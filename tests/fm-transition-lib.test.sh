@@ -51,4 +51,46 @@ pass "fm_transition_record tolerates empty workspace/from/agent fields"
 [ "$(fm_transition_policy some-future-status)" = "fallback" ] || fail "an unrecognized status must be fallback"
 pass "fm_transition_policy is the single-owner status->action table (blocked=actionable, working=absorb, idle/done=defer, else=fallback)"
 
+# --- native cursor/agy turn-end completion (debounced, identity-gated) -------
+
+# nc <harness> <status> <prev> -> prints "<rc> <newstate>" so a test can assert
+# both the signal decision (rc 0 = signal now) and the recorded state.
+nc() {
+  local out rc
+  out=$(fm_transition_native_completion "$1" "$2" "$3"); rc=$?
+  printf '%s %s' "$rc" "$out"
+}
+
+# A non-cursor/agy harness never signals and records no state (no-op).
+[ "$(nc claude idle 'idle|0')" = "1 " ] || fail "non-cursor/agy harness must never signal a native completion"
+[ "$(nc grok 'done' 'done|0')" = "1 " ] || fail "grok must never signal a native completion"
+pass "fm_transition_native_completion is a no-op for non-cursor/agy harnesses"
+
+# Debounce: a working->idle edge ARMS (no signal); the SECOND consecutive settled
+# idle/done poll signals exactly once; further idle polls do not re-signal.
+[ "$(nc cursor working '')" = "1 working|0" ] || fail "working must arm to working|0 with no signal"
+[ "$(nc cursor idle 'working|0')" = "1 idle|0" ] || fail "first idle after working must ARM (idle|0), not signal"
+[ "$(nc cursor idle 'idle|0')" = "0 idle|1" ] || fail "second consecutive idle must SIGNAL once (idle|1)"
+[ "$(nc cursor idle 'idle|1')" = "1 idle|1" ] || fail "an already-signaled idle must not re-signal"
+[ "$(nc cursor 'done' 'idle|1')" = "1 done|1" ] || fail "done after a signaled idle must not re-signal"
+pass "native completion debounces: arms on the first settled poll, signals once on the second"
+
+# A working (or blocked) edge RE-ARMS so the next turn signals afresh.
+[ "$(nc agy working 'idle|1')" = "1 working|0" ] || fail "working must re-arm (working|0)"
+[ "$(nc agy idle 'working|0')" = "1 idle|0" ] || fail "idle after re-arm must ARM again"
+[ "$(nc agy idle 'idle|0')" = "0 idle|1" ] || fail "second idle after re-arm must SIGNAL again"
+[ "$(nc agy blocked 'idle|1')" = "1 blocked|0" ] || fail "blocked (a human-wait) must re-arm, not signal a completion"
+pass "native completion re-arms on a working/blocked edge so each turn signals once"
+
+# done is treated identically to idle as a settled turn-end.
+[ "$(nc agy 'done' 'done|0')" = "0 done|1" ] || fail "two consecutive done polls must signal"
+# An unknown/unreadable status holds the signaled flag and never signals.
+[ "$(nc cursor unknown 'idle|1')" = "1 unknown|1" ] || fail "unknown must hold signaled=1 and not signal"
+[ "$(nc cursor unknown 'idle|0')" = "1 unknown|0" ] || fail "unknown must hold signaled=0 and not signal"
+# A fresh (no prior state) idle arms, then signals on the next idle - so a turn
+# already complete when the watcher first sees it is still caught.
+[ "$(nc cursor idle '')" = "1 idle|0" ] || fail "a first-seen idle (no prior state) must ARM"
+[ "$(nc cursor idle 'idle|0')" = "0 idle|1" ] || fail "the next idle then signals even without observing the working phase"
+pass "native completion handles done, unknown, and a first-seen-idle turn correctly"
+
 echo "# fm-transition-lib.test.sh: all assertions passed"

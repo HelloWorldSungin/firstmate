@@ -95,6 +95,40 @@ EOF
   pass "$harness is refused on a non-herdr backend (herdr-only)"
 }
 
+test_raw_command_bypass_refused() {
+  # B1: the raw launch-command escape hatch must not slip a cursor/agy launch past
+  # the crew-only/herdr-only gates. A raw command that RESOLVES to cursor-agent or
+  # agy - directly, via env, or behind assignment prefixes - is refused outright,
+  # on every dimension (the raw hatch cannot provide the trust seed / native
+  # supervision cursor/agy need). Each variant is tried on a forbidden dimension.
+  local variant extra want id home proj fakebin out status n=0
+  # <raw command>|<extra spawn args>|<expected-restricted-harness>
+  while IFS='|' read -r variant extra want; do
+    [ -n "$variant" ] || continue
+    n=$((n + 1))
+    id="rawbypass-$n"
+    IFS='|' read -r home proj fakebin <<EOF
+$(setup_home "rawbypass-$n" "$id")
+EOF
+    # shellcheck disable=SC2086  # $extra is an intentional argument list (may be empty)
+    out=$(run_spawn "$home" "$fakebin" "$id" "$proj" $extra "$variant")
+    status=$?
+    expect_code 1 "$status" "raw command '$variant' ($extra) must be refused"
+    assert_contains "$out" "cannot be launched through the raw command escape hatch" \
+      "raw '$variant' refusal should explain the escape-hatch block"
+    assert_contains "$out" "harness '$want'" "raw '$variant' should be classified as $want"
+    assert_absent "$home/state/$id.meta" "raw bypass refusal must happen before meta is written"
+  done <<'ROWS'
+cursor-agent --trust --force|--secondmate|cursor
+agy --dangerously-skip-permissions|--secondmate|agy
+env agy --dangerously-skip-permissions|--secondmate|agy
+FOO=1 cursor-agent --force|--secondmate|cursor
+FOO=1 BAR=2 agy -p hi||agy
+env -u HOME cursor-agent --force||cursor
+ROWS
+  pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, and assignment-prefixed)"
+}
+
 # --- teardown workspace-trust cleanup ---------------------------------------
 
 run_teardown() {  # <home> <fakebin> <settings> <id>
@@ -106,8 +140,12 @@ run_teardown() {  # <home> <fakebin> <settings> <id>
     "$TEARDOWN" "$id" --force 2>&1
 }
 
-setup_teardown_case() {  # <name> <id> <harness> -> prints "home|wt|fakebin|settings"
-  local name=$1 id=$2 harness=$3 case_dir home proj wt fakebin settings
+# setup_teardown_case <name> <id> <harness> <owned:yes|no> -> "home|wt|fakebin|settings"
+# When owned=yes it writes the ownership marker state/<id>.agy-trust (as fm-spawn
+# does only when firstmate actually CREATED the trust entry); owned=no models a
+# path the captain had already trusted (no marker).
+setup_teardown_case() {
+  local name=$1 id=$2 harness=$3 owned=${4:-no} case_dir home proj wt fakebin settings
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   proj="$case_dir/project"
@@ -126,29 +164,66 @@ setup_teardown_case() {  # <name> <id> <harness> -> prints "home|wt|fakebin|sett
     "mode=local-only" \
     "yolo=off" \
     "tasktmp="
+  [ "$owned" = yes ] && printf '%s' "$wt" > "$home/state/$id.agy-trust"
   printf '{"trustedWorkspaces":["/home/cap","%s"]}' "$wt" > "$settings"
   printf '%s|%s|%s|%s\n' "$home" "$wt" "$fakebin" "$settings"
 }
 
-test_teardown_removes_agy_trust() {
+test_teardown_removes_owned_agy_trust() {
   local id home wt fakebin settings out
   id=agy-teardown-z3
   IFS='|' read -r home wt fakebin settings <<EOF
-$(setup_teardown_case agy-teardown "$id" agy)
+$(setup_teardown_case agy-teardown "$id" agy yes)
 EOF
   out=$(run_teardown "$home" "$fakebin" "$settings" "$id") \
     || fail "agy teardown failed"$'\n'"$out"
   [ "$(jq -c '.trustedWorkspaces' "$settings")" = '["/home/cap"]' ] \
-    || fail "agy teardown did not drop the worktree path from trustedWorkspaces (got $(jq -c '.trustedWorkspaces' "$settings"))"
+    || fail "agy teardown did not drop the firstmate-owned worktree path (got $(jq -c '.trustedWorkspaces' "$settings"))"
+  assert_absent "$home/state/$id.agy-trust" "teardown should remove the ownership marker after a successful trust removal"
   assert_absent "$home/state/$id.meta" "teardown should remove the task meta"
-  pass "agy teardown removes the worktree entry from global workspace trust"
+  pass "agy teardown removes a firstmate-OWNED worktree entry from global workspace trust"
+}
+
+test_teardown_preserves_unowned_agy_trust() {
+  # No ownership marker: the captain had already trusted this exact path. Teardown
+  # must leave it (and the whole settings file) untouched.
+  local id home wt fakebin settings before out
+  id=agy-unowned-z5
+  IFS='|' read -r home wt fakebin settings <<EOF
+$(setup_teardown_case agy-unowned "$id" agy no)
+EOF
+  before=$(cat "$settings")
+  out=$(run_teardown "$home" "$fakebin" "$settings" "$id") \
+    || fail "agy teardown (unowned) failed"$'\n'"$out"
+  [ "$(cat "$settings")" = "$before" ] \
+    || fail "teardown removed a captain-owned (unmarked) agy trust entry"
+  pass "agy teardown leaves a captain-owned (unmarked) trust entry untouched"
+}
+
+test_teardown_incomplete_on_removal_failure() {
+  # A malformed settings file makes removal fail. Teardown must treat that as an
+  # INCOMPLETE teardown: non-zero exit, and the metadata + ownership marker
+  # retained so a rerun retries deterministically.
+  local id home wt fakebin settings out status
+  id=agy-incomplete-z6
+  IFS='|' read -r home wt fakebin settings <<EOF
+$(setup_teardown_case agy-incomplete "$id" agy yes)
+EOF
+  printf 'NOT VALID JSON {' > "$settings"
+  out=$(run_teardown "$home" "$fakebin" "$settings" "$id")
+  status=$?
+  expect_code 1 "$status" "teardown must fail when the owned trust entry cannot be removed"
+  assert_contains "$out" "teardown incomplete" "teardown should report an incomplete teardown"
+  assert_present "$home/state/$id.meta" "an incomplete teardown must retain task metadata for retry"
+  assert_present "$home/state/$id.agy-trust" "an incomplete teardown must retain the ownership marker for retry"
+  pass "teardown is incomplete (retains meta + marker) when the owned trust removal fails"
 }
 
 test_teardown_leaves_trust_for_non_agy() {
   local id home wt fakebin settings before out
   id=claude-teardown-z4
   IFS='|' read -r home wt fakebin settings <<EOF
-$(setup_teardown_case claude-teardown "$id" claude)
+$(setup_teardown_case claude-teardown "$id" claude no)
 EOF
   before=$(cat "$settings")
   out=$(run_teardown "$home" "$fakebin" "$settings" "$id") \
@@ -162,7 +237,10 @@ test_crew_only_refuses_secondmate cursor
 test_crew_only_refuses_secondmate agy
 test_herdr_only_refuses_non_herdr_backend cursor
 test_herdr_only_refuses_non_herdr_backend agy
-test_teardown_removes_agy_trust
+test_raw_command_bypass_refused
+test_teardown_removes_owned_agy_trust
+test_teardown_preserves_unowned_agy_trust
+test_teardown_incomplete_on_removal_failure
 test_teardown_leaves_trust_for_non_agy
 
 echo "# all fm-cursor-agy-adapter tests passed"

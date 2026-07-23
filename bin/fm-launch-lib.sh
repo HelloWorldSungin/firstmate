@@ -29,6 +29,63 @@ fm_launch_shell_quote() {
   printf "'"
 }
 
+# fm_launch_restricted_harness_of_word: map one command word (an executable path
+# or name) to the crew-only restricted harness it launches, or nothing.
+# cursor-agent and cursor -> cursor; agy -> agy.
+fm_launch_restricted_harness_of_word() {  # <word>
+  case "$(basename -- "${1:-}")" in
+    cursor-agent|cursor) printf 'cursor' ;;
+    agy) printf 'agy' ;;
+  esac
+}
+
+# fm_launch_raw_restricted_harness: given a RAW launch command string (the
+# unverified-adapter escape hatch), print the crew-only restricted harness
+# (cursor|agy) it would actually launch, or nothing. It resolves the real
+# executable through leading VAR=val assignments and an `env` wrapper (skipping
+# env's own options and NAME=val prefixes), then, as a fail-closed backstop
+# against wrapper spellings it does not model, also scans every remaining word.
+# This closes the bypass where a raw `cursor-agent ...`, `env agy ...`, or
+# `FOO=1 agy ...` command would otherwise slip past a token-only cursor/agy guard
+# (the executable basename is `cursor-agent`/`env`, not `cursor`/`agy`).
+fm_launch_raw_restricted_harness() {  # <raw-command>
+  local cmd=$1 word found
+  # shellcheck disable=SC2086  # deliberate word-splitting of the raw command string
+  set -- $cmd
+  # Skip leading VAR=val assignments.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      [A-Za-z_][A-Za-z0-9_]*=*) shift ;;
+      *) break ;;
+    esac
+  done
+  # Resolve an `env` wrapper to the command it runs.
+  if [ "$(basename -- "${1:-}")" = env ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        [A-Za-z_][A-Za-z0-9_]*=*) shift ;;   # env NAME=val
+        -u) shift 2 2>/dev/null || shift ;;   # env -u NAME
+        --unset=*) shift ;;
+        --) shift; break ;;
+        -*) shift ;;                          # any other env option
+        *) break ;;
+      esac
+    done
+  fi
+  found=$(fm_launch_restricted_harness_of_word "${1:-}")
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  # Fail-closed backstop: any word (past assignments) whose basename is a
+  # restricted executable name forces the guard, even through an unmodeled wrapper.
+  # shellcheck disable=SC2086
+  set -- $cmd
+  for word in "$@"; do
+    case "$word" in [A-Za-z_][A-Za-z0-9_]*=*) continue ;; esac
+    found=$(fm_launch_restricted_harness_of_word "$word")
+    [ -z "$found" ] || { printf '%s' "$found"; return 0; }
+  done
+}
+
 # fm_launch_template: print the verified launch command for <harness> (<kind>
 # defaults to ship). Returns 1 for an unknown harness so the caller can fall
 # back to the raw-launch-command escape hatch.
@@ -77,9 +134,9 @@ fm_launch_template() {
     # --dangerously-skip-permissions. cursor has NO standalone effort flag: effort
     # is encoded inside the parameterized model string (e.g.
     # 'composer-2.5[effort=high]'), which --model accepts verbatim, so the template
-    # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end rides herdr's native
-    # pane.agent_status_changed event stream (herdr-only backend), so no launch-time
-    # turn-end hook is installed.
+    # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end is the watcher's
+    # debounced native-completion detector (fm-watch.sh maybe_native_turnend), so
+    # no launch-time turn-end hook is installed.
     cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(cat __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
@@ -87,8 +144,8 @@ fm_launch_template() {
     # SEPARATE gate that --dangerously-skip-permissions does NOT cover (verified);
     # fm-spawn pre-seeds the exact worktree path into agy's global trustedWorkspaces
     # before launch (bin/fm-agy-trust-lib.sh). --effort accepts only low|medium|high
-    # (agy --help). Turn-end rides herdr's native event stream, so no launch-time
-    # hook is installed.
+    # (agy --help). Turn-end is the watcher's debounced native-completion detector,
+    # so no launch-time hook is installed.
     agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac

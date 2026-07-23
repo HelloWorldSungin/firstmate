@@ -140,7 +140,6 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
-HARNESS=$(grep '^harness=' "$META" | cut -d= -f2- || true)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 
@@ -953,7 +952,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_nativeturnend_key child_agy_path
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -1015,10 +1014,29 @@ cleanup_firstmate_home_children() {
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
-    if [ "$(meta_value "$child_meta" harness)" = agy ] && [ -n "$child_wt" ]; then
-      fm_agy_trust_remove "$child_wt" || echo "warning: could not remove agy workspace trust for $child_wt" >&2
+    child_t=$(fm_backend_target_of_meta "$child_meta")
+    if [ -n "$child_t" ]; then
+      child_nativeturnend_key=$(printf '%s' "$child_t" | tr ':/.' '___')
+      rm -f "$sub_state/.nativeturnend-$child_nativeturnend_key" 2>/dev/null || true
     fi
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
+    # Ownership-aware agy workspace-trust cleanup for a secondmate's own agy
+    # crewmate: same contract as the main path (marker = firstmate created it;
+    # removal failure is an incomplete cleanup that retains the marker + metadata
+    # for retry) rather than a warn-and-forget that could leak a global grant.
+    if [ -f "$sub_state/$child_id.agy-trust" ]; then
+      child_agy_path=$(cat "$sub_state/$child_id.agy-trust" 2>/dev/null || true)
+      if [ -n "$child_agy_path" ]; then
+        if fm_agy_trust_remove "$child_agy_path"; then
+          rm -f "$sub_state/$child_id.agy-trust"
+        else
+          echo "error: could not remove firstmate-owned agy workspace trust for $child_agy_path (secondmate child $child_id); cleanup incomplete, retaining metadata for retry" >&2
+          return 1
+        fi
+      else
+        rm -f "$sub_state/$child_id.agy-trust"
+      fi
+    fi
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token"
   done
 }
@@ -1200,16 +1218,38 @@ if [ "$KIND" = secondmate ]; then
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
-# agy pre-seeds the worktree path into its shared global trustedWorkspaces at
-# launch (bin/fm-agy-trust-lib.sh); drop it now the task's worktree is gone.
-if [ "$HARNESS" = agy ] && [ -n "$WT" ]; then
-  fm_agy_trust_remove "$WT" || echo "warning: could not remove agy workspace trust for $WT" >&2
-fi
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
+# Remove the cursor/agy native turn-end debounce state (bin/fm-watch.sh
+# maybe_native_turnend), keyed by window like the watcher's other per-pane state.
+if [ -n "$T" ]; then
+  nativeturnend_key=$(printf '%s' "$T" | tr ':/.' '___')
+  rm -f "$STATE/.nativeturnend-$nativeturnend_key" 2>/dev/null || true
+fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+# agy workspace-trust cleanup (bin/fm-agy-trust-lib.sh), ownership-aware and
+# transactional. The marker state/<id>.agy-trust exists only when THIS task's
+# spawn actually CREATED a global trustedWorkspaces entry (a path the captain had
+# already trusted was left unmarked and is never touched here). Removal failure is
+# an INCOMPLETE teardown: keep the marker AND the task metadata so a rerun retries
+# deterministically, rather than warning-and-forgetting a leaked global grant.
+# Done last, after the other cleanup, so an incomplete teardown leaves only the
+# trust entry, its marker, and the metadata behind.
+if [ -f "$STATE/$ID.agy-trust" ]; then
+  agy_seeded_path=$(cat "$STATE/$ID.agy-trust" 2>/dev/null || true)
+  if [ -n "$agy_seeded_path" ]; then
+    if fm_agy_trust_remove "$agy_seeded_path"; then
+      rm -f "$STATE/$ID.agy-trust"
+    else
+      echo "error: could not remove firstmate-owned agy workspace trust for $agy_seeded_path; teardown incomplete, retaining task metadata for a deterministic retry (rerun teardown once agy's settings file is writable and valid)" >&2
+      exit 1
+    fi
+  else
+    rm -f "$STATE/$ID.agy-trust"
+  fi
+fi
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true

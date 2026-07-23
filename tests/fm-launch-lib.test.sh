@@ -119,8 +119,33 @@ test_existing_effort_flags_unchanged() {
   pass "existing harness effort renderers remain stable after extraction"
 }
 
+# --- fm_launch_raw_restricted_harness (B1 raw-command bypass guard) ----------
+
+test_raw_restricted_harness_resolution() {
+  # Direct executables.
+  assert_eq "$(fm_launch_raw_restricted_harness 'cursor-agent --trust --force')" cursor "direct cursor-agent"
+  assert_eq "$(fm_launch_raw_restricted_harness 'cursor --trust')" cursor "direct cursor"
+  assert_eq "$(fm_launch_raw_restricted_harness 'agy --dangerously-skip-permissions')" agy "direct agy"
+  # A full path is resolved by basename.
+  assert_eq "$(fm_launch_raw_restricted_harness '/home/x/.local/bin/agy -p hi')" agy "agy via absolute path"
+  # env wrapper (with and without options / NAME=val).
+  assert_eq "$(fm_launch_raw_restricted_harness 'env agy --effort high')" agy "env agy"
+  assert_eq "$(fm_launch_raw_restricted_harness 'env FOO=1 cursor-agent --force')" cursor "env NAME=val cursor-agent"
+  assert_eq "$(fm_launch_raw_restricted_harness 'env -u HOME agy')" agy "env -u NAME agy"
+  assert_eq "$(fm_launch_raw_restricted_harness 'env -i cursor-agent --force')" cursor "env -i cursor-agent"
+  # Leading assignment prefixes.
+  assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 agy -p hi')" agy "assignment-prefixed agy"
+  assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 BAR=2 cursor-agent')" cursor "two assignments then cursor-agent"
+  # Non-restricted commands resolve to nothing.
+  assert_eq "$(fm_launch_raw_restricted_harness 'claude --dangerously-skip-permissions')" "" "claude is not restricted"
+  assert_eq "$(fm_launch_raw_restricted_harness 'my-wrapper --run')" "" "an unrelated wrapper is not restricted"
+  assert_eq "$(fm_launch_raw_restricted_harness 'env FOO=1 codex')" "" "env codex is not restricted"
+  pass "fm_launch_raw_restricted_harness resolves cursor-agent/agy through env and assignment prefixes"
+}
+
 test_cursor_template
 test_agy_template
+test_raw_restricted_harness_resolution
 test_existing_templates_unchanged
 test_unknown_harness_returns_nonzero
 test_cursor_model_passthrough

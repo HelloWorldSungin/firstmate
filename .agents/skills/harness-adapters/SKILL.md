@@ -327,10 +327,15 @@ They are CREW-ONLY and HERDR-ONLY: never a primary runtime, never a secondmate l
 `bin/fm-spawn.sh` refuses a `--secondmate` spawn on either (crew-only) and refuses either on a non-herdr backend (herdr-only), both before any backend or worktree work; the refusals are covered by `tests/fm-cursor-agy-adapter.test.sh`.
 tmux is deliberately out-of-scope: it has no native agent detection, so the liveness, turn-end, and composer signals below would all be absent there.
 
-On herdr, agent-state, liveness, turn-end, and send-safety are all GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs and its `pane.agent_status_changed` event stream drives turn-end.
-So `fm_backend_herdr_agent_alive`, `fm_backend_herdr_classify_agent_status` (busy signature), and `fm_backend_herdr_wait_transition` (turn-end) all work unchanged - the busy signature is native `agent_status == working`, not a screen-scrape.
-No turn-end hook is installed for either CLI, and firstmate never writes a repo's `.cursor/hooks.json` or `.agents/hooks.json`.
-Each CLI does have a global, non-clobbering hooks location (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`) if a benign global signal is ever wanted, but the native event stream makes it unnecessary.
+On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
+So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
+
+Turn-end is NOT delivered for free by the native event stream: the shared transition policy (`bin/fm-transition-lib.sh`) deliberately DEFERS `idle`/`done` because for the general fleet those states blip between tool calls, and only `blocked` is immediately actionable.
+cursor and agy install no turn-end hook and write no status file, so a completed turn would otherwise never wake firstmate except via the unreliable content-hash stale heuristic (a repainting CLI can defeat it).
+The fix is a native-identity-gated, debounced completion detector in the watcher's poll loop: `bin/fm-watch.sh`'s `maybe_native_turnend` reads the pane's native `agent_status` and, through `fm_transition_native_completion` (`bin/fm-transition-lib.sh`), touches the task's `state/<id>.turn-ended` when a cursor/agy pane settles at `idle`/`done` across two consecutive polls - the SAME completion signal every other harness's hook writes, so the existing `scan_signals`/wake path handles it with no change to the shared policy or the event stream.
+The debounce (two settled polls) filters inter-tool `idle` blips, and the signal fires once per idle period (re-armed by a `working`/`blocked` edge).
+No repo `.cursor/hooks.json` / `.agents/hooks.json` is ever written, and no new shared global hook file is added.
+A global benign `stop`/`Stop` hook (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`, whose payloads were verified to carry the worktree in `workspace_roots[0]` / `workspacePaths[0]`) is a viable alternative, but the native poll detector is preferred because it needs no shared global-file mutation.
 
 Composer classification stays `unknown` for both (the safe default) and no override is added.
 cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
@@ -344,7 +349,7 @@ The only cost of `unknown` is that the away-mode escalation injector defers rath
 | agy launch | `agy --dangerously-skip-permissions <model-flag> <effort-flag> --prompt-interactive "$(cat <brief>)"`. `--prompt-interactive` takes the initial prompt and keeps the session interactive for steering; `--dangerously-skip-permissions` auto-approves tool use. |
 | agy model/effort | `--model <model>`, `--effort <low\|medium\|high>` (agy `--help` advertises those three only; xhigh/max omitted). |
 | Busy-pane signature | native herdr `agent_status == working` (generic, no screen-scrape). |
-| Turn-end | native herdr `pane.agent_status_changed` event stream; no hook installed, no repo hook file written. |
+| Turn-end | watcher-side debounced native completion (`fm-watch.sh` `maybe_native_turnend` -> touches `state/<id>.turn-ended` on a settled `idle`/`done`); NO hook installed, no repo or new global hook file written. |
 | Composer state | `unknown` (safe default; no override). |
 
 agy workspace trust is the one extra launch step.

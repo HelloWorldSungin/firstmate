@@ -232,6 +232,11 @@ SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+# Set to the exact worktree path only when THIS spawn created a NEW agy
+# workspace-trust entry (bin/fm-agy-trust-lib.sh). On a failed spawn the abort
+# trap rolls that entry (and its ownership marker) back, so a global trust grant
+# never survives a launch that never happened. Cleared once the spawn commits.
+AGY_TRUST_ROLLBACK_PATH=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -252,6 +257,17 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  # Roll back a NEW agy workspace-trust grant if the spawn is aborting: firstmate
+  # created it for a launch that is not happening, so remove the shared global
+  # entry it owns (and the ownership marker). Only fires on failure and only for a
+  # firstmate-created entry (AGY_TRUST_ROLLBACK_PATH set); a committed spawn clears
+  # the path so the running agy keeps its trust.
+  if [ "$status" -ne 0 ] && [ -n "${AGY_TRUST_ROLLBACK_PATH:-}" ]; then
+    fm_agy_trust_remove "$AGY_TRUST_ROLLBACK_PATH" \
+      || echo "warning: could not roll back agy workspace trust for $AGY_TRUST_ROLLBACK_PATH after a failed spawn" >&2
+    rm -f "$STATE/$ID.agy-trust" 2>/dev/null || true
+    AGY_TRUST_ROLLBACK_PATH=
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -418,6 +434,19 @@ case "$ARG3" in
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
     done
+    # The raw escape hatch must NOT become a bypass around the cursor/agy
+    # crew-only + herdr-only gates. Its harness token is only the first non-
+    # assignment word's basename (`cursor-agent`/`env`, not `cursor`/`agy`), so
+    # the canonical guard below would miss it. Resolve the ACTUAL executable
+    # (through `env` and leading assignments, with an all-words backstop) and, if
+    # it is cursor/agy, refuse: those adapters also need firstmate's workspace-
+    # trust seeding and native turn-end supervision, which only the canonical
+    # --harness path installs. Direct the caller to --harness cursor|agy.
+    raw_restricted=$(fm_launch_raw_restricted_harness "$LAUNCH")
+    if [ -n "$raw_restricted" ]; then
+      echo "error: harness '$raw_restricted' cannot be launched through the raw command escape hatch (it bypasses the crew-only/herdr-only gates, agy workspace-trust seeding, and native turn-end supervision). Use --harness $raw_restricted instead." >&2
+      exit 1
+    fi
     ;;
   '')
     # No explicit harness: resolve from config. A secondmate AGENT launches on the
@@ -451,10 +480,10 @@ esac
 # data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
 # gates before any backend or worktree work: they can supervise a ship/scout
 # crewmate only, never a secondmate, and only on the herdr backend, whose native
-# agent-state event stream provides the liveness/turn-end/composer signals these
-# CLIs lack a firstmate adapter for on tmux (tmux is documented out-of-scope in
-# the harness-adapters skill). Refuse loudly rather than launch an unsupervisable
-# crewmate.
+# agent-state gives liveness plus the debounced turn-end completion the watcher
+# derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
+# and is documented out-of-scope in the harness-adapters skill. Refuse loudly
+# rather than launch an unsupervisable crewmate.
 case "$HARNESS" in
   cursor|agy)
     if [ "$KIND" = secondmate ]; then
@@ -1121,26 +1150,37 @@ EOF
       exclude_path '.fm-grok-turnend'
       ;;
     cursor*)
-      # cursor (crew-only, herdr-only): turn-end rides herdr's native
-      # pane.agent_status_changed event stream, so NO launch-time hook is
-      # installed and NO repo hook file (.cursor/hooks.json) is ever written -
-      # that global-vs-project hook distinction and the native-stream rationale
-      # are in the harness-adapters skill / data/cursor-agy-verify/report.md.
-      # Nothing to prepare here.
+      # cursor (crew-only, herdr-only): turn-end is the watcher's debounced
+      # native-completion detector (fm-watch.sh maybe_native_turnend), so NO
+      # launch-time hook is installed and NO repo hook file (.cursor/hooks.json) is
+      # ever written. cursor's launch-time --trust already covers its workspace
+      # trust modal, so unlike agy there is nothing to seed here.
       :
       ;;
     agy*)
-      # agy (crew-only, herdr-only): turn-end likewise rides herdr's native
-      # event stream (no hook, no repo .agents/hooks.json write). What agy DOES
-      # need is workspace trust: an interactive launch gates on a per-workspace
-      # trust modal that --dangerously-skip-permissions does not cover, and trust
-      # is an EXACT-path entry in agy's shared global settings. Pre-seed the exact
-      # worktree path before launch (bin/fm-agy-trust-lib.sh); teardown removes it.
-      # Fail closed - an unseeded launch would wedge on the modal - so abort the
-      # spawn if the trust write does not land.
+      # agy (crew-only, herdr-only): turn-end is the watcher's debounced native
+      # completion detector (no hook, no repo .agents/hooks.json write). What agy
+      # DOES need is workspace trust: an interactive launch gates on a per-
+      # workspace trust modal that --dangerously-skip-permissions does not cover,
+      # and trust is an EXACT-path entry in agy's SHARED global settings. Pre-seed
+      # the exact worktree path before launch (bin/fm-agy-trust-lib.sh). Fail
+      # closed - an unseeded launch would wedge on the modal - so abort if the
+      # write does not land.
+      #
+      # Ownership + transactional safety (the settings file is shared with the
+      # captain's own agy use): only record ownership and arm rollback/teardown
+      # removal when firstmate actually CREATED the entry. If the captain had
+      # already trusted this exact path (FM_AGY_TRUST_ADDED=preexisting), leave it
+      # untouched forever - no marker, no rollback, no teardown removal. The
+      # durable marker state/<id>.agy-trust drives ownership-aware teardown; the
+      # in-memory AGY_TRUST_* vars drive spawn-abort rollback.
       if ! fm_agy_trust_add "$WT"; then
         echo "error: could not grant agy workspace trust for $WT; refusing to launch an agy crewmate that would hang on the trust modal" >&2
         exit 1
+      fi
+      if [ "${FM_AGY_TRUST_ADDED:-}" = created ]; then
+        printf '%s' "$WT" > "$STATE/$ID.agy-trust"
+        AGY_TRUST_ROLLBACK_PATH=$WT
       fi
       ;;
   esac

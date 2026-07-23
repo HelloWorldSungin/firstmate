@@ -101,3 +101,72 @@ fm_transition_policy() {  # <to_status> -> actionable|absorb|defer|fallback
     *) printf 'fallback' ;;
   esac
 }
+
+# fm_transition_native_completion: the debounced, native-identity-gated turn-end
+# decision for the crew-only, herdr-only cursor/agy adapters.
+#
+# WHY THIS EXISTS: those CLIs install no turn-end hook and write no status file,
+# and the shared policy above correctly DEFERS `idle`/`done` because for the
+# general fleet those states blip transiently between tool calls. But cursor and
+# agy signal a completed turn ONLY through their native `idle`/`done` state, and
+# the content-hash stale backstop is unreliable for a repainting CLI. So the
+# watcher's poll loop runs this decision per cursor/agy herdr window and, when it
+# says signal, touches the task's `state/<id>.turn-ended` - the same completion
+# signal every other harness's hook writes, handled by the existing scan/wake
+# path with no change to the shared policy or the event stream.
+#
+# It is NOT a blanket "idle/done is actionable" rule (the very firehose the policy
+# avoids): it is gated to cursor/agy AND debounced. A signal fires only on the
+# SECOND consecutive settled `idle`/`done` poll (so an idle shorter than a poll
+# interval - a real inter-tool blip - never signals), and only ONCE per idle
+# period; a `working` or `blocked` edge re-arms it for the next turn.
+#
+# Pure and side-effect-free so it is unit-testable: given the harness, the current
+# native <status>, and the PREVIOUS recorded "<status>|<signaled>" state, it PRINTS
+# the new "<status>|<signaled>" state and RETURNS 0 iff a turn-end should be
+# signaled now (1 otherwise). A non-cursor/agy harness always returns 1 and echoes
+# an empty state, so the caller does nothing for other tasks.
+fm_transition_native_completion() {  # <harness> <status> <prev_state> -> prints new state; 0 iff signal now
+  local harness=$1 status=$2 prev=$3 prev_status prev_signaled
+  case "$harness" in
+    cursor|agy) ;;
+    *) printf ''; return 1 ;;
+  esac
+  prev_status=${prev%%|*}
+  case "$prev" in
+    *'|'*) prev_signaled=${prev#*|} ;;
+    *) prev_signaled=0 ;;
+  esac
+  [ "$prev_signaled" = 1 ] || prev_signaled=0
+  case "$status" in
+    working|blocked)
+      # An active turn, or a human-wait already escalated by the event stream:
+      # re-arm so the next completion signals afresh.
+      printf '%s|0' "$status"
+      return 1
+      ;;
+    idle|done)
+      case "$prev_status" in
+        idle|done)
+          if [ "$prev_signaled" = 1 ]; then
+            printf '%s|1' "$status"
+            return 1
+          fi
+          # Second consecutive settled poll: a real turn-end, signal once.
+          printf '%s|1' "$status"
+          return 0
+          ;;
+        *)
+          # First settled poll after a working/unknown edge: arm, do not signal.
+          printf '%s|0' "$status"
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      # Unknown/unreadable: hold the signaled flag, record the status.
+      printf '%s|%s' "$status" "$prev_signaled"
+      return 1
+      ;;
+  esac
+}
