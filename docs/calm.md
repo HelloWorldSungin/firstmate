@@ -4,14 +4,15 @@ Calm is a Pi-only conversation presentation toggle.
 It is off by default, and the last `/calm` choice persists for the effective Firstmate home across Pi session starts and resumes.
 
 While Calm is active, Pi's built-in `Working...` activity remains visible and no separate Calm status row is added.
-Calm hides collapsed thinking labels, the shells for Pi's seven built-in tools, the `fm_watch_arm_pi` tool shell, and canonically typed Firstmate operational inputs.
-Operational rows that would ordinarily appear as user messages use a presentation-only entry so they can disappear without reserving vertical space.
+Calm hides collapsed thinking labels, the shells for Pi's seven built-in tools, and the `fm_watch_arm_pi` tool shell.
+Current Firstmate operational inputs remain visible ordinary user-role messages with their exact origin, ordering, model authority, and session persistence unchanged.
+Pi exposes no supported renderer for hiding those rows without changing their semantics and risking duplicate or lost turns.
 The session-start nudge remains on its existing non-displayed custom-message path.
 
 Calm changes presentation only.
 Tool execution, model context, session storage, diagnostics, and `/export` and `/share` operation remain unchanged.
-Every hidden Firstmate input remains available to the model and in serialized session data.
-The main HTML message transcript may omit hidden operational custom messages, while the complete artifact and Pi's sidebar tree retain their text.
+Current operational user messages remain available to the model, visible in the transcript, and present in exported and shared HTML.
+Legacy operational custom messages remain in serialized session data and Pi's sidebar tree, although the main HTML message transcript may omit them.
 Toggling Calm off restores ordinary rendering, and `Ctrl+O` expansion state is preserved.
 
 Pi's supported presentation API does not expose a global transcript filter.
