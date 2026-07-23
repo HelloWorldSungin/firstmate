@@ -109,5 +109,5 @@ bin/fm-doc-audience-check.sh
 Expected output after this record is classified:
 
 ```text
-fm-doc-audience-check: ok surfaces=55
+fm-doc-audience-check: ok surfaces=55 local_links=159
 ```
