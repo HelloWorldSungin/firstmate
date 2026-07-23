@@ -28,11 +28,11 @@ for t in herdr cursor-agent agy jq; do
   command -v "$t" >/dev/null 2>&1 || { echo "skip: $t not found"; exit 0; }
 done
 
-# shellcheck source=bin/fm-backend.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
-# shellcheck source=bin/fm-launch-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-launch-lib.sh"
-# shellcheck source=bin/fm-agy-trust-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-agy-trust-lib.sh"
 fm_backend_source herdr || { echo "skip: herdr backend could not be sourced"; exit 0; }
 fm_backend_herdr_version_check >/dev/null 2>&1 || { echo "skip: installed herdr fails the adapter version gate"; exit 0; }

@@ -13,7 +13,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-launch-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-launch-lib.sh"
 
 TMP_LAUNCH_ROOT=$(fm_test_tmproot fm-launch-lib)

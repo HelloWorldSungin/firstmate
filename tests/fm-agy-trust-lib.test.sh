@@ -7,7 +7,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=bin/fm-agy-trust-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-agy-trust-lib.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the agy trust lib)"; exit 0; }
