@@ -18,13 +18,13 @@ import argparse
 import json
 import os
 import re
+import string
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 HTML_LINK_RE = re.compile(r"\b(?:href|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 REQUIRED_TRACKED_PATTERNS = ["*.md", "*.mdx", "*.rst", "*.txt", "docs/examples/*"]
 
@@ -81,13 +81,133 @@ def list_of_strings(value: object, label: str) -> list[str]:
     return value
 
 
+def markdown_unescape(value: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] == "\\" and index + 1 < len(value) and value[index + 1] in string.punctuation:
+            index += 1
+        result.append(value[index])
+        index += 1
+    return "".join(result)
+
+
 def normalized_link_value(raw: str) -> str:
     value = raw.strip()
     if value.startswith("<") and value.endswith(">"):
         value = value[1:-1].strip()
     if " " in value:
         value = value.split()[0]
-    return value
+    return markdown_unescape(value)
+
+
+def markdown_link_tail(text: str, index: int) -> int | None:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if index >= len(text):
+        return None
+    if text[index] == ")":
+        return index + 1
+    delimiter = text[index]
+    if delimiter not in "\"'(":
+        return None
+    closing = ")" if delimiter == "(" else delimiter
+    index += 1
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if text[index] == closing:
+            index += 1
+            break
+        if text[index] in "\r\n":
+            return None
+        index += 1
+    else:
+        return None
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if index < len(text) and text[index] == ")":
+        return index + 1
+    return None
+
+
+def markdown_link_destinations(text: str) -> list[str]:
+    destinations: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if text[index] != "[":
+            index += 1
+            continue
+        label_depth = 1
+        cursor = index + 1
+        while cursor < len(text) and label_depth:
+            if text[cursor] == "\\" and cursor + 1 < len(text):
+                cursor += 2
+                continue
+            if text[cursor] == "[":
+                label_depth += 1
+            elif text[cursor] == "]":
+                label_depth -= 1
+            cursor += 1
+        if label_depth or cursor >= len(text) or text[cursor] != "(":
+            index += 1
+            continue
+        cursor += 1
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor < len(text) and text[cursor] == "<":
+            start = cursor + 1
+            cursor = start
+            accepted = False
+            while cursor < len(text):
+                if text[cursor] == "\\" and cursor + 1 < len(text):
+                    cursor += 2
+                    continue
+                if text[cursor] == ">":
+                    destination = text[start:cursor]
+                    tail_end = markdown_link_tail(text, cursor + 1)
+                    if tail_end is not None:
+                        destinations.append(destination)
+                        index = tail_end
+                        accepted = True
+                    break
+                if text[cursor] in "<\r\n":
+                    break
+                cursor += 1
+            if not accepted:
+                index += 1
+            continue
+        start = cursor
+        paren_depth = 0
+        accepted = False
+        while cursor < len(text):
+            if text[cursor] == "\\" and cursor + 1 < len(text):
+                cursor += 2
+                continue
+            if text[cursor] == "(":
+                paren_depth += 1
+            elif text[cursor] == ")":
+                if paren_depth == 0:
+                    destinations.append(text[start:cursor])
+                    index = cursor + 1
+                    accepted = True
+                    break
+                paren_depth -= 1
+            elif text[cursor].isspace() and paren_depth == 0:
+                tail_end = markdown_link_tail(text, cursor)
+                if tail_end is not None:
+                    destinations.append(text[start:cursor])
+                    index = tail_end
+                    accepted = True
+                break
+            cursor += 1
+        if not accepted:
+            index += 1
+    return destinations
 
 
 def resolve_local_target(root: Path, source: Path, raw: str) -> Path | None:
@@ -112,7 +232,7 @@ def markdown_local_links(root: Path, source: Path) -> list[tuple[str, Path]]:
         text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         fail(f"cannot read prose surface {source.relative_to(root)}: {exc}")
-    raw_links = MARKDOWN_LINK_RE.findall(text) + HTML_LINK_RE.findall(text)
+    raw_links = markdown_link_destinations(text) + HTML_LINK_RE.findall(text)
     result: list[tuple[str, Path]] = []
     for raw in raw_links:
         target = resolve_local_target(root, source, raw)

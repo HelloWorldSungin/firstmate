@@ -101,6 +101,7 @@ write_fixture_inventory() {
     {"path": "README.md", "audience": "public-product"},
     {"path": "docs/evidence.md", "audience": "maintainer-verification"},
     {"path": "docs/policy.md", "audience": "operator-current"},
+    {"path": "docs/protocol_(v1).md", "audience": "operator-current"},
     {"path": "docs/setup.md", "audience": "operator-current"}
   ]
 }
@@ -114,6 +115,7 @@ test_local_links_and_no_keyword_heuristic() {
   printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
   printf '%s\n' '# Setup' > "$repo/docs/setup.md"
   printf '%s\n' '# Policy' > "$repo/docs/policy.md"
+  printf '%s\n' '# Protocol' > "$repo/docs/protocol_(v1).md"
   cat > "$repo/docs/evidence.md" <<'MD'
 # Incident verification on 2026-07-23
 
@@ -128,7 +130,15 @@ MD
   "$CHECK" --root "$repo" >/dev/null \
     || fail "structural checker rejected legitimate maintainer evidence prose"
 
-  printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md) [Broken](docs/missing.bin)' \
+  printf '%s\n' \
+    '[Setup](docs/setup.md) [Policy](docs/policy.md) [Balanced](docs/protocol_(v1).md) [Escaped](docs/protocol_\(v1\).md "Protocol")' \
+    > "$repo/README.md"
+  git -C "$repo" add README.md
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "structural checker rejected balanced or escaped parentheses in local links"
+
+  printf '%s\n' \
+    '[Setup](docs/setup.md) [Policy](docs/policy.md) [Broken](docs/missing.bin)' \
     > "$repo/README.md"
   git -C "$repo" add README.md
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
