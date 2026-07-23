@@ -210,6 +210,70 @@ def markdown_link_destinations(text: str) -> list[str]:
     return destinations
 
 
+def markdown_without_code(text: str) -> str:
+    masked = list(text)
+
+    def mask(start: int, end: int) -> None:
+        for position in range(start, end):
+            if masked[position] not in "\r\n":
+                masked[position] = " "
+
+    def escaped(position: int) -> bool:
+        backslashes = 0
+        position -= 1
+        while position >= 0 and masked[position] == "\\":
+            backslashes += 1
+            position -= 1
+        return backslashes % 2 == 1
+
+    fence: tuple[str, int] | None = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if fence is not None:
+            mask(offset, offset + len(line))
+            fence_char, fence_length = fence
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*", content):
+                fence = None
+        else:
+            opener = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
+            if opener is not None:
+                marker = opener.group(1)
+                info = opener.group(2)
+                if marker[0] == "~" or "`" not in info:
+                    fence = (marker[0], len(marker))
+                    mask(offset, offset + len(line))
+        offset += len(line)
+
+    index = 0
+    while index < len(masked):
+        if masked[index] != "`" or escaped(index):
+            index += 1
+            continue
+        opening = index
+        while index < len(masked) and masked[index] == "`":
+            index += 1
+        delimiter_length = index - opening
+        cursor = index
+        closing = None
+        while cursor < len(masked):
+            if masked[cursor] != "`":
+                cursor += 1
+                continue
+            run_start = cursor
+            while cursor < len(masked) and masked[cursor] == "`":
+                cursor += 1
+            if cursor - run_start == delimiter_length and not escaped(run_start):
+                closing = cursor
+                break
+        if closing is None:
+            continue
+        mask(opening, closing)
+        index = closing
+
+    return "".join(masked)
+
+
 def resolve_local_target(root: Path, source: Path, raw: str) -> Path | None:
     split = urlsplit(normalized_link_value(raw))
     if split.scheme or split.netloc:
@@ -232,7 +296,8 @@ def markdown_local_links(root: Path, source: Path) -> list[tuple[str, Path]]:
         text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         fail(f"cannot read prose surface {source.relative_to(root)}: {exc}")
-    raw_links = markdown_link_destinations(text) + HTML_LINK_RE.findall(text)
+    prose = markdown_without_code(text)
+    raw_links = markdown_link_destinations(prose) + HTML_LINK_RE.findall(prose)
     result: list[tuple[str, Path]] = []
     for raw in raw_links:
         target = resolve_local_target(root, source, raw)

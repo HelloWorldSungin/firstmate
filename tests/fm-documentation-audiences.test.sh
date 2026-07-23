@@ -130,12 +130,19 @@ MD
   "$CHECK" --root "$repo" >/dev/null \
     || fail "structural checker rejected legitimate maintainer evidence prose"
 
-  printf '%s\n' \
-    '[Setup](docs/setup.md) [Policy](docs/policy.md) [Balanced](docs/protocol_(v1).md) [Escaped](docs/protocol_\(v1\).md "Protocol")' \
-    > "$repo/README.md"
+  cat > "$repo/README.md" <<'MD'
+[Setup](docs/setup.md) [Policy](docs/policy.md) [Balanced](docs/protocol_(v1).md) [Escaped](docs/protocol_\(v1\).md "Protocol")
+
+`[Inline Markdown example](docs/missing-inline.md)` and `<a href="docs/missing-inline.html">inline HTML example</a>`.
+
+```markdown
+[Fenced Markdown example](docs/missing-fenced.md)
+<img src="docs/missing-fenced.png">
+```
+MD
   git -C "$repo" add README.md
   "$CHECK" --root "$repo" >/dev/null \
-    || fail "structural checker rejected balanced or escaped parentheses in local links"
+    || fail "structural checker rejected valid links or code examples"
 
   printf '%s\n' \
     '[Setup](docs/setup.md) [Policy](docs/policy.md) [Broken](docs/missing.bin)' \
