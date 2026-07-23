@@ -27,12 +27,15 @@ from urllib.parse import unquote, urlsplit
 
 HTML_LINK_RE = re.compile(r"\b(?:href|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 MARKDOWN_REFERENCE_DEFINITION_RE = re.compile(
-    r"^ {0,3}\[[^\]\r\n]+\]:[ \t]*(?:<([^>\r\n]+)>|(\S+))",
+    r"^ {0,3}\[[^\]\r\n]+\]:[ \t]*(?:\r\n?|\n)?[ \t]*(?:<([^>\r\n]+)>|(\S+))",
     re.MULTILINE,
 )
 RST_EMBEDDED_LINK_RE = re.compile(r"`[^`\r\n]*<([^<>\r\n]+)>`__?")
 RST_TARGET_RE = re.compile(r"^ {0,3}\.\. _([^:\r\n]+):[ \t]*(.*)$", re.MULTILINE)
-RST_ANONYMOUS_TARGET_RE = re.compile(r"^ {0,3}__:[ \t]*(\S.*)$", re.MULTILINE)
+RST_ANONYMOUS_TARGET_RE = re.compile(
+    r"^ {0,3}(?:\.\. __:|__)[ \t]+(\S.*)$",
+    re.MULTILINE,
+)
 RST_DIRECTIVE_LINK_RE = re.compile(
     r"^ {0,3}\.\. (?:figure|image|include|literalinclude)::[ \t]*(\S.*)$",
     re.MULTILINE | re.IGNORECASE,
@@ -372,15 +375,16 @@ def rst_without_code(text: str) -> str:
                 offset += len(line)
                 continue
             literal_base = None
-        directive = re.match(
-            r"^( {0,3})\.\. (?:code-block|sourcecode|parsed-literal)::",
+        literal_directive = re.match(
+            r"^( {0,3})\.\. (?:code|code-block|sourcecode|parsed-literal|raw|math)::",
             content,
             re.IGNORECASE,
         )
-        if directive is not None:
-            literal_base = len(directive.group(1))
+        directive = re.match(r"^ {0,3}\.\. [A-Za-z0-9_-]+::", content)
+        if literal_directive is not None:
+            literal_base = len(literal_directive.group(1))
             mask(offset, offset + len(line))
-        elif content.rstrip().endswith("::"):
+        elif directive is None and content.rstrip().endswith("::"):
             literal_base = indentation
         offset += len(line)
 

@@ -171,7 +171,8 @@ MD
 [Setup][setup] [Policy](docs/policy.md)
 
 [setup]: docs/setup.md
-[missing]: docs/missing-reference.md
+[missing]:
+  docs/missing-reference.md
 MD
   git -C "$repo" add README.md
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
@@ -179,6 +180,38 @@ MD
   printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
   printf '%s\n' 'Guide' '=====' '' 'See `missing`_.' '' '.. _missing: missing.rst' > "$repo/docs/guide.rst"
   git -C "$repo" add README.md docs/guide.rst
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  cat > "$repo/docs/guide.rst" <<'RST'
+Guide
+=====
+
+Anonymous__
+
+__ missing-anonymous.rst
+RST
+  git -C "$repo" add docs/guide.rst
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  cat > "$repo/docs/guide.rst" <<'RST'
+Guide
+=====
+
+.. code:: rst
+
+   `Code example <missing-code.rst>`_
+
+.. note::
+
+   `Policy <policy.md>`_
+RST
+  git -C "$repo" add docs/guide.rst
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "structural checker confused parsed and literal reStructuredText directives"
+
+  sed 's/policy.md/missing-note.rst/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
+  git -C "$repo" add docs/guide.rst
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
 
   printf '%s\n' 'Guide' '=====' '' 'See `setup`_.' '' '.. _setup: setup.md' > "$repo/docs/guide.rst"
