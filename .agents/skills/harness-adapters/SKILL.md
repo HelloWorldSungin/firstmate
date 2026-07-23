@@ -25,7 +25,8 @@ If `config/crew-harness` is unset or `default`, there is no concrete value to in
 Inheritance also copies the literal `config/crew-dispatch.json` file, so secondmates apply the same best-fit profile rules for their own crewmates.
 
 Each adapter splits into mechanics and knowledge.
-The per-task mechanics, including launch command, autonomy flag, and crewmate turn-end hook, live in `bin/fm-spawn.sh`.
+Exact launch-command construction, including model and effort flags, lives in `bin/fm-launch-lib.sh`.
+The surrounding per-task gates, workspace-trust setup, and crewmate turn-end integration live in `bin/fm-spawn.sh`.
 The primary-session "no turn ends blind" guard contract and harness hook installation paths live in `docs/turnend-guard.md`.
 The primary-session watcher wake protocols are rendered from `docs/supervision-protocols/` by `bin/fm-supervision-instructions.sh`.
 The supervision knowledge lives here: busy signature, exit command, interrupt, dialogs, resume behavior, skill invocation, and quirks.
@@ -362,6 +363,7 @@ The only cost of `unknown` is that the away-mode escalation injector defers rath
 
 agy workspace trust is the one extra launch step.
 An interactive agy launch gates on a per-workspace trust modal that `--dangerously-skip-permissions` does NOT cover, and trust is an EXACT-path entry (not a prefix) in agy's SINGLE global settings file `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces`.
-So `bin/fm-spawn.sh` pre-seeds the exact crew-worktree path there before launch and `bin/fm-teardown.sh` removes it, both through `bin/fm-agy-trust-lib.sh`, which is locked, additive/idempotent, atomic, and fail-closed (it leaves an unparseable settings file untouched rather than clobbering the captain's own agy trust).
+So `bin/fm-spawn.sh` pre-seeds the exact crew-worktree path before launch, records ownership only when firstmate created the entry, and `bin/fm-teardown.sh` removes only a firstmate-owned entry.
+`bin/fm-agy-trust-lib.sh`'s header owns the created-vs-preexisting signal, ownership-and-liveness lock, atomic mutation, abort rollback, retry-evidence preservation, and fail-closed behavior.
 An agy spawn aborts if that trust write does not land, because an unseeded launch would wedge on the modal.
 cursor needs no such pre-seed - its launch-time `--trust` covers the workspace trust modal directly.

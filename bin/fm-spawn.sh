@@ -56,10 +56,12 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|grok)
-#   overrides it for this spawn (either kind). A non-flag string containing
+#   /updatefirstmate, restart). A bare verified adapter name overrides it for this
+#   spawn, subject to cursor/agy being crew-only and herdr-only. A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
-#   new adapters.
+#   new adapters. The raw path refuses detectable cursor/agy spellings at spawn
+#   and installs PATH guard shims as execution-time defense; use --harness for
+#   either restricted adapter so the required gates, trust setup, and supervision apply.
 #   config/secondmate-harness may also carry an optional model and effort as extra
 #   whitespace-separated tokens ("<harness> [<model>] [<effort>]"). For a
 #   --secondmate spawn, those tokens apply only when this spawn also resolves its
@@ -99,7 +101,8 @@
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __PIBRIEFENV__ shell assignment identifying the unchanged Pi positional brief
-# Per-harness turn-end hooks are installed automatically; some live outside the worktree.
+# Per-harness turn-end integrations are installed automatically when hook-based;
+# cursor/agy completion is derived by the watcher from herdr-native agent state.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
