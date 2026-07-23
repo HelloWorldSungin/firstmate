@@ -307,8 +307,36 @@ test_malformed_profile_arrays_are_validation_errors() {
 [{"harness":"claude","model":3}]^model must be a non-empty string
 [{"harness":"spaceship"}]^contains an unverified harness
 [{"harness":"codex","effort":"max"}]^contains an unsupported harness/effort pair
+[{"harness":"cursor","effort":"high"}]^contains an unsupported harness/effort pair
+[{"harness":"agy","effort":"max"}]^contains an unsupported harness/effort pair
+[{"harness":"agy","effort":"xhigh"}]^contains an unsupported harness/effort pair
 ROWS
   pass "malformed arrays stay actionable validation errors and never enter random fallback"
+}
+
+test_cursor_agy_verified_and_unscorable() {
+  local out err
+  # cursor and agy are verified harnesses; a single profile resolves to itself.
+  out=$("$ROOT/bin/fm-dispatch-select.sh" '{"harness":"cursor","model":"composer-2.5[effort=high]"}' 2>/dev/null)
+  assert_profile "$out" '{"harness":"cursor","model":"composer-2.5[effort=high]"}' \
+    "cursor single profile should resolve to itself"
+  out=$("$ROOT/bin/fm-dispatch-select.sh" '{"harness":"agy","model":"gemini-3-pro","effort":"high"}' 2>/dev/null)
+  assert_profile "$out" '{"harness":"agy","model":"gemini-3-pro","effort":"high"}' \
+    "agy single profile with high effort should resolve to itself"
+
+  # A quota-balanced array of cursor/agy is UNSCORABLE (their paid subs are not in
+  # quota-axi), so even with usable quota data it must fall back to uniform random
+  # across the candidates rather than starving on missing scores.
+  write_quota "$TMP_ROOT/cursor-agy-quota.json" fresh 90 90 fresh 90 90
+  out=$(FM_DISPATCH_RANDOM_SOURCE="$RANDOM_ONE" "$ROOT/bin/fm-dispatch-select.sh" \
+    --quota-json "$TMP_ROOT/cursor-agy-quota.json" \
+    '[{"harness":"cursor","model":"composer-2.5"},{"harness":"agy","model":"gemini-3-pro"}]' 2>"$TMP_ROOT/cursor-agy.err")
+  err=$(cat "$TMP_ROOT/cursor-agy.err")
+  assert_profile "$out" '{"harness":"agy","model":"gemini-3-pro"}' \
+    "an unscorable cursor/agy array should pick via uniform random fallback (index 1 from RANDOM_ONE)"
+  assert_contains "$err" "no usable quota windows for candidates" \
+    "unscorable cursor/agy candidates should log the no-usable-windows fallback reason"
+  pass "cursor/agy are verified and fall back to uniform random when unscorable"
 }
 
 test_implicit_array_picks_higher_min_provider
@@ -323,5 +351,6 @@ test_partial_quota_data_prefers_scorable_candidate
 test_operational_quota_failures_use_uniform_random_fallback
 test_single_profile_and_one_element_array
 test_malformed_profile_arrays_are_validation_errors
+test_cursor_agy_verified_and_unscorable
 
 echo "# all fm-dispatch-select tests passed"

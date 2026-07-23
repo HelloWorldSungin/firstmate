@@ -106,6 +106,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-agy-trust-lib.sh
+. "$SCRIPT_DIR/fm-agy-trust-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -138,6 +140,7 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+HARNESS=$(grep '^harness=' "$META" | cut -d= -f2- || true)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 
@@ -1012,6 +1015,9 @@ cleanup_firstmate_home_children() {
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
+    if [ "$(meta_value "$child_meta" harness)" = agy ] && [ -n "$child_wt" ]; then
+      fm_agy_trust_remove "$child_wt" || echo "warning: could not remove agy workspace trust for $child_wt" >&2
+    fi
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token"
   done
@@ -1194,6 +1200,11 @@ if [ "$KIND" = secondmate ]; then
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
+# agy pre-seeds the worktree path into its shared global trustedWorkspaces at
+# launch (bin/fm-agy-trust-lib.sh); drop it now the task's worktree is gone.
+if [ "$HARNESS" = agy ] && [ -n "$WT" ]; then
+  fm_agy_trust_remove "$WT" || echo "warning: could not remove agy workspace trust for $WT" >&2
+fi
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.

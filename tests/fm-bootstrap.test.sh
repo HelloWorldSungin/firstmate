@@ -776,6 +776,10 @@ unsupported grok max effort is flagged^{"rules":[{"when":"deep current work","us
 unsupported grok xhigh effort is flagged^{"rules":[{"when":"deep current work","use":{"harness":"grok","model":"grok-4","effort":"xhigh"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: grok:xhigh
 pi max effort is accepted^{"rules":[{"when":"deep coding","use":{"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"max"}}]}^empty^
 unsupported opencode effort is flagged^{"rules":[{"when":"opencode work","use":{"harness":"opencode","model":"anthropic/claude-sonnet-4-5","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: opencode:high
+cursor profile is accepted^{"rules":[{"when":"composer work","use":{"harness":"cursor","model":"composer-2.5[effort=high]"}}]}^empty^
+agy high effort is accepted^{"rules":[{"when":"gemini work","use":{"harness":"agy","model":"gemini-3-pro","effort":"high"}}]}^empty^
+unsupported cursor effort is flagged^{"rules":[{"when":"composer work","use":{"harness":"cursor","model":"composer-2.5","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cursor:high
+unsupported agy max effort is flagged^{"rules":[{"when":"gemini work","use":{"harness":"agy","model":"gemini-3-pro","effort":"max"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: agy:max
 array use with quota-balanced is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude","model":"claude-sonnet-5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}],"select":"quota-balanced"}]}^empty^
 array use without select is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude"},{"harness":"codex"}]}]}^empty^
 one-element array use is accepted^{"rules":[{"when":"focused feature","use":[{"harness":"claude"}]}]}^empty^

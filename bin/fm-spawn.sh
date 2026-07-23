@@ -89,7 +89,7 @@
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
-#   Launch templates live in launch_template() below; placeholders replaced before launch:
+#   Launch templates live in bin/fm-launch-lib.sh (fm_launch_template); placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
@@ -134,6 +134,10 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-launch-lib.sh
+. "$SCRIPT_DIR/fm-launch-lib.sh"
+# shellcheck source=bin/fm-agy-trust-lib.sh
+. "$SCRIPT_DIR/fm-agy-trust-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -404,49 +408,9 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
-# The verified launch command per adapter. The knowledge half of each adapter
-# (busy signature, exit command, dialogs, quirks) lives in the harness-adapters skill.
-launch_template() {
-  local harness=$1 kind=${2:-ship}
-  # shellcheck disable=SC2016  # single quotes are deliberate: $(cat ...) expands in the crewmate pane, not here
-  case "$harness" in
-    # CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false disables claude's interactive
-    # predicted-next-prompt ghost text, which renders as dim/faint text inside an
-    # otherwise-empty composer and would otherwise read like real typed input when
-    # firstmate captures the pane (see the harness-adapters skill). It is a per-launch env
-    # prefix scoped to this firstmate-launched agent; it never touches the captain's
-    # global config. The CLI's --prompt-suggestions flag is print/SDK-mode only and
-    # does NOT suppress the interactive ghost text (verified empirically), so the env
-    # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
-    # the defense-in-depth backstop for any pane this flag cannot reach.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
-    codex)
-      if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
-      else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
-      fi
-      ;;
-    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
-    pi)
-      if [ "$kind" = secondmate ]; then
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(cat __BRIEF__)"'
-      else
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __BRIEF__)"'
-      fi
-      ;;
-    # grok (Grok Build TUI): a positional prompt starts the supervised interactive
-    # session. --always-approve auto-approves every tool execution (verified: the
-    # crewmate runs fully autonomously, no permission gate), which an unattended
-    # crewmate needs; it is the targeted equivalent of claude's
-    # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
-    # launch command - it is a Stop-event hook installed below (global hook +
-    # per-task pointer), so the template is identical for ship/scout/secondmate.
-    grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
-    *) return 1 ;;
-  esac
-}
-
+# The verified launch command per adapter lives in bin/fm-launch-lib.sh
+# (fm_launch_template), sourced above. cursor and agy are CREW-ONLY, herdr-ONLY;
+# the guard after this case block enforces both gates.
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
@@ -462,7 +426,7 @@ case "$ARG3" in
     # active. Resolving here on every spawn is what makes the split DURABLE - a
     # respawn (recovery, /updatefirstmate, restart) re-resolves, so
     # config/secondmate-harness keeps governing secondmate launches across restarts.
-    # The launch_template lookup below is the unverified-adapter guard for both
+    # The fm_launch_template lookup below is the unverified-adapter guard for both
     # kinds: a harness with no template aborts the spawn.
     if [ "$KIND" = secondmate ]; then
       HARNESS=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
@@ -475,11 +439,32 @@ case "$ARG3" in
       HARNESS=$("$FM_ROOT/bin/fm-harness.sh" crew)
       harness_src='config/crew-harness'
     fi
-    LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: no launch template for harness '$HARNESS' (from $harness_src or detection); pass a raw launch command to use an unverified adapter" >&2; exit 1; }
+    LAUNCH=$(fm_launch_template "$HARNESS" "$KIND") || { echo "error: no launch template for harness '$HARNESS' (from $harness_src or detection); pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
   *)
     HARNESS=$ARG3
-    LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
+    LAUNCH=$(fm_launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
+    ;;
+esac
+
+# cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence;
+# data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
+# gates before any backend or worktree work: they can supervise a ship/scout
+# crewmate only, never a secondmate, and only on the herdr backend, whose native
+# agent-state event stream provides the liveness/turn-end/composer signals these
+# CLIs lack a firstmate adapter for on tmux (tmux is documented out-of-scope in
+# the harness-adapters skill). Refuse loudly rather than launch an unsupervisable
+# crewmate.
+case "$HARNESS" in
+  cursor|agy)
+    if [ "$KIND" = secondmate ]; then
+      echo "error: harness '$HARNESS' is crew-only and cannot launch a secondmate; use a verified secondmate launcher (config/secondmate-harness)" >&2
+      exit 1
+    fi
+    if [ "$BACKEND" != herdr ]; then
+      echo "error: harness '$HARNESS' is supported only on the herdr backend (resolved backend '$BACKEND'); herdr provides the native agent-state signals cursor/agy need. Select the herdr backend or use a verified crew harness." >&2
+      exit 1
+    fi
     ;;
 esac
 
@@ -518,61 +503,6 @@ secondmate_registry_value() {
   esac
   [ -n "$value" ] || return 1
   printf '%s\n' "$value"
-}
-
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
-
-model_flag_for_harness() {
-  local harness=$1 model=$2
-  [ -n "$model" ] && [ "$model" != default ] || return 0
-  case "$harness" in
-    claude|codex|opencode|pi|grok)
-      printf -- '--model %s ' "$(shell_quote "$model")"
-      ;;
-  esac
-}
-
-effort_flag_for_harness() {
-  local harness=$1 effort=$2
-  [ -n "$effort" ] && [ "$effort" != default ] || return 0
-  case "$harness" in
-    claude)
-      case "$effort" in
-        low|medium|high|xhigh|max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
-      esac
-      ;;
-    codex)
-      # The installed codex config schema uses model_reasoning_effort, and the
-      # bundled model catalog advertises low|medium|high|xhigh. Omit max rather
-      # than passing an unsupported value.
-      case "$effort" in
-        low|medium|high|xhigh) printf -- '-c %s ' "$(shell_quote "model_reasoning_effort=\"$effort\"")" ;;
-      esac
-      ;;
-    grok)
-      # grok exposes both --effort and --reasoning-effort; firstmate's profile
-      # axis is the reasoning knob. As of grok 0.2.99, --reasoning-effort accepts
-      # only low|medium|high and rejects both xhigh and max, so omit those rather
-      # than passing a known-bad value.
-      case "$effort" in
-        low|medium|high) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
-      esac
-      ;;
-    pi)
-      # Pi 0.80.6 accepts the full shared effort vocabulary, including max, through
-      # its --thinking flag.
-      case "$effort" in
-        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
-      esac
-      ;;
-    # opencode's interactive `opencode --prompt` launch has a verified --model
-    # flag but no verified effort flag. Its `opencode run --variant` flag belongs
-    # to a different, non-interactive launch mode, so fm-spawn does not pass it.
-  esac
 }
 
 json_escape() {
@@ -1165,7 +1095,7 @@ EOF
       umask "$old_umask"
       printf '%s\n' "$TURNEND" > "$auth_file"
       printf '%s\n' "${auth_file##*/}" > "$STATE/$ID.grok-turnend-token"
-      sq_grok_auth_dir=$(shell_quote "$GROK_AUTH_DIR")
+      sq_grok_auth_dir=$(fm_launch_shell_quote "$GROK_AUTH_DIR")
       cat > "$GROK_HOOKS_DIR/fm-turn-end.sh" <<EOF
 #!/usr/bin/env bash
 set -u
@@ -1185,10 +1115,33 @@ touch "\$t" 2>/dev/null || true
 exit 0
 EOF
       chmod +x "$GROK_HOOKS_DIR/fm-turn-end.sh"
-      hook_command=$(json_escape "bash $(shell_quote "$GROK_HOOKS_DIR/fm-turn-end.sh")")
+      hook_command=$(json_escape "bash $(fm_launch_shell_quote "$GROK_HOOKS_DIR/fm-turn-end.sh")")
       printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "$hook_command" > "$GROK_HOOKS_DIR/fm-turn-end.json"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
+      ;;
+    cursor*)
+      # cursor (crew-only, herdr-only): turn-end rides herdr's native
+      # pane.agent_status_changed event stream, so NO launch-time hook is
+      # installed and NO repo hook file (.cursor/hooks.json) is ever written -
+      # that global-vs-project hook distinction and the native-stream rationale
+      # are in the harness-adapters skill / data/cursor-agy-verify/report.md.
+      # Nothing to prepare here.
+      :
+      ;;
+    agy*)
+      # agy (crew-only, herdr-only): turn-end likewise rides herdr's native
+      # event stream (no hook, no repo .agents/hooks.json write). What agy DOES
+      # need is workspace trust: an interactive launch gates on a per-workspace
+      # trust modal that --dangerously-skip-permissions does not cover, and trust
+      # is an EXACT-path entry in agy's shared global settings. Pre-seed the exact
+      # worktree path before launch (bin/fm-agy-trust-lib.sh); teardown removes it.
+      # Fail closed - an unseeded launch would wedge on the modal - so abort the
+      # spawn if the trust write does not land.
+      if ! fm_agy_trust_add "$WT"; then
+        echo "error: could not grant agy workspace trust for $WT; refusing to launch an agy crewmate that would hang on the trust modal" >&2
+        exit 1
+      fi
       ;;
   esac
 fi
@@ -1252,13 +1205,13 @@ META_WINDOW=$T
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
-sq_brief=$(shell_quote "$BRIEF")
-sq_turnend=$(shell_quote "$TURNEND")
-sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
-sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
-sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
-MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
-EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
+sq_brief=$(fm_launch_shell_quote "$BRIEF")
+sq_turnend=$(fm_launch_shell_quote "$TURNEND")
+sq_piext=$(fm_launch_shell_quote "$STATE/$ID.pi-ext.ts")
+sq_piturnend=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
+sq_piwatch=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
+EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
@@ -1267,7 +1220,7 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 if [ "$KIND" = secondmate ]; then
-  sq_home=$(shell_quote "$PROJ_ABS")
+  sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
 fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child

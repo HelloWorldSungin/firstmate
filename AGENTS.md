@@ -155,6 +155,7 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
 The verified harnesses are `claude`, `codex`, `opencode`, `pi`, and `grok`; never dispatch on an unverified adapter.
+`cursor` and `agy` are additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns their launch flags, agy workspace-trust seeding, and herdr-native turn-end facts, and `fm-spawn` fail-closes both gates.
 If configured harness data names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-dispatch-select.sh` owns selector mechanics, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.

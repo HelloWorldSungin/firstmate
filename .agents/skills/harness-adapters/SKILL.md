@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, and grok.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and the crew-only herdr-only cursor and agy adapters.
 user-invocable: false
 metadata:
   internal: true
@@ -119,6 +119,8 @@ The supported launch-profile flags below are verified locally; each row records 
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high>` | Verified on grok 0.2.99 (2026-07-13). `--effort` is an alias, but firstmate's profile axis is reasoning effort. As of 0.2.99 the ceiling is `high`; both `xhigh` and `max` are rejected with `use one of: high, medium, low`, so firstmate omits them. |
 | pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-13 on Pi 0.80.6. `pi --help` advertises `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; `pi --print --model openai-codex/gpt-5.6-sol --thinking max 'Reply with exactly OK.'` completed successfully. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
+| cursor | `--model <model>` | none (effort is encoded in the model string) | Crew-only, herdr-only (see the cursor section). Verified on cursor-agent 2026.07.20. `--model` accepts a parameterized model string whose brackets carry effort, e.g. `composer-2.5[effort=high]`, so there is no standalone effort flag; put the whole parameterized string in the model axis. |
+| agy | `--model <model>` | `--effort <low\|medium\|high>` | Crew-only, herdr-only (see the agy section). Verified on agy 1.1.5. `agy --help` advertises `--effort low\|medium\|high` only; `xhigh` and `max` are omitted. |
 
 When a requested effort value is outside the harness-specific accepted set, `fm-spawn` records the requested `effort=` in meta but emits no effort flag for that harness.
 This preserves launch success instead of passing a known-bad value.
@@ -316,3 +318,37 @@ The adapter therefore runs the shared predicate and, when it returns 2, forces o
 It does not pass `--permission-mode`, so the passive hook cannot escalate the primary session's tool permissions.
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
+
+## cursor and agy (CREW-ONLY, HERDR-ONLY - VERIFIED 2026-07-23)
+
+`cursor` (harness token `cursor`, launching the `cursor-agent` Cursor Agent CLI, Composer) and `agy` (Antigravity CLI, Gemini) are a captain-approved divergence of firstmate's tracked surface, so crewmates can use the captain's paid Composer and Gemini subscriptions.
+The full rationale is in `data/captain.md` and the empirical evidence is `data/cursor-agy-verify/report.md` (cursor-agent 2026.07.20, agy 1.1.5, herdr 0.7.4).
+They are CREW-ONLY and HERDR-ONLY: never a primary runtime, never a secondmate launcher, and never on any non-herdr backend.
+`bin/fm-spawn.sh` refuses a `--secondmate` spawn on either (crew-only) and refuses either on a non-herdr backend (herdr-only), both before any backend or worktree work; the refusals are covered by `tests/fm-cursor-agy-adapter.test.sh`.
+tmux is deliberately out-of-scope: it has no native agent detection, so the liveness, turn-end, and composer signals below would all be absent there.
+
+On herdr, agent-state, liveness, turn-end, and send-safety are all GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs and its `pane.agent_status_changed` event stream drives turn-end.
+So `fm_backend_herdr_agent_alive`, `fm_backend_herdr_classify_agent_status` (busy signature), and `fm_backend_herdr_wait_transition` (turn-end) all work unchanged - the busy signature is native `agent_status == working`, not a screen-scrape.
+No turn-end hook is installed for either CLI, and firstmate never writes a repo's `.cursor/hooks.json` or `.agents/hooks.json`.
+Each CLI does have a global, non-clobbering hooks location (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`) if a benign global signal is ever wanted, but the native event stream makes it unnecessary.
+
+Composer classification stays `unknown` for both (the safe default) and no override is added.
+cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
+A generic bare-glyph "empty" rule must NOT be added: agy's prompt glyph is literally `>`, identical to a dead bash shell, so a generic rule would be a dead-shell send hazard - any future override must be native-identity-gated exactly like the Pi gate.
+The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole; send confirmation rides native agent-state, so a steer is never confirmed into a dead pane.
+
+| Fact | Value |
+|---|---|
+| cursor launch | `cursor-agent --trust --force <model-flag> "$(cat <brief>)"`. `--trust` bypasses the interactive workspace-trust modal (which `--force` alone does NOT cover); `--force` (alias `--yolo`) auto-approves every command. |
+| cursor model/effort | `--model` accepts a parameterized model string; effort is encoded inside it (`composer-2.5[effort=high]`), so there is NO standalone effort flag. Put the whole string in the model axis. |
+| agy launch | `agy --dangerously-skip-permissions <model-flag> <effort-flag> --prompt-interactive "$(cat <brief>)"`. `--prompt-interactive` takes the initial prompt and keeps the session interactive for steering; `--dangerously-skip-permissions` auto-approves tool use. |
+| agy model/effort | `--model <model>`, `--effort <low\|medium\|high>` (agy `--help` advertises those three only; xhigh/max omitted). |
+| Busy-pane signature | native herdr `agent_status == working` (generic, no screen-scrape). |
+| Turn-end | native herdr `pane.agent_status_changed` event stream; no hook installed, no repo hook file written. |
+| Composer state | `unknown` (safe default; no override). |
+
+agy workspace trust is the one extra launch step.
+An interactive agy launch gates on a per-workspace trust modal that `--dangerously-skip-permissions` does NOT cover, and trust is an EXACT-path entry (not a prefix) in agy's SINGLE global settings file `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces`.
+So `bin/fm-spawn.sh` pre-seeds the exact crew-worktree path there before launch and `bin/fm-teardown.sh` removes it, both through `bin/fm-agy-trust-lib.sh`, which is locked, additive/idempotent, atomic, and fail-closed (it leaves an unparseable settings file untouched rather than clobbering the captain's own agy trust).
+An agy spawn aborts if that trust write does not land, because an unseeded launch would wedge on the modal.
+cursor needs no such pre-seed - its launch-time `--trust` covers the workspace trust modal directly.
