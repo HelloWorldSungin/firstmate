@@ -103,9 +103,58 @@ fm_launch_raw_restricted_harness() {  # <raw-command> -> cursor|agy|unresolved|<
   # literal scan above cannot see (`$AGY`, `$(...)`, `$a$g`, `eval "$x"`). A bare
   # `eval agy` needs no `$` but carries the literal `agy` the scan already caught,
   # so these two characters cover every real indirection bypass.
+  #
+  # NOTE: this string classifier is only the EARLY, defense-in-depth layer. The
+  # shell is Turing-complete, so quote concatenation (`ag"y"`), brace expansion
+  # (`a{gy,}`), alias expansion, and generated process substitution can all
+  # assemble a restricted command that no static scan can model. The robust
+  # primary B1 defense is the exec-time PATH shim below
+  # (fm_launch_write_raw_guard), installed into the raw-command pane by
+  # bin/fm-spawn.sh; it catches ANY spelling that actually resolves the binary
+  # through PATH, including a wrapper script that internally execs it.
   case "$cmd" in
     *'$'*|*'`'*) printf 'unresolved'; return 0 ;;
   esac
+}
+
+# fm_launch_write_raw_guard: write executable guard shims named `cursor-agent`,
+# `cursor`, and `agy` into <dir>. bin/fm-spawn.sh prepends <dir> to the PATH of a
+# RAW launch command's pane, making these shims the EXEC-TIME gate for B1: when
+# any shell spelling in the raw command resolves one of those restricted binaries
+# through PATH, the shim runs instead of the real CLI, refuses loudly, and exits
+# non-zero, so cursor/agy never launch outside the sanctioned `--harness` path
+# (which does NOT use this guard and reaches the real binary directly). Because
+# the shell performs the expansion before exec, this uniformly defeats quote
+# concatenation, brace/alias/process-substitution expansion, and even a wrapper
+# script that internally execs the binary - none of which a launch-string scan
+# can model.
+#
+# Residual limitation (documented, out of scope for a PATH shim): an ABSOLUTE-path
+# invocation of the real binary, or a raw command that first resets PATH to drop
+# this dir, bypasses a PATH-based shim. Both are deliberate circumventions rather
+# than a careless raw spelling, and closing them would require execve-level
+# interception (LD_PRELOAD/seccomp) that is platform-specific and disproportionate.
+fm_launch_write_raw_guard() {  # <dir>
+  local dir=$1 name
+  [ -n "$dir" ] || return 1
+  mkdir -p "$dir" || return 1
+  for name in cursor-agent cursor agy; do
+    cat > "$dir/$name" <<'SHIM'
+#!/usr/bin/env bash
+# firstmate raw-launch guard shim (bin/fm-launch-lib.sh fm_launch_write_raw_guard).
+# Reached only when a raw launch command resolved a crew-only cursor/agy binary
+# through PATH; the sanctioned --harness path never routes through here.
+prog=$(basename -- "$0")
+case "$prog" in
+  cursor-agent|cursor) canon=cursor ;;
+  agy) canon=agy ;;
+  *) canon=$prog ;;
+esac
+printf 'firstmate: refusing to run "%s" from a raw launch command - %s is a crew-only, herdr-only adapter that must be launched via `--harness %s` so firstmate can seed its workspace trust and supervise it (harness-adapters skill). Aborting.\n' "$prog" "$canon" "$canon" >&2
+exit 127
+SHIM
+    chmod +x "$dir/$name" || return 1
+  done
 }
 
 # fm_launch_template: print the verified launch command for <harness> (<kind>

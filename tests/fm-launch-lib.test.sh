@@ -16,6 +16,8 @@ set -u
 # shellcheck source=bin/fm-launch-lib.sh
 . "$ROOT/bin/fm-launch-lib.sh"
 
+TMP_LAUNCH_ROOT=$(fm_test_tmproot fm-launch-lib)
+
 assert_eq() {  # <actual> <expected> <msg>
   [ "$1" = "$2" ] || fail "$3"$'\n'"expected: $2"$'\n'"actual:   $1"
 }
@@ -174,11 +176,69 @@ test_raw_restricted_harness_variable_indirection() {
   pass "fm_launch_raw_restricted_harness refuses variable/command-substitution indirection as unresolved"
 }
 
+test_raw_guard_intercepts_every_bypass_spelling() {
+  # B1 hardening: the robust, primary defense is the exec-time PATH shim
+  # (fm_launch_write_raw_guard), not the string classifier. With the guard dir
+  # ahead of a fake REAL cursor-agent/agy on PATH, EVERY shell spelling the pane
+  # could use to resolve those binaries must hit the refusing shim, so the real
+  # binary never runs. This is what closes quote-concat / brace / alias /
+  # process-substitution AND the wrapper-script boundary uniformly - constructs a
+  # launch-string scan can never model.
+  local tmp shim realbin b execlog rc
+  mkdir -p "$TMP_LAUNCH_ROOT"
+  tmp=$(mktemp -d "$TMP_LAUNCH_ROOT/rawguard.XXXXXX")
+  shim="$tmp/raw-guard"
+  realbin="$tmp/realbin"
+  fm_launch_write_raw_guard "$shim" || fail "fm_launch_write_raw_guard failed"
+  for b in cursor-agent cursor agy; do
+    assert_present "$shim/$b" "guard shim for $b was not written"
+    [ -x "$shim/$b" ] || fail "guard shim for $b is not executable"
+  done
+  mkdir -p "$realbin"
+  execlog="$tmp/executed.log"
+  for b in agy cursor-agent cursor; do
+    printf '#!/usr/bin/env bash\nprintf "REAL_%s_RAN\\n" >> %q\n' "$b" "$execlog" > "$realbin/$b"
+    chmod +x "$realbin/$b"
+  done
+
+  # <label>|<shell command the raw launch could expand to>
+  local label cmd n=0
+  while IFS='|' read -r label cmd; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    : > "$execlog"
+    PATH="$shim:$realbin:$PATH" bash -c "$cmd" >/dev/null 2>&1
+    rc=$?
+    [ ! -s "$execlog" ] || fail "B1 bypass [$label]: the real restricted binary EXECUTED ($(cat "$execlog"))"
+    [ "$rc" -ne 0 ] || fail "B1 bypass [$label]: the shim did not refuse (exit 0)"
+  done <<'ROWS'
+quote-concat agy|ag"y" --dangerously-skip-permissions
+quote-concat cursor-agent|cur"sor-agent" --trust --force
+eval + quote-concat agy|eval ag"y" --dangerously-skip-permissions
+brace agy|a{gy,} --dangerously-skip-permissions
+brace cursor-agent|cur{sor-agent,} --trust --force
+process substitution agy|source <(printf %b "\141\147\171 --x")
+alias expansion agy|shopt -s expand_aliases; alias a=agy; a --x
+wrapper via PATH agy|agy --x
+plain cursor-agent|cursor-agent --trust
+ROWS
+  [ "$n" -ge 9 ] || fail "expected all bypass rows to run, ran $n"
+
+  # A legitimate, non-restricted raw command is unaffected by the guard.
+  : > "$execlog"
+  PATH="$shim:$realbin:$PATH" bash -c 'echo ok >/dev/null && exit 0' \
+    || fail "the raw guard must not interfere with a non-cursor/agy command"
+
+  rm -rf "$tmp"
+  pass "the exec-time raw guard blocks every cursor/agy shell spelling (quote-concat, brace, alias, process-sub, wrapper) and leaves other commands alone"
+}
+
 test_cursor_template
 test_agy_template
 test_raw_restricted_harness_resolution
 test_raw_restricted_harness_shell_wrappers
 test_raw_restricted_harness_variable_indirection
+test_raw_guard_intercepts_every_bypass_spelling
 test_existing_templates_unchanged
 test_unknown_harness_returns_nonzero
 test_cursor_model_passthrough

@@ -327,6 +327,12 @@ They are CREW-ONLY and HERDR-ONLY: never a primary runtime, never a secondmate l
 `bin/fm-spawn.sh` refuses a `--secondmate` spawn on either (crew-only) and refuses either on a non-herdr backend (herdr-only), both before any backend or worktree work; the refusals are covered by `tests/fm-cursor-agy-adapter.test.sh`.
 tmux is deliberately out-of-scope: it has no native agent detection, so the liveness, turn-end, and composer signals below would all be absent there.
 
+The raw-launch-command escape hatch must never reach `cursor-agent`/`agy` outside that sanctioned `--harness` path.
+Because the pane shell is Turing-complete, a launch-string scanner can never model every spelling (quote concatenation `ag"y"`, brace `a{gy,}`, alias, generated process substitution, or a wrapper script that internally execs the binary), so the robust primary defense is EXEC-TIME: for a raw launch command, `bin/fm-spawn.sh` writes firstmate-owned refusing `cursor-agent`/`cursor`/`agy` shims (`fm_launch_write_raw_guard`) into `TASK_TMP/raw-guard` and prepends that dir to the pane PATH, so ANY spelling that resolves one of those binaries through PATH hits the shim and exits non-zero.
+The `fm_launch_raw_restricted_harness` string classifier (literal/env/assignment plus a `$`/backtick indirection refusal) stays only as early, spawn-time defense-in-depth.
+Documented residual: an absolute-path invocation, or a raw command that first resets PATH to drop the guard dir, bypasses a PATH shim; both are deliberate circumventions, and closing them would need execve-level interception (LD_PRELOAD/seccomp) disproportionate to the raw hatch.
+The exec-time interception is covered per bypass class in `tests/fm-launch-lib.test.sh` and the real-spawn installation in `tests/fm-cursor-agy-adapter.test.sh`.
+
 On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
 So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
 

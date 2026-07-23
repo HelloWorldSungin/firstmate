@@ -430,20 +430,23 @@ fi
 # The verified launch command per adapter lives in bin/fm-launch-lib.sh
 # (fm_launch_template), sourced above. cursor and agy are CREW-ONLY, herdr-ONLY;
 # the guard after this case block enforces both gates.
+RAW_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    RAW_LAUNCH=1
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
     done
     # The raw escape hatch must NOT become a bypass around the cursor/agy
-    # crew-only + herdr-only gates. Its harness token is only the first non-
-    # assignment word's basename (`cursor-agent`/`env`/`bash`, not `cursor`/`agy`),
-    # so the canonical guard below would miss it. fm_launch_raw_restricted_harness
-    # resolves the actual executable and also refuses any command whose shell
-    # indirection ($VAR, $(...), backtick) could expand to cursor/agy at run time
-    # in the pane shell - closing the wrapper and variable-indirection bypasses.
+    # crew-only + herdr-only gates. Two layers guard it: (1) this early string
+    # classifier refuses an obvious/literal or shell-indirection ($VAR/$(...)/
+    # backtick) cursor/agy spelling at spawn time, for a clear message before
+    # launch; (2) the primary, robust defense is the exec-time PATH shim installed
+    # into the pane below (RAW_LAUNCH), which catches ANY spelling that resolves
+    # cursor-agent/agy through PATH - quote-concat, brace/alias/process-sub, or a
+    # wrapper script - because the shell expands them before exec.
     raw_restricted=$(fm_launch_raw_restricted_harness "$LAUNCH")
     case "$raw_restricted" in
       cursor|agy)
@@ -1274,6 +1277,25 @@ LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
+fi
+# Raw-launch exec-time guard (B1): for a raw launch command, write firstmate-owned
+# cursor-agent/cursor/agy guard shims and prepend their dir to the pane's PATH
+# BEFORE the raw command runs, so any shell spelling that resolves one of those
+# restricted binaries through PATH hits the refusing shim instead of the real CLI
+# (bin/fm-launch-lib.sh fm_launch_write_raw_guard). This is the robust primary B1
+# defense; the string classifier above is only early defense-in-depth. Lives under
+# TASK_TMP so fm-teardown's `rm -rf` cleans it with the rest of the task temp.
+if [ "$RAW_LAUNCH" = 1 ]; then
+  RAW_GUARD_DIR="$TASK_TMP/raw-guard"
+  if fm_launch_write_raw_guard "$RAW_GUARD_DIR"; then
+    sq_raw_guard=$(fm_launch_shell_quote "$RAW_GUARD_DIR")
+    # $PATH is deliberately left literal so it expands in the pane, not here.
+    spawn_send_text_line "$T" "export PATH=$sq_raw_guard:\"\$PATH\""
+    sleep 0.3
+  else
+    echo "error: could not install the raw-launch cursor/agy exec-time guard at $RAW_GUARD_DIR; refusing to launch a raw command without it" >&2
+    exit 1
+  fi
 fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so

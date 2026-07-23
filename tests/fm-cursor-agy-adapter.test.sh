@@ -142,6 +142,75 @@ ROWS
   pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, assignment, wrapper, and variable indirection)"
 }
 
+# --- exec-time raw guard installed by a real raw spawn ----------------------
+
+# A fake tmux that records every send-keys payload to $FM_FAKE_SEND_LOG, so the
+# test can see the PATH export fm-spawn sends before a raw launch, and lets a full
+# spawn succeed (pane path = the settled worktree).
+make_logging_fakebin() {  # <dir>
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+  send-keys) [ -z "${FM_FAKE_SEND_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_SEND_LOG"; exit 0 ;;
+  has-session|new-session|new-window|kill-window) exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  printf '%s\n' "$fakebin"
+}
+
+test_raw_spawn_installs_exec_time_guard() {
+  # The robust B1 defense is installed by a REAL raw spawn: a raw command that the
+  # string classifier does NOT catch (quote-concat `ag"y"`) still gets the
+  # exec-time cursor/agy PATH shim written and prepended to the pane PATH, so the
+  # binary can never resolve to the real CLI regardless of shell spelling.
+  local case_dir home proj wt fakebin sendlog id out status guard
+  case_dir="$TMP_ROOT/raw-guard-install"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  sendlog="$case_dir/send.log"
+  fakebin=$(make_logging_fakebin "$case_dir/fake")
+  id=rawguard-install-z1
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'brief\n' > "$home/data/$id/brief.md"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  touch "$home/state/.last-watcher-beat"
+
+  : > "$sendlog"
+  # A quote-concat agy spelling: the classifier returns empty (harness=bash), so
+  # the spawn proceeds - and must still install the exec-time guard.
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_SEND_LOG="$sendlog" PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$proj" 'bash -c '\''ag"y" --dangerously-skip-permissions'\''' 2>&1)
+  status=$?
+  expect_code 0 "$status" "the quote-concat raw spawn should proceed (classifier does not catch it): $out"
+  assert_contains "$out" "spawned $id harness=bash" "raw spawn did not launch as harness=bash"
+
+  guard="/tmp/fm-$id/raw-guard"
+  assert_present "$guard/agy" "raw spawn did not install the agy exec-time guard shim"
+  assert_present "$guard/cursor-agent" "raw spawn did not install the cursor-agent guard shim"
+  assert_present "$guard/cursor" "raw spawn did not install the cursor guard shim"
+  [ -x "$guard/agy" ] || fail "installed agy guard shim is not executable"
+  # The refusing shim, when run, must block and exit non-zero.
+  "$guard/agy" >/dev/null 2>&1 && fail "the installed agy guard shim did not refuse"
+  # fm-spawn must have prepended the guard dir to the pane PATH before the launch.
+  assert_grep "export PATH='$guard'" "$sendlog" "fm-spawn did not prepend the raw-guard dir to the pane PATH"
+  rm -rf "/tmp/fm-$id"
+  pass "a real raw spawn installs the exec-time cursor/agy guard and prepends it to the pane PATH"
+}
+
 # --- teardown workspace-trust cleanup ---------------------------------------
 
 run_teardown() {  # <home> <fakebin> <settings> <id>
@@ -251,6 +320,7 @@ test_crew_only_refuses_secondmate agy
 test_herdr_only_refuses_non_herdr_backend cursor
 test_herdr_only_refuses_non_herdr_backend agy
 test_raw_command_bypass_refused
+test_raw_spawn_installs_exec_time_guard
 test_teardown_removes_owned_agy_trust
 test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
