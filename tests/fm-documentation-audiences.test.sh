@@ -119,6 +119,7 @@ test_local_links_and_no_keyword_heuristic() {
   printf '%s\n' '# Setup' > "$repo/docs/setup.md"
   printf '%s\n' '# Policy' > "$repo/docs/policy.md"
   printf '%s\n' '# Protocol' > "$repo/docs/protocol_(v1).md"
+  # shellcheck disable=SC2016 # Intentional literal reStructuredText fixture.
   printf '%s\n' 'Guide' '=====' '' 'See `setup`_.' '' '.. _setup: setup.md' > "$repo/docs/guide.rst"
   printf '%s\n' '[Target](target.md#real-heading)' > "$repo/docs/source.md"
   printf '%s\n' '# Real heading' > "$repo/docs/target.md"
@@ -178,6 +179,7 @@ MD
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
 
   printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
+  # shellcheck disable=SC2016 # Intentional literal reStructuredText fixture.
   printf '%s\n' 'Guide' '=====' '' 'See `missing`_.' '' '.. _missing: missing.rst' > "$repo/docs/guide.rst"
   git -C "$repo" add README.md docs/guide.rst
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
@@ -230,12 +232,14 @@ RST
   sed 's/href="missing-raw.html"/href="policy.md"/' \
     "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
   mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
+  # shellcheck disable=SC2016 # Intentional literal reStructuredText fixture.
   sed 's/`Policy <policy.md>`_/`Policy <missing-note.rst>`_/' \
     "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
   mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
   git -C "$repo" add docs/guide.rst
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
 
+  # shellcheck disable=SC2016 # Intentional literal reStructuredText fixture.
   printf '%s\n' 'Guide' '=====' '' 'See `setup`_.' '' '.. _setup: setup.md' > "$repo/docs/guide.rst"
   printf '%s\n' '# Real heading' '' '```markdown' '# Example' '```' > "$repo/docs/target.md"
   printf '%s\n' '[Code-only anchor](target.md#example)' > "$repo/docs/source.md"
