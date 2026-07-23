@@ -139,10 +139,27 @@ MD
 [Fenced Markdown example](docs/missing-fenced.md)
 <img src="docs/missing-fenced.png">
 ```
+
+    [Indented Markdown example](docs/missing-indented.md)
+    <a href="docs/missing-indented.html">indented HTML example</a>
+
+> ~~~markdown
+> [Blockquoted Markdown example](docs/missing-blockquoted.md)
+> <img src="docs/missing-blockquoted.png">
+> ~~~
 MD
   git -C "$repo" add README.md
   "$CHECK" --root "$repo" >/dev/null \
     || fail "structural checker rejected valid links or code examples"
+
+  cat > "$repo/README.md" <<'MD'
+[Setup](docs/setup.md) [Policy](docs/policy.md)
+
+- Nested documentation:
+    [Broken nested link](docs/missing-nested.md)
+MD
+  git -C "$repo" add README.md
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
 
   printf '%s\n' \
     '[Setup](docs/setup.md) [Policy](docs/policy.md) [Broken](docs/missing.bin)' \

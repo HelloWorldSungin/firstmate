@@ -226,23 +226,81 @@ def markdown_without_code(text: str) -> str:
             position -= 1
         return backslashes % 2 == 1
 
-    fence: tuple[str, int] | None = None
+    def blockquote_content(line: str) -> tuple[int, int]:
+        depth = 0
+        position = 0
+        while position < len(line):
+            marker = position
+            spaces = 0
+            while marker < len(line) and line[marker] == " " and spaces < 3:
+                marker += 1
+                spaces += 1
+            if marker >= len(line) or line[marker] != ">":
+                break
+            position = marker + 1
+            if position < len(line) and line[position] in " \t":
+                position += 1
+            depth += 1
+        return depth, position
+
+    fence: tuple[str, int, int] | None = None
+    indented_depth: int | None = None
+    previous_blank = True
     offset = 0
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
+        quote_depth, content_start = blockquote_content(content)
+        block_content = content[content_start:]
         if fence is not None:
+            fence_char, fence_length, fence_depth = fence
+            if quote_depth >= fence_depth:
+                mask(offset, offset + len(line))
+                if quote_depth == fence_depth and re.fullmatch(
+                    rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                    block_content,
+                ):
+                    fence = None
+                previous_blank = False
+                offset += len(line)
+                continue
+            fence = None
+        if indented_depth is not None:
+            if not block_content.strip(" \t"):
+                mask(offset, offset + len(line))
+                previous_blank = True
+                offset += len(line)
+                continue
+            if quote_depth == indented_depth and (
+                block_content.startswith("    ") or block_content.startswith("\t")
+            ):
+                mask(offset, offset + len(line))
+                previous_blank = False
+                offset += len(line)
+                continue
+            indented_depth = None
+        if not block_content.strip(" \t"):
+            previous_blank = True
+            offset += len(line)
+            continue
+        opener = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", block_content)
+        if opener is not None:
+            marker = opener.group(1)
+            info = opener.group(2)
+            if marker[0] == "~" or "`" not in info:
+                fence = (marker[0], len(marker), quote_depth)
+                mask(offset, offset + len(line))
+                previous_blank = False
+                offset += len(line)
+                continue
+        if previous_blank and (
+            block_content.startswith("    ") or block_content.startswith("\t")
+        ):
+            indented_depth = quote_depth
             mask(offset, offset + len(line))
-            fence_char, fence_length = fence
-            if re.fullmatch(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*", content):
-                fence = None
-        else:
-            opener = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
-            if opener is not None:
-                marker = opener.group(1)
-                info = opener.group(2)
-                if marker[0] == "~" or "`" not in info:
-                    fence = (marker[0], len(marker))
-                    mask(offset, offset + len(line))
+            previous_blank = False
+            offset += len(line)
+            continue
+        previous_blank = False
         offset += len(line)
 
     index = 0
