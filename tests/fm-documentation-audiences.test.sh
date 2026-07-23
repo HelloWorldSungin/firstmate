@@ -209,6 +209,13 @@ RST
   "$CHECK" --root "$repo" >/dev/null \
     || fail "structural checker confused parsed and literal reStructuredText directives"
 
+  sed 's/code:: rst/parsed-literal::/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
+  git -C "$repo" add docs/guide.rst
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  sed 's/parsed-literal::/code:: rst/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
   sed 's/policy.md/missing-note.rst/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
   mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
   git -C "$repo" add docs/guide.rst

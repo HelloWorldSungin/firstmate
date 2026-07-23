@@ -376,7 +376,7 @@ def rst_without_code(text: str) -> str:
                 continue
             literal_base = None
         literal_directive = re.match(
-            r"^( {0,3})\.\. (?:code|code-block|sourcecode|parsed-literal|raw|math)::",
+            r"^( {0,3})\.\. (?:code|code-block|sourcecode|raw|math)::",
             content,
             re.IGNORECASE,
         )
