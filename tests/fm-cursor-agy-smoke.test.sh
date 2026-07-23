@@ -58,7 +58,7 @@ LAUNCH_TARGET=
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
   local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag
-  local brief_path opinput_path agent st i saw_working=0 settled=0
+  local brief_path opinput_path agent st saw_working=0 settled=0
   LAUNCH_TARGET=
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
@@ -75,13 +75,13 @@ EOF
   brief_path=$(fm_launch_shell_quote "$WORK/brief.md")
   opinput_path=$(fm_launch_shell_quote "$ROOT/bin/fm-operational-input.sh")
   launch=$(fm_launch_render \
-    "$launch" "" "$effortflag" "$brief_path" "" "" "" "" "$opinput_path" "") \
+    "$launch" "" "$effortflag" "$brief_path" "" "" "" "" "$opinput_path") \
     || { echo "template render failed" >&2; return 1; }
   fm_backend_herdr_send_literal "$ses:$pane" "$launch" || { echo "send failed" >&2; return 1; }
   sleep 0.3
   fm_backend_herdr_send_key "$ses:$pane" Enter || { echo "enter failed" >&2; return 1; }
   agent=
-  for i in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     agent=$("$LAB" run "$SESSION" agent get "$pane" 2>/dev/null | jq -r '.result.agent.agent // empty' 2>/dev/null)
     [ -z "$agent" ] || break
     sleep 1
@@ -91,7 +91,7 @@ EOF
     || { echo "$harness pane not reported alive by the generic liveness probe" >&2; return 1; }
   # Observe a working->idle/done transition: the crew picks up the brief, works,
   # then settles (the exact edge the native completion detector keys on).
-  for i in $(seq 1 60); do
+  for _ in $(seq 1 60); do
     st=$(fm_backend_agent_status herdr "$ses:$pane" 2>/dev/null)
     [ "$st" = working ] && saw_working=1
     case "$st" in idle|done) [ "$saw_working" = 1 ] && { settled=1; break; } ;; esac

@@ -24,22 +24,22 @@ assert_eq() {  # <actual> <expected> <msg>
 
 # --- fm_launch_render --------------------------------------------------------
 
-test_render_substitutes_operational_input_and_pi_env() {
+test_render_substitutes_operational_input() {
   local rendered
   rendered=$(fm_launch_render \
-    '__PIBRIEFENV__ cursor-agent __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'cursor-agent __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "--model 'composer' " "" "'/tmp/brief.md'" "" "" "" "" \
-    "'/opt/firstmate/bin/fm-operational-input.sh'" "FM_FIRSTMATE_PI_LAUNCH_BRIEF='/tmp/brief.md'")
+    "'/opt/firstmate/bin/fm-operational-input.sh'")
   assert_eq "$rendered" \
-    'FM_FIRSTMATE_PI_LAUNCH_BRIEF='\''/tmp/brief.md'\'' cursor-agent --model '\''composer'\'' "$('\''/opt/firstmate/bin/fm-operational-input.sh'\'' encode launch-brief < '\''/tmp/brief.md'\'')"' \
-    "launch rendering must substitute the operational-input path and Pi brief environment"
-  pass "launch rendering substitutes operational input and Pi brief environment"
+    'cursor-agent --model '\''composer'\'' "$('\''/opt/firstmate/bin/fm-operational-input.sh'\'' encode launch-brief < '\''/tmp/brief.md'\'')"' \
+    "launch rendering must substitute the canonical operational-input encoder path"
+  pass "launch rendering substitutes the operational-input encoder path"
 }
 
 test_render_rejects_unknown_placeholder() {
   local output
   if output=$(fm_launch_render \
-    'cursor-agent __FUTURE_PLACEHOLDER__' "" "" "" "" "" "" "" "" "" 2>&1); then
+    'cursor-agent __FUTURE_PLACEHOLDER__' "" "" "" "" "" "" "" "" 2>&1); then
     fail "launch rendering must reject an unknown placeholder"
   fi
   assert_contains "$output" "__FUTURE_PLACEHOLDER__" \
@@ -265,7 +265,7 @@ ROWS
   pass "the exec-time raw guard blocks PATH-resolved cursor/agy spellings, with absolute-path, PATH-reset, and guard-removal circumvention documented as accepted residuals"
 }
 
-test_render_substitutes_operational_input_and_pi_env
+test_render_substitutes_operational_input
 test_render_rejects_unknown_placeholder
 test_cursor_template
 test_agy_template

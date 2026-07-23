@@ -12,10 +12,9 @@
 # quirks, verified versions) lives in the harness-adapters skill; this file owns
 # only the exact launch string. fm_launch_render below is the one owner that
 # substitutes placeholders (__MODELFLAG__, __EFFORTFLAG__, __BRIEF__,
-# __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, __OPINPUT__ - the canonical
-# operational-input encoder that every template pipes the brief through,
-# origin/main #909 - and __PIBRIEFENV__ - the Pi unchanged-brief env assignment)
-# after a template is chosen.
+# __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, and __OPINPUT__ - the
+# canonical operational-input encoder that every template pipes the brief
+# through, #909) after a template is chosen.
 #
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence,
 # data/captain.md; verification data/cursor-agy-verify/report.md). They are never
@@ -37,11 +36,11 @@ fm_launch_shell_quote() {
 # the raw-command escape hatch, whose input is not a verified template. Every
 # template caller fails loudly if a future placeholder is added without also
 # being rendered here.
-fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> <pi-brief-env> [<allow-unresolved>]
+fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> [<allow-unresolved>]
   local launch model_flag effort_flag brief turnend pi_ext pi_turnend pi_watch
-  local op_input pi_brief_env allow_unresolved leftover
-  if [ "$#" -lt 10 ] || [ "$#" -gt 11 ]; then
-    printf 'firstmate: fm_launch_render expected 10 or 11 arguments, got %s\n' "$#" >&2
+  local op_input allow_unresolved leftover
+  if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
+    printf 'firstmate: fm_launch_render expected 9 or 10 arguments, got %s\n' "$#" >&2
     return 1
   fi
   launch=$1
@@ -53,8 +52,7 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   pi_turnend=$7
   pi_watch=$8
   op_input=$9
-  pi_brief_env=${10}
-  allow_unresolved=${11:-0}
+  allow_unresolved=${10:-0}
 
   launch=${launch//__MODELFLAG__/$model_flag}
   launch=${launch//__EFFORTFLAG__/$effort_flag}
@@ -64,7 +62,6 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   launch=${launch//__PITURNEND__/$pi_turnend}
   launch=${launch//__PIWATCH__/$pi_watch}
   launch=${launch//__OPINPUT__/$op_input}
-  launch=${launch//__PIBRIEFENV__/$pi_brief_env}
 
   if [ "$allow_unresolved" != 1 ] && [[ $launch =~ __[A-Z][A-Z0-9_]*__ ]]; then
     leftover=${BASH_REMATCH[0]}
@@ -233,9 +230,9 @@ fm_launch_template() {
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi)
       if [ "$kind" = secondmate ]; then
-        printf '%s' '__PIBRIEFENV__ pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' '__PIBRIEFENV__ pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive

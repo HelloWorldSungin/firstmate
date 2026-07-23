@@ -100,9 +100,9 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
-#     __PIBRIEFENV__ shell assignment identifying the unchanged Pi positional brief
-# Per-harness turn-end integrations are installed automatically when hook-based;
-# cursor/agy completion is derived by the watcher from herdr-native agent state.
+# Per-harness turn-end hooks are installed automatically; some live outside the worktree.
+# cursor/agy install no hook at all: the watcher derives their completion from
+# herdr-native agent state (bin/fm-transition-lib.sh, fm_transition_native_completion).
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
@@ -1272,16 +1272,13 @@ sq_turnend=$(fm_launch_shell_quote "$TURNEND")
 sq_piext=$(fm_launch_shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
-# origin/main #909: the canonical operational-input encoder path and the Pi
-# unchanged-brief env assignment threaded into the launch templates.
+# #909's canonical operational-input encoder path, threaded into every template.
 sq_opinput=$(fm_launch_shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
-PIBRIEFENV=
-[ "$HARNESS" != pi ] || PIBRIEFENV="FM_FIRSTMATE_PI_LAUNCH_BRIEF=$sq_brief"
 MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
 EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
 LAUNCH=$(fm_launch_render \
   "$LAUNCH" "$MODELFLAG" "$EFFORTFLAG" "$sq_brief" "$sq_turnend" \
-  "$sq_piext" "$sq_piturnend" "$sq_piwatch" "$sq_opinput" "$PIBRIEFENV" \
+  "$sq_piext" "$sq_piturnend" "$sq_piwatch" "$sq_opinput" \
   "$RAW_LAUNCH") || {
   echo "error: could not render launch command for harness '$HARNESS'" >&2
   exit 1
