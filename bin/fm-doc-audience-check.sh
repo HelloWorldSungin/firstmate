@@ -26,6 +26,18 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 HTML_LINK_RE = re.compile(r"\b(?:href|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
+MARKDOWN_REFERENCE_DEFINITION_RE = re.compile(
+    r"^ {0,3}\[[^\]\r\n]+\]:[ \t]*(?:<([^>\r\n]+)>|(\S+))",
+    re.MULTILINE,
+)
+RST_EMBEDDED_LINK_RE = re.compile(r"`[^`\r\n]*<([^<>\r\n]+)>`__?")
+RST_TARGET_RE = re.compile(r"^ {0,3}\.\. _([^:\r\n]+):[ \t]*(.*)$", re.MULTILINE)
+RST_ANONYMOUS_TARGET_RE = re.compile(r"^ {0,3}__:[ \t]*(\S.*)$", re.MULTILINE)
+RST_DIRECTIVE_LINK_RE = re.compile(
+    r"^ {0,3}\.\. (?:figure|image|include|literalinclude)::[ \t]*(\S.*)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+RST_DOCUMENT_ROLE_RE = re.compile(r":(?:doc|download):`(?:[^`<]*<)?([^`<>]+)>?`")
 REQUIRED_TRACKED_PATTERNS = ["*.md", "*.mdx", "*.rst", "*.txt", "docs/examples/*"]
 
 
@@ -210,6 +222,10 @@ def markdown_link_destinations(text: str) -> list[str]:
     return destinations
 
 
+def markdown_reference_destinations(text: str) -> list[str]:
+    return [angle or plain for angle, plain in MARKDOWN_REFERENCE_DEFINITION_RE.findall(text)]
+
+
 def markdown_without_code(text: str) -> str:
     masked = list(text)
 
@@ -332,6 +348,49 @@ def markdown_without_code(text: str) -> str:
     return "".join(masked)
 
 
+def rst_without_code(text: str) -> str:
+    masked = list(text)
+
+    def mask(start: int, end: int) -> None:
+        for position in range(start, end):
+            if masked[position] not in "\r\n":
+                masked[position] = " "
+
+    literal_base: int | None = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        expanded = content.expandtabs(8)
+        indentation = len(expanded) - len(expanded.lstrip(" "))
+        if literal_base is not None:
+            if not content.strip():
+                mask(offset, offset + len(line))
+                offset += len(line)
+                continue
+            if indentation > literal_base:
+                mask(offset, offset + len(line))
+                offset += len(line)
+                continue
+            literal_base = None
+        directive = re.match(
+            r"^( {0,3})\.\. (?:code-block|sourcecode|parsed-literal)::",
+            content,
+            re.IGNORECASE,
+        )
+        if directive is not None:
+            literal_base = len(directive.group(1))
+            mask(offset, offset + len(line))
+        elif content.rstrip().endswith("::"):
+            literal_base = indentation
+        offset += len(line)
+
+    prose = "".join(masked)
+    masked = list(prose)
+    for match in re.finditer(r"``.*?``", prose, re.DOTALL):
+        mask(match.start(), match.end())
+    return "".join(masked)
+
+
 def resolve_local_target(root: Path, source: Path, raw: str) -> Path | None:
     split = urlsplit(normalized_link_value(raw))
     if split.scheme or split.netloc:
@@ -349,13 +408,34 @@ def resolve_local_target(root: Path, source: Path, raw: str) -> Path | None:
     return target
 
 
-def markdown_local_links(root: Path, source: Path) -> list[tuple[str, Path]]:
+def read_prose(root: Path, source: Path) -> str:
     try:
-        text = source.read_text(encoding="utf-8")
+        return source.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         fail(f"cannot read prose surface {source.relative_to(root)}: {exc}")
-    prose = markdown_without_code(text)
-    raw_links = markdown_link_destinations(prose) + HTML_LINK_RE.findall(prose)
+
+
+def rst_link_destinations(text: str) -> list[str]:
+    destinations = RST_EMBEDDED_LINK_RE.findall(text)
+    destinations.extend(target for _, target in RST_TARGET_RE.findall(text) if target)
+    destinations.extend(RST_ANONYMOUS_TARGET_RE.findall(text))
+    destinations.extend(RST_DIRECTIVE_LINK_RE.findall(text))
+    destinations.extend(RST_DOCUMENT_ROLE_RE.findall(text))
+    return [target for target in destinations if not target.rstrip().endswith("_")]
+
+
+def local_links(root: Path, source: Path) -> list[tuple[str, Path]]:
+    text = read_prose(root, source)
+    if source.suffix.lower() == ".rst":
+        prose = rst_without_code(text)
+        raw_links = rst_link_destinations(prose)
+    else:
+        prose = markdown_without_code(text)
+        raw_links = (
+            markdown_link_destinations(prose)
+            + markdown_reference_destinations(prose)
+            + HTML_LINK_RE.findall(prose)
+        )
     result: list[tuple[str, Path]] = []
     for raw in raw_links:
         target = resolve_local_target(root, source, raw)
@@ -371,14 +451,11 @@ def github_heading_slug(value: str) -> str:
     return re.sub(r"\s", "-", value)
 
 
-def markdown_anchors(path: Path) -> set[str]:
+def markdown_anchors(root: Path, path: Path) -> set[str]:
     anchors: set[str] = set()
     counts: Counter[str] = Counter()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
-        fail(f"cannot read link target {path}: {exc}")
-    for line in lines:
+    prose = markdown_without_code(read_prose(root, path))
+    for line in prose.splitlines():
         match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
         if match:
             base = github_heading_slug(match.group(1))
@@ -389,6 +466,35 @@ def markdown_anchors(path: Path) -> set[str]:
         for explicit in re.findall(r"<(?:a|span)\s+(?:name|id)=[\"']([^\"']+)[\"']", line, re.IGNORECASE):
             anchors.add(explicit)
     return anchors
+
+
+def rst_heading_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def rst_anchors(root: Path, path: Path) -> set[str]:
+    prose = rst_without_code(read_prose(root, path))
+    anchors = {
+        rst_heading_slug(name)
+        for name, _ in RST_TARGET_RE.findall(prose)
+        if rst_heading_slug(name)
+    }
+    lines = prose.splitlines()
+    adornment = re.compile(r"^([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])\1{2,}\s*$")
+    for index in range(len(lines) - 1):
+        title = lines[index].strip()
+        underline = lines[index + 1].strip()
+        if title and adornment.fullmatch(underline) and len(underline) >= len(title):
+            slug = rst_heading_slug(title)
+            if slug:
+                anchors.add(slug)
+    return anchors
+
+
+def document_anchors(root: Path, path: Path) -> set[str]:
+    if path.suffix.lower() == ".rst":
+        return rst_anchors(root, path)
+    return markdown_anchors(root, path)
 
 
 def validate(root: Path, inventory_path: Path) -> tuple[int, int]:
@@ -440,7 +546,7 @@ def validate(root: Path, inventory_path: Path) -> tuple[int, int]:
     readme_path = root / "README.md"
     readme_targets = {
         os.path.relpath(target, root).replace(os.sep, "/")
-        for _, target in markdown_local_links(root, readme_path)
+        for _, target in local_links(root, readme_path)
     }
     setup_targets = list_of_strings(data.get("readmeSetupTargets"), "readmeSetupTargets")
     for target in setup_targets:
@@ -476,7 +582,7 @@ def validate(root: Path, inventory_path: Path) -> tuple[int, int]:
         if source_path.suffix.lower() in {".md", ".mdx", ".rst"}:
             linked_targets = {
                 os.path.relpath(linked, root).replace(os.sep, "/")
-                for _, linked in markdown_local_links(root, source_path)
+                for _, linked in local_links(root, source_path)
             }
         if target not in source_text and target not in linked_targets:
             fail(f"required owner pointer missing: {source} -> {target}")
@@ -487,13 +593,13 @@ def validate(root: Path, inventory_path: Path) -> tuple[int, int]:
         if Path(path).suffix.lower() not in {".md", ".mdx", ".rst"}:
             continue
         source = root / path
-        for raw, target in markdown_local_links(root, source):
+        for raw, target in local_links(root, source):
             checked_links += 1
             if not target.exists():
                 fail(f"unresolved local link in {path}: {raw}")
             fragment = unquote(urlsplit(normalized_link_value(raw)).fragment)
             if fragment and target.is_file() and target.suffix.lower() in {".md", ".mdx", ".rst"}:
-                anchors = anchor_cache.setdefault(target, markdown_anchors(target))
+                anchors = anchor_cache.setdefault(target, document_anchors(root, target))
                 if fragment not in anchors:
                     fail(f"unresolved local anchor in {path}: {raw}")
 

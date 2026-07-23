@@ -100,9 +100,12 @@ write_fixture_inventory() {
   "surfaces": [
     {"path": "README.md", "audience": "public-product"},
     {"path": "docs/evidence.md", "audience": "maintainer-verification"},
+    {"path": "docs/guide.rst", "audience": "operator-current"},
     {"path": "docs/policy.md", "audience": "operator-current"},
     {"path": "docs/protocol_(v1).md", "audience": "operator-current"},
-    {"path": "docs/setup.md", "audience": "operator-current"}
+    {"path": "docs/setup.md", "audience": "operator-current"},
+    {"path": "docs/source.md", "audience": "operator-current"},
+    {"path": "docs/target.md", "audience": "operator-current"}
   ]
 }
 JSON
@@ -116,6 +119,9 @@ test_local_links_and_no_keyword_heuristic() {
   printf '%s\n' '# Setup' > "$repo/docs/setup.md"
   printf '%s\n' '# Policy' > "$repo/docs/policy.md"
   printf '%s\n' '# Protocol' > "$repo/docs/protocol_(v1).md"
+  printf '%s\n' 'Guide' '=====' '' 'See `setup`_.' '' '.. _setup: setup.md' > "$repo/docs/guide.rst"
+  printf '%s\n' '[Target](target.md#real-heading)' > "$repo/docs/source.md"
+  printf '%s\n' '# Real heading' > "$repo/docs/target.md"
   cat > "$repo/docs/evidence.md" <<'MD'
 # Incident verification on 2026-07-23
 
@@ -161,6 +167,28 @@ MD
   git -C "$repo" add README.md
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
 
+  cat > "$repo/README.md" <<'MD'
+[Setup][setup] [Policy](docs/policy.md)
+
+[setup]: docs/setup.md
+[missing]: docs/missing-reference.md
+MD
+  git -C "$repo" add README.md
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
+  printf '%s\n' 'Guide' '=====' '' 'See `missing`_.' '' '.. _missing: missing.rst' > "$repo/docs/guide.rst"
+  git -C "$repo" add README.md docs/guide.rst
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  printf '%s\n' 'Guide' '=====' '' 'See `setup`_.' '' '.. _setup: setup.md' > "$repo/docs/guide.rst"
+  printf '%s\n' '# Real heading' '' '```markdown' '# Example' '```' > "$repo/docs/target.md"
+  printf '%s\n' '[Code-only anchor](target.md#example)' > "$repo/docs/source.md"
+  git -C "$repo" add docs/guide.rst docs/source.md docs/target.md
+  run_expect_failure "unresolved local anchor" "$CHECK" --root "$repo"
+
+  printf '%s\n' '[Target](target.md#real-heading)' > "$repo/docs/source.md"
+  git -C "$repo" add docs/source.md
   printf '%s\n' \
     '[Setup](docs/setup.md) [Policy](docs/policy.md) [Broken](docs/missing.bin)' \
     > "$repo/README.md"
