@@ -40,23 +40,26 @@ fm_launch_restricted_harness_of_word() {  # <word>
 }
 
 # fm_launch_raw_restricted_harness: given a RAW launch command string (the
-# unverified-adapter escape hatch), print the crew-only restricted harness
-# (cursor|agy) it would actually launch, or nothing. It resolves the real
-# executable through leading VAR=val assignments and an `env` wrapper (skipping
-# env's own options and NAME=val prefixes) for a precise verdict on the common
-# direct forms, then applies a FAIL-CLOSED backstop that neutralizes shell quoting
-# and separators and scans every token's basename.
+# unverified-adapter escape hatch), decide whether firstmate must REFUSE it
+# because it could launch the crew-only cursor/agy CLIs outside their canonical
+# --harness path. Prints one of:
+#   cursor | agy - a restricted executable basename is present (literal case).
+#   unresolved   - the command uses shell INDIRECTION ($ expansion, backtick or
+#                  $() command substitution, or the `eval` builtin) that could
+#                  resolve to cursor-agent/agy but cannot be cleared statically.
+#   <empty>      - safe to allow through the raw hatch.
 #
-# The backstop is what closes a raw `cursor-agent ...`, `env agy ...`,
-# `FOO=1 agy ...`, AND a quoted shell wrapper (`bash -lc 'agy ...'`, `sh -c
-# "cursor-agent ..."`) - forms where the executable basename firstmate would
-# otherwise record is `bash`/`env`/`cursor-agent`, not `cursor`/`agy`. It
-# deliberately over-approximates: a raw command that merely NAMES a restricted
-# executable basename anywhere is refused. That is acceptable because the raw
-# hatch exists for UNVERIFIED adapters, cursor/agy are verified and have a
-# canonical --harness path (with the required trust seed + native supervision),
-# and refusing errs safe.
-fm_launch_raw_restricted_harness() {  # <raw-command>
+# WHY the indirection rule: the raw command is ultimately executed by the
+# crewmate PANE's shell, so `AGY=agy bash -lc '$AGY ...'`, `bash -lc 'x=agy;
+# eval "$x ..."'`, backticks, `$(...)`, and split-token concatenation (`$a$g`)
+# can all launch a restricted executable that a basename scan can never see. So
+# any unresolved shell expansion makes the command unverifiable, and firstmate
+# refuses it. This over-approximates (a raw command that merely uses `$FOO` for
+# an unrelated reason is also refused), which is acceptable: the raw hatch exists
+# for UNVERIFIED adapters, cursor/agy are verified with a canonical --harness path
+# (that also installs the trust seed and native supervision), and a refusal here
+# only sends the operator to that path or to an expansion-free spelling.
+fm_launch_raw_restricted_harness() {  # <raw-command> -> cursor|agy|unresolved|<empty>
   local cmd=$1 word found normalized
   # shellcheck disable=SC2086  # deliberate word-splitting of the raw command string
   set -- $cmd
@@ -83,9 +86,9 @@ fm_launch_raw_restricted_harness() {  # <raw-command>
   fi
   found=$(fm_launch_restricted_harness_of_word "${1:-}")
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
-  # Fail-closed backstop: replace shell quote characters and command separators
-  # with spaces so a quoted/wrapped invocation splits into plain tokens, then scan
-  # every token's basename for a restricted executable. This is what catches
+  # Literal-basename backstop: replace shell quote characters and command
+  # separators with spaces so a quoted/wrapped invocation splits into plain
+  # tokens, then scan every token's basename for a restricted executable. Catches
   # `bash -lc 'agy ...'` (whose raw token is "'agy", not "agy") and similar.
   normalized=$(printf '%s' "$cmd" | tr $'\047"\140;&|(){}<>\n\t' '              ')
   # shellcheck disable=SC2086  # deliberate word-splitting of the normalized string
@@ -95,6 +98,14 @@ fm_launch_raw_restricted_harness() {  # <raw-command>
     found=$(fm_launch_restricted_harness_of_word "$word")
     [ -z "$found" ] || { printf '%s' "$found"; return 0; }
   done
+  # Indirection backstop: a `$` (variable or $() command substitution) or a
+  # backtick means the pane shell could expand a restricted executable name the
+  # literal scan above cannot see (`$AGY`, `$(...)`, `$a$g`, `eval "$x"`). A bare
+  # `eval agy` needs no `$` but carries the literal `agy` the scan already caught,
+  # so these two characters cover every real indirection bypass.
+  case "$cmd" in
+    *'$'*|*'`'*) printf 'unresolved'; return 0 ;;
+  esac
 }
 
 # fm_launch_template: print the verified launch command for <harness> (<kind>

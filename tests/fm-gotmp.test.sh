@@ -65,6 +65,11 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
   ln -s "$ROOT/bin/fm-pr-lib.sh" "$fake/bin/fm-pr-lib.sh"
+  # fm-agy-trust-lib.sh + fm-wake-lib.sh: teardown sources the trust lib for its
+  # ownership-aware agy workspace-trust cleanup, and that lib pulls in fm-wake-lib
+  # for the ownership lock. Newly required siblings since the cursor/agy adapter.
+  ln -s "$ROOT/bin/fm-agy-trust-lib.sh" "$fake/bin/fm-agy-trust-lib.sh"
+  ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -165,6 +170,10 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
   ln -s "$ROOT/bin/fm-pr-lib.sh" "$fake/bin/fm-pr-lib.sh"
+  # fm-agy-trust-lib.sh + fm-wake-lib.sh: newly required teardown siblings (agy
+  # workspace-trust cleanup and its ownership lock).
+  ln -s "$ROOT/bin/fm-agy-trust-lib.sh" "$fake/bin/fm-agy-trust-lib.sh"
+  ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0

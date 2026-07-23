@@ -31,9 +31,18 @@
 
 # The ownership-and-liveness lock lives in bin/fm-wake-lib.sh. fm-spawn already
 # sources it; fm-teardown (and standalone tests) may not, so pull it in on demand.
+# Source it only when present: it always sits next to this file in a real bin/,
+# but a curated test stub that sources this library without exercising the trust
+# functions (e.g. a non-agy teardown) may omit it, and a missing optional lock
+# backend must not abort the sourcing script. The lock is only ever invoked for
+# agy tasks, whose full firstmate environment always has fm-wake-lib.sh.
 if ! command -v fm_lock_try_acquire >/dev/null 2>&1; then
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh"
+  __fm_agy_wake_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh"
+  if [ -f "$__fm_agy_wake_lib" ]; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$__fm_agy_wake_lib"
+  fi
+  unset __fm_agy_wake_lib
 fi
 
 # fm_agy_settings_path: the agy global settings file this home should mutate.

@@ -114,9 +114,14 @@ EOF
     out=$(run_spawn "$home" "$fakebin" "$id" "$proj" $extra "$variant")
     status=$?
     expect_code 1 "$status" "raw command '$variant' ($extra) must be refused"
-    assert_contains "$out" "cannot be launched through the raw command escape hatch" \
-      "raw '$variant' refusal should explain the escape-hatch block"
-    assert_contains "$out" "harness '$want'" "raw '$variant' should be classified as $want"
+    if [ "$want" = unresolved ]; then
+      assert_contains "$out" "uses shell expansion or command substitution" \
+        "raw '$variant' should be refused as unverifiable shell indirection"
+    else
+      assert_contains "$out" "cannot be launched through the raw command escape hatch" \
+        "raw '$variant' refusal should explain the escape-hatch block"
+      assert_contains "$out" "harness '$want'" "raw '$variant' should be classified as $want"
+    fi
     assert_absent "$home/state/$id.meta" "raw bypass refusal must happen before meta is written"
   done <<'ROWS'
 cursor-agent --trust --force|--secondmate|cursor
@@ -129,8 +134,12 @@ bash -lc 'agy --dangerously-skip-permissions'||agy
 bash -lc 'cursor-agent --trust --force'||cursor
 sh -c "agy -p hi"|--secondmate|agy
 env bash -lc 'cursor-agent'||cursor
+AGY=agy bash -lc '$AGY --dangerously-skip-permissions'||unresolved
+CUR=cursor-agent bash -lc '$CUR --trust --force'|--secondmate|unresolved
+bash -lc 'x=agy; eval "$x --dangerously-skip-permissions"'||unresolved
+bash -lc 'a=a; g=gy; $a$g --x'||unresolved
 ROWS
-  pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, and assignment-prefixed)"
+  pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, assignment, wrapper, and variable indirection)"
 }
 
 # --- teardown workspace-trust cleanup ---------------------------------------

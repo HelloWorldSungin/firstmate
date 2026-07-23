@@ -72,7 +72,10 @@ test_tracked_extension_present_and_self_hashing() {
 
 test_spawn_template_mentions_pi_watch_placeholder() {
   local text
-  text=$(cat "$ROOT/bin/fm-spawn.sh")
+  # The launch TEMPLATE lives in bin/fm-launch-lib.sh (fm_launch_template); the
+  # placeholder SUBSTITUTION and the tracked-extension path stay in bin/fm-spawn.sh.
+  # Read both so the assertions cover the split.
+  text=$(cat "$ROOT/bin/fm-spawn.sh" "$ROOT/bin/fm-launch-lib.sh")
   assert_contains "$text" "-e __PITURNEND__ -e __PIWATCH__" "Pi secondmate launch template does not include both primary extensions"
   assert_contains "$text" "\$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts" "fm-spawn does not point the Pi secondmate watch placeholder at the tracked extension"
   assert_not_contains "$text" "fm-pi-watch-extension.sh" "fm-spawn should no longer generate the Pi watch extension before launch"

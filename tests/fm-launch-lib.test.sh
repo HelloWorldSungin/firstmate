@@ -159,10 +159,26 @@ test_raw_restricted_harness_shell_wrappers() {
   pass "fm_launch_raw_restricted_harness sees through quoted shell-wrapper commands (bash -lc 'agy ...')"
 }
 
+test_raw_restricted_harness_variable_indirection() {
+  # B1 second re-review: variable/command-substitution indirection can expand to a
+  # restricted executable the literal scan cannot see. Since the raw command is run
+  # by the pane shell, any unresolved shell expansion is refused as 'unresolved'.
+  assert_eq "$(fm_launch_raw_restricted_harness "AGY=agy bash -lc '\$AGY --dangerously-skip-permissions'")" unresolved "assigned-var indirection to agy"
+  assert_eq "$(fm_launch_raw_restricted_harness "CUR=cursor-agent bash -lc '\$CUR --trust'")" unresolved "assigned-var indirection to cursor-agent"
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'x=agy; eval \"\$x --x\"'")" unresolved "eval of a variable"
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'a=a; g=gy; \$a\$g --x'")" unresolved "split-token concatenation"
+  assert_eq "$(fm_launch_raw_restricted_harness "custom-agent --home \$HOME")" unresolved "any \$ expansion is refused as unverifiable"
+  assert_eq "$(fm_launch_raw_restricted_harness 'custom-agent --out `date`')" unresolved "backtick command substitution is refused"
+  # No expansion and no restricted basename: allowed.
+  assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 custom-agent --flag')" "" "expansion-free raw command stays allowed"
+  pass "fm_launch_raw_restricted_harness refuses variable/command-substitution indirection as unresolved"
+}
+
 test_cursor_template
 test_agy_template
 test_raw_restricted_harness_resolution
 test_raw_restricted_harness_shell_wrappers
+test_raw_restricted_harness_variable_indirection
 test_existing_templates_unchanged
 test_unknown_harness_returns_nonzero
 test_cursor_model_passthrough

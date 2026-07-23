@@ -439,17 +439,22 @@ case "$ARG3" in
     done
     # The raw escape hatch must NOT become a bypass around the cursor/agy
     # crew-only + herdr-only gates. Its harness token is only the first non-
-    # assignment word's basename (`cursor-agent`/`env`, not `cursor`/`agy`), so
-    # the canonical guard below would miss it. Resolve the ACTUAL executable
-    # (through `env` and leading assignments, with an all-words backstop) and, if
-    # it is cursor/agy, refuse: those adapters also need firstmate's workspace-
-    # trust seeding and native turn-end supervision, which only the canonical
-    # --harness path installs. Direct the caller to --harness cursor|agy.
+    # assignment word's basename (`cursor-agent`/`env`/`bash`, not `cursor`/`agy`),
+    # so the canonical guard below would miss it. fm_launch_raw_restricted_harness
+    # resolves the actual executable and also refuses any command whose shell
+    # indirection ($VAR, $(...), backtick) could expand to cursor/agy at run time
+    # in the pane shell - closing the wrapper and variable-indirection bypasses.
     raw_restricted=$(fm_launch_raw_restricted_harness "$LAUNCH")
-    if [ -n "$raw_restricted" ]; then
-      echo "error: harness '$raw_restricted' cannot be launched through the raw command escape hatch (it bypasses the crew-only/herdr-only gates, agy workspace-trust seeding, and native turn-end supervision). Use --harness $raw_restricted instead." >&2
-      exit 1
-    fi
+    case "$raw_restricted" in
+      cursor|agy)
+        echo "error: harness '$raw_restricted' cannot be launched through the raw command escape hatch (it bypasses the crew-only/herdr-only gates, agy workspace-trust seeding, and native turn-end supervision). Use --harness $raw_restricted instead." >&2
+        exit 1
+        ;;
+      unresolved)
+        echo "error: this raw launch command uses shell expansion or command substitution (\$VAR, \$(...), or backticks), which the pane shell could expand into a crew-only cursor/agy launch that bypasses their required gates and supervision. Remove the shell indirection, or use --harness for a verified adapter." >&2
+        exit 1
+        ;;
+    esac
     ;;
   '')
     # No explicit harness: resolve from config. A secondmate AGENT launches on the
