@@ -26,3 +26,4 @@ bin/fm-doc-audience-check.sh
 The check intentionally does not lint dates, versions, commands, paths, incident language, or transcript-like prose.
 Those forms are legitimate in maintainer verification and require semantic review rather than keyword heuristics.
 For every changed prose surface, review its audience, authoritative owner, current relevance, evidence destination, and unique safety facts, then repeat that review over the complete branch diff after all fixes.
+[`verification/documentation-audience-cleanup.md`](verification/documentation-audience-cleanup.md) records the quantified prompt reductions and preservation map for the migration that established this split.

@@ -133,6 +133,11 @@ MD
   git -C "$repo" add README.md
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
   pass "local links resolve while dates, versions, commands, and incident prose remain semantically reviewed"
+
+  printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
+  printf '%s\n' '# Draft' > "$repo/docs/draft.md"
+  run_expect_failure "unclassified: docs/draft.md" "$CHECK" --root "$repo"
+  pass "untracked maintained prose cannot bypass audience classification"
 }
 
 test_no_mistakes_document_schema() {
