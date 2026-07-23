@@ -63,7 +63,15 @@ test_rendering_and_session_lifecycle() {
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
-  [ "$version" = "0.80.10" ] || fail "Pi calm compatibility assumptions require Pi 0.80.10, found $version"
+  # Pinned to the exact Pi versions the calm renderer contract was verified against.
+  # 0.80.10 was the original verification; 0.81.1 re-verified 2026-07-23 by running
+  # this suite's renderer and lifecycle assertions green against the installed
+  # @earendil-works/pi-coding-agent 0.81.1. Add a version here only after the same
+  # green re-verification.
+  case "$version" in
+    0.80.10|0.81.1) : ;;
+    *) fail "Pi calm compatibility is verified for Pi 0.80.10 or 0.81.1, found $version - re-verify the renderer contract before pinning a new version" ;;
+  esac
 
   fixture="$TMP_ROOT/renderer"
   mkdir -p "$fixture/node_modules/@earendil-works"
@@ -366,7 +374,12 @@ test_interactive_terminal_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.80.10" ] || fail "Pi calm interactive E2E requires Pi 0.80.10, found $version"
+  # Verified Pi versions for the calm interactive E2E; 0.81.1 re-verified 2026-07-23
+  # (see the renderer test above). Re-verify green before adding another version.
+  case "$version" in
+    0.80.10|0.81.1) : ;;
+    *) fail "Pi calm interactive E2E is verified for Pi 0.80.10 or 0.81.1, found $version - re-verify before pinning a new version" ;;
+  esac
 
   project="$TMP_ROOT/e2e-project"
   config="$TMP_ROOT/e2e-config"
