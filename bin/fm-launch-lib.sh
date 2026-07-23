@@ -43,13 +43,21 @@ fm_launch_restricted_harness_of_word() {  # <word>
 # unverified-adapter escape hatch), print the crew-only restricted harness
 # (cursor|agy) it would actually launch, or nothing. It resolves the real
 # executable through leading VAR=val assignments and an `env` wrapper (skipping
-# env's own options and NAME=val prefixes), then, as a fail-closed backstop
-# against wrapper spellings it does not model, also scans every remaining word.
-# This closes the bypass where a raw `cursor-agent ...`, `env agy ...`, or
-# `FOO=1 agy ...` command would otherwise slip past a token-only cursor/agy guard
-# (the executable basename is `cursor-agent`/`env`, not `cursor`/`agy`).
+# env's own options and NAME=val prefixes) for a precise verdict on the common
+# direct forms, then applies a FAIL-CLOSED backstop that neutralizes shell quoting
+# and separators and scans every token's basename.
+#
+# The backstop is what closes a raw `cursor-agent ...`, `env agy ...`,
+# `FOO=1 agy ...`, AND a quoted shell wrapper (`bash -lc 'agy ...'`, `sh -c
+# "cursor-agent ..."`) - forms where the executable basename firstmate would
+# otherwise record is `bash`/`env`/`cursor-agent`, not `cursor`/`agy`. It
+# deliberately over-approximates: a raw command that merely NAMES a restricted
+# executable basename anywhere is refused. That is acceptable because the raw
+# hatch exists for UNVERIFIED adapters, cursor/agy are verified and have a
+# canonical --harness path (with the required trust seed + native supervision),
+# and refusing errs safe.
 fm_launch_raw_restricted_harness() {  # <raw-command>
-  local cmd=$1 word found
+  local cmd=$1 word found normalized
   # shellcheck disable=SC2086  # deliberate word-splitting of the raw command string
   set -- $cmd
   # Skip leading VAR=val assignments.
@@ -75,10 +83,13 @@ fm_launch_raw_restricted_harness() {  # <raw-command>
   fi
   found=$(fm_launch_restricted_harness_of_word "${1:-}")
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
-  # Fail-closed backstop: any word (past assignments) whose basename is a
-  # restricted executable name forces the guard, even through an unmodeled wrapper.
-  # shellcheck disable=SC2086
-  set -- $cmd
+  # Fail-closed backstop: replace shell quote characters and command separators
+  # with spaces so a quoted/wrapped invocation splits into plain tokens, then scan
+  # every token's basename for a restricted executable. This is what catches
+  # `bash -lc 'agy ...'` (whose raw token is "'agy", not "agy") and similar.
+  normalized=$(printf '%s' "$cmd" | tr $'\047"\140;&|(){}<>\n\t' '              ')
+  # shellcheck disable=SC2086  # deliberate word-splitting of the normalized string
+  set -- $normalized
   for word in "$@"; do
     case "$word" in [A-Za-z_][A-Za-z0-9_]*=*) continue ;; esac
     found=$(fm_launch_restricted_harness_of_word "$word")

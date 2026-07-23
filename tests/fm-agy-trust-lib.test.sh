@@ -173,8 +173,54 @@ test_live_lock_is_not_stolen() {
   pass "a live lock is never stolen (even past 10s); a dead holder's lock is reclaimed"
 }
 
+test_rollback_clean_removes_entry_and_marker() {
+  # B3: a spawn-abort rollback of a firstmate-CREATED entry removes it from the
+  # shared file and drops the ownership marker.
+  new_settings '{"trustedWorkspaces":["/home/cap","/home/cap/wt"]}'
+  local marker="$FM_AGY_SETTINGS_OVERRIDE.marker"
+  printf '/home/cap/wt' > "$marker"
+  fm_agy_trust_rollback /home/cap/wt "$marker" || fail "clean rollback should return 0"
+  [ "$(jq -c '.trustedWorkspaces' "$FM_AGY_SETTINGS_OVERRIDE")" = '["/home/cap"]' ] \
+    || fail "rollback did not remove the created entry"
+  assert_absent "$marker" "a clean rollback should drop the ownership marker"
+  pass "rollback removes a firstmate-created entry and its ownership marker"
+}
+
+test_rollback_failure_preserves_marker_evidence() {
+  # B3 concern 2: if rollback removal FAILS (malformed/locked settings), the
+  # firstmate-owned entry is still leaked, so the ownership marker MUST be retained
+  # as retry evidence rather than deleted.
+  new_settings 'NOT VALID JSON {'
+  local marker="$FM_AGY_SETTINGS_OVERRIDE.marker"
+  printf '/home/cap/leaked' > "$marker"
+  if fm_agy_trust_rollback /home/cap/leaked "$marker" 2>/dev/null; then
+    fail "rollback against unparseable settings must return non-zero"
+  fi
+  assert_present "$marker" "a failed rollback must retain the ownership marker as retry evidence"
+  [ "$(cat "$marker")" = /home/cap/leaked ] || fail "the retained marker must record the leaked path"
+  pass "a failed rollback preserves the ownership marker as retry evidence"
+}
+
+test_rollback_failure_recreates_absent_marker() {
+  # B3 concern 1: the marker-write-after-seed can fail, so the marker may be
+  # ABSENT at abort time. A failed rollback must then CREATE the marker so the
+  # leaked entry still has deterministic retry evidence.
+  new_settings 'still not json'
+  local marker="$FM_AGY_SETTINGS_OVERRIDE.marker"
+  assert_absent "$marker" "precondition: no marker exists (models a failed marker write)"
+  if fm_agy_trust_rollback /home/cap/leaked2 "$marker" 2>/dev/null; then
+    fail "rollback against unparseable settings must return non-zero"
+  fi
+  assert_present "$marker" "a failed rollback must create retry evidence even when the marker was never written"
+  [ "$(cat "$marker")" = /home/cap/leaked2 ] || fail "the recreated marker must record the leaked path"
+  pass "a failed rollback recreates an absent marker so retry evidence survives a marker-write failure"
+}
+
 test_add_creates_minimal_file
 test_add_reports_created_vs_preexisting
+test_rollback_clean_removes_entry_and_marker
+test_rollback_failure_preserves_marker_evidence
+test_rollback_failure_recreates_absent_marker
 test_add_preserves_other_paths_and_keys
 test_add_is_idempotent
 test_remove_drops_only_the_exact_path

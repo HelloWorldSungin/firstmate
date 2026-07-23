@@ -125,6 +125,10 @@ env agy --dangerously-skip-permissions|--secondmate|agy
 FOO=1 cursor-agent --force|--secondmate|cursor
 FOO=1 BAR=2 agy -p hi||agy
 env -u HOME cursor-agent --force||cursor
+bash -lc 'agy --dangerously-skip-permissions'||agy
+bash -lc 'cursor-agent --trust --force'||cursor
+sh -c "agy -p hi"|--secondmate|agy
+env bash -lc 'cursor-agent'||cursor
 ROWS
   pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, and assignment-prefixed)"
 }

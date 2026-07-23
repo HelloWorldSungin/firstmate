@@ -263,9 +263,12 @@ spawn_abort_cleanup() {
   # firstmate-created entry (AGY_TRUST_ROLLBACK_PATH set); a committed spawn clears
   # the path so the running agy keeps its trust.
   if [ "$status" -ne 0 ] && [ -n "${AGY_TRUST_ROLLBACK_PATH:-}" ]; then
-    fm_agy_trust_remove "$AGY_TRUST_ROLLBACK_PATH" \
-      || echo "warning: could not roll back agy workspace trust for $AGY_TRUST_ROLLBACK_PATH after a failed spawn" >&2
-    rm -f "$STATE/$ID.agy-trust" 2>/dev/null || true
+    # fm_agy_trust_rollback removes the firstmate-created global entry and, on
+    # removal failure, preserves the ownership marker as retry evidence for the
+    # leaked entry (bin/fm-agy-trust-lib.sh). AGY_TRUST_ROLLBACK_PATH was armed
+    # BEFORE the marker write, so this fires even if that write failed.
+    fm_agy_trust_rollback "$AGY_TRUST_ROLLBACK_PATH" "$STATE/$ID.agy-trust" \
+      || echo "warning: could not roll back agy workspace trust for $AGY_TRUST_ROLLBACK_PATH after a failed spawn; retained the ownership marker $STATE/$ID.agy-trust as retry evidence for the leaked global entry" >&2
     AGY_TRUST_ROLLBACK_PATH=
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -1179,8 +1182,12 @@ EOF
         exit 1
       fi
       if [ "${FM_AGY_TRUST_ADDED:-}" = created ]; then
-        printf '%s' "$WT" > "$STATE/$ID.agy-trust"
+        # Arm rollback BEFORE any fallible write: the global trust entry now
+        # exists, so from this instant an abort must roll it back. Arming after
+        # the marker write would leak the entry if the marker write itself failed
+        # under set -e.
         AGY_TRUST_ROLLBACK_PATH=$WT
+        printf '%s' "$WT" > "$STATE/$ID.agy-trust"
       fi
       ;;
   esac

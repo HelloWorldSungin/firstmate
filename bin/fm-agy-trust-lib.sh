@@ -114,6 +114,24 @@ fm_agy_trust_add() {  # <abs-path>
   return "$rc"
 }
 
+# fm_agy_trust_rollback <abs-path> <marker>: undo a firstmate-CREATED trust grant
+# after a failed spawn. It is the exact logic fm-spawn's abort trap runs, factored
+# out so it is unit-testable. On clean removal the leaked entry is gone and the
+# ownership <marker> is deleted (return 0). On removal FAILURE (unparseable or
+# locked settings) the firstmate-owned entry is still present, so it PRESERVES
+# retry evidence by (re)writing <marker> with <abs-path> - even when the marker
+# was never written (a marker-write failure after seeding) - and returns 1, so the
+# caller can warn and a later cleanup can deterministically retry.
+fm_agy_trust_rollback() {  # <abs-path> <marker>
+  local path=$1 marker=$2
+  if fm_agy_trust_remove "$path"; then
+    rm -f "$marker" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$path" > "$marker" 2>/dev/null || true
+  return 1
+}
+
 # fm_agy_trust_remove <abs-path>: drop <abs-path> at teardown (or spawn-abort
 # rollback). Idempotent: a missing file or absent entry is a no-op success.
 # Returns non-zero only on a real failure (jq missing, unparseable settings, lock

@@ -777,6 +777,27 @@ crew_dispatch_validate() {
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - $err"
     return 0
   fi
+  # Backend-context check (S2): cursor and agy are crew-only, HERDR-only. A
+  # dispatch profile that selects them is valid JSON, but every matching task
+  # will be refused at spawn when the resolved backend is not herdr. Diagnose it
+  # here rather than deferring the surprise to task intake. $BACKEND is the
+  # already-resolved runtime backend (fm_backend_name, above).
+  if [ "$BACKEND" != herdr ]; then
+    local restricted
+    restricted=$(jq -r '
+      def profiles($value):
+        if ($value | type) == "array" then $value
+        elif ($value | type) == "object" then [$value]
+        else [] end;
+      ([(.rules // [])[]? | profiles(.use?)[]?]
+        + (if has("default") then [profiles(.default)[]?] else [] end))
+      | map(.harness?) | map(select(. == "cursor" or . == "agy")) | unique | join(", ")
+    ' "$file" 2>/dev/null || true)
+    if [ -n "$restricted" ]; then
+      echo "CREW_DISPATCH: backend mismatch - config/crew-dispatch.json selects crew-only herdr-only harness(es) ($restricted) but the resolved backend is '$BACKEND'; those tasks will be refused at spawn. Select the herdr backend (config/backend) or drop cursor/agy from the dispatch rules."
+      return 0
+    fi
+  fi
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ]; then
     jq -r '
     def profile($p):

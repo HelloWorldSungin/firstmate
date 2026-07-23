@@ -143,9 +143,26 @@ test_raw_restricted_harness_resolution() {
   pass "fm_launch_raw_restricted_harness resolves cursor-agent/agy through env and assignment prefixes"
 }
 
+test_raw_restricted_harness_shell_wrappers() {
+  # B1 re-review: a QUOTED shell-wrapper command hides the real executable inside a
+  # quoted string, so the raw token is e.g. "'agy", not "agy". The fail-closed
+  # backstop neutralizes quoting/separators before scanning.
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'agy --dangerously-skip-permissions'")" agy "bash -lc 'agy ...'"
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'cursor-agent --trust --force'")" cursor "bash -lc 'cursor-agent ...'"
+  assert_eq "$(fm_launch_raw_restricted_harness 'sh -c "agy -p hi"')" agy 'sh -c "agy ..."'
+  assert_eq "$(fm_launch_raw_restricted_harness 'bash -c "cursor-agent"')" cursor 'bash -c "cursor-agent"'
+  assert_eq "$(fm_launch_raw_restricted_harness "env bash -lc 'agy'")" agy "env bash -lc 'agy'"
+  assert_eq "$(fm_launch_raw_restricted_harness "zsh -ic 'x=1; agy'")" agy "zsh -ic with a separator"
+  # Wrappers that do NOT invoke cursor/agy still resolve to nothing.
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'echo hello world'")" "" "harmless wrapped command"
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'claude --x'")" "" "wrapped claude is not restricted"
+  pass "fm_launch_raw_restricted_harness sees through quoted shell-wrapper commands (bash -lc 'agy ...')"
+}
+
 test_cursor_template
 test_agy_template
 test_raw_restricted_harness_resolution
+test_raw_restricted_harness_shell_wrappers
 test_existing_templates_unchanged
 test_unknown_harness_returns_nonzero
 test_cursor_model_passthrough
