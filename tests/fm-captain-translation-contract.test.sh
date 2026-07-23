@@ -162,6 +162,22 @@ test_ahoy_owns_only_the_visible_session_recap() {
     "first-message fallback does not delegate to Bearings by relative pointer"
   assert_grep 'If no prior real captain message exists' "$AHOY" \
     "ahoy does not limit Bearings fallback to the first real captain message"
+  assert_grep 'A captain boundary is an ordinary user-role message unless it matches one of the narrow operational exclusions below.' "$AHOY" \
+    "ahoy lacks an explicit captain-authored boundary rule"
+  assert_grep 'Exclude messages that begin with the current U+2063 `FIRSTMATE_OP:` injection prefix.' "$AHOY" \
+    "ahoy does not exclude current marked operational injections"
+  assert_grep 'Exclude legacy bare-marker away-mode injections only when U+2063 is immediately followed by `Supervisor escalate (`.' "$AHOY" \
+    "ahoy does not narrowly exclude the legacy away-mode injection shape"
+  assert_grep 'Exclude the exact legacy unmarked session-start payload ``Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.``' "$AHOY" \
+    "ahoy does not exclude the legacy unmarked session-start payload"
+  assert_grep 'quotes or embeds a current operational message after ordinary captain text' "$AHOY" \
+    "ahoy lacks quoted-current near-miss protection"
+  assert_grep 'Apply the current exclusion only when U+2063 `FIRSTMATE_OP:` begins at the first character of the whole message' "$AHOY" \
+    "ahoy does not pin the current-prefix whole-message boundary"
+  assert_grep 'contains ASCII `FIRSTMATE_OP:` without a leading U+2063' "$AHOY" \
+    "ahoy lacks ASCII-only near-miss protection"
+  assert_grep 'Apply the legacy startup exclusion as a literal whole-message match: ``Captain quote: Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.`` is a captain boundary.' "$AHOY" \
+    "ahoy does not pin the altered-startup behavioral near miss"
   assert_grep 'System, developer, tool, watcher, guard, away-mode, and other injected operational messages are not captain messages.' "$AHOY" \
     "ahoy incorrectly treats synthetic operational messages as captain messages"
   assert_grep 'The normal recap branch is session-history-only.' "$AHOY" \
@@ -181,6 +197,47 @@ test_ahoy_owns_only_the_visible_session_recap() {
   pass "ahoy delegates first-message fallback and keeps later recaps visible-session-only"
 }
 
+test_ahoy_user_role_injections_share_one_marker() {
+  local daemon grok_guard opencode_guard opencode_watch pi_guard pi_watch owner sessionstart spawn
+  daemon=$(cat "$ROOT/bin/fm-supervise-daemon.sh")
+  grok_guard=$(cat "$ROOT/bin/fm-turnend-guard-grok.sh")
+  opencode_guard=$(cat "$ROOT/.opencode/plugins/fm-primary-turnend-guard.js")
+  opencode_watch=$(cat "$ROOT/.opencode/plugins/fm-primary-watch-arm.js")
+  pi_guard=$(cat "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts")
+  pi_watch=$(cat "$ROOT/.pi/extensions/fm-primary-pi-watch.ts")
+  owner=$(cat "$ROOT/bin/fm-operational-input.sh")
+  sessionstart=$(cat "$ROOT/bin/fm-sessionstart-nudge.sh")
+  spawn=$(cat "$ROOT/bin/fm-spawn.sh")
+
+  assert_contains "$owner" 'FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "' \
+    "canonical owner lost the landed Ahoy prefix"
+  assert_contains "$sessionstart" 'fm_operational_input_encode session-start' \
+    "session-start does not use the canonical typed constructor"
+  assert_contains "$daemon" 'fm_operational_input_encode away-supervisor' \
+    "away-mode does not use the canonical typed constructor"
+  assert_contains "$grok_guard" 'fm_operational_input_encode turn-end-guard' \
+    "Grok guard does not use the canonical typed constructor"
+  assert_contains "$opencode_guard" 'encodeFirstmateOperationalInput(' \
+    "OpenCode guard does not use the cross-language constructor"
+  assert_contains "$opencode_guard" '"turn-end-guard"' \
+    "OpenCode guard does not retain its exact current kind"
+  assert_contains "$opencode_watch" 'encodeFirstmateOperationalInput(paths.root, "watcher"' \
+    "OpenCode watcher does not retain its exact current kind"
+  assert_contains "$pi_guard" 'encodeFirstmateOperationalInput(' \
+    "Pi guard does not use the cross-language constructor"
+  assert_contains "$pi_guard" '"turn-end-guard"' \
+    "Pi guard does not retain its exact current kind"
+  assert_contains "$pi_watch" '"watcher"' \
+    "Pi watcher does not retain its exact current kind"
+  assert_contains "$spawn" 'encode launch-brief' \
+    "cross-harness launches do not use the canonical launch-instruction kind"
+  for producer in "$daemon" "$grok_guard" "$opencode_guard" "$opencode_watch" "$pi_guard" "$pi_watch" "$sessionstart" "$spawn"; do
+    assert_not_contains "$producer" 'FIRSTMATE_OP: ' \
+      "a current producer copied the canonical marker grammar"
+  done
+  pass "ahoy: one canonical owner constructs typed operational input for every Firstmate-controlled user-role producer"
+}
+
 test_section_9_owns_positive_translation_contract
 test_scout_remains_allowed_house_vocabulary
 test_compressed_safety_labels_have_plain_renderings
@@ -191,3 +248,4 @@ test_section_9_owner_is_not_duplicated_into_skills
 test_ahoy_is_an_internal_user_invocable_skill
 test_ahoy_readme_uses_cross_harness_convention
 test_ahoy_owns_only_the_visible_session_recap
+test_ahoy_user_role_injections_share_one_marker

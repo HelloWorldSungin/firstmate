@@ -5,7 +5,7 @@
 # (tests/fm-spawn-dispatch-profile.test.sh separately proves the same strings
 # reach a real spawn).
 # The expected launch strings below deliberately contain a literal, unexpanded
-# $(cat __BRIEF__): they assert the template text fm-spawn substitutes later, so
+# $(__OPINPUT__ encode launch-brief < __BRIEF__): they assert the template text fm-spawn substitutes later, so
 # single quotes (no expansion) are correct here. File-wide directive (before the
 # first command) so every literal-template assertion is covered.
 # shellcheck disable=SC2016
@@ -26,7 +26,7 @@ assert_eq() {  # <actual> <expected> <msg>
 
 test_cursor_template() {
   assert_eq "$(fm_launch_template cursor ship)" \
-    'cursor-agent --trust --force __MODELFLAG__"$(cat __BRIEF__)"' \
+    'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "cursor ship template must launch cursor-agent with --trust --force and no effort placeholder"
   # kind is irrelevant for cursor (crew-only, no secondmate variant).
   assert_eq "$(fm_launch_template cursor scout)" "$(fm_launch_template cursor ship)" \
@@ -36,7 +36,7 @@ test_cursor_template() {
 
 test_agy_template() {
   assert_eq "$(fm_launch_template agy ship)" \
-    'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(cat __BRIEF__)"' \
+    'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "agy ship template must skip permissions, thread model+effort, and pass the brief to --prompt-interactive"
   assert_eq "$(fm_launch_template agy scout)" "$(fm_launch_template agy ship)" \
     "agy scout template must match ship template"
@@ -45,10 +45,10 @@ test_agy_template() {
 
 test_existing_templates_unchanged() {
   assert_eq "$(fm_launch_template claude ship)" \
-    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' \
+    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "claude template drifted"
   assert_eq "$(fm_launch_template grok ship)" \
-    'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' \
+    'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "grok template drifted"
   # codex/pi have distinct secondmate variants; confirm the crew variant is stable.
   assert_contains "$(fm_launch_template codex ship)" 'touch __TURNEND__' \

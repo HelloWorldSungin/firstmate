@@ -97,6 +97,8 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
+#     __OPINPUT__   absolute path to the canonical operational-input encoder
+#     __PIBRIEFENV__ shell assignment identifying the unchanged Pi positional brief
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
@@ -428,8 +430,10 @@ fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
 # The verified launch command per adapter lives in bin/fm-launch-lib.sh
-# (fm_launch_template), sourced above. cursor and agy are CREW-ONLY, herdr-ONLY;
-# the guard after this case block enforces both gates.
+# (fm_launch_template), sourced above - including origin/main #909's __OPINPUT__
+# operational-input encoding and __PIBRIEFENV__ threaded into each template there.
+# cursor and agy are CREW-ONLY, herdr-ONLY; the guard after this case block
+# enforces both gates.
 RAW_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
@@ -1265,6 +1269,11 @@ sq_turnend=$(fm_launch_shell_quote "$TURNEND")
 sq_piext=$(fm_launch_shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+# origin/main #909: the canonical operational-input encoder path and the Pi
+# unchanged-brief env assignment threaded into the launch templates.
+sq_opinput=$(fm_launch_shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
+PIBRIEFENV=
+[ "$HARNESS" != pi ] || PIBRIEFENV="FM_FIRSTMATE_PI_LAUNCH_BRIEF=$sq_brief"
 MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
 EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
@@ -1274,6 +1283,8 @@ LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+LAUNCH=${LAUNCH//__PIBRIEFENV__/$PIBRIEFENV}
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"

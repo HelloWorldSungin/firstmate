@@ -11,8 +11,10 @@
 # The KNOWLEDGE half of each adapter (busy signature, exit command, dialogs,
 # quirks, verified versions) lives in the harness-adapters skill; this file owns
 # only the exact launch string. Placeholders (__MODELFLAG__, __EFFORTFLAG__,
-# __BRIEF__, __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__) are substituted
-# by bin/fm-spawn.sh after this template is chosen; see its header.
+# __BRIEF__, __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, __OPINPUT__ - the
+# canonical operational-input encoder that every template pipes the brief through,
+# origin/main #909 - and __PIBRIEFENV__ - the Pi unchanged-brief env assignment)
+# are substituted by bin/fm-spawn.sh after this template is chosen; see its header.
 #
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence,
 # data/captain.md; verification data/cursor-agy-verify/report.md). They are never
@@ -162,7 +164,7 @@ SHIM
 # back to the raw-launch-command escape hatch.
 fm_launch_template() {
   local harness=$1 kind=${2:-ship}
-  # shellcheck disable=SC2016  # single quotes are deliberate: $(cat ...) expands in the crewmate pane, not here
+  # shellcheck disable=SC2016  # single quotes are deliberate: $(__OPINPUT__ ...) expands in the crewmate pane, not here
   case "$harness" in
     # CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false disables claude's interactive
     # predicted-next-prompt ghost text, which renders as dim/faint text inside an
@@ -173,20 +175,20 @@ fm_launch_template() {
     # does NOT suppress the interactive ghost text (verified empirically), so the env
     # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
     # the defense-in-depth backstop for any pane this flag cannot reach.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
-    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
+    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(cat __BRIEF__)"'
+        printf '%s' '__PIBRIEFENV__ pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __BRIEF__)"'
+        printf '%s' '__PIBRIEFENV__ pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -196,7 +198,7 @@ fm_launch_template() {
     # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
     # launch command - it is a Stop-event hook installed by fm-spawn (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
-    grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # cursor (Cursor Agent CLI, harness token `cursor`, binary `cursor-agent`):
     # a positional prompt starts the supervised interactive session. --trust
     # bypasses the interactive workspace-trust modal (verified: the modal blocks
@@ -208,7 +210,7 @@ fm_launch_template() {
     # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end is the watcher's
     # debounced native-completion detector (fm-watch.sh maybe_native_turnend), so
     # no launch-time turn-end hook is installed.
-    cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(cat __BRIEF__)"' ;;
+    cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
     # --dangerously-skip-permissions auto-approves tool use. Workspace trust is a
@@ -217,7 +219,7 @@ fm_launch_template() {
     # before launch (bin/fm-agy-trust-lib.sh). --effort accepts only low|medium|high
     # (agy --help). Turn-end is the watcher's debounced native-completion detector,
     # so no launch-time hook is installed.
-    agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(cat __BRIEF__)"' ;;
+    agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
