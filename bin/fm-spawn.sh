@@ -1276,15 +1276,13 @@ PIBRIEFENV=
 [ "$HARNESS" != pi ] || PIBRIEFENV="FM_FIRSTMATE_PI_LAUNCH_BRIEF=$sq_brief"
 MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
 EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
-LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
-LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
-LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
-LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
-LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
-LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
-LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
-LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
-LAUNCH=${LAUNCH//__PIBRIEFENV__/$PIBRIEFENV}
+LAUNCH=$(fm_launch_render \
+  "$LAUNCH" "$MODELFLAG" "$EFFORTFLAG" "$sq_brief" "$sq_turnend" \
+  "$sq_piext" "$sq_piturnend" "$sq_piwatch" "$sq_opinput" "$PIBRIEFENV" \
+  "$RAW_LAUNCH") || {
+  echo "error: could not render launch command for harness '$HARNESS'" >&2
+  exit 1
+}
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"

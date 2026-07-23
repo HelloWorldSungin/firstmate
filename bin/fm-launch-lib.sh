@@ -10,11 +10,12 @@
 #
 # The KNOWLEDGE half of each adapter (busy signature, exit command, dialogs,
 # quirks, verified versions) lives in the harness-adapters skill; this file owns
-# only the exact launch string. Placeholders (__MODELFLAG__, __EFFORTFLAG__,
-# __BRIEF__, __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, __OPINPUT__ - the
-# canonical operational-input encoder that every template pipes the brief through,
+# only the exact launch string. fm_launch_render below is the one owner that
+# substitutes placeholders (__MODELFLAG__, __EFFORTFLAG__, __BRIEF__,
+# __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, __OPINPUT__ - the canonical
+# operational-input encoder that every template pipes the brief through,
 # origin/main #909 - and __PIBRIEFENV__ - the Pi unchanged-brief env assignment)
-# are substituted by bin/fm-spawn.sh after this template is chosen; see its header.
+# after a template is chosen.
 #
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence,
 # data/captain.md; verification data/cursor-agy-verify/report.md). They are never
@@ -29,6 +30,48 @@ fm_launch_shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
   printf "'"
+}
+
+# fm_launch_render: substitute every launch-template placeholder and print the
+# rendered command. The optional final <allow-unresolved> flag is reserved for
+# the raw-command escape hatch, whose input is not a verified template. Every
+# template caller fails loudly if a future placeholder is added without also
+# being rendered here.
+fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> <pi-brief-env> [<allow-unresolved>]
+  local launch model_flag effort_flag brief turnend pi_ext pi_turnend pi_watch
+  local op_input pi_brief_env allow_unresolved leftover
+  if [ "$#" -lt 10 ] || [ "$#" -gt 11 ]; then
+    printf 'firstmate: fm_launch_render expected 10 or 11 arguments, got %s\n' "$#" >&2
+    return 1
+  fi
+  launch=$1
+  model_flag=$2
+  effort_flag=$3
+  brief=$4
+  turnend=$5
+  pi_ext=$6
+  pi_turnend=$7
+  pi_watch=$8
+  op_input=$9
+  pi_brief_env=${10}
+  allow_unresolved=${11:-0}
+
+  launch=${launch//__MODELFLAG__/$model_flag}
+  launch=${launch//__EFFORTFLAG__/$effort_flag}
+  launch=${launch//__BRIEF__/$brief}
+  launch=${launch//__TURNEND__/$turnend}
+  launch=${launch//__PIEXT__/$pi_ext}
+  launch=${launch//__PITURNEND__/$pi_turnend}
+  launch=${launch//__PIWATCH__/$pi_watch}
+  launch=${launch//__OPINPUT__/$op_input}
+  launch=${launch//__PIBRIEFENV__/$pi_brief_env}
+
+  if [ "$allow_unresolved" != 1 ] && [[ $launch =~ __[A-Z][A-Z0-9_]*__ ]]; then
+    leftover=${BASH_REMATCH[0]}
+    printf 'firstmate: unresolved launch placeholder %s\n' "$leftover" >&2
+    return 1
+  fi
+  printf '%s' "$launch"
 }
 
 # fm_launch_restricted_harness_of_word: map one command word (an executable path

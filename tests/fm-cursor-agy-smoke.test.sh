@@ -57,7 +57,8 @@ LAUNCH_TARGET=
 # to the pane's "<session>:<pane>" on success, and waits for the crew to actually
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
-  local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag agent st i saw_working=0 settled=0
+  local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag
+  local brief_path opinput_path agent st i saw_working=0 settled=0
   LAUNCH_TARGET=
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
@@ -71,9 +72,11 @@ EOF
   [ -n "$pane" ] || { echo "no pane id" >&2; return 1; }
   effortflag=$(fm_launch_effort_flag "$harness" "$effort")
   launch=$(fm_launch_template "$harness") || { echo "no template" >&2; return 1; }
-  launch=${launch//__MODELFLAG__/}
-  launch=${launch//__EFFORTFLAG__/$effortflag}
-  launch=${launch//__BRIEF__/\'$WORK/brief.md\'}
+  brief_path=$(fm_launch_shell_quote "$WORK/brief.md")
+  opinput_path=$(fm_launch_shell_quote "$ROOT/bin/fm-operational-input.sh")
+  launch=$(fm_launch_render \
+    "$launch" "" "$effortflag" "$brief_path" "" "" "" "" "$opinput_path" "") \
+    || { echo "template render failed" >&2; return 1; }
   fm_backend_herdr_send_literal "$ses:$pane" "$launch" || { echo "send failed" >&2; return 1; }
   sleep 0.3
   fm_backend_herdr_send_key "$ses:$pane" Enter || { echo "enter failed" >&2; return 1; }
