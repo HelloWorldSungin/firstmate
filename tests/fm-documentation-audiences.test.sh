@@ -200,6 +200,11 @@ Guide
 .. code:: rst
 
    `Code example <missing-code.rst>`_
+   <a href="missing-code.html">HTML code example</a>
+
+.. raw:: html
+
+   <a href="policy.md">Policy</a>
 
 .. note::
 
@@ -216,7 +221,17 @@ RST
 
   sed 's/parsed-literal::/code:: rst/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
   mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
-  sed 's/policy.md/missing-note.rst/' "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  sed 's/href="policy.md"/href="missing-raw.html"/' \
+    "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
+  git -C "$repo" add docs/guide.rst
+  run_expect_failure "unresolved local link" "$CHECK" --root "$repo"
+
+  sed 's/href="missing-raw.html"/href="policy.md"/' \
+    "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
+  mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
+  sed 's/`Policy <policy.md>`_/`Policy <missing-note.rst>`_/' \
+    "$repo/docs/guide.rst" > "$repo/docs/guide.rst.tmp"
   mv "$repo/docs/guide.rst.tmp" "$repo/docs/guide.rst"
   git -C "$repo" add docs/guide.rst
   run_expect_failure "unresolved local link" "$CHECK" --root "$repo"

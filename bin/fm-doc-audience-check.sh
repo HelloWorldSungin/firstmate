@@ -376,7 +376,7 @@ def rst_without_code(text: str) -> str:
                 continue
             literal_base = None
         literal_directive = re.match(
-            r"^( {0,3})\.\. (?:code|code-block|sourcecode|raw|math)::",
+            r"^( {0,3})\.\. (?:code|code-block|sourcecode|math)::",
             content,
             re.IGNORECASE,
         )
@@ -432,7 +432,7 @@ def local_links(root: Path, source: Path) -> list[tuple[str, Path]]:
     text = read_prose(root, source)
     if source.suffix.lower() == ".rst":
         prose = rst_without_code(text)
-        raw_links = rst_link_destinations(prose)
+        raw_links = rst_link_destinations(prose) + HTML_LINK_RE.findall(prose)
     else:
         prose = markdown_without_code(text)
         raw_links = (
