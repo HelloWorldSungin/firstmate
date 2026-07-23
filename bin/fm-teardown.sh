@@ -164,6 +164,23 @@ meta_value() {
   fm_meta_get "$meta" "$key"
 }
 
+remove_owned_agy_trust() {
+  local state=$1 id=$2 context=$3 marker path
+  marker="$state/$id.agy-trust"
+  [ -f "$marker" ] || return 0
+  path=$(cat "$marker" 2>/dev/null || true)
+  if [ -z "$path" ]; then
+    rm -f "$marker"
+    return 0
+  fi
+  if fm_agy_trust_remove "$path"; then
+    rm -f "$marker"
+    return 0
+  fi
+  echo "error: could not remove firstmate-owned agy workspace trust for $path ($context); teardown incomplete, retaining the ownership marker and metadata for retry" >&2
+  return 1
+}
+
 require_orca_worktree_id() {
   local meta=$1 id
   id=$(meta_value "$meta" orca_worktree_id)
@@ -952,7 +969,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_nativeturnend_key child_agy_path
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_nativeturnend_key
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -987,30 +1004,33 @@ cleanup_firstmate_home_children() {
       child_home=$(meta_value "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       if [ -n "$child_home" ] && [ -d "$child_home" ]; then
-        cleanup_firstmate_home_children "$child_home"
-        remove_firstmate_home "$child_home" "child firstmate home" "$child_id"
+        cleanup_firstmate_home_children "$child_home" || return 1
+        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" || return 1
       fi
-    elif [ "$child_backend" = orca ]; then
-      if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
+    else
+      remove_owned_agy_trust "$sub_state" "$child_id" "secondmate child $child_id" || return 1
+      if [ "$child_backend" = orca ]; then
+        if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
+          validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+          rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
+        fi
+        fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
+      elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
-      fi
-      fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
-    elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
-      validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
-      rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
-      if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
-        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
-          :
-        else
-          child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
-            return "$child_return_rc"
+        if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
+          if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
+            :
+          else
+            child_return_rc=$?
+            if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
+              return "$child_return_rc"
+            fi
+            safe_rm_rf_child_worktree "$child_wt" "$child_proj"
           fi
+        else
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"
         fi
-      else
-        safe_rm_rf_child_worktree "$child_wt" "$child_proj"
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
@@ -1020,23 +1040,6 @@ cleanup_firstmate_home_children() {
       rm -f "$sub_state/.nativeturnend-$child_nativeturnend_key" 2>/dev/null || true
     fi
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
-    # Ownership-aware agy workspace-trust cleanup for a secondmate's own agy
-    # crewmate: same contract as the main path (marker = firstmate created it;
-    # removal failure is an incomplete cleanup that retains the marker + metadata
-    # for retry) rather than a warn-and-forget that could leak a global grant.
-    if [ -f "$sub_state/$child_id.agy-trust" ]; then
-      child_agy_path=$(cat "$sub_state/$child_id.agy-trust" 2>/dev/null || true)
-      if [ -n "$child_agy_path" ]; then
-        if fm_agy_trust_remove "$child_agy_path"; then
-          rm -f "$sub_state/$child_id.agy-trust"
-        else
-          echo "error: could not remove firstmate-owned agy workspace trust for $child_agy_path (secondmate child $child_id); cleanup incomplete, retaining metadata for retry" >&2
-          return 1
-        fi
-      else
-        rm -f "$sub_state/$child_id.agy-trust"
-      fi
-    fi
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token"
   done
 }
@@ -1072,7 +1075,7 @@ if [ "$KIND" = secondmate ] && [ "$FORCE" != "--force" ]; then
 fi
 
 if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
-  cleanup_firstmate_home_children "$HOME_PATH"
+  cleanup_firstmate_home_children "$HOME_PATH" || exit 1
 fi
 
 if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
@@ -1113,6 +1116,8 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
@@ -1214,7 +1219,7 @@ elif [ "$BACKEND" = herdr ] \
 fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID"
+  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit 1
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
@@ -1229,27 +1234,6 @@ fi
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-# agy workspace-trust cleanup (bin/fm-agy-trust-lib.sh), ownership-aware and
-# transactional. The marker state/<id>.agy-trust exists only when THIS task's
-# spawn actually CREATED a global trustedWorkspaces entry (a path the captain had
-# already trusted was left unmarked and is never touched here). Removal failure is
-# an INCOMPLETE teardown: keep the marker AND the task metadata so a rerun retries
-# deterministically, rather than warning-and-forgetting a leaked global grant.
-# Done last, after the other cleanup, so an incomplete teardown leaves only the
-# trust entry, its marker, and the metadata behind.
-if [ -f "$STATE/$ID.agy-trust" ]; then
-  agy_seeded_path=$(cat "$STATE/$ID.agy-trust" 2>/dev/null || true)
-  if [ -n "$agy_seeded_path" ]; then
-    if fm_agy_trust_remove "$agy_seeded_path"; then
-      rm -f "$STATE/$ID.agy-trust"
-    else
-      echo "error: could not remove firstmate-owned agy workspace trust for $agy_seeded_path; teardown incomplete, retaining task metadata for a deterministic retry (rerun teardown once agy's settings file is writable and valid)" >&2
-      exit 1
-    fi
-  else
-    rm -f "$STATE/$ID.agy-trust"
-  fi
-fi
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true

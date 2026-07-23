@@ -121,17 +121,23 @@ fm_transition_policy() {  # <to_status> -> actionable|absorb|defer|fallback
 # interval - a real inter-tool blip - never signals), and only ONCE per idle
 # period; a `working` or `blocked` edge re-arms it for the next turn.
 #
-# Pure and side-effect-free so it is unit-testable: given the harness, the current
-# native <status>, and the PREVIOUS recorded "<status>|<signaled>" state, it PRINTS
-# the new "<status>|<signaled>" state and RETURNS 0 iff a turn-end should be
-# signaled now (1 otherwise). A non-cursor/agy harness always returns 1 and echoes
-# an empty state, so the caller does nothing for other tasks.
-fm_transition_native_completion() {  # <harness> <status> <prev_state> -> prints new state; 0 iff signal now
-  local harness=$1 status=$2 prev=$3 prev_status prev_signaled
+# Pure and side-effect-free so it is unit-testable: given the expected harness,
+# the live native identity and status read together, and the PREVIOUS recorded
+# "<status>|<signaled>" state, it PRINTS the new state and RETURNS 0 iff a
+# turn-end should be signaled now (1 otherwise). A non-cursor/agy expected
+# harness always returns 1 and echoes an empty state. A live identity mismatch
+# returns a re-armed unknown state so stale debounce state cannot signal if the
+# expected adapter later reappears.
+fm_transition_native_completion() {  # <expected_harness> <native_identity> <status> <prev_state> -> new state; 0 iff signal
+  local harness=$1 native_identity=$2 status=$3 prev=$4 prev_status prev_signaled
   case "$harness" in
     cursor|agy) ;;
     *) printf ''; return 1 ;;
   esac
+  if [ "$native_identity" != "$harness" ]; then
+    printf 'unknown|0'
+    return 1
+  fi
   prev_status=${prev%%|*}
   case "$prev" in
     *'|'*) prev_signaled=${prev#*|} ;;

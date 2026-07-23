@@ -224,13 +224,20 @@ plain cursor-agent|cursor-agent --trust
 ROWS
   [ "$n" -ge 9 ] || fail "expected all bypass rows to run, ran $n"
 
+  # Accepted residuals for this PATH shim are an absolute-path invocation, a PATH
+  # reset that drops the guard, and `rm -rf` of the predictable guard dir before
+  # invoking. The raw command is firstmate-authored, so code able to remove the
+  # guard already has full same-user execution and can reach the CLI by other
+  # paths. This test therefore treats the shim as accident-prevention rather than
+  # a security boundary and does not claim to intercept those deliberate actions.
+
   # A legitimate, non-restricted raw command is unaffected by the guard.
   : > "$execlog"
   PATH="$shim:$realbin:$PATH" bash -c 'echo ok >/dev/null && exit 0' \
     || fail "the raw guard must not interfere with a non-cursor/agy command"
 
   rm -rf "$tmp"
-  pass "the exec-time raw guard blocks every cursor/agy shell spelling (quote-concat, brace, alias, process-sub, wrapper) and leaves other commands alone"
+  pass "the exec-time raw guard blocks PATH-resolved cursor/agy spellings, with absolute-path, PATH-reset, and guard-removal circumvention documented as accepted residuals"
 }
 
 test_cursor_template

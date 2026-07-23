@@ -263,7 +263,7 @@ window_harness() {
 # ".nativeturnend-<key>" file carries the debounce state ("<status>|<signaled>");
 # fm-teardown removes it with the rest of the task's watcher state.
 maybe_native_turnend() {  # <window> <task> <key>
-  local w=$1 task=$2 key=$3 backend harness status prev newstate tf sfile
+  local w=$1 task=$2 key=$3 backend harness native_pair native_identity status prev newstate tf sfile
   [ -n "$task" ] || return 0
   backend=$(window_backend "$w")
   [ "$backend" = herdr ] || return 0
@@ -272,11 +272,20 @@ maybe_native_turnend() {  # <window> <task> <key>
     cursor|agy) ;;
     *) return 0 ;;
   esac
-  status=$(fm_backend_agent_status "$backend" "$w" 2>/dev/null) || status=unknown
+  fm_backend_source herdr || return 0
+  fm_backend_herdr_parse_target "$w" || return 0
+  native_pair=$(fm_backend_herdr_agent_identity_raw \
+    "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+  native_identity=${native_pair%%$'\t'*}
+  case "$native_pair" in
+    *$'\t'*) status=${native_pair#*$'\t'} ;;
+    *) status=unknown ;;
+  esac
   [ -n "$status" ] || status=unknown
   sfile="$STATE/.nativeturnend-$key"
   prev=$(cat "$sfile" 2>/dev/null || true)
-  if newstate=$(fm_transition_native_completion "$harness" "$status" "$prev"); then
+  if newstate=$(fm_transition_native_completion \
+    "$harness" "$native_identity" "$status" "$prev"); then
     tf="$STATE/$task.turn-ended"
     : > "$tf" 2>/dev/null || touch "$tf" 2>/dev/null || true
     triage_log "native turn-end ($harness $status): $w"

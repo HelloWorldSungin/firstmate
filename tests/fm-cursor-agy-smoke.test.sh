@@ -57,7 +57,7 @@ LAUNCH_TARGET=
 # to the pane's "<session>:<pane>" on success, and waits for the crew to actually
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
-  local harness=$1 effort=$2 raw container seeded ses pane ids tab launch effortflag agent st i saw_working=0 settled=0
+  local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag agent st i saw_working=0 settled=0
   LAUNCH_TARGET=
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
@@ -65,7 +65,7 @@ launch_and_detect() {  # <harness> <effort>
   ses=${container%%:*}
   ids=$(fm_backend_herdr_create_task "$container" "fm-smoke-$harness" "$WORK" "$seeded") \
     || { echo "create_task failed" >&2; return 1; }
-  read -r tab pane <<EOF
+  read -r _ pane <<EOF
 $ids
 EOF
   [ -n "$pane" ] || { echo "no pane id" >&2; return 1; }
@@ -104,12 +104,20 @@ EOF
 # debounced fm_transition_native_completion, and confirm it produces the
 # state/<id>.turn-ended completion signal that scan_signals turns into a wake.
 prove_completion_wake() {  # <target> <harness>
-  local target=$1 harness=$2 statedir tf prev="" newstate st i signaled=0
+  local target=$1 harness=$2 statedir tf prev="" newstate native_pair native_identity st signaled=0
   statedir=$(mktemp -d)
   tf="$statedir/task.turn-ended"
-  for i in $(seq 1 8); do
-    st=$(fm_backend_agent_status herdr "$target" 2>/dev/null)
-    if newstate=$(fm_transition_native_completion "$harness" "$st" "$prev"); then
+  fm_backend_herdr_parse_target "$target" || return 1
+  for _ in $(seq 1 8); do
+    native_pair=$(fm_backend_herdr_agent_identity_raw \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+    native_identity=${native_pair%%$'\t'*}
+    case "$native_pair" in
+      *$'\t'*) st=${native_pair#*$'\t'} ;;
+      *) st=unknown ;;
+    esac
+    if newstate=$(fm_transition_native_completion \
+      "$harness" "$native_identity" "$st" "$prev"); then
       : > "$tf"
       signaled=1
     fi

@@ -132,10 +132,14 @@ fm_launch_raw_restricted_harness() {  # <raw-command> -> cursor|agy|unresolved|<
 # can model.
 #
 # Residual limitation (documented, out of scope for a PATH shim): an ABSOLUTE-path
-# invocation of the real binary, or a raw command that first resets PATH to drop
-# this dir, bypasses a PATH-based shim. Both are deliberate circumventions rather
-# than a careless raw spelling, and closing them would require execve-level
-# interception (LD_PRELOAD/seccomp) that is platform-specific and disproportionate.
+# invocation, a raw command that first resets PATH to drop this dir, or a raw
+# command that removes this predictable guard dir before invoking the binary
+# bypasses the shim. The raw command is firstmate-authored rather than
+# attacker-supplied, so same-user code able to remove the guard already has full
+# execution and can reach the CLI by other paths. This guard prevents accidents;
+# it is not a security boundary. Closing these deliberate circumventions would
+# require execve-level interception (LD_PRELOAD/seccomp) that is platform-specific
+# and disproportionate.
 fm_launch_write_raw_guard() {  # <dir>
   local dir=$1 name
   [ -n "$dir" ] || return 1

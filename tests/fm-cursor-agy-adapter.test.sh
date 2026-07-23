@@ -34,7 +34,21 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = return ]; then
+  [ -z "${FM_TEST_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_TEST_TREEHOUSE_LOG"
+  if [ -n "${FM_TEST_AGY_TRUST_ABSENT_PATH:-}" ]; then
+    jq -e --arg path "$FM_TEST_AGY_TRUST_ABSENT_PATH" \
+      '.trustedWorkspaces | index($path) == null' \
+      "${FM_TEST_AGY_SETTINGS:?}" >/dev/null || exit 93
+  fi
+fi
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+  fm_fake_exit0 "$fakebin" herdr gh-axi gh
   printf '%s\n' "$fakebin"
 }
 
@@ -218,7 +232,10 @@ run_teardown() {  # <home> <fakebin> <settings> <id>
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_AGY_SETTINGS_OVERRIDE="$settings" PATH="$fakebin:$PATH" \
+    FM_AGY_SETTINGS_OVERRIDE="$settings" FM_TEST_AGY_SETTINGS="$settings" \
+    FM_TEST_TREEHOUSE_LOG="${FM_TEST_TREEHOUSE_LOG:-}" \
+    FM_TEST_AGY_TRUST_ABSENT_PATH="${FM_TEST_AGY_TRUST_ABSENT_PATH:-}" \
+    PATH="$fakebin:$PATH" \
     "$TEARDOWN" "$id" --force 2>&1
 }
 
@@ -252,18 +269,21 @@ setup_teardown_case() {
 }
 
 test_teardown_removes_owned_agy_trust() {
-  local id home wt fakebin settings out
+  local id home wt fakebin settings out order_log
   id=agy-teardown-z3
   IFS='|' read -r home wt fakebin settings <<EOF
 $(setup_teardown_case agy-teardown "$id" agy yes)
 EOF
-  out=$(run_teardown "$home" "$fakebin" "$settings" "$id") \
+  order_log="$home/treehouse-order.log"
+  out=$(FM_TEST_TREEHOUSE_LOG="$order_log" FM_TEST_AGY_TRUST_ABSENT_PATH="$wt" \
+    run_teardown "$home" "$fakebin" "$settings" "$id") \
     || fail "agy teardown failed"$'\n'"$out"
   [ "$(jq -c '.trustedWorkspaces' "$settings")" = '["/home/cap"]' ] \
     || fail "agy teardown did not drop the firstmate-owned worktree path (got $(jq -c '.trustedWorkspaces' "$settings"))"
   assert_absent "$home/state/$id.agy-trust" "teardown should remove the ownership marker after a successful trust removal"
   assert_absent "$home/state/$id.meta" "teardown should remove the task meta"
-  pass "agy teardown removes a firstmate-OWNED worktree entry from global workspace trust"
+  assert_present "$order_log" "teardown did not return the worktree after removing owned trust"
+  pass "agy teardown removes firstmate-owned trust before returning the worktree lease"
 }
 
 test_teardown_preserves_unowned_agy_trust() {
@@ -286,19 +306,75 @@ test_teardown_incomplete_on_removal_failure() {
   # A malformed settings file makes removal fail. Teardown must treat that as an
   # INCOMPLETE teardown: non-zero exit, and the metadata + ownership marker
   # retained so a rerun retries deterministically.
-  local id home wt fakebin settings out status
+  local id home wt fakebin settings out status order_log
   id=agy-incomplete-z6
   IFS='|' read -r home wt fakebin settings <<EOF
 $(setup_teardown_case agy-incomplete "$id" agy yes)
 EOF
   printf 'NOT VALID JSON {' > "$settings"
-  out=$(run_teardown "$home" "$fakebin" "$settings" "$id")
+  order_log="$home/treehouse-order.log"
+  out=$(FM_TEST_TREEHOUSE_LOG="$order_log" run_teardown "$home" "$fakebin" "$settings" "$id")
   status=$?
   expect_code 1 "$status" "teardown must fail when the owned trust entry cannot be removed"
   assert_contains "$out" "teardown incomplete" "teardown should report an incomplete teardown"
   assert_present "$home/state/$id.meta" "an incomplete teardown must retain task metadata for retry"
   assert_present "$home/state/$id.agy-trust" "an incomplete teardown must retain the ownership marker for retry"
-  pass "teardown is incomplete (retains meta + marker) when the owned trust removal fails"
+  assert_absent "$order_log" "teardown must not return the worktree when owned trust removal fails"
+  pass "owned trust removal failure retains retry evidence and the worktree lease"
+}
+
+test_forced_secondmate_child_trust_failure_prevents_release() {
+  local case_dir home parent_home parent_proj child_proj child_wt fakebin settings
+  local parent_id child_id order_log out status
+  case_dir="$TMP_ROOT/secondmate-child-trust-failure"
+  home="$case_dir/home"
+  parent_home="$case_dir/secondmate-home"
+  parent_proj="$case_dir/parent-project"
+  child_proj="$case_dir/child-project"
+  child_wt="$case_dir/child-worktree"
+  parent_id=secondmate-parent-z7
+  child_id=agy-child-z8
+  fakebin=$(make_fakebin "$case_dir/fake")
+  settings="$case_dir/agy-settings.json"
+  order_log="$case_dir/treehouse-order.log"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  mkdir -p "$parent_home/state" "$parent_home/data" "$parent_home/projects" "$parent_home/config"
+  printf '%s' "$parent_id" > "$parent_home/.fm-secondmate-home"
+  fm_git_init_commit "$parent_proj"
+  fm_git_worktree "$child_proj" "$child_wt" "fm/$child_id"
+  fm_write_meta "$home/state/$parent_id.meta" \
+    "window=firstmate:fm-$parent_id" \
+    "worktree=$parent_home" \
+    "project=$parent_proj" \
+    "home=$parent_home" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "mode=local-only" \
+    "yolo=off" \
+    "tasktmp="
+  fm_write_meta "$parent_home/state/$child_id.meta" \
+    "window=firstmate:fm-$child_id" \
+    "worktree=$child_wt" \
+    "project=$child_proj" \
+    "backend=herdr" \
+    "harness=agy" \
+    "kind=ship" \
+    "mode=local-only" \
+    "yolo=off" \
+    "tasktmp="
+  printf '%s' "$child_wt" > "$parent_home/state/$child_id.agy-trust"
+  printf 'NOT VALID JSON {' > "$settings"
+
+  out=$(FM_TEST_TREEHOUSE_LOG="$order_log" run_teardown "$home" "$fakebin" "$settings" "$parent_id")
+  status=$?
+  expect_code 1 "$status" "forced secondmate teardown must fail when child owned trust cannot be removed"
+  assert_contains "$out" "secondmate child $child_id" "forced child trust failure should identify the child"
+  assert_absent "$order_log" "forced child cleanup must not return the child worktree after trust removal failure"
+  assert_present "$parent_home/state/$child_id.agy-trust" "forced child cleanup must retain the ownership marker"
+  assert_present "$parent_home/state/$child_id.meta" "forced child cleanup must retain child metadata"
+  assert_present "$home/state/$parent_id.meta" "forced child cleanup failure must retain parent metadata"
+  assert_present "$parent_home" "forced child cleanup failure must retain the secondmate home"
+  pass "forced secondmate child cleanup removes trust before release and fails closed"
 }
 
 test_teardown_leaves_trust_for_non_agy() {
@@ -324,6 +400,7 @@ test_raw_spawn_installs_exec_time_guard
 test_teardown_removes_owned_agy_trust
 test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
+test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
 
 echo "# all fm-cursor-agy-adapter tests passed"
