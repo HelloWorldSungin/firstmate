@@ -177,7 +177,7 @@ claude, codex, opencode, pi, and grok are empirically verified as primary, crewm
 cursor (Cursor Agent CLI/Composer) and agy (Antigravity CLI/Gemini) are additionally verified only for crewmate and scout launches on the herdr backend; they are never primary harnesses, secondmate launchers, or available on another backend.
 New harnesses get verified through a supervised trial task before joining either set.
 The verified adapter knowledge - busy signatures, interrupt and exit commands, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
-Exact launch-command construction, including the verified templates and model/effort flags, lives in [`bin/fm-launch-lib.sh`](../bin/fm-launch-lib.sh); [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) owns the surrounding gates, workspace-trust setup, and turn-end integration.
+Exact launch-command construction, including the verified templates and model/effort flags, lives in [`bin/fm-launch-lib.sh`](../bin/fm-launch-lib.sh); [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) owns the surrounding gates, workspace-trust orchestration, and non-template hook installation.
 Primary-session turn-end guard integrations for the five primary-capable harnesses are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
 Claude and Grok use background-notify cycles, Codex uses bounded foreground checkpoints, Pi uses its two tracked primary extensions, and OpenCode uses its TUI plugin.

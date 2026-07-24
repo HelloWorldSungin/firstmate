@@ -2,8 +2,9 @@
 # bin/fm-launch-lib.sh - the ONE owner of crewmate/secondmate LAUNCH-COMMAND
 # construction: the per-harness launch template plus the per-harness --model and
 # effort flag renderers. Sourced by bin/fm-spawn.sh (which owns the surrounding
-# spawn machinery: worktree isolation, backend container creation, turn-end hook
-# installation, and metadata). Split into its own file so the pure
+# spawn machinery: worktree isolation, backend container creation, non-template
+# turn-end hook installation, workspace-trust orchestration, and metadata).
+# Split into its own file so the pure
 # string-construction logic is unit-testable without driving a full spawn
 # (tests/fm-launch-lib.test.sh) while bin/fm-spawn.sh stays the owner of the
 # stateful launch sequence.

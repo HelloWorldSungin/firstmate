@@ -85,7 +85,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
 projects/            cloned repos; gitignored; READ-ONLY for you
 state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
-  <id>.turn-ended    task completion signal; producer contracts live in bin/fm-spawn.sh and bin/fm-watch.sh
+  <id>.turn-ended    task completion signal; harness-adapters routes each producer contract to its authoritative implementation
   <id>.agy-trust     agy trust cleanup marker; exact lifecycle lives in bin/fm-agy-trust-lib.sh
   <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown
   <id>.meta          written by fm-spawn: window=, worktree=, project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=; kind=secondmate also records home= and projects=; a non-default runtime backend records further backend-specific fields (docs/configuration.md "Runtime backend"; bin/fm-backend.sh, section 8); fm-pr-check, including through fm-pr-merge, records one canonical pr= and the forge's pr_head= when available (GitHub pull requests and GitLab merge requests; docs/gitlab-merge-watch.md); fm-x-link appends x_request=, x_request_ts=, x_followups=, and optional x_platform=/x_reply_max_chars= for an X-mode-originated task (section 14)
@@ -158,10 +158,10 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
 The verified harnesses are `claude`, `codex`, `opencode`, `pi`, and `grok`; never dispatch on an unverified adapter.
-`cursor` and `agy` are additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns their launch flags, agy workspace-trust seeding, and herdr-native turn-end facts, and `fm-spawn` fail-closes both gates.
+`cursor` and `agy` are additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns their operating guidance and routes each mechanism to its implementation owner, and `fm-spawn` fail-closes both gates.
 If configured harness data names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
-`docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-dispatch-select.sh` owns selector mechanics, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
+`docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-dispatch-select.sh` owns selector mechanics, `bin/fm-harness.sh` owns static resolution, `bin/fm-launch-lib.sh` owns launch-command construction and flags, and `bin/fm-spawn.sh` owns fail-closed validation and launch orchestration.
 When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile required by `fm-spawn`.
 Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
 The generic effort fallback and its precedence are owned by `harness-adapters`: explicit captain and standing configured effort win; otherwise use low for well-understood explicit work, xhigh for ambiguous investigation or design, intermediate levels proportionally, and never max without explicit captain preference.

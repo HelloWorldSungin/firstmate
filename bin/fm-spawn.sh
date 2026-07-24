@@ -100,7 +100,7 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
-# Per-harness turn-end hooks are installed automatically; some live outside the worktree.
+# Per-harness turn-end hooks are installed automatically where applicable; some live outside the worktree.
 # cursor/agy install no hook at all: the watcher derives their completion from
 # herdr-native agent state (bin/fm-transition-lib.sh, fm_transition_native_completion).
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
@@ -434,7 +434,7 @@ fi
 
 # The verified launch command per adapter lives in bin/fm-launch-lib.sh
 # (fm_launch_template), sourced above - including origin/main #909's __OPINPUT__
-# operational-input encoding and __PIBRIEFENV__ threaded into each template there.
+# operational-input encoding threaded into each template there.
 # cursor and agy are CREW-ONLY, herdr-ONLY; the guard after this case block
 # enforces both gates.
 RAW_LAUNCH=0

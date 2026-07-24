@@ -3,8 +3,9 @@
 # herdr-only cursor/agy adapters. It launches each CLI through the EXACT
 # bin/fm-launch-lib.sh template in an isolated Herdr lab pane and confirms herdr
 # NATIVELY recognizes it, which is the load-bearing generic-detection claim that
-# lets these adapters need no per-CLI liveness/turn-end code (verification
-# data/cursor-agy-verify/report.md). For agy it also exercises the real
+# lets these adapters reuse herdr's liveness code and feed the watcher-side
+# native-completion detector (verification data/cursor-agy-verify/report.md).
+# For agy it also exercises the real
 # workspace-trust seed/remove around the launch.
 #
 # Requires the explicit credentialed-test opt-in, then skips cleanly when any
