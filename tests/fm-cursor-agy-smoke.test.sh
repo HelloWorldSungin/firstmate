@@ -39,7 +39,17 @@ fm_backend_herdr_version_check >/dev/null 2>&1 || { echo "skip: installed herdr 
 
 SESSION=$("$LAB" name cursor-agy-smoke) || { echo "skip: could not derive a lab session name"; exit 0; }
 WORK=
+AGY_TRUST_CREATED=0
+FM_AGY_TRUST_ADDED=
 cleanup() {
+  if { [ "$AGY_TRUST_CREATED" = 1 ] || [ "${FM_AGY_TRUST_ADDED:-}" = created ]; } && [ -n "$WORK" ]; then
+    if fm_agy_trust_remove "$WORK" >/dev/null 2>&1; then
+      AGY_TRUST_CREATED=0
+      FM_AGY_TRUST_ADDED=
+    else
+      printf 'not ok - agy workspace-trust cleanup for %s\n' "$WORK" >&2
+    fi
+  fi
   [ -z "$WORK" ] || rm -rf "$WORK"
   "$LAB" teardown "$SESSION" >/dev/null 2>&1 || printf 'not ok - lab teardown for %s\n' "$SESSION" >&2
 }
@@ -153,21 +163,22 @@ fi
 GLOBAL_SETTINGS="${HOME}/.gemini/antigravity-cli/settings.json"
 fm_agy_trust_add "$WORK" || fail "agy workspace-trust seed failed"
 [ "$FM_AGY_TRUST_ADDED" = created ] || fail "agy trust seed should report a created (firstmate-owned) entry"
+AGY_TRUST_CREATED=1
 jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTINGS" >/dev/null 2>&1 \
   || fail "agy workspace-trust seed did not record the exact worktree path"
 if launch_and_detect agy high; then
   pass "agy launches via its fm-spawn template (trust pre-seeded), herdr natively detects it, and it works then settles"
 else
-  fm_agy_trust_remove "$WORK" || true
   fail "agy did not launch, register, and settle as a native herdr agent"
 fi
 if prove_completion_wake "$LAUNCH_TARGET" agy; then
   pass "agy: the native debounced completion detector produces a turn-end wake from the settled pane"
 else
-  fm_agy_trust_remove "$WORK" || true
   fail "agy: no turn-end completion signal was produced from the settled native state"
 fi
 fm_agy_trust_remove "$WORK" || fail "agy workspace-trust remove failed"
+AGY_TRUST_CREATED=0
+FM_AGY_TRUST_ADDED=
 if jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTINGS" >/dev/null 2>&1; then
   fail "agy workspace-trust entry survived removal"
 fi
