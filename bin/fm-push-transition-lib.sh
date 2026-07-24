@@ -55,6 +55,34 @@ mark_surfaced() {  # <status-file>
   printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
 }
 
+fm_backend_observe_transition() {  # <backend> <session> <record>
+  local backend=$1 session=$2 record=$3 pane_id status identity window meta harness key sfile prev newstate
+  [ "$backend" = herdr ] || return 0
+  status=$(fm_transition_to_status "$record")
+  case "$status" in
+    working|blocked) ;;
+    *) return 0 ;;
+  esac
+  pane_id=$(fm_transition_pane_id "$record")
+  identity=$(fm_transition_agent "$record")
+  [ -n "$pane_id" ] || return 0
+  window="$session:$pane_id"
+  meta=$(fm_backend_meta_for_window "$window" "$STATE" 2>/dev/null || true)
+  [ -n "$meta" ] || return 0
+  harness=$(fm_meta_get "$meta" harness)
+  case "$harness" in
+    cursor|agy) ;;
+    *) return 0 ;;
+  esac
+  [ "$identity" = "$harness" ] || return 0
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  sfile="$STATE/.nativeturnend-$key"
+  prev=$(cat "$sfile" 2>/dev/null || true)
+  newstate=$(fm_transition_native_completion \
+    "$harness" "$identity" "$status" "$prev" || true)
+  printf '%s' "$newstate" > "$sfile" 2>/dev/null || true
+}
+
 # Act on a fresh actionable transition from a push-capable backend.
 handle_push_transition() {  # <backend> <session> <record>
   local backend=$1 session=$2 record=$3 pane_id to window task reason

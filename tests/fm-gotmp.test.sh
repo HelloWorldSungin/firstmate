@@ -69,8 +69,12 @@ make_fake_root() {
   # design-toolkit skill mounts, so it is a required sibling even for a task
   # that never staged any.
   ln -s "$ROOT/bin/fm-skill-mount-lib.sh" "$fake/bin/fm-skill-mount-lib.sh"
-  # fm-wake-lib.sh: fm-skill-mount-lib.sh sources it for the portable lock that
-  # serializes shared-exclude-file writes.
+  # fm-agy-trust-lib.sh + fm-wake-lib.sh: teardown sources the trust lib for its
+  # ownership-aware agy workspace-trust cleanup, and that lib pulls in fm-wake-lib
+  # for the ownership lock. Newly required siblings since the cursor/agy adapter.
+  ln -s "$ROOT/bin/fm-agy-trust-lib.sh" "$fake/bin/fm-agy-trust-lib.sh"
+  # fm-wake-lib.sh: both libs source it for the portable lock that serializes
+  # shared-exclude-file writes and agy trust ownership.
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
@@ -176,8 +180,11 @@ test_teardown_skips_gracefully_without_tasktmp() {
   # design-toolkit skill mounts, so it is a required sibling even for a task
   # that never staged any.
   ln -s "$ROOT/bin/fm-skill-mount-lib.sh" "$fake/bin/fm-skill-mount-lib.sh"
-  # fm-wake-lib.sh: fm-skill-mount-lib.sh sources it for the portable lock that
-  # serializes shared-exclude-file writes.
+  # fm-agy-trust-lib.sh + fm-wake-lib.sh: newly required teardown siblings (agy
+  # workspace-trust cleanup and its ownership lock).
+  ln -s "$ROOT/bin/fm-agy-trust-lib.sh" "$fake/bin/fm-agy-trust-lib.sh"
+  # fm-wake-lib.sh: both libs source it for the portable lock that serializes
+  # shared-exclude-file writes and agy trust ownership.
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash

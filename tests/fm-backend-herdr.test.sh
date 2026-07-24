@@ -2905,22 +2905,23 @@ test_wait_transition_stream_blocked_returns_record() {
 }
 
 test_wait_transition_stream_absorb_clears_then_timeout() {
-  local dir state agent fb reader lines rc marker
+  local dir state agent fb reader lines rc marker observed
   dir="$TMP_ROOT/wt-stream-absorb"; state="$dir/state"; agent="$dir/agents"; mkdir -p "$state" "$agent"
   fb=$(make_herdr_eventfake "$dir")
   set_fake_agent "$agent" "wG:pQ" idle
   : > "$state/.herdr-escalated-sess_wG_pQ"   # previously escalated
-  reader=$(make_fake_reader "$dir"); lines="$dir/lines"
+  reader=$(make_fake_reader "$dir"); lines="$dir/lines"; observed="$dir/observed"
   marker="$state/.herdr-escalated-sess_wG_pQ"
   # Stream a working edge (absorb) then an idle edge (defer). Neither is a fresh
   # actionable edge, so the wait ends as a clean timeout (rc 1) and the marker
   # is cleared by the working edge.
   printf 'wG:pQ\t\tworking\tclaude\nwG:pQ\t\tidle\tclaude\n' > "$lines"
-  rc=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_EVENTS_FORCE=1 FM_FAKE_SESSION_NAME=sess FM_FAKE_SOCKET="$dir/x.sock" FM_FAKE_AGENT_DIR="$agent" \
+  rc=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_EVENTS_FORCE=1 FM_FAKE_SESSION_NAME=sess FM_FAKE_SOCKET="$dir/x.sock" FM_FAKE_AGENT_DIR="$agent" FM_OBSERVED="$observed" \
     FM_BACKEND_HERDR_EVENT_READER="$reader" FM_FAKE_READER_LINES="$lines" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_transition sess 2 "$1" sess:wG:pQ; echo $?' "$ROOT" "$state" | tail -1)
+    bash -c 'fm_backend_observe_transition() { printf "%s\n" "$3" >> "$FM_OBSERVED"; }; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_transition sess 2 "$1" sess:wG:pQ; echo $?' "$ROOT" "$state" | tail -1)
   [ "$rc" = 1 ] || fail "a stream of only working/idle edges must end as a clean timeout (rc 1), got $rc"
   [ ! -e "$marker" ] || fail "a streamed working edge must clear the escalation marker"
+  grep -q $'\tworking\tclaude$' "$observed" || fail "the streamed working edge must reach the watcher transition observer"
   pass "fm_backend_herdr_wait_transition: streamed working clears the marker, idle/done are deferred (clean timeout)"
 }
 

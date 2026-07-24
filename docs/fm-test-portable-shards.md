@@ -64,8 +64,8 @@ Exact ordered membership is the heredoc lists in `bin/fm-test-run.sh` (`list_por
 
 ## Portable serial remainder
 
-`portable-serial` is every `tests/*.test.sh` that is neither proven-isolated nor `real-herdr-gated`.
-That keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, live-harness opt-in (default skip), GUI backends, and other stateful or unproven work serial.
+`portable-serial` is every `tests/*.test.sh` that is neither proven-isolated, `real-herdr-gated`, nor `live-harness-optin`.
+That keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, GUI backends, and other stateful or unproven work serial while credentialed live tests remain explicit opt-ins.
 Measured serial remainder wall (from the same Phase 1 artifacts, excluding Herdr) is about **13 minutes**.
 
 ## Coverage guard
@@ -74,8 +74,8 @@ Measured serial remainder wall (from the same Phase 1 artifacts, excluding Herdr
 
 1. The two portable parallel shards are a partition of the proven-isolated set.
 2. Proven-isolated embeds match `bin/fm-test-isolation-proof.sh --list`.
-3. Union of portable parallel shards + portable serial + real-Herdr family equals the complete `tests/*.test.sh` inventory.
-4. Those four partitions are pairwise disjoint (no missing scripts, no duplicates).
+3. Union of portable parallel shards + portable serial + real-Herdr family + live-harness opt-in family equals the complete `tests/*.test.sh` inventory.
+4. Those five partitions are pairwise disjoint (no missing scripts, no duplicates).
 
 CI runs that guard as a required job (`test-coverage`).
 

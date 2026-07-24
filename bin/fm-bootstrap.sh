@@ -9,6 +9,7 @@
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
+#                 "CREW_DISPATCH: backend mismatch - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "TANGLE: <remediation>",
@@ -713,7 +714,7 @@ crew_dispatch_validate() {
     return 0
   fi
   err=$(jq -r '
-    def verified($h): ["claude","codex","opencode","pi","grok","kimi"] | index($h);
+    def verified($h): ["claude","codex","opencode","pi","grok","kimi","cursor","agy"] | index($h);
     def effort_ok($h; $e):
       if $e == null then true
       elif ($e | type) != "string" then false
@@ -721,7 +722,9 @@ crew_dispatch_validate() {
       elif $h == "codex" then (["low","medium","high","xhigh"] | index($e))
       elif $h == "grok" then (["low","medium","high"] | index($e))
       elif $h == "pi" then (["low","medium","high","xhigh","max"] | index($e))
+      elif $h == "agy" then (["low","medium","high"] | index($e))
       elif $h == "opencode" or $h == "kimi" then false
+      elif $h == "cursor" then false
       else true
       end;
     def profiles($value):
@@ -775,6 +778,27 @@ crew_dispatch_validate() {
   if [ -n "$err" ]; then
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - $err"
     return 0
+  fi
+  # Backend-context check (S2): cursor and agy are crew-only, HERDR-only. A
+  # dispatch profile that selects them is valid JSON, but every matching task
+  # will be refused at spawn when the resolved backend is not herdr. Diagnose it
+  # here rather than deferring the surprise to task intake. $BACKEND is the
+  # already-resolved runtime backend (fm_backend_name, above).
+  if [ "$BACKEND" != herdr ]; then
+    local restricted
+    restricted=$(jq -r '
+      def profiles($value):
+        if ($value | type) == "array" then $value
+        elif ($value | type) == "object" then [$value]
+        else [] end;
+      ([(.rules // [])[]? | profiles(.use?)[]?]
+        + (if has("default") then [profiles(.default)[]?] else [] end))
+      | map(.harness?) | map(select(. == "cursor" or . == "agy")) | unique | join(", ")
+    ' "$file" 2>/dev/null || true)
+    if [ -n "$restricted" ]; then
+      echo "CREW_DISPATCH: backend mismatch - config/crew-dispatch.json selects crew-only herdr-only harness(es) ($restricted) but the resolved backend is '$BACKEND'; those tasks will be refused at spawn. Select the herdr backend (config/backend) or drop cursor/agy from the dispatch rules."
+      return 0
+    fi
   fi
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ]; then
     jq -r '

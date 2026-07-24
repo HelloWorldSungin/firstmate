@@ -621,6 +621,27 @@ fm_backend_busy_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_agent_status: the RAW native agent-state enum
+# (working|idle|done|blocked|unknown) for <target>, when the backend reports it
+# natively (herdr). Distinct from fm_backend_busy_state, which collapses
+# idle/done/blocked into idle: a caller that must tell a COMPLETED turn (idle or
+# done) apart from a human-wait (blocked) - the cursor/agy native turn-end
+# detector in fm-watch.sh - needs this finer distinction. Non-native backends
+# report unknown.
+fm_backend_agent_status() {  # <backend> <target>
+  local backend=$1 target=$2 st
+  fm_backend_source "$backend" || { printf 'unknown'; return 0; }
+  case "$backend" in
+    herdr)
+      fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+      st=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+      [ -n "$st" ] || st=unknown
+      printf '%s' "$st"
+      ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 # fm_backend_composer_state: classify the composer/input row of <target> as
 # empty|pending|pending-unproven|unknown for callers that need a pre-submit
 # input guard or an adapter's conservative submit fallback. It is exposed so a
