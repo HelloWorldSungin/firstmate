@@ -155,7 +155,8 @@ family_for_basename() {
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|fm-claude-continuity-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
-    fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
+    fm-cursor-agy-smoke.test.sh|fm-opencode-primary-live-e2e.test.sh|\
+    fm-pi-primary-live-e2e.test.sh|\
     fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
@@ -344,16 +345,16 @@ select_lane() {
       done < <(list_portable_parallel_2)
       ;;
     portable-serial)
-      # Everything in the complete suite that is not proven-isolated and not
-      # real-herdr-gated. Watcher/lock/AFK/tmux/daemon/ambiguous/stateful work
-      # stays here, serial only.
+      # Everything in the complete suite that is not proven-isolated,
+      # real-herdr-gated, or live-harness-optin. Watcher/lock/AFK/tmux/daemon/
+      # ambiguous/stateful work stays here, serial only.
       while IFS= read -r s; do
         [ -n "$s" ] || continue
         base=$(basename "$s")
         fam=$(family_for_basename "$base")
-        if [ "$fam" = "real-herdr-gated" ]; then
-          continue
-        fi
+        case "$fam" in
+          real-herdr-gated|live-harness-optin) continue ;;
+        esac
         if is_proven_isolated_script "$s"; then
           continue
         fi
@@ -400,7 +401,7 @@ run_coverage_guard() {
     return 1
   fi
 
-  # Serial + Herdr lane listings without disturbing a caller's selection.
+  # Serial + gated family listings without disturbing a caller's selection.
   saved_scripts=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
   SCRIPTS=()
   select_lane portable-serial
@@ -408,9 +409,14 @@ run_coverage_guard() {
   SCRIPTS=()
   select_family real-herdr-gated
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
+  SCRIPTS=()
+  select_family live-harness-optin
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/optin"
   SCRIPTS=("${saved_scripts[@]+"${saved_scripts[@]}"}")
 
-  for pair in "shards_union:serial" "shards_union:herdr" "serial:herdr"; do
+  for pair in \
+    "shards_union:serial" "shards_union:herdr" "shards_union:optin" \
+    "serial:herdr" "serial:optin" "herdr:optin"; do
     a=${pair%%:*}
     b=${pair#*:}
     LC_ALL=C comm -12 "$tmp/$a" "$tmp/$b" >"$tmp/overlap"
@@ -422,7 +428,7 @@ run_coverage_guard() {
     fi
   done
 
-  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" | LC_ALL=C sort >"$tmp/union_raw"
+  cat "$tmp/shards_union" "$tmp/serial" "$tmp/herdr" "$tmp/optin" | LC_ALL=C sort >"$tmp/union_raw"
   uniq -d "$tmp/union_raw" >"$tmp/union_dups"
   if [ -s "$tmp/union_dups" ]; then
     log "coverage guard: duplicate scripts across lanes:"
@@ -434,7 +440,7 @@ run_coverage_guard() {
   missing=$(LC_ALL=C comm -23 "$tmp/all" "$tmp/union" || true)
   extra=$(LC_ALL=C comm -13 "$tmp/all" "$tmp/union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
-    log "coverage guard: union of portable shards + portable serial + Herdr must equal tests/*.test.sh"
+    log "coverage guard: union of portable shards + portable serial + Herdr + live opt-in must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
     [ -z "$extra" ] || { log "extra beyond inventory:"; printf '%s\n' "$extra" >&2; }
     rm -rf "$tmp"
@@ -451,11 +457,12 @@ run_coverage_guard() {
     fi
   fi
 
-  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s herdr=%s\n' \
+  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s herdr=%s optin=%s\n' \
     "$(wc -l <"$tmp/all" | tr -d ' ')" \
     "$(wc -l <"$tmp/shards_union" | tr -d ' ')" \
     "$(wc -l <"$tmp/serial" | tr -d ' ')" \
-    "$(wc -l <"$tmp/herdr" | tr -d ' ')"
+    "$(wc -l <"$tmp/herdr" | tr -d ' ')" \
+    "$(wc -l <"$tmp/optin" | tr -d ' ')"
   rm -rf "$tmp"
   return 0
 }

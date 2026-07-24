@@ -76,8 +76,8 @@ bin/fm-test-run.sh tests/<subject>.test.sh   # one script (primary local focus p
 bin/fm-test-run.sh --family pure-contract-unit   # ordinary family-scoped local path (serial, timed)
 bin/fm-test-run.sh --changed   # conservative changed-file-informed set (never silent full suite)
 bin/fm-test-run.sh --proven-isolated --jobs 4   # explicit local parallel of the proven set only (default is serial)
-bin/fm-test-run.sh --lane portable-serial   # portable serial remainder (watcher/AFK/tmux/stateful)
-bin/fm-test-run.sh --check-coverage   # prove portable shards + serial + Herdr equal the full inventory
+bin/fm-test-run.sh --lane portable-serial   # portable serial remainder (watcher/AFK/tmux/stateful; live opt-ins excluded)
+bin/fm-test-run.sh --check-coverage   # prove portable shards + serial + Herdr + live opt-ins equal the full inventory
 bin/fm-test-run.sh --all   # deliberate complete regression (optional local full walk; not no-mistakes Test)
 bin/fm-test-isolation-proof.sh --list   # proven parallel candidate set (Phase 2 owner)
 bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # re-run concurrent isolation proof only
@@ -95,7 +95,7 @@ Family selection is the ordinary local path; `--all` is deliberate full regressi
 CI owns broad regression across required portable parallel shards, the portable serial lane, the Herdr lane, lint, invariants, the coverage guard, and macOS snapshot compatibility in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 Use `bin/fm-test-run.sh --help` for lane names, `--jobs` rules, and required gate-skip flags when reproducing a lane locally.
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
-Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
+Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests and live harness regressions) skip themselves and print the tool or environment gate needed to enable them, and credentialed live tests stay outside portable lanes.
 The [Herdr backend guide](docs/herdr-backend.md) owns the lane's safety and isolation rationale, including why live harness credential tests remain opt-in.
 
 ## Questions

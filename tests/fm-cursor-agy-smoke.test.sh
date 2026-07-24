@@ -7,9 +7,8 @@
 # data/cursor-agy-verify/report.md). For agy it also exercises the real
 # workspace-trust seed/remove around the launch.
 #
-# Skips cleanly when any of herdr, cursor-agent, agy, jq, or an authenticated
-# CLI session is unavailable, so CI/dev machines without the paid Composer/Gemini
-# subscriptions are unaffected.
+# Requires the explicit credentialed-test opt-in, then skips cleanly when any
+# required binary or the supported Herdr event path is unavailable.
 #
 # Safety: ALL Herdr lifecycle goes through bin/fm-herdr-lab.sh on a private,
 # named, throwaway session (never the default), which records the live default
@@ -17,6 +16,11 @@
 # adapter's own herdr calls (fm_backend_herdr_cli) append a trailing
 # --session <lab> to every call, the same isolation the helper enforces.
 set -u
+
+if [ "${FM_CURSOR_AGY_LIVE_E2E:-0}" != 1 ]; then
+  echo "skip: set FM_CURSOR_AGY_LIVE_E2E=1 to run the cursor/agy live smoke"
+  exit 0
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="$ROOT/bin/fm-herdr-lab.sh"
