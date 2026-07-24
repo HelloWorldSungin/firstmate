@@ -208,6 +208,61 @@ window_label() {
   [ -n "$task" ] && printf 'fm-%s' "$task"
 }
 
+window_harness() {
+  local w=$1 meta harness
+  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
+  if [ -n "$meta" ]; then
+    harness=$(grep '^harness=' "$meta" | cut -d= -f2- || true)
+    [ -n "$harness" ] || harness=unknown
+    echo "$harness"
+    return 0
+  fi
+  echo unknown
+}
+
+# maybe_native_turnend: the crew-only, herdr-only cursor/agy turn-end wake path.
+# Those CLIs install no turn-end hook and write no status file, and the shared
+# transition policy deliberately DEFERS their native idle/done (it blips between
+# tool calls for the general fleet). So the poll loop reads their NATIVE agent
+# state and, via the debounced native-identity-gated decision in
+# fm-transition-lib.sh, touches the task's state/<id>.turn-ended on a settled
+# turn-end - the exact completion signal every other harness's hook writes, which
+# scan_signals already turns into a wake. Gated strictly to a cursor/agy herdr
+# crew window, so every other task's behavior is byte-unchanged. The per-pane
+# ".nativeturnend-<key>" file carries the debounce state ("<status>|<signaled>");
+# fm-teardown removes it with the rest of the task's watcher state.
+maybe_native_turnend() {  # <window> <task> <key>
+  local w=$1 task=$2 key=$3 backend harness native_pair native_identity status prev newstate tf sfile
+  [ -n "$task" ] || return 0
+  backend=$(window_backend "$w")
+  [ "$backend" = herdr ] || return 0
+  harness=$(window_harness "$w")
+  case "$harness" in
+    cursor|agy) ;;
+    *) return 0 ;;
+  esac
+  fm_backend_source herdr || return 0
+  fm_backend_herdr_parse_target "$w" || return 0
+  native_pair=$(fm_backend_herdr_agent_identity_raw \
+    "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+  native_identity=${native_pair%%$'\t'*}
+  case "$native_pair" in
+    *$'\t'*) status=${native_pair#*$'\t'} ;;
+    *) status=unknown ;;
+  esac
+  [ -n "$status" ] || status=unknown
+  sfile="$STATE/.nativeturnend-$key"
+  prev=$(cat "$sfile" 2>/dev/null || true)
+  if newstate=$(fm_transition_native_completion \
+    "$harness" "$native_identity" "$status" "$prev"); then
+    tf="$STATE/$task.turn-ended"
+    : > "$tf" 2>/dev/null || touch "$tf" 2>/dev/null || true
+    triage_log "native turn-end ($harness $status): $w"
+  fi
+  printf '%s' "$newstate" > "$sfile" 2>/dev/null || true
+  return 0
+}
+
 recorded_windows() {
   local meta w seen=
   for meta in "$STATE"/*.meta; do
@@ -820,6 +875,11 @@ EOF
     key=${w//:/_}
     key=${key//\//_}
     key=${key//./_}
+    # cursor/agy native turn-end: runs before the capture-and-hash backstop below
+    # (and before the secondmate skip) so a completed cursor/agy turn wakes
+    # firstmate from its NATIVE idle/done state even when the content hash never
+    # settles. A no-op for every non-cursor/agy window.
+    maybe_native_turnend "$w" "$task" "$key"
     last=$(last_status_line "$STATE/$task.status")
     if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$w"

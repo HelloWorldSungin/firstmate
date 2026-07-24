@@ -746,6 +746,37 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
+test_crew_dispatch_backend_mismatch() {
+  # S2: a valid cursor/agy dispatch profile on a NON-herdr backend is unusable
+  # (every matching task is refused at spawn), so bootstrap must diagnose it here
+  # rather than deferring the surprise to task intake. On herdr it stays silent.
+  local case_dir fakebin out h
+  for h in cursor agy; do
+    case_dir="$TMP_ROOT/dispatch-mismatch-$h"
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+    printf '%s\n' tmux > "$case_dir/home/config/backend"
+    printf '{"rules":[{"when":"paid sub work","use":{"harness":"%s","model":"m1"}}]}\n' "$h" \
+      > "$case_dir/home/config/crew-dispatch.json"
+    fakebin=$(make_fake_toolchain "$case_dir")
+    add_real_jq "$fakebin"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+      || fail "$h on tmux backend should warn of a backend mismatch, got: $out"
+    printf '%s\n' "$out" | grep -q "($h)" \
+      || fail "$h backend-mismatch warning should name the harness, got: $out"
+
+    # Same config on herdr must NOT warn of a mismatch (cursor/agy are usable there).
+    printf '%s\n' herdr > "$case_dir/home/config/backend"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+      && fail "$h on the herdr backend must NOT warn of a backend mismatch, got: $out"
+  done
+  pass "bootstrap warns when a cursor/agy dispatch profile is configured on a non-herdr backend"
+}
+
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -776,6 +807,8 @@ unsupported grok max effort is flagged^{"rules":[{"when":"deep current work","us
 unsupported grok xhigh effort is flagged^{"rules":[{"when":"deep current work","use":{"harness":"grok","model":"grok-4","effort":"xhigh"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: grok:xhigh
 pi max effort is accepted^{"rules":[{"when":"deep coding","use":{"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"max"}}]}^empty^
 unsupported opencode effort is flagged^{"rules":[{"when":"opencode work","use":{"harness":"opencode","model":"anthropic/claude-sonnet-4-5","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: opencode:high
+unsupported cursor effort is flagged^{"rules":[{"when":"composer work","use":{"harness":"cursor","model":"composer-2.5","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cursor:high
+unsupported agy max effort is flagged^{"rules":[{"when":"gemini work","use":{"harness":"agy","model":"gemini-3-pro","effort":"max"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: agy:max
 array use with quota-balanced is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude","model":"claude-sonnet-5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}],"select":"quota-balanced"}]}^empty^
 array use without select is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude"},{"harness":"codex"}]}]}^empty^
 one-element array use is accepted^{"rules":[{"when":"focused feature","use":[{"harness":"claude"}]}]}^empty^
@@ -814,4 +847,5 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_info_is_no_load_and_actionable_lines_trigger
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
+test_crew_dispatch_backend_mismatch
 test_crew_dispatch_validation

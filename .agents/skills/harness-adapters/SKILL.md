@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, and grok.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and the crew-only herdr-only cursor and agy adapters.
 user-invocable: false
 metadata:
   internal: true
@@ -18,6 +18,7 @@ The captain may override that file at session start or later; a per-task instruc
 Secondmates have their own harness knob, so a secondmate can run on a different adapter than crewmates.
 `config/secondmate-harness` is the harness the primary uses to launch SECONDMATE agents, resolved through the fallback chain `config/secondmate-harness` -> `config/crew-harness` -> firstmate's own.
 An absent or `default` `config/secondmate-harness` therefore behaves exactly as the crew harness did before this knob existed (secondmates launched on the crew harness); setting it splits the two.
+The cursor/agy crew-only gate is the exception: if that fallback resolves to either restricted adapter, configure a different concrete secondmate harness before spawning.
 The [`secondmate-provisioning` skill](../secondmate-provisioning/SKILL.md) owns the complete inherited-local-material allowlist and propagation contract.
 This skill owns only the harness-relevant consequence: a secondmate's own crewmates use the primary's inherited dispatch profiles and static harness value, while `config/secondmate-harness` is the primary's own setting and is never inherited - secondmates do not spawn secondmates.
 Inheritance copies the literal `config/crew-harness` file, so for a secondmate's own crewmates to run on the primary's crewmate harness the captain must set `config/crew-harness` to a concrete adapter name, such as `codex`.
@@ -25,13 +26,15 @@ If `config/crew-harness` is unset or `default`, there is no concrete value to in
 Inheritance also copies the literal `config/crew-dispatch.json` file, so secondmates apply the same best-fit profile rules for their own crewmates.
 
 Each adapter splits into mechanics and knowledge.
-The per-task mechanics, including launch command, autonomy flag, and crewmate turn-end hook, live in `bin/fm-spawn.sh`.
+Exact launch-command construction, including model and effort flags, lives in `bin/fm-launch-lib.sh`.
+The surrounding per-task gates, workspace-trust orchestration, and non-template turn-end hook installation live in `bin/fm-spawn.sh`.
 The primary-session "no turn ends blind" guard contract and harness hook installation paths live in `docs/turnend-guard.md`.
 The primary-session watcher wake protocols are rendered from `docs/supervision-protocols/` by `bin/fm-supervision-instructions.sh`.
 The supervision knowledge lives here: busy signature, exit command, interrupt, dialogs, resume behavior, skill invocation, and quirks.
 
 Never dispatch a crewmate or secondmate on an unverified adapter.
 If `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, tell the captain under `AGENTS.md` section 9 that the requested worker runtime is not verified yet, use firstmate's own verified runtime for current work, and ask only whether to verify the requested runtime before future use.
+The verified-but-restricted cursor and agy adapters follow their dedicated section below instead of this unverified-adapter fallback.
 Do not pause current work for that future-verification choice, and never launch an unverified adapter.
 If the captain asks for a new harness, propose verifying it first: spawn a trivial supervised task using `fm-spawn`'s raw-launch-command escape hatch, confirm every fact empirically, then record the mechanics in `fm-spawn`, the busy signature in `fm-watch.sh` and `fm-tmux-lib.sh` defaults, any needed `FM_COMPOSER_IDLE_RE` empty-composer override plus any novel bare agent prompt glyph in `bin/fm-composer-lib.sh`'s shared composer classifier (the one fleet-wide owner of the empty/dead-shell/pending decision, so a new harness's own idle composer is not misread as a dead shell), the tmux agent-process liveness classification in `bin/backends/tmux.sh` when the harness can launch a secondmate, and the verified knowledge here.
 
@@ -40,7 +43,7 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 `bin/fm-harness.sh` prints firstmate's own harness, using verified env markers first and then process ancestry.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
-`bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either.
+`bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either resolution but never the cursor/agy kind and backend gates.
 On `unknown`, ask the captain instead of guessing.
 A captain override always beats detection.
 When verifying a new adapter, record its env marker and command name in `bin/fm-harness.sh`.
@@ -110,15 +113,17 @@ Choose intermediate levels proportionally as complexity, uncertainty, blast radi
 When a verified adapter lacks `xhigh`, cap the choice at its highest supported non-`max` level rather than omitting the intended effort silently.
 Never select `max` from this fallback; use it only when the captain has explicitly expressed that per-task or standing preference.
 
-The supported launch-profile flags below are verified locally; each row records its evidence.
+The supported launch-profile flags below are summarized as verified selection axes; each row records its evidence, while `bin/fm-launch-lib.sh` owns their exact command-line rendering.
 
-| Harness | Model flag | Effort flag | Notes |
+| Harness | Model axis | Effort axis | Notes |
 |---|---|---|---|
-| claude | `--model <model>` | `--effort <low\|medium\|high\|xhigh\|max>` | Verified on Claude Code 2.1.196. |
-| codex | `--model <model>` | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'` | Verified on codex-cli 0.142.1. The installed binary schema contains `model_reasoning_effort`, the active config uses it, and the bundled model catalog advertises only low/medium/high/xhigh. `max` is omitted. |
-| grok | `--model <model>` | `--reasoning-effort <low\|medium\|high>` | Verified on grok 0.2.99 (2026-07-13). `--effort` is an alias, but firstmate's profile axis is reasoning effort. As of 0.2.99 the ceiling is `high`; both `xhigh` and `max` are rejected with `use one of: high, medium, low`, so firstmate omits them. |
-| pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-13 on Pi 0.80.6. `pi --help` advertises `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; `pi --print --model openai-codex/gpt-5.6-sol --thinking max 'Reply with exactly OK.'` completed successfully. |
-| opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
+| claude | model name | `low\|medium\|high\|xhigh\|max` | Verified on Claude Code 2.1.196. |
+| codex | model name | `low\|medium\|high\|xhigh` | Verified on codex-cli 0.142.1, whose installed binary schema and bundled model catalog advertise these four reasoning levels while omitting `max`. |
+| grok | model name | `low\|medium\|high` | Verified on grok 0.2.99 (2026-07-13), which rejects both `xhigh` and `max` with `use one of: high, medium, low`. |
+| pi | provider/model name | `low\|medium\|high\|xhigh\|max` | Verified 2026-07-13 on Pi 0.80.6, whose CLI advertises additional `off` and `minimal` values outside firstmate's shared vocabulary and completed the `max` verification command successfully. |
+| opencode | provider/model name | none for firstmate's interactive launch | Verified on opencode 1.17.6, whose non-interactive run mode has a variant axis while firstmate's interactive path has no verified effort axis. |
+| cursor | parameterized model string, including effort | none as a separate axis | Crew-only and herdr-only, verified on cursor-agent 2026.07.20; put the whole parameterized value, such as `composer-2.5[effort=high]`, in the model axis. |
+| agy | model name | `low\|medium\|high` | Crew-only, herdr-only (see the agy section). Verified on agy 1.1.5; `xhigh` and `max` are omitted. |
 
 When a requested effort value is outside the harness-specific accepted set, `fm-spawn` records the requested `effort=` in meta but emits no effort flag for that harness.
 This preserves launch success instead of passing a known-bad value.
@@ -316,3 +321,43 @@ The adapter therefore runs the shared predicate and, when it returns 2, forces o
 It does not pass `--permission-mode`, so the passive hook cannot escalate the primary session's tool permissions.
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
+
+## cursor and agy (CREW-ONLY, HERDR-ONLY - VERIFIED 2026-07-23)
+
+`cursor` (harness token `cursor`, launching the `cursor-agent` Cursor Agent CLI, Composer) and `agy` (Antigravity CLI, Gemini) are a captain-approved divergence of firstmate's tracked surface, so crewmates can use the captain's paid Composer and Gemini subscriptions.
+The full rationale is in `data/captain.md` and the empirical evidence is `data/cursor-agy-verify/report.md` (cursor-agent 2026.07.20, agy 1.1.5, herdr 0.7.4).
+They are CREW-ONLY and HERDR-ONLY: never a primary runtime, never a secondmate launcher, and never on any non-herdr backend.
+`bin/fm-spawn.sh` refuses a `--secondmate` spawn on either (crew-only) and refuses either on a non-herdr backend (herdr-only), both before any backend or worktree work; the refusals are covered by `tests/fm-cursor-agy-adapter.test.sh`.
+tmux is deliberately out-of-scope: it has no native agent detection, so the liveness, turn-end, and composer signals below would all be absent there.
+
+The raw-launch-command escape hatch must never be used for `cursor-agent`/`agy`; use the sanctioned `--harness` path so the required gates and supervision apply.
+`bin/fm-launch-lib.sh`'s `fm_launch_raw_restricted_harness` and `fm_launch_write_raw_guard` comments own the early classifier, exec-time PATH-shim invariant, accepted same-user removal residual, and security-boundary rationale.
+`tests/fm-launch-lib.test.sh` covers each bypass class, and `tests/fm-cursor-agy-adapter.test.sh` covers real-spawn guard installation.
+
+On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
+So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
+
+cursor and agy install no turn-end hook or status writer; the watcher instead converts their herdr-native completion into the shared `state/<id>.turn-ended` signal without relaxing the event-stream policy.
+`bin/fm-transition-lib.sh`'s `fm_transition_native_completion` comment owns the native-identity gate, debounce state machine, and re-arm behavior, while `bin/fm-watch.sh` owns its poll-loop integration.
+No repo `.cursor/hooks.json` / `.agents/hooks.json` is ever written, and no new shared global hook file is added.
+A global benign `stop`/`Stop` hook (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`, whose payloads were verified to carry the worktree in `workspace_roots[0]` / `workspacePaths[0]`) is a viable alternative, but the native poll detector is preferred because it needs no shared global-file mutation.
+
+Composer classification stays `unknown` for both (the safe default) and no override is added.
+cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
+A generic bare-glyph "empty" rule must NOT be added: agy's prompt glyph is literally `>`, identical to a dead bash shell, so a generic rule would be a dead-shell send hazard - any future override must be native-identity-gated exactly like the Pi gate.
+The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole; send confirmation rides native agent-state, so a steer is never confirmed into a dead pane.
+
+| Fact | Value |
+|---|---|
+| cursor launch behavior | Positional prompt stays interactive; workspace trust and command auto-approval are both enabled by the verified template in `bin/fm-launch-lib.sh`. |
+| agy launch behavior | The initial prompt stays interactive and tool use is auto-approved by the verified template in `bin/fm-launch-lib.sh`. |
+| Busy-pane signature | native herdr `agent_status == working` (generic, no screen-scrape). |
+| Turn-end | watcher-side native completion; no hook installed and no repo or new global hook file written. |
+| Composer state | `unknown` (safe default; no override). |
+
+agy workspace trust is the one extra launch step.
+An interactive agy launch gates on a per-workspace trust modal that `--dangerously-skip-permissions` does NOT cover, and trust is an EXACT-path entry (not a prefix) in agy's SINGLE global settings file `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces`.
+So spawn pre-seeds the exact crew-worktree path before launch and teardown removes only a firstmate-owned entry.
+`bin/fm-agy-trust-lib.sh`'s header and function comments own the created-vs-preexisting signal, ownership-and-liveness lock, atomic mutation, abort rollback, teardown ordering, retry-evidence preservation, and fail-closed behavior.
+An agy spawn aborts if that trust write does not land, because an unseeded launch would wedge on the modal.
+cursor needs no such pre-seed - its launch-time `--trust` covers the workspace trust modal directly.

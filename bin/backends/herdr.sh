@@ -2140,6 +2140,9 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
     agent=$(printf '%s' "$line" | cut -f4)
     [ -n "$pane_id" ] || continue
     record=$(fm_backend_herdr_normalize_event "$pane_id" "$ws" "$status" "$agent")
+    if declare -F fm_backend_observe_transition >/dev/null 2>&1; then
+      fm_backend_observe_transition herdr "$session" "$record"
+    fi
     if hit=$(fm_backend_herdr_apply_transition "$state" "$session" "$record"); then
       printf '%s' "$hit"
       rc=0

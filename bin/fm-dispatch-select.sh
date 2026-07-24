@@ -16,7 +16,9 @@
 #   - Candidates map to the quota provider and product their model consumes:
 #     direct Claude -> Claude, direct Codex -> Codex, direct Grok -> Grok Build,
 #     and Pi/OpenCode models prefixed anthropic/, openai-codex/, or xai/ ->
-#     Claude, Codex, or the xAI API product respectively.
+#     Claude, Codex, or the xAI API product respectively. cursor and agy run on
+#     the captain's paid Composer/Gemini subscriptions, which quota-axi does not
+#     expose, so they are unscorable and rely on the uniform random fallback.
 #   - A candidate's score is the minimum percentRemaining among its relevant
 #     general and matching model windows, or its exact Grok product window.
 #     Grok's aggregate credits window is used only when product windows are not
@@ -114,13 +116,15 @@ profiles_json=$(printf '%s\n' "$SPEC_JSON" | jq -ec '
 ' 2>/dev/null) || { echo "error: dispatch input must be a rule, profile, or profile array" >&2; exit 2; }
 
 validation_error=$(printf '%s\n' "$profiles_json" | jq -r '
-  def verified($h): ["claude", "codex", "opencode", "pi", "grok"] | index($h);
+  def verified($h): ["claude", "codex", "opencode", "pi", "grok", "cursor", "agy"] | index($h);
   def effort_ok($h; $e):
     if $h == "claude" then ["low", "medium", "high", "xhigh", "max"] | index($e)
     elif $h == "codex" then ["low", "medium", "high", "xhigh"] | index($e)
     elif $h == "grok" then ["low", "medium", "high"] | index($e)
     elif $h == "pi" then ["low", "medium", "high", "xhigh", "max"] | index($e)
+    elif $h == "agy" then ["low", "medium", "high"] | index($e)
     elif $h == "opencode" then false
+    elif $h == "cursor" then false
     else false
     end;
   if length == 0 then "dispatch profile array must not be empty"
@@ -243,6 +247,11 @@ selection=$(printf '%s\n' "$quota_json" | jq -ec \
         {provider: "codex", model: (model_name($model))}
       elif (($h == "pi" or $h == "opencode") and ($model | startswith("xai/"))) then
         {provider: "grok", product: "api", model: (model_name($model))}
+      # cursor and agy run on paid Composer/Gemini subscriptions that quota-axi
+      # does not expose, so they are intentionally UNSCORABLE: route yields null,
+      # candidate_metric emits nothing, and an all-cursor/agy array falls through
+      # to the uniform random fallback (the header no-candidate-scorable path),
+      # which is the right load balancing for two untracked paid subscriptions.
       else null
       end;
   def provider_for($id): [.providers[]? | select(.provider == $id)][0];

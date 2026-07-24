@@ -106,6 +106,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-agy-trust-lib.sh
+. "$SCRIPT_DIR/fm-agy-trust-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -160,6 +162,23 @@ default_branch() {
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
+}
+
+remove_owned_agy_trust() {
+  local state=$1 id=$2 context=$3 marker path
+  marker="$state/$id.agy-trust"
+  [ -f "$marker" ] || return 0
+  path=$(cat "$marker" 2>/dev/null || true)
+  if [ -z "$path" ]; then
+    rm -f "$marker"
+    return 0
+  fi
+  if fm_agy_trust_remove "$path"; then
+    rm -f "$marker"
+    return 0
+  fi
+  echo "error: could not remove firstmate-owned agy workspace trust for $path ($context); teardown incomplete, retaining the ownership marker and metadata for retry" >&2
+  return 1
 }
 
 require_orca_worktree_id() {
@@ -961,7 +980,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_nativeturnend_key
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -996,33 +1015,41 @@ cleanup_firstmate_home_children() {
       child_home=$(meta_value "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
       if [ -n "$child_home" ] && [ -d "$child_home" ]; then
-        cleanup_firstmate_home_children "$child_home"
-        remove_firstmate_home "$child_home" "child firstmate home" "$child_id"
+        cleanup_firstmate_home_children "$child_home" || return 1
+        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" || return 1
       fi
-    elif [ "$child_backend" = orca ]; then
-      if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
+    else
+      remove_owned_agy_trust "$sub_state" "$child_id" "secondmate child $child_id" || return 1
+      if [ "$child_backend" = orca ]; then
+        if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
+          validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+          rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
+        fi
+        fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
+      elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
-      fi
-      fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
-    elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
-      validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
-      rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
-      if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
-        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
-          :
-        else
-          child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
-            return "$child_return_rc"
+        if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
+          if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
+            :
+          else
+            child_return_rc=$?
+            if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
+              return "$child_return_rc"
+            fi
+            safe_rm_rf_child_worktree "$child_wt" "$child_proj"
           fi
+        else
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"
         fi
-      else
-        safe_rm_rf_child_worktree "$child_wt" "$child_proj"
       fi
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
+    child_t=$(fm_backend_target_of_meta "$child_meta")
+    if [ -n "$child_t" ]; then
+      child_nativeturnend_key=$(printf '%s' "$child_t" | tr ':/.' '___')
+      rm -f "$sub_state/.nativeturnend-$child_nativeturnend_key" 2>/dev/null || true
+    fi
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token"
   done
@@ -1059,7 +1086,7 @@ if [ "$KIND" = secondmate ] && [ "$FORCE" != "--force" ]; then
 fi
 
 if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
-  cleanup_firstmate_home_children "$HOME_PATH"
+  cleanup_firstmate_home_children "$HOME_PATH" || exit 1
 fi
 
 if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
@@ -1100,6 +1127,8 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
@@ -1201,11 +1230,17 @@ elif [ "$BACKEND" = herdr ] \
 fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID"
+  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit 1
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
+# Remove the cursor/agy native turn-end debounce state (bin/fm-watch.sh
+# maybe_native_turnend), keyed by window like the watcher's other per-pane state.
+if [ -n "$T" ]; then
+  nativeturnend_key=$(printf '%s' "$T" | tr ':/.' '___')
+  rm -f "$STATE/.nativeturnend-$nativeturnend_key" 2>/dev/null || true
+fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"

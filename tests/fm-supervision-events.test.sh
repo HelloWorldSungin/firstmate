@@ -34,7 +34,8 @@ sleep() { printf 'SLEEP\n' >> "$SLEEP_LOG"; }
 reset_state() {
   rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status "$STATE_DIR"/.wake-queue \
     "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log \
-    "$STATE_DIR"/.herdr-escalated-* "$TMP"/panes "$TMP"/wtcalls "$TMP"/wtcalled 2>/dev/null || true
+    "$STATE_DIR"/.herdr-escalated-* "$STATE_DIR"/.nativeturnend-* \
+    "$TMP"/panes "$TMP"/wtcalls "$TMP"/wtcalled 2>/dev/null || true
   : > "$WAKE_LOG"
   : > "$SLEEP_LOG"
   _event_cap_key=""
@@ -42,9 +43,29 @@ reset_state() {
   _event_cap_fails=0
 }
 
-mkrec() {  # <pane_id> <status>
-  fm_transition_record "$1" "wG" "" "$2" claude
+mkrec() {  # <pane_id> <status> [agent]
+  fm_transition_record "$1" "wG" "" "$2" "${3:-claude}"
 }
+
+reset_state
+fm_write_meta "$STATE_DIR/tk0.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship" "harness=cursor"
+printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
+fm_backend_observe_transition herdr default "$(mkrec wG:pQ working cursor)"
+[ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "working|0" ] \
+  || fail "a matching working push edge must re-arm a cursor native completion"
+FIRST=$(fm_transition_native_completion cursor cursor idle 'working|0'); FIRST_RC=$?
+SECOND=$(fm_transition_native_completion cursor cursor idle "$FIRST"); SECOND_RC=$?
+[ "$FIRST_RC:$FIRST" = "1:idle|0" ] || fail "the first idle poll after a short pushed turn must debounce"
+[ "$SECOND_RC:$SECOND" = "0:idle|1" ] || fail "the second idle poll after a short pushed turn must signal"
+printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
+fm_backend_observe_transition herdr default "$(mkrec wG:pQ blocked cursor)"
+[ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "blocked|0" ] \
+  || fail "a matching blocked push edge must re-arm a cursor native completion"
+printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
+fm_backend_observe_transition herdr default "$(mkrec wG:pQ working claude)"
+[ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "idle|1" ] \
+  || fail "a mismatched native identity must not re-arm cursor completion"
+pass "matching working push edges re-arm short cursor/agy turns without weakening idle/done defer"
 
 # --- handle_push_transition: enqueue + wake for a non-paused blocked crew -----
 

@@ -207,7 +207,9 @@ test_ahoy_user_role_injections_share_one_marker() {
   pi_watch=$(cat "$ROOT/.pi/extensions/fm-primary-pi-watch.ts")
   owner=$(cat "$ROOT/bin/fm-operational-input.sh")
   sessionstart=$(cat "$ROOT/bin/fm-sessionstart-nudge.sh")
-  spawn=$(cat "$ROOT/bin/fm-spawn.sh")
+  # The launch templates live in bin/fm-launch-lib.sh, which fm-spawn.sh sources;
+  # read both so this contract covers the launch command wherever it is authored.
+  spawn=$(cat "$ROOT/bin/fm-spawn.sh" "$ROOT/bin/fm-launch-lib.sh")
 
   assert_contains "$owner" 'FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "' \
     "canonical owner lost the landed Ahoy prefix"
