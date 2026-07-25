@@ -423,7 +423,8 @@ EOF
 6. Every design question follows the one-at-a-time Design profile contract above.
    Firstmate owns the answer or escalation.
    Use the same stable key on every `needs-decision` or `blocked` event and on the `resolved` event that closes it, and do not continue while that key is unanswered.
-   Every key you open must be closed by a matching `resolved` before done, except the handoff and ceiling keys firstmate closes for you once a fresh context is live.
+   Every key you open must be closed by a matching `resolved` before done.
+   The runtime's own `context-handoff`, `context-ceiling`, and `context-telemetry` keys are not yours to close: firstmate clears the first two once a fresh context is live, and the runtime clears the third itself on the first turn telemetry recovers.
 EOF
 )
 fi

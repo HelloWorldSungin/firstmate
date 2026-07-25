@@ -557,6 +557,15 @@ test_every_brief_closes_the_decisions_it_opens() {
   brief="$home/data/closure-design/brief.md"
   assert_grep "resolved [key=prototype-<same-stable-slug>]" "$brief" \
     "design brief opens a prototype detour blocker it never closes"
+
+  # The runtime opens three keys of its own. The worker must know it owns none
+  # of them, or it either stalls waiting to close them or reports done with one
+  # still open. Naming all three is what makes the exception exhaustive.
+  local key
+  for key in context-handoff context-ceiling context-telemetry; do
+    assert_grep "\`$key\`" "$brief" \
+      "design brief leaves the runtime key $key without a named owner"
+  done
   pass "fm-brief.sh: every brief closes the structured decisions it opens"
 }
 

@@ -67,6 +67,9 @@ To hand off:
 4. Tell the fresh worker this is a resume on the existing branch, to skip initial branch creation, and to read the handoff before doing design work.
 5. Clear context-ceiling and context-handoff blockers only after the fresh context is live, using matching `resolved` events.
 
+The runtime clears its third key, context-telemetry, itself on the first turn telemetry recovers, and appends nothing once the worker has reported done or failed.
+Clear context-telemetry by hand only when a task finishes while telemetry is still unavailable.
+
 Never compact the design worker mid-phase.
 Never ask the worker whose context has hit the ceiling to make one more design decision.
 
