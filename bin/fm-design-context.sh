@@ -18,9 +18,18 @@
 #   fm-design-context.sh show <task-id>
 #   fm-design-context.sh reset <task-id>
 #
+# The turn-end wake is unconditional: it is armed before any other work, so a
+# failure anywhere in this helper degrades to missing telemetry, never to a
+# design crewmate that finishes a turn without waking firstmate.
+#
 # FM_DESIGN_CONTEXT_HARD_LIMIT overrides the 110000-token default for tests or a
 # future evidence-backed adapter revision.
 set -eu
+
+if [ "${1:-}" = turn-end ] && [ "$#" -eq 3 ]; then
+  FM_DESIGN_TURNEND=$3
+  trap 'touch "$FM_DESIGN_TURNEND" 2>/dev/null || true' EXIT
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -71,15 +80,14 @@ write_unavailable() { # <id> <reason>
     "design context telemetry unavailable ($reason); create the profile handoff before relaunch"
 }
 
-turn_end() { # <task-id> <turn-end-path>
-  local id=$1 turnend=$2 payload transcript metrics request_id tokens turns ceiling
+turn_end() { # <task-id>
+  local id=$1 payload transcript metrics request_id tokens turns ceiling
   local sidecar="$STATE/$1.design-context" tmp
 
   payload=$(cat)
   transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null || true)
   if [ -z "$transcript" ] || [ "${transcript#/}" = "$transcript" ] || [ ! -f "$transcript" ]; then
     write_unavailable "$id" "missing readable Claude transcript"
-    touch "$turnend"
     return 0
   fi
 
@@ -113,7 +121,6 @@ turn_end() { # <task-id> <turn-end-path>
   )
   if [ -z "$metrics" ]; then
     write_unavailable "$id" "no main-chain usage records in Claude transcript"
-    touch "$turnend"
     return 0
   fi
 
@@ -138,7 +145,6 @@ EOF
     status_once "$id" context-ceiling \
       "hard design context ceiling reached at $tokens/$HARD_LIMIT tokens after $turns turns; create the profile handoff before relaunch"
   fi
-  touch "$turnend"
 }
 
 show_context() { # <task-id>
@@ -181,7 +187,7 @@ validate_limit
 case "$command" in
   turn-end)
     [ "$#" -eq 3 ] || fail "turn-end requires <task-id> <turn-end-path>"
-    turn_end "$id" "$3"
+    turn_end "$id"
     ;;
   show)
     [ "$#" -eq 2 ] || fail "show requires only <task-id>"

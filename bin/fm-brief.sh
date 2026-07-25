@@ -268,9 +268,11 @@ If isolation fails, append \`blocked: launched in primary checkout, not an isola
    Report only supervisor-actionable phase changes and terminal states.
    Use \`$PAUSED_VERB: {why}\` only for a known external wait expected to clear on its own.
    Use \`blocked:\` when firstmate must act.
-5. If the prototype question is ambiguous, append one evidence-first \`needs-decision:\` question with your recommendation and stop.
-6. Never turn the prototype into production implementation, tests, generalized architecture, or a second task system.
-7. Never stop, restart, or update the shared \`no-mistakes\` daemon.
+5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+6. If the prototype question is ambiguous, append one evidence-first \`needs-decision:\` question with your recommendation and stop.
+   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+7. Never turn the prototype into production implementation, tests, generalized architecture, or a second task system.
+8. Never stop, restart, or update the shared \`no-mistakes\` daemon.
 
 # Definition of done
 Commit the throwaway prototype on \`prototype/$ID\` and leave the worktree clean.
@@ -403,6 +405,7 @@ Never compact or continue the design phase after a handoff call.
 If a question needs runnable evidence, do not prototype in this worktree.
 Append \`blocked [key=prototype-<stable-slug>]: prototype scout needed to answer {one exact question}\` and stop.
 Firstmate will launch a separate scout-shaped prototype task and return its report pointer and verdict.
+When that verdict arrives, append \`resolved [key=prototype-<same-stable-slug>]: {verdict}; report: {report path}\` before continuing, so the detour is durably closed.
 The prototype must stay on the separate scout task throwaway branch and must never enter this ADR branch or the default branch.
 
 Use an existing project ADR convention when one exists.
@@ -419,7 +422,8 @@ EOF
   DECISION_RULE=$(cat <<'EOF'
 6. Every design question follows the one-at-a-time Design profile contract above.
    Firstmate owns the answer or escalation.
-   Use the same stable key on `needs-decision` and `resolved`, and do not continue while that key is unanswered.
+   Use the same stable key on every `needs-decision` or `blocked` event and on the `resolved` event that closes it, and do not continue while that key is unanswered.
+   Every key you open must be closed by a matching `resolved` before done, except the handoff and ceiling keys firstmate closes for you once a fresh context is live.
 EOF
 )
 fi

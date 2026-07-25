@@ -86,7 +86,7 @@ The prototype brief:
 The report is the durable result.
 Normal teardown discards the worktree but preserves the local `prototype/<scout-id>` branch as the report's primary-source context pointer.
 The branch is never pushed or merged and can be explicitly discarded later when no decision record refers to it.
-Return the report pointer and verdict to the design worker.
+Return the report pointer and verdict to the design worker, which closes its `prototype-<slug>` blocker with a matching `resolved` event before resuming.
 The ADR records the decision and the report plus branch pointer, but no prototype code lands on its branch or on main.
 
 This preserves the original prototype skill's explicit throwaway-branch rule while using Firstmate's existing scout lifecycle.

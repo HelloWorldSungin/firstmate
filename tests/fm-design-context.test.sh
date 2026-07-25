@@ -82,6 +82,24 @@ test_missing_telemetry_blocks_once() {
   pass "unavailable design telemetry fails closed exactly once"
 }
 
+# The Stop hook replaces the plain `touch <turn-end>` wake, so a helper failure
+# must never cost firstmate the turn-end backstop it used to get for free.
+test_wake_survives_helper_failure() {
+  local id=design-wake status
+  set +e
+  printf '{}\n' | FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$STATE" \
+    FM_DESIGN_CONTEXT_HARD_LIMIT=not-a-number \
+    "$CONTEXT" turn-end "$id" "$STATE/$id.turn-ended" >/dev/null 2>&1
+  status=$?
+  set -e
+  expect_code 1 "$status" "a malformed hard limit should still fail the helper"
+  assert_present "$STATE/$id.turn-ended" \
+    "a failing telemetry helper swallowed the turn-end wake"
+  assert_absent "$STATE/$id.design-context" \
+    "a rejected hard limit still wrote context telemetry"
+  pass "the turn-end wake survives a telemetry helper failure"
+}
+
 test_reset_requires_handoff_and_returns_to_pending() {
   local id=design-reset out status
   set +e
@@ -105,4 +123,5 @@ test_pending_before_first_stop
 test_tracks_latest_context_and_unique_turns
 test_hard_ceiling_blocks_once
 test_missing_telemetry_blocks_once
+test_wake_survives_helper_failure
 test_reset_requires_handoff_and_returns_to_pending
