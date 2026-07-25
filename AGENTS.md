@@ -245,7 +245,7 @@ Classify the deliverable:
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge deliverable or unresolved uncertainty could materially change whether or what to build.
 - **Design** runs a sequential evidence-first interview and produces an ADR through the selected delivery mode; load `design-profile` for its supervisor authority, context pacing, prototype-scout detour, completion, and teardown contract.
 
-If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
+If established evidence already answers an informational question, relay it without dispatching a design task; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.

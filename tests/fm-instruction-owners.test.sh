@@ -235,7 +235,7 @@ test_intake_reuses_evidence_and_parallelizes_safe_work() {
     'consult existing reports and established evidence' \
     'remaining bounded research inside it' \
     'unresolved uncertainty could materially change whether or what to build' \
-    'relay it without a design-only scout' \
+    'relay it without dispatching a design task' \
     'ask one concise implementation question when useful' \
     'Never both present a likely-enough solution' \
     'overlap as a risk signal rather than an automatic reason to wait' \

@@ -408,10 +408,16 @@ test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
     ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
     to-spec domain-modeling prototype
   do
-    [ -L "$WT_DIR/.agents/skills/$skill" ] \
+    # Copies, never symlinks: a symlink would let the crewmate write through the
+    # mount into the firstmate home's real skill files.
+    [ -f "$WT_DIR/.agents/skills/$skill/SKILL.md" ] \
       || fail "design spawn did not mount .agents skill $skill"
-    [ -L "$WT_DIR/.claude/skills/$skill" ] \
+    [ -L "$WT_DIR/.agents/skills/$skill" ] \
+      && fail "design spawn mounted .agents skill $skill as a writable symlink"
+    [ -f "$WT_DIR/.claude/skills/$skill/SKILL.md" ] \
       || fail "design spawn did not mount Claude skill $skill"
+    [ -L "$WT_DIR/.claude/skills/$skill" ] \
+      && fail "design spawn mounted Claude skill $skill as a writable symlink"
   done
   [ -z "$(git -C "$WT_DIR" status --short)" ] \
     || fail "design skill mounts or hooks dirtied the isolated worktree"
@@ -440,6 +446,76 @@ test_design_spawn_refuses_unverified_harness() {
   pass "design spawn fails closed on a harness without invocation and context evidence"
 }
 
+# Regression: this repo VENDORS the nine design skills, so every firstmate
+# worktree already carries .agents/skills/<skill> as a real tracked directory.
+# The mount guard used to refuse any pre-existing real directory, which made
+# --design and --prototype abort on a firstmate-repo target - the exact case the
+# design profile exists to serve. A project that already carries the skill needs
+# no mount; anything else occupying that path is still a genuine collision.
+test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills() {
+  local rec id out status skill
+  id=profile-design-selfrepo-z21
+  rec=$(make_spawn_case profile-design-selfrepo claude "$id")
+  read_case_record "$rec"
+
+  # Make the target look like a firstmate checkout: its own committed copies.
+  for skill in \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
+    to-spec domain-modeling prototype
+  do
+    mkdir -p "$WT_DIR/.agents/skills/$skill" "$WT_DIR/.claude/skills/$skill"
+    printf 'project-owned %s\n' "$skill" > "$WT_DIR/.agents/skills/$skill/SKILL.md"
+    printf 'project-owned %s\n' "$skill" > "$WT_DIR/.claude/skills/$skill/SKILL.md"
+  done
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 0 "$status" "design spawn must succeed when the target already carries the skills (got: $out)"
+  assert_contains "$out" "spawned $id harness=claude kind=design" \
+    "design spawn on a self-carrying target did not report kind=design"
+  # The project's own copy is left untouched and stays loadable.
+  assert_grep "project-owned grilling" "$WT_DIR/.agents/skills/grilling/SKILL.md" \
+    "design spawn overwrote the project's own committed skill copy"
+  # A path occupied by something that is NOT a skill is still a real collision.
+  mkdir -p "$HOME_DIR/data/${id}b"
+  printf 'brief for %sb\n' "$id" > "$HOME_DIR/data/${id}b/brief.md"
+  rm -rf "$WT_DIR/.agents/skills/handoff"
+  printf 'not a skill\n' > "$WT_DIR/.agents/skills/handoff"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "${id}b" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 1 "$status" "a non-skill file occupying a mount path must still refuse"
+  assert_contains "$out" "collides with project path" \
+    "genuine mount collision lost its diagnostic"
+  pass "design spawn reuses a target's own skills and still refuses a foreign path"
+}
+
+# Regression: the mount was a symlink into $FM_ROOT/.agents/skills, so a write
+# inside the disposable worktree reached the firstmate home's REAL skill files -
+# an isolation break teardown cannot see, because the mount is git-excluded.
+test_skill_mount_write_cannot_reach_the_firstmate_home() {
+  local rec id status home_skill before
+  id=profile-design-isolation-z22
+  rec=$(make_spawn_case profile-design-isolation claude "$id")
+  read_case_record "$rec"
+
+  home_skill="$ROOT/.agents/skills/grilling/SKILL.md"
+  before=$(cat "$home_skill")
+
+  run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design >/dev/null
+  status=$?
+  expect_code 0 "$status" "design spawn should succeed for the isolation check"
+
+  printf 'CREWMATE WROTE THROUGH THE MOUNT\n' >> "$WT_DIR/.agents/skills/grilling/SKILL.md"
+  [ "$(cat "$home_skill")" = "$before" ] \
+    || fail "a write inside the worktree reached the firstmate home's real skill file"
+  assert_no_grep "CREWMATE WROTE THROUGH THE MOUNT" "$home_skill" \
+    "worktree write leaked into the firstmate home skill"
+  pass "a write to a mounted skill cannot reach the firstmate home"
+}
+
 test_prototype_spawn_is_scout_profile_with_invocable_skill() {
   local rec id out status meta
   id=profile-prototype-z20
@@ -455,10 +531,14 @@ test_prototype_spawn_is_scout_profile_with_invocable_skill() {
   meta="$HOME_DIR/state/$id.meta"
   assert_grep "kind=scout" "$meta" "prototype spawn did not record scout kind"
   assert_grep "profile=prototype" "$meta" "prototype spawn did not record its profile"
-  [ -L "$WT_DIR/.agents/skills/prototype" ] \
+  [ -f "$WT_DIR/.agents/skills/prototype/SKILL.md" ] \
     || fail "prototype scout did not mount the Agent Skills path"
-  [ -L "$WT_DIR/.claude/skills/prototype" ] \
+  [ -L "$WT_DIR/.agents/skills/prototype" ] \
+    && fail "prototype scout mounted the Agent Skills path as a writable symlink"
+  [ -f "$WT_DIR/.claude/skills/prototype/SKILL.md" ] \
     || fail "prototype scout did not mount the Claude skill path"
+  [ -L "$WT_DIR/.claude/skills/prototype" ] \
+    && fail "prototype scout mounted the Claude skill path as a writable symlink"
   assert_absent "$WT_DIR/.agents/skills/ask-matt" \
     "prototype scout mounted the full design interview toolkit"
   assert_no_grep "fm-design-context.sh" "$WT_DIR/.claude/settings.local.json" \
@@ -486,6 +566,8 @@ test_batch_forwards_shared_profile_flags
 test_active_dispatch_profile_does_not_block_secondmate_launch
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop
 test_design_spawn_refuses_unverified_harness
+test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
+test_skill_mount_write_cannot_reach_the_firstmate_home
 test_prototype_spawn_is_scout_profile_with_invocable_skill
 
 echo "# all fm-spawn-dispatch-profile tests passed"

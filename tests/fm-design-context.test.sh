@@ -212,7 +212,8 @@ EOF
     templates=$(grep -o '`done: [^`]*`' "$brief" | tr -d '`' \
       | sed -e 's|{path}|docs/adr/0007-x.md|g' \
             -e 's|{url}|https://example.invalid/pr/7|g' \
-            -e 's|{concise summary}|require checks green on every PR #1033, ready in branch main|g')
+            -e 's|{concise summary}|require checks green on every PR #1033, ready in branch main|g' \
+            -e 's|\[context={tokens}/{limit} turns={n}\]|[context=94000/110000 turns=31]|g')
     [ -n "$templates" ] || fail "the $proj design brief declares no done template"
     count=$(printf '%s\n' "$templates" | wc -l | tr -d ' ')
     i=0
@@ -230,6 +231,37 @@ $templates
 EOF
   done
   pass "the runtime terminal predicate matches every design brief done template"
+}
+
+# The design gate requires the final status line to carry a context/session-depth
+# token, but terminality is read POSITIONALLY from the delivery field. If a
+# worker improvises that token into a new semicolon field it would move the
+# delivery field and misreport completion, so the templates pin it to the end of
+# the line. Prove both directions: pinned placement keeps the predicate correct,
+# and the token can never turn a pre-validation done into a terminal one.
+test_context_token_placement_cannot_break_terminality() {
+  local id=token-placement
+
+  # Final delivery lines stay terminal with the token appended where pinned.
+  runtime_treats_as_terminal "$id-1" \
+    'done: ADR docs/adr/0007-x.md; PR https://example.invalid/pr/7 checks green; decisions: settled three [context=94000/110000 turns=31]' \
+    || fail "pinned context token broke terminality on the no-mistakes final line"
+  runtime_treats_as_terminal "$id-2" \
+    'done: ADR docs/adr/0007-x.md; ready in branch fm/x; decisions: settled three [context=94000/110000 turns=31]' \
+    || fail "pinned context token broke terminality on the local-only final line"
+
+  # A pre-validation done stays non-terminal no matter what the token says.
+  ! runtime_treats_as_terminal "$id-3" \
+    'done: ADR docs/adr/0007-x.md; decisions: settled three [context=94000/110000 turns=31]' \
+    || fail "pre-validation done with a context token silenced the backstop"
+
+  # And the token must not be able to act as a delivery field if misplaced: a
+  # token in field 2 must NOT read as terminal, so the backstop stays live
+  # rather than going quiet on a session that has not actually delivered.
+  ! runtime_treats_as_terminal "$id-4" \
+    'done: ADR docs/adr/0007-x.md; [context=94000/110000 turns=31]; decisions: settled three' \
+    || fail "a misplaced context token was read as a delivery field"
+  pass "the pinned context token cannot break or fake terminality"
 }
 
 # The worker never opens context-telemetry, so no worker-side closure rule
@@ -319,6 +351,7 @@ test_runtime_appends_nothing_after_a_terminal_event
 test_pre_validation_done_still_paces_the_worker
 test_summary_prose_cannot_silence_the_backstops
 test_terminal_predicate_tracks_the_brief_templates
+test_context_token_placement_cannot_break_terminality
 test_recovered_telemetry_closes_its_own_key
 test_wake_survives_signal_termination
 test_reset_requires_handoff_and_returns_to_pending
