@@ -656,6 +656,50 @@ test_staged_skill_mounts_and_excludes_are_undone() {
   pass "teardown undoes exactly the skill mounts and ignore lines its own spawn staged"
 }
 
+# The ledger is the record, but it is not infallible: a stale ledger, a reused
+# task id, or a project that committed a path a spawn once staged all end with a
+# TRACKED path named as a mount. Removing it would destroy committed project
+# content, so the ls-files guard must refuse that record and say so, rather than
+# trusting the ledger. Distinct from the case above, where the project's path is
+# simply absent from the ledger and is safe by omission.
+test_teardown_refuses_to_remove_a_tracked_path_named_in_the_ledger() {
+  local case_dir rc excl
+  case_dir=$(make_case skill-mount-tracked-guard)
+  write_meta "$case_dir" local-only ship
+  excl=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+
+  # Committed project content that the ledger WRONGLY claims this spawn staged.
+  mkdir -p "$case_dir/wt/.agents/skills/handoff"
+  printf 'project owned and committed\n' > "$case_dir/wt/.agents/skills/handoff/SKILL.md"
+  git -C "$case_dir/wt" add -f .agents/skills/handoff
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "project skill"
+  git -C "$case_dir/project" update-ref refs/heads/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
+
+  {
+    printf 'mount\t.agents/skills/handoff\n'
+    printf 'exclude\towned\t%s\t.agents/skills/handoff\n' "$excl"
+  } > "$case_dir/state/task-x1.skill-mounts"
+  printf '.agents/skills/handoff\n' >> "$excl"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "tracked-guard: teardown should still succeed"
+  assert_present "$case_dir/wt/.agents/skills/handoff/SKILL.md" \
+    "teardown destroyed committed project content named as a staged mount"
+  assert_grep "project owned and committed" "$case_dir/wt/.agents/skills/handoff/SKILL.md" \
+    "teardown altered the project's own committed skill"
+  assert_grep "tracked in git" "$case_dir/stderr" \
+    "teardown removed a tracked path without saying why it refused"
+  # The ignore line stays too: its directory is still there, so releasing the
+  # line would expose the project's own files to an unintended commit path.
+  assert_grep ".agents/skills/handoff" "$excl" \
+    "teardown released an ignore line while the directory it hid still exists"
+  pass "teardown refuses to remove a tracked path even when its ledger names it"
+}
+
 test_no_mistakes_origin_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-origin)
@@ -1445,6 +1489,7 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_staged_skill_mounts_and_excludes_are_undone
+test_teardown_refuses_to_remove_a_tracked_path_named_in_the_ledger
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
