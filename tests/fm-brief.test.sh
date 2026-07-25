@@ -392,8 +392,8 @@ test_design_profile_contract_and_delivery_modes() {
       "$id lost the captain-granted obvious-answer authority"
     assert_grep "Firstmate is the human pacer for this session." "$brief" \
       "$id made the worker its own context pacer"
-    assert_grep "fm-design-context.sh show $id" "$brief" \
-      "$id did not surface context position and session depth"
+    assert_grep "FM_HOME='$home' FM_STATE_OVERRIDE='$home/state' '$ROOT/bin/fm-design-context.sh' show '$id'" "$brief" \
+      "$id did not pin its telemetry read to the home its turn-end hook writes"
     assert_grep "runtime hard ceiling at 110000 tokens" "$brief" \
       "$id lost the mechanical context backstop"
     assert_grep "$home/data/$id/handoff.md" "$brief" \
