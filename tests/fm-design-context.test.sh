@@ -342,7 +342,20 @@ test_reset_requires_handoff_and_returns_to_pending() {
   pass "design context resets only after a durable handoff"
 }
 
+# FM_DESIGN_CONTEXT_HARD_LIMIT makes the ceiling configurable, so the supervisor
+# skill must route the worker to `show` instead of quoting a figure the runtime
+# may no longer enforce.
+test_supervisor_skill_never_asserts_a_fixed_ceiling() {
+  local skill="$ROOT/.agents/skills/design-profile/SKILL.md"
+  assert_no_grep "110000" "$skill" \
+    "the design supervisor skill hardcoded a ceiling the runtime may not enforce"
+  assert_grep "bin/fm-design-context.sh show <id>" "$skill" \
+    "the design supervisor skill lost its pointer to the authoritative limit"
+  pass "the design supervisor skill reads the effective ceiling instead of asserting one"
+}
+
 test_pending_before_first_stop
+test_supervisor_skill_never_asserts_a_fixed_ceiling
 test_tracks_latest_context_and_unique_turns
 test_hard_ceiling_blocks_once
 test_missing_telemetry_blocks_once

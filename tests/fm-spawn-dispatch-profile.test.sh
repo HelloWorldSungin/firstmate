@@ -494,6 +494,102 @@ test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills() {
   pass "design spawn reuses a target's own skills and still refuses a foreign path"
 }
 
+# Regression: a staged mount is hidden from git and survives `treehouse return`,
+# so nothing but a per-task record of what THIS spawn created can tell teardown
+# which directories are safe to remove. A target that already carries the skills
+# is staged nothing, and must therefore be recorded as nothing.
+test_design_spawn_records_only_what_it_actually_staged() {
+  local rec id ledger excl skill
+  id=profile-design-ledger-z25
+  rec=$(make_spawn_case profile-design-ledger claude "$id" "${id}b")
+  read_case_record "$rec"
+
+  run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design >/dev/null \
+    || fail "design spawn should succeed"
+  ledger="$HOME_DIR/state/$id.skill-mounts"
+  excl=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  assert_present "$ledger" "design spawn did not record what it staged"
+  for skill in \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
+    to-spec domain-modeling prototype
+  do
+    assert_grep $'mount\t.agents/skills/'"$skill" "$ledger" \
+      "ledger lost the staged .agents mount for $skill"
+    assert_grep $'exclude\towned\t'"$excl"$'\t.agents/skills/'"$skill" "$ledger" \
+      "ledger lost the ignore line it added for $skill"
+    assert_grep ".agents/skills/$skill" "$excl" \
+      "staged mount $skill was never hidden from git"
+  done
+
+  # Round trip: the real cleanup owner consumes the real ledger this spawn wrote,
+  # which is what teardown runs before the worktree goes back to its pool.
+  bash -c '. "$1/bin/fm-skill-mount-lib.sh"; fm_skill_mount_cleanup "$2" "$3" "$4"' \
+    _ "$ROOT" "$HOME_DIR/state" "$id" "$WT_DIR" \
+    || fail "cleanup of the recorded design mounts failed"
+  assert_absent "$ledger" "cleanup left the mount ledger behind"
+  for skill in \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
+    to-spec domain-modeling prototype
+  do
+    assert_absent "$WT_DIR/.agents/skills/$skill" \
+      "cleanup left the staged .agents mount for $skill behind"
+    assert_absent "$WT_DIR/.claude/skills/$skill" \
+      "cleanup left the staged Claude mount for $skill behind"
+    assert_no_grep ".agents/skills/$skill" "$excl" \
+      "cleanup left the ignore line for $skill in the shared git dir"
+  done
+
+  # The project's own vendored copies are skipped, so nothing is recorded and
+  # teardown has no license to delete the project's committed content.
+  for skill in \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
+    to-spec domain-modeling prototype
+  do
+    mkdir -p "$WT_DIR/.agents/skills/$skill" "$WT_DIR/.claude/skills/$skill"
+    printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
+      > "$WT_DIR/.agents/skills/$skill/SKILL.md"
+    printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
+      > "$WT_DIR/.claude/skills/$skill/SKILL.md"
+  done
+  run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "${id}b" "$PROJ_DIR" --harness claude --design >/dev/null \
+    || fail "design spawn on a self-carrying target should succeed"
+  assert_absent "$HOME_DIR/state/${id}b.skill-mounts" \
+    "a spawn that staged nothing still claimed removable mounts"
+  pass "a design spawn records exactly the mounts and ignore lines it created"
+}
+
+# Regression: a refused mount aborts before meta exists, so no teardown will ever
+# run for that id. The attempt must leave nothing of its own behind.
+test_refused_mount_cleans_up_what_it_already_staged() {
+  local rec id out status excl
+  id=profile-design-refuse-cleanup-z26
+  rec=$(make_spawn_case profile-design-refuse-cleanup claude "$id")
+  read_case_record "$rec"
+
+  # `to-spec` is staged after several successful mounts, so the refusal lands
+  # mid-way through staging.
+  mkdir -p "$WT_DIR/.agents/skills"
+  printf 'not a skill\n' > "$WT_DIR/.agents/skills/to-spec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 1 "$status" "a mid-staging collision must refuse"
+  assert_contains "$out" "collides with project path" "refusal lost its diagnostic"
+  excl=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  assert_absent "$HOME_DIR/state/$id.skill-mounts" \
+    "a refused spawn left its mount ledger behind"
+  assert_absent "$WT_DIR/.agents/skills/ask-matt" \
+    "a refused spawn left an already-staged mount in the worktree"
+  assert_no_grep ".agents/skills/ask-matt" "$excl" \
+    "a refused spawn left its ignore lines in the project's shared git dir"
+  assert_grep "not a skill" "$WT_DIR/.agents/skills/to-spec" \
+    "cleanup after refusal touched the project's own path"
+  pass "a refused mount undoes the mounts and ignore lines it already made"
+}
+
 # Regression: the mounted names are generic (prototype, handoff, grilling), so a
 # project shipping its OWN same-named skill must never silently shadow the
 # vendored one. Presence of a SKILL.md is not proof; only the vendored marker is.
@@ -624,6 +720,8 @@ test_active_dispatch_profile_does_not_block_secondmate_launch
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop
 test_design_spawn_refuses_unverified_harness
 test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
+test_design_spawn_records_only_what_it_actually_staged
+test_refused_mount_cleans_up_what_it_already_staged
 test_foreign_same_named_skill_refuses_instead_of_shadowing
 test_skill_mount_root_outside_the_worktree_refuses
 test_skill_mount_write_cannot_reach_the_firstmate_home

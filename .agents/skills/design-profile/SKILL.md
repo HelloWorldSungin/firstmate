@@ -47,7 +47,8 @@ Never answer a question merely to preserve momentum.
 
 ## Live pacing and structural ceiling
 
-Each supervisor-actionable question and completion event includes the worker's current context tokens, 110000-token hard limit, and main-chain turn count from `bin/fm-design-context.sh show <id>`.
+Each supervisor-actionable question and completion event includes the worker's current context tokens, the hard limit in force, and main-chain turn count from `bin/fm-design-context.sh show <id>`.
+That command is the only authority on the limit; it is configurable, so never quote a fixed number at the worker.
 Read that position against the quality, novelty, and coherence of the work actually produced.
 Firstmate, not the worker, decides whether to continue or hand off.
 
@@ -56,7 +57,7 @@ Do not wait for the hard ceiling.
 Low remaining context in an ordinary task is not itself a wedge, but a design-profile handoff is an intentional pacing action and must be honored.
 
 The runtime updates `state/<id>.design-context` on every Claude turn.
-At 110000 tokens, or when telemetry becomes unavailable, it appends a keyed blocked event.
+At that reported hard limit, or when telemetry becomes unavailable, it appends a keyed blocked event.
 That event is a fail-closed ceiling, not evidence that work below it is automatically sound.
 
 To hand off:
