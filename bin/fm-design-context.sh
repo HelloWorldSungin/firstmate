@@ -13,6 +13,11 @@
 # It never decides whether the work quality has degraded and never authorizes a
 # worker to continue merely because the ceiling has not been reached.
 #
+# The runtime owns the keys it opens. It closes context-telemetry itself once
+# telemetry recovers, and it appends nothing at all once the worker has reported
+# a terminal state, because after done or failed a backstop signal has no
+# consumer and would only reopen the task's decision fold behind its own gate.
+#
 # Usage:
 #   fm-design-context.sh turn-end <task-id> <turn-end-path>
 #   fm-design-context.sh show <task-id>
@@ -29,6 +34,7 @@ set -eu
 if [ "${1:-}" = turn-end ] && [ "$#" -eq 3 ]; then
   FM_DESIGN_TURNEND=$3
   trap 'touch "$FM_DESIGN_TURNEND" 2>/dev/null || true' EXIT
+  trap 'touch "$FM_DESIGN_TURNEND" 2>/dev/null || true; trap - EXIT; exit 143' INT TERM HUP
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +46,8 @@ HARD_LIMIT=${FM_DESIGN_CONTEXT_HARD_LIMIT:-110000}
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 
 fail() {
   printf 'fm-design-context: %s\n' "$*" >&2
@@ -53,8 +61,18 @@ validate_limit() {
   [ "$HARD_LIMIT" -gt 0 ] || fail "hard limit must be a positive integer"
 }
 
+reported_terminal() { # <id>
+  local verb
+  verb=$(status_line_verb "$(last_status_line "$STATE/$1.status")")
+  case "$verb" in
+    done|failed) return 0 ;;
+  esac
+  return 1
+}
+
 status_once() { # <id> <key> <message>
   local id=$1 key=$2 message=$3 status="$STATE/$1.status" last
+  if reported_terminal "$id"; then return 0; fi
   last=$(grep -F "[key=$key]" "$status" 2>/dev/null | tail -1 || true)
   case "$last" in
     '') ;;
@@ -62,6 +80,17 @@ status_once() { # <id> <key> <message>
     *) return 0 ;;
   esac
   printf 'blocked [key=%s]: %s\n' "$key" "$message" >> "$status"
+}
+
+status_clear_once() { # <id> <key> <message>
+  local id=$1 key=$2 message=$3 status="$STATE/$1.status" last
+  if reported_terminal "$id"; then return 0; fi
+  last=$(grep -F "[key=$key]" "$status" 2>/dev/null | tail -1 || true)
+  case "$last" in
+    blocked*) ;;
+    *) return 0 ;;
+  esac
+  printf 'resolved [key=%s]: %s\n' "$key" "$message" >> "$status"
 }
 
 write_unavailable() { # <id> <reason>
@@ -141,6 +170,8 @@ EOF
   } > "$tmp"
   mv "$tmp" "$sidecar"
 
+  status_clear_once "$id" context-telemetry \
+    "design context telemetry recovered at $tokens/$HARD_LIMIT tokens after $turns turns"
   if [ "$ceiling" -eq 1 ]; then
     status_once "$id" context-ceiling \
       "hard design context ceiling reached at $tokens/$HARD_LIMIT tokens after $turns turns; create the profile handoff before relaunch"
