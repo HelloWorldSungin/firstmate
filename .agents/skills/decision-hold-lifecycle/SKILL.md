@@ -1,8 +1,8 @@
 ---
 name: decision-hold-lifecycle
 description: >-
-  Agent-only policy for completing investigations and visual reviews without losing unresolved captain decisions.
-  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+  Agent-only policy for completing investigations, design sessions, and visual reviews without losing unresolved captain decisions.
+  Load before treating an investigation, scout report, design session, structured review, or Lavish review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 user-invocable: false
 metadata:
   internal: true
@@ -10,11 +10,11 @@ metadata:
 
 # Durable unresolved-decision lifecycle
 
-This skill is the single policy owner for unresolved captain decisions discovered by an investigation or visual review.
+This skill is the single policy owner for unresolved captain decisions discovered by an investigation, a design session, or a visual review.
 
 ## Policy
 
-Every unresolved decision that belongs to the captain and is discovered while producing, reading, presenting, or ending an investigation or visual review must become a structured captain-held work item in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
+Every unresolved decision that belongs to the captain and is discovered while producing, reading, presenting, or ending an investigation, a design session, or a visual review must become a structured captain-held work item in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
 The agent performs the semantic inventory because scripts must not infer decisions from report prose, visual-review artifacts, terminal output, or chat.
 Give each distinct unresolved decision a stable privacy-safe key, register it through `bin/fm-decision-hold.sh hold`, and use the same key on retry so registration is idempotent while different decisions retain different durable identities.
 After inventorying the whole report and review surface, run `bin/fm-decision-hold.sh complete` with every unresolved key, or with `--none` only when the reviewed surface contains no unresolved captain decision.

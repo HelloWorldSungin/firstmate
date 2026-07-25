@@ -66,6 +66,7 @@ It never raw-deletes an Orca worktree.
 - Orca is macOS-only and explicit-only.
 - The app must be running and report ready.
 - Secondmate spawns are unsupported.
+- Prototype scout spawns are unsupported: their throwaway `prototype/<id>` branch must survive teardown, which needs a Treehouse-backed worktree.
 - Escape is unsupported.
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
 - Only the verified terminal-handle and worktree result fields are accepted; speculative response shapes are rejected.
