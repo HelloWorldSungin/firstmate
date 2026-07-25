@@ -305,6 +305,67 @@ EOF
   pass "non-forced scout teardown always requires durable inventory verification"
 }
 
+test_design_teardown_requires_inventory_verification() {
+  local home id
+  home=$(make_home design-teardown)
+  id=sample-design-session
+  write_origin_meta "$home" "$id" design
+
+  if run_teardown "$home" "$id" > "$home/design-absent.out" 2> "$home/design-absent.err"; then
+    fail "design teardown skipped the unresolved-decision inventory"
+  fi
+  assert_grep "REFUSED: design task $id has not passed" "$home/design-absent.err" \
+    "design teardown refusal did not name its completion gate"
+  assert_present "$home/state/$id.meta" \
+    "refused design teardown removed task metadata"
+
+  run_decisions "$home" complete "$id" --none >/dev/null \
+    || fail "design task could not attest an empty decision inventory"
+  run_teardown "$home" "$id" > "$home/design-complete.out" 2> "$home/design-complete.err" \
+    || fail "attested design teardown failed: $(cat "$home/design-complete.err")"
+  assert_absent "$home/state/$id.meta" \
+    "attested design teardown retained task metadata"
+  pass "design teardown refuses until its decision inventory is attested"
+}
+
+test_prototype_scout_teardown_preserves_local_branch_pointer() {
+  local home id proj wt base
+  home=$(make_home prototype-teardown)
+  id=sample-prototype-scout
+  proj="$home/projects/sample"
+  wt="$home/projects/sample-prototype-wt"
+  fm_git_worktree "$proj" "$wt" "prototype/$id"
+  base=$(git -C "$proj" symbolic-ref --short HEAD)
+  printf 'throwaway prototype\n' > "$wt/prototype.txt"
+  git -C "$wt" add prototype.txt
+  git -C "$wt" commit -q -m "Prototype sample decision"
+
+  mkdir -p "$home/data/$id"
+  cat > "$home/data/$id/report.md" <<EOF
+# Prototype verdict
+
+Context: branch prototype/$id at $(git -C "$wt" rev-parse HEAD).
+This branch must never merge.
+EOF
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=claude" \
+    "kind=scout" \
+    "profile=prototype" \
+    "mode=no-mistakes"
+  run_decisions "$home" complete "$id" --none >/dev/null \
+    || fail "prototype scout could not attest an empty decision inventory"
+  run_teardown "$home" "$id" > "$home/prototype-complete.out" 2> "$home/prototype-complete.err" \
+    || fail "prototype scout teardown failed: $(cat "$home/prototype-complete.err")"
+  git -C "$proj" show-ref --verify --quiet "refs/heads/prototype/$id" \
+    || fail "prototype teardown deleted the local scratch-branch context pointer"
+  [ "$(git -C "$proj" rev-list --count "$base..prototype/$id")" -eq 1 ] \
+    || fail "preserved prototype branch did not retain its scratch commit"
+  pass "prototype scout teardown preserves the local scratch branch outside main"
+}
+
 test_origin_slug_validation_precedes_path_construction() {
   local home escaped
   home=$(make_home origin-validation)
@@ -553,6 +614,8 @@ test_resolve_matches_quoted_blocked_by_edges() {
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
+test_design_teardown_requires_inventory_verification
+test_prototype_scout_teardown_preserves_local_branch_pointer
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

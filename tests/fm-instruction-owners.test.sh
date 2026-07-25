@@ -250,8 +250,10 @@ test_intake_reuses_evidence_and_parallelizes_safe_work() {
   done
   assert_grep 'dispatch isolated work immediately with no concurrency cap' "$AGENTS" \
     "intake contract lost unbounded safe parallel dispatch"
-  assert_grep 'captain explicitly requests a separate knowledge or design deliverable' "$AGENTS" \
+  assert_grep 'captain explicitly requests a separate knowledge deliverable' "$AGENTS" \
     "intake contract lost captain-requested separate scouts"
+  assert_grep '**Design** runs a sequential evidence-first interview' "$AGENTS" \
+    "intake contract lost the design-task classification"
   assert_grep 'When implementation is separately authorized, promote the existing scout' "$AGENTS" \
     "intake contract lost genuine scout promotion"
   pass "intake reuses evidence, reserves scouts for uncertainty, and parallelizes safe work"

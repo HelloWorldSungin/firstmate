@@ -184,24 +184,24 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path() {
   pass "fm-brief.sh: --herdr-lab uses its quoted Firstmate-owned helper path"
 }
 
-test_herdr_lab_omission_is_loud_for_ship_and_scout() {
+test_herdr_lab_omission_is_loud_for_tracked_and_scout_tasks() {
   local home id brief
   home="$TMP_ROOT/herdr-gate-home"
   mkdir -p "$home/data"
-  for kind in ship scout; do
+  for kind in ship scout design; do
     id="brief-herdr-gate-$kind"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1
-    fi
+    case "$kind" in
+      scout) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1 ;;
+      design) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --design >/dev/null 2>&1 ;;
+      ship) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1 ;;
+    esac
     brief="$home/data/$id/brief.md"
     assert_grep "# Herdr lifecycle declaration - NOT ENABLED" "$brief" \
       "$kind brief silently omitted the Herdr declaration"
     assert_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
       "$kind brief missing the fail-visible regeneration instruction"
   done
-  pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
+  pass "fm-brief.sh: ship, scout, and design scaffolds make omitted Herdr intent fail-visible"
 }
 
 test_secondmate_no_projects_charter() {
@@ -362,6 +362,86 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+test_design_profile_contract_and_delivery_modes() {
+  local home id brief
+  home="$TMP_ROOT/design-profile-home"
+  write_registry "$home"
+
+  for id_proj in \
+    "brief-design-no-mistakes:unregistered-proj" \
+    "brief-design-direct:direct-proj" \
+    "brief-design-local:local-proj"
+  do
+    id=${id_proj%%:*}
+    proj=${id_proj##*:}
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+      "$ROOT/bin/fm-brief.sh" "$id" "$proj" --design >/dev/null 2>&1 \
+      || fail "design brief failed for $proj"
+    brief="$home/data/$id/brief.md"
+    assert_grep "interactive DESIGN task" "$brief" "$id did not declare the design profile"
+    assert_grep "\`ask-matt\`" "$brief" "$id did not invoke the vendored router"
+    assert_grep "\`grilling\`" "$brief" "$id did not invoke sequential grilling"
+    assert_grep "\`domain-modeling\`" "$brief" "$id did not invoke domain modeling"
+    assert_grep "Ask exactly one decision question at a time" "$brief" \
+      "$id lost the one-question interview contract"
+    assert_grep "Never invoke \`batch-grill-me\` in this profile" "$brief" \
+      "$id did not prohibit batching inside the design profile"
+    assert_grep "never proceed while the current question is unanswered" "$brief" \
+      "$id allowed an unanswered question to be bypassed"
+    assert_grep "granted firstmate authority to answer obvious design questions" "$brief" \
+      "$id lost the captain-granted obvious-answer authority"
+    assert_grep "Firstmate is the human pacer for this session." "$brief" \
+      "$id made the worker its own context pacer"
+    assert_grep "fm-design-context.sh show $id" "$brief" \
+      "$id did not surface context position and session depth"
+    assert_grep "runtime hard ceiling at 110000 tokens" "$brief" \
+      "$id lost the mechanical context backstop"
+    assert_grep "$home/data/$id/handoff.md" "$brief" \
+      "$id did not route handoff to the durable task path"
+    assert_grep "separate scout-shaped prototype task" "$brief" \
+      "$id did not keep prototype work out of the ADR branch"
+    assert_grep "decision-hold-lifecycle/SKILL.md" "$brief" \
+      "$id did not load the unresolved-decision completion gate"
+    assert_grep "final status line must name the ADR path" "$brief" \
+      "$id did not require an ADR status report"
+  done
+
+  brief="$home/data/brief-design-no-mistakes/brief.md"
+  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "no-mistakes design brief did not leave PR creation to its delivery pipeline"
+  brief="$home/data/brief-design-direct/brief.md"
+  assert_grep "design worker raises the ADR PR" "$brief" \
+    "direct-PR design brief did not require the worker to open its ADR PR"
+  brief="$home/data/brief-design-local/brief.md"
+  assert_grep "ADR stays on a local branch" "$brief" \
+    "local-only design brief did not keep the ADR local"
+  pass "fm-brief.sh: --design renders the sequential ADR, pacing, prototype, and delivery contracts"
+}
+
+test_prototype_scout_contract() {
+  local home id brief
+  home="$TMP_ROOT/prototype-profile-home"
+  mkdir -p "$home/data"
+  id="brief-prototype-scout"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" "$id" sample --prototype >/dev/null 2>&1 \
+    || fail "prototype scout brief failed"
+  brief="$home/data/$id/brief.md"
+  assert_grep "PROTOTYPE SCOUT task" "$brief" \
+    "prototype variant did not retain scout identity"
+  assert_grep "git checkout -b prototype/$id" "$brief" \
+    "prototype variant did not require its local scratch branch"
+  assert_grep "model skill mechanism to invoke \`prototype\`" "$brief" \
+    "prototype variant did not invoke the vendored skill"
+  assert_grep "Never push to any remote, never open a PR, never merge" "$brief" \
+    "prototype variant could escape the scout delivery boundary"
+  assert_grep "branch, commit, and the design task or ADR context" "$brief" \
+    "prototype report lost its context-pointer inventory"
+  assert_grep "normal teardown preserves the local scratch branch reference" "$brief" \
+    "prototype contract did not preserve its local primary-source pointer"
+  pass "fm-brief.sh: --prototype is a scout-shaped local scratch-branch variant"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -390,10 +470,12 @@ test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
-test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_herdr_lab_omission_is_loud_for_tracked_and_scout_tasks
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_design_profile_contract_and_delivery_modes
+test_prototype_scout_contract
 test_scout_and_secondmate_scaffold

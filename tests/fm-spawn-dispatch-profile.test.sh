@@ -388,6 +388,86 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
+  local rec id out status meta hook skill
+  id=profile-design-z18
+  rec=$(make_spawn_case profile-design claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --model sonnet --effort xhigh --design)
+  status=$?
+  expect_code 0 "$status" "Claude design spawn should succeed"
+  assert_contains "$out" "spawned $id harness=claude kind=design" \
+    "design spawn did not report kind=design"
+  meta="$HOME_DIR/state/$id.meta"
+  assert_grep "kind=design" "$meta" "design spawn did not record kind=design"
+  [ "$(git -C "$WT_DIR" rev-parse --show-toplevel)" = "$WT_DIR" ] \
+    || fail "design spawn fixture did not resolve the isolated worktree root"
+  for skill in \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
+    to-spec domain-modeling prototype
+  do
+    [ -L "$WT_DIR/.agents/skills/$skill" ] \
+      || fail "design spawn did not mount .agents skill $skill"
+    [ -L "$WT_DIR/.claude/skills/$skill" ] \
+      || fail "design spawn did not mount Claude skill $skill"
+  done
+  [ -z "$(git -C "$WT_DIR" status --short)" ] \
+    || fail "design skill mounts or hooks dirtied the isolated worktree"
+  hook="$WT_DIR/.claude/settings.local.json"
+  assert_grep "fm-design-context.sh" "$hook" \
+    "design Claude Stop hook did not install the context backstop"
+  assert_grep "turn-end '$id'" "$hook" \
+    "design Claude Stop hook did not bind the task identity"
+  pass "design spawn resolves an isolated worktree, records its kind, mounts skills, and installs context telemetry"
+}
+
+test_design_spawn_refuses_unverified_harness() {
+  local rec id out status
+  id=profile-design-refuse-z19
+  rec=$(make_spawn_case profile-design-refuse codex "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --design)
+  status=$?
+  expect_code 1 "$status" "design spawn on an unverified harness should fail"
+  assert_contains "$out" "--design currently requires harness=claude" \
+    "design harness refusal did not explain its empirical boundary"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "unverified design harness refusal still published task metadata"
+  pass "design spawn fails closed on a harness without invocation and context evidence"
+}
+
+test_prototype_spawn_is_scout_profile_with_invocable_skill() {
+  local rec id out status meta
+  id=profile-prototype-z20
+  rec=$(make_spawn_case profile-prototype claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --prototype)
+  status=$?
+  expect_code 0 "$status" "Claude prototype scout spawn should succeed"
+  assert_contains "$out" "spawned $id harness=claude kind=scout" \
+    "prototype spawn did not retain kind=scout"
+  meta="$HOME_DIR/state/$id.meta"
+  assert_grep "kind=scout" "$meta" "prototype spawn did not record scout kind"
+  assert_grep "profile=prototype" "$meta" "prototype spawn did not record its profile"
+  [ -L "$WT_DIR/.agents/skills/prototype" ] \
+    || fail "prototype scout did not mount the Agent Skills path"
+  [ -L "$WT_DIR/.claude/skills/prototype" ] \
+    || fail "prototype scout did not mount the Claude skill path"
+  assert_absent "$WT_DIR/.agents/skills/ask-matt" \
+    "prototype scout mounted the full design interview toolkit"
+  assert_no_grep "fm-design-context.sh" "$WT_DIR/.claude/settings.local.json" \
+    "prototype scout incorrectly inherited the design-session context hook"
+  [ -z "$(git -C "$WT_DIR" status --short)" ] \
+    || fail "prototype skill mounts or hook dirtied the isolated worktree"
+  pass "prototype spawn remains kind=scout and mounts only its invocable skill"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_active_dispatch_profile_requires_explicit_harness_for_ship
 test_active_dispatch_profile_requires_explicit_harness_for_scout
@@ -404,5 +484,8 @@ test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_batch_forwards_shared_profile_flags
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_design_spawn_mounts_skills_records_kind_and_installs_backstop
+test_design_spawn_refuses_unverified_harness
+test_prototype_spawn_is_scout_profile_with_invocable_skill
 
 echo "# all fm-spawn-dispatch-profile tests passed"
