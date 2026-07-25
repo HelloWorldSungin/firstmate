@@ -22,8 +22,16 @@
 # brief has the worker append a pre-validation `done: ADR {path}; decisions: ...`
 # and then drive the whole review, fix, push, PR, and CI phase - the longest and
 # most token-heavy stretch of the session - before its real terminal event. Both
-# backstops must keep firing across that phase, so only a done carrying the
-# delivery-completion marker of its mode counts, plus any failed.
+# backstops must keep firing across that phase, so only a done carrying its
+# mode's delivery field counts, plus any failed.
+#
+# Terminality is read STRUCTURALLY and never by scanning the note for prose.
+# Every design done template in bin/fm-brief.sh is a semicolon-separated record
+# whose first field is `ADR <path>` and whose last field is
+# `decisions: <concise summary>`. Only the final templates carry a delivery
+# field in between, so field 2 alone decides, and the worker's free-text summary
+# - which may legitimately discuss PRs, merges, or green checks - is confined to
+# the trailing field where it can never silence a backstop.
 #
 # Usage:
 #   fm-design-context.sh turn-end <task-id> <turn-end-path>
@@ -68,11 +76,23 @@ validate_limit() {
   [ "$HARD_LIMIT" -gt 0 ] || fail "hard limit must be a positive integer"
 }
 
-delivery_complete_note() { # <status-line-note>
+delivery_field() { # <status-line-note> -> semicolon field 2, or empty when absent
+  local field
   case "$1" in
-    *'checks green'*) return 0 ;;
-    *'ready in branch'*) return 0 ;;
-    *'PR http'*|*'PR #'*) return 0 ;;
+    *\;*) ;;
+    *) return 0 ;;
+  esac
+  field=${1#*;}
+  field=${field%%;*}
+  field=${field#"${field%%[![:space:]]*}"}
+  printf '%s' "${field%"${field##*[![:space:]]}"}"
+}
+
+delivery_complete_note() { # <status-line-note>
+  case "$(delivery_field "$1")" in
+    'decisions:'*) return 1 ;;
+    'PR '?*) return 0 ;;
+    'ready in branch '?*) return 0 ;;
   esac
   return 1
 }
