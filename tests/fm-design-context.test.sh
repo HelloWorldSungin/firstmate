@@ -208,6 +208,7 @@ EOF
       "$ROOT/bin/fm-brief.sh" "$id" "$proj" --design >/dev/null 2>&1 \
       || fail "design brief failed to scaffold for $proj"
     brief="$home/data/$id/brief.md"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
     templates=$(grep -o '`done: [^`]*`' "$brief" | tr -d '`' \
       | sed -e 's|{path}|docs/adr/0007-x.md|g' \
             -e 's|{url}|https://example.invalid/pr/7|g' \
