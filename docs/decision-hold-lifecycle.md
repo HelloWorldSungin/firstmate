@@ -21,7 +21,8 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 `bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
-Design teardown calls the same `verify` subcommand after the tracked-work landing check, so an ADR session cannot erase its own unresolved-decision source either.
+Design teardown calls the same `verify` subcommand before the tracked-work landing check, so an ADR session cannot erase its own unresolved-decision source either.
+Both gates must pass, so the order only decides which refusal surfaces first when a design task has both unlanded work and an unattested inventory.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
@@ -44,6 +45,7 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Design teardown gate, prototype scratch-branch preservation, and promoted-prototype teardown verification date: 2026-07-25.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -56,6 +58,9 @@ The final verification commands and their exact summarized outputs follow.
 $ bash tests/fm-decision-hold-lifecycle.test.sh
 ok - report-only unresolved decision is reproduced and completion refuses before loss
 ok - non-forced scout teardown always requires durable inventory verification
+ok - design teardown refuses until its decision inventory is attested
+ok - prototype scout teardown preserves the local scratch branch outside main
+ok - promoted prototype task tears down under ship rules and drops its ship branch
 ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
 ok - completion and verification validate origins before constructing paths
 ok - ended visual review follows the same decision-hold completion owner
@@ -87,6 +92,9 @@ fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 $ git diff --check
 (no output)
 
-$ for test_script in tests/*.test.sh; do bash "$test_script"; done
-ALL 71 TEST SCRIPTS PASSED
+$ bin/fm-test-run.sh --all
+100/100 scripts, 1776 passing assertions
+2 failures, both pre-existing on clean origin/main and unrelated to this mechanism:
+  not ok - /calm left collapsed thinking labels in the transcript (unexpected: 'Thinking...')
+  not ok - MISSING diagnostic did not appear at all
 ```

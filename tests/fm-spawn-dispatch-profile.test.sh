@@ -458,14 +458,17 @@ test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills() {
   rec=$(make_spawn_case profile-design-selfrepo claude "$id")
   read_case_record "$rec"
 
-  # Make the target look like a firstmate checkout: its own committed copies.
+  # Make the target look like a firstmate checkout: its own committed copies,
+  # each carrying the vendored marker that proves it IS the vendored skill.
   for skill in \
     ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
     to-spec domain-modeling prototype
   do
     mkdir -p "$WT_DIR/.agents/skills/$skill" "$WT_DIR/.claude/skills/$skill"
-    printf 'project-owned %s\n' "$skill" > "$WT_DIR/.agents/skills/$skill/SKILL.md"
-    printf 'project-owned %s\n' "$skill" > "$WT_DIR/.claude/skills/$skill/SKILL.md"
+    printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
+      > "$WT_DIR/.agents/skills/$skill/SKILL.md"
+    printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
+      > "$WT_DIR/.claude/skills/$skill/SKILL.md"
   done
 
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
@@ -489,6 +492,60 @@ test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills() {
   assert_contains "$out" "collides with project path" \
     "genuine mount collision lost its diagnostic"
   pass "design spawn reuses a target's own skills and still refuses a foreign path"
+}
+
+# Regression: the mounted names are generic (prototype, handoff, grilling), so a
+# project shipping its OWN same-named skill must never silently shadow the
+# vendored one. Presence of a SKILL.md is not proof; only the vendored marker is.
+test_foreign_same_named_skill_refuses_instead_of_shadowing() {
+  local rec id out status
+  id=profile-design-foreign-z23
+  rec=$(make_spawn_case profile-design-foreign claude "$id")
+  read_case_record "$rec"
+
+  # A project's own unrelated `prototype` skill - a real SKILL.md, no marker.
+  mkdir -p "$WT_DIR/.agents/skills/prototype"
+  printf -- '---\nname: prototype\n---\n\nThis project has its own prototype skill.\n' \
+    > "$WT_DIR/.agents/skills/prototype/SKILL.md"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 1 "$status" "a foreign same-named skill must refuse, not silently shadow the vendored one"
+  assert_contains "$out" "collides with a different skill already at" \
+    "foreign-skill refusal did not name the shadowing hazard"
+  assert_grep "This project has its own prototype skill." \
+    "$WT_DIR/.agents/skills/prototype/SKILL.md" \
+    "refusal overwrote the project's own skill"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "a refused foreign-skill spawn still published task metadata"
+  pass "a foreign same-named skill refuses loudly instead of shadowing the vendored one"
+}
+
+# Regression: stage_skill_dir guarded only the leaf path, so a project whose
+# skills ROOT is a symlink pointing outside the worktree would have nine
+# directories written through the link. This repo itself ships
+# `.claude/skills -> ../.agents/skills`, so symlinked roots are a live pattern.
+test_skill_mount_root_outside_the_worktree_refuses() {
+  local rec id out status outside
+  id=profile-design-rootescape-z24
+  rec=$(make_spawn_case profile-design-rootescape claude "$id")
+  read_case_record "$rec"
+
+  outside="$TMP_ROOT/outside-skills-root"
+  mkdir -p "$outside"
+  mkdir -p "$WT_DIR/.claude"
+  ln -s "$outside" "$WT_DIR/.claude/skills"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 1 "$status" "a skills root resolving outside the worktree must refuse"
+  assert_contains "$out" "resolves outside the worktree" \
+    "root-escape refusal did not explain the isolation boundary"
+  [ -z "$(ls -A "$outside")" ] \
+    || fail "staging wrote through the symlinked root to $outside"
+  pass "a skills root outside the worktree refuses before anything is written"
 }
 
 # Regression: the mount was a symlink into $FM_ROOT/.agents/skills, so a write
@@ -567,6 +624,8 @@ test_active_dispatch_profile_does_not_block_secondmate_launch
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop
 test_design_spawn_refuses_unverified_harness
 test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
+test_foreign_same_named_skill_refuses_instead_of_shadowing
+test_skill_mount_root_outside_the_worktree_refuses
 test_skill_mount_write_cannot_reach_the_firstmate_home
 test_prototype_spawn_is_scout_profile_with_invocable_skill
 
