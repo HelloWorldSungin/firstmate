@@ -445,9 +445,10 @@ task_json_lines() {
     # reads any report content:
     #   - a live activity read (run-step or busy pane) that is working/done, so a
     #     crew that resumed past a gate is not still reported as parked; and
-    #   - a TERMINAL done/failed state on a single-owner task (scout or ship), whose
-    #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
-    #     report POINTER, never as a reopened pending decision.
+    #   - a TERMINAL done/failed state on a single-owner task (scout, ship, or
+    #     design), whose deliverable is its report, PR, or ADR, so a COMPLETED
+    #     scout surfaces only as a report POINTER, never as a reopened pending
+    #     decision.
     # Secondmates are excluded from lifecycle clearing: they are persistent and
     # multiplex many concerns onto one stream, so activity on one concern must
     # never clear another concern's keyed decision. A parked/blocked state, or a
