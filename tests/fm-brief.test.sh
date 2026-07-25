@@ -394,8 +394,12 @@ test_design_profile_contract_and_delivery_modes() {
       "$id made the worker its own context pacer"
     assert_grep "FM_HOME='$home' FM_STATE_OVERRIDE='$home/state' '$ROOT/bin/fm-design-context.sh' show '$id'" "$brief" \
       "$id did not pin its telemetry read to the home its turn-end hook writes"
-    assert_grep "runtime hard ceiling at 110000 tokens" "$brief" \
+    assert_grep "runtime hard ceiling that command reports" "$brief" \
       "$id lost the mechanical context backstop"
+    # FM_DESIGN_CONTEXT_HARD_LIMIT makes the ceiling configurable, so a number
+    # written into the brief can outlive the limit the runtime enforces.
+    assert_no_grep "110000" "$brief" \
+      "$id hardcoded a context ceiling the runtime may not enforce"
     assert_grep "$home/data/$id/handoff.md" "$brief" \
       "$id did not route handoff to the durable task path"
     assert_grep "separate scout-shaped prototype task" "$brief" \

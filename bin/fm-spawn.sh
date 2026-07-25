@@ -141,6 +141,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-skill-mount-lib.sh
+. "$SCRIPT_DIR/fm-skill-mount-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1255,16 +1257,10 @@ STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
 exclude_path() {
   local rel=$1 EXCL
-  EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
+  EXCL=$(fm_skill_mount_exclude_file "$WT")
   [ -n "$EXCL" ] || return 0
-  mkdir -p "$(dirname "$EXCL")"
-  grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
+  fm_skill_mount_exclude_add "$EXCL" "$rel" || true
 }
-
-# Proof that a file IS the vendored copy rather than a same-named project skill.
-# Every vendored SKILL.md carries this exact frontmatter line, and
-# tests/fm-design-skills.test.sh pins it for all nine.
-FM_VENDORED_SKILL_MARKER='source: https://github.com/mattpocock/skills'
 
 stage_skill_dir() { # <relative-skill-root> <skill>...
   local rel_root=$1 skill source target root_real wt_real
@@ -1308,6 +1304,10 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
       echo "error: design-toolkit skill mount collides with project path $target" >&2
       return 1
     fi
+    # Record the mount and claim its ignore line BEFORE creating it, so this
+    # task's teardown can remove exactly what this spawn created and nothing the
+    # project owns (bin/fm-skill-mount-lib.sh).
+    fm_skill_mount_record "$STATE" "$ID" "$WT" "$rel_root/$skill"
     # Copy rather than symlink. A symlink into $FM_ROOT/.agents/skills lets a
     # crewmate write through the mount and mutate the firstmate home's real
     # skill files, which breaks the worktree isolation the brief promises and
@@ -1316,18 +1316,28 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
       echo "error: could not stage design-toolkit skill $skill into $target" >&2
       return 1
     }
-    exclude_path "$rel_root/$skill"
   done
 }
 
-if [ "$KIND" = design ]; then
-  stage_skill_dir '.agents/skills' \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype
-  stage_skill_dir '.claude/skills' \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype
-elif [ "$PROFILE" = prototype ]; then
-  stage_skill_dir '.agents/skills' prototype
-  stage_skill_dir '.claude/skills' prototype
+stage_profile_skills() {
+  if [ "$KIND" = design ]; then
+    stage_skill_dir '.agents/skills' \
+      ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype || return 1
+    stage_skill_dir '.claude/skills' \
+      ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype || return 1
+  elif [ "$PROFILE" = prototype ]; then
+    stage_skill_dir '.agents/skills' prototype || return 1
+    stage_skill_dir '.claude/skills' prototype || return 1
+  fi
+  return 0
+}
+
+if ! stage_profile_skills; then
+  # A refused mount aborts before meta is published, so no teardown will ever run
+  # for this id. Undo the mounts and ignore lines this attempt already made, or
+  # the refusal would leave the project dirtier than it found it.
+  fm_skill_mount_cleanup "$STATE" "$ID" "$WT" || true
+  exit 1
 fi
 
 if [ "$KIND" != secondmate ]; then

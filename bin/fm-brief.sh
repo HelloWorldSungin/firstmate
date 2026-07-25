@@ -404,7 +404,7 @@ When the answer arrives, append \`resolved [key=<same-stable-slug>]: {decision r
 Firstmate is the human pacer for this session.
 Report context position and session depth with every supervisor-actionable question and final status so firstmate can judge them against the work you produced.
 Do not decide that your own thinking is fresh or stale and do not hand yourself permission to continue because telemetry is under the ceiling.
-The runtime hard ceiling at 110000 tokens is only a fail-closed backstop.
+The runtime hard ceiling that command reports is only a fail-closed backstop.
 If telemetry reports \`ceiling=1\`, or firstmate requests a handoff earlier, invoke \`handoff\`, write \`$DATA/$ID/handoff.md\`, append \`blocked [key=context-handoff]: handoff ready at $DATA/$ID/handoff.md; fresh context required\`, and stop.
 Never compact or continue the design phase after a handoff call.
 

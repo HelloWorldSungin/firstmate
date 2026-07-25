@@ -38,6 +38,12 @@
 # under the ordinary ship rules on its `fm/<id>` branch.
 # Design tasks remain subject to the tracked-work landing check and also require
 # the same unresolved-decision inventory verification before teardown.
+# Any task that staged skill mounts (design, prototype scouts) also has them
+# undone here, before its worktree goes back to the pool: git-excluded files
+# survive `treehouse return`, and the ignore lines live in the project's shared
+# common git dir. bin/fm-skill-mount-lib.sh owns that ledger, so teardown removes
+# exactly the directories and lines this task's spawn created - never a path the
+# project itself carries.
 # Before destructive cleanup, teardown validates task check artifacts and any
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
@@ -115,6 +121,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-skill-mount-lib.sh
+. "$SCRIPT_DIR/fm-skill-mount-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -1020,11 +1028,13 @@ cleanup_firstmate_home_children() {
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+        fm_skill_mount_cleanup "$sub_state" "$child_id" "$child_wt" || true
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+      fm_skill_mount_cleanup "$sub_state" "$child_id" "$child_wt" || true
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
       if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
         if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
@@ -1042,7 +1052,10 @@ cleanup_firstmate_home_children() {
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
-    rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token"
+    # Releases the child's ignore lines even when its worktree was already gone;
+    # they live in the project's shared common git dir, not in the worktree.
+    fm_skill_mount_cleanup "$sub_state" "$child_id" "" || true
+    rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.skill-mounts"
   done
 }
 
@@ -1172,6 +1185,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
         fi
       fi
     fi
+    fm_skill_mount_cleanup "$STATE" "$ID" "$WT" || true
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" "$WT/.fm-grok-turnend"
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
@@ -1185,6 +1199,10 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
       fi
     fi
   fi
+  # Remove what this task staged before the worktree goes back to the pool:
+  # `treehouse return` preserves git-excluded files, so staged skill mounts would
+  # otherwise stay model-invocable for the next, unrelated lessee.
+  fm_skill_mount_cleanup "$STATE" "$ID" "$WT" || true
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" "$WT/.fm-grok-turnend"
   # Kills remaining processes in the worktree (including the agent), resets, returns
@@ -1270,7 +1288,12 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" "$STATE/$ID.design-context"
+# Backstop for a task whose worktree was already gone above: its ignore lines
+# live in the project's shared common git dir and outlive the worktree. The
+# worktree argument stays empty on purpose - by now the path may belong to
+# whichever task next leased it from the pool.
+fm_skill_mount_cleanup "$STATE" "$ID" "" || true
+rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" "$STATE/$ID.design-context" "$STATE/$ID.skill-mounts"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

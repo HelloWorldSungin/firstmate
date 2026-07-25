@@ -49,6 +49,11 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#
+# And staged skill-mount cleanup (bin/fm-skill-mount-lib.sh):
+#   (z) recorded mounts and ignore lines                      -> undone; a
+#       project-carried skill, a sibling task's shared line, and a project-owned
+#       ignore line are left untouched
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -586,6 +591,69 @@ test_local_only_merged_to_local_main_allows() {
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
   pass "local-only worktree with work merged into local main is torn down (no regression)"
+}
+
+# A staged skill mount is invisible to git and survives `treehouse return`, so a
+# teardown that leaves it behind hands the next, unrelated lessee of that pooled
+# worktree a set of model-invocable skills and leaves permanent ignore lines in
+# the project's SHARED common git dir. Teardown removes exactly what the spawn
+# recorded: never a path the project itself carries, and never a line another
+# live task still relies on.
+test_staged_skill_mounts_and_excludes_are_undone() {
+  local case_dir rc excl
+  case_dir=$(make_case skill-mount-cleanup)
+  write_meta "$case_dir" local-only ship
+  excl=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+
+  # Staged by this task's spawn: recorded, hidden, and removable.
+  mkdir -p "$case_dir/wt/.agents/skills/grilling" "$case_dir/wt/.claude/skills/prototype"
+  printf 'vendored\n' > "$case_dir/wt/.agents/skills/grilling/SKILL.md"
+  printf 'vendored\n' > "$case_dir/wt/.claude/skills/prototype/SKILL.md"
+  # Carried by the project itself: committed content the spawn skipped, so it is
+  # absent from the ledger and must survive.
+  mkdir -p "$case_dir/wt/.agents/skills/handoff"
+  printf 'project owned\n' > "$case_dir/wt/.agents/skills/handoff/SKILL.md"
+  git -C "$case_dir/wt" add -f .agents/skills/handoff
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "project skill"
+  git -C "$case_dir/project" update-ref refs/heads/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
+
+  {
+    printf 'mount\t.agents/skills/grilling\n'
+    printf 'mount\t.claude/skills/prototype\n'
+    printf 'exclude\towned\t%s\t.agents/skills/grilling\n' "$excl"
+    printf 'exclude\towned\t%s\t.claude/skills/prototype\n' "$excl"
+    printf 'exclude\tforeign\t%s\t.idea\n' "$excl"
+  } > "$case_dir/state/task-x1.skill-mounts"
+  # A sibling task (the prototype scout a design task dispatches) still relies on
+  # the shared `.claude/skills/prototype` line.
+  printf 'exclude\towned\t%s\t.claude/skills/prototype\n' "$excl" \
+    > "$case_dir/state/sibling-x9.skill-mounts"
+  {
+    printf '.agents/skills/grilling\n'
+    printf '.claude/skills/prototype\n'
+    printf '.idea\n'
+  } >> "$excl"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "skill-mount-cleanup: teardown should succeed"
+  assert_absent "$case_dir/wt/.agents/skills/grilling" \
+    "teardown left a staged skill mount for the next lessee of the pooled worktree"
+  assert_absent "$case_dir/wt/.claude/skills/prototype" \
+    "teardown left a staged Claude skill mount behind"
+  assert_present "$case_dir/wt/.agents/skills/handoff/SKILL.md" \
+    "teardown deleted a skill the project itself carries"
+  assert_no_grep ".agents/skills/grilling" "$excl" \
+    "teardown left its ignore line in the project's shared git dir"
+  assert_grep ".claude/skills/prototype" "$excl" \
+    "teardown dropped an ignore line a live sibling task still relies on"
+  assert_grep ".idea" "$excl" "teardown removed an ignore line the project owns"
+  assert_absent "$case_dir/state/task-x1.skill-mounts" \
+    "teardown left the task's mount ledger behind"
+  pass "teardown undoes exactly the skill mounts and ignore lines its own spawn staged"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -1376,6 +1444,7 @@ test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_staged_skill_mounts_and_excludes_are_undone
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
