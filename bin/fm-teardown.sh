@@ -33,6 +33,9 @@
 # at least one scratch commit.
 # Normal teardown detaches the worktree but preserves that local branch as the
 # report's context pointer; forced discard deletes it like any other task branch.
+# Those prototype rules hold only while the task is still a scout. bin/fm-promote.sh
+# rewrites kind= and leaves profile=prototype behind, so a promoted task tears down
+# under the ordinary ship rules on its `fm/<id>` branch.
 # Design tasks remain subject to the tracked-work landing check and also require
 # the same unresolved-decision inventory verification before teardown.
 # Before destructive cleanup, teardown validates task check artifacts and any
@@ -145,6 +148,14 @@ ORCA_PATH_MATCH_VERIFIED=0
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
 PROFILE=$(grep '^profile=' "$META" | cut -d= -f2- || true)
+# profile= records the crewmate contract the task was DISPATCHED under, and
+# bin/fm-promote.sh rewrites only kind=. A promoted prototype scout is a ship
+# task on fm/<id>, so every prototype-shaped rule below must key off the pair,
+# never off the surviving profile field alone.
+PROTOTYPE_SCOUT=0
+if [ "$KIND" = scout ] && [ "$PROFILE" = prototype ]; then
+  PROTOTYPE_SCOUT=1
+fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 
@@ -1097,7 +1108,7 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
-if [ "$PROFILE" = prototype ] && [ "$FORCE" != "--force" ]; then
+if [ "$PROTOTYPE_SCOUT" = 1 ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
     echo "REFUSED: prototype scout $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot preserve its local scratch-branch context pointer; restore the worktree or get explicit discard authority." >&2
@@ -1169,7 +1180,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        if [ "$PROFILE" != prototype ] || [ "$FORCE" = "--force" ]; then
+        if [ "$PROTOTYPE_SCOUT" != 1 ] || [ "$FORCE" = "--force" ]; then
           git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
         fi
       fi
@@ -1183,7 +1194,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      if [ "$PROFILE" != prototype ] || [ "$FORCE" = "--force" ]; then
+      if [ "$PROTOTYPE_SCOUT" != 1 ] || [ "$FORCE" = "--force" ]; then
         git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
       fi
     fi

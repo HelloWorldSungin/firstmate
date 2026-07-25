@@ -366,6 +366,38 @@ EOF
   pass "prototype scout teardown preserves the local scratch branch outside main"
 }
 
+# bin/fm-promote.sh flips kind= to ship in place and leaves profile=prototype
+# behind. The prototype branch shape is a scout contract, so a promoted task must
+# tear down under the ordinary ship rules instead of being refused forever on a
+# branch its own new contract requires.
+test_promoted_prototype_teardown_uses_ship_rules() {
+  local home id proj wt
+  home=$(make_home promoted-prototype)
+  id=sample-promoted-prototype
+  proj="$home/projects/sample"
+  wt="$home/projects/sample-promoted-wt"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "worktree=$wt" \
+    "project=$proj" \
+    "harness=claude" \
+    "kind=ship" \
+    "profile=prototype" \
+    "mode=local-only"
+
+  run_teardown "$home" "$id" > "$home/promoted.out" 2> "$home/promoted.err" \
+    || fail "promoted prototype teardown was refused: $(cat "$home/promoted.err")"
+  assert_no_grep "expected prototype/$id" "$home/promoted.err" \
+    "promoted prototype teardown still enforced the scout branch shape"
+  assert_absent "$home/state/$id.meta" "promoted prototype teardown retained task metadata"
+  if git -C "$proj" show-ref --verify --quiet "refs/heads/fm/$id"; then
+    fail "promoted prototype teardown left its landed ship branch in the shared repo"
+  fi
+  pass "promoted prototype task tears down under ship rules and drops its ship branch"
+}
+
 test_origin_slug_validation_precedes_path_construction() {
   local home escaped
   home=$(make_home origin-validation)
@@ -616,6 +648,7 @@ test_uninventoried_report_decision_refuses_completion
 test_scout_teardown_always_requires_inventory_verification
 test_design_teardown_requires_inventory_verification
 test_prototype_scout_teardown_preserves_local_branch_pointer
+test_promoted_prototype_teardown_uses_ship_rules
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

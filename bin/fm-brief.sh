@@ -365,6 +365,11 @@ if [ "$KIND" = design ]; then
   OUTPUT_KIND=design
   PROJECT_MEMORY_SECTION=
   RULE2="2. Stay inside this worktree; the only files you may write outside it are the status file below and the profile handoff at \`$DATA/$ID/handoff.md\`."
+  # Pin the telemetry read to the same home bin/fm-spawn.sh pins the writing Stop
+  # hook to. A crewmate's environment comes from the terminal server, not from
+  # firstmate, so an unpinned `show` can resolve a foreign state dir.
+  DESIGN_STATE_ABS=$(cd "$STATE" 2>/dev/null && pwd -P || printf '%s' "$STATE")
+  DESIGN_CONTEXT_SHOW="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$DESIGN_STATE_ABS") $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") show $(shell_quote "$ID")"
   DESIGN_SECTION=$(cat <<EOF
 # Design profile
 This is an interactive DESIGN task.
@@ -383,7 +388,8 @@ Firstmate owns work decomposition and delivery through its tasks-axi backlog and
 
 Investigate each factual question from repository evidence before asking for a decision.
 Ask exactly one decision question at a time and include your recommended answer with evidence.
-Read your latest context telemetry with \`$FM_ROOT/bin/fm-design-context.sh show $ID\`.
+Read your latest context telemetry with \`$DESIGN_CONTEXT_SHOW\`.
+Run it exactly as written; the pinned home is what makes it resolve the same telemetry your own turn-end hook writes.
 For each question, append exactly one line in this form:
 \`needs-decision [key=<stable-slug>]: {one question} Recommendation: {your recommended answer and why} [context=<tokens>/<limit> turns=<n>]\`
 Then stop the turn and wait.
