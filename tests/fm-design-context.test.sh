@@ -106,20 +106,101 @@ test_wake_survives_helper_failure() {
 # on a terminal LAST line), so teardown would refuse a task that already passed
 # its own completion gate.
 test_runtime_appends_nothing_after_a_terminal_event() {
-  local id=design-terminal out
-  printf 'done: ADR landed at docs/adr/0007-x.md\n' > "$STATE/$id.status"
+  local id=design-terminal out last
+  for last in \
+    'done: ADR docs/adr/0007-x.md; PR https://example.invalid/pr/7 checks green; decisions: two' \
+    'done: ADR docs/adr/0007-x.md; PR https://example.invalid/pr/7; decisions: two' \
+    'done: ADR docs/adr/0007-x.md; ready in branch fm/design-terminal; decisions: two' \
+    'failed: could not reach an ADR'; do
+    printf '%s\n' "$last" > "$STATE/$id.status"
+    run_turn_end "$id" 120 "{\"transcript_path\":\"$TRANSCRIPT\"}"
+    assert_no_grep "blocked [key=context-ceiling]" "$STATE/$id.status" \
+      "the ceiling backstop reopened the decision fold after: $last"
+    run_turn_end "$id" 120 '{"transcript_path":"/missing/design-transcript.jsonl"}'
+    assert_no_grep "blocked [key=context-telemetry]" "$STATE/$id.status" \
+      "the telemetry backstop reopened the decision fold after: $last"
+  done
+
+  printf 'done: ADR docs/adr/0007-x.md; PR https://example.invalid/pr/7 checks green; decisions: two\n' \
+    > "$STATE/$id.status"
   run_turn_end "$id" 120 "{\"transcript_path\":\"$TRANSCRIPT\"}"
   out=$(show_context "$id" 120)
   [ "$out" = "context=128/120 turns=2 ceiling=1 telemetry=available" ] \
     || fail "a terminal event should still refresh telemetry: $out"
-  assert_no_grep "blocked [key=context-ceiling]" "$STATE/$id.status" \
-    "the ceiling backstop reopened the decision fold after done"
+  pass "the runtime appends no status event after a final delivery event"
+}
 
-  printf 'failed: could not reach an ADR\n' > "$STATE/$id.status"
+# In no-mistakes mode the design brief has the worker append a pre-validation
+# `done: ADR {path}; decisions: ...` and THEN drive the whole review, fix, push,
+# PR, and CI phase. That phase is the longest and most token-heavy stretch of the
+# session, so treating its opening done as terminal would silently disable the
+# mechanical pacing backstop exactly where the intent requires it most.
+test_pre_validation_done_still_paces_the_worker() {
+  local id=design-prevalidation
+  printf 'done: ADR docs/adr/0007-x.md; decisions: chose the evented reader\n' \
+    > "$STATE/$id.status"
+  run_turn_end "$id" 120 "{\"transcript_path\":\"$TRANSCRIPT\"}"
+  assert_grep "blocked [key=context-ceiling]" "$STATE/$id.status" \
+    "the ceiling backstop went silent during the no-mistakes phase"
+
+  printf 'done: ADR docs/adr/0007-x.md; decisions: chose the evented reader\n' \
+    > "$STATE/$id.status"
   run_turn_end "$id" 120 '{"transcript_path":"/missing/design-transcript.jsonl"}'
-  assert_no_grep "blocked [key=context-telemetry]" "$STATE/$id.status" \
-    "the telemetry backstop reopened the decision fold after failed"
-  pass "the runtime appends no status event after a terminal worker event"
+  assert_grep "blocked [key=context-telemetry]" "$STATE/$id.status" \
+    "the telemetry backstop went silent during the no-mistakes phase"
+  run_turn_end "$id" 120 "{\"transcript_path\":\"$TRANSCRIPT\"}"
+  assert_grep "resolved [key=context-telemetry]" "$STATE/$id.status" \
+    "the runtime could not close its own key during the no-mistakes phase"
+  pass "a pre-validation done keeps both backstops live through validation"
+}
+
+runtime_treats_as_terminal() { # <id> <status-line>
+  printf '%s\n' "$2" > "$STATE/$1.status"
+  run_turn_end "$1" 120 "{\"transcript_path\":\"$TRANSCRIPT\"}"
+  ! grep -qF 'blocked [key=context-ceiling]' "$STATE/$1.status"
+}
+
+# The runtime recognizes a final delivery event by the marker its mode's done
+# template carries, so the predicate and bin/fm-brief.sh's design templates are
+# one contract split across two files. Drive the real scaffolds rather than
+# restating their wording here: a reworded template must fail this test instead
+# of silently disabling the pacing backstop for that delivery mode.
+test_terminal_predicate_tracks_the_brief_templates() {
+  local home proj id brief templates count i line
+  home="$TMP_ROOT/brief-coupling"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- direct-proj [direct-PR] - fixture for direct-PR mode (added 2026-07-01)
+- local-proj [local-only] - fixture for local-only mode (added 2026-07-01)
+EOF
+
+  for proj in nm-proj direct-proj local-proj; do
+    id="coupling-$proj"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+      "$ROOT/bin/fm-brief.sh" "$id" "$proj" --design >/dev/null 2>&1 \
+      || fail "design brief failed to scaffold for $proj"
+    brief="$home/data/$id/brief.md"
+    templates=$(grep -o '`done: [^`]*`' "$brief" | tr -d '`' \
+      | sed -e 's|{path}|docs/adr/0007-x.md|g' \
+            -e 's|{url}|https://example.invalid/pr/7|g' \
+            -e 's|{concise summary}|two|g')
+    [ -n "$templates" ] || fail "the $proj design brief declares no done template"
+    count=$(printf '%s\n' "$templates" | wc -l | tr -d ' ')
+    i=0
+    while IFS= read -r line; do
+      i=$((i + 1))
+      if [ "$i" -eq "$count" ]; then
+        runtime_treats_as_terminal "$id-t$i" "$line" \
+          || fail "$proj final done template is not terminal to the runtime: $line"
+      else
+        ! runtime_treats_as_terminal "$id-t$i" "$line" \
+          || fail "$proj pre-validation done template silenced the backstop: $line"
+      fi
+    done <<EOF
+$templates
+EOF
+  done
+  pass "the runtime terminal predicate matches every design brief done template"
 }
 
 # The worker never opens context-telemetry, so no worker-side closure rule
@@ -206,6 +287,8 @@ test_hard_ceiling_blocks_once
 test_missing_telemetry_blocks_once
 test_wake_survives_helper_failure
 test_runtime_appends_nothing_after_a_terminal_event
+test_pre_validation_done_still_paces_the_worker
+test_terminal_predicate_tracks_the_brief_templates
 test_recovered_telemetry_closes_its_own_key
 test_wake_survives_signal_termination
 test_reset_requires_handoff_and_returns_to_pending

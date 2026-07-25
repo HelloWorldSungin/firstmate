@@ -15,8 +15,15 @@
 #
 # The runtime owns the keys it opens. It closes context-telemetry itself once
 # telemetry recovers, and it appends nothing at all once the worker has reported
-# a terminal state, because after done or failed a backstop signal has no
+# a FINAL terminal state, because past that point a backstop signal has no
 # consumer and would only reopen the task's decision fold behind its own gate.
+#
+# Final is narrower than "any done:". In no-mistakes delivery mode the design
+# brief has the worker append a pre-validation `done: ADR {path}; decisions: ...`
+# and then drive the whole review, fix, push, PR, and CI phase - the longest and
+# most token-heavy stretch of the session - before its real terminal event. Both
+# backstops must keep firing across that phase, so only a done carrying the
+# delivery-completion marker of its mode counts, plus any failed.
 #
 # Usage:
 #   fm-design-context.sh turn-end <task-id> <turn-end-path>
@@ -61,11 +68,24 @@ validate_limit() {
   [ "$HARD_LIMIT" -gt 0 ] || fail "hard limit must be a positive integer"
 }
 
+delivery_complete_note() { # <status-line-note>
+  case "$1" in
+    *'checks green'*) return 0 ;;
+    *'ready in branch'*) return 0 ;;
+    *'PR http'*|*'PR #'*) return 0 ;;
+  esac
+  return 1
+}
+
 reported_terminal() { # <id>
-  local verb
-  verb=$(status_line_verb "$(last_status_line "$STATE/$1.status")")
+  local line verb
+  line=$(last_status_line "$STATE/$1.status")
+  verb=$(status_line_verb "$line")
   case "$verb" in
-    done|failed) return 0 ;;
+    failed) return 0 ;;
+    done)
+      if delivery_complete_note "$(status_line_note "$line")"; then return 0; fi
+      ;;
   esac
   return 1
 }
