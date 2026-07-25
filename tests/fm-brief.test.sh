@@ -514,6 +514,52 @@ test_prototype_scout_contract() {
   pass "fm-brief.sh: --prototype is a scout-shaped local scratch-branch variant"
 }
 
+# fm-classify-lib folds an unclosed `needs-decision`/`blocked` into the open
+# decision set, and the shared completion gate every brief requires before done
+# refuses an open key that is outside the reviewed inventory. So a brief that
+# tells a worker to open a structured event must also tell it how to close one,
+# or the worker wedges behind its own gate and is then refused teardown.
+test_every_brief_closes_the_decisions_it_opens() {
+  local home brief label
+  home="$TMP_ROOT/decision-closure-home"
+  write_registry "$home"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" closure-ship unregistered-proj >/dev/null 2>&1 \
+    || fail "ship brief failed to scaffold for the decision-closure check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" closure-design unregistered-proj --design >/dev/null 2>&1 \
+    || fail "design brief failed to scaffold for the decision-closure check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" closure-scout unregistered-proj --scout >/dev/null 2>&1 \
+    || fail "scout brief failed to scaffold for the decision-closure check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" closure-proto unregistered-proj --prototype >/dev/null 2>&1 \
+    || fail "prototype brief failed to scaffold for the decision-closure check"
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" closure-sm --secondmate alpha >/dev/null 2>&1 \
+    || fail "secondmate charter failed to scaffold for the decision-closure check"
+
+  for label in closure-ship closure-design closure-scout closure-proto closure-sm; do
+    brief="$home/data/$label/brief.md"
+    assert_grep "needs-decision" "$brief" "$label never opens a structured decision"
+    assert_grep "resolved" "$brief" \
+      "$label opens a needs-decision it never tells the worker to close"
+  done
+
+  # Every worker brief also needs the repeat-obstacle escape; without it a
+  # worker that hits the same wall twice has no instructed way to stop.
+  for label in closure-ship closure-scout closure-proto; do
+    brief="$home/data/$label/brief.md"
+    assert_grep "same obstacle twice" "$brief" \
+      "$label left the worker with no escape from a repeated obstacle"
+  done
+
+  # The design brief opens one more keyed blocker of its own: the prototype
+  # detour. Firstmate returns a verdict rather than tearing the task down, so
+  # that key must be closed in-session too.
+  brief="$home/data/closure-design/brief.md"
+  assert_grep "resolved [key=prototype-<same-stable-slug>]" "$brief" \
+    "design brief opens a prototype detour blocker it never closes"
+  pass "fm-brief.sh: every brief closes the structured decisions it opens"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -552,4 +598,5 @@ test_design_profile_contract_and_delivery_modes
 test_every_scaffold_has_clean_section_spacing
 test_rule_two_permits_the_writes_the_brief_requires
 test_prototype_scout_contract
+test_every_brief_closes_the_decisions_it_opens
 test_scout_and_secondmate_scaffold
