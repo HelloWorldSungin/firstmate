@@ -150,6 +150,8 @@ Setup guides for tmux (the default) and every other supported backend (herdr, ze
      │
      ├─ ship: project mode ► PR/local merge ► teardown
      │
+     ├─ design: one question at a time ► ADR ► decision inventory ► project mode ► teardown
+     │
      └─ scout: report at data/<id>/report.md ► decision inventory ► relay findings ► teardown
 ```
 
@@ -214,3 +216,5 @@ Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) for the workf
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+The design task kind's vendored skills under `.agents/skills/` are adapted from [mattpocock/skills](https://github.com/mattpocock/skills), also MIT - see [docs/licenses/mattpocock-skills-MIT.txt](docs/licenses/mattpocock-skills-MIT.txt).

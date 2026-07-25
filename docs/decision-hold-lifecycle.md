@@ -5,7 +5,7 @@ This document records the deterministic mechanism, structured surfaces, and priv
 
 ## Mechanism
 
-`bin/fm-decision-hold.sh` is the only lifecycle command for an investigation or visual review's unresolved captain decisions.
+`bin/fm-decision-hold.sh` is the only lifecycle command for the unresolved captain decisions of an investigation, a design session, or a visual review.
 The command runs tasks-axi in the active `FM_HOME`, so the existing backlog remains the only durable work database and a secondmate-owned decision stays in the secondmate home.
 It never reads report bodies, review artifacts, terminal output, or chat.
 
@@ -21,6 +21,7 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 `bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
+Design teardown calls the same `verify` subcommand after the tracked-work landing check, so an ADR session cannot erase its own unresolved-decision source either.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
