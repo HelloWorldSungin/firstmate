@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout]
+# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout|--design|--prototype]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
@@ -17,7 +17,7 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
+#   terminal, so ordinary Orca task spawns do not run treehouse get; cmux is a
 #   session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
@@ -53,8 +53,8 @@
 #   Every single-task invocation holds one task-id-scoped lock across backend
 #   creation through metadata publication, so concurrent same-id spawns serialize
 #   even when they select different backends.
-#   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
-#   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
+#   With no harness arg, an ordinary task spawn resolves the CREW harness only when
+#   config/crew-dispatch.json is absent. When that file exists, ordinary task
 #   spawns require an explicit harness so firstmate cannot silently skip dispatch
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
@@ -77,19 +77,22 @@
 #   secondmate receives the primary's read-only shared captain-preference file
 #   (fm-config-inherit-lib.sh). A successful launch clears pending inherited
 #   config reread generations because the new agent reads the converged files.
-#   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
-#   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
-#   provisioned firstmate home; the default is kind=ship.
+#   --scout records kind=scout in the task's meta (report deliverable, scratch
+#   worktree); --design records kind=design (ADR deliverable, tracked worktree);
+#   --prototype records kind=scout plus profile=prototype, mounts the invocable
+#   prototype skill, and preserves its local scratch branch through teardown;
+#   --secondmate records kind=secondmate and launches in a provisioned firstmate
+#   home; the default is kind=ship. See AGENTS.md task lifecycle.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
-#   Ship/scout spawns refuse to launch unless the resolved task path is a real
+#   Ship, scout, and design spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
-#     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
+#     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout|--design|--prototype]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend applies to every pair.
+#   source of truth; the shared kind/profile/backend flags apply to every pair.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
-#   and scout batches. The loop lives here, in bash, so callers never hand-write a
+#   scout, and design batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
@@ -106,8 +109,8 @@
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
-# mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|design|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
+# mode/yolo are resolved per-project from data/projects.md for ordinary tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
 set -eu
 
@@ -147,6 +150,7 @@ fm_refuse_if_gate_agent
 # set by the batch loop below), so the guard runs once for the batch, not once per pair.
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
+PROFILE=
 HARNESS_ARG=
 MODEL=
 EFFORT=
@@ -173,8 +177,10 @@ for a in "$@"; do
     continue
   fi
   case "$a" in
-    --scout) KIND=scout ;;
-    --secondmate) KIND=secondmate ;;
+    --scout) KIND=scout; PROFILE= ;;
+    --design) KIND=design; PROFILE= ;;
+    --prototype) KIND=scout; PROFILE=prototype ;;
+    --secondmate) KIND=secondmate; PROFILE= ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --model) want_value=model ;;
@@ -366,8 +372,12 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       echo "error: batch dispatch does not support --secondmate; spawn each secondmate explicitly" >&2
       rc=2
       continue
+    elif [ "$PROFILE" = prototype ]; then
+      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --prototype; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     elif [ "$KIND" = scout ]; then
       if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+    elif [ "$KIND" = design ]; then
+      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --design; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     else
       if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     fi
@@ -447,7 +457,7 @@ launch_template() {
     # crewmate needs; it is the targeted equivalent of claude's
     # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
     # launch command - it is a Stop-event hook installed below (global hook +
-    # per-task pointer), so the template is identical for ship/scout/secondmate.
+    # per-task pointer), so the template is identical for every task kind.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Kimi Code rejects a positional prompt, so it launches bare and receives
     # only an absolute brief pointer after the TUI readiness gate below.
@@ -493,6 +503,60 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+
+if [ "$KIND" = design ]; then
+  command -v jq >/dev/null 2>&1 || {
+    echo "error: --design requires jq for transcript-backed context telemetry" >&2
+    exit 1
+  }
+  case "$ARG3" in
+    *' '*)
+      echo "error: --design does not accept a raw launch command; its model invocation and context backstop are verified only through the Claude adapter" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$HARNESS" != claude ]; then
+    echo "error: --design currently requires harness=claude; model skill invocation and the transcript-backed hard ceiling are not empirically verified on '$HARNESS'" >&2
+    exit 1
+  fi
+  for design_skill in \
+    ask-matt \
+    grilling \
+    grill-me \
+    batch-grill-me \
+    to-questionnaire \
+    handoff \
+    to-spec \
+    domain-modeling \
+    prototype
+  do
+    [ -f "$FM_ROOT/.agents/skills/$design_skill/SKILL.md" ] || {
+      echo "error: --design requires vendored skill $FM_ROOT/.agents/skills/$design_skill/SKILL.md" >&2
+      exit 1
+    }
+  done
+fi
+
+if [ "$PROFILE" = prototype ]; then
+  case "$ARG3" in
+    *' '*)
+      echo "error: --prototype does not accept a raw launch command; its local model invocation is verified only through the Claude adapter" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$BACKEND" = orca ]; then
+    echo "error: --prototype requires a treehouse-backed worktree so its local scratch branch survives teardown" >&2
+    exit 1
+  fi
+  if [ "$HARNESS" != claude ]; then
+    echo "error: --prototype currently requires harness=claude; local model invocation of the vendored prototype skill is not empirically verified on '$HARNESS'" >&2
+    exit 1
+  fi
+  [ -f "$FM_ROOT/.agents/skills/prototype/SKILL.md" ] || {
+    echo "error: --prototype requires vendored skill $FM_ROOT/.agents/skills/prototype/SKILL.md" >&2
+    exit 1
+  }
+fi
 
 # config/secondmate-harness may carry optional model/effort tokens alongside the
 # harness ("<harness> [<model>] [<effort>]"). They apply only when this is a
@@ -943,8 +1007,8 @@ case "$BACKEND" in
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
     # FM_HOME. For every KIND except secondmate, this process's own FM_HOME is
-    # already the right home (the primary spawning its own crewmate/scout, or
-    # a secondmate spawning ITS OWN crewmate/scout from its own process's
+    # already the right home (the primary spawning its own ordinary task, or
+    # a secondmate spawning ITS OWN ordinary task from its own process's
     # FM_HOME - the latter needs no glue at all). A --secondmate spawn is the
     # one case that does: it is the PRIMARY's own fm-spawn.sh process
     # launching a DIFFERENT home (PROJ_ABS, already validated above as the
@@ -1297,13 +1361,57 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
+
+stage_skill_dir() { # <relative-skill-root> <skill>...
+  local rel_root=$1 skill source target target_real source_real
+  shift
+  mkdir -p "$WT/$rel_root"
+  for skill in "$@"; do
+    source="$FM_ROOT/.agents/skills/$skill"
+    target="$WT/$rel_root/$skill"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ ! -L "$target" ]; then
+        echo "error: design-toolkit skill mount collides with project path $target" >&2
+        return 1
+      fi
+      source_real=$(cd "$source" && pwd -P)
+      target_real=$(cd "$target" 2>/dev/null && pwd -P || true)
+      if [ "$target_real" != "$source_real" ]; then
+        echo "error: design-toolkit skill mount collides with symlink $target" >&2
+        return 1
+      fi
+    else
+      ln -s "$source" "$target"
+    fi
+    exclude_path "$rel_root/$skill"
+  done
+}
+
+if [ "$KIND" = design ]; then
+  stage_skill_dir '.agents/skills' \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype
+  stage_skill_dir '.claude/skills' \
+    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype
+elif [ "$PROFILE" = prototype ]; then
+  stage_skill_dir '.agents/skills' prototype
+  stage_skill_dir '.claude/skills' prototype
+fi
+
 if [ "$KIND" != secondmate ]; then
   case "$HARNESS" in
     claude*)
       mkdir -p "$WT/.claude"
-      cat > "$WT/.claude/settings.local.json" <<EOF
+      if [ "$KIND" = design ]; then
+        DESIGN_CONTEXT_COMMAND="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE_REAL") $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") turn-end $(shell_quote "$ID") $(shell_quote "$TURNEND")"
+        DESIGN_CONTEXT_COMMAND=$(json_escape "$DESIGN_CONTEXT_COMMAND")
+        cat > "$WT/.claude/settings.local.json" <<EOF
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"$DESIGN_CONTEXT_COMMAND"}]}]}}
+EOF
+      else
+        cat > "$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch '$TURNEND'"}]}]}}
 EOF
+      fi
       exclude_path '.claude/settings.local.json'
       ;;
     opencode*)
@@ -1404,8 +1512,8 @@ fi
 
 # Per-project delivery mode + yolo flag (bin/fm-project-mode.sh; the project-management skill and AGENTS.md task lifecycle).
 # Recorded in meta so fm-teardown's safety check and the validate/merge stages can
-# branch on them. Mode governs ship tasks; a scout's deliverable is a report, not a
-# merge, so scout teardown ignores mode.
+# branch on them. Mode governs tracked-output tasks; a scout's deliverable is a
+# report, not a merge, so scout teardown ignores mode.
 SECONDMATE_PROJECTS=
 if [ "$KIND" = secondmate ]; then
   MODE=secondmate
@@ -1426,6 +1534,7 @@ META_WINDOW=$T
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  [ -z "$PROFILE" ] || echo "profile=$PROFILE"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

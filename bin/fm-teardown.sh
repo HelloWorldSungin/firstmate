@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
-# clear volatile state, refresh/prune the project's clone for PR-based ship
-# tasks, then print a backlog-refresh reminder for ship and scout teardowns
+# clear volatile state, refresh/prune the project's clone for PR-based tracked
+# tasks, then print a backlog-refresh reminder for ship, scout, and design teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
@@ -29,6 +29,12 @@
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
 # unresolved-decision completion gate verifies its captain-held inventory.
+# A prototype scout additionally requires a clean `prototype/<id>` branch with
+# at least one scratch commit.
+# Normal teardown detaches the worktree but preserves that local branch as the
+# report's context pointer; forced discard deletes it like any other task branch.
+# Design tasks remain subject to the tracked-work landing check and also require
+# the same unresolved-decision inventory verification before teardown.
 # Before destructive cleanup, teardown validates task check artifacts and any
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
@@ -138,6 +144,7 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+PROFILE=$(grep '^profile=' "$META" | cut -d= -f2- || true)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 
@@ -1090,6 +1097,44 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+if [ "$PROFILE" = prototype ] && [ "$FORCE" != "--force" ]; then
+  if ! inspectable_git_worktree "$WT"; then
+    echo "REFUSED: prototype scout $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
+    echo "Cannot preserve its local scratch-branch context pointer; restore the worktree or get explicit discard authority." >&2
+    exit 1
+  fi
+  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  if [ "$branch" != "prototype/$ID" ]; then
+    echo "REFUSED: prototype scout $ID is on branch ${branch:-<unknown>}, expected prototype/$ID." >&2
+    echo "Move the throwaway commit to the expected local scratch branch before teardown." >&2
+    exit 1
+  fi
+  dirty=$(git -C "$WT" status --porcelain 2>/dev/null | head -1 || true)
+  if [ -n "$dirty" ]; then
+    echo "REFUSED: prototype scout $ID has uncommitted scratch work." >&2
+    echo "Commit the complete primary source on prototype/$ID before teardown." >&2
+    exit 1
+  fi
+  DEFAULT=$(default_branch) || {
+    echo "REFUSED: cannot determine the default branch for prototype scout $ID." >&2
+    exit 1
+  }
+  if [ "$(git -C "$WT" rev-list --count "$DEFAULT..HEAD" 2>/dev/null || echo 0)" -lt 1 ]; then
+    echo "REFUSED: prototype scout $ID has no scratch commit beyond $DEFAULT." >&2
+    echo "Commit the throwaway prototype before teardown so its context pointer is meaningful." >&2
+    exit 1
+  fi
+fi
+
+if [ "$KIND" = design ] && [ "$FORCE" != "--force" ]; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
+    echo "REFUSED: design task $ID has not passed the unresolved-decision completion gate." >&2
+    echo "Inventory every unresolved decision surfaced by the design session through bin/fm-decision-hold.sh before teardown." >&2
+    exit 1
+  fi
+fi
+
 if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
     echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
@@ -1124,7 +1169,9 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        if [ "$PROFILE" != prototype ] || [ "$FORCE" = "--force" ]; then
+          git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        fi
       fi
     fi
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
@@ -1136,7 +1183,9 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      if [ "$PROFILE" != prototype ] || [ "$FORCE" = "--force" ]; then
+        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      fi
     fi
   fi
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
@@ -1228,7 +1277,7 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token"
+  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.design-context"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

@@ -18,7 +18,7 @@ The target window's harness is recorded as `harness=` in `state/<id>.meta`.
 
 ## Session-start reconciliation for a dead ordinary direct report
 
-This procedure covers ordinary `kind=ship` and `kind=scout` direct reports.
+This procedure covers ordinary `kind=ship`, `kind=scout`, and `kind=design` direct reports.
 Load `secondmate-provisioning` instead for `kind=secondmate` recovery.
 
 Treat the digest's endpoint result as a presence signal, not proof that the task's work or validation run is gone.
@@ -44,6 +44,7 @@ Escalate in order:
    For example, for a single-Escape adapter: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Escape`.
 4. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
    Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
-   A low context reading is not wedging; modern harnesses auto-compact and keep going.
+   A low context reading is not wedging for an ordinary task; modern harnesses auto-compact and keep going.
+   For `kind=design`, load `design-profile` and honor an intentional handoff or hard-ceiling event instead of auto-compacting mid-phase.
    The worktree and commits persist, so relaunch is cheap.
 5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
