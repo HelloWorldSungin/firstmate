@@ -67,7 +67,8 @@ To hand off:
 4. Tell the fresh worker this is a resume on the existing branch, to skip initial branch creation, and to read the handoff before doing design work.
 5. Clear context-ceiling and context-handoff blockers only after the fresh context is live, using matching `resolved` events.
 
-The runtime clears its third key, context-telemetry, itself on the first turn telemetry recovers, and appends nothing once the worker has reported done or failed.
+The runtime clears its third key, context-telemetry, itself on the first turn telemetry recovers, and appends nothing once the worker has reported its FINAL delivery event or a `failed:`.
+In no-mistakes mode the pre-validation `done: ADR {path}; decisions: ...` is not that event, so both backstops keep pacing the worker through the whole review, fix, push, PR, and CI phase.
 Clear context-telemetry by hand only when a task finishes while telemetry is still unavailable.
 
 Never compact the design worker mid-phase.
