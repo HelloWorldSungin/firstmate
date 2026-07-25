@@ -417,6 +417,8 @@ EOF
 Before any ready or done status, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\`.
 Inventory every still-unresolved captain decision surfaced by the design session and pass its shared completion gate, using \`--none\` only when none remain.
 The final status line must name the ADR path, summarize the decisions taken, and include the latest context position and session depth.
+Put that context token exactly where the Definition of done template shows it, at the end of the line after the decisions summary.
+Never insert it as a new semicolon-separated field: firstmate reads the delivery field by position, so an extra field there would misreport whether the task has actually finished.
 EOF
 )
   DECISION_RULE=$(cat <<'EOF'
@@ -454,7 +456,7 @@ case "$MODE" in
 This project ships **direct-PR**, so the design worker raises the ADR PR without the no-mistakes pipeline.
 $DESIGN_GATE
 The task is ready only when the ADR is committed on your branch.
-Push the branch and open a PR with \`gh-axi\`, then append \`done: ADR {path}; PR {url}; decisions: {concise summary}\` to the status file and stop.
+Push the branch and open a PR with \`gh-axi\`, then append \`done: ADR {path}; PR {url}; decisions: {concise summary} [context={tokens}/{limit} turns={n}]\` to the status file and stop.
 Do NOT run /no-mistakes.
 The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -481,7 +483,7 @@ $DESIGN_GATE
 The task is ready only when the ADR is committed on your \`fm/$ID\` branch.
 Do NOT push, do NOT open a PR, and do NOT merge.
 Keep the branch a clean fast-forward onto the current default branch.
-Append \`done: ADR {path}; ready in branch fm/$ID; decisions: {concise summary}\` to the status file and stop.
+Append \`done: ADR {path}; ready in branch fm/$ID; decisions: {concise summary} [context={tokens}/{limit} turns={n}]\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
 )
@@ -506,10 +508,10 @@ EOF
 # Definition of done
 $DESIGN_GATE
 The task is ready for validation only when the ADR is committed on your branch.
-Append \`done: ADR {path}; decisions: {concise summary}\` to the status file and stop.
+Append \`done: ADR {path}; decisions: {concise summary} [context={tokens}/{limit} turns={n}]\` to the status file and stop.
 $NO_MISTAKES_GUIDANCE
 
-After /no-mistakes reports CI green, append \`done: ADR {path}; PR {url} checks green; decisions: {concise summary}\` and stop.
+After /no-mistakes reports CI green, append \`done: ADR {path}; PR {url} checks green; decisions: {concise summary} [context={tokens}/{limit} turns={n}]\` and stop.
 You are finished.
 EOF
 )

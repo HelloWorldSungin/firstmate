@@ -1363,26 +1363,34 @@ exclude_path() {
 }
 
 stage_skill_dir() { # <relative-skill-root> <skill>...
-  local rel_root=$1 skill source target target_real source_real
+  local rel_root=$1 skill source target
   shift
   mkdir -p "$WT/$rel_root"
   for skill in "$@"; do
     source="$FM_ROOT/.agents/skills/$skill"
     target="$WT/$rel_root/$skill"
     if [ -e "$target" ] || [ -L "$target" ]; then
-      if [ ! -L "$target" ]; then
-        echo "error: design-toolkit skill mount collides with project path $target" >&2
-        return 1
+      # The target project may already carry this skill as its own committed
+      # copy. Every firstmate worktree does, because this repo vendors the
+      # toolkit itself, so without this branch a design spawn onto firstmate
+      # could never start. That copy is already loadable by the crewmate, so the
+      # mount is redundant rather than conflicting: leave the project's own file
+      # alone, and do not exclude a path the project tracks. Anything else
+      # occupying the path is still a genuine collision and still refuses.
+      if [ -f "$target/SKILL.md" ]; then
+        continue
       fi
-      source_real=$(cd "$source" && pwd -P)
-      target_real=$(cd "$target" 2>/dev/null && pwd -P || true)
-      if [ "$target_real" != "$source_real" ]; then
-        echo "error: design-toolkit skill mount collides with symlink $target" >&2
-        return 1
-      fi
-    else
-      ln -s "$source" "$target"
+      echo "error: design-toolkit skill mount collides with project path $target" >&2
+      return 1
     fi
+    # Copy rather than symlink. A symlink into $FM_ROOT/.agents/skills lets a
+    # crewmate write through the mount and mutate the firstmate home's real
+    # skill files, which breaks the worktree isolation the brief promises and
+    # which teardown cannot see, because the mount is excluded from git.
+    cp -R "$source" "$target" || {
+      echo "error: could not stage design-toolkit skill $skill into $target" >&2
+      return 1
+    }
     exclude_path "$rel_root/$skill"
   done
 }
