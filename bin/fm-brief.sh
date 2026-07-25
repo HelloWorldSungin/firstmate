@@ -362,7 +362,7 @@ OUTPUT_KIND=ship
 if [ "$KIND" = design ]; then
   OUTPUT_KIND=design
   PROJECT_MEMORY_SECTION=
-  RULE2="2. Stay inside this worktree. The only permitted write outside it is the profile handoff at \`$DATA/$ID/handoff.md\`."
+  RULE2="2. Stay inside this worktree; the only files you may write outside it are the status file below and the profile handoff at \`$DATA/$ID/handoff.md\`."
   DESIGN_SECTION=$(cat <<EOF
 # Design profile
 This is an interactive DESIGN task.
@@ -522,15 +522,26 @@ EOF
     ;;
 esac
 
+# Command substitution strips trailing newlines, so blank lines that separate an
+# OPTIONAL section from its neighbour are joined here rather than left to the
+# template. A ship brief has no design section and a design brief has no
+# project-memory section; neither may leave a stray blank line behind.
+BRIEF_SECTIONS=$HERDR_SECTION
+if [ -n "$DESIGN_SECTION" ]; then
+  BRIEF_SECTIONS=$(printf '%s\n\n%s\n' "$HERDR_SECTION" "$DESIGN_SECTION")
+fi
+BRIEF_TAIL=$DOD
+if [ -n "$PROJECT_MEMORY_SECTION" ]; then
+  BRIEF_TAIL=$(printf '%s\n\n%s\n' "$PROJECT_MEMORY_SECTION" "$DOD")
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
 {TASK}
 
-$HERDR_SECTION
-
-$DESIGN_SECTION
+$BRIEF_SECTIONS
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -564,7 +575,6 @@ $DECISION_RULE
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-$PROJECT_MEMORY_SECTION
-$DOD
+$BRIEF_TAIL
 EOF
 echo "scaffolded: $BRIEF ($OUTPUT_KIND, mode=$MODE; replace {TASK})"

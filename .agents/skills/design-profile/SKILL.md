@@ -110,6 +110,7 @@ The integration was verified on 2026-07-24 against plugin version 1.2.0 and Clau
 The marketplace contained 41 skills, 24 with `disable-model-invocation: true`.
 `grill-with-docs` was locked, while `grilling`, `domain-modeling`, and `prototype` carried no lock.
 Live Claude `Skill` tool calls loaded the vendored `ask-matt`, `grilling`, and `domain-modeling` skills.
+Re-verified on 2026-07-25 under Claude Code 2.1.220 from a task worktree: `Skill(grilling)` and `Skill(domain-modeling)` each returned the vendored adapted body through the `.claude/skills -> ../.agents/skills` symlink, and all nine mounted skills listed as model-invocable.
 The spawn adapter admits no other harness until both model invocation and the context backstop have equivalent empirical evidence.
 
 The design profile wires:

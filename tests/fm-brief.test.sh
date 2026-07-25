@@ -418,6 +418,78 @@ test_design_profile_contract_and_delivery_modes() {
   pass "fm-brief.sh: --design renders the sequential ADR, pacing, prototype, and delivery contracts"
 }
 
+# Optional sections (the design block, the project-memory block) are assembled
+# with `VAR=$(cat <<EOF ... EOF)`, and command substitution strips trailing
+# newlines. Interpolating such a variable on its own template line therefore
+# renders a STRAY BLANK LINE when the section is empty, and swallows the blank
+# line that should separate it from the next heading when it is not. Both
+# defects are invisible to content assertions, so assert the rendered structure
+# directly: every scaffold separates sections with exactly one blank line.
+test_every_scaffold_has_clean_section_spacing() {
+  local home brief label max
+  home="$TMP_ROOT/spacing-home"
+  write_registry "$home"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" spacing-ship unregistered-proj >/dev/null 2>&1 \
+    || fail "ship brief failed to scaffold for the spacing check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" spacing-design unregistered-proj --design >/dev/null 2>&1 \
+    || fail "design brief failed to scaffold for the spacing check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" spacing-scout unregistered-proj --scout >/dev/null 2>&1 \
+    || fail "scout brief failed to scaffold for the spacing check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" spacing-proto unregistered-proj --prototype >/dev/null 2>&1 \
+    || fail "prototype brief failed to scaffold for the spacing check"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" spacing-lab unregistered-proj --herdr-lab >/dev/null 2>&1 \
+    || fail "herdr-lab brief failed to scaffold for the spacing check"
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" spacing-sm --secondmate alpha >/dev/null 2>&1 \
+    || fail "secondmate charter failed to scaffold for the spacing check"
+
+  for label in spacing-ship spacing-design spacing-scout spacing-proto spacing-lab spacing-sm; do
+    brief="$home/data/$label/brief.md"
+    assert_present "$brief" "$label was not scaffolded"
+    max=$(awk 'BEGIN{run=0;max=0} /^$/{run++; if(run>max)max=run; next} {run=0} END{print max}' "$brief")
+    [ "$max" -le 1 ] || fail "$label renders $max consecutive blank lines; an optional section left a stray blank"
+  done
+
+  # The two headings that follow an optional section must each keep exactly one
+  # blank line above them, in both the ship and the design shape.
+  for label in spacing-ship spacing-design; do
+    brief="$home/data/$label/brief.md"
+    grep -B1 '^# Setup$' "$brief" | head -1 | grep -qx '' \
+      || fail "$label lost the blank line above '# Setup'"
+    grep -B1 '^# Definition of done$' "$brief" | head -1 | grep -qx '' \
+      || fail "$label lost the blank line above '# Definition of done'"
+  done
+  pass "fm-brief.sh: every scaffold separates sections with exactly one blank line"
+}
+
+# Rule 2 confines the worker to its worktree, but rule 4 requires appending to
+# the status file and the design profile requires writing the handoff - both
+# outside it. Rule 2 must name those exceptions or it contradicts the contract
+# the same brief goes on to impose.
+test_rule_two_permits_the_writes_the_brief_requires() {
+  local home brief rule2
+  home="$TMP_ROOT/rule-two-home"
+  write_registry "$home"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" rule2-design unregistered-proj --design >/dev/null 2>&1 \
+    || fail "design brief failed to scaffold for the rule 2 check"
+  brief="$home/data/rule2-design/brief.md"
+  # Scoped to the Rules section: the Setup section also numbers its steps.
+  rule2=$(awk '/^# Rules$/{inrules=1; next} inrules && /^2\. /{print; exit}' "$brief")
+  [ -n "$rule2" ] || fail "design brief has no rule 2 under its Rules section"
+  case "$rule2" in
+    *"status file"*) ;;
+    *) fail "design rule 2 forbids the status-file write that rule 4 requires: $rule2" ;;
+  esac
+  case "$rule2" in
+    *"$home/data/rule2-design/handoff.md"*) ;;
+    *) fail "design rule 2 forbids the handoff write that the design profile requires: $rule2" ;;
+  esac
+  pass "fm-brief.sh: design rule 2 permits the status and handoff writes the brief requires"
+}
+
 test_prototype_scout_contract() {
   local home id brief
   home="$TMP_ROOT/prototype-profile-home"
@@ -477,5 +549,7 @@ test_secondmate_marked_request_reporting_contract
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_design_profile_contract_and_delivery_modes
+test_every_scaffold_has_clean_section_spacing
+test_rule_two_permits_the_writes_the_brief_requires
 test_prototype_scout_contract
 test_scout_and_secondmate_scaffold

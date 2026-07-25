@@ -1062,6 +1062,24 @@ test_scout_skips_run_lookup() {
   pass "scout skips the run lookup"
 }
 
+# (i2) kind=design is the complement of the scout case: under no-mistakes its ADR
+# ships through the pipeline on its own branch, so its run step must stay
+# authoritative. Reading a busy pane instead would violate the AGENTS.md rule to
+# judge validation by the current-code-matched run step, not by liveness.
+test_design_reads_run_lookup() {
+  reset_fakes
+  local d; d=$(new_case design)
+  make_repo_on_branch "$d/wt" fm/design-k
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/design-k.meta" "window=fm:fm-design-k" "worktree=$d/wt" "kind=design"
+  FM_FAKE_AXI_STATUS="$(run_running fm/design-k)"
+  FM_FAKE_BUSY=1
+  local out; out=$(run_crew_state "$d" design-k)
+  assert_contains "$out" "source: run-step" "design must read the no-mistakes run-step"
+  assert_contains "$out" "state: working" "design validating run -> working"
+  pass "design reads the run lookup"
+}
+
 # (j) torn-down worktree and missing meta are graceful (unknown/none, exit 0)
 test_torn_down_worktree() {
   reset_fakes
@@ -1270,6 +1288,7 @@ test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
+test_design_reads_run_lookup
 test_torn_down_worktree
 test_missing_meta
 test_provably_working_via_runs_list_fallback
