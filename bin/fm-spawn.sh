@@ -1261,10 +1261,31 @@ exclude_path() {
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
 
+# Proof that a file IS the vendored copy rather than a same-named project skill.
+# Every vendored SKILL.md carries this exact frontmatter line, and
+# tests/fm-design-skills.test.sh pins it for all nine.
+FM_VENDORED_SKILL_MARKER='source: https://github.com/mattpocock/skills'
+
 stage_skill_dir() { # <relative-skill-root> <skill>...
-  local rel_root=$1 skill source target
+  local rel_root=$1 skill source target root_real wt_real
   shift
   mkdir -p "$WT/$rel_root"
+  wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || {
+    echo "error: design-toolkit skill staging cannot resolve the worktree $WT" >&2
+    return 1
+  }
+  # Guard the mount ROOT, not just the leaf. `.claude/skills` is a symlink in
+  # this very repo, so a project whose skills root points outside the worktree
+  # would otherwise have nine directories written through the link to wherever
+  # it lands - the same isolation break the copy below exists to prevent.
+  root_real=$(cd "$WT/$rel_root" 2>/dev/null && pwd -P || true)
+  case "${root_real:-}/" in
+    "$wt_real"/*) ;;
+    *)
+      echo "error: design-toolkit skill root $rel_root resolves outside the worktree (${root_real:-unresolvable})" >&2
+      return 1
+      ;;
+  esac
   for skill in "$@"; do
     source="$FM_ROOT/.agents/skills/$skill"
     target="$WT/$rel_root/$skill"
@@ -1272,12 +1293,17 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
       # The target project may already carry this skill as its own committed
       # copy. Every firstmate worktree does, because this repo vendors the
       # toolkit itself, so without this branch a design spawn onto firstmate
-      # could never start. That copy is already loadable by the crewmate, so the
-      # mount is redundant rather than conflicting: leave the project's own file
-      # alone, and do not exclude a path the project tracks. Anything else
-      # occupying the path is still a genuine collision and still refuses.
-      if [ -f "$target/SKILL.md" ]; then
+      # could never start. Skip the mount only when the existing file proves it
+      # IS that vendored copy: the names are generic, so a project's own
+      # unrelated `prototype` or `handoff` skill must never silently shadow the
+      # vendored one. Anything else occupying the path refuses loudly.
+      if [ -f "$target/SKILL.md" ] && grep -qF "$FM_VENDORED_SKILL_MARKER" "$target/SKILL.md"; then
         continue
+      fi
+      if [ -f "$target/SKILL.md" ]; then
+        echo "error: design-toolkit skill mount collides with a different skill already at $target" >&2
+        echo "       (its SKILL.md does not carry the vendored marker '$FM_VENDORED_SKILL_MARKER')" >&2
+        return 1
       fi
       echo "error: design-toolkit skill mount collides with project path $target" >&2
       return 1
