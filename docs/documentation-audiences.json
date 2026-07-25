@@ -112,7 +112,15 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/ask-matt/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/ask-user-authority/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/batch-grill-me/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -128,7 +136,23 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/design-profile/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/ADR-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/CONTEXT-FORMAT.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/domain-modeling/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -148,11 +172,35 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/grilling/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/handoff/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/harness-adapters/SKILL.md",
       "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/project-management/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/LOGIC.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prototype/UI.md",
       "audience": "agent-runtime"
     },
     {
@@ -165,6 +213,14 @@
     },
     {
       "path": ".agents/skills/stuck-crewmate-recovery/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/to-questionnaire/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/to-spec/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -250,6 +306,10 @@
     {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/licenses/mattpocock-skills-MIT.txt",
+      "audience": "public-product"
     },
     {
       "path": "docs/orca-backend.md",
