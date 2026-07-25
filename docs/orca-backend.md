@@ -56,6 +56,7 @@ The watcher has no native Orca busy signal and uses the shared terminal-tail fal
 Cleanup keeps all shared Firstmate safety checks.
 A scout still requires its report and completed decision inventory.
 A ship still refuses dirty or unlanded work.
+A design task requires both: its decision inventory verifies first, then its ADR must have landed like any other tracked work.
 Before release, cleanup resolves the recorded Orca worktree id and verifies its path matches the recorded worktree path.
 A missing, unreadable, or mismatched identity preserves metadata and stops rather than deleting anything.
 After those checks, Firstmate closes the exact terminal and releases the exact worktree with Orca's worktree command.
