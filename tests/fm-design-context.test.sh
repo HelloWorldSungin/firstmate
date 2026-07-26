@@ -354,7 +354,28 @@ test_supervisor_skill_never_asserts_a_fixed_ceiling() {
   pass "the design supervisor skill reads the effective ceiling instead of asserting one"
 }
 
+# `limit` is the single owner of the ceiling rule: the spawn and brief scaffolds
+# ask THIS script whether an operator override can be honoured, so a value that
+# would kill the hook before it writes telemetry is refused up front instead of
+# silently removing the backstop.
+test_limit_reports_the_enforced_ceiling_and_refuses_a_bad_one() {
+  local out status
+  out=$(FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$STATE" "$CONTEXT" limit)
+  [ "$out" = 110000 ] || fail "limit did not report the default ceiling: $out"
+  out=$(FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$STATE" \
+    FM_DESIGN_CONTEXT_HARD_LIMIT=4242 "$CONTEXT" limit)
+  [ "$out" = 4242 ] || fail "limit did not report the operator override: $out"
+  set +e
+  FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$STATE" \
+    FM_DESIGN_CONTEXT_HARD_LIMIT=110k "$CONTEXT" limit >/dev/null 2>&1
+  status=$?
+  set -e
+  expect_code 1 "$status" "limit accepted a ceiling the helper cannot enforce"
+  pass "limit is the one owner of the ceiling the runtime will enforce"
+}
+
 test_pending_before_first_stop
+test_limit_reports_the_enforced_ceiling_and_refuses_a_bad_one
 test_supervisor_skill_never_asserts_a_fixed_ceiling
 test_tracks_latest_context_and_unique_turns
 test_hard_ceiling_blocks_once

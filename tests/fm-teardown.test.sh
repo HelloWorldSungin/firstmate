@@ -56,6 +56,8 @@
 #       ignore line are left untouched
 #   (z2) another process holds the shared exclude file's lock -> the mount is
 #       still removed, but the ignore line is left rather than rewritten blind
+#   (z3) THIS process abandoned a section still holding that lock -> cleanup
+#       adopts it instead of waiting on itself
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -750,6 +752,46 @@ test_exclude_release_refuses_while_another_process_holds_the_lock() {
   assert_absent "$case_dir/wt/.agents/skills/grilling" \
     "teardown left a staged mount behind because the exclude lock was busy"
   pass "an unobtainable exclude lock leaves the shared file alone instead of rewriting it blind"
+}
+
+# bin/fm-spawn.sh runs fm_skill_mount_cleanup from its EXIT trap, so a section
+# abandoned mid-flight reaches the release path in the SAME process. That lock
+# must be adopted, not waited on: fm_lock_try_acquire never steals from a live
+# pid, so waiting would burn the poll budget on every recorded line and then
+# leave each one behind - the leak the lock was added to prevent.
+test_cleanup_adopts_a_lock_its_own_process_abandoned() {
+  local case_dir rc excl
+  case_dir=$(make_case skill-mount-lock-adopt)
+  excl=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+
+  mkdir -p "$case_dir/wt/.agents/skills/grilling"
+  printf 'vendored\n' > "$case_dir/wt/.agents/skills/grilling/SKILL.md"
+  {
+    printf 'mount\t.agents/skills/grilling\n'
+    printf 'exclude\towned\t%s\t.agents/skills/grilling\n' "$excl"
+  } > "$case_dir/state/task-x1.skill-mounts"
+  printf '.agents/skills/grilling\n' >> "$excl"
+
+  set +e
+  FM_SKILL_MOUNT_LOCK_ATTEMPTS=2 bash -c '
+    . "$1/bin/fm-skill-mount-lib.sh"
+    fm_skill_mount_exclude_lock "$2" || exit 3
+    fm_skill_mount_cleanup "$3" task-x1 "$4"
+  ' _ "$ROOT" "$excl" "$case_dir/state" "$case_dir/wt" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "cleanup failed after adopting its own abandoned lock"
+  assert_no_grep "could not serialize" "$case_dir/stderr" \
+    "cleanup waited on a lock its own process already held"
+  assert_no_grep ".agents/skills/grilling" "$excl" \
+    "cleanup left its ignore line behind after an abandoned section"
+  assert_absent "$case_dir/wt/.agents/skills/grilling" \
+    "cleanup left the staged mount behind after an abandoned section"
+  assert_absent "$case_dir/state/task-x1.skill-mounts" \
+    "cleanup left the ledger behind"
+  pass "cleanup adopts a lock its own process abandoned instead of waiting on itself"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -1542,6 +1584,7 @@ test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_staged_skill_mounts_and_excludes_are_undone
 test_exclude_release_refuses_while_another_process_holds_the_lock
+test_cleanup_adopts_a_lock_its_own_process_abandoned
 test_teardown_refuses_to_remove_a_tracked_path_named_in_the_ledger
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses

@@ -92,14 +92,27 @@ case "${FM_SKILL_MOUNT_LOCK_ATTEMPTS:-}" in
   ''|*[!0-9]*) FM_SKILL_MOUNT_LOCK_ATTEMPTS=100 ;;
 esac
 
+# The one lock this process currently holds, or empty. Nothing here ever nests an
+# acquire, so finding this set on entry means an earlier section was abandoned
+# mid-flight - and the path that discovers it is bin/fm-spawn.sh's EXIT trap,
+# which runs fm_skill_mount_cleanup in the SAME process. fm_lock_try_acquire
+# refuses to steal from a live pid, so without adoption that cleanup would poll
+# out its whole budget on every recorded line and then leave each ignore line
+# behind: the exact leak the lock exists to prevent.
+FM_SKILL_MOUNT_LOCK_HELD=
+
 fm_skill_mount_exclude_lock() { # <exclude-file>
   local lock attempt=0
+  lock=$(fm_skill_mount_exclude_lock_path "$1")
+  if [ "$FM_SKILL_MOUNT_LOCK_HELD" = "$lock" ]; then
+    return 0
+  fi
   # An unwritable git dir is not contention: the lock could never be created, so
   # polling out the whole budget would only stall the caller once per mount.
   [ -w "$(dirname "$1")" ] || return 1
-  lock=$(fm_skill_mount_exclude_lock_path "$1")
   while [ "$attempt" -lt "$FM_SKILL_MOUNT_LOCK_ATTEMPTS" ]; do
     if fm_lock_try_acquire "$lock"; then
+      FM_SKILL_MOUNT_LOCK_HELD=$lock
       return 0
     fi
     sleep 0.1
@@ -109,7 +122,12 @@ fm_skill_mount_exclude_lock() { # <exclude-file>
 }
 
 fm_skill_mount_exclude_unlock() { # <exclude-file>
-  fm_lock_release "$(fm_skill_mount_exclude_lock_path "$1")" || true
+  local lock
+  lock=$(fm_skill_mount_exclude_lock_path "$1")
+  if [ "$FM_SKILL_MOUNT_LOCK_HELD" = "$lock" ]; then
+    FM_SKILL_MOUNT_LOCK_HELD=
+  fi
+  fm_lock_release "$lock" || true
 }
 
 # Lock-held primitives. Callers that need a wider critical section than one file
@@ -203,7 +221,7 @@ fm_skill_mount_exclude_claimed_by_other() { # <state> <id> <exclude-file> <line>
 # hides it. Called BEFORE the copy so the files are never briefly visible to git
 # and so a failed copy still leaves a removable record.
 fm_skill_mount_record() { # <state> <id> <worktree> <relative-path>
-  local state=$1 id=$2 wt=$3 rel=$4 ledger excl ownership held=0
+  local state=$1 id=$2 wt=$3 rel=$4 ledger excl ownership held=0 status=0
   ledger=$(fm_skill_mount_ledger "$state" "$id")
   mkdir -p "$state"
   printf 'mount\t%s\n' "$rel" >> "$ledger"
@@ -225,11 +243,17 @@ fm_skill_mount_record() { # <state> <id> <worktree> <relative-path>
   else
     ownership=foreign
   fi
-  printf 'exclude\t%s\t%s\t%s\n' "$ownership" "$excl" "$rel" >> "$ledger"
+  # Never let a failed append abort the function under `set -e`: the lock is held
+  # here, and every consumer's abort path runs the release code in this same
+  # process.
+  if ! printf 'exclude\t%s\t%s\t%s\n' "$ownership" "$excl" "$rel" >> "$ledger"; then
+    echo "fm-skill-mount: could not record the ignore-line claim for '$rel' in $ledger" >&2
+    status=1
+  fi
   if [ "$held" = 1 ]; then
     fm_skill_mount_exclude_unlock "$excl"
   fi
-  return 0
+  return "$status"
 }
 
 # Remove one recorded mount, or refuse loudly and leave it alone. Every refusal

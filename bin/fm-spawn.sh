@@ -323,14 +323,26 @@ spawn_abort_cleanup() {
     fi
   fi
   if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
+    local abort_wt_real abort_return_out
     LEASE_ABORT_CLEANUP=0
     if [ "$BACKEND" != orca ]; then
-      # treehouse resolves the pool from the working directory, and it kills the
-      # processes still living in the worktree, so run it from the project just
-      # as fm-teardown.sh does.
-      if [ -n "${WT:-}" ] \
-         && ! ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) >/dev/null 2>&1; then
-        echo "warning: could not return worktree $WT after an aborted spawn; return it by hand" >&2
+      # Resolve before returning anything. This flag is armed before the
+      # isolation assertion, whose whole job is to catch a $WT that is actually
+      # the PRIMARY CHECKOUT - returning that to a pool would be far worse than
+      # the leak this cleanup exists to prevent.
+      abort_wt_real=
+      if [ -n "${WT:-}" ]; then
+        abort_wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || abort_wt_real=
+      fi
+      if [ -n "$abort_wt_real" ] && [ "$abort_wt_real" = "$PROJ_ABS_REAL" ]; then
+        echo "warning: aborted spawn resolved '$WT' to the primary checkout; leaving it untouched" >&2
+      elif [ -n "$abort_wt_real" ]; then
+        # treehouse resolves the pool from the working directory, and it kills the
+        # processes still living in the worktree, so run it from the project just
+        # as fm-teardown.sh does.
+        if ! abort_return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
+          echo "warning: could not return worktree $WT after an aborted spawn; return it by hand: $abort_return_out" >&2
+        fi
       fi
       # A projected herdr pane is closed focus-preservingly by the branch above;
       # every other backend's window is ours to kill outright.
@@ -564,6 +576,16 @@ if [ "$KIND" = design ]; then
       exit 1
     }
   done
+  # Fail closed on the ceiling knob here, at the same altitude as jq and the
+  # harness. fm-design-context.sh rejects a malformed limit before it writes any
+  # telemetry, so pinning one into the Stop hook would silence the sidecar, the
+  # context-telemetry blocker, and the ceiling itself - a typo that removes the
+  # mechanical backstop instead of tripping it. Asking the enforcing script keeps
+  # one owner for the rule.
+  "$FM_ROOT/bin/fm-design-context.sh" limit >/dev/null || {
+    echo "error: --design refuses FM_DESIGN_CONTEXT_HARD_LIMIT='${FM_DESIGN_CONTEXT_HARD_LIMIT:-}'; the mechanical context ceiling must be a positive integer" >&2
+    exit 1
+  }
 fi
 
 if [ "$PROFILE" = prototype ]; then
@@ -1225,6 +1247,14 @@ spawn_send_key() {  # <target> <key>
     cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
   esac
 }
+# From here to the meta write below, this spawn holds a backend window - and,
+# once treehouse get lands, a pooled worktree - that only state/<id>.meta can
+# hand to fm-teardown.sh. Armed BEFORE the worktree wait and the isolation
+# assertion, because both of those exit with the window already open. A
+# secondmate's "worktree" is its own firstmate home, never a pooled lease, so it
+# stays out.
+[ "$KIND" = secondmate ] || LEASE_ABORT_CLEANUP=1
+
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
@@ -1274,11 +1304,6 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
-
-# From here to the meta write below, this spawn holds a worktree and a window
-# that only state/<id>.meta can hand to fm-teardown.sh. A secondmate's "worktree"
-# is its own firstmate home, never a pooled lease, so it stays out.
-[ "$KIND" = secondmate ] || LEASE_ABORT_CLEANUP=1
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
