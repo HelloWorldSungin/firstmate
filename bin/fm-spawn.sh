@@ -1470,9 +1470,8 @@ exclude_path() {
 }
 
 stage_skill_dir() { # <relative-skill-root> <skill>...
-  local rel_root=$1 skill source target root_real wt_real
+  local rel_root=$1 skill source target root_real wt_real probe probe_real
   shift
-  mkdir -p "$WT/$rel_root"
   wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || {
     echo "error: design-toolkit skill staging cannot resolve the worktree $WT" >&2
     return 1
@@ -1481,6 +1480,25 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
   # this very repo, so a project whose skills root points outside the worktree
   # would otherwise have the staged directories written through the link to wherever
   # it lands - the same isolation break the copy below exists to prevent.
+  #
+  # The containment check has to clear the deepest path that already EXISTS
+  # before anything is created, because `mkdir -p` walks symlinks: a project
+  # shipping `.agents -> /elsewhere` with no `skills/` under it would have the
+  # missing leaf created on the far side of the link, and the refusal below would
+  # then be diagnosing a write that had already escaped.
+  probe="$WT/$rel_root"
+  while [ ! -e "$probe" ] && [ ! -L "$probe" ]; do
+    probe=$(dirname "$probe")
+  done
+  probe_real=$(cd "$probe" 2>/dev/null && pwd -P || true)
+  case "${probe_real:-}/" in
+    "$wt_real"/*) ;;
+    *)
+      echo "error: design-toolkit skill root $rel_root resolves outside the worktree (${probe_real:-unresolvable})" >&2
+      return 1
+      ;;
+  esac
+  mkdir -p "$WT/$rel_root"
   root_real=$(cd "$WT/$rel_root" 2>/dev/null && pwd -P || true)
   case "${root_real:-}/" in
     "$wt_real"/*) ;;

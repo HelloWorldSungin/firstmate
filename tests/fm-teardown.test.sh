@@ -722,12 +722,14 @@ test_exclude_release_refuses_while_another_process_holds_the_lock() {
   } > "$case_dir/state/task-x1.skill-mounts"
   printf '.agents/skills/grilling\n' >> "$excl"
 
-  # A live sibling holding the lock the whole time teardown runs.
+  # A live sibling holding the lock the whole time teardown runs. The hold is
+  # unbounded on purpose: a fixed sleep would expire early on a loaded machine,
+  # teardown would then serialize normally, and the assertions below would fail
+  # with a message blaming the lock discipline instead of the timing.
   bash -c '
     . "$1/bin/fm-wake-lib.sh"
     fm_lock_acquire_wait "$2.fm-skill-mount.lock"
-    sleep 5
-    fm_lock_release "$2.fm-skill-mount.lock"
+    while :; do sleep 1; done
   ' _ "$ROOT" "$excl" >/dev/null 2>&1 &
   holder_pid=$!
   # Wait for the holder to actually own the lock before racing it.

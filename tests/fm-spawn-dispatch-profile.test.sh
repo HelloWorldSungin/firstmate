@@ -837,6 +837,32 @@ test_skill_mount_root_outside_the_worktree_refuses() {
   pass "a skills root outside the worktree refuses before anything is written"
 }
 
+# Regression: the containment check ran AFTER `mkdir -p`, so an escaping ANCESTOR
+# of the skills root - a `.agents` symlink with no `skills/` under it, which
+# mkdir -p happily follows - had the leaf created outside the worktree before the
+# refusal ever fired. The sibling test above escapes at the leaf, which mkdir -p
+# treats as a no-op, so it cannot catch this ordering.
+test_skill_mount_root_ancestor_outside_the_worktree_writes_nothing() {
+  local rec id out status outside
+  id=profile-design-ancestorescape-z25
+  rec=$(make_spawn_case profile-design-ancestorescape claude "$id")
+  read_case_record "$rec"
+
+  outside="$TMP_ROOT/outside-skills-ancestor"
+  mkdir -p "$outside"
+  ln -s "$outside" "$WT_DIR/.agents"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  expect_code 1 "$status" "a skills root whose ancestor escapes the worktree must refuse"
+  assert_contains "$out" "resolves outside the worktree" \
+    "ancestor-escape refusal did not explain the isolation boundary"
+  [ -z "$(ls -A "$outside")" ] \
+    || fail "staging created the missing skills root through the symlinked ancestor at $outside"
+  pass "an escaping skills-root ancestor refuses before mkdir writes through it"
+}
+
 # Regression: the mount was a symlink into $FM_ROOT/.agents/skills, so a write
 # inside the disposable worktree reached the firstmate home's REAL skill files -
 # an isolation break teardown cannot see, because the mount is git-excluded.
@@ -922,6 +948,7 @@ test_unwritable_ledger_refuses_instead_of_staging_unrecorded_mounts
 test_refused_mount_cleans_up_what_it_already_staged
 test_foreign_same_named_skill_refuses_instead_of_shadowing
 test_skill_mount_root_outside_the_worktree_refuses
+test_skill_mount_root_ancestor_outside_the_worktree_writes_nothing
 test_skill_mount_write_cannot_reach_the_firstmate_home
 test_prototype_spawn_is_scout_profile_with_invocable_skill
 

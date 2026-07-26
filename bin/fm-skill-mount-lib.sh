@@ -24,10 +24,11 @@
 # `owned` means firstmate put that line there: this spawn appended it, or a live
 # sibling task's ledger already owned it. `foreign` means the line was already
 # present with no firstmate task claiming it, so the project owns it and teardown
-# never touches it. Sibling co-ownership is not hypothetical - a design task and
-# the prototype scout it dispatches both mount `prototype` into worktrees that
-# share one common git dir - so a claim held by another live ledger always wins
-# over removal, and whichever task tears down last releases the line. Because
+# never touches it. Sibling co-ownership is not hypothetical - two concurrent
+# design tasks on one project mount the same seven skills into worktrees that
+# share one common git dir, so they share every ignore line - so a claim held by
+# another live ledger always wins over removal, and whichever task tears down
+# last releases the line. Because
 # those siblings are separate processes racing on one shared file, every claim
 # and every release runs under the per-exclude-file lock below.
 
