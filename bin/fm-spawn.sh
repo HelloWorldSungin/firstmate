@@ -232,15 +232,22 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
-# Everything a task spawn holds before state/<id>.meta exists: the pooled
-# worktree lease, the backend window sitting in it, the staged skill mounts, and
-# the per-task temp root. fm-teardown.sh reclaims all four by reading meta, so an
-# abort BETWEEN acquiring them and publishing meta - a refused skill mount, a
-# failed hook write, any set -e trip in that stretch - would orphan every one of
-# them with nothing left on disk to name them. Armed once they exist, disarmed
-# the moment meta is published. Orca keeps its own ORCA_ABORT_CLEANUP for the
-# terminal and worktree because that path can also publish a recovery meta.
-LEASE_ABORT_CLEANUP=0
+# What a task spawn holds before state/<id>.meta exists. fm-teardown.sh reclaims
+# all of it by reading meta, so an abort BETWEEN acquiring it and publishing meta
+# - a refused skill mount, a failed hook write, any set -e trip in that stretch -
+# would orphan everything with nothing left on disk to name it. Both flags are
+# disarmed the moment meta is published; Orca keeps its own ORCA_ABORT_CLEANUP
+# for the terminal and worktree because that path can also publish a recovery
+# meta.
+#
+# Two flags, because the two halves become safe at different moments. Reclaiming
+# the backend window, the staged skill mounts, and the per-task temp root is safe
+# as soon as they exist - they are unambiguously ours. Handing a path to
+# `treehouse return --force` is destructive and is only safe once
+# validate_spawn_worktree has proven that path is an isolated worktree root and
+# not the primary checkout, so it is armed separately, after that proof.
+SPAWN_ABORT_RECLAIM=0
+SPAWN_ABORT_RETURN_WT=0
 HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
@@ -275,7 +282,7 @@ spawn_abort_cleanup() {
   # worktree: `treehouse return` preserves git-excluded files and the ignore
   # lines live in the project's SHARED common git dir, so both otherwise outlive
   # the lease (bin/fm-skill-mount-lib.sh), exactly as fm-teardown.sh orders them.
-  if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
+  if [ "$SPAWN_ABORT_RECLAIM" = 1 ]; then
     fm_skill_mount_cleanup "$STATE" "$ID" "${WT:-}" || true
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -324,28 +331,26 @@ spawn_abort_cleanup() {
       fi
     fi
   fi
-  if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
-    local abort_wt_real abort_return_out
-    LEASE_ABORT_CLEANUP=0
+  if [ "$SPAWN_ABORT_RETURN_WT" = 1 ]; then
+    local abort_return_out
+    SPAWN_ABORT_RETURN_WT=0
+    # Re-ask the same predicate the assertion used. The flag is only armed after
+    # that proof, so this is defence in depth: `treehouse return --force` must
+    # never run against a path that is not a pooled worktree root.
+    if spawn_isolated_worktree_real "${WT:-}" >/dev/null; then
+      # treehouse resolves the pool from the working directory, and it kills the
+      # processes still living in the worktree, so run it from the project just
+      # as fm-teardown.sh does.
+      if ! abort_return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
+        echo "warning: could not return worktree $WT after an aborted spawn; return it by hand: $abort_return_out" >&2
+      fi
+    else
+      echo "warning: aborted spawn will not return '${WT:-}'; it is no longer an isolated worktree root distinct from $PROJ_ABS" >&2
+    fi
+  fi
+  if [ "$SPAWN_ABORT_RECLAIM" = 1 ]; then
+    SPAWN_ABORT_RECLAIM=0
     if [ "$BACKEND" != orca ]; then
-      # Resolve before returning anything. This flag is armed before the
-      # isolation assertion, whose whole job is to catch a $WT that is actually
-      # the PRIMARY CHECKOUT - returning that to a pool would be far worse than
-      # the leak this cleanup exists to prevent.
-      abort_wt_real=
-      if [ -n "${WT:-}" ]; then
-        abort_wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || abort_wt_real=
-      fi
-      if [ -n "$abort_wt_real" ] && [ "$abort_wt_real" = "$PROJ_ABS_REAL" ]; then
-        echo "warning: aborted spawn resolved '$WT' to the primary checkout; leaving it untouched" >&2
-      elif [ -n "$abort_wt_real" ]; then
-        # treehouse resolves the pool from the working directory, and it kills the
-        # processes still living in the worktree, so run it from the project just
-        # as fm-teardown.sh does.
-        if ! abort_return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) 2>&1 ); then
-          echo "warning: could not return worktree $WT after an aborted spawn; return it by hand: $abort_return_out" >&2
-        fi
-      fi
       # A projected herdr pane is closed focus-preservingly by the branch above;
       # every other backend's window is ours to kill outright.
       if [ "${HERDR_PROJECTED:-0}" != 1 ]; then
@@ -954,22 +959,50 @@ real_path_or_raw() {  # <path>
 # herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
+# The single owner of "is this path a pooled worktree we may act on": it must
+# resolve, sit inside a git repo, be that repo's ROOT, and not be the primary
+# checkout. validate_spawn_worktree refuses a spawn when it says no, and
+# spawn_abort_cleanup refuses to force-return a path when it says no. Two
+# callers, one predicate, so the destructive path can never act on something the
+# assertion just rejected. Sets SPAWN_WT_TOP so callers can report what they saw.
+SPAWN_WT_TOP=
+spawn_isolated_worktree_real() {  # <path>; prints the physical worktree root
+  local path=${1:-} real top_real
+  SPAWN_WT_TOP=
+  [ -n "$path" ] || return 1
+  real=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  [ -n "$real" ] || return 1
+  SPAWN_WT_TOP=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null || true)
+  [ -n "$SPAWN_WT_TOP" ] || return 1
+  top_real=$(cd "$SPAWN_WT_TOP" 2>/dev/null && pwd -P) || return 1
+  [ "$real" = "$top_real" ] || return 1
+  [ "$real" != "$PROJ_ABS_REAL" ] || return 1
+  printf '%s\n' "$real"
+}
+
+# Both pre-launch refusals below reclaim the window they run in, so the evidence
+# an operator needs has to travel with the error rather than staying behind in a
+# pane. treehouse prints the worktree it entered, so this transcript is also the
+# only handle on a lease this spawn never got to name.
+spawn_report_pane_evidence() {  # <target>
+  local target=${1:-} pane_tail
+  [ -n "$target" ] || return 0
+  pane_tail=$(fm_backend_capture "$BACKEND" "$target" 40 "fm-$ID" 2>/dev/null || true)
+  if [ -z "$pane_tail" ]; then
+    echo "note: no output could be captured from $target before reclaiming it" >&2
+    return 0
+  fi
+  echo "----- last 40 lines of $target -----" >&2
+  printf '%s\n' "$pane_tail" >&2
+  echo "----- end of $target -----" >&2
+}
+
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
-  wt_real=
-  if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
-    wt_real=
-  fi
-  proj_real=$PROJ_ABS_REAL
-  wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null || true)
-  wt_top_real=
-  if ! wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P); then
-    wt_top_real=
-  fi
-  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
-    echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
-    exit 1
-  fi
+  local source=$1 inspect_target=$2
+  spawn_isolated_worktree_real "$WT" >/dev/null && return 0
+  echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${SPAWN_WT_TOP:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. The resolved path is left untouched and window $inspect_target is reclaimed after the transcript below." >&2
+  spawn_report_pane_evidence "$inspect_target"
+  exit 1
 }
 
 herdr_projection_meta_field_exact() {  # <meta> <key>
@@ -1347,13 +1380,12 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
-# From here to the meta write below, this spawn holds a backend window - and,
-# once treehouse get lands, a pooled worktree - that only state/<id>.meta can
-# hand to fm-teardown.sh. Armed BEFORE the worktree wait and the isolation
-# assertion, because both of those exit with the window already open. A
-# secondmate's "worktree" is its own firstmate home, never a pooled lease, so it
-# stays out.
-[ "$KIND" = secondmate ] || LEASE_ABORT_CLEANUP=1
+# From here to the meta write below, this spawn holds a backend window that only
+# state/<id>.meta can hand to fm-teardown.sh. Armed BEFORE the worktree wait and
+# the isolation assertion, because both of those exit with the window already
+# open. A secondmate's "worktree" is its own firstmate home, never a pooled
+# lease, so it stays out.
+[ "$KIND" = secondmate ] || SPAWN_ABORT_RECLAIM=1
 
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
@@ -1378,8 +1410,13 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # a mismatch just becomes the new candidate rather than resetting the wait, so a
   # pane that is already settled by the first real read only costs the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
+  # Internal seam: tests drive the timeout path without waiting a real minute.
+  WT_WAIT_POLLS=${FM_SPAWN_WT_WAIT_POLLS:-60}
+  case "$WT_WAIT_POLLS" in
+    ''|*[!0-9]*|0) WT_WAIT_POLLS=60 ;;
+  esac
   candidate=""
-  for _ in $(seq 1 60); do
+  for _ in $(seq 1 "$WT_WAIT_POLLS"); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
@@ -1398,11 +1435,15 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     sleep 1
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: treehouse get did not enter a worktree within ${WT_WAIT_POLLS}s; window $T is reclaimed after the transcript below. If treehouse already leased a worktree, the transcript names it - this spawn never could, so return it by hand." >&2
+    spawn_report_pane_evidence "$T"
     exit 1
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+  # Proven a pooled worktree root distinct from the primary checkout, so the
+  # abort path may now hand it back. $WT is never reassigned past this point.
+  SPAWN_ABORT_RETURN_WT=1
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -1472,7 +1513,10 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
     # Record the mount and claim its ignore line BEFORE creating it, so this
     # task's teardown can remove exactly what this spawn created and nothing the
     # project owns (bin/fm-skill-mount-lib.sh).
-    fm_skill_mount_record "$STATE" "$ID" "$WT" "$rel_root/$skill"
+    fm_skill_mount_record "$STATE" "$ID" "$WT" "$rel_root/$skill" || {
+      echo "error: could not record the staged mount $rel_root/$skill; refusing to create a mount teardown would have no record of" >&2
+      return 1
+    }
     # Copy rather than symlink. A symlink into $FM_ROOT/.agents/skills lets a
     # crewmate write through the mount and mutate the firstmate home's real
     # skill files, which breaks the worktree isolation the brief promises and
@@ -1499,10 +1543,11 @@ stage_profile_skills() {
 
 if ! stage_profile_skills; then
   # A refused mount aborts before meta is published, so no teardown will ever run
-  # for this id. spawn_abort_cleanup's LEASE_ABORT_CLEANUP branch undoes the
-  # mounts and ignore lines this attempt already made and gives back the worktree,
-  # window, and temp root it leased, or the refusal would leave the project
-  # dirtier than it found it and the lease held forever.
+  # for this id. spawn_abort_cleanup's SPAWN_ABORT_RETURN_WT and
+  # SPAWN_ABORT_RECLAIM branches undo the mounts and ignore lines this attempt
+  # already made and give back the worktree, window, and temp root it leased, or
+  # the refusal would leave the project dirtier than it found it and the lease
+  # held forever.
   exit 1
 fi
 
@@ -1688,7 +1733,8 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 # meta is published: fm-teardown.sh can now name and reclaim everything above.
-LEASE_ABORT_CLEANUP=0
+SPAWN_ABORT_RECLAIM=0
+SPAWN_ABORT_RETURN_WT=0
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

@@ -223,8 +223,18 @@ fm_skill_mount_exclude_claimed_by_other() { # <state> <id> <exclude-file> <line>
 fm_skill_mount_record() { # <state> <id> <worktree> <relative-path>
   local state=$1 id=$2 wt=$3 rel=$4 ledger excl ownership held=0 status=0
   ledger=$(fm_skill_mount_ledger "$state" "$id")
-  mkdir -p "$state"
-  printf 'mount\t%s\n' "$rel" >> "$ledger"
+  # Every write here is checked. The caller stages a real directory once this
+  # returns 0, and it runs with `set -e` suppressed (bin/fm-spawn.sh reaches it
+  # through `if ! stage_profile_skills`), so an unwritable ledger has to be
+  # reported as a refusal or the mount would exist with nothing recording it.
+  if ! mkdir -p "$state"; then
+    echo "fm-skill-mount: could not create the ledger directory $state" >&2
+    return 1
+  fi
+  if ! printf 'mount\t%s\n' "$rel" >> "$ledger"; then
+    echo "fm-skill-mount: could not record the staged mount '$rel' in $ledger" >&2
+    return 1
+  fi
   excl=$(fm_skill_mount_exclude_file "$wt")
   [ -n "$excl" ] || return 0
   mkdir -p "$(dirname "$excl")"

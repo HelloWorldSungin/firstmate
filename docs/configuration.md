@@ -409,6 +409,7 @@ FMX_FOLLOWUP_MAX_AGE_SECS=604800   # local window for posting X-mode completion 
 FMX_FOLLOWUP_MAX_COUNT=3   # local cap on X-mode completion follow-ups per linked mention
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_SKILL_MOUNT_LOCK_ATTEMPTS=100   # 0.1s polls for the lock serializing writes to a project's shared git exclude file; on timeout a claim proceeds and a release refuses
+FM_SPAWN_WT_WAIT_POLLS=60   # internal/test seam: 1s polls fm-spawn.sh waits for `treehouse get` to move the pane into a worktree before refusing
 FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and the primary turn-end guard treat a watcher beacon as stale
 FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=800   # milliseconds the --claude turn-end guard waits for the Stop auto-arm's claim, health, or fresh rewake epoch before re-blocking
 FM_CLAUDE_AUTOARM_EPOCH_FRESH=15   # seconds a recorded auto-arm rewake outcome counts as this event epoch's owned recovery
