@@ -410,6 +410,15 @@ test_design_profile_contract_and_delivery_modes() {
       "$id did not require an ADR status report"
   done
 
+  # An operator override is the one figure the brief may name, because it is
+  # exactly what bin/fm-spawn.sh pins into the Stop hook that enforces it.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DESIGN_CONTEXT_HARD_LIMIT=4242 \
+    "$ROOT/bin/fm-brief.sh" brief-design-ceiling direct-proj --design >/dev/null 2>&1 \
+    || fail "design brief failed under a ceiling override"
+  brief="$home/data/brief-design-ceiling/brief.md"
+  assert_grep "FM_DESIGN_CONTEXT_HARD_LIMIT='4242' '$ROOT/bin/fm-design-context.sh' show 'brief-design-ceiling'" \
+    "$brief" "the telemetry read did not carry the operator's ceiling override"
+
   brief="$home/data/brief-design-no-mistakes/brief.md"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
     "no-mistakes design brief did not leave PR creation to its delivery pipeline"

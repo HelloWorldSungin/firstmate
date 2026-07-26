@@ -230,6 +230,15 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+# Everything a task spawn holds before state/<id>.meta exists: the pooled
+# worktree lease, the backend window sitting in it, the staged skill mounts, and
+# the per-task temp root. fm-teardown.sh reclaims all four by reading meta, so an
+# abort BETWEEN acquiring them and publishing meta - a refused skill mount, a
+# failed hook write, any set -e trip in that stretch - would orphan every one of
+# them with nothing left on disk to name them. Armed once they exist, disarmed
+# the moment meta is published. Orca keeps its own ORCA_ABORT_CLEANUP for the
+# terminal and worktree because that path can also publish a recovery meta.
+LEASE_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
@@ -260,6 +269,13 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  # Staged skill mounts come out first, before anything reclaims or removes the
+  # worktree: `treehouse return` preserves git-excluded files and the ignore
+  # lines live in the project's SHARED common git dir, so both otherwise outlive
+  # the lease (bin/fm-skill-mount-lib.sh), exactly as fm-teardown.sh orders them.
+  if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
+    fm_skill_mount_cleanup "$STATE" "$ID" "${WT:-}" || true
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -305,6 +321,24 @@ spawn_abort_cleanup() {
         fi
       fi
     fi
+  fi
+  if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
+    LEASE_ABORT_CLEANUP=0
+    if [ "$BACKEND" != orca ]; then
+      # treehouse resolves the pool from the working directory, and it kills the
+      # processes still living in the worktree, so run it from the project just
+      # as fm-teardown.sh does.
+      if [ -n "${WT:-}" ] \
+         && ! ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) >/dev/null 2>&1; then
+        echo "warning: could not return worktree $WT after an aborted spawn; return it by hand" >&2
+      fi
+      # A projected herdr pane is closed focus-preservingly by the branch above;
+      # every other backend's window is ours to kill outright.
+      if [ "${HERDR_PROJECTED:-0}" != 1 ]; then
+        fm_backend_kill "$BACKEND" "${T:-}" "${ZELLIJ_TAB_ID:-}" "fm-$ID" 2>/dev/null || true
+      fi
+    fi
+    [ -z "${TASK_TMP:-}" ] || rm -rf "$TASK_TMP"
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -1241,6 +1275,11 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   validate_spawn_worktree "treehouse get" "$T"
 fi
 
+# From here to the meta write below, this spawn holds a worktree and a window
+# that only state/<id>.meta can hand to fm-teardown.sh. A secondmate's "worktree"
+# is its own firstmate home, never a pooled lease, so it stays out.
+[ "$KIND" = secondmate ] || LEASE_ABORT_CLEANUP=1
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
@@ -1334,9 +1373,10 @@ stage_profile_skills() {
 
 if ! stage_profile_skills; then
   # A refused mount aborts before meta is published, so no teardown will ever run
-  # for this id. Undo the mounts and ignore lines this attempt already made, or
-  # the refusal would leave the project dirtier than it found it.
-  fm_skill_mount_cleanup "$STATE" "$ID" "$WT" || true
+  # for this id. spawn_abort_cleanup's LEASE_ABORT_CLEANUP branch undoes the
+  # mounts and ignore lines this attempt already made and gives back the worktree,
+  # window, and temp root it leased, or the refusal would leave the project
+  # dirtier than it found it and the lease held forever.
   exit 1
 fi
 
@@ -1345,7 +1385,17 @@ if [ "$KIND" != secondmate ]; then
     claude*)
       mkdir -p "$WT/.claude"
       if [ "$KIND" = design ]; then
-        DESIGN_CONTEXT_COMMAND="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE_REAL") $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") turn-end $(shell_quote "$ID") $(shell_quote "$TURNEND")"
+        # The crewmate's environment comes from the terminal server, not from
+        # firstmate, so every knob the ceiling depends on has to be pinned into
+        # the hook command itself. FM_DESIGN_CONTEXT_HARD_LIMIT is an operator
+        # knob (docs/configuration.md): unpinned, an override set on firstmate's
+        # side would silently leave the enforced ceiling at the default while the
+        # brief's `show` reported the overridden one.
+        DESIGN_CONTEXT_ENV="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE_REAL")"
+        if [ -n "${FM_DESIGN_CONTEXT_HARD_LIMIT:-}" ]; then
+          DESIGN_CONTEXT_ENV="$DESIGN_CONTEXT_ENV FM_DESIGN_CONTEXT_HARD_LIMIT=$(shell_quote "$FM_DESIGN_CONTEXT_HARD_LIMIT")"
+        fi
+        DESIGN_CONTEXT_COMMAND="$DESIGN_CONTEXT_ENV $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") turn-end $(shell_quote "$ID") $(shell_quote "$TURNEND")"
         DESIGN_CONTEXT_COMMAND=$(json_escape "$DESIGN_CONTEXT_COMMAND")
         cat > "$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"$DESIGN_CONTEXT_COMMAND"}]}]}}
@@ -1496,6 +1546,8 @@ META_WINDOW=$T
     echo "projects=$SECONDMATE_PROJECTS"
   fi
 } > "$STATE/$ID.meta"
+# meta is published: fm-teardown.sh can now name and reclaim everything above.
+LEASE_ABORT_CLEANUP=0
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
