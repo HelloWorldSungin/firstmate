@@ -68,6 +68,7 @@ When in doubt, write the fact into the skill or doc first, and add only the one-
 A new skill is dead weight if nothing loads it.
 Every new skill needs its load trigger declared inline: section 13 for agent-only reference skills, or the relevant operating section for anything else.
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
+The one exception is a skill firstmate never loads itself: the vendored design toolkit is triggered by the generated brief of the task whose worktree it is staged into, so its trigger belongs in that `bin/fm-brief.sh` scaffold rather than in `AGENTS.md`.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
 `bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
 Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
