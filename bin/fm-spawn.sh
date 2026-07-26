@@ -572,16 +572,17 @@ if [ "$KIND" = design ]; then
     echo "error: --design currently requires harness=claude; model skill invocation and the transcript-backed hard ceiling are not empirically verified on '$HARNESS'" >&2
     exit 1
   fi
+  # Only the skills this profile actually stages are required. batch-grill-me
+  # batches questions and prototype belongs to the separate scout detour, so
+  # neither is mounted here and neither may gate the spawn.
   for design_skill in \
     ask-matt \
     grilling \
     grill-me \
-    batch-grill-me \
     to-questionnaire \
     handoff \
     to-spec \
-    domain-modeling \
-    prototype
+    domain-modeling
   do
     [ -f "$FM_ROOT/.agents/skills/$design_skill/SKILL.md" ] || {
       echo "error: --design requires vendored skill $FM_ROOT/.agents/skills/$design_skill/SKILL.md" >&2
@@ -1478,7 +1479,7 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
   }
   # Guard the mount ROOT, not just the leaf. `.claude/skills` is a symlink in
   # this very repo, so a project whose skills root points outside the worktree
-  # would otherwise have nine directories written through the link to wherever
+  # would otherwise have the staged directories written through the link to wherever
   # it lands - the same isolation break the copy below exists to prevent.
   root_real=$(cd "$WT/$rel_root" 2>/dev/null && pwd -P || true)
   case "${root_real:-}/" in
@@ -1530,10 +1531,14 @@ stage_skill_dir() { # <relative-skill-root> <skill>...
 
 stage_profile_skills() {
   if [ "$KIND" = design ]; then
+    # batch-grill-me and prototype are deliberately absent. The profile forbids
+    # both, so not staging them makes the prohibition structural instead of
+    # leaving a batching skill model-invocable next to the worker. prototype
+    # stays available to the separate --prototype scout below.
     stage_skill_dir '.agents/skills' \
-      ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype || return 1
+      ask-matt grilling grill-me to-questionnaire handoff to-spec domain-modeling || return 1
     stage_skill_dir '.claude/skills' \
-      ask-matt grilling grill-me batch-grill-me to-questionnaire handoff to-spec domain-modeling prototype || return 1
+      ask-matt grilling grill-me to-questionnaire handoff to-spec domain-modeling || return 1
   elif [ "$PROFILE" = prototype ]; then
     stage_skill_dir '.agents/skills' prototype || return 1
     stage_skill_dir '.claude/skills' prototype || return 1

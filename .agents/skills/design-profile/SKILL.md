@@ -115,7 +115,7 @@ The integration was verified on 2026-07-24 against plugin version 1.2.0 and Clau
 The marketplace contained 41 skills, 24 with `disable-model-invocation: true`.
 `grill-with-docs` was locked, while `grilling`, `domain-modeling`, and `prototype` carried no lock.
 Live Claude `Skill` tool calls loaded the vendored `ask-matt`, `grilling`, and `domain-modeling` skills.
-Re-verified on 2026-07-25 under Claude Code 2.1.220 from a task worktree: `Skill(grilling)` and `Skill(domain-modeling)` each returned the vendored adapted body through the `.claude/skills -> ../.agents/skills` symlink, and all nine mounted skills listed as model-invocable.
+Re-verified on 2026-07-25 under Claude Code 2.1.220 from a task worktree: `Skill(grilling)` and `Skill(domain-modeling)` each returned the vendored adapted body through the `.claude/skills -> ../.agents/skills` symlink, and every skill staged at the time listed as model-invocable.
 The spawn adapter admits no other harness until both model invocation and the context backstop have equivalent empirical evidence.
 
 The design profile wires:
@@ -128,6 +128,7 @@ The design profile wires:
 - `to-spec`
 - `domain-modeling`
 
-`batch-grill-me` is vendored and model-invocable but prohibited inside the sequential design profile.
-`prototype` is vendored without a model-invocation lock and runs only in the separate scout detour.
+`batch-grill-me` is vendored but never staged into a design worktree, because it batches questions and the profile requires exactly one at a time.
+`prototype` is vendored without a model-invocation lock and is staged only by the separate `--prototype` scout detour, never into a design worktree.
+Both prohibitions are structural rather than advisory: `bin/fm-spawn.sh` neither stages nor requires either skill for a design spawn.
 `grill-with-docs`, `to-tickets`, `implement`, and `triage` are not mounted into this profile.

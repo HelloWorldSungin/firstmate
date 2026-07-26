@@ -408,7 +408,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
 }
 
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
-  local rec id out status meta hook skill
+  local rec id out status meta hook skill forbidden_excl
   id=profile-design-z18
   rec=$(make_spawn_case profile-design claude "$id")
   read_case_record "$rec"
@@ -424,8 +424,8 @@ test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
   [ "$(git -C "$WT_DIR" rev-parse --show-toplevel)" = "$WT_DIR" ] \
     || fail "design spawn fixture did not resolve the isolated worktree root"
   for skill in \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
-    to-spec domain-modeling prototype
+    ask-matt grilling grill-me to-questionnaire handoff \
+    to-spec domain-modeling
   do
     # Copies, never symlinks: a symlink would let the crewmate write through the
     # mount into the firstmate home's real skill files.
@@ -437,6 +437,20 @@ test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
       || fail "design spawn did not mount Claude skill $skill"
     [ -L "$WT_DIR/.claude/skills/$skill" ] \
       && fail "design spawn mounted Claude skill $skill as a writable symlink"
+  done
+  # The profile forbids both of these, so the prohibition is structural: neither
+  # is staged where the design worker's model can invoke it. prototype belongs to
+  # the separate --prototype scout detour instead.
+  forbidden_excl=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  for skill in batch-grill-me prototype; do
+    assert_absent "$WT_DIR/.agents/skills/$skill" \
+      "design spawn staged forbidden skill $skill into the .agents path"
+    assert_absent "$WT_DIR/.claude/skills/$skill" \
+      "design spawn staged forbidden skill $skill into the Claude path"
+    assert_no_grep "skills/$skill" "$forbidden_excl" \
+      "design spawn claimed an ignore line for forbidden skill $skill"
+    assert_no_grep "skills/$skill" "$HOME_DIR/state/$id.skill-mounts" \
+      "design spawn recorded a mount ledger entry for forbidden skill $skill"
   done
   [ -z "$(git -C "$WT_DIR" status --short)" ] \
     || fail "design skill mounts or hooks dirtied the isolated worktree"
@@ -510,7 +524,7 @@ test_design_spawn_refuses_unverified_harness() {
   pass "design spawn fails closed on a harness without invocation and context evidence"
 }
 
-# Regression: this repo VENDORS the nine design skills, so every firstmate
+# Regression: this repo VENDORS the design skills, so every firstmate
 # worktree already carries .agents/skills/<skill> as a real tracked directory.
 # The mount guard used to refuse any pre-existing real directory, which made
 # --design and --prototype abort on a firstmate-repo target - the exact case the
@@ -525,8 +539,8 @@ test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills() {
   # Make the target look like a firstmate checkout: its own committed copies,
   # each carrying the vendored marker that proves it IS the vendored skill.
   for skill in \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
-    to-spec domain-modeling prototype
+    ask-matt grilling grill-me to-questionnaire handoff \
+    to-spec domain-modeling
   do
     mkdir -p "$WT_DIR/.agents/skills/$skill" "$WT_DIR/.claude/skills/$skill"
     printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
@@ -575,8 +589,8 @@ test_design_spawn_records_only_what_it_actually_staged() {
   excl=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
   assert_present "$ledger" "design spawn did not record what it staged"
   for skill in \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
-    to-spec domain-modeling prototype
+    ask-matt grilling grill-me to-questionnaire handoff \
+    to-spec domain-modeling
   do
     assert_grep $'mount\t.agents/skills/'"$skill" "$ledger" \
       "ledger lost the staged .agents mount for $skill"
@@ -593,8 +607,8 @@ test_design_spawn_records_only_what_it_actually_staged() {
     || fail "cleanup of the recorded design mounts failed"
   assert_absent "$ledger" "cleanup left the mount ledger behind"
   for skill in \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
-    to-spec domain-modeling prototype
+    ask-matt grilling grill-me to-questionnaire handoff \
+    to-spec domain-modeling
   do
     assert_absent "$WT_DIR/.agents/skills/$skill" \
       "cleanup left the staged .agents mount for $skill behind"
@@ -607,8 +621,8 @@ test_design_spawn_records_only_what_it_actually_staged() {
   # The project's own vendored copies are skipped, so nothing is recorded and
   # teardown has no license to delete the project's committed content.
   for skill in \
-    ask-matt grilling grill-me batch-grill-me to-questionnaire handoff \
-    to-spec domain-modeling prototype
+    ask-matt grilling grill-me to-questionnaire handoff \
+    to-spec domain-modeling
   do
     mkdir -p "$WT_DIR/.agents/skills/$skill" "$WT_DIR/.claude/skills/$skill"
     printf 'source: https://github.com/mattpocock/skills\nproject-owned %s\n' "$skill" \
@@ -769,7 +783,7 @@ test_refused_mount_cleans_up_what_it_already_staged() {
   pass "a refused mount undoes the mounts, ignore lines, and lease it already took"
 }
 
-# Regression: the mounted names are generic (prototype, handoff, grilling), so a
+# Regression: the mounted names are generic (handoff, grilling, to-spec), so a
 # project shipping its OWN same-named skill must never silently shadow the
 # vendored one. Presence of a SKILL.md is not proof; only the vendored marker is.
 test_foreign_same_named_skill_refuses_instead_of_shadowing() {
@@ -778,10 +792,10 @@ test_foreign_same_named_skill_refuses_instead_of_shadowing() {
   rec=$(make_spawn_case profile-design-foreign claude "$id")
   read_case_record "$rec"
 
-  # A project's own unrelated `prototype` skill - a real SKILL.md, no marker.
-  mkdir -p "$WT_DIR/.agents/skills/prototype"
-  printf -- '---\nname: prototype\n---\n\nThis project has its own prototype skill.\n' \
-    > "$WT_DIR/.agents/skills/prototype/SKILL.md"
+  # A project's own unrelated `handoff` skill - a real SKILL.md, no marker.
+  mkdir -p "$WT_DIR/.agents/skills/handoff"
+  printf -- '---\nname: handoff\n---\n\nThis project has its own handoff skill.\n' \
+    > "$WT_DIR/.agents/skills/handoff/SKILL.md"
 
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --harness claude --design)
@@ -789,8 +803,8 @@ test_foreign_same_named_skill_refuses_instead_of_shadowing() {
   expect_code 1 "$status" "a foreign same-named skill must refuse, not silently shadow the vendored one"
   assert_contains "$out" "collides with a different skill already at" \
     "foreign-skill refusal did not name the shadowing hazard"
-  assert_grep "This project has its own prototype skill." \
-    "$WT_DIR/.agents/skills/prototype/SKILL.md" \
+  assert_grep "This project has its own handoff skill." \
+    "$WT_DIR/.agents/skills/handoff/SKILL.md" \
     "refusal overwrote the project's own skill"
   assert_absent "$HOME_DIR/state/$id.meta" \
     "a refused foreign-skill spawn still published task metadata"
@@ -798,8 +812,8 @@ test_foreign_same_named_skill_refuses_instead_of_shadowing() {
 }
 
 # Regression: stage_skill_dir guarded only the leaf path, so a project whose
-# skills ROOT is a symlink pointing outside the worktree would have nine
-# directories written through the link. This repo itself ships
+# skills ROOT is a symlink pointing outside the worktree would have every staged
+# directory written through the link. This repo itself ships
 # `.claude/skills -> ../.agents/skills`, so symlinked roots are a live pattern.
 test_skill_mount_root_outside_the_worktree_refuses() {
   local rec id out status outside

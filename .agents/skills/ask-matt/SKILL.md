@@ -26,7 +26,7 @@ Choose the smallest flow that answers the current design need.
 6. Invoke `handoff` when firstmate calls a context handoff or the runtime ceiling fires.
 
 `grill-me` is a convenience entry point for the same sequential interview.
-`batch-grill-me` is unlocked but forbidden inside `kind=design`, whose contract requires exactly one question at a time.
+`batch-grill-me` is unlocked but forbidden inside `kind=design`, whose contract requires exactly one question at a time, so a design spawn never stages it.
 
 ## Context hygiene
 
