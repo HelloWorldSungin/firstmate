@@ -13,6 +13,10 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
+# What the fake tmux emits for `capture-pane`. The pre-launch refusals reclaim
+# the window they ran in, so they must carry its transcript into the error.
+FM_FAKE_PANE_MARKER='FAKE-PANE-TRANSCRIPT-LINE'
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -26,6 +30,10 @@ case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window) exit 0 ;;
+  capture-pane)
+    printf '%s\n' "${FM_FAKE_PANE_MARKER:-}"
+    exit 0
+    ;;
   kill-window)
     [ -z "${FM_FAKE_KILL_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_KILL_LOG"
     exit 0
@@ -98,6 +106,7 @@ run_spawn() {
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_PANE_MARKER="$FM_FAKE_PANE_MARKER" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -615,10 +624,13 @@ test_design_spawn_records_only_what_it_actually_staged() {
   pass "a design spawn records exactly the mounts and ignore lines it created"
 }
 
-# The isolation assertion fires with the pooled worktree already leased and the
-# backend window already open, and it exits before any meta exists - so the
-# refusal itself has to hand both back.
-test_isolation_refusal_releases_the_window_and_lease() {
+# The isolation assertion fires with the backend window already open and exits
+# before any meta exists, so the refusal reclaims that window - and carries the
+# pane transcript into the error, because the handle it used to name is gone.
+# It must NOT force-return the resolved path: the assertion just proved that path
+# is not a pooled worktree root, and on some tmux/WSL setups it has been observed
+# to be an unrelated real checkout.
+test_isolation_refusal_reclaims_the_window_but_returns_nothing() {
   local rec id out status killlog thlog stray
   id=profile-isolation-refuse-z29
   rec=$(make_spawn_case profile-isolation-refuse claude "$id")
@@ -630,6 +642,7 @@ test_isolation_refusal_releases_the_window_and_lease() {
   mkdir -p "$stray"
   killlog="$CASE_DIR/kill.log"
   thlog="$CASE_DIR/treehouse.log"
+  : > "$thlog"
 
   export FM_FAKE_KILL_LOG="$killlog" FM_FAKE_TREEHOUSE_LOG="$thlog"
   out=$(run_spawn "$HOME_DIR" "$stray" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
@@ -644,14 +657,70 @@ test_isolation_refusal_releases_the_window_and_lease() {
     "the isolation refusal published task metadata"
   assert_grep "kill-window" "$killlog" \
     "the isolation refusal orphaned the backend window it had already opened"
-  assert_grep "return --force $stray" "$thlog" \
-    "the isolation refusal orphaned the worktree lease it had already taken"
-  # The cleanup is armed BEFORE the assertion whose job is to catch a $WT that is
-  # actually the primary checkout, so it must only ever return the resolved pane
-  # path - never the project it was spawned against.
-  assert_no_grep "return --force $PROJ_DIR\$" "$thlog" \
-    "the abort path returned the primary checkout to a treehouse pool"
-  pass "the isolation assertion gives back the window and lease it already took"
+  assert_contains "$out" "$FM_FAKE_PANE_MARKER" \
+    "the refusal reclaimed the window without carrying its transcript into the error"
+  assert_no_grep "return --force" "$thlog" \
+    "the abort path force-returned a path the isolation assertion had just rejected"
+  pass "the isolation refusal reclaims its window with evidence and returns nothing"
+}
+
+# The same must hold before a worktree is ever resolved: the wait times out with
+# $WT still empty, so there is nothing this spawn can name, and the pane
+# transcript is the only place a lease treehouse may already have taken shows up.
+test_worktree_wait_timeout_reports_the_pane_and_returns_nothing() {
+  local rec id out status thlog
+  id=profile-wait-timeout-z31
+  rec=$(make_spawn_case profile-wait-timeout claude "$id")
+  read_case_record "$rec"
+  thlog="$CASE_DIR/treehouse.log"
+  : > "$thlog"
+
+  # The pane never leaves the project, so the wait never resolves a worktree.
+  export FM_FAKE_TREEHOUSE_LOG="$thlog" FM_SPAWN_WT_WAIT_POLLS=1
+  out=$(run_spawn "$HOME_DIR" "$PROJ_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude)
+  status=$?
+  unset FM_FAKE_TREEHOUSE_LOG FM_SPAWN_WT_WAIT_POLLS
+
+  expect_code 1 "$status" "a pane that never enters a worktree must refuse the spawn"
+  assert_contains "$out" "did not enter a worktree" \
+    "the wait timeout lost its diagnostic"
+  assert_contains "$out" "$FM_FAKE_PANE_MARKER" \
+    "the wait timeout reclaimed the window without carrying its transcript into the error"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "the wait timeout published task metadata"
+  assert_no_grep "return --force" "$thlog" \
+    "the abort path returned a worktree the spawn never resolved"
+  pass "the worktree wait timeout reports the pane and returns nothing it cannot name"
+}
+
+# A mount with no ledger record is exactly the leak the ledger exists to prevent:
+# the next lessee of the pooled worktree would inherit stray model-invocable
+# skills nothing can name. An unwritable ledger must refuse like any other mount
+# refusal, and `set -e` cannot do it - staging runs inside `if ! ...`.
+test_unwritable_ledger_refuses_instead_of_staging_unrecorded_mounts() {
+  local rec id out status
+  id=profile-design-ledger-ro-z32
+  rec=$(make_spawn_case profile-design-ledger-ro claude "$id")
+  read_case_record "$rec"
+
+  # A directory where the ledger file belongs: appending fails for any user,
+  # while the rest of the state directory stays writable, so this isolates the
+  # ledger write from every other reason a spawn could fail.
+  mkdir -p "$HOME_DIR/state/$id.skill-mounts"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+
+  expect_code 1 "$status" "an unwritable mount ledger must refuse the spawn"
+  assert_contains "$out" "could not record the staged mount" \
+    "the ledger refusal lost its diagnostic"
+  assert_absent "$WT_DIR/.agents/skills/ask-matt" \
+    "a spawn staged a skill the ledger has no record of"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "a spawn with an unrecordable mount still published task metadata"
+  pass "an unwritable ledger refuses instead of staging mounts teardown cannot undo"
 }
 
 # Regression: a refused mount aborts before meta exists, so no teardown will ever
@@ -659,19 +728,23 @@ test_isolation_refusal_releases_the_window_and_lease() {
 # mounts and ignore lines, and not the worktree lease, window, or temp root it
 # had already acquired by the time staging ran.
 test_refused_mount_cleans_up_what_it_already_staged() {
-  local rec id out status excl
+  local rec id out status excl thlog
   id=profile-design-refuse-cleanup-z26
   rec=$(make_spawn_case profile-design-refuse-cleanup claude "$id")
   read_case_record "$rec"
+  thlog="$CASE_DIR/treehouse.log"
+  : > "$thlog"
 
   # `to-spec` is staged after several successful mounts, so the refusal lands
   # mid-way through staging.
   mkdir -p "$WT_DIR/.agents/skills"
   printf 'not a skill\n' > "$WT_DIR/.agents/skills/to-spec"
 
+  export FM_FAKE_TREEHOUSE_LOG="$thlog"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --harness claude --design)
   status=$?
+  unset FM_FAKE_TREEHOUSE_LOG
   expect_code 1 "$status" "a mid-staging collision must refuse"
   assert_contains "$out" "collides with project path" "refusal lost its diagnostic"
   excl=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
@@ -689,6 +762,10 @@ test_refused_mount_cleans_up_what_it_already_staged() {
   # itself has to give the temp root back.
   assert_absent "/tmp/fm-$id" \
     "a refused spawn orphaned its per-task temp root"
+  # This refusal lands AFTER the isolation assertion passed, so unlike the
+  # rejected-path cases the lease is proven ours and must go back to its pool.
+  assert_grep "return --force $WT_DIR" "$thlog" \
+    "a refused spawn orphaned the worktree lease the assertion had already cleared"
   pass "a refused mount undoes the mounts, ignore lines, and lease it already took"
 }
 
@@ -825,7 +902,9 @@ test_design_spawn_refuses_a_malformed_context_ceiling
 test_design_spawn_refuses_unverified_harness
 test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
 test_design_spawn_records_only_what_it_actually_staged
-test_isolation_refusal_releases_the_window_and_lease
+test_isolation_refusal_reclaims_the_window_but_returns_nothing
+test_worktree_wait_timeout_reports_the_pane_and_returns_nothing
+test_unwritable_ledger_refuses_instead_of_staging_unrecorded_mounts
 test_refused_mount_cleans_up_what_it_already_staged
 test_foreign_same_named_skill_refuses_instead_of_shadowing
 test_skill_mount_root_outside_the_worktree_refuses
