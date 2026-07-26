@@ -367,9 +367,16 @@ if [ "$KIND" = design ]; then
   RULE2="2. Stay inside this worktree; the only files you may write outside it are the status file below and the profile handoff at \`$DATA/$ID/handoff.md\`."
   # Pin the telemetry read to the same home bin/fm-spawn.sh pins the writing Stop
   # hook to. A crewmate's environment comes from the terminal server, not from
-  # firstmate, so an unpinned `show` can resolve a foreign state dir.
+  # firstmate, so an unpinned `show` can resolve a foreign state dir. The ceiling
+  # override rides along for the same reason and so `show` reports exactly the
+  # figure the hook enforces; the default stays unpinned so no number is baked
+  # into a brief that the runtime may not be enforcing.
   DESIGN_STATE_ABS=$(cd "$STATE" 2>/dev/null && pwd -P || printf '%s' "$STATE")
-  DESIGN_CONTEXT_SHOW="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$DESIGN_STATE_ABS") $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") show $(shell_quote "$ID")"
+  DESIGN_CONTEXT_ENV="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$DESIGN_STATE_ABS")"
+  if [ -n "${FM_DESIGN_CONTEXT_HARD_LIMIT:-}" ]; then
+    DESIGN_CONTEXT_ENV="$DESIGN_CONTEXT_ENV FM_DESIGN_CONTEXT_HARD_LIMIT=$(shell_quote "$FM_DESIGN_CONTEXT_HARD_LIMIT")"
+  fi
+  DESIGN_CONTEXT_SHOW="$DESIGN_CONTEXT_ENV $(shell_quote "$FM_ROOT/bin/fm-design-context.sh") show $(shell_quote "$ID")"
   DESIGN_SECTION=$(cat <<EOF
 # Design profile
 This is an interactive DESIGN task.

@@ -429,6 +429,27 @@ test_design_spawn_mounts_skills_records_kind_and_installs_backstop() {
   pass "design spawn resolves an isolated worktree, records its kind, mounts skills, and installs context telemetry"
 }
 
+# The crewmate's environment comes from the terminal server, not from firstmate,
+# so an operator's ceiling override only reaches the process that ENFORCES the
+# ceiling if the hook command carries it.
+test_design_hook_pins_the_operator_context_ceiling() {
+  local rec id status hook
+  id=profile-design-ceiling-z27
+  rec=$(make_spawn_case profile-design-ceiling claude "$id")
+  read_case_record "$rec"
+
+  export FM_DESIGN_CONTEXT_HARD_LIMIT=4242
+  run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design >/dev/null
+  status=$?
+  unset FM_DESIGN_CONTEXT_HARD_LIMIT
+  expect_code 0 "$status" "design spawn under a ceiling override should succeed"
+  hook="$WT_DIR/.claude/settings.local.json"
+  assert_grep "FM_DESIGN_CONTEXT_HARD_LIMIT='4242'" "$hook" \
+    "design Stop hook enforced the default ceiling despite an operator override"
+  pass "design Stop hook pins the operator's context ceiling into the enforcing process"
+}
+
 test_design_spawn_refuses_unverified_harness() {
   local rec id out status
   id=profile-design-refuse-z19
@@ -561,7 +582,9 @@ test_design_spawn_records_only_what_it_actually_staged() {
 }
 
 # Regression: a refused mount aborts before meta exists, so no teardown will ever
-# run for that id. The attempt must leave nothing of its own behind.
+# run for that id. The attempt must leave nothing of its own behind - not the
+# mounts and ignore lines, and not the worktree lease, window, or temp root it
+# had already acquired by the time staging ran.
 test_refused_mount_cleans_up_what_it_already_staged() {
   local rec id out status excl
   id=profile-design-refuse-cleanup-z26
@@ -587,7 +610,13 @@ test_refused_mount_cleans_up_what_it_already_staged() {
     "a refused spawn left its ignore lines in the project's shared git dir"
   assert_grep "not a skill" "$WT_DIR/.agents/skills/to-spec" \
     "cleanup after refusal touched the project's own path"
-  pass "a refused mount undoes the mounts and ignore lines it already made"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "a refused spawn published task metadata"
+  # Nothing names /tmp/fm-<id> once the refusal exits without meta, so the spawn
+  # itself has to give the temp root back.
+  assert_absent "/tmp/fm-$id" \
+    "a refused spawn orphaned its per-task temp root"
+  pass "a refused mount undoes the mounts, ignore lines, and lease it already took"
 }
 
 # Regression: the mounted names are generic (prototype, handoff, grilling), so a
@@ -718,6 +747,7 @@ test_pi_threads_model_and_max_effort
 test_batch_forwards_shared_profile_flags
 test_active_dispatch_profile_does_not_block_secondmate_launch
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop
+test_design_hook_pins_the_operator_context_ceiling
 test_design_spawn_refuses_unverified_harness
 test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
 test_design_spawn_records_only_what_it_actually_staged

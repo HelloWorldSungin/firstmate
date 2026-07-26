@@ -69,6 +69,9 @@ make_fake_root() {
   # design-toolkit skill mounts, so it is a required sibling even for a task
   # that never staged any.
   ln -s "$ROOT/bin/fm-skill-mount-lib.sh" "$fake/bin/fm-skill-mount-lib.sh"
+  # fm-wake-lib.sh: fm-skill-mount-lib.sh sources it for the portable lock that
+  # serializes shared-exclude-file writes.
+  ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -173,6 +176,9 @@ test_teardown_skips_gracefully_without_tasktmp() {
   # design-toolkit skill mounts, so it is a required sibling even for a task
   # that never staged any.
   ln -s "$ROOT/bin/fm-skill-mount-lib.sh" "$fake/bin/fm-skill-mount-lib.sh"
+  # fm-wake-lib.sh: fm-skill-mount-lib.sh sources it for the portable lock that
+  # serializes shared-exclude-file writes.
+  ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0

@@ -27,7 +27,17 @@
 # never touches it. Sibling co-ownership is not hypothetical - a design task and
 # the prototype scout it dispatches both mount `prototype` into worktrees that
 # share one common git dir - so a claim held by another live ledger always wins
-# over removal, and whichever task tears down last releases the line.
+# over removal, and whichever task tears down last releases the line. Because
+# those siblings are separate processes racing on one shared file, every claim
+# and every release runs under the per-exclude-file lock below.
+
+# Portable lock primitives (fm_lock_try_acquire/fm_lock_release). bin/fm-spawn.sh
+# already sources this library before us; bin/fm-teardown.sh does not, so pull it
+# in here rather than making every consumer remember to.
+if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh"
+fi
 
 # Proof that a file IS the vendored copy rather than a same-named project skill.
 # Every vendored SKILL.md carries this exact frontmatter line, and
@@ -56,11 +66,56 @@ fm_skill_mount_exclude_file() { # <worktree>
   printf '%s/%s\n' "$wt_real" "$excl"
 }
 
-# 0 when this call appended the line, 1 when it was already present. Idempotent
-# either way: the line exists exactly once when this returns.
-fm_skill_mount_exclude_add() { # <exclude-file> <line>
+# One lock per exclude file, keyed on the file itself so that everything touching
+# it serializes - including spawns and teardowns from DIFFERENT firstmate homes,
+# which share no other state. Without it the release below (a read-modify-write:
+# grep -v into a temp, then mv) silently drops any line a concurrent spawn
+# appended between its read and its mv, which un-hides that live task's staged
+# mounts and lets its own `git add -A` commit them.
+#
+# The critical section is wider than the file: a line is `owned` iff the file AND
+# the sibling ledgers say so, so the claim decision and the ledger append belong
+# inside the same section as the append. A release that scanned for other claims
+# before a sibling's claim landed would otherwise strip the ignore line out from
+# under mounts that are still on disk.
+#
+# Bounded at FM_SKILL_MOUNT_LOCK_ATTEMPTS polls of 0.1s (10s by default, lowered
+# by tests), because the section is a few file operations long and blocking a
+# spawn or a teardown forever is worse than the race: on timeout an append
+# proceeds anyway (>> is atomic against other appends; only the rewrite can lose
+# it) while a release refuses and leaves its line, the conservative failure.
+fm_skill_mount_exclude_lock_path() { # <exclude-file>
+  printf '%s.fm-skill-mount.lock\n' "$1"
+}
+
+case "${FM_SKILL_MOUNT_LOCK_ATTEMPTS:-}" in
+  ''|*[!0-9]*) FM_SKILL_MOUNT_LOCK_ATTEMPTS=100 ;;
+esac
+
+fm_skill_mount_exclude_lock() { # <exclude-file>
+  local lock attempt=0
+  # An unwritable git dir is not contention: the lock could never be created, so
+  # polling out the whole budget would only stall the caller once per mount.
+  [ -w "$(dirname "$1")" ] || return 1
+  lock=$(fm_skill_mount_exclude_lock_path "$1")
+  while [ "$attempt" -lt "$FM_SKILL_MOUNT_LOCK_ATTEMPTS" ]; do
+    if fm_lock_try_acquire "$lock"; then
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+fm_skill_mount_exclude_unlock() { # <exclude-file>
+  fm_lock_release "$(fm_skill_mount_exclude_lock_path "$1")" || true
+}
+
+# Lock-held primitives. Callers that need a wider critical section than one file
+# operation hold the lock themselves and call these directly.
+fm_skill_mount_exclude_append() { # <exclude-file> <line>
   local excl=$1 line=$2
-  mkdir -p "$(dirname "$excl")"
   if grep -qxF "$line" "$excl" 2>/dev/null; then
     return 1
   fi
@@ -68,7 +123,7 @@ fm_skill_mount_exclude_add() { # <exclude-file> <line>
   return 0
 }
 
-fm_skill_mount_exclude_remove() { # <exclude-file> <line>
+fm_skill_mount_exclude_strip() { # <exclude-file> <line>
   local excl=$1 line=$2 tmp status
   [ -f "$excl" ] || return 0
   grep -qxF "$line" "$excl" 2>/dev/null || return 0
@@ -86,6 +141,44 @@ fm_skill_mount_exclude_remove() { # <exclude-file> <line>
     return 1
   fi
   mv "$tmp" "$excl"
+}
+
+# 0 when this call appended the line, 1 when it was already present. Idempotent
+# either way: the line exists exactly once when this returns.
+fm_skill_mount_exclude_add() { # <exclude-file> <line>
+  local excl=$1 line=$2 held=0 status
+  mkdir -p "$(dirname "$excl")"
+  if fm_skill_mount_exclude_lock "$excl"; then
+    held=1
+  else
+    echo "fm-skill-mount: could not serialize on $excl; appending '$line' unserialized" >&2
+  fi
+  if fm_skill_mount_exclude_append "$excl" "$line"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$held" = 1 ]; then
+    fm_skill_mount_exclude_unlock "$excl"
+  fi
+  return "$status"
+}
+
+# Give up one ignore line this task claimed, unless another live task's ledger
+# still claims the same line. Both halves run under one lock so a sibling's claim
+# can never land in between.
+fm_skill_mount_exclude_release() { # <state> <id> <exclude-file> <line>
+  local state=$1 id=$2 excl=$3 line=$4
+  [ -f "$excl" ] || return 0
+  if ! fm_skill_mount_exclude_lock "$excl"; then
+    echo "fm-skill-mount: could not serialize on $excl; leaving the ignore line '$line' in place" >&2
+    return 0
+  fi
+  if ! fm_skill_mount_exclude_claimed_by_other "$state" "$id" "$excl" "$line"; then
+    fm_skill_mount_exclude_strip "$excl" "$line" || true
+  fi
+  fm_skill_mount_exclude_unlock "$excl"
+  return 0
 }
 
 # 0 when a DIFFERENT task's ledger records this exact exclude line. <ownership>
@@ -110,13 +203,22 @@ fm_skill_mount_exclude_claimed_by_other() { # <state> <id> <exclude-file> <line>
 # hides it. Called BEFORE the copy so the files are never briefly visible to git
 # and so a failed copy still leaves a removable record.
 fm_skill_mount_record() { # <state> <id> <worktree> <relative-path>
-  local state=$1 id=$2 wt=$3 rel=$4 ledger excl ownership
+  local state=$1 id=$2 wt=$3 rel=$4 ledger excl ownership held=0
   ledger=$(fm_skill_mount_ledger "$state" "$id")
   mkdir -p "$state"
   printf 'mount\t%s\n' "$rel" >> "$ledger"
   excl=$(fm_skill_mount_exclude_file "$wt")
   [ -n "$excl" ] || return 0
-  if fm_skill_mount_exclude_add "$excl" "$rel"; then
+  mkdir -p "$(dirname "$excl")"
+  # Append, decide ownership, and publish the claim as one section: a concurrent
+  # release that scanned the ledgers first would otherwise remove a line this
+  # task is about to depend on.
+  if fm_skill_mount_exclude_lock "$excl"; then
+    held=1
+  else
+    echo "fm-skill-mount: could not serialize on $excl; claiming '$rel' unserialized" >&2
+  fi
+  if fm_skill_mount_exclude_append "$excl" "$rel"; then
     ownership=owned
   elif fm_skill_mount_exclude_claimed_by_other "$state" "$id" "$excl" "$rel" owned; then
     ownership=owned
@@ -124,6 +226,10 @@ fm_skill_mount_record() { # <state> <id> <worktree> <relative-path>
     ownership=foreign
   fi
   printf 'exclude\t%s\t%s\t%s\n' "$ownership" "$excl" "$rel" >> "$ledger"
+  if [ "$held" = 1 ]; then
+    fm_skill_mount_exclude_unlock "$excl"
+  fi
+  return 0
 }
 
 # Remove one recorded mount, or refuse loudly and leave it alone. Every refusal
@@ -192,10 +298,7 @@ fm_skill_mount_cleanup() { # <state> <id> <worktree>
     case "$kept" in
       *$'\n'"$c"$'\n'*) continue ;;
     esac
-    if fm_skill_mount_exclude_claimed_by_other "$state" "$id" "$b" "$c"; then
-      continue
-    fi
-    fm_skill_mount_exclude_remove "$b" "$c" || true
+    fm_skill_mount_exclude_release "$state" "$id" "$b" "$c" || true
   done < "$ledger"
   rm -f "$ledger"
   return 0

@@ -54,6 +54,8 @@
 #   (z) recorded mounts and ignore lines                      -> undone; a
 #       project-carried skill, a sibling task's shared line, and a project-owned
 #       ignore line are left untouched
+#   (z2) another process holds the shared exclude file's lock -> the mount is
+#       still removed, but the ignore line is left rather than rewritten blind
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -698,6 +700,56 @@ test_teardown_refuses_to_remove_a_tracked_path_named_in_the_ledger() {
   assert_grep ".agents/skills/handoff" "$excl" \
     "teardown released an ignore line while the directory it hid still exists"
   pass "teardown refuses to remove a tracked path even when its ledger names it"
+}
+
+# The exclude file lives in the project's SHARED common git dir, so a release is
+# a read-modify-write racing every other spawn's append. Serializing them is what
+# keeps a live sibling's staged mounts hidden; when the lock cannot be taken, a
+# release must leave its line rather than rewrite the file blind.
+test_exclude_release_refuses_while_another_process_holds_the_lock() {
+  local case_dir rc excl holder_pid
+  case_dir=$(make_case skill-mount-exclude-lock)
+  write_meta "$case_dir" local-only ship
+  excl=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+
+  mkdir -p "$case_dir/wt/.agents/skills/grilling"
+  printf 'vendored\n' > "$case_dir/wt/.agents/skills/grilling/SKILL.md"
+  {
+    printf 'mount\t.agents/skills/grilling\n'
+    printf 'exclude\towned\t%s\t.agents/skills/grilling\n' "$excl"
+  } > "$case_dir/state/task-x1.skill-mounts"
+  printf '.agents/skills/grilling\n' >> "$excl"
+
+  # A live sibling holding the lock the whole time teardown runs.
+  bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$2.fm-skill-mount.lock"
+    sleep 5
+    fm_lock_release "$2.fm-skill-mount.lock"
+  ' _ "$ROOT" "$excl" >/dev/null 2>&1 &
+  holder_pid=$!
+  # Wait for the holder to actually own the lock before racing it.
+  while [ ! -e "$excl.fm-skill-mount.lock" ] && [ ! -L "$excl.fm-skill-mount.lock" ]; do
+    sleep 0.05
+  done
+
+  set +e
+  FM_SKILL_MOUNT_LOCK_ATTEMPTS=2 run_teardown "$case_dir" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  expect_code 0 "$rc" "exclude-lock: teardown should still succeed"
+  assert_grep ".agents/skills/grilling" "$excl" \
+    "teardown rewrote the shared exclude file without holding its lock"
+  assert_grep "could not serialize on $excl" "$case_dir/stderr" \
+    "teardown skipped the ignore line without saying it could not serialize"
+  # The mount itself is per-worktree, so it is still removed.
+  assert_absent "$case_dir/wt/.agents/skills/grilling" \
+    "teardown left a staged mount behind because the exclude lock was busy"
+  pass "an unobtainable exclude lock leaves the shared file alone instead of rewriting it blind"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -1489,6 +1541,7 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_staged_skill_mounts_and_excludes_are_undone
+test_exclude_release_refuses_while_another_process_holds_the_lock
 test_teardown_refuses_to_remove_a_tracked_path_named_in_the_ledger
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
