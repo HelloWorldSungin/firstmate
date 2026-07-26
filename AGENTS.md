@@ -58,7 +58,7 @@ CONTRIBUTING.md      contributor workflow and repo conventions
 README.md            public overview and development notes
 .github/workflows/   shared CI and PR enforcement, committed
 .tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
-.agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
+.agents/skills/      internal skills, committed; firstmate-loaded ones plus the design toolkit fm-spawn stages into a design worktree; each carries metadata.internal=true for installers
 .claude/skills       symlink to .agents/skills for claude compatibility
 skills/              standalone public installer-facing skills, committed; not loaded by firstmate
 bin/                 helper scripts, committed; read each script's header before first use
@@ -293,7 +293,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 
 ### Validate
 
-For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
+For a no-mistakes ship or design task, trigger validation on the same worker after it commits its deliverable, using the harness invocation owned by `harness-adapters`.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 
@@ -309,7 +309,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 
 ### PR ready, landing, and teardown
 
-For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
+For PR-based ship and design tasks, the ready signal depends on mode: `no-mistakes` reports `PR <url> checks green` after CI is green, while `direct-PR` reports `PR <url>` after opening the PR; `bin/fm-brief.sh` owns each kind's exact `done:` record.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
@@ -435,7 +435,7 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item; use `tasks-axi hold <id> --reason "<reason>" --kind captain` for a captain-gated thread.
-Unresolved decisions discovered by investigations or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.
+Unresolved decisions discovered by investigations, design sessions, or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.
 Update the backlog on every dispatch, completion, and decision for a work item.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
 
@@ -455,7 +455,7 @@ Use its scaffold as the contract, then replace every `{TASK}` placeholder with a
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
 Every ship, design, and prototype scout brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
-If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
+If a ship or design task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
 
@@ -482,7 +482,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `project-management` - load before adding, creating, removing, or initializing a project.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+- `decision-hold-lifecycle` - load before treating an investigation, design session, or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `design-profile` - load before dispatching or supervising a design worker, answering its question, pacing or handing off its context, launching its prototype scout, treating its ADR as complete, or tearing it down.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
