@@ -363,7 +363,7 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 }
 
 test_design_profile_contract_and_delivery_modes() {
-  local home id brief
+  local home id brief status
   home="$TMP_ROOT/design-profile-home"
   write_registry "$home"
 
@@ -418,6 +418,17 @@ test_design_profile_contract_and_delivery_modes() {
   brief="$home/data/brief-design-ceiling/brief.md"
   assert_grep "FM_DESIGN_CONTEXT_HARD_LIMIT='4242' '$ROOT/bin/fm-design-context.sh' show 'brief-design-ceiling'" \
     "$brief" "the telemetry read did not carry the operator's ceiling override"
+
+  # A ceiling the runtime cannot honour would make every `show` and every
+  # turn-end hook die before writing telemetry, so the brief refuses to carry it.
+  set +e
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DESIGN_CONTEXT_HARD_LIMIT=110k \
+    "$ROOT/bin/fm-brief.sh" brief-design-badceiling direct-proj --design >/dev/null 2>&1
+  status=$?
+  set -e
+  expect_code 1 "$status" "a malformed ceiling override should refuse the design brief"
+  assert_absent "$home/data/brief-design-badceiling/brief.md" \
+    "a refused ceiling override still scaffolded a design brief"
 
   brief="$home/data/brief-design-no-mistakes/brief.md"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \

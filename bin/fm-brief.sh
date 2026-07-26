@@ -372,6 +372,13 @@ if [ "$KIND" = design ]; then
   # figure the hook enforces; the default stays unpinned so no number is baked
   # into a brief that the runtime may not be enforcing.
   DESIGN_STATE_ABS=$(cd "$STATE" 2>/dev/null && pwd -P || printf '%s' "$STATE")
+  # Ask the enforcing script whether it can honour the override before writing it
+  # into a brief. A malformed value makes every `show` and every turn-end hook
+  # die before it writes telemetry, so the backstop would be silently gone.
+  "$FM_ROOT/bin/fm-design-context.sh" limit >/dev/null || {
+    echo "error: --design refuses FM_DESIGN_CONTEXT_HARD_LIMIT='${FM_DESIGN_CONTEXT_HARD_LIMIT:-}'; the mechanical context ceiling must be a positive integer" >&2
+    exit 1
+  }
   DESIGN_CONTEXT_ENV="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$DESIGN_STATE_ABS")"
   if [ -n "${FM_DESIGN_CONTEXT_HARD_LIMIT:-}" ]; then
     DESIGN_CONTEXT_ENV="$DESIGN_CONTEXT_ENV FM_DESIGN_CONTEXT_HARD_LIMIT=$(shell_quote "$FM_DESIGN_CONTEXT_HARD_LIMIT")"

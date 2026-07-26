@@ -25,7 +25,11 @@ esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  has-session|new-session|new-window) exit 0 ;;
+  kill-window)
+    [ -z "${FM_FAKE_KILL_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_KILL_LOG"
+    exit 0
+    ;;
   send-keys)
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
       prev=
@@ -42,7 +46,13 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
@@ -450,6 +460,30 @@ test_design_hook_pins_the_operator_context_ceiling() {
   pass "design Stop hook pins the operator's context ceiling into the enforcing process"
 }
 
+# A malformed ceiling makes fm-design-context.sh exit before it writes any
+# telemetry, so pinning one would remove the mechanical backstop rather than trip
+# it. The spawn has to refuse before it leases anything.
+test_design_spawn_refuses_a_malformed_context_ceiling() {
+  local rec id out status
+  id=profile-design-badceiling-z28
+  rec=$(make_spawn_case profile-design-badceiling claude "$id")
+  read_case_record "$rec"
+
+  export FM_DESIGN_CONTEXT_HARD_LIMIT=110k
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude --design)
+  status=$?
+  unset FM_DESIGN_CONTEXT_HARD_LIMIT
+  expect_code 1 "$status" "a malformed ceiling override must refuse the design spawn"
+  assert_contains "$out" "must be a positive integer" \
+    "the ceiling refusal did not explain what it rejected"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "a refused ceiling override still published task metadata"
+  assert_absent "$WT_DIR/.claude/settings.local.json" \
+    "a refused ceiling override still installed a Stop hook"
+  pass "a malformed context ceiling refuses the spawn instead of disabling the backstop"
+}
+
 test_design_spawn_refuses_unverified_harness() {
   local rec id out status
   id=profile-design-refuse-z19
@@ -579,6 +613,45 @@ test_design_spawn_records_only_what_it_actually_staged() {
   assert_absent "$HOME_DIR/state/${id}b.skill-mounts" \
     "a spawn that staged nothing still claimed removable mounts"
   pass "a design spawn records exactly the mounts and ignore lines it created"
+}
+
+# The isolation assertion fires with the pooled worktree already leased and the
+# backend window already open, and it exits before any meta exists - so the
+# refusal itself has to hand both back.
+test_isolation_refusal_releases_the_window_and_lease() {
+  local rec id out status killlog thlog stray
+  id=profile-isolation-refuse-z29
+  rec=$(make_spawn_case profile-isolation-refuse claude "$id")
+  read_case_record "$rec"
+
+  # A real directory that is not a git worktree root: the pane settles there, so
+  # the wait succeeds and validate_spawn_worktree is what refuses.
+  stray="$CASE_DIR/not-a-worktree"
+  mkdir -p "$stray"
+  killlog="$CASE_DIR/kill.log"
+  thlog="$CASE_DIR/treehouse.log"
+
+  export FM_FAKE_KILL_LOG="$killlog" FM_FAKE_TREEHOUSE_LOG="$thlog"
+  out=$(run_spawn "$HOME_DIR" "$stray" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness claude)
+  status=$?
+  unset FM_FAKE_KILL_LOG FM_FAKE_TREEHOUSE_LOG
+
+  expect_code 1 "$status" "a non-worktree pane path must refuse the spawn"
+  assert_contains "$out" "did not yield an isolated worktree" \
+    "the isolation assertion lost its diagnostic"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "the isolation refusal published task metadata"
+  assert_grep "kill-window" "$killlog" \
+    "the isolation refusal orphaned the backend window it had already opened"
+  assert_grep "return --force $stray" "$thlog" \
+    "the isolation refusal orphaned the worktree lease it had already taken"
+  # The cleanup is armed BEFORE the assertion whose job is to catch a $WT that is
+  # actually the primary checkout, so it must only ever return the resolved pane
+  # path - never the project it was spawned against.
+  assert_no_grep "return --force $PROJ_DIR\$" "$thlog" \
+    "the abort path returned the primary checkout to a treehouse pool"
+  pass "the isolation assertion gives back the window and lease it already took"
 }
 
 # Regression: a refused mount aborts before meta exists, so no teardown will ever
@@ -748,9 +821,11 @@ test_batch_forwards_shared_profile_flags
 test_active_dispatch_profile_does_not_block_secondmate_launch
 test_design_spawn_mounts_skills_records_kind_and_installs_backstop
 test_design_hook_pins_the_operator_context_ceiling
+test_design_spawn_refuses_a_malformed_context_ceiling
 test_design_spawn_refuses_unverified_harness
 test_design_spawn_succeeds_on_a_target_that_already_carries_the_skills
 test_design_spawn_records_only_what_it_actually_staged
+test_isolation_refusal_releases_the_window_and_lease
 test_refused_mount_cleans_up_what_it_already_staged
 test_foreign_same_named_skill_refuses_instead_of_shadowing
 test_skill_mount_root_outside_the_worktree_refuses

@@ -37,6 +37,12 @@
 #   fm-design-context.sh turn-end <task-id> <turn-end-path>
 #   fm-design-context.sh show <task-id>
 #   fm-design-context.sh reset <task-id>
+#   fm-design-context.sh limit
+#
+# `limit` prints the ceiling this helper would enforce and exits non-zero when
+# the operator override cannot be honoured. It exists so the spawn and brief
+# scaffolds validate the override against the ONE process that enforces it,
+# rather than re-deriving the rule and drifting from it.
 #
 # The turn-end wake is unconditional: it is armed before any other work, so a
 # failure anywhere in this helper degrades to missing telemetry, never to a
@@ -249,7 +255,14 @@ reset_context() { # <task-id>
   mv "$tmp" "$sidecar"
 }
 
-[ "$#" -ge 2 ] || fail "usage: fm-design-context.sh turn-end <task-id> <turn-end-path> | show <task-id> | reset <task-id>"
+if [ "${1:-}" = limit ]; then
+  [ "$#" -eq 1 ] || fail "limit takes no arguments"
+  validate_limit
+  printf '%s\n' "$HARD_LIMIT"
+  exit 0
+fi
+
+[ "$#" -ge 2 ] || fail "usage: fm-design-context.sh turn-end <task-id> <turn-end-path> | show <task-id> | reset <task-id> | limit"
 command=$1
 id=$2
 fm_task_id_path_safe "$id" || fail "invalid task id"
