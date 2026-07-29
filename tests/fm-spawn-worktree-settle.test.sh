@@ -166,6 +166,7 @@ test_issue_prose_without_marker_is_not_inferred() {
   rec=$(make_settle_case settle-issue-prose "$id" 0)
   read_settle_record "$rec"
   brief="$HOME_DIR/data/$id/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal Markdown in the brief fixture.
   printf '%s\n' \
     'Investigate GitHub issue #99 and report the findings.' \
     'Put `Closes #99` in the eventual PR body.' > "$brief"
