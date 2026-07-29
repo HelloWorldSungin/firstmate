@@ -205,6 +205,56 @@ test_issue_traceability_is_strictly_opt_in() {
   pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
 }
 
+brief_fingerprint() {
+  local brief=$1 data=$2 id=$3 hash bytes
+  hash=$(
+    FM_GOLDEN_ROOT="$ROOT" FM_GOLDEN_DATA="$data" perl -pe \
+      's/\Q$ENV{FM_GOLDEN_ROOT}\E/<FM_ROOT>/g; s/\Q$ENV{FM_GOLDEN_DATA}\E/<FM_DATA>/g' \
+      "$brief" | shasum -a 256 | awk '{print $1}'
+  )
+  bytes=$(
+    FM_GOLDEN_ROOT="$ROOT" FM_GOLDEN_DATA="$data" perl -pe \
+      's/\Q$ENV{FM_GOLDEN_ROOT}\E/<FM_ROOT>/g; s/\Q$ENV{FM_GOLDEN_DATA}\E/<FM_DATA>/g' \
+      "$brief" | wc -c | tr -d ' '
+  )
+  printf '%s %s %s\n' "$hash" "$bytes" "$id"
+}
+
+test_no_issue_briefs_match_exact_goldens() {
+  local home actual id
+  home="$TMP_ROOT/no-issue-golden-home"
+  actual="$TMP_ROOT/no-issue-golden.actual"
+  write_registry "$home"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-nm no-registry-proj >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-direct direct-proj >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-local local-proj >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-ship-herdr no-registry-proj --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-scout sample --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-scout-herdr sample --scout --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state FM_SECONDMATE_CHARTER='{TASK}' \
+    "$ROOT/bin/fm-brief.sh" golden-secondmate --secondmate alpha beta >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state FM_SECONDMATE_CHARTER='{TASK}' \
+    "$ROOT/bin/fm-brief.sh" golden-secondmate-empty --secondmate --no-projects >/dev/null 2>&1
+
+  : > "$actual"
+  for id in golden-nm golden-direct golden-local golden-ship-herdr \
+    golden-scout golden-scout-herdr golden-secondmate golden-secondmate-empty; do
+    brief_fingerprint "$home/data/$id/brief.md" "$home/data" "$id" >> "$actual"
+  done
+  if ! cmp "$ROOT/tests/fixtures/fm-brief-no-issue.sha256" "$actual"; then
+    diff -u "$ROOT/tests/fixtures/fm-brief-no-issue.sha256" "$actual" >&2 || true
+    fail "no-issue brief bytes drifted from the pre-issue goldens"
+  fi
+  pass "fm-brief.sh: no-issue brief variants remain byte-identical"
+}
+
 # Registry with one project per delivery mode, so each ship-mode DOD branch is
 # exercised. A project absent from the registry defaults to no-mistakes.
 write_registry() {
@@ -650,6 +700,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_issue_traceability_is_strictly_opt_in
+test_no_issue_briefs_match_exact_goldens
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
