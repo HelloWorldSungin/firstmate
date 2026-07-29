@@ -117,6 +117,8 @@ test_single_stale_first_read_is_not_accepted() {
     "meta did not record the settled worktree"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
+  assert_no_grep 'issue=' "$HOME_DIR/state/$id.meta" \
+    "spawn added issue metadata to a brief with no recorded issue"
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
@@ -141,7 +143,25 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+test_explicit_brief_issue_is_recorded_in_task_meta() {
+  local rec id out status brief
+  id=settle-recorded-issue-z3
+  rec=$(make_settle_case settle-recorded-issue "$id" 0)
+  read_settle_record "$rec"
+  brief="$HOME_DIR/data/$id/brief.md"
+  printf '%s\n' '<!-- firstmate-task-issue=41 -->' "brief for $id" > "$brief"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should accept an explicit valid issue marker"
+  assert_contains "$out" "spawned $id" "issue-marked spawn did not report success"
+  assert_grep 'issue=41' "$HOME_DIR/state/$id.meta" \
+    "spawn did not copy the explicit brief issue into task metadata"
+  pass "spawn records only the explicit issue identity carried by the generated brief"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_explicit_brief_issue_is_recorded_in_task_meta
 
 echo "# all fm-spawn-worktree-settle tests passed"

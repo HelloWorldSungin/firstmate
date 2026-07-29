@@ -14,6 +14,10 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) an open recorded issue is closed after merge and linked to the PR
+#   (j) an already-closed recorded issue is left alone
+#   (k) issue-close failure reports the merge as successful and exits zero
+#   (l) a task with no recorded issue makes no issue API calls
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -74,6 +78,69 @@ add_gh_mocks_merge_fails() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+add_gh_mocks_issue_open_then_closed() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "issue view")
+    count_file="$FM_TEST_GH_AXI_LOG.issue-views"
+    count=0
+    [ -f "$count_file" ] && count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    if [ "$count" -eq 1 ]; then
+      printf 'issue:\n  state: open\n'
+    else
+      printf 'issue:\n  state: closed\n'
+    fi
+    ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+add_gh_mocks_issue_closed() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "issue view") printf 'issue:\n  state: closed\n' ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+add_gh_mocks_issue_close_fails() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "issue view") printf 'issue:\n  state: open\n' ;;
+  "issue close") echo 'error: issue close failed' >&2; exit 1 ;;
 esac
 exit 0
 SH
@@ -301,6 +368,82 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_open_recorded_issue_is_closed_after_merge() {
+  local case_dir url
+  case_dir=$(make_case issue-open)
+  url=https://github.com/example/repo/pull/31
+  printf 'issue=42\n' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_issue_open_then_closed "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "issue-open: merge reconciliation failed"
+
+  grep -qxF "issue close 42 --repo example/repo --reason completed --comment Closed after merge of $url." "$case_dir/gh-axi.log" \
+    || fail "issue-open: recorded issue was not closed with the merged PR URL"
+  [ "$(grep -c '^issue view 42 --repo example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
+    || fail "issue-open: issue state was not verified before and after closing"
+  pass "fm-pr-merge closes an open recorded issue and verifies the close"
+}
+
+test_already_closed_recorded_issue_is_left_alone() {
+  local case_dir
+  case_dir=$(make_case issue-closed)
+  printf 'issue=43\n' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_issue_closed "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "issue-closed: merge reconciliation failed"
+
+  assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
+    "issue-closed: already-closed issue received a redundant close call"
+  grep -qxF 'issue view 43 --repo example/repo --full' "$case_dir/gh-axi.log" \
+    || fail "issue-closed: recorded issue was not verified"
+  pass "fm-pr-merge leaves an already-closed recorded issue alone"
+}
+
+test_issue_close_failure_keeps_merge_success_unambiguous() {
+  local case_dir rc
+  case_dir=$(make_case issue-close-fails)
+  printf 'issue=44\n' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_issue_close_fails "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "issue-close-fails: a completed merge must remain successful"
+  assert_grep 'warning: PR merge succeeded: https://github.com/example/repo/pull/33' "$case_dir/stderr" \
+    "issue-close-fails: warning did not make the successful merge explicit"
+  assert_grep 'could not close issue #44' "$case_dir/stderr" \
+    "issue-close-fails: warning did not identify the failed bookkeeping"
+  pass "fm-pr-merge reports issue-close failure without making a completed merge retryable"
+}
+
+test_no_recorded_issue_makes_no_issue_calls() {
+  local case_dir
+  case_dir=$(make_case no-issue)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "no-issue: merge failed"
+
+  assert_no_grep 'issue ' "$case_dir/gh-axi.log" \
+    "no-issue: merge path made an issue API call without recorded issue metadata"
+  grep -qxF 'pr merge 34 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "no-issue: ordinary merge invocation changed"
+  pass "fm-pr-merge preserves the ordinary path when no issue is recorded"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +454,7 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_open_recorded_issue_is_closed_after_merge
+test_already_closed_recorded_issue_is_left_alone
+test_issue_close_failure_keeps_merge_success_unambiguous
+test_no_recorded_issue_makes_no_issue_calls

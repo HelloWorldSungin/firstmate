@@ -174,7 +174,35 @@ test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
+  assert_contains "$help" "--issue records a same-repository GitHub issue number" \
+    "fm-brief.sh --help omitted the issue argument"
   pass "fm-brief.sh: --help renders the complete header"
+}
+
+test_issue_traceability_is_strictly_opt_in() {
+  local home plain traced
+  home="$TMP_ROOT/issue-traceability-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" plain-task sample >/dev/null 2>&1
+  plain="$home/data/plain-task/brief.md"
+  assert_no_grep 'firstmate-task-issue=' "$plain" \
+    "ordinary brief unexpectedly recorded an issue"
+  assert_no_grep '# GitHub issue traceability' "$plain" \
+    "ordinary brief unexpectedly gained the issue contract"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" traced-task sample --issue 37 >/dev/null 2>&1
+  traced="$home/data/traced-task/brief.md"
+  assert_grep '<!-- firstmate-task-issue=37 -->' "$traced" \
+    "issue brief did not carry its explicit machine-readable issue identity"
+  assert_grep 'comment on GitHub issue #37 with a substantive summary of what you found and what you actually changed' "$traced" \
+    "issue brief did not require a substantive issue comment"
+  assert_grep 'A bare "done" comment does not satisfy this contract' "$traced" \
+    "issue brief did not reject an empty completion comment"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Put `Closes #37` in the PR body' "$traced" \
+    "issue brief did not require the atomic closing keyword"
+  pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
 }
 
 # Registry with one project per delivery mode, so each ship-mode DOD branch is
@@ -621,6 +649,7 @@ test_scout_and_secondmate_scaffold() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
+test_issue_traceability_is_strictly_opt_in
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

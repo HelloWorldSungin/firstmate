@@ -6,8 +6,11 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> [--issue <number>] [--scout] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#   --issue records a same-repository GitHub issue number for a ship task.
+#   The generated brief requires a substantive issue comment and `Closes #<number>`
+#   in the PR body, and fm-spawn.sh copies the explicit marker into task metadata.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -94,17 +97,40 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+ISSUE=
+ISSUE_SET=0
 POS=()
+want_value=
 for a in "$@"; do
+  if [ -n "$want_value" ]; then
+    case "$a" in
+      --*) echo "error: --$want_value requires a value" >&2; exit 1 ;;
+    esac
+    ISSUE=$a
+    ISSUE_SET=1
+    want_value=
+    continue
+  fi
   case "$a" in
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --issue) want_value=issue ;;
+    --issue=*) ISSUE=${a#--issue=}; ISSUE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
+[ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 ID=${POS[0]}
+
+if [ "$ISSUE_SET" -eq 1 ]; then
+  case "$ISSUE" in
+    ''|*[!0-9]*) echo "error: --issue requires a positive GitHub issue number" >&2; exit 1 ;;
+  esac
+  [ "$ISSUE" -gt 0 ] || { echo "error: --issue requires a positive GitHub issue number" >&2; exit 1; }
+  [ "$KIND" = ship ] || { echo "error: --issue applies only to ship briefs" >&2; exit 1; }
+fi
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
@@ -247,6 +273,21 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+ISSUE_SECTION=
+if [ "$ISSUE_SET" -eq 1 ]; then
+  IFS= read -r -d '' ISSUE_SECTION <<EOF || true
+<!-- firstmate-task-issue=$ISSUE -->
+# GitHub issue traceability
+Before reporting the PR ready, comment on GitHub issue #$ISSUE with a substantive summary of what you found and what you actually changed.
+A bare "done" comment does not satisfy this contract: someone reading the issue later must be able to understand the outcome without opening the PR.
+Put \`Closes #$ISSUE\` in the PR body so merging the PR closes the issue atomically.
+EOF
+  ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
+  ISSUE_SECTION="$ISSUE_SECTION
+
+"
+fi
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -254,7 +295,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
-$HERDR_SECTION
+$ISSUE_SECTION$HERDR_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -301,6 +342,10 @@ fi
 read -r MODE _ <<EOF
 $("$FM_ROOT/bin/fm-project-mode.sh" "$REPO")
 EOF
+if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
+  echo "error: --issue requires a PR-based delivery mode" >&2
+  exit 1
+fi
 
 case "$MODE" in
   direct-PR)
@@ -362,7 +407,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
-$HERDR_SECTION
+$ISSUE_SECTION$HERDR_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.

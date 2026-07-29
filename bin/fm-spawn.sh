@@ -90,6 +90,9 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
+#   For a ship brief scaffolded with fm-brief.sh --issue, spawn validates its one
+#   explicit firstmate-task-issue marker and records issue=<number> in task meta.
+#   Brief prose and PR bodies are never searched to infer an issue identity.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
@@ -849,6 +852,29 @@ fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
 BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
+
+ISSUE=
+if [ "$KIND" = ship ]; then
+  ISSUE_MARKER_COUNT=$(grep -c '^<!-- firstmate-task-issue=' "$BRIEF_REAL" 2>/dev/null || true)
+  case "$ISSUE_MARKER_COUNT" in
+    0) ;;
+    1)
+      ISSUE_MARKER=$(grep '^<!-- firstmate-task-issue=' "$BRIEF_REAL")
+      case "$ISSUE_MARKER" in
+        '<!-- firstmate-task-issue='*' -->')
+          ISSUE=${ISSUE_MARKER#'<!-- firstmate-task-issue='}
+          ISSUE=${ISSUE%' -->'}
+          ;;
+        *) echo "error: malformed GitHub issue marker in $BRIEF" >&2; exit 1 ;;
+      esac
+      case "$ISSUE" in
+        ''|*[!0-9]*) echo "error: malformed GitHub issue marker in $BRIEF" >&2; exit 1 ;;
+      esac
+      [ "$ISSUE" -gt 0 ] || { echo "error: malformed GitHub issue marker in $BRIEF" >&2; exit 1; }
+      ;;
+    *) echo "error: multiple GitHub issue markers in $BRIEF" >&2; exit 1 ;;
+  esac
+fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
@@ -1618,6 +1644,7 @@ META_WINDOW=$T
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
+  [ -z "$ISSUE" ] || echo "issue=$ISSUE"
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).

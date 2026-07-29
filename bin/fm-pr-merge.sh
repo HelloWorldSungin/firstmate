@@ -7,6 +7,10 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
+# After a successful merge, an optional issue=<number> recorded in task metadata
+# is verified through GitHub. An open issue is closed with a comment linking the
+# merged PR. Issue verification or closure failures warn while returning success,
+# because the already-completed merge must never look retryable.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -82,3 +86,45 @@ if ! caller_has_merge_method "$@"; then
 fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+
+issue_close_warning() {  # <detail>
+  echo "warning: PR merge succeeded: $URL; GitHub issue bookkeeping did not complete: $1" >&2
+}
+
+github_issue_state() {  # <issue-number>
+  local issue=$1 output state
+  output=$(gh-axi issue view "$issue" --repo "$PR_OWNER/$PR_REPO" --full) || return 1
+  state=$(printf '%s\n' "$output" | awk '$1 == "state:" { print $2; exit }')
+  [ -n "$state" ] || return 1
+  printf '%s\n' "$state"
+}
+
+ISSUE_LINE_COUNT=$(grep -c '^issue=' "$META" 2>/dev/null || true)
+case "$ISSUE_LINE_COUNT" in
+  0) exit 0 ;;
+  1) ISSUE=$(grep '^issue=' "$META" | cut -d= -f2-) ;;
+  *) issue_close_warning "task metadata has multiple recorded issues"; exit 0 ;;
+esac
+case "$ISSUE" in
+  ''|*[!0-9]*) issue_close_warning "recorded issue identity is malformed"; exit 0 ;;
+esac
+if [ "$ISSUE" -le 0 ]; then
+  issue_close_warning "recorded issue identity is malformed"
+  exit 0
+fi
+
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE"); then
+  issue_close_warning "could not verify issue #$ISSUE"
+  exit 0
+fi
+[ "$ISSUE_STATE" = closed ] && exit 0
+
+if ! gh-axi issue close "$ISSUE" --repo "$PR_OWNER/$PR_REPO" --reason completed \
+  --comment "Closed after merge of $URL."; then
+  issue_close_warning "could not close issue #$ISSUE"
+  exit 0
+fi
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE") || [ "$ISSUE_STATE" != closed ]; then
+  issue_close_warning "issue #$ISSUE is still not closed after the close request"
+fi
+exit 0
