@@ -160,8 +160,60 @@ test_explicit_brief_issue_is_recorded_in_task_meta() {
   pass "spawn records only the explicit issue identity carried by the generated brief"
 }
 
+test_issue_prose_without_marker_is_not_inferred() {
+  local rec id out status brief
+  id=settle-issue-prose-z4
+  rec=$(make_settle_case settle-issue-prose "$id" 0)
+  read_settle_record "$rec"
+  brief="$HOME_DIR/data/$id/brief.md"
+  printf '%s\n' \
+    'Investigate GitHub issue #99 and report the findings.' \
+    'Put `Closes #99` in the eventual PR body.' > "$brief"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should accept ordinary issue-related brief prose"
+  assert_contains "$out" "spawned $id" "prose-only spawn did not report success"
+  assert_no_grep 'issue=' "$HOME_DIR/state/$id.meta" \
+    "spawn inferred issue metadata from brief or PR-style prose"
+  pass "spawn never infers issue identity from brief or PR-style prose"
+}
+
+test_invalid_explicit_issue_markers_fail_closed() {
+  local rec id out status brief expected name
+  for name in malformed duplicate; do
+    id="settle-invalid-issue-$name-z5"
+    rec=$(make_settle_case "settle-invalid-issue-$name" "$id" 0)
+    read_settle_record "$rec"
+    brief="$HOME_DIR/data/$id/brief.md"
+    case "$name" in
+      malformed)
+        printf '%s\n' '<!-- firstmate-task-issue=abc -->' "brief for $id" > "$brief"
+        expected="malformed GitHub issue marker"
+        ;;
+      duplicate)
+        printf '%s\n' \
+          '<!-- firstmate-task-issue=41 -->' \
+          '<!-- firstmate-task-issue=42 -->' \
+          "brief for $id" > "$brief"
+        expected="multiple GitHub issue markers"
+        ;;
+    esac
+
+    out=$(run_settle_spawn "$id")
+    status=$?
+    expect_code 1 "$status" "$name issue marker should fail before spawn"
+    assert_contains "$out" "$expected" "$name issue marker refusal was not explicit"
+    assert_absent "$HOME_DIR/state/$id.meta" \
+      "$name issue marker wrote task metadata despite the refusal"
+  done
+  pass "spawn rejects malformed or duplicate explicit issue markers before writing metadata"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
 test_explicit_brief_issue_is_recorded_in_task_meta
+test_issue_prose_without_marker_is_not_inferred
+test_invalid_explicit_issue_markers_fail_closed
 
 echo "# all fm-spawn-worktree-settle tests passed"

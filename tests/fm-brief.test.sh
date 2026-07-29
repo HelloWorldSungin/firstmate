@@ -205,6 +205,53 @@ test_issue_traceability_is_strictly_opt_in() {
   pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
 }
 
+test_issue_argument_validation_and_delivery_mode_guards() {
+  local home rc name value expected
+  home="$TMP_ROOT/issue-validation-home"
+  write_registry "$home"
+
+  for name in zero nonnumeric missing; do
+    case "$name" in
+      zero) value=0; expected='requires a positive GitHub issue number' ;;
+      nonnumeric) value=abc; expected='requires a positive GitHub issue number' ;;
+      missing) value=; expected='requires a value' ;;
+    esac
+    if [ "$name" = missing ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "issue-$name" sample --issue \
+        > "$home/$name.stdout" 2> "$home/$name.stderr"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "issue-$name" sample --issue "$value" \
+        > "$home/$name.stdout" 2> "$home/$name.stderr"
+    fi
+    rc=$?
+    expect_code 1 "$rc" "--issue $name should fail"
+    assert_grep "$expected" "$home/$name.stderr" \
+      "--issue $name did not explain its invalid value"
+    assert_absent "$home/data/issue-$name/brief.md" \
+      "--issue $name wrote a brief despite the refusal"
+  done
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" issue-scout sample --issue 8 --scout \
+    > "$home/scout.stdout" 2> "$home/scout.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--issue should reject scout briefs"
+  assert_grep 'applies only to ship briefs' "$home/scout.stderr" \
+    "--issue scout refusal did not explain the task-kind guard"
+  assert_absent "$home/data/issue-scout/brief.md" \
+    "--issue scout refusal wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" issue-local local-proj --issue 9 \
+    > "$home/local.stdout" 2> "$home/local.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--issue should reject local-only delivery"
+  assert_grep 'requires a PR-based delivery mode' "$home/local.stderr" \
+    "--issue local-only refusal did not explain the delivery-mode guard"
+  assert_absent "$home/data/issue-local/brief.md" \
+    "--issue local-only refusal wrote a brief"
+
+  pass "fm-brief.sh: --issue accepts only positive numbers on PR-based ship briefs"
+}
+
 brief_fingerprint() {
   local brief=$1 data=$2 id=$3 hash bytes
   hash=$(
@@ -700,6 +747,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_issue_traceability_is_strictly_opt_in
+test_issue_argument_validation_and_delivery_mode_guards
 test_no_issue_briefs_match_exact_goldens
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review

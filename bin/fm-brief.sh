@@ -8,7 +8,7 @@
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> [--issue <number>] [--scout] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
-#   --issue records a same-repository GitHub issue number for a ship task.
+#   --issue records a same-repository GitHub issue number for a PR-based ship task.
 #   The generated brief requires a substantive issue comment and `Closes #<number>`
 #   in the PR body, and fm-spawn.sh copies the explicit marker into task metadata.
 #   --scout writes the scout contract instead: the deliverable is a report at

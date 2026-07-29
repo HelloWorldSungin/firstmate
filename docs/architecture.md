@@ -212,6 +212,9 @@ When a selected delivery path calls for a diff, `bin/fm-review-diff.sh` refreshe
 For target project repos shipped through their own no-mistakes pipeline, commits under `.no-mistakes/evidence/` are the pipeline's PR-viewable validation evidence and are expected to stay in the crew branch until the evidence-hosting design changes.
 The firstmate repo itself is the exception: its `.no-mistakes/` directory is local state, stays gitignored, and is rejected by CI if tracked.
 PR-based task merges go through `bin/fm-pr-merge.sh`, which records `pr=` and any available `pr_head=` through `bin/fm-pr-check.sh` before calling `gh-axi pr merge`.
+For same-repository GitHub issue work, `bin/fm-brief.sh --issue <number>` places one explicit issue identity in the ship brief, and `bin/fm-spawn.sh` validates and copies that identity into task metadata without inferring it from prose.
+After the GitHub merge succeeds, `bin/fm-pr-merge.sh` verifies that recorded issue is closed and closes it with the merged PR URL when needed.
+Issue bookkeeping failures remain loud but do not turn a completed merge into a failed, retryable merge; tasks without an explicit issue and non-GitHub providers retain their existing paths.
 The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, invokes `gh-axi pr merge <n> --repo <owner>/<repo>`, defaults to `--squash`, preserves explicit merge-method flags, and rejects malformed URLs or repo override flags before recording merge state; a well-formed GitLab merge request URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) is refused too, explicitly, rather than sent to the wrong forge.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
