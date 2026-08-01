@@ -68,6 +68,9 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     else "\($r.blocked_by) - \($r.blocked_reason)" end;
   def backlog_row($r):
     "| \($r.id // "-") | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) | \(dash($r.pr_url // $r.report_path // $r.local_note)) |";
+  def model_suspect($t): $t.model_verification.verdict == "mismatch" or $t.model_verification.verdict == "unverifiable";
+  def model_row($t):
+    "| \($t.id) | \($t.model_verification.verdict) | \(dash($t.model_verification.recorded)) | \(if ($t.model_verification.actual | length) == 0 then "-" else ($t.model_verification.actual | join(", ")) end) | \($t.model_verification.detail) |";
 
   "# Fleet View",
   "",
@@ -87,6 +90,17 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     (.tasks | sort_by([.card.rank, .id])[] | task_row(.))
    end),
   "",
+  (if ([.tasks[]? | select(model_suspect(.))] | length) == 0 then empty
+   else
+    "## Model Routing",
+    "",
+    "A worker below did not provably run on the model it was dispatched with. Treat the recorded model as unproven for quota decisions until this clears.",
+    "",
+    "| ID | Verdict | Recorded | Actually ran on | Detail |",
+    "| --- | --- | --- | --- | --- |",
+    (.tasks[] | select(model_suspect(.)) | model_row(.)),
+    ""
+   end),
   "## Queued",
   (if ([.backlog.records[]? | select(.state == "queued")] | length) == 0 then
     "No queued backlog records found."

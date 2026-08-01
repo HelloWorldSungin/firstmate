@@ -2085,6 +2085,11 @@ META_WINDOW=$T
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  # Dispatch timestamp, epoch seconds. bin/fm-model-verify.sh uses it to bind
+  # runtime model evidence to THIS dispatch: a worktree from a reusable pool can
+  # still carry a previous occupant's transcripts, and without an anchor that
+  # occupant's model cannot be told apart from this worker's.
+  echo "spawned_at=$(date +%s)"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   [ -z "$ISSUE" ] || echo "issue=$ISSUE"
   # One line per resolved work item, in brief order. The URL is the identity;
