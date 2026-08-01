@@ -89,6 +89,7 @@ projects/            cloned repos; gitignored; read-only except under hard rule 
 state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
   <id>.turn-ended    task completion signal; harness-adapters routes each producer contract to its authoritative implementation
+  <id>.run-step      last observed no-mistakes run-step for the task, written and read only by bin/fm-crew-state.sh so a validation lookup that cannot complete degrades to it instead of reporting no current state; removed by teardown
   <id>.agy-trust     agy trust cleanup marker; exact lifecycle lives in bin/fm-agy-trust-lib.sh
   <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown
   <id>.kimi-turnend-token   firstmate-owned Kimi hook registry token for the task; removed by teardown
