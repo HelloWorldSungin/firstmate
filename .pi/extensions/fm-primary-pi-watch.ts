@@ -1,6 +1,6 @@
 // Firstmate primary watcher bridge for Pi.
 //
-// Away-mode ownership (stated once here):
+// Away-mode implementation invariant (contract: docs/watcher-continuity.md):
 // While the durable away-mode flag state/.afk exists, the sub-supervisor daemon is
 // the single supervision owner (AGENTS.md section 8). This extension therefore
 // arms nothing, retires any arm child it already owns, and injects no ordinary
