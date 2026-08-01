@@ -530,7 +530,7 @@ test_watcher_stops_promptly_on_term() {
   # A watcher must honor its own stop signal within the cycle it receives it, not
   # at the end of the current poll interval. Bash defers a trapped signal until
   # the running foreground command returns, so a blind `sleep "$POLL"` made exit
-  # latency track FM_POLL exactly (measured 14.68s at the 15s default). Every
+  # latency track FM_POLL exactly (measured 14.53s at the 15s default). Every
   # stop path pays that: fm-watch-arm.sh's HUP/TERM teardown, and its --restart
   # stop-then-relaunch, which gives the old watcher only 5s to exit before
   # falling through to a fresh child. Pin the property with a poll interval far

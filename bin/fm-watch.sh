@@ -601,12 +601,13 @@ interruptible_sleep_stop() {
 # bounded wait on the backend's native transition stream, so a crew going
 # `blocked` wakes the supervisor sub-second instead of after the stale-pane
 # wedge timer. For every other home - no push-capable window, backend not
-# capable, or the event path proven unreliable this process - it sleeps POLL,
-# byte-for-byte today's behavior. The poll loop above still runs every cycle, so
-# this only ever SHORTENS latency; it can never drop an escalation (the poll
-# loop is the permanent fail-closed backstop). This preserves the single live
-# supervision cycle: the reader is a short-lived subprocess of THIS watcher, not
-# a second watcher, so every guard/beacon/arm/turn-end mechanism is unchanged.
+# capable, or the event path proven unreliable this process - it waits POLL on
+# the interruptible poll path with the same cadence. The poll loop above still
+# runs every cycle, so this only ever SHORTENS latency; it can never drop an
+# escalation (the poll loop is the permanent fail-closed backstop). This
+# preserves the single live supervision cycle: the reader is a short-lived
+# subprocess of THIS watcher, not a second watcher, so every
+# guard/beacon/arm/turn-end mechanism is unchanged.
 event_wait_or_sleep() {
   local w b session first_backend="" first_session="" rec rc
   local windows=()
