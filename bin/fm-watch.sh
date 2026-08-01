@@ -567,6 +567,35 @@ heartbeat_scan_finds_actionable() {
   return 1
 }
 
+# interruptible_sleep: wait <seconds> without swallowing this watcher's own stop
+# signal. Bash defers a trapped signal until the running FOREGROUND command
+# finishes, so a blind `sleep "$POLL"` left the watcher deaf to TERM/HUP/INT for
+# the remainder of the interval - exit latency tracked FM_POLL exactly, 14.53s
+# at the 15s default. Every path that stops this home's watcher (fm-watch-arm.sh's
+# HUP/TERM teardown, its --restart stop-then-relaunch, and its bounded 5s wait for
+# the old watcher to exit) paid that latency, and the default 15s poll exceeds that
+# restart budget outright, so a restart forked a second watcher while the first was
+# still alive holding the lock. Backgrounding the sleep and waiting on the named
+# child keeps the same wait budget while letting the trap run the moment the signal
+# lands. Tracked so the EXIT path can reap the child instead of orphaning it for
+# the rest of the interval. Cadence, wake classification, and the heartbeat beacon
+# are unchanged, so wedge detection is unaffected. Measurements and the herdr
+# push-path limit below: docs/verification/supervision.md.
+INTERRUPTIBLE_SLEEP_PID=
+interruptible_sleep() {
+  sleep "$1" &
+  INTERRUPTIBLE_SLEEP_PID=$!
+  wait "$INTERRUPTIBLE_SLEEP_PID" 2>/dev/null || true
+  INTERRUPTIBLE_SLEEP_PID=
+}
+
+interruptible_sleep_stop() {
+  [ -n "$INTERRUPTIBLE_SLEEP_PID" ] || return 0
+  kill -TERM "$INTERRUPTIBLE_SLEEP_PID" 2>/dev/null || true
+  wait "$INTERRUPTIBLE_SLEEP_PID" 2>/dev/null || true
+  INTERRUPTIBLE_SLEEP_PID=
+}
+
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
 # with push-capable windows (herdr), it replaces the blind `sleep POLL` with a
 # bounded wait on the backend's native transition stream, so a crew going
@@ -601,7 +630,7 @@ event_wait_or_sleep() {
   done < <(recorded_windows)
 
   if [ "${#windows[@]}" -eq 0 ]; then
-    sleep "$POLL"
+    interruptible_sleep "$POLL"
     return
   fi
 
@@ -617,10 +646,16 @@ event_wait_or_sleep() {
     _event_cap_fails=0
   fi
   if [ "$_event_cap_ok" != 1 ]; then
-    sleep "$POLL"
+    interruptible_sleep "$POLL"
     return
   fi
 
+  # Known limit: unlike the interruptible_sleep budgets above, this reader wait is
+  # a foreground command substitution, so a push-capable home stays up to POLL deaf
+  # to its own stop signal. It is left alone deliberately: the reader owns a fifo
+  # dir and a child reader process that it removes on its own return path, so
+  # interrupting it here would leak both on every stop. Fixing it needs reader-side
+  # teardown, not a second background wrapper.
   rec=$(FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 fm_backend_wait_transition "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}")
   rc=$?
   case "$rc" in
@@ -634,7 +669,7 @@ event_wait_or_sleep() {
       # pure polling for the rest of this watcher process.
       _event_cap_fails=$((_event_cap_fails + 1))
       [ "$_event_cap_fails" -ge "$EVENT_CAP_FAIL_MAX" ] && _event_cap_ok=0
-      sleep "$POLL"
+      interruptible_sleep "$POLL"
       ;;
     *)
       # 1: a clean full-budget wait with no actionable edge - the reader already
@@ -679,6 +714,7 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   exit 0
 fi
 watcher_cleanup() {
+  interruptible_sleep_stop
   fm_active_check_stop || return 1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
@@ -802,7 +838,7 @@ while :; do
   # signature for an already-pending file (last write wins below).
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
-    sleep "$SIGNAL_GRACE"
+    interruptible_sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do

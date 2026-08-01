@@ -22,6 +22,15 @@ mark_pr_check_migration_complete() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
+# Sub-second mtime of the watcher liveness beacon. Whole seconds are too coarse
+# to tell "still cycling" from "frozen" at a short test poll, so read the
+# fractional stamp: GNU `%y` first, BSD `%Fm` as the fallback.
+beacon_stamp() {
+  local beat="$1/.last-watcher-beat"
+  [ -e "$beat" ] || return 1
+  stat -c %y "$beat" 2>/dev/null || stat -f %Fm "$beat" 2>/dev/null
+}
+
 
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
@@ -501,6 +510,134 @@ test_watcher_self_evicts_on_lock_takeover() {
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   [ "$lock_pid" = "$$" ] || fail "self-evicting watcher clobbered the new holder's lock (got '$lock_pid')"
   pass "watcher self-evicts when the lock pid no longer names it"
+}
+
+test_watcher_stops_promptly_on_term() {
+  # A watcher must honor its own stop signal within the cycle it receives it, not
+  # at the end of the current poll interval. Bash defers a trapped signal until
+  # the running foreground command returns, so a blind `sleep "$POLL"` made exit
+  # latency track FM_POLL exactly (measured 14.68s at the 15s default). Every
+  # stop path pays that: fm-watch-arm.sh's HUP/TERM teardown, and its --restart
+  # stop-then-relaunch, which gives the old watcher only 5s to exit before
+  # falling through to a fresh child. Pin the property with a poll interval far
+  # longer than the exit budget, so a regression cannot pass on timing luck.
+  local dir state fakebin out pid i status
+  dir=$(make_case term-latency)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+      && [ -e "$state/.last-watcher-beat" ] \
+      && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    || fail "watcher did not take the lock before the stop-signal check"
+  # The watcher is now inside its 60s cycle wait. A watcher that only reacts when
+  # that wait expires blows this budget by a wide margin.
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the watcher"
+  wait_for_exit "$pid" 100
+  status=$?
+  [ "$status" -ne 124 ] || fail "watcher ignored TERM for its whole poll interval"
+  [ ! -e "$state/.watch.lock/pid" ] || fail "stopped watcher left its singleton lock claimed"
+  pass "watcher honors a stop signal without waiting out its poll interval"
+}
+
+test_watch_restart_hands_over_within_its_own_budget() {
+  # The consequence the prompt-exit property exists for. --restart signals this
+  # home's watcher, then waits only 50 * 0.1s for it to exit before forking a
+  # fresh one. A watcher that stays deaf past that budget is still alive and
+  # still holding the lock when the replacement starts, so the replacement sees
+  # a live holder and no-ops - the restart never produces the fresh watcher it
+  # reported wanting. Assert the handover completes inside the arm's own budget
+  # and that the outgoing watcher is gone by the time the incoming one holds the
+  # lock, so the two never overlap.
+  local dir state fakebin out armout old_pid arm_pid lock_pid i
+  dir=$(make_case restart-handover)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/restart.out"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  old_pid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$old_pid" ] \
+      && [ -s "$state/.watch.lock/pid-identity" ] \
+      && [ -e "$state/.last-watcher-beat" ] \
+      && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$old_pid" ] \
+    || fail "outgoing watcher did not take the lock before the restart"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=5 "$WATCH_ARM" --restart > "$armout" &
+  arm_pid=$!
+  # 50 iterations of 0.1s is exactly the arm's own stop-wait budget, so this
+  # cannot pass by merely being faster than some looser test deadline.
+  i=0
+  lock_pid=
+  while [ "$i" -lt 50 ]; do
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    { [ -n "$lock_pid" ] && [ "$lock_pid" != "$old_pid" ] && kill -0 "$lock_pid" 2>/dev/null; } && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  { [ -n "$lock_pid" ] && [ "$lock_pid" != "$old_pid" ]; } \
+    || fail "restart did not hand the lock to a fresh watcher inside its 5s budget (lock still '$lock_pid')"
+  is_live_non_zombie "$old_pid" \
+    && fail "outgoing watcher was still live while its replacement held the lock"
+  kill "$arm_pid" "$lock_pid" 2>/dev/null || true
+  wait "$arm_pid" 2>/dev/null || true
+  wait "$old_pid" 2>/dev/null || true
+  pass "watch restart hands over to a fresh watcher inside its own stop budget"
+}
+
+test_watcher_liveness_beacon_survives_interruptible_waits() {
+  # Guard rail on the fix above. The cycle wait now runs as a background child,
+  # so the failure mode to exclude is a watcher that keeps its lock and its
+  # process while no longer cycling: the beacon would freeze and every wedge
+  # alarm built on it would go quiet on a watcher that looks alive. Require the
+  # beacon to keep advancing across several cycle waits, then require it to stop
+  # advancing and the lock to clear once the watcher genuinely stops, so a
+  # stopped watcher is still detectable.
+  local dir state fakebin out pid first second after i
+  dir=$(make_case beacon-cadence)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ -e "$state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  first=$(beacon_stamp "$state") || fail "watcher never published a liveness beacon"
+  i=0
+  second=$first
+  while [ "$i" -lt 100 ] && [ "$second" = "$first" ]; do
+    sleep 0.1
+    second=$(beacon_stamp "$state")
+    i=$((i + 1))
+  done
+  [ "$second" != "$first" ] || fail "liveness beacon froze while the watcher was cycling"
+  is_live_non_zombie "$pid" || fail "watcher exited on its own during the cadence check"
+  kill -TERM "$pid" 2>/dev/null || fail "could not stop the watcher"
+  wait_for_exit "$pid" 100
+  [ ! -e "$state/.watch.lock/pid" ] || fail "stopped watcher left its singleton lock claimed"
+  after=$(beacon_stamp "$state")
+  sleep 1
+  [ "$(beacon_stamp "$state")" = "$after" ] || fail "beacon kept advancing after the watcher stopped"
+  pass "liveness beacon advances while cycling and goes stale once the watcher stops"
 }
 
 test_arm_self_eviction_is_loud_without_successor() {
@@ -1029,6 +1166,9 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
+test_watcher_stops_promptly_on_term
+test_watch_restart_hands_over_within_its_own_budget
+test_watcher_liveness_beacon_survives_interruptible_waits
 test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger

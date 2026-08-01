@@ -187,6 +187,25 @@ Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
 
+### Watcher stop latency
+
+Measured on 2026-08-01 against an isolated temporary home, sending the signal to a watcher that had already taken its lock and entered its cycle wait.
+Before the interruptible cycle wait in `bin/fm-watch.sh`, exit latency tracked `FM_POLL` exactly, because bash defers a trapped signal until the running foreground command returns.
+
+| FM_POLL | Signal | Before | After |
+| --- | --- | --- | --- |
+| 1 | TERM | 0.54s | 0.05s |
+| 5 | TERM | 4.54s | 0.06s |
+| 15 (default) | TERM | 14.53s | 0.06s |
+| 15 (default) | HUP | 14.52s | 0.06s |
+
+`bin/fm-watch-arm.sh --restart` allows the outgoing watcher 50 iterations of `sleep 0.1`, a 5s budget, before forking a replacement.
+At the 15s default the old latency exceeded that budget outright, so a restart forked a second watcher while the first was still alive and still holding the lock.
+The singleton lock is released in every measured case.
+
+Current limit: the herdr push path in `event_wait_or_sleep` waits inside a foreground command substitution, so a push-capable home remains up to `FM_POLL` deaf to its own stop signal.
+That reader owns a fifo directory and a child reader process that it removes on its own return path, so interrupting it from the caller would leak both on every stop.
+
 Deterministic entry points:
 
 ```sh
