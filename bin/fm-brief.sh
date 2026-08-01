@@ -48,10 +48,9 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act. It also keeps the crewmate's latest line a
-# readable current state: park with the pause verb and resume with "working:"
-# around a backgrounded pipeline call, and never end on a stateless "resolved:"
-# line, which otherwise reads as no state at all. Under no-mistakes, "done:"
+# blocked when firstmate must act. Ship and scout briefs also require a readable
+# current state after "resolved:". Ship briefs pair the pause verb with
+# "working:" around backgrounded pipeline calls. Under no-mistakes, "done:"
 # means the PR is open with checks green, so the implementation handoff before
 # validation is a declared wait rather than a second "done:".
 # Ship tasks include a project-memory section so durable project-intrinsic
