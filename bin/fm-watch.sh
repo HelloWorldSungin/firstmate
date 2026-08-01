@@ -406,6 +406,33 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
+# Identity of the captain decisions a task currently has OPEN, from the durable
+# keyed fold owned by fm-classify-lib.sh (status_open_decisions): a
+# needs-decision/blocked line opens a key, and only a matching resolution or
+# verified captain-held transfer closes it. Prints a stable digest of that open
+# set, or nothing when no decision is open. This is what the terminal stale path
+# suppresses a repeat surface on, INSTEAD of the pane hash: a crew parked on a
+# captain decision keeps the same open set no matter how its pane repaints,
+# while a new status line, a new decision key, and the decision resolving all
+# change it.
+open_decision_id() {  # <task>
+  local task=$1 open
+  [ -n "$task" ] || return 0
+  open=$(status_open_decisions "$STATE/$task.status")
+  [ -n "$open" ] || return 0
+  printf '%s' "$open" | hash_pane
+}
+
+# 0 when a parked crew has stopped responding: its recorded endpoint no longer
+# carries a live agent. Only the confident `dead` verdict counts (an ambiguous,
+# unreadable, or unverified backend read stays absorbed), so suppressing the
+# repeat surface above never costs wedge detection for a parked crew that dies.
+parked_agent_is_dead() {  # <window>
+  local win=$1 state
+  state=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || return 1
+  [ "$state" = dead ]
+}
+
 surface_nonterminal_stale() {  # <window> <hash>
   local win=$1 h=$2 key task last
   key=$(printf '%s' "$win" | tr ':/.' '___')
@@ -918,7 +945,29 @@ EOF
           # line. On a NEW hash, give an active run/busy pane (the same
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
-          if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
+          #
+          # The one-shot suppressor is keyed on the OPEN DECISION, not the pane
+          # hash, whenever the captain-relevant status is a still-open keyed
+          # decision. An idle harness pane is not static - a live context and
+          # quota footer repaints on its own - so a hash-keyed one-shot let the
+          # identical already-escalated waiting state re-surface on every
+          # repaint, costing a full handling turn each time (twenty-two
+          # consecutive surfaces on one parked pane on 2026-08-01). Detection is
+          # unchanged: the open set moves on a new status line, a new decision
+          # key, or the decision resolving, and a parked crew whose agent has
+          # died still escalates through the shared wedge timer below.
+          did=$(open_decision_id "$task")
+          dsf="$STATE/.stale-decision-$key"
+          [ -n "$did" ] || rm -f "$dsf"
+          if [ -n "$did" ] && [ "$(cat "$dsf" 2>/dev/null || true)" = "$did" ]; then
+            printf '%s' "$h" > "$sf"
+            if parked_agent_is_dead "$w"; then
+              wedge_timer_check "$w" "$ssf" "stale (parked on an open decision, agent gone)" "$ewf"
+            else
+              rm -f "$ssf" "$ewf"
+              triage_log "absorbed stale (open decision already surfaced): $w"
+            fi
+          elif [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
@@ -926,6 +975,7 @@ EOF
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
+              [ -n "$did" ] && printf '%s' "$did" > "$dsf"
               rm -f "$ssf"
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
