@@ -160,6 +160,57 @@ fm_composer_strip_ghost() {
   '
 }
 
+# NON-ASCII BLANK PADDING is the third concern of this owner (task
+# fm-afk-injection-wedge): a harness may pad an otherwise-empty composer row
+# with a non-ASCII blank rather than an ASCII space. Verified claude 2.x renders
+# its EMPTY composer row as `❯` + U+00A0 NO-BREAK SPACE (bytes e2 9d af c2 a0),
+# and bash's own `[:space:]` trims treat no non-ASCII blank as whitespace under
+# any locale the fleet runs (verified C, C.utf8, en_US.utf8, and POSIX - note
+# that glibc's grep DOES match U+00A0 there, so a grep-based spot check is
+# misleading), so the pad survived every trim as "real typed content" and the
+# row classified `pending`. The away-mode injector (bin/fm-supervise-daemon.sh)
+# refuses to inject unless the composer is affirmatively `empty`, so an idle,
+# perfectly injectable primary deferred EVERY escalation until the captain
+# returned - three overnight wedges of 7.8h, 11.0h, and 10.1h, all buffered and
+# replayed intact but none delivered on time. fm_composer_blank_normalize folds
+# these into an ASCII space before the emptiness decision. That is safe in the
+# one direction that matters here: every character it folds is invisible, so a
+# row reducing to blank carried no visible typed content, while any visible byte
+# survives untouched and still reads `pending`.
+#
+# fm_composer_blank_normalize: replace every non-ASCII blank or zero-width
+# character with an ASCII space so the shared trims below see it as whitespace.
+# Byte-literal substitution, so it is locale-independent (the fleet default is
+# C/POSIX, where bash's own character classes are byte-wise).
+FM_COMPOSER_BLANKS=(
+  $'\xc2\xa0'      # U+00A0 NO-BREAK SPACE (verified: claude 2.x empty-composer pad)
+  $'\xe1\x9a\x80'  # U+1680 OGHAM SPACE MARK
+  $'\xe2\x80\x80'  # U+2000 EN QUAD
+  $'\xe2\x80\x81'  # U+2001 EM QUAD
+  $'\xe2\x80\x82'  # U+2002 EN SPACE
+  $'\xe2\x80\x83'  # U+2003 EM SPACE
+  $'\xe2\x80\x84'  # U+2004 THREE-PER-EM SPACE
+  $'\xe2\x80\x85'  # U+2005 FOUR-PER-EM SPACE
+  $'\xe2\x80\x86'  # U+2006 SIX-PER-EM SPACE
+  $'\xe2\x80\x87'  # U+2007 FIGURE SPACE
+  $'\xe2\x80\x88'  # U+2008 PUNCTUATION SPACE
+  $'\xe2\x80\x89'  # U+2009 THIN SPACE
+  $'\xe2\x80\x8a'  # U+200A HAIR SPACE
+  $'\xe2\x80\x8b'  # U+200B ZERO WIDTH SPACE
+  $'\xe2\x80\xaf'  # U+202F NARROW NO-BREAK SPACE
+  $'\xe2\x81\x9f'  # U+205F MEDIUM MATHEMATICAL SPACE
+  $'\xe3\x80\x80'  # U+3000 IDEOGRAPHIC SPACE
+  $'\xef\xbb\xbf'  # U+FEFF ZERO WIDTH NO-BREAK SPACE
+)
+
+fm_composer_blank_normalize() {  # <content>
+  local s=$1 b
+  for b in "${FM_COMPOSER_BLANKS[@]}"; do
+    s=${s//"$b"/ }
+  done
+  printf '%s' "$s"
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, or a structurally-identified bare AGENT
@@ -183,6 +234,14 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  # Callers trim with ASCII [:space:], which leaves a non-ASCII blank pad behind
+  # (see FM_COMPOSER_BLANKS above). Fold and re-trim before any verdict.
+  content=$(fm_composer_blank_normalize "$content")
+  content="${content#"${content%%[![:space:]]*}"}"
+  content="${content%"${content##*[![:space:]]}"}"
+  plain_content=$(fm_composer_blank_normalize "$plain_content")
+  plain_content="${plain_content#"${plain_content%%[![:space:]]*}"}"
+  plain_content="${plain_content%"${plain_content##*[![:space:]]}"}"
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;
@@ -206,10 +265,19 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   if fm_composer_idle_matches "$content" "$idle_re" "$idle_case"; then
     printf 'empty'; return 0
   fi
-  # Strip a leading prompt glyph, then re-judge the remainder.
+  # Strip a leading prompt glyph, then re-judge the remainder. The glyph is
+  # removed as a LITERAL prefix rather than by character count: `${content#?}`
+  # removes one CHARACTER, which under the fleet's C/POSIX locale is one BYTE,
+  # so a multibyte agent glyph (❯ / ›) left its two trailing bytes behind and
+  # they re-read as real content. The trailing whitespace trim below absorbs any
+  # separating space, so one literal-prefix case per glyph covers both shapes.
   case "$content" in
-    '❯ '*|'› '*|'> '*|'$ '*|'% '*|'# '*) content=${content#??} ;;
-    '❯'*|'›'*|'>'*|'$'*|'%'*|'#'*) content=${content#?} ;;
+    '❯'*) content=${content#'❯'} ;;
+    '›'*) content=${content#'›'} ;;
+    '>'*) content=${content#'>'} ;;
+    '$'*) content=${content#'$'} ;;
+    '%'*) content=${content#'%'} ;;
+    '#'*) content=${content#'#'} ;;
   esac
   content="${content#"${content%%[![:space:]]*}"}"
   content="${content%"${content##*[![:space:]]}"}"
