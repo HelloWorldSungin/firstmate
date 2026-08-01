@@ -319,6 +319,71 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
+# Three status-reporting gaps observed across five crewmates in one session:
+# (1) no-mistakes workers appended done: after their own tests passed, before the
+# pipeline ran; (2) workers parked on a backgrounded pipeline call left a spent
+# needs-decision: line standing, so supervision read them as awaiting an answered
+# decision while the quiet pane raised stale alarms; (3) a trailing keyed
+# resolved: line leaves no state verb at all, so a healthy worker reads as
+# unknown and becomes indistinguishable from a dead one. All three are scaffold
+# defects, so the generated contract - not steering - has to close them.
+test_status_protocol_closes_reporting_gaps() {
+  local home id brief scout
+  home="$TMP_ROOT/status-gaps-home"
+  mkdir -p "$home/data"
+  id="brief-status-gaps-d1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+
+  # Gap 1: done: under no-mistakes means PR open with checks green, never a
+  # clean local commit, and the interim handoff must not be spelled done:.
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'ships **no-mistakes**: `done:` means the PR is open with its checks green' "$brief" \
+    "no-mistakes DOD must define done: as PR open with checks green"
+  assert_grep 'A clean local commit is NOT done' "$brief" \
+    "no-mistakes DOD must reject a clean local commit as done"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'exactly one `done:` line and it is the last one, `done: PR {url} checks green`' "$brief" \
+    "no-mistakes DOD must pin the single terminal done: line"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_no_grep 'append `done: {summary}`' "$brief" \
+    "no-mistakes DOD still tells the worker to report done before the pipeline runs"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
+    "no-mistakes DOD lost the declared-wait handoff before validation"
+
+  # Gap 2: park-and-resume around a backgrounded pipeline call.
+  assert_grep 'Park-and-resume pairing: whenever you background a pipeline call and go idle' "$brief" \
+    "status protocol lost the park-and-resume rule"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`paused:` BEFORE going idle and `working:` as soon as it returns' "$brief" \
+    "status protocol must pair paused: while parked with working: on return"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`needs-decision:` stays standing and firstmate reads you as still waiting' "$brief" \
+    "status protocol must explain the spent needs-decision: misreading"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'While you sit parked on a backgrounded `axi run` or `axi respond` call' "$brief" \
+    "no-mistakes DOD lost the park-and-resume reminder at the pipeline gate"
+
+  # Gap 3: resolved: carries no state, so it must never be the last line.
+  # This is the highest-value gap: it makes a healthy worker invisible.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id-scout" some-proj --scout >/dev/null 2>&1
+  scout="$home/data/$id-scout/brief.md"
+  assert_present "$scout" "scout brief was not scaffolded"
+  local generated
+  for generated in "$brief" "$scout"; do
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep '`resolved:` carries NO state, so it must never be your last line' "$generated" \
+      "$generated: contract must forbid a trailing stateless resolved: line"
+    assert_grep 'append the next state line' "$generated" \
+      "$generated: contract must require a state line after resolved:"
+    assert_grep 'invisible to firstmate and indistinguishable from a dead worker' "$generated" \
+      "$generated: contract must state the invisibility consequence of a trailing resolved:"
+  done
+  pass "fm-brief.sh: status protocol closes the done:/park/resolved: reporting gaps"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -717,6 +782,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_status_protocol_closes_reporting_gaps
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
