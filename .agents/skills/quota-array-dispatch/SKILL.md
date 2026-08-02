@@ -68,11 +68,11 @@ Keep the two questions separate for every candidate, because collapsing them is 
 - Is the surface resolved? Answer from the candidate's own tuple - its harness catalog and the credential source it actually selects.
 - Is the applicable quota known? Answer from `quota-axi`, which may legitimately have no coverage for that vendor.
 
-An unmodeled vendor is a quota unknown on a resolved surface, never an unresolved surface.
+When an auth-gated catalog supplies that positive evidence, an unmodeled vendor is a quota unknown on a resolved surface, never an unresolved surface.
 
 Uncertainty and ineligibility are different findings:
 
-- No model-level window, no matching auth source, an absent `state.authStatus`, an unmeasurable or `unknown` scope, or a surface quota-axi does not model at all is disclosed uncertainty.
+- No model-level window, no matching auth source, an absent `state.authStatus`, or an unmeasurable or `unknown` scope is disclosed uncertainty.
   Keep the candidate eligible, state the unknown, and prefer known sustainable evidence when otherwise comparable.
 - An expired credential is a short-lived session token the owning vendor renews on next use, not a sign-out.
 - Only concrete contradictory evidence blocks: an authoritative catalog proving the model unsupported, or proof that the credential the candidate actually selects is unusable.
@@ -98,7 +98,7 @@ Apply only among candidates satisfying required fit and strongest reasoning clas
 Never use headroom, runway, pace, or reserve to silently replace that reasoning class.
 
 1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
-   Unmeasurable quota, a missing model-level window, an absent runway field, and a credential surface quota-axi does not model are uncertainty, never this rule.
+   Unmeasurable quota, a missing model-level window, an absent runway field, and a provider family quota-axi does not model are uncertainty, never this rule.
 2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.

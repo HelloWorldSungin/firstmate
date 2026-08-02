@@ -127,13 +127,9 @@ run_case \
   "FACT=claude|reasoning=required|headroom=1|runway_seconds=10800" \
   "FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800"
 
-# A provider family quota-axi does not model at all must stay eligible on the
-# strength of its own harness catalog. The retired bin/fm-auth-preflight.sh
-# resolved surfaces from a hard-coded harness-to-provider table plus a
-# `pi:<prefix>` source matcher, so it reported every such candidate as
-# `eligible=no reason=surface-unresolved`. That silently retired the whole
-# zero-premium flat-subscription lane to the premium default. The script is gone;
-# this pins the judgment that replaced it.
+# An auth-gated catalog row can resolve a candidate's surface even when
+# quota-axi does not model that provider family; this pins the distinction
+# between positive surface evidence and unknown quota.
 write_fixture <<'JSON'
 {"schemaVersion":3,"providers":[{"provider":"claude","quotaSemantics":{"description":"The all_models scope bounds every Claude model.","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":60,"boundedBy":["weekly"],"runway":{"status":"projected_exhaustion","usableRunwaySeconds":14400,"projectedExhaustedAt":"2030-01-01T04:00:00Z","limitingWindowId":"weekly","projectionConfidence":"established","projectionBasis":"cycle_average"}}]}}]}
 JSON
