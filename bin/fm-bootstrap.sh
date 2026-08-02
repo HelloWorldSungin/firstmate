@@ -80,10 +80,10 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          An ENDPOINT_BINDING_MIGRATION line reports one legacy non-tmux task
-#          record that predates `endpoint_task_id=` and whose recorded endpoint
-#          could not be verified to belong to that task, so cleanup still
-#          refuses it; bin/fm-endpoint-binding-migrate.sh owns that contract.
+#          An ENDPOINT_BINDING_MIGRATION line reports one non-tmux task record
+#          that lacks `endpoint_task_id=` and whose recorded endpoint could not
+#          be verified to belong to that task, so cleanup still refuses it;
+#          bin/fm-endpoint-binding-migrate.sh owns that contract.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, secondmate_sync,
 #          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,

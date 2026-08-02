@@ -7,14 +7,15 @@
 # cmux endpoint id is opaque and does not encode the task it belongs to. Legacy
 # tmux records need no migration: their window name is exactly `fm-<id>`, so the
 # record identifies itself. A record spawned on a non-tmux backend before that
-# field existed instead refuses cleanup permanently.
+# field existed would otherwise refuse cleanup indefinitely.
 #
 # This sweep writes the missing binding ONLY for a record whose recorded
-# endpoint still resolves, live, to a runtime object carrying that task's own
-# label - the same class of self-identifying evidence the legacy tmux path
-# validates by window name. Every other outcome refuses and leaves the record
-# byte-unchanged: an opaque id whose ownership cannot be proven right now must
-# never gain a durable binding, because a wrongly bound record authorizes
+# endpoint still resolves, live, to a runtime object carrying backend-specific
+# evidence of that task's identity - the same class of self-identifying
+# evidence the legacy tmux path validates by window name. Every other outcome
+# refuses and leaves the record byte-unchanged: an opaque id whose ownership
+# cannot be proven right now must never gain a durable binding, because a
+# wrongly bound record authorizes
 # destroying another task's endpoint. An uncleanable task is a nuisance; a
 # wrongly bound one destroys work.
 #
