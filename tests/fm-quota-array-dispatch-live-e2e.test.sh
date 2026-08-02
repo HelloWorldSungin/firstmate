@@ -26,6 +26,7 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-quota-array-dispatch-live.XXXXXX")
 PROJECT="$LAB/project"
 FAKEBIN="$LAB/fakebin"
 FIXTURE="$LAB/quota.json"
+AUTH_FIXTURE="$LAB/quota-auth.json"
 CALLS="$LAB/quota-axi.calls"
 
 cleanup() {
@@ -39,12 +40,21 @@ cp "$OWNER" "$PROJECT/.agents/skills/quota-array-dispatch/SKILL.md"
 cat > "$FAKEBIN/quota-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
-if [ "${1:-}" != --json ] || [ "$#" -ne 1 ]; then
-  printf 'unexpected quota-axi invocation: %s\n' "$*" >&2
-  exit 64
-fi
 printf '%s\n' "$*" >> "${QUOTA_AXI_CALLS:?}"
-cat "${QUOTA_AXI_FIXTURE:?}"
+if [ "${1:-}" = --json ] && [ "$#" -eq 1 ]; then
+  cat "${QUOTA_AXI_FIXTURE:?}"
+  exit 0
+fi
+# `quota-axi auth --json` is the credential-surface read the skill is allowed to
+# take when a candidate's surface is in question. It is served only when the case
+# supplied an auth fixture, so a case that never intended one still fails loudly.
+if [ "${1:-}" = auth ] && [ "${2:-}" = --json ] && [ "$#" -eq 2 ] \
+  && [ -s "${QUOTA_AXI_AUTH_FIXTURE:-/nonexistent}" ]; then
+  cat "$QUOTA_AXI_AUTH_FIXTURE"
+  exit 0
+fi
+printf 'unexpected quota-axi invocation: %s\n' "$*" >&2
+exit 64
 SH
 chmod +x "$FAKEBIN/quota-axi"
 
@@ -52,20 +62,31 @@ write_fixture() {
   cat > "$FIXTURE"
 }
 
+write_auth_fixture() {
+  cat > "$AUTH_FIXTURE"
+}
+
 run_case() {
-  local label=$1 expected=$2 prompt=$3 out calls required
+  local label=$1 expected=$2 prompt=$3 out calls required snapshots stray
   shift 3
   : > "$CALLS"
   out=$(
     cd "$PROJECT" &&
       PATH="$FAKEBIN:$PATH" QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" \
+        QUOTA_AXI_AUTH_FIXTURE="$AUTH_FIXTURE" \
         pi --print --approve --no-session --no-context-files --no-extensions \
           --no-skills --skill .agents/skills --tools bash \
           --model openai-codex/gpt-5.6-sol --thinking high \
           "$prompt"
   ) || fail "$label: Pi skill run failed: $out"
   calls=$(cat "$CALLS")
-  [ "$calls" = "--json" ] || fail "$label: skill did not use one quota-axi --json snapshot: $calls"
+  # The one-snapshot rule binds the quota read. A credential-surface read is a
+  # separate, explicitly permitted command, so it is allowed but nothing else is.
+  snapshots=$(grep -Fxc -- "--json" "$CALLS" || true)
+  [ "$snapshots" = 1 ] \
+    || fail "$label: skill did not use exactly one quota-axi --json snapshot: $calls"
+  stray=$(grep -Fxv -- "--json" "$CALLS" | grep -Fxv -- "auth --json" || true)
+  [ -z "$stray" ] || fail "$label: unexpected quota-axi invocation(s): $stray"
   printf '%s\n' "$out" | grep -Fxq "$expected" \
     || fail "$label: expected final line $expected, got: $out"
   for required in "$@"; do
@@ -105,5 +126,25 @@ run_case \
   "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. The likely task-completion horizon is two hours with established confidence. Claude/Sonnet is catalog-supported with usable authentication and is the only profile that meets the task's required strongest reasoning class. Codex/GPT is catalog-supported with usable authentication but is a weaker reasoning class and cannot meet the requirement. Return exact lines FACT=claude|reasoning=required|headroom=1|runway_seconds=10800 and FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800, then an exact final line SELECTED=<claude|codex>. Do not use other vendor or model commands and do not modify files." \
   "FACT=claude|reasoning=required|headroom=1|runway_seconds=10800" \
   "FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800"
+
+# A provider family quota-axi does not model at all must stay eligible on the
+# strength of its own harness catalog. The retired bin/fm-auth-preflight.sh
+# resolved surfaces from a hard-coded harness-to-provider table plus a
+# `pi:<prefix>` source matcher, so it reported every such candidate as
+# `eligible=no reason=surface-unresolved`. That silently retired the whole
+# zero-premium flat-subscription lane to the premium default. The script is gone;
+# this pins the judgment that replaced it.
+write_fixture <<'JSON'
+{"schemaVersion":3,"providers":[{"provider":"claude","quotaSemantics":{"description":"The all_models scope bounds every Claude model.","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":60,"boundedBy":["weekly"],"runway":{"status":"projected_exhaustion","usableRunwaySeconds":14400,"projectedExhaustedAt":"2030-01-01T04:00:00Z","limitingWindowId":"weekly","projectionConfidence":"established","projectionBasis":"cycle_average"}}]}}]}
+JSON
+write_auth_fixture <<'JSON'
+{"schemaVersion":1,"auth":[{"provider":"claude","sources":[{"source":"oauth-file","status":"available"}]}]}
+JSON
+run_case \
+  "a provider family quota-axi does not model keeps a catalog-resolved surface" \
+  "ELIGIBLE=BOTH" \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once; you may also run quota-axi auth --json. Candidate A is harness=claude model=opus. Candidate B is harness=pi model=minimax/MiniMax-M3. Take this raw observation as given and draw your own conclusions from it: running the authoritative Pi catalog command printed the row 'minimax  MiniMax-M3  1M  128K  yes  yes'. That is the entire catalog evidence available; no other command may be run to gather more. Both candidates have comparable required task fit and the same reasoning class for this work. For each candidate decide whether its authentication surface is resolved or unresolved, whether its applicable quota is known or unmodeled, and whether it is eligible. Return exact lines FACT=claude|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled> and FACT=minimax|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled>, then an exact final line ELIGIBLE=<BOTH|CLAUDE_ONLY>. Do not use other vendor or model commands and do not modify files." \
+  "FACT=claude|eligible=yes|surface=resolved|quota=known" \
+  "FACT=minimax|eligible=yes|surface=resolved|quota=unmodeled"
 
 echo "# all quota-array-dispatch live behavior tests passed"

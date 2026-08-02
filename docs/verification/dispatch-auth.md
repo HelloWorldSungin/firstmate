@@ -114,6 +114,68 @@ No models matching "gpt-9.9-nonexistent"
 
 A listing that reaches the account and returns no row is the authoritative negative that does block a candidate.
 
+## The Pi catalog is itself positive authentication-surface evidence
+
+Verified 2026-08-02 on Pi 0.82.1.
+
+Pi's installed `docs/models.md` states the availability rule for its own catalog:
+
+```text
+apiKey is not required to load the file: models become available when auth is
+configured through /login/auth.json, CLI --api-key, or provider apiKey. If no
+auth is configured, the models load but stay unavailable in /model and
+--list-models.
+```
+
+A row in `pi --list-models` therefore proves Pi holds configured auth for that provider family.
+The catalog resolves the surface positively; it is not merely support evidence.
+This matters because it is the only surface evidence available for a family that `quota-axi` does not model, and without it such a family looks indistinguishable from one with no surface at all.
+
+## Provider family that quota-axi does not model at all
+
+Verified 2026-08-02 on Pi 0.82.1 and quota-axi 0.1.16.
+
+```sh
+quota-axi --json | jq -r '.providers[].provider'
+quota-axi auth --json | jq -r '.auth[].provider'
+```
+
+Both commands return the same six names, and `minimax` is absent from each:
+
+```text
+claude
+codex
+cursor
+copilot
+grok
+kimi
+```
+
+```sh
+pi --list-models minimax
+```
+
+```text
+provider     model                   context  max-out  thinking  images
+minimax      MiniMax-M2.7            204.8K   131.1K   yes       no
+minimax      MiniMax-M2.7-highspeed  204.8K   131.1K   yes       no
+minimax      MiniMax-M3              1M       128K     yes       yes
+opencode-go  minimax-m2.7            204.8K   131.1K   yes       no
+opencode-go  minimax-m3              1M       131.1K   yes       yes
+```
+
+For `harness=pi`, `model=minimax/MiniMax-M3` the catalog establishes the model is supported, places it in the `minimax` family, and by the availability rule above proves Pi holds configured `minimax` auth.
+The surface is Pi's own credential store for that family, and `quota-axi` models no `minimax` provider, so it supplies no window and no auth entry for it.
+
+Two distinct findings must not be collapsed here:
+
+- The authentication surface is resolved, by the catalog, not by `quota-axi`.
+- The applicable quota is unknown, because the vendor is outside `quota-axi`'s coverage.
+
+Unknown quota is disclosed uncertainty and keeps the candidate eligible.
+A family's absence from `quota-axi` is never absence of a surface, and never a credential fault.
+This is the shape of the whole flat-subscription lane in `config/crew-dispatch.json`, so reading it as unresolved silently retires that lane to the premium default.
+
 ## Credential sources are independent per provider
 
 Verified 2026-07-30 against quota-axi 0.1.16.
@@ -175,4 +237,4 @@ It asserts that the script accepts no harness, model, or provider input, never c
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `quota-axi --json` snapshot per case.
-It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for unmeasurable runway, and the strongest-reasoning constraint.
+It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for unmeasurable runway, the strongest-reasoning constraint, and a provider family absent from the snapshot that must stay eligible on its catalog-resolved surface.
