@@ -12,6 +12,7 @@
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
+#                 "ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>",
 #                 "TANGLE: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
@@ -79,10 +80,15 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
-#          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
-#          printing every read-only detect line
+#          An ENDPOINT_BINDING_MIGRATION line reports one legacy non-tmux task
+#          record that predates `endpoint_task_id=` and whose recorded endpoint
+#          could not be verified to belong to that task, so cleanup still
+#          refuses it; bin/fm-endpoint-binding-migrate.sh owns that contract.
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
+#          (PR-check migration, endpoint-binding migration, secondmate_sync,
+#          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
+#          fleet_sync)
+#          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
@@ -971,6 +977,11 @@ fi
 # runnable. Detect-only sessions never touch state.
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
+  # Endpoint-binding migration: converge legacy non-tmux task records that
+  # predate `endpoint_task_id=` so they stay cleanable. It only ever adds a
+  # binding it verified live, so it is safe to re-run every locked session and
+  # is silent once no record needs one.
+  "$SCRIPT_DIR/fm-endpoint-binding-migrate.sh" || true
   startup_memory_budget_setup
 fi
 
