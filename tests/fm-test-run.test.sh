@@ -452,12 +452,7 @@ test_portable_serial_shard_lane_refusals() {
   pass "portable serial shard lanes refuse mismatched, out-of-range, and countless names"
 }
 
-# The coverage guard builds every list with `LC_ALL=C sort`, so its set
-# operations must run under LC_ALL=C too. Under a dictionary-collation locale
-# (glibc en_US.UTF-8 ignores `-` at the primary weight, so "fm-backend.test.sh"
-# collates before "fm-backend-tmux-smoke.test.sh" while C orders them the other
-# way) an ambient-locale `comm` reads the byte-sorted lists as unsorted, warns
-# "not in sorted order", and exits 1 under the runner's `set -e`.
+# Regression for the C-collation invariant documented by run_coverage_guard.
 test_coverage_guard_is_collation_independent() {
   local tmp loc probe divergent rc n
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-collation.XXXXXX")

@@ -563,11 +563,11 @@ select_lane() {
 }
 
 # Every list below is built with `LC_ALL=C sort`, so every set operation over
-# those files must also run under LC_ALL=C. Under a UTF-8 collation `comm` reads
-# byte-sorted paths as unsorted (glibc's en_US.UTF-8 ignores `-` at the primary
-# weight, so "fm-backend.test.sh" collates before "fm-backend-tmux-smoke.test.sh"
-# while C orders them the other way), which makes `comm` emit a bogus
-# "not in sorted order" warning and either exit 1 or return a wrong set diff.
+# those files must also run under LC_ALL=C. Under dictionary-style collation,
+# `comm` can read byte-sorted paths as unsorted (glibc's en_US.UTF-8 ignores `-`
+# at the primary weight, so "fm-backend.test.sh" collates before
+# "fm-backend-tmux-smoke.test.sh" while C orders them the other way), which
+# makes `comm` emit a bogus warning and either exit 1 or return a wrong set diff.
 run_coverage_guard() {
   local tmp missing extra a b shard
   local -a saved_scripts=()
