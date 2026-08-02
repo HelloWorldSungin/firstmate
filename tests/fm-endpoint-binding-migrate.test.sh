@@ -54,6 +54,9 @@ fi
 if [ "${FM_FAKE_HERDR_FAIL:-0}" = 1 ]; then
   exit 1
 fi
+if [ "${1:-}:${2:-}" = pane:list ] && [ -n "${FM_FAKE_META_REWRITE:-}" ]; then
+  printf 'pr=concurrent-update\n' >> "$FM_FAKE_META_REWRITE"
+fi
 case "${1:-}:${2:-}" in
   tab:list) cat "${FM_FAKE_HERDR_TABS:?}" ;;
   pane:list) cat "${FM_FAKE_HERDR_PANES:?}" ;;
@@ -111,6 +114,7 @@ run_migrate() {  # <home> [args...]
   FM_RUNTIME_LOG="$dir/runtime.log" \
   FM_FAKE_HERDR_TABS="$dir/tabs.json" FM_FAKE_HERDR_PANES="$dir/panes.json" \
   FM_FAKE_HERDR_FAIL="${FM_FAKE_HERDR_FAIL:-0}" \
+  FM_FAKE_META_REWRITE="${FM_FAKE_META_REWRITE:-}" \
   PATH="$dir/fakebin:$PATH" \
     "$MIGRATE" "$@"
 }
@@ -217,6 +221,28 @@ test_already_gone_task_is_handled_without_error() {
   pass "fm-endpoint-binding-migrate: an already-gone endpoint is reported without error and never bound"
 }
 
+test_concurrent_metadata_change_refuses_publication() {
+  local dir id=legacy-herdr-task before after out
+  dir=$(make_home concurrent-change)
+  write_legacy_herdr_meta "$dir" "$id"
+  set_live_herdr_tab "$dir" t1 "fm-$id" p1
+  before=$(cat "$dir/state/$id.meta")
+
+  out=$(FM_FAKE_META_REWRITE="$dir/state/$id.meta" run_migrate "$dir")
+  assert_contains "$out" "ENDPOINT_BINDING_MIGRATION: task $id (herdr):" \
+    "a concurrent metadata change did not produce a refusal"
+  assert_contains "$out" "changed concurrently before endpoint binding could be published" \
+    "a concurrent metadata change reported the wrong refusal reason"
+  assert_not_contains "$out" "BOOTSTRAP_INFO" \
+    "a concurrent metadata change reported a binding"
+  after=$(cat "$dir/state/$id.meta")
+  [ "$after" = "$before"$'\n''pr=concurrent-update' ] \
+    || fail "the migration overwrote or altered the concurrent metadata change"
+  ! validates "$dir" "$id" || fail "a concurrently changed record gained an endpoint binding"
+
+  pass "fm-endpoint-binding-migrate: a concurrent metadata change refuses publication and remains intact"
+}
+
 test_missing_state_and_empty_home_are_handled_without_error() {
   local dir out rc
   dir=$(make_home empty)
@@ -294,6 +320,7 @@ test_dry_run_decides_without_writing() {
 test_pre_change_record_is_uncleanable_before_and_cleanable_after
 test_unverifiable_endpoints_refuse_rather_than_bind
 test_already_gone_task_is_handled_without_error
+test_concurrent_metadata_change_refuses_publication
 test_missing_state_and_empty_home_are_handled_without_error
 test_records_outside_the_migration_are_left_alone
 test_dry_run_decides_without_writing

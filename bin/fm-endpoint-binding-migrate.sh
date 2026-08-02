@@ -205,17 +205,15 @@ verify_endpoint() {  # <backend> <meta> <id>
   esac
 }
 
-# bind_record: write <meta> plus the binding atomically, but only after the
-# exact bytes that would land pass fm_backend_validate_task_endpoint. A record
-# is never replaced by one cleanup would still refuse.
-bind_record() {  # <meta> <id>
-  local meta=$1 id=$2 tmp
+# bind_record: atomically write <source> plus a validated binding to <meta>.
+bind_record() {  # <meta> <source> <id>
+  local meta=$1 source=$2 id=$3 tmp
   tmp=$(mktemp "$meta.migrate.XXXXXX") || {
     refuse "the migrated record could not be staged"
     return 1
   }
   {
-    cat -- "$meta" && printf 'endpoint_task_id=%s\n' "$id"
+    cat -- "$source" && printf 'endpoint_task_id=%s\n' "$id"
   } > "$tmp" 2>/dev/null || {
     rm -f -- "$tmp"
     refuse "the migrated record could not be staged"
@@ -226,11 +224,16 @@ bind_record() {  # <meta> <id>
     refuse "the migrated record would still be refused by cleanup validation"
     return 1
   fi
+  chmod 600 -- "$tmp" 2>/dev/null || true
+  if ! cmp -s -- "$source" "$meta"; then
+    rm -f -- "$tmp"
+    refuse "the task record changed concurrently before endpoint binding could be published"
+    return 1
+  fi
   if [ "$DRY_RUN" = 1 ]; then
     rm -f -- "$tmp"
     return 0
   fi
-  chmod 600 -- "$tmp" 2>/dev/null || true
   mv -f -- "$tmp" "$meta" || {
     rm -f -- "$tmp"
     refuse "the migrated record could not replace the original"
@@ -261,10 +264,21 @@ for meta in "$STATE"/*.meta; do
   fm_backend_is_known "$backend" || continue
 
   REASON=
-  if ! verify_endpoint "$backend" "$meta" "$id" || ! bind_record "$meta" "$id"; then
+  source=$(mktemp "$meta.source.XXXXXX") || {
+    echo "ENDPOINT_BINDING_MIGRATION: task $id ($backend): the task record could not be snapshotted; record left unchanged"
+    continue
+  }
+  if ! cat -- "$meta" > "$source" 2>/dev/null; then
+    rm -f -- "$source"
+    echo "ENDPOINT_BINDING_MIGRATION: task $id ($backend): the task record could not be snapshotted; record left unchanged"
+    continue
+  fi
+  if ! verify_endpoint "$backend" "$source" "$id" || ! bind_record "$meta" "$source" "$id"; then
+    rm -f -- "$source"
     echo "ENDPOINT_BINDING_MIGRATION: task $id ($backend): ${REASON:-the recorded endpoint could not be verified}; record left unchanged"
     continue
   fi
+  rm -f -- "$source"
   if [ "$DRY_RUN" = 1 ]; then
     echo "BOOTSTRAP_INFO: endpoint binding migration: task $id ($backend) would be bound after live task-label verification"
   else
