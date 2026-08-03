@@ -566,6 +566,12 @@ select_lane() {
   [ "$found" -eq 1 ] || die "lane '$want' selected no tests"
 }
 
+# Every list below is built with `LC_ALL=C sort`, so every set operation over
+# those files must also run under LC_ALL=C. Under dictionary-style collation,
+# `comm` can read byte-sorted paths as unsorted (glibc's en_US.UTF-8 ignores `-`
+# at the primary weight, so "fm-backend.test.sh" collates before
+# "fm-backend-tmux-smoke.test.sh" while C orders them the other way), which
+# makes `comm` emit a bogus warning and either exit 1 or return a wrong set diff.
 run_coverage_guard() {
   local tmp missing extra a b shard
   local -a saved_scripts=()
@@ -632,8 +638,8 @@ run_coverage_guard() {
     return 1
   fi
   LC_ALL=C sort -u "$tmp/serial_shards_raw" >"$tmp/serial_shards"
-  missing=$(comm -23 "$tmp/serial" "$tmp/serial_shards" || true)
-  extra=$(comm -13 "$tmp/serial" "$tmp/serial_shards" || true)
+  missing=$(LC_ALL=C comm -23 "$tmp/serial" "$tmp/serial_shards" || true)
+  extra=$(LC_ALL=C comm -13 "$tmp/serial" "$tmp/serial_shards" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then
     log "coverage guard: portable serial shards must equal the portable serial lane"
     [ -z "$missing" ] || { log "missing from serial shards:"; printf '%s\n' "$missing" >&2; }
