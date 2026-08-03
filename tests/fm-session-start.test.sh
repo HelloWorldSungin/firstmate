@@ -86,6 +86,25 @@ SH
   printf '%s\n' manual > "${fakebin%/*}/home-placeholder" 2>/dev/null || true
 }
 
+# hide_node <fakebin> <home>: make node genuinely undetectable so bootstrap emits
+# its real "MISSING: node" diagnostic. Deleting the fake binary alone is not
+# enough on hosts that ship node in the base PATH, so this also masks the lookup
+# the same way the Herdr cases mask tmux. Echoes the mask path for BASH_ENV.
+hide_node() {
+  local fakebin=$1 home=$2 mask
+  rm -f "$fakebin/node"
+  mask="$home/mask-node.bash"
+  cat > "$mask" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = node ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+SH
+  printf '%s\n' "$mask"
+}
+
 make_fake_tasks_axi_compact() {
   local fakebin=$1
   cat > "$fakebin/tasks-axi" <<'SH'
@@ -793,7 +812,7 @@ SH
 # --- output ordering ----------------------------------------------------------
 
 test_output_ordering_diagnostics_lead() {
-  local rec root home fakebin out lock_line boot_line wake_line context_line fleet_line next_line
+  local rec root home fakebin mask out lock_line boot_line wake_line context_line fleet_line next_line
   rec=$(new_world ordering)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -805,10 +824,13 @@ EOF
   # rather than a common tool like node that a host may install into $BASE_PATH
   # (/usr/bin) and thereby mask the forced-missing condition.
   rm -f "$fakebin/no-mistakes"
+  # Also mask node, so a host that ships it in the base PATH cannot change which
+  # other diagnostics the digest emits around the asserted line.
+  mask=$(hide_node "$fakebin" "$home")
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
   boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
@@ -1079,7 +1101,7 @@ EOF
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
-  local rec root home fakebin out
+  local rec root home fakebin mask out
   rec=$(new_world composition)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1089,11 +1111,12 @@ EOF
   # Force a MISSING via a firstmate-specific tool never on a standard system PATH
   # (node can leak from $BASE_PATH; see test_output_ordering_diagnostics_lead).
   rm -f "$fakebin/no-mistakes"
+  mask=$(hide_node "$fakebin" "$home")
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"
