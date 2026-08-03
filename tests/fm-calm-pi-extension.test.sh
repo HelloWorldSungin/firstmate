@@ -2724,6 +2724,9 @@ JSON
     # observe a half-redrawn transcript.
     if ! grep -Fq "CALM_E2E_OUTPUT" "$hidden_snapshot" &&
       ! grep -Fq "/calm" "$hidden_snapshot" &&
+      ! grep -Fq "Thinking..." "$hidden_snapshot" &&
+      ! grep -Fq "fm_watch_arm_pi" "$hidden_snapshot" &&
+      ! grep -Fq "FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status" "$hidden_snapshot" &&
       grep -Fq "FIRSTMATE WATCHER WAKE: can you explain this phrase?" "$hidden_snapshot" &&
       grep -Fq "The deterministic tool example is complete." "$hidden_snapshot"; then
       break

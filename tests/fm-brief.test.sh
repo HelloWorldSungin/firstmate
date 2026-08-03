@@ -174,7 +174,132 @@ test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
+  assert_contains "$help" "--issue records a same-repository GitHub issue number" \
+    "fm-brief.sh --help omitted the issue argument"
   pass "fm-brief.sh: --help renders the complete header"
+}
+
+test_issue_traceability_is_strictly_opt_in() {
+  local home plain traced
+  home="$TMP_ROOT/issue-traceability-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" plain-task sample --mode no-mistakes >/dev/null 2>&1
+  plain="$home/data/plain-task/brief.md"
+  assert_no_grep 'firstmate-task-issue=' "$plain" \
+    "ordinary brief unexpectedly recorded an issue"
+  assert_no_grep '# GitHub issue traceability' "$plain" \
+    "ordinary brief unexpectedly gained the issue contract"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" traced-task sample --mode no-mistakes --issue 37 >/dev/null 2>&1
+  traced="$home/data/traced-task/brief.md"
+  assert_grep '<!-- firstmate-task-issue=37 -->' "$traced" \
+    "issue brief did not carry its explicit machine-readable issue identity"
+  assert_grep 'comment on GitHub issue #37 with a substantive summary of what you found and what you actually changed' "$traced" \
+    "issue brief did not require a substantive issue comment"
+  assert_grep 'A bare "done" comment does not satisfy this contract' "$traced" \
+    "issue brief did not reject an empty completion comment"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Put `Closes #37` in the PR body' "$traced" \
+    "issue brief did not require the atomic closing keyword"
+  pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
+}
+
+test_issue_argument_validation_and_delivery_mode_guards() {
+  local home rc name value expected
+  home="$TMP_ROOT/issue-validation-home"
+  write_registry "$home"
+
+  for name in zero nonnumeric missing; do
+    case "$name" in
+      zero) value=0; expected='requires a positive GitHub issue number' ;;
+      nonnumeric) value=abc; expected='requires a positive GitHub issue number' ;;
+      missing) value=; expected='requires a value' ;;
+    esac
+    if [ "$name" = missing ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "issue-$name" sample --mode no-mistakes --issue \
+        > "$home/$name.stdout" 2> "$home/$name.stderr"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "issue-$name" sample --mode no-mistakes --issue "$value" \
+        > "$home/$name.stdout" 2> "$home/$name.stderr"
+    fi
+    rc=$?
+    expect_code 1 "$rc" "--issue $name should fail"
+    assert_grep "$expected" "$home/$name.stderr" \
+      "--issue $name did not explain its invalid value"
+    assert_absent "$home/data/issue-$name/brief.md" \
+      "--issue $name wrote a brief despite the refusal"
+  done
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" issue-scout sample --issue 8 --scout \
+    > "$home/scout.stdout" 2> "$home/scout.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--issue should reject scout briefs"
+  assert_grep 'applies only to ship briefs' "$home/scout.stderr" \
+    "--issue scout refusal did not explain the task-kind guard"
+  assert_absent "$home/data/issue-scout/brief.md" \
+    "--issue scout refusal wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" issue-local local-proj --mode local-only --issue 9 \
+    > "$home/local.stdout" 2> "$home/local.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--issue should reject local-only delivery"
+  assert_grep 'requires a PR-based delivery mode' "$home/local.stderr" \
+    "--issue local-only refusal did not explain the delivery-mode guard"
+  assert_absent "$home/data/issue-local/brief.md" \
+    "--issue local-only refusal wrote a brief"
+
+  pass "fm-brief.sh: --issue accepts only positive numbers on PR-based ship briefs"
+}
+
+brief_fingerprint() {
+  local brief=$1 data=$2 id=$3 hash bytes
+  hash=$(
+    FM_GOLDEN_ROOT="$ROOT" FM_GOLDEN_DATA="$data" perl -pe \
+      's/\Q$ENV{FM_GOLDEN_ROOT}\E/<FM_ROOT>/g; s/\Q$ENV{FM_GOLDEN_DATA}\E/<FM_DATA>/g' \
+      "$brief" | shasum -a 256 | awk '{print $1}'
+  )
+  bytes=$(
+    FM_GOLDEN_ROOT="$ROOT" FM_GOLDEN_DATA="$data" perl -pe \
+      's/\Q$ENV{FM_GOLDEN_ROOT}\E/<FM_ROOT>/g; s/\Q$ENV{FM_GOLDEN_DATA}\E/<FM_DATA>/g' \
+      "$brief" | wc -c | tr -d ' '
+  )
+  printf '%s %s %s\n' "$hash" "$bytes" "$id"
+}
+
+test_no_issue_briefs_match_exact_goldens() {
+  local home actual id
+  home="$TMP_ROOT/no-issue-golden-home"
+  actual="$TMP_ROOT/no-issue-golden.actual"
+  write_registry "$home"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-nm no-registry-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-direct direct-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-local local-proj --mode local-only >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-ship-herdr no-registry-proj --mode no-mistakes --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-scout sample --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state \
+    "$ROOT/bin/fm-brief.sh" golden-scout-herdr sample --scout --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state FM_SECONDMATE_CHARTER='{TASK}' \
+    "$ROOT/bin/fm-brief.sh" golden-secondmate --secondmate alpha beta >/dev/null 2>&1
+  FM_HOME="$home" FM_STATE_OVERRIDE=/golden/state FM_SECONDMATE_CHARTER='{TASK}' \
+    "$ROOT/bin/fm-brief.sh" golden-secondmate-empty --secondmate --no-projects >/dev/null 2>&1
+
+  : > "$actual"
+  for id in golden-nm golden-direct golden-local golden-ship-herdr \
+    golden-scout golden-scout-herdr golden-secondmate golden-secondmate-empty; do
+    brief_fingerprint "$home/data/$id/brief.md" "$home/data" "$id" >> "$actual"
+  done
+  if ! cmp "$ROOT/tests/fixtures/fm-brief-no-issue.sha256" "$actual"; then
+    diff -u "$ROOT/tests/fixtures/fm-brief-no-issue.sha256" "$actual" >&2 || true
+    fail "no-issue brief bytes drifted from the recorded no-issue goldens"
+  fi
+  pass "fm-brief.sh: no-issue brief variants remain byte-identical"
 }
 
 # Registry with one project per delivery mode. fm-brief.sh no longer reads it -
@@ -711,6 +836,9 @@ test_scout_and_secondmate_scaffold() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
+test_issue_traceability_is_strictly_opt_in
+test_issue_argument_validation_and_delivery_mode_guards
+test_no_issue_briefs_match_exact_goldens
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
