@@ -44,6 +44,7 @@ Name the evidence for each relation you assert so the conclusion is inspectable.
 
 1. Confirm the catalog lists the candidate's model and record the provider family it reports.
    A model the authoritative catalog does not list is concrete contradictory evidence: block that candidate and quote the catalog result.
+   Carry that row forward: on an auth-gated catalog it also resolves the candidate's authentication surface, per "Authentication is scoped to the selected surface" below.
 2. Apply quota at the granularity the vendor actually supplies.
    A provider-level or `all_models`/`all_products` scope bounds every model you established in that family, including one with no window of its own.
    A named-model or named-product scope is an additional bound for that model alone and is irrelevant to every other model in the family.
@@ -57,9 +58,21 @@ A candidate authenticates through its own tuple's surface; another harness's CLI
 A provider can carry a healthy source beside a missing or expired one; the unused source's state is not the candidate's state.
 A Pi-hosted family may authenticate through the vendor's own store with no `pi:`-prefixed source at all, which is normal and never evidence against the candidate.
 
+`quota-axi` is not the only surface evidence, and it is not the surface's owner.
+The candidate's own harness catalog resolves the surface positively when that harness lists a model only once its auth is configured; `docs/verification/dispatch-auth.md` verifies that rule for Pi, and it must be established from the harness's own documentation before being relied on for another harness.
+So a family that `quota-axi` does not model at all can still have a fully resolved surface, established from the catalog row alone.
+Never read a provider's absence from `quota-axi` as an unresolved or missing surface; `quota-axi` bounds quota, and coverage it never claimed is not a finding about credentials.
+
+Keep the two questions separate for every candidate, because collapsing them is what silently retires a whole lane:
+
+- Is the surface resolved? Answer from the candidate's own tuple - its harness catalog and the credential source it actually selects.
+- Is the applicable quota known? Answer from `quota-axi`, which may legitimately have no coverage for that vendor.
+
+When an auth-gated catalog supplies that positive evidence, an unmodeled vendor is a quota unknown on a resolved surface, never an unresolved surface.
+
 Uncertainty and ineligibility are different findings:
 
-- No model-level window, no matching auth source, an absent `state.authStatus`, an unmeasurable or `unknown` scope, or a surface quota-axi does not model at all is disclosed uncertainty.
+- No model-level window, no matching auth source, an absent `state.authStatus`, or an unmeasurable or `unknown` scope is disclosed uncertainty.
   Keep the candidate eligible, state the unknown, and prefer known sustainable evidence when otherwise comparable.
 - An expired credential is a short-lived session token the owning vendor renews on next use, not a sign-out.
 - Only concrete contradictory evidence blocks: an authoritative catalog proving the model unsupported, or proof that the credential the candidate actually selects is unusable.
@@ -85,7 +98,7 @@ Apply only among candidates satisfying required fit and strongest reasoning clas
 Never use headroom, runway, pace, or reserve to silently replace that reasoning class.
 
 1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
-   Unmeasurable quota, a missing model-level window, an absent runway field, and a credential surface quota-axi does not model are uncertainty, never this rule.
+   Unmeasurable quota, a missing model-level window, an absent runway field, and a provider family quota-axi does not model are uncertainty, never this rule.
 2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.
