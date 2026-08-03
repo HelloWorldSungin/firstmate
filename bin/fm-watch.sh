@@ -241,18 +241,6 @@ window_label() {
   [ -n "$task" ] && printf 'fm-%s' "$task"
 }
 
-window_harness() {
-  local w=$1 meta harness
-  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
-  if [ -n "$meta" ]; then
-    harness=$(grep '^harness=' "$meta" | cut -d= -f2- || true)
-    [ -n "$harness" ] || harness=unknown
-    echo "$harness"
-    return 0
-  fi
-  echo unknown
-}
-
 # maybe_native_turnend: the crew-only, herdr-only cursor/agy turn-end wake path.
 # Those CLIs install no turn-end hook and write no status file, and the shared
 # transition policy deliberately DEFERS their native idle/done (it blips between
