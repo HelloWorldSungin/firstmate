@@ -62,7 +62,7 @@ A verdict is never `match` unless a model was actually read and actually compare
 | `match` | every model attributed to this worker satisfies the record | 0 |
 | `mismatch` | at least one attributed model does not | 3 |
 | `unverifiable` | the record cannot be checked at all | 4 |
-| `unstarted` | beneath an inspectable recorded evidence store, the runtime wrote no session for this worker at all, so it has no evidence of its own | 4 |
+| `unstarted` | beneath an inspectable recorded evidence store and transcript parent, the runtime wrote no session path entry for this worker at all, so it has no evidence of its own | 4 |
 | `pending` | a session exists and the worker has not produced a model-attributed turn yet | 0 |
 | `unpinned` | `model=default`: no tier was pinned, so there is no record for the runtime to contradict | 0 |
 
@@ -71,8 +71,8 @@ Nothing may render them as verified.
 Only the exact record `model=default` is unpinned.
 A missing or empty `model=` is malformed dispatch metadata and therefore `unverifiable`.
 
-`unverifiable` covers a harness with no evidence adapter, a recorded evidence store that is missing or inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
-`unstarted` is separated from it because the two ask different questions of a caller: evidence that exists or may exist in an uninspectable store may belong to a worker that ran, while an absent per-worktree session directory beneath an inspectable store has no turn of its own to read at all.
+`unverifiable` covers a harness with no evidence adapter, a recorded evidence store or transcript parent that is missing or inaccessible, a session path entry that is a non-directory or broken symbolic link, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+`unstarted` is separated from it because the two ask different questions of a caller: evidence that exists or may exist behind an uninspectable path may belong to a worker that ran, while a genuinely absent per-worktree session path entry beneath an inspectable store and parent has no turn of its own to read at all.
 Neither is a pass, and both exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
 Every unreadable path therefore ends in `unverifiable`, never in silence and never in `match`.
@@ -118,6 +118,8 @@ Refusing whenever a verdict was absent would make non-forced cleanup impossible 
 One further boundary sits inside that refusal, for the same reason.
 A worker that died before its first model-attributed turn - `unstarted` or `pending` - can never produce a verdict however long its records are kept, so the refusal there is permanent rather than protective, and it strands the endpoint name the task holds.
 Non-forced teardown therefore proceeds for such a task when its recorded worktree independently proves there is nothing to preserve: inspectable, on no branch, with no `refs/heads/fm/<task-id>` task branch, carrying no commit that no existing ref already contains, and clean after enumerating every untracked file apart from `.claude/settings.local.json`, `.opencode/plugins/fm-turn-end.js`, `.opencode/plugins/fm-busy-state.js`, `.fm-grok-turnend`, and `.fm-kimi-turnend`, which `bin/fm-spawn.sh` writes itself.
+Before that allowance reaches any destructive cleanup, teardown must establish confirmed endpoint quiescence through the recorded backend and semantic busy-state owners, then recompute both the terminal model-routing verdict and the complete no-work proof at the shared teardown boundary.
+An endpoint that cannot be interrupted, closed, or confirmed absent refuses, and a turn or worktree change observed by the recomputation follows the ordinary terminal-verdict and work-preservation refusal rules.
 The absent verdict is stated plainly in the teardown output either way.
 Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
@@ -139,7 +141,7 @@ It also proves that bounded secondmate-home summaries do not scan model transcri
 `tests/fm-spawn-dispatch-profile.test.sh` covers durable metadata publication before watermark capture, preservation when capture fails, explicit config forwarding over a backend daemon's ambient configuration, default config discovery without conflating it with the transcript store, and refusal before launch for a newline-bearing physical store.
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
-It also owns the never-started boundary: both no-turn shapes tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store, uncommitted changes including any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, and a worker that ran on unattributable evidence with a clean worktree.
+It also owns the never-started boundary: both quiescent no-turn shapes tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, uncommitted changes including any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced between the initial check and endpoint quiescence.
 
 Run:
 

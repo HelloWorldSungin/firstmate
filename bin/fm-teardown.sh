@@ -110,6 +110,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-busy-lib.sh
+. "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -419,33 +421,95 @@ worker_left_nothing_to_preserve() {
   return 0
 }
 
+refresh_terminal_model_verdict() {
+  MODEL_VERIFY_RC=0
+  MODEL_VERIFY_OUTPUT=$(
+    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-model-verify.sh" "$ID" --terminal 2>&1
+  ) || MODEL_VERIFY_RC=$?
+  case "$MODEL_VERIFY_OUTPUT" in
+    *' · verdict: '*) ;;
+    *)
+      MODEL_VERIFY_OUTPUT="$ID · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${MODEL_VERIFY_OUTPUT:+: $MODEL_VERIFY_OUTPUT}"
+      MODEL_VERIFY_RC=4
+      ;;
+  esac
+  MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
+  MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
+}
+
+quiesce_no_turn_endpoint() {
+  local endpoint_state busy_state harness
+  endpoint_state=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$endpoint_state" in
+    missing) return 0 ;;
+    dead) ;;
+    alive)
+      harness=$(fm_meta_get "$META" harness)
+      busy_state=$(fm_busy_classify_live "$BACKEND" "$T" "$harness" "$ID" "$STATE" "fm-$ID")
+      if [ "${busy_state%% *}" != idle ]; then
+        FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_ROOT_OVERRIDE="$FM_ROOT" \
+          "$SCRIPT_DIR/fm-send.sh" "$ID" --key Escape >/dev/null || {
+            echo "REFUSED: task $ID endpoint could not be interrupted for confirmed quiescence; preserving its worktree and metadata." >&2
+            return 1
+          }
+        busy_state=$(fm_busy_classify_live "$BACKEND" "$T" "$harness" "$ID" "$STATE" "fm-$ID")
+      fi
+      case "${busy_state%% *}" in
+        idle) ;;
+        dead)
+          [ "$(fm_backend_agent_state "$BACKEND" "$T")" = missing ] && return 0
+          echo "REFUSED: task $ID endpoint quiescence is contradictory; preserving its worktree and metadata." >&2
+          return 1
+          ;;
+        *)
+          echo "REFUSED: task $ID endpoint did not reach a confirmed idle state; preserving its worktree and metadata." >&2
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "REFUSED: task $ID endpoint state is $endpoint_state, so quiescence cannot be confirmed; preserving its worktree and metadata." >&2
+      return 1
+      ;;
+  esac
+
+  case "$BACKEND" in
+    tmux)
+      fm_backend_kill "$BACKEND" "$T" >/dev/null 2>&1 || true
+      ;;
+    herdr)
+      fm_backend_herdr_parse_target "$T" || return 1
+      teardown_herdr_session_lock_held "$FM_BACKEND_HERDR_SESSION" || return 1
+      fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1 || true
+      fm_backend_herdr_endpoint_confirmed_gone "$T" || return 1
+      ;;
+    *)
+      echo "REFUSED: task $ID endpoint quiescence is not verifiable on backend $BACKEND; preserving its worktree and metadata." >&2
+      return 1
+      ;;
+  esac
+  endpoint_state=$(fm_backend_agent_state "$BACKEND" "$T")
+  if [ "$endpoint_state" != missing ]; then
+    echo "REFUSED: task $ID endpoint remained $endpoint_state after quiescence; preserving its worktree and metadata." >&2
+    return 1
+  fi
+}
+
 # This is the first cleanup authorization check. It is metadata-only and must
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
-MODEL_VERIFY_RC=0
-MODEL_VERIFY_OUTPUT=$(
-  FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$SCRIPT_DIR/fm-model-verify.sh" "$ID" --terminal 2>&1
-) || MODEL_VERIFY_RC=$?
-case "$MODEL_VERIFY_OUTPUT" in
-  *' · verdict: '*) ;;
-  *)
-    MODEL_VERIFY_OUTPUT="$ID · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${MODEL_VERIFY_OUTPUT:+: $MODEL_VERIFY_OUTPUT}"
-    MODEL_VERIFY_RC=4
-    ;;
-esac
+NO_TURN_ALLOWANCE_CANDIDATE=0
+refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
 # verifiable in principle. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
-MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
-    echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
-    echo "Its worktree is on no branch, has no task branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
+    NO_TURN_ALLOWANCE_CANDIDATE=1
   else
     echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
     exit 1
@@ -1926,6 +1990,25 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
+fi
+
+if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
+  quiesce_no_turn_endpoint || exit 1
+  refresh_terminal_model_verdict
+  printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+  if ! worker_left_nothing_to_preserve; then
+    echo "REFUSED: task $ID gained work before endpoint quiescence; preserving its worktree and metadata." >&2
+    exit 1
+  fi
+  if [ "$MODEL_VERIFY_RC" -eq 0 ]; then
+    :
+  elif model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
+    echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
+    echo "Its endpoint is confirmed quiescent, and its worktree is on no branch, has no task branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
+  else
+    echo "REFUSED: task $ID has no successful terminal model-routing verdict after endpoint quiescence; preserving its worktree and metadata." >&2
+    exit 1
+  fi
 fi
 
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1

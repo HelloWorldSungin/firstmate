@@ -300,7 +300,7 @@ fi
 # that arrived as "no models" would be indistinguishable from a well-behaved
 # worker, which is the silent pass this helper exists to prevent.
 claude_models() {  # <transcript-store> <transcript-dir> <spawned-at-epoch|empty> <watermark> <baseline-identities>
-  local store=$1 dir=$2 anchor=$3 watermark=$4 baseline=$5 files=() f listing name
+  local store=$1 dir=$2 anchor=$3 watermark=$4 baseline=$5 parent files=() f listing name
 
   if [ ! -e "$store" ]; then
     printf 'ERR:recorded model-evidence store is missing: %s\n' "$store"
@@ -315,6 +315,20 @@ claude_models() {  # <transcript-store> <transcript-dir> <spawned-at-epoch|empty
     return 0
   fi
 
+  parent=${dir%/*}
+  if [ ! -e "$parent" ]; then
+    printf 'ERR:transcript parent directory is missing: %s\n' "$parent"
+    return 0
+  fi
+  if [ ! -d "$parent" ]; then
+    printf 'ERR:transcript parent path is not a directory: %s\n' "$parent"
+    return 0
+  fi
+  if [ ! -r "$parent" ] || [ ! -x "$parent" ]; then
+    printf 'ERR:transcript parent directory is not readable: %s\n' "$parent"
+    return 0
+  fi
+
   # No transcript directory at all means the runtime never wrote a session for
   # this working directory. That is still no verdict, but it is a DIFFERENT
   # no-verdict cause from evidence that exists and cannot be read, so it gets
@@ -323,7 +337,15 @@ claude_models() {  # <transcript-store> <transcript-dir> <spawned-at-epoch|empty
   # not the benign "not yet" case, because a worker whose session was written
   # elsewhere would land here too. A worker spawned seconds ago lands here
   # briefly and clears itself on its first turn.
-  if [ ! -d "$dir" ]; then
+  if [ -L "$dir" ] && [ ! -e "$dir" ]; then
+    printf 'ERR:transcript path is a broken symbolic link: %s\n' "$dir"
+    return 0
+  fi
+  if [ -e "$dir" ] && [ ! -d "$dir" ]; then
+    printf 'ERR:transcript path is not a directory: %s\n' "$dir"
+    return 0
+  fi
+  if [ ! -e "$dir" ]; then
     printf 'NOSESSION:the runtime wrote no session for the working directory recorded for this worker, so it has no evidence of its own to read: %s\n' "$dir"
     return 0
   fi

@@ -165,6 +165,34 @@ expect_code 4 "$code" "terminal verification still rejects an unstarted worker"
 assert_contains "$out" "verdict: unstarted" "terminal rejection preserves the unstarted verdict"
 pass "terminal verification rejects unstarted as no verdict"
 
+wt=$(meta non-directory-session opus)
+dir=$(encoded_dir "$wt")
+printf 'not transcript data\n' > "$dir"
+out=$(run_verify non-directory-session); code=$?
+expect_code 4 "$code" "non-directory transcript path exits 4"
+assert_contains "$out" "verdict: unverifiable" "a non-directory transcript path is unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a present transcript path is not treated as absent"
+assert_contains "$out" "transcript path is not a directory" "the non-directory cause is named"
+pass "a present non-directory transcript path fails loudly"
+
+unreadable_store="$TMP_ROOT/unreadable-parent-store"
+mkdir -p "$unreadable_store/projects"
+wt=$(meta unreadable-parent opus)
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$unreadable_store|" "$HOME_DIR/state/unreadable-parent.meta"
+rm -f "$HOME_DIR/state/unreadable-parent.meta.bak"
+chmod 000 "$unreadable_store/projects"
+out=$(run_verify unreadable-parent); code=$?
+chmod 755 "$unreadable_store/projects"
+if [ "$(id -u)" = 0 ]; then
+  pass "unreadable transcript parent case skipped (running as root)"
+else
+  expect_code 4 "$code" "unreadable transcript parent exits 4"
+  assert_contains "$out" "verdict: unverifiable" "an unreadable transcript parent is unverifiable"
+  assert_not_contains "$out" "verdict: unstarted" "a hidden transcript path is not treated as absent"
+  assert_contains "$out" "transcript parent directory is not readable" "the unreadable parent cause is named"
+  pass "an unreadable transcript parent fails loudly"
+fi
+
 missing_store="$TMP_ROOT/missing-claude-store"
 meta missing-store opus model_evidence_watermark=claude-transcript-v1 >/dev/null
 sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$missing_store|" "$HOME_DIR/state/missing-store.meta"

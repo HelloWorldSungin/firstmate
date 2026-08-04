@@ -550,7 +550,7 @@ test_terminal_model_verdict_blocks_cleanup_then_allows_match() {
 claude_dispatch_meta() {
   local case_dir=$1 cfg
   cfg="$case_dir/claude-config"
-  mkdir -p "$cfg"
+  mkdir -p "$cfg/projects"
   printf '%s\n' \
     'harness=claude' \
     'model=opus' \
@@ -616,6 +616,109 @@ test_uninspectable_evidence_store_still_refuses() {
   assert_grep "REFUSED" "$case_dir/stderr" "uninspectable-evidence-store: no refusal was printed"
   assert_present "$case_dir/state/task-x1.meta" "uninspectable-evidence-store: task metadata was erased"
   pass "an uninspectable recorded evidence store remains unverifiable and refuses teardown"
+}
+
+test_non_directory_session_path_still_refuses() {
+  local case_dir dir rc
+  case_dir=$(make_case non-directory-session-path)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  printf 'not transcript data\n' > "$dir"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "non-directory-session-path: teardown discarded uninspectable evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "non-directory-session-path: the present path was not unverifiable"
+  assert_grep "transcript path is not a directory" "$case_dir/stderr" \
+    "non-directory-session-path: the path cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "non-directory-session-path: task metadata was erased"
+  pass "a present non-directory session path remains unverifiable and refuses teardown"
+}
+
+test_unreadable_session_parent_still_refuses() {
+  local case_dir dir parent rc
+  case_dir=$(make_case unreadable-session-parent)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  parent=${dir%/*}
+  never_started_worktree "$case_dir"
+  chmod 000 "$parent"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  chmod 755 "$parent"
+  if [ "$(id -u)" = 0 ]; then
+    pass "unreadable session parent teardown case skipped (running as root)"
+    return
+  fi
+  [ "$rc" -ne 0 ] || fail "unreadable-session-parent: teardown discarded hidden evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "unreadable-session-parent: the hidden path was not unverifiable"
+  assert_grep "transcript parent directory is not readable" "$case_dir/stderr" \
+    "unreadable-session-parent: the parent cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "unreadable-session-parent: task metadata was erased"
+  pass "an unreadable session parent remains unverifiable and refuses teardown"
+}
+
+install_first_turn_race_tmux() {
+  local case_dir=$1 transcript_dir=$2
+  cat > "$case_dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+killed='$case_dir/endpoint-killed'
+transcript_dir='$transcript_dir'
+case "\${1:-}" in
+  list-windows)
+    [ ! -e "\$killed" ] || exit 0
+    printf '%s\n' fm-task-x1
+    ;;
+  display-message)
+    case "\${*: -1}" in
+      '#{pane_tty}') printf '\n' ;;
+      '#{pane_current_command}') printf '%s\n' claude ;;
+      '#{pane_id}') printf '%s\n' %1 ;;
+    esac
+    ;;
+  send-keys) ;;
+  kill-window)
+    mkdir -p "\$transcript_dir"
+    printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "\$transcript_dir/current.jsonl"
+    : > "\$killed"
+    ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+test_first_turn_during_quiescence_recheck_refuses() {
+  local case_dir dir gen rc
+  case_dir=$(make_case first-turn-during-quiescence)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  mkdir -p "$dir"
+  printf '{"type":"user","message":{"role":"user"}}\n' > "$dir/current.jsonl"
+  never_started_worktree "$case_dir"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$case_dir/state" task-x1)
+  "$ROOT/bin/fm-busy-event.sh" apply "$case_dir/state" task-x1 idle \
+    --gen "$gen" --source fm-recovery --event quiescent
+  printf 'busy_gen=%s\n' "$gen" >> "$case_dir/state/task-x1.meta"
+  install_first_turn_race_tmux "$case_dir" "$dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "first-turn-during-quiescence: teardown discarded a mismatched first turn"
+  assert_grep "verdict: pending" "$case_dir/stderr" \
+    "first-turn-during-quiescence: the initial pending verdict was not surfaced"
+  assert_grep "verdict: mismatch" "$case_dir/stderr" \
+    "first-turn-during-quiescence: the recomputed mismatch was not surfaced"
+  assert_grep "REFUSED" "$case_dir/stderr" "first-turn-during-quiescence: no refusal was printed"
+  assert_present "$case_dir/endpoint-killed" "first-turn-during-quiescence: endpoint was not quiesced"
+  assert_present "$case_dir/state/task-x1.meta" "first-turn-during-quiescence: task metadata was erased"
+  pass "a first mismatched turn during endpoint quiescence is recomputed and preserved"
 }
 
 # The same allowance for the other no-turn shape: the runtime DID open a session
@@ -2185,7 +2288,10 @@ test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match
 test_never_started_and_clean_tears_down_without_force
 test_uninspectable_evidence_store_still_refuses
+test_non_directory_session_path_still_refuses
+test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
+test_first_turn_during_quiescence_recheck_refuses
 test_never_started_but_dirty_still_refuses
 test_never_started_with_untracked_claude_file_still_refuses
 test_never_started_but_committed_on_a_branch_still_refuses
