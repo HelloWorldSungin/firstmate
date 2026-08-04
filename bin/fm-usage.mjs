@@ -46,6 +46,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 // node:sqlite emits an ExperimentalWarning on import under Node 22. Replace the
 // default printer with one that drops exactly that warning, so a routine
@@ -412,7 +413,52 @@ async function eachLine(file, handler) {
 // An adapter turns one source line into zero or one usage event. Both adapters
 // below return the same event shape, which is the interface an OpenCode or Pi
 // adapter implements later without touching the store, the attribution ladder,
-// or the rollups.
+// or the rollups. An adapter returns SKIPPED - not null - for a line that did
+// carry a usage payload it could not use, so a harness that renames a field
+// cannot look like a harness that simply produced no usage.
+
+const SKIPPED = Symbol("skipped");
+
+// Harnesses disagree about whether a cached-input count is a SUBSET of the input
+// count or a bucket beside it, and reading the same column two ways is how a
+// by-harness or by-model rollup stops being comparable. The store therefore has
+// one convention - input_tokens, cache_read_tokens, and cache_write_tokens are
+// mutually exclusive, and total_tokens is their sum plus output - and every
+// adapter names the convention its own source uses. A later OpenCode or Pi
+// adapter has to make that choice explicitly rather than inherit whichever one
+// happened to be assumed here.
+const TOKEN_CONVENTIONS = {
+  // input, cache read, and cache write are already disjoint buckets. Claude Code
+  // reports this: a real transcript shows input_tokens: 2 beside
+  // cache_read_input_tokens: 17684 for one response.
+  disjoint: (raw) => raw.input,
+  // the cached part of the input is reported INSIDE the input count, so the
+  // harness's own total is input + output. Codex reports this: a real rollout
+  // shows total_token_usage {input 21418, cached_input 11008, output 284,
+  // total 21702}. The cached part is removed from input here so it is counted
+  // exactly once, and the stored total matches what Codex itself reports.
+  cached_input_within_input: (raw) => raw.input - raw.cacheRead,
+};
+
+function normalizeTokens(convention, raw) {
+  const resolveInput = TOKEN_CONVENTIONS[convention];
+  if (!resolveInput) throw new Error(`unknown token convention: ${convention}`);
+  const input = count(raw.input);
+  const output = count(raw.output);
+  const cacheRead = count(raw.cacheRead);
+  const cacheWrite = count(raw.cacheWrite);
+  const uncachedInput = Math.max(0, resolveInput({ input, output, cacheRead, cacheWrite }));
+  return {
+    input_tokens: uncachedInput,
+    output_tokens: output,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
+    // Reasoning tokens are a subset of the output count in both harnesses, so
+    // they are kept as a memo column and never enter the total.
+    reasoning_tokens: count(raw.reasoning),
+    total_tokens: uncachedInput + output + cacheRead + cacheWrite,
+  };
+}
 
 // Claude Code writes one JSONL transcript per session under
 // <root>/<slugified-cwd>/<session>.jsonl. Assistant lines carry message.usage.
@@ -427,16 +473,22 @@ function claudeEvent(line, file, ordinal) {
   const usage = line.message.usage;
   if (!usage || typeof usage !== "object") return null;
   const occurred = normalizeIso(line.timestamp);
-  if (!occurred) return null;
+  if (!occurred) return SKIPPED;
   const native =
     cleanToken(line.message.id) || cleanToken(line.requestId) || cleanToken(line.uuid);
-  if (!native) return null;
+  if (!native) return SKIPPED;
   const session = cleanToken(line.sessionId) || cleanToken(line.session_id) || "unknown";
-  const input = count(usage.input_tokens);
-  const output = count(usage.output_tokens);
-  const cacheRead = count(usage.cache_read_input_tokens);
-  const cacheWrite = count(usage.cache_creation_input_tokens);
-  if (input + output + cacheRead + cacheWrite === 0) return null;
+  // Claude reports input, cache read, and cache creation as disjoint buckets.
+  const tokens = normalizeTokens("disjoint", {
+    input: usage.input_tokens,
+    output: usage.output_tokens,
+    cacheRead: usage.cache_read_input_tokens,
+    cacheWrite: usage.cache_creation_input_tokens,
+    reasoning: 0,
+  });
+  // A usage payload this adapter can read no tokens out of is a field change,
+  // not an empty response: it is reported rather than dropped silently.
+  if (tokens.total_tokens === 0) return SKIPPED;
   return {
     event_id: `claude:${native}`,
     harness: "claude",
@@ -447,11 +499,7 @@ function claudeEvent(line, file, ordinal) {
     occurred_at: occurred,
     model: cleanToken(line.message.model),
     cwd: cleanToken(line.cwd, 480),
-    input_tokens: input,
-    output_tokens: output,
-    cache_read_tokens: cacheRead,
-    cache_write_tokens: cacheWrite,
-    reasoning_tokens: 0,
+    ...tokens,
   };
 }
 
@@ -469,9 +517,9 @@ function codexEvent(line, file, ordinal, stream) {
   if (!line || line.type !== "event_msg" || !line.payload) return null;
   if (line.payload.type !== "token_count") return null;
   const info = line.payload.info;
-  if (!info || typeof info !== "object") return null;
+  if (!info || typeof info !== "object") return SKIPPED;
   const occurred = normalizeIso(line.timestamp);
-  if (!occurred) return null;
+  if (!occurred) return SKIPPED;
 
   const total = info.total_token_usage || {};
   const last = info.last_token_usage || {};
@@ -509,7 +557,12 @@ function codexEvent(line, file, ordinal, stream) {
     };
     stream.cumulative = cumulative;
   }
-  if (delta.input + delta.output + delta.cacheRead + delta.cacheWrite === 0) return null;
+  // Codex counts its cached input inside its input count, so the growth is
+  // converted to the store's disjoint columns here.
+  const tokens = normalizeTokens("cached_input_within_input", delta);
+  // A turn that added no tokens is the ordinary rate-limit-only refresh, not a
+  // field this adapter failed to read.
+  if (tokens.total_tokens === 0) return null;
 
   stream.tokenEvents += 1;
   const stem = path.basename(file).replace(/\.jsonl$/, "");
@@ -523,11 +576,7 @@ function codexEvent(line, file, ordinal, stream) {
     occurred_at: occurred,
     model: stream.model,
     cwd: stream.cwd,
-    input_tokens: delta.input,
-    output_tokens: delta.output,
-    cache_read_tokens: delta.cacheRead,
-    cache_write_tokens: delta.cacheWrite,
-    reasoning_tokens: delta.reasoning,
+    ...tokens,
   };
 }
 
@@ -555,6 +604,12 @@ async function collect(db, roots, stamp) {
     files_unreadable: 0,
     events_new: 0,
     events_duplicate: 0,
+    // A line that carried a usage payload an adapter could not use: an
+    // unparseable timestamp, no usable identity, or no readable counter. It is
+    // counted so a harness that changes one of those fields cannot report
+    // events_new: 0 with malformed_lines: 0 and look healthy while collecting
+    // nothing.
+    events_skipped: 0,
     malformed_lines: 0,
   };
   const insert = db.prepare(`INSERT OR IGNORE INTO usage_event (
@@ -597,6 +652,7 @@ async function collect(db, roots, stamp) {
     };
     const events = [];
     let malformed = 0;
+    let skipped = 0;
     try {
       await eachLine(file, (line, ordinal) => {
         if (line === null) {
@@ -610,7 +666,8 @@ async function collect(db, roots, stamp) {
           codexStreamUpdate(line, stream);
           event = codexEvent(line, file, ordinal, stream);
         }
-        if (event) events.push(event);
+        if (event === SKIPPED) skipped += 1;
+        else if (event) events.push(event);
       });
     } catch {
       // An unreadable or vanishing source is a fact about that source, never a
@@ -620,15 +677,11 @@ async function collect(db, roots, stamp) {
     }
     summary.files_scanned += 1;
     summary.malformed_lines += malformed;
+    summary.events_skipped += skipped;
 
     db.exec("BEGIN");
     try {
       for (const event of events) {
-        const total =
-          event.input_tokens +
-          event.output_tokens +
-          event.cache_read_tokens +
-          event.cache_write_tokens;
         const result = insert.run(
           event.event_id,
           event.harness,
@@ -645,7 +698,9 @@ async function collect(db, roots, stamp) {
           event.cache_read_tokens,
           event.cache_write_tokens,
           event.reasoning_tokens,
-          total,
+          // The adapter owns the total, because only the adapter knows whether
+          // its harness reported those columns as disjoint or nested.
+          event.total_tokens,
           stamp,
           COLLECTOR_VERSION,
         );
@@ -691,15 +746,22 @@ function syncTasks(db, dirs, stamp) {
        completed_at, outcome, source, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(task_id) DO UPDATE SET
-      project = excluded.project, kind = excluded.kind, harness = excluded.harness,
-      model = excluded.model, effort = excluded.effort, worktree = excluded.worktree,
+      -- A source that does not report a fact does not erase it: the live
+      -- metadata and the durable manifest each know things the other may not.
+      project = COALESCE(excluded.project, usage_task.project),
+      kind = COALESCE(excluded.kind, usage_task.kind),
+      harness = COALESCE(excluded.harness, usage_task.harness),
+      model = COALESCE(excluded.model, usage_task.model),
+      effort = COALESCE(excluded.effort, usage_task.effort),
+      worktree = COALESCE(excluded.worktree, usage_task.worktree),
       -- Task metadata is appended to after dispatch, so its mtime drifts later
       -- than the moment the worker started. The earliest stamp ever observed is
       -- kept so a later rewrite cannot orphan the task's own early usage.
       started_at = MIN(COALESCE(excluded.started_at, usage_task.started_at),
                        COALESCE(usage_task.started_at, excluded.started_at)),
       completed_at = COALESCE(excluded.completed_at, usage_task.completed_at),
-      outcome = excluded.outcome, source = excluded.source,
+      outcome = COALESCE(excluded.outcome, usage_task.outcome),
+      source = excluded.source,
       updated_at = excluded.updated_at`);
   const bind = db.prepare(`INSERT INTO usage_binding
       (harness, session_id, task_id, project, worktree, source, recorded_at)
@@ -709,17 +771,23 @@ function syncTasks(db, dirs, stamp) {
       worktree = excluded.worktree, source = excluded.source,
       recorded_at = excluded.recorded_at`);
 
-  const counts = { live: 0, archived: 0, bindings_from_manifest: 0 };
+  const counts = { live: 0, archived: 0, live_records_gone: 0, bindings_from_manifest: 0 };
   const state = dirs.state;
   const data = dirs.data;
 
   // Live tasks first: state/<id>.meta is the only structured record while a task
-  // is running, and its mtime is when the worker started.
+  // is running, and its mtime is when the worker started. Liveness is a fact
+  // about THIS run - the ids seen below - and never a column left behind by an
+  // earlier one, because a worktree the pool has already recycled must not stay
+  // claimed by the task that used to hold it.
+  const liveIds = new Set();
   let entries = [];
+  let stateReadable = true;
   try {
     entries = fs.readdirSync(state, { withFileTypes: true });
   } catch {
     entries = [];
+    stateReadable = false;
   }
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".meta")) continue;
@@ -747,6 +815,7 @@ function syncTasks(db, dirs, stamp) {
       "meta",
       stamp,
     );
+    liveIds.add(id);
     counts.live += 1;
   }
 
@@ -765,10 +834,11 @@ function syncTasks(db, dirs, stamp) {
     if (!manifest || manifest.schema !== "fm-outcome-manifest.v1") continue;
     if (manifest.task_id !== dir.name) continue;
     const attribution = manifest.attribution || {};
-    const live = db.prepare("SELECT source FROM usage_task WHERE task_id = ?").get(dir.name);
-    // A live meta record wins over an archived one for the same id: the task was
-    // dispatched again under a recycled id and is running now.
-    if (!live) {
+    // A meta record seen in THIS run wins over the manifest for the same id: the
+    // task is running now, whatever an earlier archive says. Otherwise the
+    // manifest supersedes whatever a previous run recorded, which is what stamps
+    // completion onto a row that was written while the task was still live.
+    if (!liveIds.has(dir.name)) {
       upsert.run(
         manifest.task_id,
         cleanToken(manifest.project, 480),
@@ -800,6 +870,22 @@ function syncTasks(db, dirs, stamp) {
       );
       counts.bindings_from_manifest += 1;
     }
+  }
+
+  // A task whose live records are gone is not live any more, even when no
+  // manifest ever superseded its row. Retiring it here is what stops a torn-down
+  // task from claiming a pool slot it no longer holds; the moment its absence
+  // was first observed bounds the claim, so its own earlier usage still matches
+  // while a later task's does not. A state directory that could not be read at
+  // all is unknown, not empty, and retires nothing.
+  if (stateReadable) {
+    const live = [...liveIds];
+    const retired = db
+      .prepare(`UPDATE usage_task
+          SET source = 'meta_gone', completed_at = COALESCE(completed_at, ?), updated_at = ?
+        WHERE source = 'meta'${live.length ? ` AND task_id NOT IN (${live.map(() => "?").join(",")})` : ""}`)
+      .run(stamp, stamp, ...live);
+    counts.live_records_gone = Number(retired.changes);
   }
   return counts;
 }
@@ -861,7 +947,6 @@ function matchTasksByWorktree(db, cwd, atIso, fromIso = null, { liveOnly = false
 // Attribution is derived, so it is recomputed from scratch on every ingest and
 // never drifts from the bindings and task records it is built on.
 function attributeEvents(db) {
-  db.exec("UPDATE usage_event SET task_id = NULL, project = NULL, attribution_method = 'unknown', attribution_confidence = 'none'");
   const update = db.prepare(`UPDATE usage_event
     SET task_id = ?, project = ?, attribution_method = ?, attribution_confidence = ?
     WHERE event_id = ?`);
@@ -874,6 +959,13 @@ function attributeEvents(db) {
     .all();
   db.exec("BEGIN");
   try {
+    // The reset belongs inside the same transaction as the re-derivation. A
+    // failure between the two - a second writer past the busy timeout, a full
+    // disk - would otherwise commit the reset and roll back only the rebuild,
+    // leaving every stored event unattributed until a later run succeeded.
+    db.exec(
+      "UPDATE usage_event SET task_id = NULL, project = NULL, attribution_method = 'unknown', attribution_confidence = 'none'",
+    );
     for (const event of events) {
       const binding = bindings.get(`${event.harness}${event.session_id}`);
       if (binding) {
@@ -1146,7 +1238,10 @@ function parseArgs(argv) {
 function resolveHome(options) {
   if (options.home) return path.resolve(options.home);
   if (process.env.FM_HOME) return path.resolve(process.env.FM_HOME);
-  return path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  // fileURLToPath, not the URL's pathname: a checkout under a path containing a
+  // space or a '#' stays percent-encoded in the latter and would resolve the
+  // store under a directory that does not exist.
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
 function resolvePaths(options) {
@@ -1206,10 +1301,30 @@ async function main() {
     const collected = await collect(db, { claude: paths.claude, codex: paths.codex }, stamp);
     const tasks = syncTasks(db, paths, stamp);
     const bound = bindLiveSessions(db, stamp);
-    attributeEvents(db);
-    const cost = applyCost(db, loadRates(paths.rates), stamp);
-    const published = options.sessions === false ? 0 : publishTaskSessions(db, paths, stamp);
-    const attribution = attributionReport(db);
+    // Each derived stage is atomic on its own, so a failure in one must not
+    // silently skip the ones after it - publishing the session map is what lets
+    // a task's usage survive the cleanup that is about to run. Every failure is
+    // named in the summary and in the exit status instead of vanishing into
+    // teardown's best-effort call.
+    const failures = [];
+    const stage = (name, run, fallback) => {
+      try {
+        return run();
+      } catch (error) {
+        failures.push({ stage: name, detail: String(error?.message ?? error).slice(0, 240) });
+        return fallback;
+      }
+    };
+    stage("attribution", () => attributeEvents(db), null);
+    const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
+      rate_version: null,
+      currency: null,
+      events_priced: 0,
+      events_unpriced: null,
+    });
+    const published =
+      options.sessions === false ? 0 : stage("task_sessions", () => publishTaskSessions(db, paths, stamp), 0);
+    const attribution = stage("attribution_report", () => attributionReport(db), null);
     emit({
       schema: "fm-usage-ingest.v1",
       store: paths.db,
@@ -1220,9 +1335,11 @@ async function main() {
       task_session_maps_published: published,
       cost,
       attribution,
+      failures,
       completed_at: stamp,
     });
     db.close();
+    if (failures.length > 0) process.exitCode = 1;
     return;
   }
 
@@ -1276,4 +1393,10 @@ async function main() {
   db.close();
 }
 
-await main();
+// An unhandled rejection would exit with a bare stack trace and no explanation,
+// which is worth nothing to an operator and less to teardown's best-effort call.
+try {
+  await main();
+} catch (error) {
+  die(String(error?.message ?? error));
+}

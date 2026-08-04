@@ -141,6 +141,8 @@ test_claude_adapter() {
   [ "$(jq -r '.output_tokens' <<<"$row")" = 300 ] || fail "claude output tokens wrong: $row"
   [ "$(jq -r '.cache_read_tokens' <<<"$row")" = 4000 ] || fail "claude cache read tokens wrong: $row"
   [ "$(jq -r '.cache_write_tokens' <<<"$row")" = 500 ] || fail "claude cache write tokens wrong: $row"
+  # Claude reports the three input buckets as disjoint, so the total is their
+  # sum plus output and no token is counted twice.
   [ "$(jq -r '.total_tokens' <<<"$row")" = 4815 ] || fail "claude total tokens wrong: $row"
   pass "the Claude adapter stores input, output, and cache tokens once per API response"
 }
@@ -160,10 +162,17 @@ test_codex_adapter() {
   usage_run "$case_root" ingest >/dev/null || fail "codex ingest failed"
   local row
   row=$(usage_run "$case_root" report --by harness | jq -c '.rows[] | select(.key == "codex")')
-  [ "$(jq -r '.input_tokens' <<<"$row")" = 3000 ] || fail "codex input tokens wrong: $row"
+  # Codex counts its cached input INSIDE its input count, so the cached half
+  # belongs in the cache column and not twice in the total. The store's columns
+  # are disjoint whatever a harness reports.
+  [ "$(jq -r '.input_tokens' <<<"$row")" = 1500 ] || fail "codex uncached input tokens wrong: $row"
   [ "$(jq -r '.output_tokens' <<<"$row")" = 250 ] || fail "codex output tokens wrong: $row"
   [ "$(jq -r '.cache_read_tokens' <<<"$row")" = 1500 ] || fail "codex cache read tokens wrong: $row"
   [ "$(jq -r '.reasoning_tokens' <<<"$row")" = 90 ] || fail "codex reasoning tokens wrong: $row"
+  # Codex's own total for this session is input + output = 3250, with cached
+  # input already inside input and reasoning already inside output.
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 3250 ] \
+    || fail "the stored total must match the harness's own total: $row"
   [ "$(jq -r '.events' <<<"$row")" = 2 ] || fail "a repeated cumulative report must not add an event: $row"
   local model
   model=$(usage_run "$case_root" report --by model | jq -r '.rows[0].key')
@@ -228,11 +237,22 @@ test_malformed_and_rotated_sources() {
   # Malformed, truncated, and empty lines around a good one.
   printf '{"type":"assistant","message":{"usage":\n' >> "$file"
   printf 'not json at all\n\n' >> "$file"
+  # A well-formed line that IS a usage record but whose timestamp the adapter
+  # cannot read: a field the harness changed, not a parse failure. It has its own
+  # counter, so a harness that renames a field can never report zero new events,
+  # zero malformed lines, and look like a quiet fleet.
+  jq -cn '{type:"assistant",uuid:"u-skip",sessionId:"session-e",cwd:"/home/worker/echo",
+           timestamp:"08/01/2026 10:06",
+           message:{id:"msg_unreadable",model:"claude-opus-5",
+                    usage:{input_tokens:9,output_tokens:9,
+                           cache_read_input_tokens:0,cache_creation_input_tokens:0}}}' >> "$file"
   claude_line "$file" session-e /home/worker/echo 2026-08-01T10:05:00Z msg_after 1 1 1 1
   local out
   out=$(usage_run "$case_root" ingest) || fail "ingest must survive malformed input"
   [ "$(jq -r '.collected.malformed_lines' <<<"$out")" -ge 2 ] \
     || fail "malformed lines must be reported: $(jq -c '.collected' <<<"$out")"
+  [ "$(jq -r '.collected.events_skipped' <<<"$out")" -ge 1 ] \
+    || fail "a usage record dropped by a field check must be counted: $(jq -c '.collected' <<<"$out")"
 
   # Rotation: the live transcript is moved aside and a fresh one takes its name.
   mv "$file" "$dir/session-e.1.jsonl"
@@ -308,9 +328,11 @@ test_totals_survive_teardown() {
   codex_token_count "$rollout" 2026-08-01T10:02:00Z 2000 300 800 60
 
   usage_run "$case_root" ingest >/dev/null || fail "pre-teardown ingest failed"
+  # 1000 from the Claude response plus 2300 from the Codex turn, whose 800
+  # cached tokens are inside its 2000 input count rather than beside it.
   local before
   before=$(usage_run "$case_root" report --by task | jq -c '.rows[] | select(.key == "bravo")')
-  [ "$(jq -r '.total_tokens' <<<"$before")" = 4100 ] || fail "pre-teardown totals wrong: $before"
+  [ "$(jq -r '.total_tokens' <<<"$before")" = 3300 ] || fail "pre-teardown totals wrong: $before"
 
   # Exactly what teardown does: publish the manifest from the records that still
   # exist, then remove the volatile ones.
@@ -331,13 +353,104 @@ test_totals_survive_teardown() {
   usage_run "$case_root" ingest >/dev/null || fail "post-teardown ingest failed"
   local after
   after=$(usage_run "$case_root" report --by task | jq -c '.rows[] | select(.key == "bravo")')
-  [ "$(jq -r '.total_tokens' <<<"$after")" = 4100 ] \
+  [ "$(jq -r '.total_tokens' <<<"$after")" = 3300 ] \
     || fail "a completed task must keep its token totals after teardown: $after"
   [ "$(jq -r '.sessions' <<<"$after")" = 2 ] || fail "both sessions must stay attributed: $after"
   local project
   project=$(usage_run "$case_root" report --by project | jq -r '.rows[] | select(.key == "demo") | .total_tokens')
-  [ "$project" = 4100 ] || fail "project attribution must survive teardown, got $project"
+  [ "$project" = 3300 ] || fail "project attribution must survive teardown, got $project"
   pass "completed Claude and Codex tasks retain their token totals after teardown"
+}
+
+# Treehouse hands the same pool slot to task after task, so a torn-down task's
+# record must stop claiming that worktree once its live records are gone. The
+# store is deliberately NOT wiped between the two tasks here: that is the path a
+# real fleet takes, and the one a rebuilt-store case cannot see.
+test_a_recycled_worktree_slot_belongs_to_the_task_holding_it() {
+  local case_root
+  case_root=$(new_case recycled-slot)
+  local worktree="$case_root/worktrees/pool-slot"
+  mkdir -p "$worktree" "$case_root/home/data/first"
+  printf 'brief\n' > "$case_root/home/data/first/brief.md"
+  write_meta_at "$case_root/home/state/first.meta" 202608010900.00 \
+    "window=fm:first" "worktree=$worktree" "project=demo" "harness=claude" \
+    "model=claude-opus-5" "effort=high" "kind=ship" "mode=no-mistakes"
+  printf 'done: PR https://example.invalid/pr/1 checks green\n' \
+    > "$case_root/home/state/first.status"
+  local dir="$case_root/claude/-pool-slot"
+  mkdir -p "$dir"
+  claude_line "$dir/first.jsonl" session-first "$worktree" 2026-08-01T10:00:00Z msg_f1 10 20 30 40
+
+  local out
+  out=$(usage_run "$case_root" ingest) || fail "the first task's ingest failed"
+  [ "$(jq -r '.sessions_bound' <<<"$out")" = 1 ] || fail "the first task's session must bind: $out"
+
+  # Teardown of the first task: publish the manifest, then remove the volatile
+  # records it was composed from.
+  FM_HOME="$case_root/home" "$MANIFEST" write first >/dev/null || fail "manifest write failed"
+  rm -f "$case_root/home/state/first.meta" "$case_root/home/state/first.status" \
+    "$case_root/home/state/first.usage-sessions"
+
+  # The pool hands the same slot to the next task, which opens its own session.
+  write_meta_at "$case_root/home/state/second.meta" 202608011100.00 \
+    "window=fm:second" "worktree=$worktree" "project=demo" "harness=claude" \
+    "model=claude-opus-5" "effort=high" "kind=ship" "mode=no-mistakes"
+  claude_line "$dir/second.jsonl" session-second "$worktree" 2026-08-01T11:30:00Z msg_s1 1 2 3 4
+
+  out=$(usage_run "$case_root" ingest) || fail "the second task's ingest failed"
+  [ "$(jq -r '.sessions_bound' <<<"$out")" = 1 ] \
+    || fail "the task now holding the slot must bind its own session: $out"
+  local sidecar="$case_root/home/state/second.usage-sessions"
+  assert_present "$sidecar" "the new holder's session map must reach its own manifest"
+  [ "$(jq -r '.sessions[0].session_id' "$sidecar")" = session-second ] \
+    || fail "the new holder's session map carries the wrong session: $(cat "$sidecar")"
+
+  local report attribution
+  report=$(usage_run "$case_root" report --by task)
+  attribution=$(usage_run "$case_root" attribution)
+  [ "$(jq -r '.rows[] | select(.key == "first") | .total_tokens' <<<"$report")" = 100 ] \
+    || fail "the torn-down task lost its own usage: $report"
+  [ "$(jq -r '.rows[] | select(.key == "second") | .total_tokens' <<<"$report")" = 10 ] \
+    || fail "usage in a recycled slot was not attributed to the task holding it: $report"
+  [ "$(jq -r '[.by_method[] | select(.method == "ambiguous") | .events] | add // 0' <<<"$attribution")" = 0 ] \
+    || fail "a recycled slot must not make either task's usage ambiguous: $attribution"
+  pass "a recycled worktree slot attributes usage to the task holding it"
+}
+
+# The same slot, but the first task's records vanish without a manifest ever
+# being published. Liveness is a fact about the current scan, so the vanished
+# task stops claiming the slot instead of contesting every later task forever.
+test_a_task_whose_live_records_vanish_stops_claiming_its_slot() {
+  local case_root
+  case_root=$(new_case vanished-task)
+  local worktree="$case_root/worktrees/pool-slot-2"
+  mkdir -p "$worktree"
+  write_meta_at "$case_root/home/state/gone.meta" 202608010900.00 \
+    "window=fm:gone" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  local dir="$case_root/claude/-pool-slot-2"
+  mkdir -p "$dir"
+  claude_line "$dir/gone.jsonl" session-gone "$worktree" 2026-08-01T10:00:00Z msg_g1 10 20 30 40
+  usage_run "$case_root" ingest >/dev/null || fail "the first task's ingest failed"
+
+  rm -f "$case_root/home/state/gone.meta" "$case_root/home/state/gone.usage-sessions"
+  write_meta_at "$case_root/home/state/next.meta" 202608011100.00 \
+    "window=fm:next" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  claude_line "$dir/next.jsonl" session-next "$worktree" 2026-08-01T11:30:00Z msg_n1 1 2 3 4
+
+  local out
+  out=$(usage_run "$case_root" ingest) || fail "the second task's ingest failed"
+  [ "$(jq -r '.tasks.live_records_gone' <<<"$out")" = 1 ] \
+    || fail "a task whose live records vanished must be retired: $(jq -c '.tasks' <<<"$out")"
+  [ "$(jq -r '.sessions_bound' <<<"$out")" = 1 ] \
+    || fail "the task holding the slot must still bind its own session: $out"
+
+  local report
+  report=$(usage_run "$case_root" report --by task)
+  [ "$(jq -r '.rows[] | select(.key == "gone") | .total_tokens' <<<"$report")" = 100 ] \
+    || fail "the vanished task lost the usage it had already earned: $report"
+  [ "$(jq -r '.rows[] | select(.key == "next") | .total_tokens' <<<"$report")" = 10 ] \
+    || fail "the task holding the slot did not get its own usage: $report"
+  pass "a task whose live records vanish stops claiming its worktree slot"
 }
 
 test_unattributed_usage_is_preserved() {
@@ -454,9 +567,10 @@ test_rollups_reconcile() {
   local per_task
   per_task=$(usage_run "$case_root" sessions --task echo | jq '.sessions | length')
   [ "$per_task" = 2 ] || fail "the task's own sessions should be listed, got $per_task"
-  # 100 + 10 from the two Claude responses, 150 from the Codex turn. Codex
-  # reasoning tokens are part of its output count, so they are not added again.
-  [ "$task_total" = 260 ] || fail "per-task rows must match their events, got $task_total"
+  # 100 + 10 from the two Claude responses, 120 from the Codex turn. Codex
+  # reasoning tokens are part of its output count and its cached tokens are part
+  # of its input count, so neither is added again.
+  [ "$task_total" = 230 ] || fail "per-task rows must match their events, got $task_total"
 
   local burn
   burn=$(FM_USAGE_NOW=2026-08-01T12:00:00Z usage_run "$case_root" burn --bucket hour --buckets 6)
@@ -539,6 +653,8 @@ test_reprocessing_is_idempotent
 test_malformed_and_rotated_sources
 test_live_attribution_and_session_map
 test_totals_survive_teardown
+test_a_recycled_worktree_slot_belongs_to_the_task_holding_it
+test_a_task_whose_live_records_vanish_stops_claiming_its_slot
 test_unattributed_usage_is_preserved
 test_ambiguous_attribution_is_refused
 test_rollups_reconcile

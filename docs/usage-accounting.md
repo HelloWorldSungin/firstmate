@@ -17,6 +17,7 @@ bin/fm-usage.mjs attribution
 
 `ingest` scans this machine's Claude Code transcripts and Codex rollouts, stores every token-usage event, attributes what it can, and prints a JSON summary.
 It is safe to run on any cadence, including concurrently with an earlier run that has not finished, because ingestion is idempotent rather than incremental-only.
+Each derived stage - attribution, cost, the published session maps - is atomic on its own, so a stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
 The remaining subcommands are read-only projections and print JSON: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.
 
 The store lives at `data/usage.db` under the operational home and is private to it.
@@ -37,6 +38,17 @@ Each usage event carries a stable identity, its source provenance, and its raw c
 Raw fields are copied verbatim from the source record.
 Derived fields are recomputed from raw fields and the durable task records on every ingest, so a corrected task record fixes history without re-reading a transcript.
 
+The token columns are disjoint by contract: `input_tokens` counts input that was **not** served from a cache, `cache_read_tokens` and `cache_write_tokens` count the cached parts, and `total_tokens` is their sum plus output.
+Harnesses disagree about that, so each adapter names the convention its own source uses and converts once, rather than letting the shared arithmetic assume one of them:
+
+| Harness | Source convention | Conversion |
+| --- | --- | --- |
+| Claude Code | `input_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens` are already disjoint | none |
+| Codex | `cached_input_tokens` is a **subset** of `input_tokens`, and Codex's own `total_tokens` is input plus output | the cached part moves out of input, so the stored total matches Codex's own |
+
+Reasoning tokens are a subset of the output count in both, so they are kept as a memo column and never added to a total.
+A later OpenCode or Pi adapter names its convention the same way instead of inheriting whichever one was assumed.
+
 `usage_session` holds one row per observed session, `usage_binding` the durable session-to-task map, `usage_task` the task facts attribution still needs after a task is gone, `usage_source` the per-file scan state that detects rotation and truncation, and `usage_cost_estimate` the optional estimate described below.
 
 ### Identity and idempotence
@@ -49,6 +61,7 @@ Reprocessing the same source never produces duplicate usage, because identity co
 A source is re-read whenever its size, modification time, or leading bytes changed; rotation and truncation both change one of those.
 Re-reading a whole file is safe by construction, so the collector never has to trust a saved offset across a rotation.
 A malformed, truncated, or unreadable line is counted and skipped: it cannot crash a scan or alter totals already stored.
+A line that *is* a usage record but that an adapter cannot use - an unparseable timestamp, no usable identity, no readable counter - is counted separately as `events_skipped`, so a harness that renames one of those fields shows up as a number instead of as a quiet fleet.
 
 ## Attribution
 
@@ -65,6 +78,10 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 Every claim starts from an exact worktree path match; the task's own lifetime only bounds a claim that a path already supports.
 Worktree paths are recycled between tasks, which is precisely why the bound exists and why an overlapping claim is disclosed as ambiguous instead of resolved by guessing.
 
+A task counts as live only while its own `state/<id>.meta` is present in the scan that is running now, never because an earlier scan saw it.
+Once that record is gone, the durable manifest supersedes what the live record said, and a task that left no manifest is retired at the moment its absence was first observed.
+Either way the claim on the worktree ends when the task's hold on it ended, so the next task in that pool slot owns its own usage.
+
 Unattributed usage is preserved with explicit unknown fields and reported in every projection, including firstmate's own sessions, which belong to no task.
 `bin/fm-usage.mjs attribution` reports the method and confidence breakdown plus the percentage of events and tokens matched.
 
@@ -75,7 +92,8 @@ The chain that carries attribution past that point has three steps:
 
 1. While the task is live, `ingest` binds each session it observes in that task's worktree and publishes the map to `state/<id>.usage-sessions` (schema `fm-usage-sessions.v1`, at most 64 sessions).
    Cleanup refreshes that map once more before archiving, so the last session a task opened is not lost between collector runs.
-   That refresh runs only when `data/usage.db` already exists, so a home that has never collected usage pays nothing, and a failed refresh never blocks cleanup.
+   That refresh runs only when `data/usage.db` already exists, so a home that has never collected usage pays nothing.
+   It is best-effort and time-bounded (`FM_TEARDOWN_USAGE_TIMEOUT`, 60 seconds by default): neither a failed nor a slow refresh can block cleanup, and either one degrades to the map the previous collector run already published.
 2. [`bin/fm-outcome-manifest.sh`](../bin/fm-outcome-manifest.sh) copies that map into `attribution.sessions` in the durable outcome manifest, which is published **before** cleanup removes the volatile records ([fleet data contracts](fleet-data-contracts.md)).
 3. A later `ingest` reads the manifest and restores the bindings, so a completed task keeps its token totals even if the store is deleted and rebuilt from the same transcripts afterwards.
 

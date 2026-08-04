@@ -176,6 +176,37 @@ test_secondmate_manifest_title_is_null() {
   pass "secondmate manifests retain nullable title and provider fields in durable history"
 }
 
+# The usage session map was added to the attribution object after manifests were
+# already on disk, and fm_outcome_history_json revalidates every one of them on
+# every read. A manifest published before that contract existed must therefore
+# stay valid, or the upgrade would silently reclassify real durable history as
+# invalid and drop it out of the dashboard.
+test_manifest_without_sessions_stays_valid() {
+  local home id path legacy out
+  home=$(make_home legacy-sessions)
+  id=ship-legacy
+  seed_ship_task "$home" "$id"
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "manifest write failed"
+  path="$home/data/$id/outcome.json"
+
+  # Exactly the shape an older firstmate wrote: the attribution object with no
+  # sessions key at all, not an empty one.
+  legacy=$(jq -c 'del(.attribution.sessions)' "$path") || fail "legacy manifest fixture failed"
+  printf '%s\n' "$legacy" > "$path"
+  printf '%s' "$legacy" | jq -e '.attribution | has("sessions") | not' >/dev/null \
+    || fail "the legacy fixture still carries a sessions key"
+
+  fm "$home" "$MANIFEST" validate "$id" >/dev/null \
+    || fail "a manifest written before the usage session map was invalidated by the upgrade"
+  fm "$home" "$MANIFEST" show "$id" >/dev/null \
+    || fail "a manifest written before the usage session map could not be read back"
+  out=$(fm "$home" "$MANIFEST" list)
+  printf '%s' "$out" | jq -e --arg id "$id" '
+    (.records | any(.task_id == $id)) and (.malformed | any(.id == $id) | not)' >/dev/null \
+    || fail "pre-upgrade durable history was reclassified as malformed: $out"
+  pass "a manifest written before the usage session map stays valid in durable history"
+}
+
 test_manifest_requires_metadata_and_allowlist() {
   local home id path valid history rc out
   home=$(make_home refuse)
@@ -652,6 +683,7 @@ test_free_text_is_bounded_and_single_line() {
 test_manifest_composition
 test_manifest_gbrain_and_overrides
 test_secondmate_manifest_title_is_null
+test_manifest_without_sessions_stays_valid
 test_manifest_requires_metadata_and_allowlist
 test_work_items_round_trip
 test_work_item_rejects_unusable_urls
