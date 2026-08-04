@@ -570,41 +570,57 @@ use_unverified_zellij_backend() {
     'zellij_pane_id=7' >> "$case_dir/state/task-x1.meta"
   cat > "$case_dir/fakebin/zellij" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = list-sessions ]; then
-  [ "${FM_TEST_ZELLIJ_PRESENCE_STATE:-missing}" != unreadable ] || exit 1
-  case "${FM_TEST_ZELLIJ_MUTATION:-}" in
-    model-turn)
-      mkdir -p "${FM_TEST_ZELLIJ_TRANSCRIPT_DIR:?}"
-      printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "${FM_TEST_ZELLIJ_TRANSCRIPT_DIR:?}/current.jsonl"
-      ;;
-    task-branch)
-      git -C "${FM_TEST_ZELLIJ_PROJECT:?}" branch fm/task-x1
-      ;;
-    own-commit)
-      git -C "${FM_TEST_ZELLIJ_WT:?}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "detached worker commit"
-      ;;
-    tracked-change)
-      printf 'staged work\n' > "${FM_TEST_ZELLIJ_WT:?}/staged.txt"
-      git -C "${FM_TEST_ZELLIJ_WT:?}" add staged.txt
-      ;;
-    untracked-file)
-      printf 'untracked work\n' > "${FM_TEST_ZELLIJ_WT:?}/scratch.txt"
-      ;;
-  esac
-  [ "${FM_TEST_ZELLIJ_PRESENCE_STATE:-missing}" = ambiguous ] && printf '%s\n' firstmate
-  exit 0
-fi
-case " $* " in
-  *" action list-panes --json "*)
-    printf '%s\n' '[{"id":7,"tab_id":3,"is_plugin":false}]'
-    ;;
-  *" action list-tabs --json "*)
-    printf '%s\n' '[{"tab_id":3,"name":"fm-task-x1"}]'
-    ;;
-esac
-exit 0
+exit 1
 SH
   chmod +x "$case_dir/fakebin/zellij"
+}
+
+install_tmux_liveness_mutation() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = list-windows ]; then
+  case "${FM_TEST_LIVENESS_MUTATION:-}" in
+    model-turn)
+      mkdir -p "${FM_TEST_TRANSCRIPT_DIR:?}"
+      printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "${FM_TEST_TRANSCRIPT_DIR:?}/current.jsonl"
+      ;;
+    task-branch)
+      git -C "${FM_TEST_PROJECT:?}" branch fm/task-x1
+      ;;
+    own-commit)
+      git -C "${FM_TEST_WT:?}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "detached worker commit"
+      ;;
+    tracked-change)
+      printf 'staged work\n' > "${FM_TEST_WT:?}/staged.txt"
+      git -C "${FM_TEST_WT:?}" add staged.txt
+      ;;
+    untracked-file)
+      printf 'untracked work\n' > "${FM_TEST_WT:?}/scratch.txt"
+      ;;
+  esac
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+install_authoritative_live_tmux() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  list-windows) printf '%s\n' fm-task-x1 ;;
+  display-message)
+    case "\${*: -1}" in
+      '#{pane_tty}') printf '\n' ;;
+      '#{pane_current_command}') printf '%s\n' claude ;;
+    esac
+    ;;
+  kill-window) : > '$case_dir/endpoint-killed' ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
 }
 
 # Leave the worktree exactly as a worker that died before its first turn does:
@@ -754,66 +770,33 @@ test_unreadable_session_parent_still_refuses() {
   pass "an unreadable session parent remains unverifiable and refuses teardown"
 }
 
-install_first_turn_race_tmux() {
-  local case_dir=$1 transcript_dir=$2
-  cat > "$case_dir/fakebin/tmux" <<SH
-#!/usr/bin/env bash
-killed='$case_dir/endpoint-killed'
-transcript_dir='$transcript_dir'
-case "\${1:-}" in
-  list-windows)
-    [ ! -e "\$killed" ] || exit 0
-    printf '%s\n' fm-task-x1
-    ;;
-  display-message)
-    case "\${*: -1}" in
-      '#{pane_tty}') printf '\n' ;;
-      '#{pane_current_command}') printf '%s\n' claude ;;
-      '#{pane_id}') printf '%s\n' %1 ;;
-    esac
-    ;;
-  send-keys) ;;
-  kill-window)
-    mkdir -p "\$transcript_dir"
-    printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "\$transcript_dir/current.jsonl"
-    : > "\$killed"
-    ;;
-esac
-SH
-  chmod +x "$case_dir/fakebin/tmux"
-}
-
-test_first_turn_during_quiescence_recheck_refuses() {
-  local case_dir dir gen rc
-  case_dir=$(make_case first-turn-during-quiescence)
+test_first_turn_before_cleanup_recheck_refuses() {
+  local case_dir dir rc
+  case_dir=$(make_case first-turn-before-cleanup)
   write_meta "$case_dir" no-mistakes ship
   dir=$(claude_dispatch_meta "$case_dir")
-  mkdir -p "$dir"
-  printf '{"type":"user","message":{"role":"user"}}\n' > "$dir/current.jsonl"
   never_started_worktree "$case_dir"
-  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$case_dir/state" task-x1)
-  "$ROOT/bin/fm-busy-event.sh" apply "$case_dir/state" task-x1 idle \
-    --gen "$gen" --source fm-recovery --event quiescent
-  printf 'busy_gen=%s\n' "$gen" >> "$case_dir/state/task-x1.meta"
-  install_first_turn_race_tmux "$case_dir" "$dir"
+  install_tmux_liveness_mutation "$case_dir"
 
   rc=0
-  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+  FM_TEST_LIVENESS_MUTATION=model-turn \
+    FM_TEST_TRANSCRIPT_DIR="$dir" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-  [ "$rc" -ne 0 ] || fail "first-turn-during-quiescence: teardown discarded a mismatched first turn"
-  assert_grep "verdict: pending" "$case_dir/stderr" \
-    "first-turn-during-quiescence: the initial pending verdict was not surfaced"
+  [ "$rc" -ne 0 ] || fail "first-turn-before-cleanup: teardown discarded a mismatched first turn"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "first-turn-before-cleanup: the initial unstarted verdict was not surfaced"
   assert_grep "verdict: mismatch" "$case_dir/stderr" \
-    "first-turn-during-quiescence: the recomputed mismatch was not surfaced"
-  assert_grep "REFUSED" "$case_dir/stderr" "first-turn-during-quiescence: no refusal was printed"
-  assert_present "$case_dir/endpoint-killed" "first-turn-during-quiescence: endpoint was not quiesced"
-  assert_present "$case_dir/state/task-x1.meta" "first-turn-during-quiescence: task metadata was erased"
-  pass "a first mismatched turn during endpoint quiescence is recomputed and preserved"
+    "first-turn-before-cleanup: the recomputed mismatch was not surfaced"
+  assert_grep "gained a model-attributed turn" "$case_dir/stderr" \
+    "first-turn-before-cleanup: the changed no-turn condition was not named"
+  assert_present "$case_dir/state/task-x1.meta" "first-turn-before-cleanup: task metadata was erased"
+  pass "a first mismatched turn before cleanup is recomputed and preserved"
 }
 
-test_unverified_backend_allows_only_with_every_other_protection() {
+test_unknown_liveness_proceeds_with_on_disk_proof() {
   local case_dir rc
-  case_dir=$(make_case unverified-backend-clean)
+  case_dir=$(make_case unknown-liveness-clean)
   write_meta "$case_dir" no-mistakes ship
   claude_dispatch_meta "$case_dir" >/dev/null
   never_started_worktree "$case_dir"
@@ -822,62 +805,57 @@ test_unverified_backend_allows_only_with_every_other_protection() {
   rc=0
   FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-  expect_code 0 "$rc" "unverified-backend-clean: absent endpoint plus every other protection stayed blocked"
-  assert_grep "Endpoint quiescence could not be determined" "$case_dir/stderr" \
-    "unverified-backend-clean: the missing recovery classifier was not stated"
-  assert_grep "authoritative endpoint presence state is missing" "$case_dir/stderr" \
-    "unverified-backend-clean: the protections carrying the decision were not stated"
-  assert_absent "$case_dir/state/task-x1.meta" "unverified-backend-clean: task metadata was left behind"
-  pass "an unverified backend proceeds only with every independent protection"
+  expect_code 0 "$rc" "unknown-liveness-clean: every on-disk protection still stayed blocked"
+  assert_grep "Endpoint liveness could not be determined on backend zellij (state: unverified)" "$case_dir/stderr" \
+    "unknown-liveness-clean: the missing recovery classifier was not stated"
+  assert_grep "recomputed on-disk proof" "$case_dir/stderr" \
+    "unknown-liveness-clean: the protections carrying the decision were not stated"
+  assert_absent "$case_dir/state/task-x1.meta" "unknown-liveness-clean: task metadata was left behind"
+  pass "unknown endpoint liveness proceeds with every on-disk protection"
 }
 
-test_unverified_backend_unreadable_and_ambiguous_presence_refuse() {
-  local case_dir presence rc
-  for presence in unreadable ambiguous; do
-    case_dir=$(make_case "unverified-backend-presence-$presence")
-    write_meta "$case_dir" no-mistakes ship
-    claude_dispatch_meta "$case_dir" >/dev/null
-    never_started_worktree "$case_dir"
-    use_unverified_zellij_backend "$case_dir"
+test_authoritative_live_endpoint_refuses() {
+  local case_dir rc
+  case_dir=$(make_case authoritative-live-endpoint)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_live_tmux "$case_dir"
 
-    rc=0
-    FM_TEST_ZELLIJ_PRESENCE_STATE="$presence" \
-      FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
-      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-    [ "$rc" -ne 0 ] || fail "unverified-backend-presence-$presence: teardown treated uncertain presence as absence"
-    assert_grep "quiescence could not be determined" "$case_dir/stderr" \
-      "unverified-backend-presence-$presence: the classifier limitation was not stated"
-    assert_grep "presence state is $presence" "$case_dir/stderr" \
-      "unverified-backend-presence-$presence: the observed presence state was not surfaced"
-    assert_present "$case_dir/state/task-x1.meta" \
-      "unverified-backend-presence-$presence: task metadata was erased"
-  done
-  pass "an unverified backend refuses unreadable and ambiguous endpoint presence"
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "authoritative-live-endpoint: teardown killed a verified live worker"
+  assert_grep "live worker according to backend tmux" "$case_dir/stderr" \
+    "authoritative-live-endpoint: authoritative liveness was not named"
+  assert_absent "$case_dir/endpoint-killed" "authoritative-live-endpoint: the live endpoint was killed"
+  assert_present "$case_dir/state/task-x1.meta" "authoritative-live-endpoint: task metadata was erased"
+  pass "an authoritative live endpoint refuses never-started teardown"
 }
 
-test_unverified_backend_refuses_each_missing_protection() {
+test_recomputed_on_disk_proof_refuses_each_failed_condition() {
   local case_dir dir failure rc
   for failure in model-turn task-branch own-commit tracked-change untracked-file; do
-    case_dir=$(make_case "unverified-backend-$failure")
+    case_dir=$(make_case "recomputed-proof-$failure")
     write_meta "$case_dir" no-mistakes ship
     dir=$(claude_dispatch_meta "$case_dir")
-    use_unverified_zellij_backend "$case_dir"
     never_started_worktree "$case_dir"
+    install_tmux_liveness_mutation "$case_dir"
 
     rc=0
-    FM_TEST_ZELLIJ_MUTATION="$failure" \
-      FM_TEST_ZELLIJ_TRANSCRIPT_DIR="$dir" \
-      FM_TEST_ZELLIJ_PROJECT="$case_dir/project" \
-      FM_TEST_ZELLIJ_WT="$case_dir/wt" \
+    FM_TEST_LIVENESS_MUTATION="$failure" \
+      FM_TEST_TRANSCRIPT_DIR="$dir" \
+      FM_TEST_PROJECT="$case_dir/project" \
+      FM_TEST_WT="$case_dir/wt" \
       FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
       run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-    [ "$rc" -ne 0 ] || fail "unverified-backend-$failure: teardown proceeded without every protection"
+    [ "$rc" -ne 0 ] || fail "recomputed-proof-$failure: teardown proceeded without every protection"
     assert_grep "REFUSED" "$case_dir/stderr" \
-      "unverified-backend-$failure: the missing protection did not refuse loudly"
+      "recomputed-proof-$failure: the missing protection did not refuse loudly"
     assert_present "$case_dir/state/task-x1.meta" \
-      "unverified-backend-$failure: task metadata was erased"
+      "recomputed-proof-$failure: task metadata was erased"
   done
-  pass "an unverified backend refuses when any independent protection fails"
+  pass "the recomputed on-disk proof refuses each failed protection"
 }
 
 # The same allowance for the other no-turn shape: the runtime DID open a session
@@ -2452,10 +2430,10 @@ test_non_directory_session_path_still_refuses
 test_non_directory_session_parent_still_refuses
 test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
-test_first_turn_during_quiescence_recheck_refuses
-test_unverified_backend_allows_only_with_every_other_protection
-test_unverified_backend_unreadable_and_ambiguous_presence_refuse
-test_unverified_backend_refuses_each_missing_protection
+test_first_turn_before_cleanup_recheck_refuses
+test_unknown_liveness_proceeds_with_on_disk_proof
+test_authoritative_live_endpoint_refuses
+test_recomputed_on_disk_proof_refuses_each_failed_condition
 test_never_started_but_dirty_still_refuses
 test_never_started_with_untracked_claude_file_still_refuses
 test_never_started_but_committed_on_a_branch_still_refuses

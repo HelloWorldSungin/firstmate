@@ -438,79 +438,19 @@ refresh_terminal_model_verdict() {
   MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
 }
 
-quiesce_no_turn_endpoint() {
-  local endpoint_state presence_state busy_state harness
-  endpoint_state=$(fm_backend_agent_state "$BACKEND" "$T")
-  case "$endpoint_state" in
-    missing) return 0 ;;
-    dead) ;;
+check_no_turn_endpoint_liveness() {
+  NO_TURN_LIVENESS_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$NO_TURN_LIVENESS_STATE" in
     alive)
-      harness=$(fm_meta_get "$META" harness)
-      busy_state=$(fm_busy_classify_live "$BACKEND" "$T" "$harness" "$ID" "$STATE" "fm-$ID")
-      if [ "${busy_state%% *}" != idle ]; then
-        FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_ROOT_OVERRIDE="$FM_ROOT" \
-          "$SCRIPT_DIR/fm-send.sh" "$ID" --key Escape >/dev/null || {
-            echo "REFUSED: task $ID endpoint could not be interrupted for confirmed quiescence; preserving its worktree and metadata." >&2
-            return 1
-          }
-        busy_state=$(fm_busy_classify_live "$BACKEND" "$T" "$harness" "$ID" "$STATE" "fm-$ID")
-      fi
-      case "${busy_state%% *}" in
-        idle) ;;
-        dead)
-          [ "$(fm_backend_agent_state "$BACKEND" "$T")" = missing ] && return 0
-          echo "REFUSED: task $ID endpoint quiescence is contradictory; preserving its worktree and metadata." >&2
-          return 1
-          ;;
-        *)
-          echo "REFUSED: task $ID endpoint did not reach a confirmed idle state; preserving its worktree and metadata." >&2
-          return 1
-          ;;
-      esac
-      ;;
-    unverified)
-      # fm_backend_target_exists intentionally maps read failures onto false for
-      # cheap observational callers, so its benign value cannot authorize
-      # destructive cleanup; this boundary requires safety-grade tri-state proof.
-      presence_state=$(fm_backend_target_presence_state "$BACKEND" "$T" "fm-$ID")
-      NO_TURN_ENDPOINT_PRESENCE_STATE=$presence_state
-      case "$presence_state" in
-        missing)
-          NO_TURN_QUIESCENCE_UNDETERMINED=1
-          return 0
-          ;;
-        ambiguous|unreadable)
-          echo "REFUSED: task $ID endpoint quiescence could not be determined on backend $BACKEND, and its authoritative endpoint presence state is $presence_state; preserving its worktree and metadata." >&2
-          return 1
-          ;;
-        *)
-          echo "REFUSED: task $ID endpoint quiescence could not be determined on backend $BACKEND, and its endpoint presence proof returned invalid state '$presence_state'; preserving its worktree and metadata." >&2
-          return 1
-          ;;
-      esac
-      ;;
-    *)
-      echo "REFUSED: task $ID endpoint state is $endpoint_state, so quiescence cannot be confirmed; preserving its worktree and metadata." >&2
+      echo "REFUSED: task $ID has a live worker according to backend $BACKEND; preserving its endpoint, worktree, and metadata." >&2
       return 1
       ;;
-  esac
-
-  case "$BACKEND" in
-    herdr)
-      fm_backend_herdr_parse_target "$T" || return 1
-      teardown_herdr_session_lock_held "$FM_BACKEND_HERDR_SESSION" || return 1
-      fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1 || true
-      fm_backend_herdr_endpoint_confirmed_gone "$T" || return 1
-      ;;
+    dead|missing) return 0 ;;
     *)
-      fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" >/dev/null 2>&1 || true
+      NO_TURN_LIVENESS_UNDETERMINED=1
+      return 0
       ;;
   esac
-  endpoint_state=$(fm_backend_agent_state "$BACKEND" "$T")
-  if [ "$endpoint_state" != missing ]; then
-    echo "REFUSED: task $ID endpoint remained $endpoint_state after quiescence; preserving its worktree and metadata." >&2
-    return 1
-  fi
 }
 
 # This is the first cleanup authorization check. It is metadata-only and must
@@ -518,8 +458,8 @@ quiesce_no_turn_endpoint() {
 # worktree return, registry change, or process termination can run.
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 NO_TURN_ALLOWANCE_CANDIDATE=0
-NO_TURN_QUIESCENCE_UNDETERMINED=0
-NO_TURN_ENDPOINT_PRESENCE_STATE=not-applicable
+NO_TURN_LIVENESS_UNDETERMINED=0
+NO_TURN_LIVENESS_STATE=not-checked
 refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
@@ -2012,29 +1952,26 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
-  quiesce_no_turn_endpoint || exit 1
+  # fm_backend_target_exists intentionally maps read failures onto false for
+  # cheap observational callers, so a failure-collapsing helper cannot be used
+  # as a destructive safety predicate without a stronger wrapper.
+  check_no_turn_endpoint_liveness || exit 1
   refresh_terminal_model_verdict
   printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-  if ! worker_left_nothing_to_preserve; then
-    echo "REFUSED: task $ID gained work before endpoint quiescence; preserving its worktree and metadata." >&2
+  if ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
+    echo "REFUSED: task $ID gained a model-attributed turn before cleanup; preserving its worktree and metadata." >&2
     exit 1
   fi
-  if [ "$NO_TURN_QUIESCENCE_UNDETERMINED" -eq 1 ] && ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
-    echo "REFUSED: task $ID no longer has a no-turn model-routing verdict while endpoint quiescence is undetermined; preserving its worktree and metadata." >&2
+  if ! worker_left_nothing_to_preserve; then
+    echo "REFUSED: task $ID gained work before cleanup; preserving its worktree and metadata." >&2
     exit 1
-  elif [ "$MODEL_VERIFY_RC" -eq 0 ]; then
-    :
-  elif model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
-    echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
-    if [ "$NO_TURN_QUIESCENCE_UNDETERMINED" -eq 1 ]; then
-      echo "Endpoint quiescence could not be determined because backend $BACKEND has no recovery-grade agent classifier." >&2
-      echo "Its authoritative endpoint presence state is $NO_TURN_ENDPOINT_PRESENCE_STATE, and the recomputed model verdict and worktree proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files, so there is no work or routing evidence to preserve; proceeding." >&2
-    else
-      echo "Its endpoint is confirmed quiescent, and its worktree is on no branch, has no task branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
-    fi
+  fi
+  echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
+  if [ "$NO_TURN_LIVENESS_UNDETERMINED" -eq 1 ]; then
+    echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_TURN_LIVENESS_STATE)." >&2
+    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files, so there is no work or routing evidence to preserve; proceeding." >&2
   else
-    echo "REFUSED: task $ID has no successful terminal model-routing verdict after endpoint quiescence; preserving its worktree and metadata." >&2
-    exit 1
+    echo "Backend $BACKEND reports no live worker (state: $NO_TURN_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; proceeding." >&2
   fi
 fi
 
