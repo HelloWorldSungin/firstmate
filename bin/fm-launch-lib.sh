@@ -229,11 +229,13 @@ fm_launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
-    pi)
+    # pi and pi-signed share one template shape; the harness token is the exact
+    # executable name, so pi-signed never silently falls back to pi.
+    pi|pi-signed)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -255,6 +257,12 @@ fm_launch_template() {
     # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end is the watcher's
     # debounced native-completion detector (fm-watch.sh maybe_native_turnend), so
     # no launch-time turn-end hook is installed.
+    # Kimi Code rejects a positional prompt, so it launches bare and receives only
+    # an absolute brief pointer after fm-spawn's TUI readiness gate. Its turn-end
+    # signal is a globally configured Stop hook plus a guarded per-task worktree
+    # token, so no launch placeholder belongs here. __KIMIBIN__ is resolved by
+    # fm-spawn before rendering, because the binary lookup is spawn-time state.
+    kimi) printf '%s' '__KIMIBIN__ __MODELFLAG__--auto' ;;
     cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
@@ -277,7 +285,7 @@ fm_launch_model_flag() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|grok|cursor|agy)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|agy)
       printf -- '--model %s ' "$(fm_launch_shell_quote "$model")"
       ;;
   esac
@@ -312,9 +320,9 @@ fm_launch_effort_flag() {
         low|medium|high) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac
       ;;
-    pi)
-      # Pi 0.80.6 accepts the full shared effort vocabulary, including max, through
-      # its --thinking flag.
+    pi|pi-signed)
+      # Pi and pi-signed 0.82.0 both accept the full shared effort vocabulary,
+      # including max, through their --thinking flag.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac
@@ -331,5 +339,7 @@ fm_launch_effort_flag() {
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
+    # kimi likewise has no reasoning-effort flag; the requested axis stays in task
+    # metadata but never reaches the launch command.
   esac
 }
