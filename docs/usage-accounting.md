@@ -19,7 +19,7 @@ bin/fm-usage.mjs attribution
 It is safe to run on any cadence, including concurrently with an earlier run that has not finished, because ingestion is idempotent rather than incremental-only.
 Every derived table is rebuilt in place, and each rebuild commits its wipe and its repopulation together, so a failed run leaves the previous derivation rather than an empty table that would read as "nothing to report".
 A stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
-The remaining subcommands are read-only projections and print JSON: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.
+Four read-only projections print JSON without touching the store: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.
 
 The store lives at `data/usage.db` under the operational home and is private to it.
 
@@ -36,7 +36,7 @@ Each usage event carries a stable identity, its source provenance, and its raw c
 | raw counters | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `model`, `cwd` |
 | derived | `total_tokens`, `task_id`, `project`, `attribution_method`, `attribution_confidence` |
 
-Raw fields are copied verbatim from the source record.
+Raw fields carry the source's own numbers, adjusted only where a harness counts differently than the store does - both conversions are named below.
 Derived fields are recomputed from raw fields and the durable task records on every ingest, so a corrected task record fixes history without re-reading a transcript.
 
 The token columns are disjoint by contract: `input_tokens` counts input that was **not** served from a cache, `cache_read_tokens` and `cache_write_tokens` count the cached parts, and `total_tokens` is their sum plus output.
@@ -71,12 +71,12 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 | Method | Confidence | Evidence |
 | --- | --- | --- |
 | `session_binding` | high | the session was observed in a live task's isolated worktree while that task held it, and the binding was recorded durably at that moment |
-| `worktree_window` | medium | the session's working directory is exactly a completed task's recorded worktree, and the usage falls inside that task's own start and completion stamps |
+| `worktree_window` | medium | the session's working directory is a task's recorded worktree or a path inside it, and the usage falls inside that task's own start and completion stamps |
 | `ambiguous` | none | more than one task claims that worktree for that moment, so no claim is made |
 | `unknown` | none | no task claims it at all |
 
 **A time window alone never attributes anything.**
-Every claim starts from an exact worktree path match; the task's own lifetime only bounds a claim that a path already supports.
+Every claim starts from the task's own recorded worktree path, which the session must have run in or under; the task's own lifetime only bounds a claim that a path already supports.
 Worktree paths are recycled between tasks, which is precisely why the bound exists and why an overlapping claim is disclosed as ambiguous instead of resolved by guessing.
 
 A task counts as live only while its own `state/<id>.meta` is present in the scan that is running now, never because an earlier scan saw it.

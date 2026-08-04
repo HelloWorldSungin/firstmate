@@ -48,9 +48,9 @@ The manifest never contacts a forge and never reads brief contents, a prompt, a 
 | `work_items` | `data/<id>/work-items.json` | embedded so the manifest is self-contained |
 | `gbrain` | `state/<id>.gbrain`, an optional provider | `status` is `absent` when no provider wrote one |
 
-Every listed manifest key is required, while fields whose source may be absent retain an explicit null value with the documented type-or-null contract.
+Every listed manifest key is required except the additive `attribution.sessions` described below, while fields whose source may be absent retain an explicit null value with the documented type-or-null contract.
 A null `title` is intended for a secondmate because secondmates are never backlog items, and an absent GBrain provider retains null receipt, observation, and detail fields.
-Task identifiers are capped at 64 characters, general text at 240, paths at 480, source and backend tokens at 40, receipts at 200, URLs at 512, and hosts at 253 characters.
+Task identifiers are capped at 64 characters, general text at 240, paths at 480, source and backend tokens at 40, session identifiers at 128, receipts at 200, URLs at 512, and hosts at 253 characters.
 The shared reader validates the complete shape, types, enums, nullability, caps, task identity, and timestamp provenance before a manifest reaches `show`, history, or the fleet snapshot.
 
 ### Timestamps and their provenance
@@ -67,7 +67,7 @@ A future explicit recorded stamp can supersede any of these without a schema cha
 
 `attribution` retains what a delayed usage read needs once the task's runtime is gone: the backend, the endpoint target and its task id, the worktree, the per-task temp root, the trace context when trace propagation is enabled, and the secondmate home for a retired secondmate.
 The project it ran against is the top-level `project` field, recorded once so the two can never disagree.
-Together with `harness`, `model`, and `effort` these are enough to attribute a session's token usage to a task that no longer exists.
+The worktree and the recorded timestamps are what a later usage read matches a session against, while `harness`, `model`, and `effort` describe what the matched usage was spent on.
 
 `attribution.sessions` carries the harness sessions that were bound to the task while it was live, each as `harness`, `session_id`, and `source_kind`, capped at 64 entries.
 [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) publishes that map to `state/<id>.usage-sessions` and [usage accounting](usage-accounting.md) owns the attribution ladder; the manifest is the durable handoff, published before teardown removes the volatile map.
