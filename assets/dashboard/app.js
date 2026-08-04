@@ -110,12 +110,17 @@ function renderSignals(snapshot, envelope) {
   const mates = tasks.filter((task) => task.kind === "secondmate");
   const oldest = tasks.reduce((age, task) => Math.max(age, Number(task?.paths?.status_log?.last_event_age_seconds) || 0), 0);
   const heartbeatTone = !watcher?.present ? "red" : watcher.stale ? "amber" : "green";
-  const liveMates = mates.filter((task) => task.endpoint?.status === "alive" || task.endpoint?.exists === true).length;
+  const mateLiveness = mates.map(endpointLiveness);
+  const liveMates = mateLiveness.filter((liveness) => liveness === "alive").length;
+  const deadMates = mateLiveness.filter((liveness) => liveness === "dead").length;
+  const unknownMates = mateLiveness.filter((liveness) => liveness === "unknown").length;
+  const mateTone = deadMates ? "red" : unknownMates ? "grey" : mates.length ? "green" : "grey";
+  const mateSummary = mates.length ? `${liveMates} live · ${deadMates} dead · ${unknownMates} unknown` : "none";
   const signals = [
     [heartbeatTone, "Heartbeat", watcher?.present ? `${formatAge(watcher.age_seconds)} ago` : "never"],
     [afk?.active ? "amber" : "grey", "Away", afk?.active ? "on" : "off"],
     [envelope?.status?.stale ? "amber" : "green", "Snapshot", envelope?.status?.stale ? "stale" : "fresh"],
-    [mates.length && liveMates !== mates.length ? "red" : mates.length ? "green" : "grey", "Secondmates", mates.length ? `${liveMates}/${mates.length}` : "none"],
+    [mateTone, "Secondmates", mateSummary],
     [oldest > 900 ? "amber" : tasks.length ? "green" : "grey", "Oldest event", tasks.length ? `${formatAge(oldest)} ago` : "none"],
   ];
   replaceChildren(ui.signals, signals.map(([tone, label, value]) => {
@@ -184,10 +189,33 @@ function renderFilters(tasks) {
   ui.filterCount.textContent = count ? `(${count} active)` : "";
 }
 
+function endpointLiveness(task) {
+  const status = task?.endpoint?.status;
+  if (status === "alive") return "alive";
+  if (status === "dead" || status === "absent") return "dead";
+  if (status === "unknown") return "unknown";
+  return task?.endpoint?.exists === false ? "dead" : "unknown";
+}
+
 function endpointTone(task) {
-  if (task?.endpoint?.status === "alive" || task?.endpoint?.exists === true) return "green";
-  if (task?.endpoint?.status === "dead" || task?.endpoint?.status === "absent" || task?.endpoint?.exists === false) return "red";
-  return "grey";
+  const liveness = endpointLiveness(task);
+  return liveness === "alive" ? "green" : liveness === "dead" ? "red" : "grey";
+}
+
+function endpointLabel(task) {
+  const status = task?.endpoint?.status;
+  if (["alive", "dead", "absent", "unknown"].includes(status)) return status;
+  if (task?.endpoint?.exists === true) return "present";
+  if (task?.endpoint?.exists === false) return "absent";
+  return "unknown";
+}
+
+function actionMetadata(task, className = "card-action") {
+  const action = task?.card?.action;
+  if (typeof action !== "string" || !action) return null;
+  const metadata = element("div", className);
+  metadata.append(element("span", "label", "ACTION"), element("code", "", action));
+  return metadata;
 }
 
 function workItemLabel(reference) {
@@ -226,10 +254,12 @@ function taskCard(task) {
   card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
   const detail = task?.current_state?.detail || task?.current_state?.state || task?.card?.reason || "No state detail";
   card.append(element("div", "detail", detail));
+  const action = actionMetadata(task);
+  if (action) card.append(action);
 
   const endpoint = element("div", "endpoint");
   endpoint.append(dot(endpointTone(task)));
-  endpoint.append(document.createTextNode(`endpoint ${task?.endpoint?.status || (task?.endpoint?.exists ? "present" : "unknown")}`));
+  endpoint.append(document.createTextNode(`endpoint ${endpointLabel(task)}`));
   card.append(endpoint);
 
   if (task?.pr?.url) {
@@ -262,6 +292,8 @@ function renderSecondmates(tasks) {
     mate.append(element("span", "pill", columnLabels[taskState(task)] || taskState(task) || "unknown"));
     const detail = [task.harness, task.model, task.effort, task.current_state?.detail].filter(Boolean).join(" · ");
     mate.append(element("small", "", detail || "No current detail"));
+    const action = actionMetadata(task, "mate-action");
+    if (action) mate.append(action);
     return mate;
   }));
 }

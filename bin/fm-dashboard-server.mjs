@@ -90,6 +90,7 @@ class DashboardState {
     this.config = config;
     this.lastGood = null;
     this.lastSuccessAt = null;
+    this.lastSuccessAtMs = null;
     this.lastAttemptAt = null;
     this.lastError = null;
     this.refreshing = false;
@@ -100,16 +101,17 @@ class DashboardState {
     this.fileTimer = null;
     this.pollTimer = null;
     this.heartbeatTimer = null;
+    this.staleTimer = null;
     this.stopped = false;
     this.activeChild = null;
   }
 
   envelope() {
-    const currentMs = Date.now();
-    const ageSeconds = this.lastSuccessAt
-      ? Math.max(0, Math.floor((currentMs - Date.parse(this.lastSuccessAt)) / 1000))
+    const ageMs = this.lastSuccessAtMs === null ? null : Math.max(0, Date.now() - this.lastSuccessAtMs);
+    const ageSeconds = ageMs !== null
+      ? Math.floor(ageMs / 1000)
       : null;
-    const thresholdStale = ageSeconds !== null && ageSeconds * 1000 > this.config.staleMs;
+    const thresholdStale = ageMs !== null && ageMs >= this.config.staleMs;
     const stale = this.lastGood !== null && (this.lastError !== null || thresholdStale);
     let phase = "first_run";
     if (this.lastGood && stale) phase = "last_good";
@@ -159,6 +161,22 @@ class DashboardState {
     this.clients.delete(response);
   }
 
+  scheduleStaleTransition() {
+    clearTimeout(this.staleTimer);
+    this.staleTimer = null;
+    if (this.stopped || !this.lastGood || this.lastError || this.lastSuccessAtMs === null) return;
+    const remaining = this.lastSuccessAtMs + this.config.staleMs - Date.now();
+    this.staleTimer = setTimeout(() => {
+      this.staleTimer = null;
+      if (this.stopped || !this.lastGood || this.lastError || this.lastSuccessAtMs === null) return;
+      if (Date.now() < this.lastSuccessAtMs + this.config.staleMs) {
+        this.scheduleStaleTransition();
+        return;
+      }
+      this.broadcast();
+    }, Math.min(Math.max(0, remaining), 2_147_483_647));
+  }
+
   trigger(source) {
     if (this.stopped) return;
     if (source === "file") {
@@ -187,7 +205,8 @@ class DashboardState {
         });
       }
       this.lastGood = snapshot;
-      this.lastSuccessAt = nowIso();
+      this.lastSuccessAtMs = Date.now();
+      this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
     } catch (error) {
       this.lastError = {
@@ -198,6 +217,7 @@ class DashboardState {
       };
     } finally {
       this.refreshing = false;
+      this.scheduleStaleTransition();
       this.broadcast();
       if (this.pending && !this.stopped) {
         this.pending = false;
@@ -311,6 +331,7 @@ class DashboardState {
     clearInterval(this.pollTimer);
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.fileTimer);
+    clearTimeout(this.staleTimer);
     for (const watcher of this.watchers) watcher.close();
     for (const response of this.clients) response.end();
     this.clients.clear();

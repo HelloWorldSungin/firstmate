@@ -119,14 +119,14 @@ SH
   printf '%s\n' "$TMP_ROOT/$name"
 }
 
-start_fixture_server() {  # <case-root> <timeout> <poll>
-  local case_root=$1 timeout=$2 poll=$3
+start_fixture_server() {  # <case-root> <timeout> <poll> [stale]
+  local case_root=$1 timeout=$2 poll=$3 stale=${4:-2}
   TEST_PORT=$(free_port)
   FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS="$timeout" \
     FM_DASHBOARD_POLL_SECONDS="$poll" \
-    FM_DASHBOARD_STALE_SECONDS=2 \
+    FM_DASHBOARD_STALE_SECONDS="$stale" \
     DASH_TEST_CONTROL="$case_root/control" \
     node "$case_root/runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
@@ -207,6 +207,179 @@ test_sse_poll_and_last_good() {
   wait_for_expression "$case_root" '.status.phase == "last_good" and .status.stale == true and .status.error.kind == "exit_nonzero" and .snapshot.tasks[0].backlog.title == "Updated without reload"'
   stop_server
   pass "poll updates stream over SSE and failed refreshes retain explicit stale last-good data"
+}
+
+test_stale_transition_streams_without_refresh() {
+  local case_root sse_log
+  case_root=$(make_runtime stale-transition)
+  start_fixture_server "$case_root" 1 5 1
+  wait_for_expression "$case_root" '.status.phase == "ready"'
+
+  sse_log="$case_root/sse-stale.log"
+  curl --max-time 2 -Ns "http://127.0.0.1:$TEST_PORT/api/events" > "$sse_log" 2>/dev/null &
+  SSE_PID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    grep -q '"stale":true' "$sse_log" && break
+    sleep 0.1
+  done
+  grep -q '"stale":true' "$sse_log" || fail "SSE did not push the configured time-only stale transition"
+  kill "$SSE_PID" 2>/dev/null || true
+  wait "$SSE_PID" 2>/dev/null || true
+  SSE_PID=
+  stop_server
+  pass "configured freshness threshold streams a stale transition without waiting for the next poll"
+}
+
+test_browser_renders_contract_actions_and_liveness() {
+  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser contract rendering failed"
+const fs = require("fs");
+const vm = require("vm");
+
+class FakeNode {
+  constructor(tagName, text = "") {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.className = "";
+    this.dataset = {};
+    this.id = "";
+    this.listeners = {};
+    this.value = "";
+    this._text = String(text);
+  }
+
+  get options() { return this.children; }
+  get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
+  set textContent(value) {
+    this._text = String(value ?? "");
+    this.children = [];
+  }
+
+  append(...children) {
+    for (const child of children) {
+      if (child === null || child === undefined) continue;
+      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+    }
+  }
+
+  replaceChildren(...children) {
+    this._text = "";
+    this.children = [];
+    this.append(...children);
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  addEventListener(name, listener) {
+    this.listeners[name] = listener;
+  }
+}
+
+const selectors = new Map();
+for (const id of ["signals", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button"]) {
+  selectors.set(`#${id}`, new FakeNode("div"));
+}
+const filterForm = new FakeNode("form");
+filterForm.elements = {};
+for (const key of ["project", "harness", "model", "kind", "state"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  filterForm.elements[key] = select;
+}
+selectors.set("#filter-form", filterForm);
+
+const document = {
+  documentElement: new FakeNode("html"),
+  querySelector: (selector) => selectors.get(selector),
+  createElement: (tagName) => new FakeNode(tagName),
+  createTextNode: (text) => new FakeNode("#text", text),
+};
+
+function task(id, kind, status, exists, action) {
+  return {
+    id,
+    kind,
+    project: "firstmate",
+    harness: "codex",
+    model: "gpt-5.6-sol",
+    effort: "high",
+    backlog: { title: id },
+    current_state: { state: kind === "secondmate" ? "idle" : "working", detail: "Visible detail" },
+    endpoint: { status, exists },
+    paths: { status_log: { last_event_age_seconds: 5 } },
+    work_items: [],
+    card: { column: kind === "secondmate" ? "secondmate" : "active", action },
+  };
+}
+
+const envelope = {
+  schema: "fm-dashboard-envelope.v1",
+  status: { phase: "ready", stale: false, last_success_at: "2026-08-04T00:00:00Z", last_success_age_seconds: 0 },
+  snapshot: {
+    tasks: [
+      task("unknown-worker", "ship", "unknown", true, "supervise"),
+      task("alive-mate", "secondmate", "alive", true, "route_work"),
+      task("dead-mate", "secondmate", "dead", true, "route_work"),
+      task("unknown-mate", "secondmate", "unknown", true, "route_work"),
+    ],
+    card_precedence: ["active", "secondmate"],
+    supervision: { watcher: { present: true, age_seconds: 1, stale: false }, afk: { active: false } },
+  },
+};
+
+class FakeEventSource {
+  addEventListener() {}
+  close() {}
+}
+
+const storage = new Map();
+const context = vm.createContext({
+  document,
+  EventSource: FakeEventSource,
+  fetch: async () => ({ ok: true, json: async () => envelope }),
+  localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+  matchMedia: () => ({ matches: false }),
+  setTimeout,
+  clearTimeout,
+  console,
+  Math,
+});
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context, { filename: process.argv[2] });
+
+setImmediate(() => {
+  const all = (root, predicate, matches = []) => {
+    if (predicate(root)) matches.push(root);
+    for (const child of root.children) all(child, predicate, matches);
+    return matches;
+  };
+  const hasClass = (node, className) => node.className.split(/\s+/).includes(className);
+  const one = (root, predicate, label) => {
+    const matches = all(root, predicate);
+    if (matches.length !== 1) throw new Error(`${label}: expected one match, received ${matches.length}`);
+    return matches[0];
+  };
+
+  const card = one(selectors.get("#kanban"), (node) => hasClass(node, "card"), "worker card");
+  const action = one(card, (node) => hasClass(node, "card-action"), "card action");
+  if (action.textContent !== "ACTIONsupervise") throw new Error(`card action was not literal: ${action.textContent}`);
+  const endpoint = one(card, (node) => hasClass(node, "endpoint"), "worker endpoint");
+  one(endpoint, (node) => hasClass(node, "dot") && hasClass(node, "grey"), "unknown endpoint tone");
+
+  const signal = one(selectors.get("#signals"), (node) => hasClass(node, "signal") && node.textContent.includes("SECONDMATES"), "secondmate signal");
+  if (!signal.textContent.includes("1 live · 1 dead · 1 unknown")) throw new Error(`liveness counts were collapsed: ${signal.textContent}`);
+  one(signal, (node) => hasClass(node, "dot") && hasClass(node, "red"), "dead secondmate signal tone");
+
+  for (const [id, tone] of [["alive-mate", "green"], ["dead-mate", "red"], ["unknown-mate", "grey"]]) {
+    const mate = one(selectors.get("#secondmate-list"), (node) => hasClass(node, "mate") && node.textContent.includes(id), `${id} row`);
+    one(mate, (node) => hasClass(node, "dot") && hasClass(node, tone), `${id} tone`);
+    const mateAction = one(mate, (node) => hasClass(node, "mate-action"), `${id} action`);
+    if (mateAction.textContent !== "ACTIONroute_work") throw new Error(`${id} action was not literal: ${mateAction.textContent}`);
+  }
+});
+NODE
+  pass "browser renders literal contract actions and keeps dead and unknown liveness distinct"
 }
 
 test_timeout_is_single_flight() {
@@ -298,6 +471,8 @@ test_installer_writes_hardened_user_service() {
 
 test_loopback_is_mandatory
 test_sse_poll_and_last_good
+test_stale_transition_streams_without_refresh
+test_browser_renders_contract_actions_and_liveness
 test_timeout_is_single_flight
 test_first_run_failures_are_explicit
 test_real_snapshot_makes_zero_fleet_writes
