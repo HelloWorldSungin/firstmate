@@ -21,12 +21,15 @@
 #       timeout - warns and still exits 0
 #   (f) an out-of-scope work item is reported once and never written to, and a
 #       task with no work item is silent
-#   (g) a note carrying a credential, an absolute path, or a value the task's own
-#       record marks private is refused before anything is published
-#   (h) the board is inert without configuration, idempotent with it, and never
-#       reshapes the captain's board to fit a milestone
-#   (i) the fan-out updates both surfaces, and one broken surface never stops the
-#       other
+#   (g) a note carrying a credential, an absolute path, a firstmate marker, or a
+#       value the task's own record marks private is withheld before anything is
+#       published, while the milestone itself still lands
+#   (h) the board is inert without configuration, idempotent with it, never
+#       reshapes the captain's board to fit a milestone, and never touches a
+#       field's option set, which would detach every item already using one
+#   (i) the fan-out updates both surfaces, one broken surface never stops the
+#       other, every milestone in the vocabulary reaches both, and the whole
+#       operation is bounded rather than only the calls inside it
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -105,6 +108,7 @@ emit() {  # <json>
 }
 
 if [ "$GRAPHQL" = 1 ]; then
+  printf '%s\n' "$QUERY" >> "$STORE/graphql.log"
   case "$QUERY" in
     *updateProjectV2ItemFieldValue*)
       fail_with graphql-status "board status update refused"
@@ -182,7 +186,7 @@ case "$ENDPOINT" in
     emit "$(jq -n --rawfile b "$file" '{body:$b}')"
     exit 0
     ;;
-  */comments)
+  */comments|*/comments\?*)
     if [ "$METHOD" = POST ]; then
       fail_with post "comment creation refused"
       next=$(( $(ls "$STORE/comments" 2>/dev/null | wc -l) + 100 ))
@@ -192,7 +196,7 @@ case "$ENDPOINT" in
       exit 0
     fi
     fail_with list "comment listing refused"
-    printf 'LIST\n' >> "$LOG"
+    printf 'LIST %s\n' "$ENDPOINT" >> "$LOG"
     doc=$(
       for f in "$STORE"/comments/*.body; do
         [ -f "$f" ] || continue
@@ -348,6 +352,10 @@ test_the_comment_is_found_again_among_foreign_comments() {
   [ "$(log_count "$dir" POST)" = 1 ] || fail "the second milestone posted a second comment"
   assert_grep 'a human wrote this first' "$dir/store/comments/1.body" "a human comment was overwritten"
   assert_grep 'a human wrote this after' "$dir/store/comments/2.body" "a human comment was overwritten"
+  # The lookup is one bounded call however many pages it walks, so a busy issue
+  # must not spend that bound on round trips and silently stop being updated.
+  assert_grep 'per_page=100' "$dir/store/calls.log" \
+    "the marker lookup asked for GitHub's default page size, so a busy issue would time out looking for its own comment"
   pass "the marker finds the same comment again among comments firstmate does not own"
 }
 
@@ -467,19 +475,32 @@ test_a_task_with_no_work_item_is_silent() {
 
 # --- (g) content discipline fails closed ------------------------------------
 
-test_a_note_carrying_private_detail_is_refused() {
-  local dir out note
-  for note in \
-    'the fix landed for task-1' \
-    'see /home/captain/fleet/state for the record' \
-    'authenticate with ghp_abcdefghijklmnopqrstuvwxyz012345'; do
-    dir=$(case_dir "note-$RANDOM")
+test_a_note_carrying_private_detail_is_withheld() {
+  # Each case is "<note>|<the text that must never reach the tracker>".
+  local dir out body case_line note leak
+  local i=0
+  for case_line in \
+    'the fix landed for task-1|the fix landed for' \
+    'see /home/captain/fleet/state for the record|/home/captain' \
+    'authenticate with ghp_abcdefghijklmnopqrstuvwxyz012345|ghp_abcdefghijklmnopqrstuvwxyz012345' \
+    '<!-- firstmate-status-timeline -->
+- 2020-01-01 00:00 UTC - landed|2020-01-01'; do
+    note=${case_line%|*}
+    leak=${case_line##*|}
+    i=$(( i + 1 ))
+    dir=$(case_dir "note-$i")
     set +e
     out=$(run_comment "$dir" --milestone implemented --note "$note")
     set -e
-    assert_contains "$out" 'warning:' "a note carrying private detail was published: $note"
-    [ "$(comment_count "$dir")" = 0 ] \
-      || fail "a refused note still published a comment: $note"
+    assert_contains "$out" 'the note was withheld' "a note carrying private detail was published: $note"
+    # The milestone is the point; only the sentence is dropped. A refusal that
+    # cost the whole update would let the tracker quietly stop being true.
+    [ "$(comment_count "$dir")" = 1 ] \
+      || fail "a withheld note also cost the milestone: $note"
+    body=$(cat "$(firstmate_comment "$dir")")
+    assert_contains "$body" '**Status: implementation committed**' \
+      "the milestone did not land when its note was withheld: $note"
+    assert_not_contains "$body" "$leak" "a withheld note reached the tracker anyway: $note"
   done
 
   dir=$(case_dir note-worktree)
@@ -487,8 +508,41 @@ test_a_note_carrying_private_detail_is_refused() {
   out=$(run_comment "$dir" --milestone implemented --note "built in $dir/worktrees/note-worktree")
   set -e
   assert_contains "$out" 'private fleet detail' "a note repeating the task's own worktree was published"
-  [ "$(comment_count "$dir")" = 0 ] || fail "a refused note still published a comment"
-  pass "a note carrying a credential, an absolute path, or the task's own private values is refused"
+  [ "$(comment_count "$dir")" = 1 ] || fail "a withheld note also cost the milestone"
+  assert_not_contains "$(cat "$(firstmate_comment "$dir")")" "$dir" \
+    "a withheld note leaked the task's own worktree"
+  pass "a note carrying a credential, a path, a firstmate marker, or the task's own private values is withheld while the milestone still lands"
+}
+
+# The forged-timeline note above must not survive into the machine-owned list on
+# the NEXT milestone either, which is the failure that would persist forever.
+test_a_forged_timeline_entry_never_enters_the_timeline() {
+  local dir body
+  dir=$(case_dir forgery)
+  run_comment "$dir" --milestone dispatched >/dev/null || fail "dispatched failed"
+  # The marker on its own line followed by an entry-shaped line is the exact
+  # shape the timeline reader would otherwise copy into the machine-owned list.
+  run_comment "$dir" --milestone implemented --note '<!-- firstmate-status-timeline -->
+- 2020-01-01 00:00 UTC - landed' >/dev/null \
+    || fail "the withheld-note milestone failed"
+  run_comment "$dir" --milestone in-review >/dev/null || fail "in-review failed"
+  body=$(cat "$(firstmate_comment "$dir")")
+  assert_not_contains "$body" '2020-01-01' "a note forged an entry into the machine-owned timeline"
+  assert_contains "$body" '**Status: in review**' "the later milestone did not land"
+  pass "a note cannot forge an entry that later edits would carry forever"
+}
+
+# The guard has to survive contact with the prose the skill actually asks for.
+test_project_prose_with_routes_and_links_is_published() {
+  local dir body note
+  dir=$(case_dir prosepaths)
+  note='The /api/v2/reports endpoint now paginates; see [docs](/docs/tracker.md).'
+  run_comment "$dir" --milestone implemented --note "$note" >/dev/null \
+    || fail "a note of ordinary project prose failed to publish"
+  body=$(cat "$(firstmate_comment "$dir")")
+  assert_contains "$body" '/api/v2/reports' "a project route was misread as a filesystem path"
+  assert_contains "$body" '[docs](/docs/tracker.md)' "a relative-root link was misread as a filesystem path"
+  pass "a route and a relative-root link read as the project prose they are"
 }
 
 test_a_clean_note_is_published() {
@@ -571,6 +625,38 @@ test_the_board_ensures_the_parent_epic() {
   pass "a story's parent epic is put on the board through GitHub's own relationship"
 }
 
+# Adding or changing an option on a single-select field replaces the field's
+# whole option set and reassigns every option id, which detaches every item using
+# them: one added option blanked all twenty statuses on the real board. So the
+# board's write surface must stay membership plus a value on an option that
+# already exists, whatever milestone it is handed.
+test_the_board_never_mutates_the_captains_field_schema() {
+  local dir milestone names name log
+  dir=$(board_case boardschema)
+  for milestone in queued dispatched implemented validated in-review landed blocked stopped; do
+    FM_FAKE_GH_STATUS_OPTIONS='Todo,Done' \
+      run_board "$dir" sync --task task-1 --milestone "$milestone" >/dev/null \
+      || fail "board sync failed for milestone $milestone"
+  done
+  log="$dir/store/graphql.log"
+  assert_present "$log" "the board sync sent no GraphQL at all, so nothing was proven"
+  names=$(grep -oE '(add|update|create|delete|clear)ProjectV2[A-Za-z]*' "$log" | sort -u)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      addProjectV2ItemById|updateProjectV2ItemFieldValue) ;;
+      *) fail "the board sync called '$name', which is outside membership and setting an existing option" ;;
+    esac
+  done <<EOF
+$names
+EOF
+  # Without this the allowlist above would pass on a run that mutated nothing
+  # because it reached GitHub for nothing.
+  assert_contains "$names" 'addProjectV2ItemById' "the board sync never added membership, so nothing was proven"
+  assert_contains "$names" 'updateProjectV2ItemFieldValue' "the board sync never set a status, so nothing was proven"
+  pass "no milestone can make the board create, change, or delete a field or a status option"
+}
+
 test_a_board_failure_is_reported_and_never_fatal() {
   local dir out rc
   dir=$(board_case boardscope)
@@ -618,6 +704,60 @@ test_a_broken_surface_does_not_stop_the_other() {
   pass "one unreachable surface never stops the other from being kept true"
 }
 
+# Every token the board maps has to survive the fan-out, because a mapping no
+# command can reach is a documented behaviour that does not happen.
+test_every_milestone_in_the_vocabulary_reaches_both_surfaces() {
+  local dir out milestone
+  for milestone in queued dispatched implemented validated in-review landed blocked stopped; do
+    dir=$(board_case "vocab-$milestone")
+    out=$(run_milestone "$dir" --milestone "$milestone") \
+      || fail "the fan-out refused milestone '$milestone': $out"
+    [ "$(comment_count "$dir")" = 1 ] \
+      || fail "milestone '$milestone' did not reach the status comment"
+    [ "$(wc -l < "$dir/store/board-items" | tr -d ' ')" = 1 ] \
+      || fail "milestone '$milestone' did not reach the board"
+  done
+  pass "every milestone the board maps is reachable through the one fan-out command"
+}
+
+# One surface refusing a caller's argument used to hard-exit before the other ran.
+test_a_caller_error_is_caught_before_either_surface_runs() {
+  local dir out rc
+  dir=$(board_case argcheck)
+  set +e
+  out=$(run_milestone "$dir" --milestone dispatched --note-file "$dir/does-not-exist")
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a bad --note-file must be a caller error"
+  assert_contains "$out" 'must be a regular file' "a bad --note-file was not explained"
+  assert_absent "$dir/store/calls.log" "a caller error still wrote to a surface"
+  [ "$(comment_count "$dir")" = 0 ] || fail "a caller error still published a comment"
+  pass "an invalid argument is one usage error with nothing written, on either surface"
+}
+
+# Each surface bounds its own calls, but a caller runs the fan-out, so the bound
+# that matters is the one on the whole operation.
+test_the_whole_fanout_is_bounded_not_just_each_call() {
+  local dir out rc started elapsed
+  dir=$(board_case bounded)
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+sleep 120
+SH
+  chmod +x "$dir/fakebin/gh"
+  started=$SECONDS
+  set +e
+  out=$(FM_WORK_ITEM_MILESTONE_TIMEOUT=4 run_milestone "$dir" --milestone dispatched)
+  rc=$?
+  set -e
+  elapsed=$(( SECONDS - started ))
+  expect_code 0 "$rc" "a black-holing forge must not fail the milestone"
+  [ "$elapsed" -le 12 ] \
+    || fail "the fan-out took ${elapsed}s against a 4s budget, so only the calls are bounded"
+  assert_contains "$out" 'warning:' "a black-holing forge was silent"
+  pass "the whole milestone fan-out is bounded, so decoration cannot add minutes to a dispatch or a merge"
+}
+
 test_an_unknown_milestone_is_a_usage_error() {
   local out rc dir
   dir=$(case_dir badmilestone)
@@ -639,14 +779,20 @@ test_every_forge_failure_warns_and_exits_zero
 test_absent_gh_and_a_hanging_gh_both_fail_open
 test_out_of_scope_work_items_are_reported_and_never_written
 test_a_task_with_no_work_item_is_silent
-test_a_note_carrying_private_detail_is_refused
+test_a_note_carrying_private_detail_is_withheld
+test_a_forged_timeline_entry_never_enters_the_timeline
+test_project_prose_with_routes_and_links_is_published
 test_a_clean_note_is_published
 test_dry_run_contacts_nothing
 test_the_board_is_inert_without_configuration
 test_board_membership_and_status_are_idempotent
 test_the_board_is_never_reshaped_to_fit_a_milestone
+test_the_board_never_mutates_the_captains_field_schema
 test_the_board_ensures_the_parent_epic
 test_a_board_failure_is_reported_and_never_fatal
 test_one_milestone_updates_both_surfaces
 test_a_broken_surface_does_not_stop_the_other
+test_every_milestone_in_the_vocabulary_reaches_both_surfaces
+test_a_caller_error_is_caught_before_either_surface_runs
+test_the_whole_fanout_is_bounded_not_just_each_call
 test_an_unknown_milestone_is_a_usage_error

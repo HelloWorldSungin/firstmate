@@ -13,7 +13,34 @@
 # A caller distinguishes those from a real command failure and reports each
 # differently; 125 in particular means "not attempted", never "failed".
 #
+# fm_call_bound <per-call-default> prints the seconds the NEXT bounded call may
+# take. A script that makes several calls inside one operation the caller bounds
+# as a whole - a milestone write-back across two surfaces, say - exports
+# FM_WRITE_BACK_BUDGET as the seconds that whole script may spend, and each call
+# then takes the smaller of its own default and the time left. 0 means the budget
+# is spent, which a caller reports as "not attempted" rather than as a forge
+# failure. Spending the budget this way is what lets a script exit cleanly with
+# its own warning instead of being killed mid-call by an outer bound.
+#
 # No side effects on source. set -u / set -e safe.
+
+fm_call_bound() {  # <per-call-default>
+  local default=$1 budget=${FM_WRITE_BACK_BUDGET:-} left
+  case "$budget" in
+    ''|*[!0-9]*)
+      printf '%s\n' "$default"
+      return 0
+      ;;
+  esac
+  left=$(( budget - SECONDS ))
+  if [ "$left" -le 0 ]; then
+    printf '0\n'
+  elif [ "$left" -lt "$default" ]; then
+    printf '%s\n' "$left"
+  else
+    printf '%s\n' "$default"
+  fi
+}
 
 fm_run_timed() {  # <seconds> <command...>
   local seconds=$1

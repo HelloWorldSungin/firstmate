@@ -21,11 +21,11 @@
 # lifecycle. The task worker owns exactly one separate thing: its substantive
 # delivery summary, which bin/fm-brief.sh requires of it before the PR is ready.
 #
-# Milestones (fixed vocabulary; the free-text note carries the substance):
-#   dispatched implemented validated in-review landed blocked stopped
-# bin/fm-spawn.sh, bin/fm-pr-check.sh, and bin/fm-pr-merge.sh post dispatched,
-# in-review, and landed themselves, so those three never depend on agent memory.
-# The rest are firstmate's to post as the work moves.
+# Milestones come from bin/fm-milestone-lib.sh, which is the single owner of the
+# vocabulary every write-back surface shares; the free-text note carries the
+# substance. bin/fm-spawn.sh, bin/fm-pr-check.sh, and bin/fm-pr-merge.sh post
+# dispatched, in-review, and landed themselves, so those three never depend on
+# agent memory. The rest are firstmate's to post as the work moves.
 #
 # SCOPE. Write-back applies only where a write credential genuinely exists: the
 # task records exactly one work item, it is a github.com issue, and its repository
@@ -42,11 +42,13 @@
 # invalid, never that a forge misbehaved. What must not happen is a SILENT
 # failure: every non-write is either a warning or a notice on stderr.
 #
-# CONTENT. A tracker comment is outward-facing. The note is refused outright -
-# leaving the previous comment untouched - when it carries a credential, an
-# absolute filesystem path, or a value this task's own metadata marks as private
-# (its id, its worktree, its project directory, its worker runtime). Content
-# safety fails CLOSED because a leak cannot be undone, while transport fails open.
+# CONTENT. A tracker comment is outward-facing. The note is WITHHELD when it
+# carries a firstmate marker, a credential, an absolute filesystem path, or a
+# value this task's own metadata marks as private (its id, its worktree, its
+# project directory, its worker runtime). Content safety fails CLOSED because a
+# leak cannot be undone, while transport fails open - but withholding is not
+# losing: the milestone still lands without the note and stderr says what was
+# withheld and why, so a false positive costs a sentence rather than the update.
 #
 # GitHub access goes through `gh api` rather than gh-axi: editing an existing
 # comment is a PATCH that gh-axi exposes no subcommand for, and mixing the two
@@ -70,6 +72,8 @@ esac
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-milestone-lib.sh
+. "$SCRIPT_DIR/fm-milestone-lib.sh"
 
 # The body marker is a constant, not a task-keyed one: the comment belongs to the
 # work item, and a task id has no place in outward-facing text anyway.
@@ -89,23 +93,10 @@ usage() {
 
 warn() { printf 'warning: status comment not updated: %s\n' "$1" >&2; }
 notice() { printf 'notice: no tracker status comment for this task: %s\n' "$1" >&2; }
+# A withheld note is not a withheld milestone: the update still lands, so this
+# says what was dropped rather than reporting the whole write-back as skipped.
+withheld() { printf 'warning: the note was withheld and the milestone recorded without it: %s\n' "$1" >&2; }
 
-milestone_label() {  # <token> -> prints the rendered phase label
-  case "$1" in
-    dispatched) printf 'dispatched\n' ;;
-    implemented) printf 'implementation committed\n' ;;
-    validated) printf 'validated\n' ;;
-    in-review) printf 'in review\n' ;;
-    landed) printf 'landed\n' ;;
-    blocked) printf 'blocked\n' ;;
-    stopped) printf 'stopped\n' ;;
-    *) return 1 ;;
-  esac
-}
-
-MILESTONE_TOKENS='dispatched implemented validated in-review landed blocked stopped'
-# The rendered labels, in the same order, for reading back a published timeline.
-MILESTONE_LABELS='dispatched|implementation committed|validated|in review|landed|blocked|stopped'
 GH_REASON=
 
 case "${1:-}" in
@@ -158,9 +149,9 @@ done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 [ -n "$ID" ] || { echo "error: a task id is required" >&2; exit 1; }
 fm_pr_task_id_valid "$ID" || { echo "error: invalid task id" >&2; exit 1; }
-[ -n "$MILESTONE" ] || { echo "error: --milestone is required (one of: $MILESTONE_TOKENS)" >&2; exit 1; }
-LABEL=$(milestone_label "$MILESTONE") \
-  || { echo "error: --milestone must be one of: $MILESTONE_TOKENS (got '$MILESTONE')" >&2; exit 1; }
+[ -n "$MILESTONE" ] || { echo "error: --milestone is required (one of: $FM_MILESTONE_TOKENS)" >&2; exit 1; }
+LABEL=$(fm_milestone_label "$MILESTONE") \
+  || { echo "error: --milestone must be one of: $FM_MILESTONE_TOKENS (got '$MILESTONE')" >&2; exit 1; }
 
 # --- task metadata: eligibility and the private values a comment may never carry
 
@@ -231,31 +222,59 @@ for key in worktree project tasktmp harness; do
 done
 PRIVATE_VALUES+=("$FM_HOME" "$STATE")
 
+# Anchored on the roots a real filesystem path actually starts at, so a project's
+# own route (/api/v2/reports) and a relative-root markdown link ([docs](/docs/x))
+# read as the project prose they are, while /home/..., ~/..., and C:\... stay
+# refused. Narrowing what counts as a path is safe here precisely because a hit
+# no longer costs the milestone.
+PRIVATE_PATH_ROOTS='home|Users|root|tmp|var|etc|opt|usr|srv|mnt|media|private|proc|sys|dev|run|boot|bin|sbin|lib|lib64|Volumes|System|Library|Applications'
+PRIVATE_PATH_RE="(^|[[:space:]([<\"'])(~/|/($PRIVATE_PATH_ROOTS)/|[A-Za-z]:\\\\)"
+CREDENTIAL_RE='gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
 if [ "$NOTE_SET" -eq 1 ]; then
   # Control characters would forge structure in the rendered comment; strip them
   # rather than refusing, then check the readable text that remains.
   NOTE=$(printf '%s' "$NOTE" | tr -d '\000-\010\013\014\016-\037\177')
   NOTE=${NOTE%"${NOTE##*[![:space:]]}"}
+  NOTE_REFUSAL=
   if [ "${#NOTE}" -gt 4000 ]; then
-    warn "the note is longer than 4000 characters; shorten it to what a reader of the issue needs"
-    exit 0
+    NOTE_REFUSAL='it is longer than 4000 characters, which is more than a reader of the issue needs'
   fi
-  for value in "${PRIVATE_VALUES[@]}"; do
-    [ -n "$value" ] || continue
+  if [ -z "$NOTE_REFUSAL" ]; then
+    for value in "${PRIVATE_VALUES[@]}"; do
+      [ -n "$value" ] || continue
+      case "$NOTE" in
+        *"$value"*)
+          NOTE_REFUSAL="it repeats a private fleet detail recorded in this task's own record; rewrite it as the project outcome"
+          break
+          ;;
+      esac
+    done
+  fi
+  if [ -z "$NOTE_REFUSAL" ]; then
+    # A note carrying firstmate's own marker prefix could forge an entry into the
+    # machine-owned timeline, where a fabricated line would then survive every
+    # later edit. That timeline is the artifact this surface exists to make
+    # trustworthy, so nothing able to write into it is ever published.
     case "$NOTE" in
-      *"$value"*)
-        warn "the note repeats a private fleet detail recorded in this task's own record; rewrite it as the project outcome"
-        exit 0
+      *'<!-- firstmate-'*)
+        NOTE_REFUSAL='it carries a firstmate marker, which would forge entries into the machine-owned timeline'
         ;;
     esac
-  done
-  if printf '%s' "$NOTE" | grep -Eq '(^|[[:space:]([<"'"'"'])/[A-Za-z0-9._-]+/'; then
-    warn "the note contains an absolute filesystem path, which never belongs in a tracker comment"
-    exit 0
   fi
-  if printf '%s' "$NOTE" | grep -Eq 'gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
-    warn "the note looks like it contains a credential"
-    exit 0
+  if [ -z "$NOTE_REFUSAL" ] && printf '%s' "$NOTE" | grep -Eq "$PRIVATE_PATH_RE"; then
+    NOTE_REFUSAL='it names an absolute filesystem path, which never belongs in a tracker comment'
+  fi
+  if [ -z "$NOTE_REFUSAL" ] && printf '%s' "$NOTE" | grep -Eq "$CREDENTIAL_RE"; then
+    NOTE_REFUSAL='it looks like it contains a credential'
+  fi
+  if [ -n "$NOTE_REFUSAL" ]; then
+    # The note goes, the milestone stays. A false positive then costs one
+    # sentence and a true positive still leaks nothing, whereas dropping the
+    # whole update would let the tracker quietly stop being true.
+    NOTE=
+    NOTE_SET=0
+    withheld "$NOTE_REFUSAL"
   fi
 fi
 
@@ -273,7 +292,7 @@ fi
 # with a known label. Anything else in the timeline block is someone's edit, and
 # rewriting it back into a machine-owned list would launder it.
 timeline_keep() {  # reads a comment body on stdin
-  awk -v marker="$TIMELINE_MARKER" -v trimmed="$TIMELINE_TRIMMED" -v labels="|$MILESTONE_LABELS|" '
+  awk -v marker="$TIMELINE_MARKER" -v trimmed="$TIMELINE_TRIMMED" -v labels="|$FM_MILESTONE_LABELS|" '
     BEGIN { seen = 0 }
     $0 == marker { seen = 1; next }
     seen == 0 { next }
@@ -332,6 +351,10 @@ WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-issue-comment.XXXXXX") || {
   exit 0
 }
 trap 'rm -rf -- "$WORKDIR"' EXIT
+# The caller bounds this whole script (bin/fm-work-item-milestone.sh), so being
+# terminated mid-call is an ordinary outcome rather than a crash, and it must not
+# leave a working directory behind each time it happens.
+trap 'rm -rf -- "$WORKDIR"; trap - EXIT; exit 143' HUP INT TERM
 
 if [ "$DRY_RUN" -eq 1 ]; then
   # Deliberately offline: it renders exactly what a first update would publish,
@@ -345,12 +368,20 @@ fi
 command -v gh >/dev/null 2>&1 || { warn "gh is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
 
 gh_call() {  # <output-file> <args...>
-  local out=$1 rc=0
+  local out=$1 rc=0 bound
   shift
-  fm_run_timed "$CALL_TIMEOUT" gh "$@" > "$out" 2>"$WORKDIR/err" || rc=$?
+  # Each call takes the smaller of its own bound and whatever is left of the
+  # overall budget a caller set, so this script finishes and reports rather than
+  # being killed part-way through by the bound around it.
+  bound=$(fm_call_bound "$CALL_TIMEOUT")
+  if [ "$bound" -le 0 ]; then
+    GH_REASON="the milestone budget was already spent, so nothing was sent"
+    return 1
+  fi
+  fm_run_timed "$bound" gh "$@" > "$out" 2>"$WORKDIR/err" || rc=$?
   case "$rc" in
     0) return 0 ;;
-    124|137) GH_REASON="GitHub did not answer within ${CALL_TIMEOUT}s" ;;
+    124|137) GH_REASON="GitHub did not answer within ${bound}s" ;;
     125) GH_REASON="no bounded timeout runner could start, so nothing was sent" ;;
     *) GH_REASON="GitHub rejected the request (the issue may be missing, or the credential may lack write access)" ;;
   esac
@@ -358,7 +389,11 @@ gh_call() {  # <output-file> <args...>
 }
 
 COMMENT_ID=
-if gh_call "$WORKDIR/find" api --paginate "repos/$ISSUE_PATH/issues/$ISSUE_NUMBER/comments" \
+# per_page=100 rather than GitHub's default 30: the lookup is one bounded call
+# however many pages it walks, so a busy issue - exactly the one a reader is most
+# likely following - must not spend that bound on round trips and silently stop
+# being updated.
+if gh_call "$WORKDIR/find" api --paginate "repos/$ISSUE_PATH/issues/$ISSUE_NUMBER/comments?per_page=100" \
   --jq "[.[] | select(.body != null and (.body | contains(\"$MARKER\"))) | .id] | first // empty"; then
   # --paginate applies the filter per page, so the first non-empty line is the
   # earliest matching comment: the one this task has been editing all along.

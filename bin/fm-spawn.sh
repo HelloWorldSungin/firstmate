@@ -2298,14 +2298,16 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
   fi
 fi
 
+SPAWN_DELIVERY=
+[ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+
 # The tracker learns the work is under way from the dispatch that started it,
-# rather than from anyone remembering to say so. Strictly best effort: this whole
-# path warns and exits 0 on any forge trouble, and the worker is already running.
+# rather than from anyone remembering to say so. Strictly best effort, and
+# deliberately AFTER the spawned line: the worker is already running, so a slow
+# forge must not be able to make a dispatch that succeeded read as one that did
+# not. bin/fm-work-item-milestone.sh additionally bounds the whole fan-out.
 if [ "$KIND" = ship ] && [ "${#WORK_ITEM_RECORDS[@]}" -gt 0 ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$FM_ROOT/bin/fm-work-item-milestone.sh" "$ID" --milestone dispatched || true
 fi
-
-SPAWN_DELIVERY=
-[ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

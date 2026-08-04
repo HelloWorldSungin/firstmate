@@ -106,7 +106,8 @@ FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
 
 # Record the landing on every tracker surface before the close bookkeeping below,
 # which has several legitimate early exits. Best effort by design: the merge has
-# already happened and must never look retryable.
+# already happened and must never look retryable, which is also why the fan-out
+# bounds itself as one operation rather than only bounding each call inside it.
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
   "$SCRIPT_DIR/fm-work-item-milestone.sh" "$ID" --milestone landed || true
 

@@ -127,9 +127,11 @@ fm_pr_poll_publish_prepared || {
 # unauthenticated forge must not fail the arm.
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
   "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" >/dev/null 2>&1 || true
+printf 'armed: state/%s.check.sh\n' "$ID"
 # An open PR is the milestone a tracker reader most wants to see, so it is
-# recorded from the same call that arms the watch. Best effort by design: the
-# watch is armed and the PR is open whatever a forge says about the comment.
+# recorded from the same call that arms the watch. Best effort by design, and
+# deliberately after the armed line: the watch is armed and the PR is open
+# whatever a forge says about the comment, so a slow forge must not be able to
+# make an arm that succeeded read as one that did not.
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
   "$SCRIPT_DIR/fm-work-item-milestone.sh" "$ID" --milestone in-review || true
-printf 'armed: state/%s.check.sh\n' "$ID"

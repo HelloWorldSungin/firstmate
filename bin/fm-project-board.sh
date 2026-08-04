@@ -16,10 +16,17 @@
 # OWNERSHIP MEANS KEEPING IT TRUE, NOT RESHAPING IT. Nothing here creates,
 # renames, or deletes a view, a filter, a field, or a status option, and nothing
 # removes an item. It adds membership and sets the Status field of items it
-# added, and that is the whole of its write surface. When the board's Status
-# field has no option matching a milestone, it says so and leaves the status
-# alone rather than inventing an option; adding one is an additive structural
-# change and therefore the captain's call, made deliberately and visibly.
+# added, and that is the whole of its write surface.
+#
+# A FIELD'S OPTION SET IS NEVER TOUCHED, AND THAT IS A HARD SAFETY RULE RATHER
+# THAN A MATTER OF TASTE. `updateProjectV2Field` replaces a single-select field's
+# WHOLE option set and reassigns every option id, which detaches every item
+# already using them: adding one `Blocked` option to the real firstmate board
+# blanked the status of all twenty items instantly. So when the board's Status
+# field has no option matching a milestone, this reports it and leaves the status
+# alone. A future reconciliation sweep that "helpfully" adds the missing option
+# would silently blank a whole board, which is why the missing option is the
+# captain's to add by hand, deliberately and visibly.
 #
 # MEMBERSHIP AND EPICS. Every work item firstmate tracks belongs on the board,
 # because an issue missing from it makes the board lie by omission. When a story
@@ -72,6 +79,8 @@ esac
 . "$SCRIPT_DIR/fm-issue-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-milestone-lib.sh
+. "$SCRIPT_DIR/fm-milestone-lib.sh"
 
 usage() {
   awk '
@@ -88,6 +97,7 @@ notice() { printf 'notice: this work item is not tracked on the project board: %
 # The first candidate that matches an option the captain actually configured
 # wins, matched case-insensitively so "In Progress" and "In progress" are one
 # answer. A milestone with no matching option leaves the status untouched.
+# The vocabulary itself belongs to bin/fm-milestone-lib.sh; this maps it.
 status_candidates() {  # <milestone>
   case "$1" in
     queued) printf 'todo\nto do\nbacklog\nqueued\n' ;;
@@ -99,8 +109,6 @@ status_candidates() {  # <milestone>
     *) return 1 ;;
   esac
 }
-
-MILESTONE_TOKENS='queued dispatched implemented validated in-review landed blocked stopped'
 
 # --- arguments --------------------------------------------------------------
 
@@ -153,13 +161,13 @@ else
   [ -z "$TASK" ] || [ -z "$ISSUE_ARG" ] \
     || { echo "error: --task and --issue are mutually exclusive" >&2; exit 1; }
   if [ -n "$TASK" ]; then
-    [ -n "$MILESTONE" ] || { echo "error: --task requires --milestone (one of: $MILESTONE_TOKENS)" >&2; exit 1; }
+    [ -n "$MILESTONE" ] || { echo "error: --task requires --milestone (one of: $FM_MILESTONE_TOKENS)" >&2; exit 1; }
     case "$TASK" in
       ''|.*|*[!A-Za-z0-9._-]*) echo "error: invalid task id" >&2; exit 1 ;;
     esac
   fi
-  if [ -n "$MILESTONE" ] && ! status_candidates "$MILESTONE" >/dev/null; then
-    echo "error: --milestone must be one of: $MILESTONE_TOKENS (got '$MILESTONE')" >&2
+  if [ -n "$MILESTONE" ] && ! fm_milestone_label "$MILESTONE" >/dev/null; then
+    echo "error: --milestone must be one of: $FM_MILESTONE_TOKENS (got '$MILESTONE')" >&2
     exit 1
   fi
 fi
@@ -255,16 +263,28 @@ WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-project-board.XXXXXX") || {
   exit 0
 }
 trap 'rm -rf -- "$WORKDIR"' EXIT
+# The caller bounds this whole script (bin/fm-work-item-milestone.sh), so being
+# terminated mid-call is an ordinary outcome rather than a crash, and it must not
+# leave a working directory behind each time it happens.
+trap 'rm -rf -- "$WORKDIR"; trap - EXIT; exit 143' HUP INT TERM
 
 GQL_REASON=
 gql() {  # <output-file> <jq> <query> [-F name=value]...
-  local out=$1 filter=$2 query=$3 rc=0
+  local out=$1 filter=$2 query=$3 rc=0 bound
   shift 3
-  fm_run_timed "$CALL_TIMEOUT" gh api graphql -f query="$query" "$@" --jq "$filter" \
+  # Each call takes the smaller of its own bound and whatever is left of the
+  # overall budget a caller set, so this script finishes and reports rather than
+  # being killed part-way through by the bound around it.
+  bound=$(fm_call_bound "$CALL_TIMEOUT")
+  if [ "$bound" -le 0 ]; then
+    GQL_REASON="the milestone budget was already spent, so nothing was sent"
+    return 1
+  fi
+  fm_run_timed "$bound" gh api graphql -f query="$query" "$@" --jq "$filter" \
     > "$out" 2>"$WORKDIR/err" || rc=$?
   case "$rc" in
     0) return 0 ;;
-    124|137) GQL_REASON="GitHub did not answer within ${CALL_TIMEOUT}s" ;;
+    124|137) GQL_REASON="GitHub did not answer within ${bound}s" ;;
     125) GQL_REASON="no bounded timeout runner could start, so nothing was sent" ;;
     *)
       if grep -qi 'scope\|INSUFFICIENT_SCOPES\|Resource not accessible' "$WORKDIR/err" 2>/dev/null; then
@@ -394,9 +414,9 @@ $CANDIDATES
 EOF
 
 if [ -z "$OPTION_ID" ]; then
-  # Adding an option is an additive structural change to the captain's board, so
-  # it is reported rather than performed.
-  echo "warning: $ISSUE_URL is on $BOARD_URL, but its Status field has no option matching milestone '$MILESTONE'; the status was left unchanged" >&2
+  # Adding the option would rewrite the field's whole option set and detach every
+  # item already using one, so the gap is reported and the board left alone.
+  echo "warning: $ISSUE_URL is on $BOARD_URL, but its Status field has no option matching milestone '$MILESTONE'; the status was left unchanged, and the option must be added by hand because creating one would clear the status of every item on the board" >&2
   exit 0
 fi
 

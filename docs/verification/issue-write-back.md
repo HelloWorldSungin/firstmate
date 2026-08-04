@@ -78,6 +78,14 @@ status option: Done
 Every milestone `bin/fm-project-board.sh` maps resolves against those options: `queued` to Backlog, `dispatched`/`implemented`/`validated`/`blocked` to In progress, `in-review` to In review, and `landed` to Done.
 No milestone in the vocabulary needs an option this board does not already have, so no additive structural change is required to keep it true.
 
+## Why a missing status option is never created
+
+Adding or changing an option on a Projects v2 single-select field is destructive, which is why `bin/fm-project-board.sh` reports a missing option and stops rather than helpfully adding one.
+The `updateProjectV2Field` mutation replaces the field's whole option set and reassigns every option id, so every item holding one of the old ids is detached from its value.
+Adding a `Blocked` option to this board by hand blanked the status of all twenty items on it instantly; the captain had snapshotted the board first and restored every value, verified identical afterwards.
+A reconciliation sweep that added a missing option on a 223-item board would blank all 223 the same way and report success, so the constraint is that this code may only ever SET a value on an option that already exists.
+`tests/fm-issue-writeback.test.sh` pins it against the fake GitHub: every milestone in the vocabulary is driven through the board and the only Projects mutations the run is allowed to name are `addProjectV2ItemById` and `updateProjectV2ItemFieldValue`.
+
 After the two runs above, that board holds exactly one card for the issue, at the status the milestone maps to:
 
 ```
