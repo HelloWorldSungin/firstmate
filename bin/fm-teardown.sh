@@ -145,8 +145,48 @@ META="$STATE/$ID.meta"
 # Teardown refuses when that fails: the manifest is the canonical structured
 # completion record, so a task that cannot be archived must not be erased.
 # Rerun teardown once the cause is fixed - the write is idempotent.
+# Best-effort refresh of the task's usage session map, immediately before the
+# manifest that carries it into durable history is composed. This is the last
+# moment the live records exist, so a session that started after the previous
+# collector run would otherwise lose its task forever.
+#
+# Deliberately conditional on an existing store: usage accounting activates only
+# after an operator has run bin/fm-usage.mjs once, so a home that never opted in
+# pays nothing here and a failure never blocks cleanup.
+# The call is also time-bounded, because a first collection scans every Claude
+# transcript and Codex rollout on the machine: a slow or hung collector degrades
+# to a stale session map rather than stalling a lifecycle-critical path.
+# docs/usage-accounting.md owns the contract.
+FM_TEARDOWN_USAGE_TIMEOUT=${FM_TEARDOWN_USAGE_TIMEOUT:-60}
+case "$FM_TEARDOWN_USAGE_TIMEOUT" in ''|*[!0-9]*) FM_TEARDOWN_USAGE_TIMEOUT=60 ;; esac
+
+# Bounded execution, mirroring bin/fm-fleet-snapshot.sh's selection so a host
+# without GNU coreutils still bounds the call rather than skipping the bound.
+run_timed() {  # <seconds> <command...>
+  local seconds=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+  else
+    return 124
+  fi
+}
+
+refresh_usage_sessions() {
+  [ -f "$DATA/usage.db" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  run_timed "$FM_TEARDOWN_USAGE_TIMEOUT" \
+    env FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+}
+
 publish_outcome_manifest() {  # <force-flag>
   local rc=0
+  refresh_usage_sessions
   if [ "${1:-}" = "--force" ]; then
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" --forced >/dev/null || rc=$?
@@ -1851,7 +1891,8 @@ cleanup_firstmate_home_children() {
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" \
       "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" \
       "$sub_state/$child_id.run-step" \
-      "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token"
+      "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
+      "$sub_state/$child_id.usage-sessions"
   done
 }
 
@@ -2158,7 +2199,7 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.run-step" \
   "$STATE/$ID.grok-turnend-token" "$STATE/$ID.kimi-turnend-token" \
-  "$STATE/$ID.pr-status" "$STATE/$ID.gbrain"
+  "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

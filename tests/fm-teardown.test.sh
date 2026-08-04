@@ -883,6 +883,143 @@ test_unknown_liveness_completes_cleanup_and_retains_worktree() {
   pass "unknown endpoint liveness completes cleanup and retains the worktree"
 }
 
+# Usage attribution must outlive cleanup. The live session map is a volatile
+# record like the metadata beside it, so teardown removes it - but only after the
+# durable manifest has carried its contents into history.
+test_usage_session_map_reaches_the_manifest_before_cleanup_removes_it() {
+  local case_dir rc
+  case_dir=$(make_case usage-session-map)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  use_unverified_zellij_backend "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  printf '%s\n' '{"schema":"fm-usage-sessions.v1","task_id":"task-x1","recorded_at":"2026-08-01T10:00:00Z","sessions":[{"harness":"claude","session_id":"session-teardown","source_kind":"claude-jsonl"}]}' \
+    > "$case_dir/state/task-x1.usage-sessions"
+
+  rc=0
+  FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "usage-session-map: cleanup did not complete"
+  assert_grep 'session-teardown' "$case_dir/data/task-x1/outcome.json" \
+    "usage-session-map: the durable outcome lost the task's usage sessions"
+  assert_absent "$case_dir/state/task-x1.usage-sessions" \
+    "usage-session-map: the volatile session map was left behind"
+  pass "the usage session map reaches durable history before cleanup removes it"
+}
+
+# The last usage a task produces arrives after any earlier collector run, so
+# cleanup refreshes the session map from the live records before archiving them.
+# The refresh is conditional on a store the operator already created, which is
+# why every other cleanup test above never invokes it.
+test_cleanup_refreshes_usage_sessions_when_a_store_exists() {
+  local case_dir rc
+  command -v node >/dev/null 2>&1 || { echo "skip: node not found"; return; }
+  node -e 'import("node:sqlite").then(()=>process.exit(0),()=>process.exit(1))' 2>/dev/null \
+    || { echo "skip: node:sqlite not available"; return; }
+  case_dir=$(make_case usage-refresh)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  use_unverified_zellij_backend "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  # An operator has opted into usage accounting, and a session ran in this
+  # task's worktree since the last collection.
+  mkdir -p "$case_dir/usage-claude/-slot" "$case_dir/usage-codex"
+  # The task's dispatch record is what dates its start, and a session is only
+  # claimed from the moment its task held the worktree.
+  TZ=UTC touch -t 202607310000.00 "$case_dir/state/task-x1.meta"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$case_dir" \
+    --db "$case_dir/data/usage.db" >/dev/null || fail "usage-refresh: store setup failed"
+  printf '%s\n' "{\"type\":\"assistant\",\"uuid\":\"u9\",\"sessionId\":\"session-late\",\"cwd\":\"$case_dir/wt\",\"timestamp\":\"2026-08-01T10:00:00Z\",\"message\":{\"id\":\"msg_late\",\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":5,\"output_tokens\":5,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":5}}}" \
+    > "$case_dir/usage-claude/-slot/late.jsonl"
+
+  rc=0
+  FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    FM_USAGE_CLAUDE_ROOT="$case_dir/usage-claude" \
+    FM_USAGE_CODEX_ROOT="$case_dir/usage-codex" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "usage-refresh: cleanup did not complete"
+  assert_grep 'session-late' "$case_dir/data/task-x1/outcome.json" \
+    "usage-refresh: a session observed only at cleanup time never reached durable history"
+  pass "cleanup refreshes the usage session map before archiving the task"
+}
+
+# The acceptance criterion the whole durable-attribution design exists for, end
+# to end through the REAL cleanup rather than in halves: a completed task's
+# tokens are still reported once its volatile records are gone. The two cases
+# above prove cleanup puts the sessions in the manifest and the usage suite
+# proves a manifest carries totals; only reading the report after driving
+# fm-teardown.sh proves the joint between them holds for both harnesses.
+test_completed_task_still_reports_its_tokens_after_cleanup() {
+  local case_dir rc roll before after sessions method
+  command -v node >/dev/null 2>&1 || { echo "skip: node not found"; return; }
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; return; }
+  node -e 'import("node:sqlite").then(()=>process.exit(0),()=>process.exit(1))' 2>/dev/null \
+    || { echo "skip: node:sqlite not available"; return; }
+  case_dir=$(make_case usage-survives-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  use_unverified_zellij_backend "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  mkdir -p "$case_dir/usage-claude/-slot" "$case_dir/usage-codex/2026/08/01"
+  TZ=UTC touch -t 202607310000.00 "$case_dir/state/task-x1.meta"
+
+  # Claude repeats one API response across transcript lines; only the response
+  # counts once. 120 + 880 + 40000 + 5000 = 46000 tokens.
+  local line
+  line="{\"type\":\"assistant\",\"sessionId\":\"session-claude-durable\",\"cwd\":\"$case_dir/wt\",\"timestamp\":\"2026-08-01T10:00:00Z\",\"message\":{\"id\":\"msg_durable\",\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":120,\"output_tokens\":880,\"cache_read_input_tokens\":40000,\"cache_creation_input_tokens\":5000}}}"
+  printf '%s\n%s\n' "$line" "$line" > "$case_dir/usage-claude/-slot/session.jsonl"
+  # Codex reports cumulative session totals, with its cached tokens inside the
+  # input count: 9000 + 1000 = 10000 tokens.
+  roll="$case_dir/usage-codex/2026/08/01/rollout-session-codex-durable.jsonl"
+  printf '%s\n' "{\"timestamp\":\"2026-08-01T10:05:00Z\",\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-codex-durable\",\"cwd\":\"$case_dir/wt\"}}" > "$roll"
+  printf '%s\n' "{\"timestamp\":\"2026-08-01T10:05:01Z\",\"type\":\"turn_context\",\"payload\":{\"cwd\":\"$case_dir/wt\",\"model\":\"gpt-5.6-sol\"}}" >> "$roll"
+  printf '%s\n' '{"timestamp":"2026-08-01T10:06:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":9000,"output_tokens":1000,"cached_input_tokens":8000,"cache_write_input_tokens":0,"reasoning_output_tokens":400,"total_tokens":10000}}}}' >> "$roll"
+
+  usage_cli() {
+    FM_USAGE_CLAUDE_ROOT="$case_dir/usage-claude" FM_USAGE_CODEX_ROOT="$case_dir/usage-codex" \
+      node "$ROOT/bin/fm-usage.mjs" "$@" --home "$case_dir" --db "$case_dir/data/usage.db"
+  }
+  usage_cli ingest >/dev/null || fail "usage-survives-cleanup: the live collection failed"
+  before=$(usage_cli report --by task | jq -r '.rows[] | select(.key=="task-x1") | .total_tokens')
+  [ "$before" = 56000 ] \
+    || fail "usage-survives-cleanup: the live task should hold 56000 tokens, got '$before'"
+
+  rc=0
+  FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    FM_USAGE_CLAUDE_ROOT="$case_dir/usage-claude" \
+    FM_USAGE_CODEX_ROOT="$case_dir/usage-codex" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "usage-survives-cleanup: cleanup did not complete"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "usage-survives-cleanup: cleanup left the task live, so nothing was proven"
+
+  # A store rebuilt after cleanup can only learn whose tokens these are from the
+  # durable manifest, which is the record that has to carry them.
+  rm -f "$case_dir/data/usage.db" "$case_dir/data/usage.db-wal" "$case_dir/data/usage.db-shm"
+  usage_cli ingest >/dev/null || fail "usage-survives-cleanup: the post-cleanup collection failed"
+  after=$(usage_cli report --by task | jq -r '.rows[] | select(.key=="task-x1") | .total_tokens')
+  [ "$after" = "$before" ] \
+    || fail "usage-survives-cleanup: a torn-down task lost its tokens ($before -> '$after')"
+  sessions=$(usage_cli report --by task | jq -r '.rows[] | select(.key=="task-x1") | .sessions')
+  [ "$sessions" = 2 ] \
+    || fail "usage-survives-cleanup: both harnesses' sessions must survive, got '$sessions'"
+  method=$(usage_cli attribution | jq -r '.by_method[] | select(.tokens==56000) | .method + "/" + .confidence')
+  [ "$method" = session_binding/high ] \
+    || fail "usage-survives-cleanup: the surviving tokens must stay a high-confidence binding, got '$method'"
+  unset -f usage_cli
+  pass "a completed task still reports both harnesses' tokens after the real cleanup"
+}
+
 # An unknown evidence location cannot prove the absent turn at all, so the
 # never-started allowance does not apply: the task has not been shown to be
 # never-started, only not shown to have run. Retention is not enough here,
@@ -2615,6 +2752,9 @@ test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_before_final_recompute_refuses
 test_unknown_liveness_completes_cleanup_and_retains_worktree
+test_usage_session_map_reaches_the_manifest_before_cleanup_removes_it
+test_cleanup_refreshes_usage_sessions_when_a_store_exists
+test_completed_task_still_reports_its_tokens_after_cleanup
 test_missing_recorded_store_refuses_and_preserves_metadata
 test_ignored_content_refuses_while_allowlisted_harness_files_do_not
 test_allowlisted_harness_files_still_tear_down

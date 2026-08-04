@@ -39,6 +39,9 @@ FM_OUTCOME_PATH_MAX=${FM_OUTCOME_PATH_MAX:-480}
 FM_OUTCOME_OWNER_MAX=${FM_OUTCOME_OWNER_MAX:-400}
 FM_OUTCOME_REPO_MAX=${FM_OUTCOME_REPO_MAX:-200}
 FM_OUTCOME_SOURCE_MAX=${FM_OUTCOME_SOURCE_MAX:-40}
+# Cap on the usage session map a manifest carries, matching the bound
+# bin/fm-usage.mjs publishes.
+FM_OUTCOME_SESSIONS_MAX=${FM_OUTCOME_SESSIONS_MAX:-64}
 
 _FM_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_OUTCOME_LIB_DIR="."
 if ! declare -F fm_sup_stat_mtime >/dev/null 2>&1; then
@@ -713,6 +716,48 @@ fm_outcome_gbrain_json() {  # <state-dir> <id>
 }
 
 # ---------------------------------------------------------------------------
+# Usage session map (optional producer)
+# ---------------------------------------------------------------------------
+
+fm_outcome_usage_sessions_path() {  # <state-dir> <id>
+  printf '%s/%s.usage-sessions' "$1" "$2"
+}
+
+# The sessions bound to this task while it was live, as a validated array, or
+# the empty array when no collector ever ran. bin/fm-usage.mjs publishes the
+# sidecar (schema fm-usage-sessions.v1); this library only reads and bounds it,
+# so a task whose usage was never collected archives exactly like one that has
+# no sessions rather than failing to archive at all.
+fm_outcome_usage_sessions_json() {  # <state-dir> <id>
+  local path doc
+  path=$(fm_outcome_usage_sessions_path "$1" "$2")
+  if [ -f "$path" ] && [ ! -L "$path" ] \
+    && doc=$(jq -cse --arg schema fm-usage-sessions.v1 --arg id "$2" \
+      --argjson max "$FM_OUTCOME_SESSIONS_MAX" '
+      if length == 1 and (.[0] | type == "object") then .[0]
+      else error("single sessions object required") end
+      | if .schema == $schema and .task_id == $id and (.sessions | type == "array")
+        then [.sessions[]
+              | select(type == "object")
+              | {harness:(.harness // ""),
+                 session_id:(.session_id // ""),
+                 source_kind:(.source_kind // "unknown")}
+              | select((.harness | type == "string") and (.session_id | type == "string")
+                       and (.source_kind | type == "string"))
+              | select((.harness | test("^[a-z0-9._-]{1,40}$"))
+                       and (.session_id | test("^[A-Za-z0-9._:-]{1,128}$"))
+                       and (.source_kind | test("^[a-z0-9._-]{1,40}$")))]
+             | unique_by([.harness, .session_id])
+             | .[0:$max]
+        else error("invalid sessions document") end
+      ' "$path" 2>/dev/null); then
+    printf '%s\n' "$doc"
+  else
+    printf '[]\n'
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Outcome manifest
 # ---------------------------------------------------------------------------
 
@@ -778,6 +823,11 @@ attribution.worktree
 attribution.task_tmp
 attribution.traceparent
 attribution.secondmate_home
+attribution.sessions
+attribution.sessions[]
+attribution.sessions[].harness
+attribution.sessions[].session_id
+attribution.sessions[].source_kind
 work_items
 work_items.schema
 work_items.references
@@ -836,7 +886,8 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
     --argjson url_max "$FM_OUTCOME_URL_MAX" --argjson host_max "$FM_OUTCOME_HOST_MAX" \
     --argjson path_max "$FM_OUTCOME_PATH_MAX" --argjson owner_max "$FM_OUTCOME_OWNER_MAX" \
     --argjson repo_max "$FM_OUTCOME_REPO_MAX" --argjson text_max "$FM_OUTCOME_TEXT_MAX" \
-    --argjson source_max "$FM_OUTCOME_SOURCE_MAX" --argjson receipt_max "$FM_OUTCOME_RECEIPT_MAX" '
+    --argjson source_max "$FM_OUTCOME_SOURCE_MAX" --argjson receipt_max "$FM_OUTCOME_RECEIPT_MAX" \
+    --argjson sessions_max "$FM_OUTCOME_SESSIONS_MAX" '
 '"$FM_OUTCOME_WORK_ITEM_VALIDATOR_JQ"'
 '"$FM_OUTCOME_PR_STATUS_VALIDATOR_JQ"'
     def fm_iso:
@@ -912,7 +963,20 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
       and (.report.path | fm_nullable_path)
       and (.report.present | type == "boolean")
       and ((.report.present | not) or .report.path != null)
-      and (.attribution | type == "object" and keys == ["backend","endpoint","secondmate_home","task_tmp","traceparent","worktree"])
+      # The usage session map is additive: a manifest published before this
+      # contract existed carries no sessions key and stays valid, so durable
+      # history written by an older firstmate is never invalidated by an upgrade.
+      and (.attribution | type == "object"
+           and (keys == ["backend","endpoint","secondmate_home","task_tmp","traceparent","worktree"]
+                or keys == ["backend","endpoint","secondmate_home","sessions","task_tmp","traceparent","worktree"]))
+      and (.attribution.sessions == null
+           or ((.attribution.sessions | type == "array" and length <= $sessions_max)
+               and all(.attribution.sessions[];
+                       type == "object"
+                       and (keys == ["harness","session_id","source_kind"])
+                       and (.harness | type == "string" and test("^[a-z0-9._-]{1,40}$"))
+                       and (.session_id | type == "string" and test("^[A-Za-z0-9._:-]{1,128}$"))
+                       and (.source_kind | type == "string" and test("^[a-z0-9._-]{1,40}$")))))
       and (.attribution.backend | fm_clean_string($source_max)) and (.attribution.backend | length > 0)
       and (.attribution.endpoint | type == "object" and keys == ["target","task_id"])
       and (.attribution.endpoint.target | fm_nullable_clean($text_max))

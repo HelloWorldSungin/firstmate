@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, per-task completion manifests, and per-task work-item references.
+`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, per-task completion manifests, per-task work-item references, and the token-usage store described in [usage-accounting.md](usage-accounting.md).
 [`fleet-data-contracts.md`](fleet-data-contracts.md) owns the durable manifest, work-item, and normalized PR-observation contracts and the field ownership across their producers and consumers.
 `state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, generated X-mode artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
@@ -62,6 +62,29 @@ GitHub needs no entry because it uses the ambient `gh-axi` authentication.
 Gitea uses its host entry when present and otherwise attempts an unauthenticated read, which can enrich public repositories while private repositories retain only the link and reason.
 `config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
 The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
+
+## Usage cost rates (config/usage-rates.json)
+
+Token accounting is always on once [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) runs, while a cost estimate is opt-in and absent by default.
+[usage-accounting.md](usage-accounting.md) owns what is stored, how a task keeps its usage after cleanup, and why tokens never imply dollars.
+
+Write the local, gitignored `config/usage-rates.json` under the effective Firstmate home to opt in, or point `FM_USAGE_RATES` at another file.
+Rates are per million tokens in the file's declared currency:
+
+```json
+{
+  "schema": "fm-usage-rates.v1",
+  "rate_version": "2026-08-01",
+  "currency": "USD",
+  "models": {
+    "claude-opus-5": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}
+  }
+}
+```
+
+`rate_version` is stored with every estimate it produces, so a rate change is a new version rather than a silent rewrite of history.
+A model with no entry stays explicitly unpriced and keeps its tokens, and an absent, unreadable, or wrong-schema file means no estimate at all rather than a zero.
+This file is local to each Firstmate home and is not part of secondmate inherited configuration.
 
 ## Pi Calm preference (config/calm)
 

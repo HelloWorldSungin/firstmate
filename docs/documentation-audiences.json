@@ -32,7 +32,8 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/remote-secondmates.md",
+    "docs/usage-accounting.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -351,6 +352,10 @@
     },
     {
       "path": "docs/tmux-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/usage-accounting.md",
       "audience": "operator-current"
     },
     {
