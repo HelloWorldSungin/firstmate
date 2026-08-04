@@ -108,7 +108,7 @@ It is also the shape of the intended behavior: the verifier reports what it cann
 
 The focused regression matrix uses temporary Firstmate homes and temporary Claude stores only.
 It binds a mismatched worker to store A, invokes verification under store B containing an older matching transcript, and requires the mismatch from store A.
-It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record without binding fields retains its disclosed weaker attribution.
+It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record with a persisted evidence-store identity but no time binding retains its disclosed weaker attribution and a record without that store identity remains `unverifiable`.
 
 The lifecycle cases require base endpoint metadata to exist when watermark capture fails, require forced teardown to print a mismatch without losing discard authority, and require recursive secondmate cleanup to print each child's verdict before removing its record.
 The store-binding cases require an explicitly configured Claude launch to override a different backend-daemon ambient store, and require `link/../cfg` to resolve the link before applying the parent component.

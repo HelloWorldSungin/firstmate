@@ -62,7 +62,7 @@ A verdict is never `match` unless a model was actually read and actually compare
 | `match` | every model attributed to this worker satisfies the record | 0 |
 | `mismatch` | at least one attributed model does not | 3 |
 | `unverifiable` | the record cannot be checked at all | 4 |
-| `unstarted` | beneath an inspectable recorded evidence store, the runtime wrote neither its normal transcript parent nor a session path entry for this worker, so it has no evidence of its own | 4 |
+| `unstarted` | beneath an inspectable recorded evidence store, the runtime wrote no transcript parent at all or no session path entry for this worker, so it has no evidence of its own | 4 |
 | `pending` | a session exists and the worker has not produced a model-attributed turn yet | 0 |
 | `unpinned` | `model=default`: no tier was pinned, so there is no record for the runtime to contradict | 0 |
 
@@ -111,15 +111,15 @@ An unreadable or absent verifier answer becomes an explicit `unverifiable` verdi
 
 `bin/fm-teardown.sh` always runs terminal verification before cleanup, and always surfaces the verdict, so no worker's model provenance is discarded unseen.
 Only the refusal is conditional.
-Non-forced teardown refuses on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
-It then preserves the worktree, transcript evidence, and task metadata for inspection.
+Terminal verification returns a blocking status on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
+Non-forced teardown ordinarily turns that status into a refusal that preserves the worktree, transcript evidence, and task metadata for inspection, subject only to the narrow no-turn and retained-worktree paths below.
 Refusing whenever a verdict was absent would make non-forced cleanup impossible for every harness that can never produce one, which is a fleet-wide regression rather than the boundary this refusal exists to draw.
 
 One further boundary sits inside that refusal, for the same reason.
-A worker that died before its first model-attributed turn - `unstarted` or `pending` - can never produce a verdict however long its records are kept, so the refusal there is permanent rather than protective, and it strands the endpoint name the task holds.
-Non-forced teardown therefore proceeds for such a task when its recorded worktree independently proves there is nothing to preserve: inspectable, on no branch, with no `refs/heads/fm/<task-id>` task branch, carrying no commit that no existing ref already contains, and clean after enumerating every untracked file apart from `.claude/settings.local.json`, `.opencode/plugins/fm-turn-end.js`, `.opencode/plugins/fm-busy-state.js`, `.fm-grok-turnend`, and `.fm-kimi-turnend`, which `bin/fm-spawn.sh` writes itself.
+For a worker with an `unstarted` or `pending` result, retained records alone cannot create the absent first model-attributed turn, so retaining a task that is no longer authoritatively live can become permanent rather than protective and strand the endpoint name it holds.
+Non-forced teardown therefore proceeds for such a task when its recorded worktree independently proves there is nothing to preserve: inspectable, on no branch, with no `refs/heads/fm/<task-id>` task branch, carrying no commit that no existing local or remote-tracking branch already contains, and clean after enumerating every non-ignored untracked file apart from `.claude/settings.local.json`, `.opencode/plugins/fm-turn-end.js`, `.opencode/plugins/fm-busy-state.js`, `.fm-grok-turnend`, and `.fm-kimi-turnend`, which `bin/fm-spawn.sh` writes itself.
 Before that allowance reaches record removal, teardown consults the recorded backend's strongest available liveness evidence, attempts the existing best-effort endpoint close when no live worker is authoritatively reported, and then recomputes the terminal model-routing verdict and complete on-disk proof immediately before cleanup.
-The allowance requires four backend-independent protections to hold together: no model-attributed turn, no task branch or commit of the worker's own, no tracked or staged modification, and no enumerated untracked file beyond the exact harness-owned allowlist.
+The allowance requires four backend-independent protections to hold together: no model-attributed turn, no current or task branch and no commit of the worker's own, no tracked or staged modification, and no enumerated non-ignored untracked file beyond the exact harness-owned allowlist.
 A recovery-grade classifier that authoritatively reports a live worker refuses and preserves the endpoint, worktree, and metadata.
 A recovery-grade `dead` or `missing` result permits the best-effort close and on-disk proof to decide, while `ambiguous`, `unreadable`, or `unverified` liveness is stated plainly and does not become either a safety proof or a permanent block.
 A turn or worktree change observed by the recomputation refuses under the ordinary terminal-verdict and work-preservation rules.
@@ -128,12 +128,12 @@ An unknown evidence location cannot satisfy the no-turn proof and therefore neve
 The teardown output names the retained worktree and each unknown reason, leaving any later committed or uncommitted write recoverable.
 The residual gap pending separately tracked confirmed-termination support is one possible unverified model attribution: a worker that begins its first turn after the final recomputation can write routing evidence while its task records are being removed, but no path discards its worktree contents.
 The absent verdict is stated plainly in the teardown output either way.
-Both halves are required for recycling and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
+Both halves are required for recycling and both are read from evidence rather than a flag: a worker whose recorded evidence shows that it ran without a usable verdict keeps refusing even on a spotless worktree, and any change visible to the worktree proof or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
 
 `bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch`, `unverifiable`, or `unstarted`.
 It deliberately omits `pending` because every healthy worker is briefly pending before its first model-attributed turn, and a routine false alarm would make the section less useful.
-The residual gap is explicit: a worker whose runtime opened a session it never took a turn in remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object, and blocks non-forced teardown when that dispatch was verifiable in principle.
+The residual gap is explicit: a worker whose runtime opened a session it never took a turn in remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object and enters the non-forced teardown refusal path when that dispatch was verifiable in principle, subject to the no-turn boundary above.
 `unstarted` is listed rather than omitted, because a dispatched worker whose runtime wrote no session at all is not the routine transient state `pending` is.
 Deliberate `unpinned` dispatches are also omitted, and correctly routed work therefore looks exactly as it did before.
 
