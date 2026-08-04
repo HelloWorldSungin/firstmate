@@ -115,6 +115,12 @@
 #   records issue=<number>; when the project declares a tracker, spawn also
 #   upgrades that bare number to one project-scoped work_item= record, while a
 #   missing, trackerless, or malformed declaration warns instead of guessing.
+#   The brief's single firstmate-pr-target marker is recorded as pr_target=, and
+#   a legacy bare number records the tracker it resolved against, which is the
+#   only thing a bare number can have meant. bin/fm-issue-comment.sh reads that
+#   line to decide whether firstmate may write back to the work item's tracker.
+#   After a successful ship launch with a recorded work item, the dispatch
+#   milestone is posted through bin/fm-work-item-milestone.sh, best effort.
 #   Brief prose, git remotes, and PR bodies are never searched to infer identity.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
@@ -1201,7 +1207,30 @@ fi
 # of whichever repository its PR happens to open against. A brief may carry any
 # number of them, including none.
 WORK_ITEM_RECORDS=()
+# The brief's PR target says which tracker firstmate's own write-back may reach:
+# a work item in that exact repository is one it already holds write access to,
+# and anything else is link-only (bin/fm-issue-comment.sh).
+PR_TARGET=
 if [ "$KIND" = ship ]; then
+  PR_TARGET_MARKER_COUNT=$(grep -c '^<!-- firstmate-pr-target=' "$BRIEF_REAL" 2>/dev/null || true)
+  case "$PR_TARGET_MARKER_COUNT" in
+    0) ;;
+    1)
+      PR_TARGET_MARKER=$(grep '^<!-- firstmate-pr-target=' "$BRIEF_REAL")
+      case "$PR_TARGET_MARKER" in
+        '<!-- firstmate-pr-target='*' -->')
+          PR_TARGET=${PR_TARGET_MARKER#'<!-- firstmate-pr-target='}
+          PR_TARGET=${PR_TARGET%' -->'}
+          ;;
+        *) echo "error: malformed PR-target marker in $BRIEF" >&2; exit 1 ;;
+      esac
+      if ! fm_issue_tracker_parse "$PR_TARGET" || [ -z "$FM_ISSUE_TRACKER_FORGE" ]; then
+        echo "error: malformed PR-target marker in $BRIEF" >&2
+        exit 1
+      fi
+      ;;
+    *) echo "error: multiple PR-target markers in $BRIEF" >&2; exit 1 ;;
+  esac
   while IFS= read -r marker; do
     [ -n "$marker" ] || continue
     case "$marker" in
@@ -1233,6 +1262,10 @@ if [ "$KIND" = ship ]; then
           echo "warning: $ID records issue #$ISSUE but $PROJ_NAME declares no issue tracker (tracker=none); the issue stays a bare same-repository number and will not be resolved against a tracker" >&2
         elif fm_issue_ref_resolve "#$ISSUE" "$LEGACY_TRACKER" "$PROJ_NAME"; then
           WORK_ITEM_RECORDS+=("$(fm_issue_work_item_format declared "$FM_ISSUE_FORGE" "$FM_ISSUE_URL")")
+          # A bare number can only ever have meant "the repository this PR lands
+          # in", so the tracker it just resolved against IS this task's PR target.
+          [ -n "$PR_TARGET" ] \
+            || PR_TARGET="$FM_ISSUE_FORGE:$FM_ISSUE_HOST/$FM_ISSUE_PATH"
         else
           echo "warning: $ID records issue #$ISSUE but it could not be resolved against $PROJ_NAME's tracker: $FM_ISSUE_ERROR" >&2
         fi
@@ -2093,6 +2126,8 @@ META_WINDOW=$T
   for work_item_record in ${WORK_ITEM_RECORDS[@]+"${WORK_ITEM_RECORDS[@]}"}; do
     echo "work_item=$work_item_record"
   done
+  # Written before any pr= line, which bin/fm-pr-lib.sh requires to stay last.
+  [ -z "$PR_TARGET" ] || echo "pr_target=$PR_TARGET"
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -2261,6 +2296,14 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+
+# The tracker learns the work is under way from the dispatch that started it,
+# rather than from anyone remembering to say so. Strictly best effort: this whole
+# path warns and exits 0 on any forge trouble, and the worker is already running.
+if [ "$KIND" = ship ] && [ "${#WORK_ITEM_RECORDS[@]}" -gt 0 ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+    "$FM_ROOT/bin/fm-work-item-milestone.sh" "$ID" --milestone dispatched || true
 fi
 
 SPAWN_DELIVERY=

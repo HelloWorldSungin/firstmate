@@ -65,6 +65,8 @@ esac
 
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 usage() {
   awk '
@@ -150,20 +152,6 @@ digest() {  # <string>
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
   else
     printf '%s' "$1" | sha256sum | awk '{print $1}'
-  fi
-}
-
-run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after=1 "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --kill-after=1 "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 125
   fi
 }
 
@@ -378,7 +366,7 @@ adapter_github() {  # <host> <path> <number>
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="gh-axi is not installed"
     return 0
   fi
-  output=$(run_timed "$LOOKUP_TIMEOUT" gh-axi issue view "$number" --repo "$path" --full 2>&1) || rc=$?
+  output=$(fm_run_timed "$LOOKUP_TIMEOUT" gh-axi issue view "$number" --repo "$path" --full 2>&1) || rc=$?
   case "$rc" in
     0) ;;
     124|137)
@@ -436,11 +424,11 @@ adapter_gitea() {  # <host> <path> <number>
   # this process's arguments and never reaches a log or the cache.
   if [ "$token_rc" -eq 0 ] && [ -n "$token" ]; then
     response=$(printf 'header = "Authorization: token %s"\n' "$token" \
-      | run_timed "$LOOKUP_TIMEOUT" curl -sS -K - -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
+      | fm_run_timed "$LOOKUP_TIMEOUT" curl -sS -K - -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
         -H 'Accept: application/json' \
         "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
   else
-    response=$(run_timed "$LOOKUP_TIMEOUT" curl -sS -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
+    response=$(fm_run_timed "$LOOKUP_TIMEOUT" curl -sS -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
       -H 'Accept: application/json' \
       "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
   fi

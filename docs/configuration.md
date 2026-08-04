@@ -49,6 +49,26 @@ Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in 
 `bin/fm-pr-merge.sh` closes a recorded work item only when it is a `github.com` issue, and then in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
 A work item on a self-hosted GitHub host, or on any other forge, is reported as one Firstmate does not close automatically rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
 
+Firstmate also writes back, so a tracker shows where its work stands without anyone opening the pull request.
+`bin/fm-work-item-milestone.sh` records one lifecycle milestone - `dispatched`, `implemented`, `validated`, `in-review`, `landed`, `blocked`, or `stopped` - on every surface Firstmate keeps true, so those surfaces cannot drift into different opinions about the same task.
+`bin/fm-spawn.sh`, `bin/fm-pr-check.sh`, and `bin/fm-pr-merge.sh` post `dispatched`, `in-review`, and `landed` themselves; Firstmate posts the rest with a note written for a human reading the issue.
+
+`bin/fm-issue-comment.sh` owns the tracker comment: ONE living status comment per work item, created once and thereafter edited in place, located idempotently by a Firstmate-owned marker in its body so a restart, a partial failure, or a repeated milestone all correct the same comment rather than adding another.
+It carries the current status, the note, the pull request when one is recorded, and a short dated timeline of the milestones so far.
+The task's worker owns exactly one separate comment, its substantive delivery summary, which `bin/fm-brief.sh` requires of it before the PR is ready.
+Write-back applies only where a write credential genuinely exists: exactly one recorded work item, a `github.com` issue, in the repository the PR opens against, which `bin/fm-brief.sh --pr-target` records as `pr_target=` in task metadata.
+Cross-forge write-back needs a per-host write-credential design of its own and is deliberately out of scope, because `config/forge-tokens/` is read-side only.
+The note is refused - leaving the previous comment untouched - when it carries a credential, an absolute filesystem path, or a value the task's own record marks as private, because a leak cannot be undone.
+
+`config/project-board` optionally names the captain's GitHub Projects board as one line, `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`; absent, `bin/fm-project-board.sh` does nothing and contacts no host.
+It adds board membership for each tracked work item and drives the board's existing Status field from the same milestones, and it ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
+It never creates, renames, or deletes a view, filter, field, status option, or item: a milestone with no matching status option is reported and the status left alone, because adding one is an additive structural change and the captain's call.
+Projects v2 is GraphQL-only and `gh-axi` does not implement it, so that one path uses `gh api graphql` directly and additionally needs the token's `project` scope, which `repo` does not imply.
+The file is inherited by secondmate homes, so their work appears on the same board.
+
+Every write-back path fails open exactly as enrichment does: an unreachable, unauthenticated, rate-limited, or missing target prints one warning on stderr and exits 0, so it can never block or fail dispatch, validation, merge, or cleanup.
+What it is never allowed to be is silent, which is why each non-write reports its own reason rather than passing quietly.
+
 `bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters: `github.com` and Gitea on any host are implemented, while a self-hosted GitHub host and GitLab report that they have no adapter and keep the plain link.
 Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
 Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900), and that cache is what stops repeated dashboard refreshes hammering a forge: every refresh inside the TTL is answered from disk without contacting the host at all.
