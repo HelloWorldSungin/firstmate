@@ -174,8 +174,10 @@ test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
   assert_contains "$help" "Refuses to overwrite an existing brief." "fm-brief.sh --help omitted its header terminator"
-  assert_contains "$help" "--issue records a same-repository GitHub issue number" \
+  assert_contains "$help" "--issue is the older same-repository GitHub form" \
     "fm-brief.sh --help omitted the issue argument"
+  assert_contains "$help" "--work-item records a resolved work item" \
+    "fm-brief.sh --help omitted the work-item argument"
   pass "fm-brief.sh: --help renders the complete header"
 }
 

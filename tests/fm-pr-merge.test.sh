@@ -459,7 +459,7 @@ test_issue_close_failure_keeps_merge_success_unambiguous() {
   expect_code 0 "$rc" "issue-close-fails: a completed merge must remain successful"
   assert_grep 'warning: PR merge succeeded: https://github.com/example/repo/pull/33' "$case_dir/stderr" \
     "issue-close-fails: warning did not make the successful merge explicit"
-  assert_grep 'could not close issue #44' "$case_dir/stderr" \
+  assert_grep 'could not close example/repo#44' "$case_dir/stderr" \
     "issue-close-fails: warning did not identify the failed bookkeeping"
   pass "fm-pr-merge reports issue-close failure without making a completed merge retryable"
 }
@@ -498,7 +498,7 @@ test_issue_verification_failure_keeps_merge_success_unambiguous() {
   expect_code 0 "$rc" "issue-view-fails: a completed merge must remain successful"
   assert_grep 'warning: PR merge succeeded: https://github.com/example/repo/pull/35' "$case_dir/stderr" \
     "issue-view-fails: warning did not make the successful merge explicit"
-  assert_grep 'could not verify issue #45' "$case_dir/stderr" \
+  assert_grep 'could not verify example/repo#45' "$case_dir/stderr" \
     "issue-view-fails: warning did not identify the failed verification"
   assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
     "issue-view-fails: close was attempted without verifying the issue state"
@@ -522,7 +522,7 @@ test_issue_still_open_after_close_request_warns() {
   expect_code 0 "$rc" "issue-stays-open: a completed merge must remain successful"
   [ "$(grep -c '^issue view 46 --repo example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
     || fail "issue-stays-open: issue state was not checked before and after closing"
-  assert_grep 'issue #46 is still not closed after the close request' "$case_dir/stderr" \
+  assert_grep 'example/repo#46 is still not closed after the close request' "$case_dir/stderr" \
     "issue-stays-open: post-close verification failure was not loud"
   pass "fm-pr-merge warns when an issue remains open after a successful close request"
 }
@@ -560,6 +560,125 @@ test_invalid_recorded_issue_metadata_warns_without_issue_calls() {
   pass "fm-pr-merge warns on malformed or duplicate recorded issue metadata without making API calls"
 }
 
+# The linkage bug this guards: before work_item= records existed, the only
+# recorded identity was a bare number, so the close was addressed to whichever
+# repository the PR landed in. A project mirrored on one host with its issues
+# tracked in another repository had its bookkeeping sent to the wrong tracker.
+# The PR here lands in example/repo while the work item declares
+# HelloWorldSungin/ark-robinhood, so a regression re-addressing the close to the
+# PR's repository fails on both assertions below.
+test_work_item_closes_in_its_declared_repository_not_the_pr_repository() {
+  local case_dir url
+  case_dir=$(make_case work-item-declared)
+  url=https://github.com/example/repo/pull/51
+  printf 'work_item=declared|github|https://github.com/HelloWorldSungin/ark-robinhood/issues/42\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_issue_open_then_closed "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "work-item-declared: merge reconciliation failed"
+
+  grep -qxF "issue close 42 --repo HelloWorldSungin/ark-robinhood --reason completed --comment Closed after merge of $url." \
+    "$case_dir/gh-axi.log" \
+    || fail "work-item-declared: the work item was not closed in its own declared repository"
+  assert_no_grep '--repo example/repo --reason' "$case_dir/gh-axi.log" \
+    "work-item-declared: the close was addressed to the PR's repository instead of the declared tracker"
+  [ "$(grep -c '^issue view 42 --repo HelloWorldSungin/ark-robinhood --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
+    || fail "work-item-declared: issue state was not verified in the declared repository before and after closing"
+  pass "fm-pr-merge closes a work item in its declared repository, not the PR's"
+}
+
+# A work item on a forge firstmate does not write back to must leave the merge
+# successful and the link intact, and must not be silently retargeted at GitHub.
+test_non_github_work_item_is_reported_not_closed() {
+  local case_dir rc
+  case_dir=$(make_case work-item-gitea)
+  printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/52 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "work-item-gitea: a completed merge must remain successful"
+  assert_grep 'lives on gitea' "$case_dir/stderr" \
+    "work-item-gitea: the unsupported write-back was not reported"
+  assert_grep 'https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7' "$case_dir/stderr" \
+    "work-item-gitea: the warning did not carry the plain link"
+  assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
+    "work-item-gitea: a non-GitHub work item reached the GitHub close path"
+  pass "fm-pr-merge reports a non-GitHub work item instead of closing it"
+}
+
+test_invalid_or_multiple_work_items_warn_without_issue_calls() {
+  local case_dir rc name expected
+  for name in malformed multiple; do
+    case_dir=$(make_case "work-item-$name")
+    case "$name" in
+      malformed)
+        printf 'work_item=declared|github|not-a-url\n' >> "$case_dir/state/task-x1.meta"
+        expected='recorded work item is malformed'
+        ;;
+      multiple)
+        printf 'work_item=declared|github|https://github.com/a/b/issues/1\n' \
+          >> "$case_dir/state/task-x1.meta"
+        printf 'work_item=declared|github|https://github.com/c/d/issues/2\n' \
+          >> "$case_dir/state/task-x1.meta"
+        expected='records several work items'
+        ;;
+    esac
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" dddddddddddddddddddddddddddddddddddddddd
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/53 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 0 "$rc" "work-item-$name: a completed merge must remain successful"
+    assert_grep "$expected" "$case_dir/stderr" \
+      "work-item-$name: the warning was not explicit"
+    assert_no_grep 'issue ' "$case_dir/gh-axi.log" \
+      "work-item-$name: the issue API was called despite unusable work-item metadata"
+  done
+  pass "fm-pr-merge warns on malformed or multiple work items without making API calls"
+}
+
+# A work_item= record carries a whole tracker identity and a legacy issue= line
+# carries none, so the record must win whenever both are present.
+test_work_item_record_wins_over_legacy_issue_line() {
+  local case_dir url
+  case_dir=$(make_case work-item-precedence)
+  url=https://github.com/example/repo/pull/54
+  printf 'issue=99\n' >> "$case_dir/state/task-x1.meta"
+  printf 'work_item=declared|github|https://github.com/HelloWorldSungin/ark-robinhood/issues/42\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_issue_open_then_closed "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "work-item-precedence: merge reconciliation failed"
+
+  grep -qxF "issue close 42 --repo HelloWorldSungin/ark-robinhood --reason completed --comment Closed after merge of $url." \
+    "$case_dir/gh-axi.log" \
+    || fail "work-item-precedence: the declared work item was not the close target"
+  assert_no_grep 'issue close 99' "$case_dir/gh-axi.log" \
+    "work-item-precedence: the legacy bare number was closed instead of the declared work item"
+  pass "fm-pr-merge prefers a declared work item over a legacy bare issue number"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -577,3 +696,7 @@ test_no_recorded_issue_makes_no_issue_calls
 test_issue_verification_failure_keeps_merge_success_unambiguous
 test_issue_still_open_after_close_request_warns
 test_invalid_recorded_issue_metadata_warns_without_issue_calls
+test_work_item_closes_in_its_declared_repository_not_the_pr_repository
+test_non_github_work_item_is_reported_not_closed
+test_invalid_or_multiple_work_items_warn_without_issue_calls
+test_work_item_record_wins_over_legacy_issue_line

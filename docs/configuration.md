@@ -23,6 +23,39 @@ Wake, watcher, away-mode, and X-specific state mechanics remain with their named
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Project issue trackers (data/projects.md tracker= / config/forge-tokens)
+
+A task's work item almost always lives in the managed project's own tracker rather than in the Firstmate repository, and Firstmate manages projects across several forges and hosts.
+A bare `#42` is therefore meaningless without a project, and the tracker is never implied by a git remote: a project may be mirrored on one host while its issues are tracked on another, so the declaration below is the only authority.
+
+Each project may declare its tracker with a `tracker=` token inside the existing bracket annotation in `data/projects.md`:
+
+```
+- <name> [<mode> +yolo tracker=<forge>:<host>/<path>] - <desc> (added <date>)
+- <name> [<mode> tracker=none] - <desc> (added <date>)
+```
+
+`<forge>` is `github`, `gitlab`, or `gitea`; `<host>` is the tracker's DNS host; `<path>` is `owner/repository` on GitHub and Gitea, and the full nested namespace on GitLab.
+`tracker=none` declares that a project has no tracker, which is distinct from an absent token meaning undeclared; both refuse to resolve a bare reference, with different reasons.
+The token rides inside the delivery-posture annotation that `bin/fm-project-mode.sh` already parses, so adding it never changes a project's registered mode or yolo posture.
+
+`bin/fm-issue-lib.sh` is the single owner of this declaration and of the reference forms resolved against it: a full canonical issue URL, a `<forge>:<url>` prefixed URL for the self-hosted shape several forges share, `<owner>/<repo>#<n>`, and a bare `#<n>` or `<n>`.
+Firstmate resolves references once at intake with `bin/fm-issue-ref.sh`, exactly as it resolves delivery mode and yolo, and passes the resolved result explicitly onward.
+`bin/fm-brief.sh --work-item` accepts only a fully qualified reference and never reads the registry at all.
+`bin/fm-spawn.sh` records those resolved markers as they stand and consults the registry only to upgrade a legacy bare `issue=` number through the project's declared tracker, reporting rather than guessing when that project declares none.
+A task may carry several references or none, and one unresolvable reference refuses the whole set rather than recording a partial one.
+Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in task metadata and handed to the outcome manifest's work-item field.
+`bin/fm-pr-merge.sh` closes a recorded GitHub work item in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
+
+`bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters, with GitHub and Gitea implemented and GitLab reporting that it has none.
+Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
+Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900) and live lookups to one host are spaced by `FM_ISSUE_STATUS_MIN_INTERVAL` seconds (default 2), so repeated dashboard refreshes cannot hammer a forge.
+
+Per-host credentials live in `config/forge-tokens/<host>`, which must be a regular file with mode 0600; a token stored more loosely is refused rather than used.
+GitHub needs no entry because it uses the ambient `gh-axi` authentication.
+`config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
+The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.

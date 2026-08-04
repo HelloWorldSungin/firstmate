@@ -7,10 +7,14 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
-# After a successful merge, an optional issue=<number> recorded in task metadata
-# is verified through GitHub. An open issue is closed with a comment linking the
-# merged PR. Issue verification or closure failures warn while returning success,
-# because the already-completed merge must never look retryable.
+# After a successful merge, an optional work item recorded in task metadata is
+# verified and, when it is an open GitHub issue, closed with a comment linking
+# the merged PR. A work_item= record names the tracker the project declared and
+# is closed in THAT repository; only the legacy bare issue= number falls back to
+# the repository the PR landed in, which is all a bare number can mean. Several
+# recorded work items, or one on a forge with no write-back, warn instead.
+# Issue verification or closure failures warn while returning success, because
+# the already-completed merge must never look retryable.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -21,6 +25,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-issue-lib.sh
+. "$SCRIPT_DIR/fm-issue-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -88,43 +94,73 @@ fi
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
 
 issue_close_warning() {  # <detail>
-  echo "warning: PR merge succeeded: $URL; GitHub issue bookkeeping did not complete: $1" >&2
+  echo "warning: PR merge succeeded: $URL; issue bookkeeping did not complete: $1" >&2
 }
 
-github_issue_state() {  # <issue-number>
-  local issue=$1 output state
-  output=$(gh-axi issue view "$issue" --repo "$PR_OWNER/$PR_REPO" --full) || return 1
+github_issue_state() {  # <repo-path> <issue-number>
+  local repo=$1 issue=$2 output state
+  output=$(gh-axi issue view "$issue" --repo "$repo" --full) || return 1
   state=$(printf '%s\n' "$output" | awk '$1 == "state:" { print $2; exit }')
   [ -n "$state" ] || return 1
   printf '%s\n' "$state"
 }
 
-ISSUE_LINE_COUNT=$(grep -c '^issue=' "$META" 2>/dev/null || true)
-case "$ISSUE_LINE_COUNT" in
-  0) exit 0 ;;
-  1) ISSUE=$(grep '^issue=' "$META" | cut -d= -f2-) ;;
-  *) issue_close_warning "task metadata has multiple recorded issues"; exit 0 ;;
-esac
-case "$ISSUE" in
-  ''|*[!0-9]*) issue_close_warning "recorded issue identity is malformed"; exit 0 ;;
-esac
-if [ "$ISSUE" -le 0 ]; then
-  issue_close_warning "recorded issue identity is malformed"
+# Resolve which tracker this task's issue actually lives in. A work_item=
+# record carries the whole identity the captain declared for the project, so it
+# is authoritative; the legacy bare issue= number carries none and can only mean
+# "the repository this PR landed in", which is wrong for any project whose code
+# and issues live on different hosts. Preferring the record is what stops a
+# mirrored project's bookkeeping going to the wrong forge.
+ISSUE_REPO=
+ISSUE=
+WORK_ITEM_COUNT=$(grep -c '^work_item=' "$META" 2>/dev/null || true)
+if [ "$WORK_ITEM_COUNT" -gt 1 ]; then
+  issue_close_warning "task metadata records several work items; none was closed automatically"
   exit 0
 fi
+if [ "$WORK_ITEM_COUNT" -eq 1 ]; then
+  WORK_ITEM_RECORD=$(grep '^work_item=' "$META" | cut -d= -f2-)
+  if ! fm_issue_work_item_parse "$WORK_ITEM_RECORD"; then
+    issue_close_warning "recorded work item is malformed"
+    exit 0
+  fi
+  if [ "$FM_ISSUE_FORGE" != github ]; then
+    # Writing back to a non-GitHub tracker is deliberately not implemented; the
+    # merge still succeeded and the work item is still linked.
+    issue_close_warning "the work item lives on $FM_ISSUE_FORGE ($FM_ISSUE_URL), which firstmate does not close automatically"
+    exit 0
+  fi
+  ISSUE_REPO="$FM_ISSUE_PATH"
+  ISSUE="$FM_ISSUE_NUMBER"
+else
+  ISSUE_LINE_COUNT=$(grep -c '^issue=' "$META" 2>/dev/null || true)
+  case "$ISSUE_LINE_COUNT" in
+    0) exit 0 ;;
+    1) ISSUE=$(grep '^issue=' "$META" | cut -d= -f2-) ;;
+    *) issue_close_warning "task metadata has multiple recorded issues"; exit 0 ;;
+  esac
+  case "$ISSUE" in
+    ''|*[!0-9]*) issue_close_warning "recorded issue identity is malformed"; exit 0 ;;
+  esac
+  if [ "$ISSUE" -le 0 ]; then
+    issue_close_warning "recorded issue identity is malformed"
+    exit 0
+  fi
+  ISSUE_REPO="$PR_OWNER/$PR_REPO"
+fi
 
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE"); then
-  issue_close_warning "could not verify issue #$ISSUE"
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE_REPO" "$ISSUE"); then
+  issue_close_warning "could not verify $ISSUE_REPO#$ISSUE"
   exit 0
 fi
 [ "$ISSUE_STATE" = closed ] && exit 0
 
-if ! gh-axi issue close "$ISSUE" --repo "$PR_OWNER/$PR_REPO" --reason completed \
+if ! gh-axi issue close "$ISSUE" --repo "$ISSUE_REPO" --reason completed \
   --comment "Closed after merge of $URL."; then
-  issue_close_warning "could not close issue #$ISSUE"
+  issue_close_warning "could not close $ISSUE_REPO#$ISSUE"
   exit 0
 fi
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE") || [ "$ISSUE_STATE" != closed ]; then
-  issue_close_warning "issue #$ISSUE is still not closed after the close request"
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE_REPO" "$ISSUE") || [ "$ISSUE_STATE" != closed ]; then
+  issue_close_warning "$ISSUE_REPO#$ISSUE is still not closed after the close request"
 fi
 exit 0
