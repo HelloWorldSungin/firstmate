@@ -41,6 +41,9 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 ```
 
 Reinitialization backs up and rebuilds the existing PGLite brain, so run it only as part of story #6.
+GBrain does not persist the command-scoped `OLLAMA_BASE_URL` value during initialization or reinitialization.
+Set `OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` for every later GBrain command, including `import`, `embed`, and `search`.
+Without it, GBrain falls back to `http://localhost:11434/v1`, which can miss this IPv4-only listener.
 Verify the endpoint directly before initialization:
 
 ```sh
