@@ -53,6 +53,7 @@ Persistent secondmates stay in their own lane.
 ## History
 
 History lists completed work from the durable completion manifests in `data/<id>/outcome.json`, which [`docs/fleet-data-contracts.md`](fleet-data-contracts.md) owns.
+This page states the history policy for humans, and [`assets/dashboard/history.js`](../assets/dashboard/history.js) is its single executable copy.
 It is deliberately not built from task metadata or from the Done backlog: cleanup removes the volatile records and the backlog keeps only its recent Done entries, so a view sourced from either would lose a task that finished a few weeks ago.
 A completed investigation therefore stays browsable, with its report, after cleanup and after backlog pruning.
 
@@ -84,5 +85,5 @@ A report that is missing, is no longer a plain file, or resolves outside that di
 ## Updating configuration
 
 Re-run the installer with the desired values to replace the environment file and restart the enabled service.
-The environment file owns the operational home, loopback address, port, poll interval, snapshot timeout, and stale threshold for the service.
+The environment file carries the service's value for every configuration name [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header documents.
 Use ordinary user-level systemd status and journal commands to inspect startup failures.
