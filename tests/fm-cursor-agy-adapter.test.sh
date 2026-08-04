@@ -101,7 +101,7 @@ test_herdr_only_refuses_non_herdr_backend() {
 $(setup_home "herdr-$harness" "$id")
 EOF
   # TMUX is set, so the backend resolves to tmux; the herdr-only guard must refuse.
-  out=$(run_spawn "$home" "$fakebin" "$id" "$proj" "$harness")
+  out=$(run_spawn "$home" "$fakebin" "$id" "$proj" --mode no-mistakes --yolo off "$harness")
   status=$?
   expect_code 1 "$status" "$harness spawn on the tmux backend should be refused"
   assert_contains "$out" "only on the herdr backend" "$harness refusal should say herdr-only"
@@ -115,7 +115,7 @@ test_raw_command_bypass_refused() {
   # agy - directly, via env, or behind assignment prefixes - is refused outright,
   # on every dimension (the raw hatch cannot provide the trust seed / native
   # supervision cursor/agy need). Each variant is tried on a forbidden dimension.
-  local variant extra want id home proj fakebin out status n=0
+  local variant extra want id home proj fakebin out status ship_flags n=0
   # <raw command>|<extra spawn args>|<expected-restricted-harness>
   while IFS='|' read -r variant extra want; do
     [ -n "$variant" ] || continue
@@ -124,8 +124,15 @@ test_raw_command_bypass_refused() {
     IFS='|' read -r home proj fakebin <<EOF
 $(setup_home "rawbypass-$n" "$id")
 EOF
-    # shellcheck disable=SC2086  # $extra is an intentional argument list (may be empty)
-    out=$(run_spawn "$home" "$fakebin" "$id" "$proj" $extra "$variant")
+    # Ship spawns must name --mode and --yolo; a --secondmate row must not, because
+    # a secondmate records its own fixed posture and refuses both flags.
+    if [ -n "$extra" ]; then
+      ship_flags=
+    else
+      ship_flags="--mode no-mistakes --yolo off"
+    fi
+    # shellcheck disable=SC2086  # $extra and $ship_flags are intentional argument lists (may be empty)
+    out=$(run_spawn "$home" "$fakebin" "$id" "$proj" $ship_flags $extra "$variant")
     status=$?
     expect_code 1 "$status" "raw command '$variant' ($extra) must be refused"
     if [ "$want" = unresolved ]; then
@@ -207,7 +214,7 @@ test_raw_spawn_installs_exec_time_guard() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_SEND_LOG="$sendlog" PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" 'bash -c '\''ag"y" --dangerously-skip-permissions'\''' 2>&1)
+    "$SPAWN" "$id" "$proj" --mode no-mistakes --yolo off 'bash -c '\''ag"y" --dangerously-skip-permissions'\''' 2>&1)
   status=$?
   expect_code 0 "$status" "the quote-concat raw spawn should proceed (classifier does not catch it): $out"
   assert_contains "$out" "spawned $id harness=bash" "raw spawn did not launch as harness=bash"
@@ -352,11 +359,19 @@ test_forced_secondmate_child_trust_failure_prevents_release() {
     "mode=local-only" \
     "yolo=off" \
     "tasktmp="
+  # The child is recorded on tmux, not herdr. What this case exercises is
+  # cleanup_firstmate_home_children refusing when a child's firstmate-owned agy
+  # trust cannot be removed, which runs before any backend-specific work and is
+  # backend-independent. A herdr child would additionally have to clear
+  # teardown_herdr_preflight_target, which needs real structured pane inspection
+  # from a live herdr; faking that protocol here would prove nothing about trust
+  # cleanup. Real herdr endpoint behaviour is covered by the real-herdr-gated lane.
   fm_write_meta "$parent_home/state/$child_id.meta" \
     "window=firstmate:fm-$child_id" \
+    "endpoint_task_id=$child_id" \
     "worktree=$child_wt" \
     "project=$child_proj" \
-    "backend=herdr" \
+    "backend=tmux" \
     "harness=agy" \
     "kind=ship" \
     "mode=local-only" \
