@@ -380,12 +380,14 @@ case "$MODEL_VERIFY_OUTPUT" in
     MODEL_VERIFY_RC=4
     ;;
 esac
-if [ "$FORCE" = "--force" ]; then
-  printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-elif [ "$MODEL_VERIFY_RC" -ne 0 ]; then
-    echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
-    printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-    exit 1
+# The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
+# unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
+# nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
+# verifiable in principle. --force retains its existing discard authority.
+printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
+  echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
+  exit 1
 fi
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET

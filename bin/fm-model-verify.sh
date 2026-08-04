@@ -71,7 +71,10 @@ Verify the model a dispatched worker actually ran on against the model recorded
 for it in state/<id>.meta.
 
 Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable · 2 usage error.
-With --terminal, pending exits 4 because cleanup requires a conclusive verdict.
+With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
+dispatch was verifiable in principle (a claude-harness task with a pinned model);
+otherwise it exits 0 so cleanup is not blocked for a harness that can never
+produce a verdict. The verdict line is printed either way.
 With --all, the worst verdict across all tasks sets the exit code.
 EOF
 }
@@ -393,10 +396,11 @@ RECORDED=
 ACTUAL=
 SOURCE=
 DETAIL=
+VERIFIABLE_IN_PRINCIPLE=0
 
 verify_one() {  # <id>
   local id=$1 meta cwd harness kind anchor anchor_present watermark baseline models n before store store_present
-  VERDICT=; RECORDED=; ACTUAL=; SOURCE=none; DETAIL=
+  VERDICT=; RECORDED=; ACTUAL=; SOURCE=none; DETAIL=; VERIFIABLE_IN_PRINCIPLE=0
 
   meta="$STATE/$id.meta"
   if [ ! -f "$meta" ]; then
@@ -449,6 +453,11 @@ verify_one() {  # <id>
     return
   fi
   SOURCE=claude-transcript
+  # Past this point the dispatch was verifiable IN PRINCIPLE: a harness with an
+  # evidence adapter, and a pinned model for the runtime to contradict. Only
+  # such a task can be blocked from cleanup for failing to produce a verdict -
+  # see terminal_is_blocking below.
+  VERIFIABLE_IN_PRINCIPLE=1
 
   if [ "$anchor_present" -eq 1 ]; then
     case "$anchor" in
@@ -647,10 +656,18 @@ fi
 verify_one "$ID"
 if [ "$JSON" -eq 1 ]; then emit_json "$ID"; else emit_line "$ID"; fi
 if [ "$TERMINAL" -eq 1 ]; then
+  # Terminal mode answers one question for cleanup: may this task's evidence be
+  # discarded? A MISMATCH always blocks - that is the worker this whole helper
+  # exists to catch. An absent verdict blocks only when the dispatch was
+  # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter and a
+  # pinned model. Blocking otherwise would make non-forced cleanup impossible
+  # for every harness that can never produce a verdict at all, which is a fleet
+  # -wide regression rather than the boundary this refusal was meant to draw.
+  # The verdict is surfaced by the caller either way, so nothing goes unseen.
   case "$VERDICT" in
     match|unpinned) exit 0 ;;
     mismatch) exit 3 ;;
-    *) exit 4 ;;
+    *) [ "$VERIFIABLE_IN_PRINCIPLE" -eq 1 ] && exit 4; exit 0 ;;
   esac
 fi
 exit "$(exit_for_verdict "$VERDICT")"

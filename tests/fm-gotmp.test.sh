@@ -60,6 +60,10 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   # fm-lock-lib.sh: teardown sources it for the shared lock-staleness proof.
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
+  # fm-model-verify.sh: teardown runs the terminal model-routing verdict before
+  # any cleanup, and refuses when it cannot get one, so the real helper has to
+  # resolve inside the fake root like every other dependency above.
+  ln -s "$ROOT/bin/fm-model-verify.sh" "$fake/bin/fm-model-verify.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
@@ -166,6 +170,8 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-outcome-lib.sh" "$fake/bin/fm-outcome-lib.sh"
   ln -s "$ROOT/bin/fm-supervision-lib.sh" "$fake/bin/fm-supervision-lib.sh"
   ln -s "$ROOT/bin/fm-classify-lib.sh" "$fake/bin/fm-classify-lib.sh"
+  # Teardown runs the terminal model-routing verdict before any cleanup.
+  ln -s "$ROOT/bin/fm-model-verify.sh" "$fake/bin/fm-model-verify.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0

@@ -241,6 +241,30 @@ expect_code 4 "$code" "terminal verification rejects pending evidence"
 assert_contains "$out" "verdict: pending" "terminal rejection preserves the pending verdict"
 pass "terminal verification rejects pending as no verdict"
 
+# Terminal mode decides whether cleanup may discard this task's evidence. It
+# blocks only where a verdict was actually possible: refusing whenever one is
+# absent would make non-forced cleanup impossible for every harness that can
+# never produce one, which is a fleet-wide regression rather than the boundary
+# the refusal exists to draw. The verdict is surfaced either way.
+out=$(run_verify other-harness --terminal); code=$?
+expect_code 0 "$code" "a harness with no evidence adapter must not block cleanup"
+assert_contains "$out" "verdict: unverifiable" "the blocked-cleanup exemption still surfaces the verdict"
+pass "terminal verification does not block cleanup for a harness that can never produce a verdict"
+
+wt=$(meta terminal-no-model opus)
+sed -i.bak '/^model=/d' "$HOME_DIR/state/terminal-no-model.meta"
+rm -f "$HOME_DIR/state/terminal-no-model.meta.bak"
+write_transcript "$wt" s1 claude-opus-5
+out=$(run_verify terminal-no-model --terminal); code=$?
+expect_code 0 "$code" "an unpinned-by-omission dispatch must not block cleanup"
+assert_contains "$out" "verdict: unverifiable" "a missing model record still reports unverifiable"
+pass "terminal verification does not block cleanup when no model was ever pinned"
+
+out=$(run_verify downgrade --terminal); code=$?
+expect_code 3 "$code" "a mismatch always blocks cleanup"
+assert_contains "$out" "verdict: mismatch" "the blocking verdict is surfaced"
+pass "terminal verification always blocks cleanup on a mismatch"
+
 # `<synthetic>` is a runtime placeholder for messages no model served. It must
 # neither manufacture a mismatch nor stand in as evidence of a match.
 wt=$(meta synthetic-only opus)

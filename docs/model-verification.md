@@ -104,14 +104,16 @@ In that case unanimous evidence is still attributed, with the weaker binding dis
 `bin/fm-fleet-snapshot.sh` carries `model:{verdict,recorded,actual[],source,detail}` per task.
 An unreadable or absent verifier answer becomes an explicit `unverifiable` verdict there, so a broken verifier can never render as a clean one.
 
-`bin/fm-teardown.sh` always runs terminal verification before cleanup.
-Non-forced teardown accepts only `match` or `unpinned`.
-It refuses on `mismatch`, `unverifiable`, or `pending` while the worktree, transcript evidence, and task metadata still exist for inspection.
+`bin/fm-teardown.sh` always runs terminal verification before cleanup, and always surfaces the verdict, so no worker's model provenance is discarded unseen.
+Only the refusal is conditional.
+Non-forced teardown refuses on `mismatch` always, and on `unverifiable` or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
+It then preserves the worktree, transcript evidence, and task metadata for inspection.
+Refusing whenever a verdict was absent would make non-forced cleanup impossible for every harness that can never produce one, which is a fleet-wide regression rather than the boundary this refusal exists to draw.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
 
 `bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch` or `unverifiable`.
 It deliberately omits `pending` because every healthy worker is briefly pending before its first model-attributed turn, and a routine false alarm would make the section less useful.
-The residual gap is explicit: a worker that never produces a readable model turn remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object and blocks non-forced teardown.
+The residual gap is explicit: a worker that never produces a readable model turn remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object, and blocks non-forced teardown when that dispatch was verifiable in principle.
 Deliberate `unpinned` dispatches are also omitted, and correctly routed work therefore looks exactly as it did before.
 
 ## Automated validation

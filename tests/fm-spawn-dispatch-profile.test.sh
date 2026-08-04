@@ -408,7 +408,7 @@ test_claude_records_pre_dispatch_transcript_identities() {
   printf '{"type":"assistant","message":{"model":"claude-opus-4-8"}}\n' > "$dir/existing.jsonl"
 
   out=$(FM_TEST_CLAUDE_CONFIG_DIR="$cfg" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
   status=$?
   expect_code 0 "$status" "claude spawn should capture its transcript watermark"
   assert_grep "model_evidence_watermark=claude-transcript-v1" "$HOME_DIR/state/$id.meta" \
@@ -439,7 +439,7 @@ SH
   chmod +x "$FAKEBIN_DIR/find"
 
   out=$(FM_TEST_CLAUDE_CONFIG_DIR="$cfg" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
   status=$?
   [ "$status" -ne 0 ] || fail "claude spawn continued after watermark capture failed"
   assert_contains "$out" "failed to capture the pre-dispatch model-evidence watermark" \
@@ -467,7 +467,7 @@ test_claude_newline_physical_store_refuses_before_launch() {
   ln -s "$target" "$link"
 
   out=$(FM_TEST_CLAUDE_CONFIG_DIR="$link" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model opus)
   status=$?
   [ "$status" -ne 0 ] || fail "claude spawn accepted a newline-bearing physical evidence store"
   assert_contains "$out" "failed to capture the pre-dispatch model-evidence watermark" \

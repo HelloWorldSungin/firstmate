@@ -400,12 +400,20 @@ teardown_task() {  # <id> <home>
     "$ROOT/bin/fm-teardown.sh" "$id" --force
 }
 
+# Container ids differ because the two paths create different Herdr containers.
+# Dispatch-identity fields differ because they record WHEN this particular spawn
+# happened and what evidence already existed at that instant, so two spawns can
+# never agree on them regardless of projection. Both classes are masked so the
+# comparison keeps testing what it exists to test: that projection changes
+# nothing else about the recorded task.
 normalize_meta() {  # <meta>
   sed -E \
     -e 's|^window=.*$|window=<herdr-container-id>|' \
     -e 's|^herdr_workspace_id=.*$|herdr_workspace_id=<herdr-container-id>|' \
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
+    -e 's|^spawned_at=.*$|spawned_at=<dispatch-identity>|' \
+    -e 's|^model_evidence_before=.*$|model_evidence_before=<dispatch-identity>|' \
     "$1"
 }
 
