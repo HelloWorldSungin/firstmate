@@ -845,9 +845,14 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
       . == null or (. | fm_clean_string($max));
     def fm_nullable_path:
       . == null or (. | fm_clean_string($path_max));
+    # Exactly the fm_task_id_path_safe rule in bin/fm-pr-lib.sh: non-empty, no leading
+    # dot, and no character outside the path-safe set. Deliberately NOT capped
+    # further. A stricter rule here would refuse to archive a task whose id the
+    # rest of firstmate accepts, and because teardown refuses when the manifest
+    # cannot be published, that would make a long legacy task impossible to
+    # clean up. The archive records the ids that exist; it does not police them.
     def fm_task_id:
-      type == "string" and length > 0 and length <= 64
-      and test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$");
+      type == "string" and test("^[A-Za-z0-9_-][A-Za-z0-9._-]*$");
     def absent_status:
       keys == ["checks","draft","head","mergeable","observed_at","review","source","state"]
       and .state == "unknown" and .draft == null and .review == "unknown"
@@ -868,7 +873,13 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
       and (.title | fm_nullable_clean($text_max))
       and (.project | fm_nullable_path)
       and (.kind | IN("ship","scout","secondmate"))
-      and (.mode == null or (.mode | IN("no-mistakes","direct-PR","local-only","secondmate")))
+      # mode, like project/harness/model, is provenance copied verbatim from
+      # task metadata rather than a value this contract generates, so it is
+      # bounded by type and length instead of a closed vocabulary. Delivery
+      # modes, task kinds, and older strings all appear there in practice, and
+      # an archive that refused an unfamiliar-but-harmless provenance string
+      # would block the teardown of the very task it exists to record.
+      and (.mode | fm_nullable_clean($text_max))
       and (.yolo == null or (.yolo | IN("on","off")))
       and (.harness | fm_nullable_clean($text_max))
       and (.model | fm_nullable_clean($text_max))
