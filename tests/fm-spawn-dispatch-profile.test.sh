@@ -707,31 +707,38 @@ test_batch_forwards_shared_profile_flags() {
 }
 
 test_claude_forwards_firstmate_config_dir_when_set() {
-  local rec id out status launch cfg daemon_cfg resolved_config
+  local rec id out status launch canonical_root relative_cfg cfg daemon_cfg resolved_config recorded_store
   id=profile-claude-cfgdir-z17
   rec=$(make_spawn_case profile-claude-cfgdir claude "$id")
   read_case_record "$rec"
-  cfg="$CASE_DIR/claude-work"
+  canonical_root="$CASE_DIR/canonical-root"
+  relative_cfg=link/../cfg
+  cfg="$canonical_root/real/cfg"
   daemon_cfg="$CASE_DIR/daemon-claude-config"
   resolved_config="$CASE_DIR/resolved-claude-config.log"
-  mkdir -p "$cfg" "$daemon_cfg"
+  mkdir -p "$canonical_root/real/child" "$cfg" "$daemon_cfg"
+  ln -s "$canonical_root/real/child" "$canonical_root/link"
   printf '{"hasCompletedOnboarding":true}\n' > "$cfg/.claude.json"
   printf '{}\n' > "$daemon_cfg/.claude.json"
 
-  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$cfg" \
-    FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR="$daemon_cfg" \
-    FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG="$resolved_config" \
-    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(cd "$canonical_root" && \
+    FM_TEST_CLAUDE_CONFIG_DIR="$relative_cfg" \
+      FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR="$daemon_cfg" \
+      FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG="$resolved_config" \
+      run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
+  recorded_store=$(sed -n 's/^model_evidence_store=//p' "$HOME_DIR/state/$id.meta")
   assert_contains "$launch" "CLAUDE_CONFIG_DIR='$cfg' CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude" \
-    "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
+    "claude launch did not forward firstmate's canonical CLAUDE_CONFIG_DIR to the crewmate pane"
+  [ "$recorded_store" = "$cfg" ] \
+    || fail "explicit Claude config did not record its canonical evidence store: $recorded_store"
   [ "$(cat "$resolved_config")" = "$cfg/.claude.json" ] \
     || fail "daemon ambient config overrode firstmate's explicit Claude config"
   jq -e '.hasCompletedOnboarding == true' "$cfg/.claude.json" >/dev/null \
     || fail "explicitly forwarded Claude config was not onboarded"
-  pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
+  pass "claude forwards the canonical explicit config and evidence store"
 }
 
 test_claude_default_uses_home_config_and_records_evidence_store() {

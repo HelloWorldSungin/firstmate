@@ -2168,7 +2168,7 @@ LAUNCH=$(fm_launch_render \
 # transcript store is ~/.claude, but Claude's default config is ~/.claude.json;
 # do not conflate them by exporting the transcript store as CLAUDE_CONFIG_DIR.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-  LAUNCH="CLAUDE_CONFIG_DIR=$(fm_launch_shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+  LAUNCH="CLAUDE_CONFIG_DIR=$(fm_launch_shell_quote "$MODEL_EVIDENCE_STORE") $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
