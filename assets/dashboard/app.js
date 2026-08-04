@@ -1,5 +1,11 @@
+import { buildHealth, buildInbox, formatAge } from "./inbox.js";
+
 const ui = {
   signals: document.querySelector("#signals"),
+  badges: document.querySelector("#badges"),
+  navBadge: document.querySelector("#nav-badge"),
+  healthStrip: document.querySelector("#health-strip"),
+  inboxList: document.querySelector("#inbox-list"),
   notices: document.querySelector("#notice-region"),
   refreshNote: document.querySelector("#refresh-note"),
   filterForm: document.querySelector("#filter-form"),
@@ -9,6 +15,7 @@ const ui = {
   mateCount: document.querySelector("#secondmate-count"),
   kanban: document.querySelector("#kanban"),
   themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
+  notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
 };
 
 const columnLabels = {
@@ -37,12 +44,24 @@ const columnTones = {
   idle: "grey",
 };
 
+const badgeOrder = [
+  ["decisions", "Decisions", "amber"],
+  ["credentials", "Credentials", "amber"],
+  ["blocked", "Blocked", "red"],
+  ["failed", "Failing", "red"],
+  ["merge_ready", "Merge ready", "green"],
+  ["review_ready", "Review ready", "blue"],
+  ["unknown", "PR unknown", "unknown"],
+];
+
 const state = {
   envelope: null,
   filters: { project: "", harness: "", model: "", kind: "", state: "" },
   eventSource: null,
   reconnectTimer: null,
   reconnectMs: 1_000,
+  notifyEnabled: false,
+  seenInboxIds: null,
 };
 
 function element(tag, className, text) {
@@ -54,14 +73,6 @@ function element(tag, className, text) {
 
 function replaceChildren(parent, children) {
   parent.replaceChildren(...children.filter(Boolean));
-}
-
-function formatAge(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return "unknown";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ${Math.floor((seconds % 3_600) / 60)}m`;
-  return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3_600)}h`;
 }
 
 function dot(tone) {
@@ -103,33 +114,204 @@ function initializeTheme() {
   for (const button of ui.themeButtons) button.addEventListener("click", toggleTheme);
 }
 
-function renderSignals(snapshot, envelope) {
-  const watcher = snapshot?.supervision?.watcher;
-  const afk = snapshot?.supervision?.afk;
-  const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
-  const mates = tasks.filter((task) => task.kind === "secondmate");
-  const oldest = tasks.reduce((age, task) => Math.max(age, Number(task?.paths?.status_log?.last_event_age_seconds) || 0), 0);
-  const heartbeatTone = !watcher?.present ? "red" : watcher.stale ? "amber" : "green";
-  const mateLiveness = mates.map(endpointLiveness);
-  const liveMates = mateLiveness.filter((liveness) => liveness === "alive").length;
-  const deadMates = mateLiveness.filter((liveness) => liveness === "dead").length;
-  const unknownMates = mateLiveness.filter((liveness) => liveness === "unknown").length;
-  const mateTone = deadMates ? "red" : unknownMates ? "grey" : mates.length ? "green" : "grey";
-  const mateSummary = mates.length ? `${liveMates} live · ${deadMates} dead · ${unknownMates} unknown` : "none";
-  const signals = [
-    [heartbeatTone, "Heartbeat", watcher?.present ? `${formatAge(watcher.age_seconds)} ago` : "never"],
-    [afk?.active ? "amber" : "grey", "Away", afk?.active ? "on" : "off"],
-    [envelope?.status?.stale ? "amber" : "green", "Snapshot", envelope?.status?.stale ? "stale" : "fresh"],
-    [mateTone, "Secondmates", mateSummary],
-    [oldest > 900 ? "amber" : tasks.length ? "green" : "grey", "Oldest event", tasks.length ? `${formatAge(oldest)} ago` : "none"],
-  ];
-  replaceChildren(ui.signals, signals.map(([tone, label, value]) => {
+// Notifications are entirely client-side: the server never learns that a
+// browser wants them, and a denied or unsupported permission simply leaves the
+// control off rather than degrading anything else on the page.
+function notificationsSupported() {
+  return typeof Notification === "function";
+}
+
+function paintNotifyButtons() {
+  const supported = notificationsSupported();
+  const label = !supported ? "Alerts unavailable" : state.notifyEnabled ? "Alerts on" : "Alerts off";
+  ui.notifyButtons[0].textContent = label;
+  ui.notifyButtons[0].disabled = !supported;
+  for (const button of ui.notifyButtons) {
+    button.setAttribute("aria-pressed", String(state.notifyEnabled));
+    if (button !== ui.notifyButtons[0]) button.setAttribute("aria-label", `${label}. Toggle desktop alerts for new inbox items.`);
+  }
+  ui.notifyButtons[1].disabled = !supported;
+  ui.notifyButtons[1].textContent = state.notifyEnabled ? "☀" : "☾";
+}
+
+async function toggleNotifications() {
+  if (!notificationsSupported()) return;
+  if (state.notifyEnabled) {
+    state.notifyEnabled = false;
+  } else {
+    let permission = Notification.permission;
+    if (permission === "default") {
+      try { permission = await Notification.requestPermission(); } catch { permission = "denied"; }
+    }
+    state.notifyEnabled = permission === "granted";
+  }
+  try { localStorage.setItem("fm-dashboard-alerts", state.notifyEnabled ? "on" : "off"); } catch {}
+  paintNotifyButtons();
+}
+
+function initializeNotifications() {
+  let saved = null;
+  try { saved = localStorage.getItem("fm-dashboard-alerts"); } catch {}
+  state.notifyEnabled = saved === "on" && notificationsSupported() && Notification.permission === "granted";
+  for (const button of ui.notifyButtons) button.addEventListener("click", () => void toggleNotifications());
+  paintNotifyButtons();
+}
+
+function announceNewItems(items) {
+  const ids = new Set(items.map((item) => item.id));
+  if (state.seenInboxIds === null) {
+    // The first render is the baseline; everything already waiting is not new.
+    state.seenInboxIds = ids;
+    return;
+  }
+  const fresh = items.filter((item) => !state.seenInboxIds.has(item.id));
+  state.seenInboxIds = ids;
+  if (!fresh.length || !state.notifyEnabled || !notificationsSupported() || Notification.permission !== "granted") return;
+  for (const item of fresh.slice(0, 3)) {
+    try {
+      new Notification(`Firstmate: ${item.label}`, { body: `${item.title}\n${item.reasons[0].text}`, tag: `fm-inbox-${item.id}` });
+    } catch {
+      return;
+    }
+  }
+  if (fresh.length > 3) {
+    try {
+      new Notification("Firstmate: more items need you", { body: `${fresh.length - 3} further inbox items appeared.`, tag: "fm-inbox-overflow" });
+    } catch {}
+  }
+}
+
+function renderSignals(health) {
+  const overall = element("div", `signal overall ${health.overall.tone}`);
+  overall.append(dot(health.overall.tone), element("span", "label", "FLEET"), element("span", "", health.overall.label));
+  const chips = health.signals.map((signal) => {
     const item = element("div", "signal");
-    item.append(dot(envelope?.status?.stale && label !== "Snapshot" ? "grey" : tone));
-    item.append(element("span", "label", label.toUpperCase()));
-    item.append(element("span", "", value));
+    item.title = `${signal.detail} ${signal.tooltip}`;
+    item.append(dot(signal.tone));
+    item.append(element("span", "label", signal.label.toUpperCase()));
+    item.append(element("span", "", signal.value));
     return item;
+  });
+  replaceChildren(ui.signals, [overall, ...chips]);
+}
+
+function renderHealthStrip(health) {
+  replaceChildren(ui.healthStrip, health.signals.map((signal) => {
+    const card = element("div", `health-card ${signal.tone}`);
+    card.title = signal.tooltip;
+    const head = element("div", "health-head");
+    head.append(dot(signal.tone), element("span", "label", signal.label.toUpperCase()));
+    card.append(head);
+    card.append(element("strong", "health-value", signal.value));
+    card.append(element("p", "health-detail", signal.detail));
+    return card;
   }));
+}
+
+function renderBadges(counts) {
+  const chips = badgeOrder
+    .filter(([key]) => counts[key] > 0)
+    .map(([key, label, tone]) => {
+      const badge = element("span", `badge ${tone}`);
+      badge.append(element("strong", "", String(counts[key])), element("span", "", label));
+      return badge;
+    });
+  if (!chips.length) chips.push(element("span", "badge quiet", "Nothing needs you"));
+  replaceChildren(ui.badges, chips);
+  ui.navBadge.textContent = String(counts.total);
+  ui.navBadge.hidden = counts.total === 0;
+}
+
+function fieldChips(readiness) {
+  const list = element("div", "pr-fields");
+  for (const name of ["state", "review", "checks", "mergeable"]) {
+    const value = readiness.fields[name];
+    const chip = element("span", `pr-field ${value === "unknown" ? "unknown" : ""}`.trim());
+    chip.append(element("span", "key", name), element("span", "value", value));
+    list.append(chip);
+  }
+  return list;
+}
+
+function prPanel(readiness) {
+  const panel = element("div", `pr-panel ${readiness.tone}`);
+  const head = element("div", "pr-head");
+  head.append(dot(readiness.tone), element("span", "label", readiness.label.toUpperCase()));
+  const observed = readiness.freshness === "cached" && readiness.age_seconds !== null
+    ? `observed ${formatAge(readiness.age_seconds)} ago`
+    : "never observed";
+  head.append(element("span", "pr-observed", observed));
+  panel.append(head);
+  panel.append(fieldChips(readiness));
+  const link = element("a", "pr-link", readiness.url);
+  link.href = readiness.url;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  panel.append(link);
+  for (const caveat of readiness.caveats) panel.append(element("p", "pr-caveat", `Caveat: ${caveat}`));
+  return panel;
+}
+
+function inboxCard(item) {
+  const card = element("article", `inbox-card ${item.tone}`);
+  card.setAttribute("aria-label", `${item.label}: ${item.title}`);
+
+  const head = element("div", "inbox-head");
+  head.append(dot(item.tone));
+  head.append(element("span", "pill", item.label));
+  if (item.project) head.append(element("span", "pill project-pill", item.project));
+  const age = element("span", `age ${item.age_known ? "" : "unknown"}`.trim(),
+    item.age_known ? `${formatAge(item.age_seconds)} · ${item.age_source}` : "age unknown");
+  head.append(age);
+  card.append(head);
+
+  card.append(element("h3", "", item.title));
+  card.append(element("div", "task-id", item.task_id ? item.task_id : `backlog item ${item.id}`));
+
+  const reasons = element("div", "reasons");
+  for (const reason of item.reasons) {
+    const row = element("div", `reason ${reason.tone}`);
+    const label = element("div", "reason-label");
+    label.append(dot(reason.tone), element("span", "", reason.label));
+    if (reason.key) label.append(element("code", "reason-key", reason.key));
+    label.append(element("span", "reason-source", reason.source));
+    row.append(label);
+    // Full text, never truncated: a half-shown decision is a decision the
+    // captain has to go and look up somewhere else.
+    row.append(element("p", "reason-text", reason.text));
+    reasons.append(row);
+  }
+  card.append(reasons);
+
+  if (item.pr) card.append(prPanel(item.pr));
+
+  for (const reference of item.work_items) {
+    const link = workItemLink(reference);
+    if (link) card.append(link);
+  }
+  if (item.action) {
+    const action = element("div", "card-action");
+    action.append(element("span", "label", "ACTION"), element("code", "", item.action));
+    card.append(action);
+  }
+  return card;
+}
+
+function renderInbox(inbox, envelope) {
+  if (!inbox.items.length) {
+    const empty = element("div", "inbox-empty");
+    const waiting = envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good";
+    empty.append(dot(waiting ? "amber" : "green"));
+    const copy = element("div");
+    copy.append(element("strong", "", waiting ? "No inbox yet" : "Nothing needs you"));
+    copy.append(element("p", "", waiting
+      ? "The captain inbox appears once a fleet snapshot is available. Until then this list is empty because nothing has been read, not because nothing is waiting."
+      : "No open decision, blocker, failure, credential request, or review-ready pull request is outstanding in this home."));
+    empty.append(copy);
+    replaceChildren(ui.inboxList, [empty]);
+    return;
+  }
+  replaceChildren(ui.inboxList, inbox.items.map(inboxCard));
 }
 
 function renderNotices(envelope) {
@@ -140,7 +322,7 @@ function renderNotices(envelope) {
   }
   if (status.phase === "first_run") {
     const notice = element("div", "notice");
-    notice.append(dot("amber"), element("div", "", "Waiting for the first fleet snapshot. The board will populate automatically."));
+    notice.append(dot("amber"), element("div", "", "Waiting for the first fleet snapshot. The inbox and board will populate automatically."));
     replaceChildren(ui.notices, [notice]);
     return;
   }
@@ -343,7 +525,13 @@ function renderBoard(snapshot, envelope) {
 function render(envelope) {
   state.envelope = envelope;
   const snapshot = envelope?.snapshot;
-  renderSignals(snapshot, envelope);
+  const health = buildHealth(snapshot, envelope);
+  const inbox = buildInbox(snapshot);
+  renderSignals(health);
+  renderHealthStrip(health);
+  renderBadges(inbox.counts);
+  renderInbox(inbox, envelope);
+  announceNewItems(inbox.items);
   renderNotices(envelope);
   const status = envelope?.status;
   ui.refreshNote.textContent = status?.last_success_at
@@ -401,5 +589,6 @@ ui.clearFilters.addEventListener("click", () => {
 });
 
 initializeTheme();
+initializeNotifications();
 void fetchSnapshot();
 connectEvents();

@@ -232,8 +232,7 @@ test_stale_transition_streams_without_refresh() {
 
 test_browser_renders_contract_actions_and_liveness() {
   node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser contract rendering failed"
-const fs = require("fs");
-const vm = require("vm");
+const { pathToFileURL } = require("node:url");
 
 class FakeNode {
   constructor(tagName, text = "") {
@@ -278,7 +277,7 @@ class FakeNode {
 }
 
 const selectors = new Map();
-for (const id of ["signals", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button"]) {
+for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -296,6 +295,9 @@ const document = {
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
+
+const PR_URL = "https://github.com/HelloWorldSungin/firstmate/pull/31";
+const DECISION_TEXT = "Should the retention window stay at 40 records, or drop to 20 so the manifest history fits one screen? Either is defensible.";
 
 function task(id, kind, status, exists, action) {
   return {
@@ -323,9 +325,23 @@ const envelope = {
       task("alive-mate", "secondmate", "alive", true, "route_work"),
       task("dead-mate", "secondmate", "dead", true, "route_work"),
       task("unknown-mate", "secondmate", "unknown", true, "route_work"),
+      {
+        ...task("waiting-on-you", "ship", "unknown", true, "decide"),
+        current_state: { state: "parked", detail: "Parked at a gate" },
+        hints: { open_decisions: [{ key: "retention", verb: "needs-decision", summary: DECISION_TEXT }] },
+        pr: {
+          url: PR_URL,
+          number: 31,
+          status: { state: "open", review: "approved", checks: "unknown", mergeable: "mergeable" },
+          status_age_seconds: 12,
+          status_freshness: "cached",
+        },
+        card: { column: "needs_decision", action: "decide" },
+      },
     ],
     card_precedence: ["active", "secondmate"],
-    supervision: { watcher: { present: true, age_seconds: 1, stale: false }, afk: { active: false } },
+    supervision: { watcher: { present: true, age_seconds: 1, grace_seconds: 120, stale: false }, afk: { active: false } },
+    main_inventory: { valid: true, orphan_in_flight: [] },
   },
 };
 
@@ -334,21 +350,19 @@ class FakeEventSource {
   close() {}
 }
 
+// The browser app is an ES module that imports the inbox policy module beside
+// it, so it is loaded through a real module graph rather than a flat script
+// evaluation. Its DOM and platform dependencies are resolved from globals.
 const storage = new Map();
-const context = vm.createContext({
+Object.assign(globalThis, {
   document,
   EventSource: FakeEventSource,
   fetch: async () => ({ ok: true, json: async () => envelope }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
   matchMedia: () => ({ matches: false }),
-  setTimeout,
-  clearTimeout,
-  console,
-  Math,
 });
-vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context, { filename: process.argv[2] });
 
-setImmediate(() => {
+import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
   const all = (root, predicate, matches = []) => {
     if (predicate(root)) matches.push(root);
     for (const child of root.children) all(child, predicate, matches);
@@ -377,9 +391,26 @@ setImmediate(() => {
     const mateAction = one(mate, (node) => hasClass(node, "mate-action"), `${id} action`);
     if (mateAction.textContent !== "ACTIONroute_work") throw new Error(`${id} action was not literal: ${mateAction.textContent}`);
   }
-});
+
+  const inboxCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "inbox card");
+  const reasonTexts = all(inboxCard, (node) => hasClass(node, "reason-text")).map((node) => node.textContent);
+  if (!reasonTexts.includes(DECISION_TEXT)) throw new Error(`decision text was not rendered in full: ${reasonTexts.join(" | ")}`);
+  const link = one(inboxCard, (node) => hasClass(node, "pr-link"), "inbox pull-request link");
+  if (link.textContent !== PR_URL || link.href !== PR_URL) {
+    throw new Error(`pull-request link was not the full https URL: ${link.textContent} / ${link.href}`);
+  }
+  const checks = one(inboxCard, (node) => hasClass(node, "pr-field") && node.textContent.startsWith("checks"), "checks field");
+  if (!hasClass(checks, "unknown") || checks.textContent !== "checksunknown") {
+    throw new Error(`an unreadable check state was not rendered as an explicit unknown: ${checks.textContent}`);
+  }
+  const prPanel = one(inboxCard, (node) => hasClass(node, "pr-panel"), "inbox pull-request panel");
+  if (!hasClass(prPanel, "unknown")) throw new Error("a pull request with an unreadable field was not toned unknown");
+  const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
+  if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
+  if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
+}).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions and keeps dead and unknown liveness distinct"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, and explicit unknown pull-request fields"
 }
 
 test_timeout_is_single_flight() {

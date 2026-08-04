@@ -5,59 +5,76 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#0a0b0d">
-    <meta name="description" content="A read-only kanban view of the current Firstmate fleet snapshot.">
+    <meta name="description" content="A read-only captain inbox and kanban view of the current Firstmate fleet snapshot.">
     <title>Firstmate Fleet</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
-    <script src="/app.js" defer></script>
+    <script src="/app.js" type="module"></script>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar" aria-label="Dashboard navigation">
         <div class="brand"><strong>Firstmate</strong><span>Fleet</span></div>
-        <a class="nav-item active" href="#board" aria-current="page">Board</a>
+        <a class="nav-item active" href="#inbox" aria-current="page">Needs you <span class="nav-badge" id="nav-badge" hidden>0</span></a>
+        <a class="nav-item" href="#board">Board</a>
         <div class="sidebar-spacer"></div>
+        <button class="theme-button" id="notify-button" type="button" aria-pressed="false">Alerts off</button>
         <button class="theme-button" id="theme-button" type="button">Light mode</button>
       </aside>
 
-      <main id="board" tabindex="-1">
+      <main tabindex="-1">
         <header class="topbar">
           <div class="phone-head">
             <div class="phone-brand"><strong>Firstmate</strong> <span>Fleet</span></div>
+            <button class="theme-button icon-button" id="phone-notify-button" type="button" aria-pressed="false" aria-label="Enable desktop alerts for new inbox items">☾</button>
             <button class="theme-button icon-button" id="phone-theme-button" type="button" aria-label="Switch color theme">◐</button>
           </div>
+          <div class="badges" id="badges" aria-label="Captain inbox counts"></div>
           <div class="signals" id="signals" aria-label="Fleet health"></div>
         </header>
 
         <section id="notice-region" aria-live="polite" aria-atomic="true"></section>
 
         <div class="board-content">
-          <div class="board-heading">
-            <div>
-              <p class="eyebrow">Read-only fleet snapshot</p>
-              <h1>Board</h1>
+          <section class="inbox-section" id="inbox" tabindex="-1" aria-labelledby="inbox-title">
+            <div class="board-heading">
+              <div>
+                <p class="eyebrow">Captain inbox</p>
+                <h1 id="inbox-title">Needs you</h1>
+              </div>
+              <p class="refresh-note" id="refresh-note">Waiting for the first snapshot</p>
             </div>
-            <p class="refresh-note" id="refresh-note">Waiting for the first snapshot</p>
-          </div>
-
-          <details class="filters" open>
-            <summary>Filters <span id="filter-count"></span></summary>
-            <form id="filter-form" class="filter-grid">
-              <label>Project<select name="project"><option value="">All projects</option></select></label>
-              <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
-              <label>Model<select name="model"><option value="">All models</option></select></label>
-              <label>Kind<select name="kind"><option value="">All kinds</option></select></label>
-              <label>State<select name="state"><option value="">All states</option></select></label>
-              <button id="clear-filters" type="button">Clear</button>
-            </form>
-          </details>
-
-          <section class="secondmate-lane" aria-labelledby="secondmate-title">
-            <div class="lane-title"><span id="secondmate-title">Secondmates</span><span class="count" id="secondmate-count">0</span></div>
-            <div class="mate-list" id="secondmate-list"></div>
+            <div class="health-strip" id="health-strip" aria-label="Fleet health detail"></div>
+            <div class="inbox-list" id="inbox-list" aria-live="polite"></div>
           </section>
 
-          <section class="kanban" id="kanban" aria-label="Fleet kanban columns"></section>
+          <section class="board-section" id="board" tabindex="-1" aria-labelledby="board-title">
+            <div class="board-heading">
+              <div>
+                <p class="eyebrow">Read-only fleet snapshot</p>
+                <h2 class="page-title" id="board-title">Board</h2>
+              </div>
+            </div>
+
+            <details class="filters">
+              <summary>Filters <span id="filter-count"></span></summary>
+              <form id="filter-form" class="filter-grid">
+                <label>Project<select name="project"><option value="">All projects</option></select></label>
+                <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
+                <label>Model<select name="model"><option value="">All models</option></select></label>
+                <label>Kind<select name="kind"><option value="">All kinds</option></select></label>
+                <label>State<select name="state"><option value="">All states</option></select></label>
+                <button id="clear-filters" type="button">Clear</button>
+              </form>
+            </details>
+
+            <section class="secondmate-lane" aria-labelledby="secondmate-title">
+              <div class="lane-title"><span id="secondmate-title">Secondmates</span><span class="count" id="secondmate-count">0</span></div>
+              <div class="mate-list" id="secondmate-list"></div>
+            </section>
+
+            <section class="kanban" id="kanban" aria-label="Fleet kanban columns"></section>
+          </section>
         </div>
       </main>
     </div>
