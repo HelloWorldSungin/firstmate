@@ -900,6 +900,40 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# The retrieval instruction is on demand: a brief points at the brain only when
+# the home has an index to read, so a home with no brain keeps briefs unchanged
+# and one with a brain teaches every scaffold the same citation and hosted-think
+# rule. bin/fm-recall.sh owns the retrieval contract this line points at.
+test_brain_instruction_tracks_whether_the_home_has_one() {
+  local nobrain="$TMP_ROOT/brain-absent" withbrain="$TMP_ROOT/brain-present" brief kind
+  mkdir -p "$nobrain/data" "$withbrain/data/gbrain/pglite"
+
+  FM_HOME="$nobrain" "$ROOT/bin/fm-brief.sh" nb-ship repo --mode no-mistakes >/dev/null 2>&1 \
+    || fail "scaffold failed for a home with no brain"
+  assert_no_grep "fm-recall.sh" "$nobrain/data/nb-ship/brief.md" \
+    "a home with no brain must not point a crewmate at retrieval"
+
+  FM_HOME="$withbrain" "$ROOT/bin/fm-brief.sh" wb-ship repo --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold failed for a home with a brain"
+  FM_HOME="$withbrain" "$ROOT/bin/fm-brief.sh" wb-scout repo --scout >/dev/null 2>&1 \
+    || fail "scout scaffold failed for a home with a brain"
+  FM_SECONDMATE_CHARTER='Supervise alpha.' FM_HOME="$withbrain" \
+    "$ROOT/bin/fm-brief.sh" wb-sm --secondmate alpha >/dev/null 2>&1 \
+    || fail "secondmate scaffold failed for a home with a brain"
+
+  for kind in wb-ship wb-scout wb-sm; do
+    brief="$withbrain/data/$kind/brief.md"
+    assert_grep "$ROOT/bin/fm-recall.sh search" "$brief" \
+      "$kind must name the retrieval command by absolute path"
+    assert_grep '<source>:<slug>' "$brief" "$kind must say how to cite a result"
+    assert_grep 'hosted provider' "$brief" \
+      "$kind must say that hosted synthesis leaves this host"
+    assert_no_grep 'gbrain call' "$brief" \
+      "$kind must not teach a crewmate to call GBrain directly"
+  done
+  pass "fm-brief.sh: the brain instruction appears only for a home that has one, in every scaffold"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -924,3 +958,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_brain_instruction_tracks_whether_the_home_has_one

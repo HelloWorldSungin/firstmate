@@ -1,0 +1,122 @@
+# GBrain retrieval through fm-recall.sh
+
+Active empirical evidence for the retrieval guarantees in [`../gbrain-scoping.md`](../gbrain-scoping.md): that a query crosses the GBrain boundary as data rather than as shell input, that hosted synthesis failure is distinguishable from local retrieval failure, and that hosted synthesis cannot reach a read-only shared brain.
+
+Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
+
+```console
+$ gbrain version
+gbrain 0.42.69.0
+```
+
+## The local read surface returns the operation's own JSON
+
+`gbrain call <tool> '<json>'` is GBrain's trusted local dispatch, so a query crosses as one JSON value inside one argument rather than as text a shell would parse:
+
+```console
+$ GBRAIN_HOME=$tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+    gbrain call search '{"query":"canary","limit":3}'
+[
+  {
+    "slug": "probe-canary",
+    "title": "Probe Canary",
+    "chunk_text": "The fleet uses zzqqxx-canary as its retrieval canary token.",
+    "score": 0.8469165016865362,
+    "stale": false,
+    ...
+  }
+]
+```
+
+A query built with `jq --arg` and passed the same way retrieves normally and executes nothing, with every metacharacter preserved as content:
+
+```console
+$ body=$(jq -cn --arg q 'canary"; touch /tmp/PWNED; $(id) `whoami` && rm -rf /nope' \
+    --argjson n 3 '{query:$q, limit:$n}')
+$ GBRAIN_HOME=$tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+    gbrain call search "$body" | head -3
+[
+  {
+    "slug": "probe-canary",
+$ ls /tmp/PWNED
+ls: cannot access '/tmp/PWNED': No such file or directory
+```
+
+An absent brain refuses on stderr with a non-zero status and writes nothing to stdout, which is what lets a local failure be reported as local:
+
+```console
+$ GBRAIN_HOME=$tmp/absent/runtime gbrain call search '{"query":"x"}'; echo "exit=$?"
+No brain configured. Run: gbrain init
+exit=1
+```
+
+## A failed synthesis still exits 0, which is why the flag is read instead
+
+This is the fact `bin/fm-recall.sh` rests on: with no usable model GBrain returns a placeholder answer, an empty citation list, and exit 0, so a wrapper that trusted the exit status would report a non-answer as an answer.
+
+```console
+$ GBRAIN_HOME=$tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+    gbrain call think '{"question":"what is the canary token?","rounds":1}'; echo "exit=$?"
+{
+  "answer": "(no LLM available — set anthropic_api_key via gbrain config or ANTHROPIC_API_KEY env)",
+  "citations": [],
+  "pagesGathered": 1,
+  "modelUsed": "minimax:MiniMax-M3",
+  "warnings": ["LLM_OUTPUT_NOT_JSON", "CITATIONS_REGEX_FALLBACK"],
+  "synthesisOk": false,
+  ...
+}
+exit=0
+```
+
+`pagesGathered: 1` in that same document is the local half reporting that retrieval worked, which is what makes "the hosted provider failed, your own memory did not" a fact rather than an inference.
+With the credential supplied to that one process, the same call answers with citations:
+
+```console
+$ MINIMAX_API_KEY=<key> GBRAIN_HOME=$tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+    gbrain call think '{"question":"what is the canary token?","rounds":1}' \
+  | jq '{synthesisOk, modelUsed, citations}'
+{
+  "synthesisOk": true,
+  "modelUsed": "minimax:MiniMax-M3",
+  "citations": [{"page_slug": "probe-canary", "row_num": null, "citation_index": 1}]
+}
+```
+
+## Synthesis cannot reach a read-only shared brain
+
+GBrain classifies `think` as a write-scope operation, so a read-scoped client is refused it at the server.
+That is why `fm-recall.sh think` runs only against a home's own brain, by construction rather than by convention.
+Observed over the real read-only share built by `tests/fm-gbrain-readonly-e2e.test.sh`:
+
+```console
+$ curl -sS -X POST http://127.0.0.1:$PORT/mcp -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"think","arguments":{"question":"what is the canary?"}}}'
+event: message
+data: {"result":{"content":[{"type":"text","text":"{\"error\":\"insufficient_scope\",\"message\":\"Operation think requires 'write' scope\",\"your_scopes\":[\"read\"]}"}],"isError":true},"jsonrpc":"2.0","id":1}
+```
+
+A `search` over the same client succeeds, and the response is an SSE stream whose payload carries the operation's JSON as a string:
+
+```console
+$ curl ... -d '{...,"params":{"name":"search","arguments":{"query":"canary","limit":1}}}'
+event: message
+data: {"result":{"content":[{"type":"text","text":"[\n  {\n    \"slug\": \"main-canary\",\n    \"title\": \"Main Canary\",\n    \"chunk_text\": \"The main brain holds xyzzy-mainbrain-canary.\",\n    \"score\": 0.8379333077938883,\n    ...\n  }\n]"}]},"jsonrpc":"2.0","id":1}
+```
+
+Both the SSE framing and the in-band `isError` refusal are unpacked by the wrapper rather than by its renderer, so a refused read degrades one source instead of ending the run.
+
+## Refreshing this record
+
+Two suites rebuild these claims, and neither asserts anything about the wrapper's source:
+
+- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, and the caps.
+- `tests/fm-gbrain-readonly-e2e.test.sh` is the live proof and drives the wrapper against two real brains and the real read-only share:
+
+```sh
+FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=<path-to-gbrain> bin/fm-test-run.sh tests/fm-gbrain-readonly-e2e.test.sh
+```
+
+Re-run both after any GBrain upgrade.
+The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.

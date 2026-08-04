@@ -27,6 +27,11 @@
 #
 # bin/fm-config-inherit-lib.sh carries gbrain.json and deliberately carries
 # neither of the other two.
+#
+# bin/fm-gbrain.sh is the OPERATOR surface over this library (scoping,
+# credentials, retirement); bin/fm-recall.sh is the AGENT-facing retrieval
+# surface. Both resolve a home through fm_gbrain_resolve_home below and reach
+# the main brain through fm_gbrain_mint_token, so neither grows its own copy.
 
 # --- plane locations --------------------------------------------------------
 
@@ -422,6 +427,120 @@ fm_gbrain_resolve_paths() {  # <home>
   FM_GBRAIN_HOME_DIR="$root/runtime"
   FM_GBRAIN_PGLITE="$root/pglite"
   FM_GBRAIN_ARCHIVE="$root/archive"
+  return 0
+}
+
+# --- home resolution --------------------------------------------------------
+
+# A Firstmate home is not always the directory a caller happens to stand in. A
+# crewmate runs inside a disposable worktree of some project, and a crewmate on
+# a Firstmate task runs inside a worktree of THIS repository, whose bin/ holds
+# these very scripts. Deriving the home from the code root alone would let that
+# second case resolve a brand-new empty brain inside a directory teardown is
+# about to delete, silently, while reporting success.
+#
+# So a candidate must look like an operating home rather than a source checkout.
+# data/ is a home's durable private record area and config/ its local operating
+# choices; both are gitignored, so a fresh checkout of this repository has
+# neither while every home that has ever run session start has them.
+fm_gbrain_is_home() {  # <dir>
+  [ -n "$1" ] && [ -d "$1" ] || return 1
+  [ -d "$1/data" ] || [ -d "$(fm_gbrain_config_dir "$1")" ]
+}
+
+# Resolve the home whose brain a retrieval or operator command addresses, into
+# FM_GBRAIN_HOME_PATH. An explicit home wins, then FM_HOME, then the code root
+# this script was invoked from. A candidate that was named explicitly is never
+# skipped when it fails to validate: falling through would quietly search a
+# different home than the caller asked for.
+FM_GBRAIN_HOME_PATH=""
+
+fm_gbrain_resolve_home() {  # <explicit-home-or-empty> <code-root>
+  local explicit=$1 code_root=$2 candidate origin
+  FM_GBRAIN_ERROR=""
+  FM_GBRAIN_HOME_PATH=""
+  if [ -n "$explicit" ]; then
+    candidate=$explicit; origin="--home"
+  elif [ -n "${FM_HOME:-}" ]; then
+    candidate=$FM_HOME; origin="FM_HOME"
+  else
+    candidate=$code_root; origin=code-root
+  fi
+  if [ ! -d "$candidate" ]; then
+    fm_gbrain_fail "no firstmate home at $candidate (from $origin)"
+    return 1
+  fi
+  # A relative or dot-laden path is made absolute so the resolved home is stable
+  # to report and to compare. Symlinks are deliberately left alone: FM_CONFIG_
+  # OVERRIDE is matched against FM_HOME's own spelling by fm_gbrain_config_dir,
+  # and resolving a symlinked home would silently stop that override applying.
+  case $candidate in
+    /*) ;;
+    *) candidate=$(CDPATH='' cd -- "$candidate" 2>/dev/null && pwd) || {
+         fm_gbrain_fail "cannot resolve the firstmate home at $candidate (from $origin)"
+         return 1
+       } ;;
+  esac
+  candidate=${candidate%/}
+  [ -n "$candidate" ] || candidate=/
+  if ! fm_gbrain_is_home "$candidate"; then
+    if [ "$origin" = code-root ]; then
+      fm_gbrain_fail "cannot tell which firstmate home to use: $candidate is a source checkout rather than an operating home. Run this command by its absolute path under your firstmate home, set FM_HOME, or pass --home <home>"
+    else
+      fm_gbrain_fail "$candidate (from $origin) is not an operating firstmate home: it has neither a data/ nor a config/ directory"
+    fi
+    return 1
+  fi
+  # Read by the caller after this returns.
+  # shellcheck disable=SC2034
+  FM_GBRAIN_HOME_PATH=$candidate
+  return 0
+}
+
+# --- main-brain access token ------------------------------------------------
+
+# Mint a client_credentials access token for the configured main brain into
+# FM_GBRAIN_TOKEN. Returns 1 with the reason in FM_GBRAIN_ERROR on every failure
+# path, without emitting a partial credential.
+#
+# The token lands in a variable rather than on stdout for the same reason
+# fm_gbrain_read_secret does: a command substitution would lose FM_GBRAIN_ERROR
+# to the subshell and leave the credential in a captured output buffer.
+FM_GBRAIN_TOKEN=""
+
+fm_gbrain_mint_token() {  # <home>
+  local home=$1 shared local_file token_url client_id secret_name body rc=0
+  # Cleared for the caller, which reads it after a failure return.
+  # shellcheck disable=SC2034
+  FM_GBRAIN_ERROR=""
+  FM_GBRAIN_TOKEN=""
+  shared=$(fm_gbrain_shared_path "$home")
+  local_file=$(fm_gbrain_local_path "$home")
+  token_url=$(fm_gbrain_json_str "$shared" '.main_brain.token_url')
+  [ -n "$token_url" ] || { fm_gbrain_fail "no main_brain.token_url configured"; return 1; }
+  client_id=$(fm_gbrain_json_str "$local_file" '.client_id')
+  [ -n "$client_id" ] || { fm_gbrain_fail "this home has no main-brain client id"; return 1; }
+  secret_name=$(fm_gbrain_json_str "$shared" '.main_brain.secret')
+  [ -n "$secret_name" ] || { fm_gbrain_fail "no main_brain.secret configured"; return 1; }
+  fm_gbrain_read_secret "$home" "$secret_name" || rc=$?
+  case $rc in
+    0) ;;
+    1) FM_GBRAIN_SECRET=""; fm_gbrain_fail "main-brain client secret is absent"; return 1 ;;
+    *) FM_GBRAIN_SECRET=""; return 1 ;;
+  esac
+  # The secret travels through a stdin config file, so it never appears in this
+  # process's arguments and cannot be read from the process table.
+  body=$(printf 'data-urlencode = "client_secret=%s"\n' "$FM_GBRAIN_SECRET" \
+    | curl -sS -m "${FM_GBRAIN_TIMEOUT:-10}" -K - -X POST "$token_url" \
+      --data-urlencode grant_type=client_credentials \
+      --data-urlencode "client_id=$client_id" 2>/dev/null) || rc=$?
+  FM_GBRAIN_SECRET=""
+  if [ "$rc" -ne 0 ]; then
+    fm_gbrain_fail "main brain did not answer at $token_url"
+    return 1
+  fi
+  FM_GBRAIN_TOKEN=$(printf '%s' "$body" | jq -r '.access_token // empty' 2>/dev/null)
+  [ -n "$FM_GBRAIN_TOKEN" ] || { fm_gbrain_fail "main brain issued no access token"; return 1; }
   return 0
 }
 

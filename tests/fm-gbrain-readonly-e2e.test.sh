@@ -196,6 +196,36 @@ intruder=$(mcp_call get_page '{"slug":"intruder-page"}')
 assert_not_contains "$intruder" "should never exist" "a refused write must not have created a page"
 pass "the main brain is byte-for-byte unaffected by the refused writes"
 
+# --- the retrieval wrapper reads both corpora for real ----------------------
+#
+# bin/fm-recall.sh is what firstmate and every crewmate actually call, so the
+# claim that a secondmate can search its own corpus PLUS the mounted main corpus
+# is proven here against the real read-only share rather than against a stub.
+
+RECALL="$ROOT/bin/fm-recall.sh"
+recall_rc=0
+recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+  bash "$RECALL" search --json "$CANARY" 2>&1) || recall_rc=$?
+expect_code 0 "$recall_rc" "the wrapper should read the shared corpus: $recall_out"
+[ "$(printf '%s' "$recall_out" | jq -r '.sources[] | select(.source == "main") | .state')" = ok ] \
+  || fail "the secondmate should reach the main brain through the wrapper: $recall_out"
+assert_contains "$recall_out" '"citation": "main:main-canary"' \
+  "a main-brain result must arrive citable as main:<slug>"
+
+recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+  bash "$RECALL" search --json "$SM_CANARY" 2>&1) || fail "the wrapper could not read the local corpus"
+assert_contains "$recall_out" '"citation": "local:sm-canary"' \
+  "a local result must arrive citable as local:<slug>"
+pass "the retrieval wrapper reads this home's own corpus and the mounted main corpus, each labelled"
+
+# The wrapper must never be able to widen the share: think is a write-scope
+# operation in GBrain, so it is refused over the read-only client. Proving the
+# refusal at the transport is what keeps "read-only" true for retrieval too.
+think_out=$(mcp_call think '{"question":"what is the canary?"}')
+assert_contains "$think_out" "insufficient_scope" \
+  "hosted synthesis against the mounted main brain must be refused for lack of scope"
+pass "synthesis against the mounted main brain is refused, so the wrapper's think stays local by construction"
+
 # --- the secondmate writes only its OWN brain -------------------------------
 
 put_page "$SM_GBRAIN_HOME" sm-second "The secondmate wrote this into its own brain." \
@@ -223,6 +253,17 @@ local_search=$(GBRAIN_HOME="$SM_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" search "$SM_CANARY" 2>/dev/null || true)
 assert_contains "$local_search" "sm-canary" \
   "with the main brain down, the secondmate's own search must still answer from its own index"
+
+# The same must hold through the wrapper crewmates actually use: a stopped main
+# brain is a degraded source, never a failed search.
+recall_rc=0
+recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" FM_GBRAIN_TIMEOUT=3 \
+  bash "$RECALL" search --json --timeout 30 "$SM_CANARY" 2>&1) || recall_rc=$?
+expect_code 0 "$recall_rc" "a stopped main brain must not fail the wrapper's local search: $recall_out"
+[ "$(printf '%s' "$recall_out" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
+  || fail "a stopped main brain should read as degraded through the wrapper: $recall_out"
+assert_contains "$recall_out" '"citation": "local:sm-canary"' \
+  "the home's own results must survive a stopped main brain"
 
 rc=0
 check_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" check --json 2>/dev/null) || rc=$?

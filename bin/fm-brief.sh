@@ -110,6 +110,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
+# shellcheck source=bin/fm-gbrain-lib.sh
+. "$SCRIPT_DIR/fm-gbrain-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -278,6 +280,19 @@ shell_quote() {
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
+# Brain retrieval is on demand and only worth mentioning to a worker whose home
+# actually has an index to read, so the instruction appears when this home has
+# built one and is silent otherwise rather than pointing every brief at a tool
+# that would answer "no brain". bin/fm-recall.sh owns the retrieval contract.
+BRAIN_SECTION=""
+if fm_gbrain_resolve_paths "$FM_HOME" && [ -d "$FM_GBRAIN_PGLITE" ]; then
+  BRAIN_SECTION="# Brain
+This home keeps a searchable record of the fleet's prior work: run \`$FM_ROOT/bin/fm-recall.sh search <query>\` before re-deriving something already known, and cite anything you use by the \`<source>:<slug>\` label it prints.
+Retrieval stays on this host, but \`fm-recall.sh think\` sends your question and the excerpts it selects to a hosted provider, so reach for it only when local results are not enough and never for anything that must not leave this host.
+
+"
+fi
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -332,7 +347,7 @@ For a detailed answer (an investigation, a plan, an audit), write it to a doc un
 Before treating an investigation or visual review as complete, load \`decision-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
 A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
 
-# Escalation to main firstmate
+${BRAIN_SECTION}# Escalation to main firstmate
 Handle routine work yourself.
 Report only true captain-relevant outcomes or a declared external wait by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -502,7 +517,7 @@ The report is your only task-authored deliverable, so anything worth keeping mus
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-# Definition of done
+${BRAIN_SECTION}# Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
@@ -637,7 +652,7 @@ $RULE1
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-# Project memory
+${BRAIN_SECTION}# Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
 Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.

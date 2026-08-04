@@ -172,7 +172,7 @@ family_for_basename() {
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
-    fm-gbrain-lib.test.sh)
+    fm-gbrain-lib.test.sh|fm-recall.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
@@ -913,10 +913,16 @@ families_for_changed_path() {
       ;;
     # Brain scoping owns its own contract, propagates through the inherited-
     # config path, and is the subject of the opt-in live read-only proof.
-    bin/fm-gbrain.sh|bin/fm-gbrain-lib.sh)
+    bin/fm-gbrain.sh|bin/fm-gbrain-lib.sh|bin/fm-recall.sh)
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       printf '%s\n' live-harness-optin
+      ;;
+    # The shared wall-clock bound: brain retrieval owns its portable regression,
+    # and the PR observation path is its other consumer.
+    bin/fm-bounded-lib.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
     bin/fm-backlog-handoff.sh|bin/fm-backlog-receive.sh|bin/fm-procevent-remote-reply.sh|\

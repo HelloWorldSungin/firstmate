@@ -47,6 +47,9 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-pr-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-bounded-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-bounded-lib.sh"
 
 FM_PR_STATUS_TIMEOUT=${FM_PR_STATUS_TIMEOUT:-20}
 case "$FM_PR_STATUS_TIMEOUT" in
@@ -75,17 +78,11 @@ EOF
 command -v jq >/dev/null 2>&1 || { echo "fm-pr-status: jq not found" >&2; exit 1; }
 
 run_bounded() {  # <cmd...>
-  if [ "${FM_PR_STATUS_FORCE_FALLBACK:-0}" != 1 ] && command -v timeout >/dev/null 2>&1; then
-    timeout "$FM_PR_STATUS_TIMEOUT" "$@"
-  elif [ "${FM_PR_STATUS_FORCE_FALLBACK:-0}" != 1 ] && command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$FM_PR_STATUS_TIMEOUT" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
-      "$FM_PR_STATUS_TIMEOUT" "$@"
-  else
-    echo "fm-pr-status: no timeout implementation on PATH" >&2
-    return 125
-  fi
+  local rc=0
+  FM_BOUNDED_FORCE_FALLBACK=${FM_PR_STATUS_FORCE_FALLBACK:-0} \
+    fm_run_bounded "$FM_PR_STATUS_TIMEOUT" "$@" || rc=$?
+  [ "$rc" -ne 125 ] || echo "fm-pr-status: no timeout implementation on PATH" >&2
+  return "$rc"
 }
 
 github_cli() {

@@ -1,7 +1,7 @@
 # Per-home GBrain scoping and read-only main-brain sharing
 
 This operator reference owns how a Firstmate home scopes its own brain and how the main brain is shared with secondmate homes without letting them write it.
-[`gbrain.md`](gbrain.md) owns the GBrain installation, archive, and rebuild procedure for a single brain, [`gbrain-endpoints.md`](gbrain-endpoints.md) owns the local embedding endpoint, [`configuration.md`](configuration.md) owns the configuration schemas, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) holds the dated evidence for the guarantees below.
+[`gbrain.md`](gbrain.md) owns the GBrain installation, archive, and rebuild procedure for a single brain, [`gbrain-endpoints.md`](gbrain-endpoints.md) owns the local embedding endpoint, [`configuration.md`](configuration.md) owns the configuration schemas, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) plus [`verification/gbrain-retrieval.md`](verification/gbrain-retrieval.md) hold the dated evidence for the guarantees below.
 
 ## One brain per home
 
@@ -63,6 +63,25 @@ The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` an
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
 Do not use `gbrain auth create` tokens or any legacy bearer token as a read-only credential: those carry no scope and are full-access.
 Do not enable Dynamic Client Registration's consent-bypassing `client_credentials` variant to obtain one, because a self-registering client would choose its own scopes.
+
+## Reading a brain
+
+`bin/fm-recall.sh` is the retrieval surface firstmate and every crewmate use, and no worker calls a raw GBrain command.
+The wrapper exists because a raw call resolves whatever brain the caller's directory implies, and because GBrain returns a placeholder answer and exit 0 when it has no usable model, so a raw `think` reports a non-answer as an answer.
+Its `--help` owns the flags, the caps, and the `fm-recall.v1` document it prints; what follows is only the part an operator has to know.
+
+`search` reads this home's own index and, when the main brain is configured and this home holds a read-only client, the main brain's index too, labelling each result `local:<slug>` or `main:<slug>`.
+`think` is a separate command rather than a flag, because it sends the question and the excerpts it selects to the configured hosted provider.
+It runs only against this home's own brain: GBrain classifies `think` as a write-scope operation, so a read-scoped client is refused it, which is the same enforcement that makes the share read-only at all.
+
+The home a command reads is resolved from `--home`, then `FM_HOME`, then the directory the wrapper was invoked from, and a candidate that is a source checkout rather than an operating home is refused by name.
+That refusal matters because a crewmate on a firstmate task stands in a worktree of this repository: without it, the wrapper would build an empty brain inside a directory that cleanup is about to delete and report success while doing it.
+
+Local retrieval and hosted synthesis are reported as separate facts and never as one outcome.
+A main brain that is stopped, unreachable, or not shared with this home reads as a degraded source and does not fail the run, so a home's own memory never depends on another home being up.
+A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
+
+A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh` adds one instruction naming the command, the citation label, and the hosted-provider boundary, and adds it only when the home actually has an index, so a fleet with no brain carries no dead pointer.
 
 ## Source precedence and name collisions
 

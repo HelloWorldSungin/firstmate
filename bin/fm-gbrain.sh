@@ -132,39 +132,13 @@ cmd_env() {
 
 # --- main-brain read path ---------------------------------------------------
 
-# Mint a client_credentials token for the configured main brain. Prints the
-# token on stdout; every failure path prints a reason on stderr and returns
-# non-zero without emitting a partial credential.
+# Print a client_credentials token for the configured main brain on stdout.
+# fm_gbrain_mint_token owns the mint itself, shared with bin/fm-recall.sh; this
+# wrapper only renders its failure reason on stderr.
 mint_token() {
-  local token_url client_id secret_name secret body token
-  token_url=$(shared_str '.main_brain.token_url')
-  [ -n "$token_url" ] || { echo "no main_brain.token_url configured" >&2; return 1; }
-  client_id=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$FM_HOME")" '.client_id')
-  [ -n "$client_id" ] || { echo "this home has no main-brain client id" >&2; return 1; }
-  secret_name=$(shared_str '.main_brain.secret')
-  [ -n "$secret_name" ] || { echo "no main_brain.secret configured" >&2; return 1; }
-  local rc=0
-  fm_gbrain_read_secret "$FM_HOME" "$secret_name" || rc=$?
-  secret=$FM_GBRAIN_SECRET
-  FM_GBRAIN_SECRET=""
-  case $rc in
-    0) ;;
-    1) echo "main-brain client secret is absent" >&2; return 1 ;;
-    *) echo "$FM_GBRAIN_ERROR" >&2; return 1 ;;
-  esac
-  # The secret travels through a stdin config file, so it never appears in this
-  # process's arguments and cannot be read from the process table.
-  body=$(printf 'data-urlencode = "client_secret=%s"\n' "$secret" \
-    | curl -sS -m "${FM_GBRAIN_TIMEOUT:-10}" -K - -X POST "$token_url" \
-      --data-urlencode grant_type=client_credentials \
-      --data-urlencode "client_id=$client_id" 2>/dev/null) || {
-    unset secret
-    echo "main brain did not answer at $token_url" >&2; return 1
-  }
-  unset secret
-  token=$(printf '%s' "$body" | jq -r '.access_token // empty' 2>/dev/null)
-  [ -n "$token" ] || { echo "main brain issued no access token" >&2; return 1; }
-  printf '%s\n' "$token"
+  fm_gbrain_mint_token "$FM_HOME" || { printf '%s\n' "$FM_GBRAIN_ERROR" >&2; return 1; }
+  printf '%s\n' "$FM_GBRAIN_TOKEN"
+  FM_GBRAIN_TOKEN=""
 }
 
 cmd_token() {
