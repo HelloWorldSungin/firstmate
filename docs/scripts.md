@@ -15,7 +15,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
-| `fm-dashboard-server.mjs` | Serve the read-only loopback fleet kanban and versioned snapshot envelope            |
+| `fm-dashboard-server.mjs` | Serve the read-only loopback captain inbox, kanban, and versioned snapshot envelope   |
 | `fm-dashboard-install.sh` | Install and configure the dashboard as a boot-persistent user systemd service        |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |

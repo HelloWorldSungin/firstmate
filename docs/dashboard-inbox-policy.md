@@ -28,7 +28,7 @@ The first matching rule below wins.
 | `none` | unknown | no PR URL is recorded |
 | `merged` | green | `state: merged`, at any observation age |
 | `closed` | unknown | `state: closed`, at any observation age |
-| `unknown` | unknown | no observation is cached, the observation is older than the freshness limit, or any of the four fields is missing or `unknown` |
+| `unknown` | unknown | no observation is cached, the observation has no readable age or is older than the freshness limit, or any of the four fields is missing or `unknown` |
 | `draft` | unknown | `state: draft` |
 | `checks_failing` | red | `checks: failing` |
 | `conflicting` | red | `mergeable: conflicting` |
@@ -135,6 +135,7 @@ One badge covers every attention state at once - a reported failure, failing che
 
 Desktop alerts are entirely client-side and off by default.
 The toggle requests browser notification permission on click and nothing else; the server never learns that a browser wants them, and a denied or unsupported permission leaves the control off without affecting anything else on the page.
+The choice is remembered in that browser's own local storage and restored on the next load only while the browser still grants permission, so it stays a per-browser preference rather than a fleet setting.
 The first render that actually carries a fleet snapshot establishes the baseline, so alerts fire only for items that appear afterwards.
 A first-run or unavailable render is skipped rather than treated as an empty baseline, because doing otherwise would alert on every item that was already waiting.
 
