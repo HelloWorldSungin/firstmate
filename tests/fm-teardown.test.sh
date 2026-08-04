@@ -570,7 +570,17 @@ use_unverified_zellij_backend() {
     'zellij_pane_id=7' >> "$case_dir/state/task-x1.meta"
   cat > "$case_dir/fakebin/zellij" <<'SH'
 #!/usr/bin/env bash
-exit 1
+case " $* " in
+  *" list-sessions "*) printf '%s\n' firstmate ;;
+  *" action list-panes --json "*)
+    printf '%s\n' '[{"id":7,"tab_id":3,"is_plugin":false}]'
+    ;;
+  *" action list-tabs --json "*)
+    printf '%s\n' '[{"tab_id":3,"name":"fm-task-x1"}]'
+    ;;
+  *" action close-tab-by-id "*) : > "${FM_TEST_ENDPOINT_KILLED:?}" ;;
+esac
+exit 0
 SH
   chmod +x "$case_dir/fakebin/zellij"
 }
@@ -579,7 +589,8 @@ install_tmux_liveness_mutation() {
   local case_dir=$1
   cat > "$case_dir/fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = list-windows ]; then
+if [ "${1:-}" = kill-window ]; then
+  [ -z "${FM_TEST_ENDPOINT_KILLED:-}" ] || : > "$FM_TEST_ENDPOINT_KILLED"
   case "${FM_TEST_LIVENESS_MUTATION:-}" in
     model-turn)
       mkdir -p "${FM_TEST_TRANSCRIPT_DIR:?}"
@@ -770,7 +781,7 @@ test_unreadable_session_parent_still_refuses() {
   pass "an unreadable session parent remains unverifiable and refuses teardown"
 }
 
-test_first_turn_before_cleanup_recheck_refuses() {
+test_first_turn_during_endpoint_termination_refuses() {
   local case_dir dir rc
   case_dir=$(make_case first-turn-before-cleanup)
   write_meta "$case_dir" no-mistakes ship
@@ -780,6 +791,7 @@ test_first_turn_before_cleanup_recheck_refuses() {
 
   rc=0
   FM_TEST_LIVENESS_MUTATION=model-turn \
+    FM_TEST_ENDPOINT_KILLED="$case_dir/endpoint-killed" \
     FM_TEST_TRANSCRIPT_DIR="$dir" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
@@ -790,8 +802,14 @@ test_first_turn_before_cleanup_recheck_refuses() {
     "first-turn-before-cleanup: the recomputed mismatch was not surfaced"
   assert_grep "gained a model-attributed turn" "$case_dir/stderr" \
     "first-turn-before-cleanup: the changed no-turn condition was not named"
+  assert_present "$case_dir/endpoint-killed" \
+    "first-turn-before-cleanup: endpoint termination did not trigger the late turn"
+  assert_present "$dir/current.jsonl" \
+    "first-turn-before-cleanup: the late transcript was erased"
+  assert_present "$case_dir/wt" \
+    "first-turn-before-cleanup: the task worktree was returned"
   assert_present "$case_dir/state/task-x1.meta" "first-turn-before-cleanup: task metadata was erased"
-  pass "a first mismatched turn before cleanup is recomputed and preserved"
+  pass "a first mismatched turn during endpoint termination is recomputed and preserved"
 }
 
 test_unknown_liveness_proceeds_with_on_disk_proof() {
@@ -803,13 +821,16 @@ test_unknown_liveness_proceeds_with_on_disk_proof() {
   use_unverified_zellij_backend "$case_dir"
 
   rc=0
-  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+  FM_TEST_ENDPOINT_KILLED="$case_dir/endpoint-killed" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "unknown-liveness-clean: every on-disk protection still stayed blocked"
   assert_grep "Endpoint liveness could not be determined on backend zellij (state: unverified)" "$case_dir/stderr" \
     "unknown-liveness-clean: the missing recovery classifier was not stated"
   assert_grep "recomputed on-disk proof" "$case_dir/stderr" \
     "unknown-liveness-clean: the protections carrying the decision were not stated"
+  assert_present "$case_dir/endpoint-killed" \
+    "unknown-liveness-clean: the endpoint was not terminated before cleanup"
   assert_absent "$case_dir/state/task-x1.meta" "unknown-liveness-clean: task metadata was left behind"
   pass "unknown endpoint liveness proceeds with every on-disk protection"
 }
@@ -2430,7 +2451,7 @@ test_non_directory_session_path_still_refuses
 test_non_directory_session_parent_still_refuses
 test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
-test_first_turn_before_cleanup_recheck_refuses
+test_first_turn_during_endpoint_termination_refuses
 test_unknown_liveness_proceeds_with_on_disk_proof
 test_authoritative_live_endpoint_refuses
 test_recomputed_on_disk_proof_refuses_each_failed_condition
