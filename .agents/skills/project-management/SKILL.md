@@ -20,7 +20,7 @@ It does not replace `secondmate-provisioning`, which owns project clones inside 
 ## Preconditions and registry
 
 Projects live flat under `projects/`, and `data/projects.md` is the private fleet registry.
-Use the registry format and parser contract owned by the header of `bin/fm-project-mode.sh`.
+Use the registry schemas owned by [`docs/configuration.md`](../../../docs/configuration.md), with delivery-posture parsing owned by `bin/fm-project-mode.sh` and tracker parsing owned by `bin/fm-issue-lib.sh`.
 Keep each registry description useful for identifying the project, but keep delivery posture, captain-private state, and detailed project knowledge in their existing designated homes.
 Do not turn the registry into project documentation.
 
@@ -29,7 +29,8 @@ Apply `AGENTS.md` section 7's authoritative secondmate routing rules; if an exis
 Absence from the main `data/projects.md` registry is never evidence that no second mate owns the domain.
 If the owning second mate cannot accept the route, report that concrete blocker or obtain an explicit captain redirection rather than silently duplicating the project in the main home.
 
-Resolve the project name, destination, delivery posture, and autonomy posture before changing local or remote state.
+Resolve the project name, destination, delivery posture, autonomy posture, and declared issue tracker before changing local or remote state.
+The captain supplies the tracker mapping explicitly as `tracker=<forge>:<host>/<path>` or `tracker=none`; never infer it from the git remote, clone name, or repository-creation host.
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
 
@@ -54,7 +55,7 @@ Default it off for every project and every posture, and enable it only on the ca
 
 ## Add or clone an existing project
 
-Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
+Confirm the source URL, local project name, delivery posture, autonomy posture, and issue-tracker declaration, stating the resolved defaults for posture while requiring the captain to supply the tracker mapping.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
@@ -63,11 +64,11 @@ A `local-only` project may have no remote and skips no-mistakes initialization.
 ## Create a project
 
 Creating a GitHub repository is outward-facing.
-Before making that remote change, propose the repository name, owner or organization, visibility, and delivery posture, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
+Before making that remote change, propose the repository name, owner or organization, visibility, delivery posture, and issue-tracker declaration, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
 Use `gh-axi` for the approved GitHub operation and consult its current help rather than relying on remembered flags.
 After remote creation succeeds, clone it locally, add the registry entry, and initialize it according to its delivery posture.
 
-For a purely `local-only` project, create a local Git repository under its unused `projects/<name>` path, add the registry entry, and make no GitHub call.
+For a purely `local-only` project, create a local Git repository under its unused `projects/<name>` path, add the registry entry with the captain-supplied tracker declaration, and make no GitHub call.
 The captain's request to create that local project authorizes this local initialization, but it does not authorize an unmentioned remote repository.
 
 ## Initialize

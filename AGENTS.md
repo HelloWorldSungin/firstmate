@@ -82,7 +82,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
-  projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
+  projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture and issue-tracker schemas, while fm-project-mode.sh and fm-issue-lib.sh parse those respective fields (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
@@ -210,7 +210,7 @@ A restart must be a non-event because durable state and live backend inventory, 
 
 Load `project-management` before adding, creating, removing, or initializing a project.
 Cloning or registering a project is add intake and uses the same trigger.
-That skill owns registry syntax, delivery-mode selection, outward-facing consent, clone and initialization procedure, safe rollback, and removal preflight.
+That skill owns the project-management procedure, delivery-mode selection, outward-facing consent, clone and initialization procedure, safe rollback, and removal preflight; `docs/configuration.md` owns the registry schemas.
 Project creation never authorizes an unmentioned remote, and project removal never bypasses that preflight or unlanded-work checks; hard rule 1's concrete captain-approved project operation exception remains available when its exact conditions are met.
 
 Load `secondmate-provisioning` before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
@@ -309,7 +309,7 @@ Complexity alone is not expansion: a difficult correction genuinely required by 
 Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding.
 Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
-Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata and any explicitly recorded GitHub issue lifecycle are handled, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
+Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata and any eligible explicitly recorded work-item lifecycle are handled, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate

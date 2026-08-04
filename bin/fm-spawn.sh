@@ -109,9 +109,13 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
-#   For a ship brief scaffolded with fm-brief.sh --issue, spawn validates its one
-#   explicit firstmate-task-issue marker and records issue=<number> in task meta.
-#   Brief prose and PR bodies are never searched to infer an issue identity.
+#   For a ship brief scaffolded with fm-brief.sh --work-item, spawn validates
+#   every repeatable firstmate-work-item marker and records one fully qualified
+#   work_item= line per marker in task meta. The legacy --issue path still
+#   records issue=<number>; when the project declares a tracker, spawn also
+#   upgrades that bare number to one project-scoped work_item= record, while a
+#   missing, trackerless, or malformed declaration warns instead of guessing.
+#   Brief prose, git remotes, and PR bodies are never searched to infer identity.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real

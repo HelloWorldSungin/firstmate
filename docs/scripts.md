@@ -94,7 +94,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
-| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and reconcile its recorded work item in that item's own tracker |
+| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded `github.com` work item or report why it cannot |
 | `fm-issue-ref.sh`        | Resolve work-item references against a project's declared issue tracker, refusing to guess a forge |
 | `fm-issue-status.sh`     | Add optional cached work-item title and open/closed enrichment per forge, with best-effort per-host lookup spacing |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
