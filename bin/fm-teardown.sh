@@ -384,20 +384,31 @@ model_verdict_precedes_any_turn() {  # <verdict>
   return 1
 }
 
+worktree_changes_except_harness_files() {  # <porcelain-status>
+  printf '%s\n' "$1" \
+    | grep -vE '^\?\? (\.claude/settings\.local\.json|\.opencode/plugins/fm-(turn-end|busy-state)\.js|\.fm-(grok|kimi)-turnend)$' \
+    | head -1 || true
+}
+
 # 0 iff the recorded worktree provably carries nothing worth preserving: it is
 # inspectable, sits on no branch, holds no commit that no existing ref already
 # contains, and is clean apart from the harness files fm-spawn itself writes.
 # Anything that cannot be inspected or proven is treated as work to preserve.
 worker_left_nothing_to_preserve() {
-  local wt dirty contained
+  local wt dirty_raw dirty contained task_ref ref_rc
   wt=$(fm_meta_get "$META" worktree)
   [ -n "$wt" ] && [ -d "$wt" ] || return 1
   git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 1
   # A branch at HEAD means the worker got as far as creating one, which the
   # ship brief makes its first action.
   ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1 || return 1
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 1
-  dirty=$(printf '%s\n' "$dirty" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  task_ref="refs/heads/fm/$ID"
+  git -C "$wt" check-ref-format "$task_ref" >/dev/null 2>&1 || return 1
+  git -C "$wt" show-ref --verify --quiet "$task_ref" 2>/dev/null
+  ref_rc=$?
+  [ "$ref_rc" -eq 1 ] || return 1
+  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null) || return 1
+  dirty=$(worktree_changes_except_harness_files "$dirty_raw")
   [ -z "$dirty" ] || return 1
   # Reachability from an existing branch, not remote-tracking state: it answers
   # "did this worker commit anything of its own" for a project with no remote
@@ -434,7 +445,7 @@ MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
     echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
-    echo "Its worktree is on no branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
+    echo "Its worktree is on no branch, has no task branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
   else
     echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
     exit 1
@@ -1084,7 +1095,7 @@ validate_worktree_teardown_safety() {
     secondmate|scout) return 0 ;;
   esac
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+  if ! dirty_raw=$(git -C "$WT" status --porcelain=v1 --untracked-files=all 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
@@ -1092,7 +1103,7 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  dirty=$(worktree_changes_except_harness_files "$dirty_raw")
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then

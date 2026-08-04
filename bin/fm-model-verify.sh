@@ -299,8 +299,21 @@ fi
 # so a shell variable could not carry that failure back out - and a read failure
 # that arrived as "no models" would be indistinguishable from a well-behaved
 # worker, which is the silent pass this helper exists to prevent.
-claude_models() {  # <transcript-dir> <spawned-at-epoch|empty> <watermark> <baseline-identities>
-  local dir=$1 anchor=$2 watermark=$3 baseline=$4 files=() f listing name
+claude_models() {  # <transcript-store> <transcript-dir> <spawned-at-epoch|empty> <watermark> <baseline-identities>
+  local store=$1 dir=$2 anchor=$3 watermark=$4 baseline=$5 files=() f listing name
+
+  if [ ! -e "$store" ]; then
+    printf 'ERR:recorded model-evidence store is missing: %s\n' "$store"
+    return 0
+  fi
+  if [ ! -d "$store" ]; then
+    printf 'ERR:recorded model-evidence store is not a directory: %s\n' "$store"
+    return 0
+  fi
+  if [ ! -r "$store" ] || [ ! -x "$store" ]; then
+    printf 'ERR:recorded model-evidence store is not readable: %s\n' "$store"
+    return 0
+  fi
 
   # No transcript directory at all means the runtime never wrote a session for
   # this working directory. That is still no verdict, but it is a DIFFERENT
@@ -537,7 +550,7 @@ EOF
 
   local dir
   dir=$(claude_transcript_dir "$store" "$cwd")
-  models=$(claude_models "$dir" "$anchor" "$watermark" "$baseline")
+  models=$(claude_models "$store" "$dir" "$anchor" "$watermark" "$baseline")
   case "$models" in
     NOSESSION:*)
       VERDICT=unstarted

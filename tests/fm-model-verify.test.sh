@@ -165,6 +165,17 @@ expect_code 4 "$code" "terminal verification still rejects an unstarted worker"
 assert_contains "$out" "verdict: unstarted" "terminal rejection preserves the unstarted verdict"
 pass "terminal verification rejects unstarted as no verdict"
 
+missing_store="$TMP_ROOT/missing-claude-store"
+meta missing-store opus model_evidence_watermark=claude-transcript-v1 >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$missing_store|" "$HOME_DIR/state/missing-store.meta"
+rm -f "$HOME_DIR/state/missing-store.meta.bak"
+out=$(run_verify missing-store); code=$?
+expect_code 4 "$code" "missing recorded evidence store exits 4"
+assert_contains "$out" "verdict: unverifiable" "a missing evidence store remains unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a missing evidence store is not treated as an absent worker session"
+assert_contains "$out" "model-evidence store is missing" "the unverifiable reason names the missing store"
+pass "a missing recorded evidence store is not mistaken for an unstarted worker"
+
 out=$(run_verify never-dispatched); code=$?
 expect_code 4 "$code" "absent durable record exits 4"
 assert_contains "$out" "verdict: unverifiable" "no record means no verdict, loudly"

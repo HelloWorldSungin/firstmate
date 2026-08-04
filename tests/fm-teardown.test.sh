@@ -483,7 +483,8 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-if [ -n "$dir" ] && [ "${args[2]:-}" = status ] && [ "${args[3]:-}" = --porcelain ]; then
+if [ -n "$dir" ] && [ "${args[2]:-}" = status ]; then
+  case "${args[3]:-}" in --porcelain|--porcelain=v1) ;; *) exec "$real" "${args[@]}" ;; esac
   lock=$("$real" -C "$dir" rev-parse --git-path index.lock 2>/dev/null || true)
   case "$lock" in
     /*|'') ;;
@@ -549,6 +550,7 @@ test_terminal_model_verdict_blocks_cleanup_then_allows_match() {
 claude_dispatch_meta() {
   local case_dir=$1 cfg
   cfg="$case_dir/claude-config"
+  mkdir -p "$cfg"
   printf '%s\n' \
     'harness=claude' \
     'model=opus' \
@@ -575,6 +577,12 @@ test_never_started_and_clean_tears_down_without_force() {
   write_meta "$case_dir" no-mistakes ship
   dir=$(claude_dispatch_meta "$case_dir")
   never_started_worktree "$case_dir"
+  mkdir -p "$case_dir/wt/.claude" "$case_dir/wt/.opencode/plugins"
+  : > "$case_dir/wt/.claude/settings.local.json"
+  : > "$case_dir/wt/.opencode/plugins/fm-turn-end.js"
+  : > "$case_dir/wt/.opencode/plugins/fm-busy-state.js"
+  : > "$case_dir/wt/.fm-grok-turnend"
+  : > "$case_dir/wt/.fm-kimi-turnend"
 
   rc=0
   FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
@@ -587,6 +595,27 @@ test_never_started_and_clean_tears_down_without_force() {
     "never-started-clean: teardown did not state that no verdict was obtained"
   [ ! -d "$dir" ] || fail "never-started-clean: fixture wrote a transcript directory"
   pass "a never-started worker with nothing to lose tears down and still reports no verdict"
+}
+
+test_uninspectable_evidence_store_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case uninspectable-evidence-store)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  rm -rf "$case_dir/claude-config"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "uninspectable-evidence-store: teardown discarded evidence it could not inspect"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "uninspectable-evidence-store: the store failure was not unverifiable"
+  assert_grep "model-evidence store is missing" "$case_dir/stderr" \
+    "uninspectable-evidence-store: the missing store was not named"
+  assert_grep "REFUSED" "$case_dir/stderr" "uninspectable-evidence-store: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "uninspectable-evidence-store: task metadata was erased"
+  pass "an uninspectable recorded evidence store remains unverifiable and refuses teardown"
 }
 
 # The same allowance for the other no-turn shape: the runtime DID open a session
@@ -634,6 +663,25 @@ test_never_started_but_dirty_still_refuses() {
   pass "a never-started worker with uncommitted changes still refuses"
 }
 
+test_never_started_with_untracked_claude_file_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-claude-file)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf 'recovery notes\n' > "$case_dir/wt/.claude/recovery.md"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-claude-file: teardown discarded an untracked file under .claude"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-claude-file: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-claude-file: task metadata was erased"
+  assert_present "$case_dir/wt/.claude/recovery.md" "never-started-claude-file: untracked work was removed"
+  pass "an untracked file under .claude remains work to preserve"
+}
+
 # The other half: a branch with its own commits is unlanded work, and the
 # no-turn allowance must not reach it either.
 test_never_started_but_committed_on_a_branch_still_refuses() {
@@ -651,6 +699,27 @@ test_never_started_but_committed_on_a_branch_still_refuses() {
   assert_present "$case_dir/state/task-x1.meta" "never-started-branch: task metadata was erased"
   [ -d "$case_dir/wt" ] || fail "never-started-branch: the task worktree was returned"
   pass "a never-started worker whose branch carries commits still refuses"
+}
+
+test_never_started_with_detached_head_and_surviving_task_branch_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-detached-surviving-branch)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  wt_commit "$case_dir" "work retained only by the task branch"
+  git -C "$case_dir/wt" checkout --detach -q main
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-detached-surviving-branch: teardown discarded a surviving task branch"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "never-started-detached-surviving-branch: no refusal was printed"
+  git -C "$case_dir/wt" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "never-started-detached-surviving-branch: the task branch was removed"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "never-started-detached-surviving-branch: task metadata was erased"
+  pass "a surviving task branch refuses teardown even while HEAD is detached and clean"
 }
 
 # The boundary this whole guard exists to hold: a worker that RAN, on evidence
@@ -2115,9 +2184,12 @@ test_forced_teardown_records_a_discarded_outcome
 test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match
 test_never_started_and_clean_tears_down_without_force
+test_uninspectable_evidence_store_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_never_started_but_dirty_still_refuses
+test_never_started_with_untracked_claude_file_still_refuses
 test_never_started_but_committed_on_a_branch_still_refuses
+test_never_started_with_detached_head_and_surviving_task_branch_still_refuses
 test_ran_but_unverifiable_still_refuses_on_a_clean_worktree
 test_forced_teardown_surfaces_mismatch_before_discarding
 test_teardown_prompts_tasks_axi_done_when_compatible
