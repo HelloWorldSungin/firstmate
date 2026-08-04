@@ -512,6 +512,7 @@ run_status() {  # <case-dir> [args...]
 fake_gh_axi_issue() {  # <case-dir> <state> <title>
   cat > "$1/fakebin/gh-axi" <<SH
 #!/usr/bin/env bash
+[ -z "\${FM_TEST_GH_CALLS:-}" ] || printf '%s\n' "\$*" >> "\$FM_TEST_GH_CALLS"
 printf 'issue:\n  number: 1\n  title: "%s"\n  state: %s\n' '$3' '$2'
 exit 0
 SH
@@ -530,7 +531,8 @@ SH
 fake_gh_axi_hanging() {  # <case-dir>
   cat > "$1/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
-sleep 30
+trap '' TERM
+while :; do sleep 1; done
 SH
   chmod +x "$1/fakebin/gh-axi"
 }
@@ -578,6 +580,22 @@ test_github_status_enrichment() {
   assert_contains "$out" 'open' "github enrichment lost the open/closed state"
   assert_contains "$out" 'Add the thing' "github enrichment lost the title"
   pass "GitHub status enrichment returns the issue title and state"
+}
+
+test_self_hosted_github_status_is_reported_without_a_live_call() {
+  local case_dir out
+  case_dir=$(status_case gh-self-hosted)
+  fake_gh_axi_issue "$case_dir" open 'Wrong host'
+  out=$(FM_TEST_GH_CALLS="$case_dir/gh-calls" run_status "$case_dir" \
+    'declared|github|https://ghe.example.com/o/r/issues/5') \
+    || fail "self-hosted GitHub status degradation failed"
+  assert_contains "$out" 'https://ghe.example.com/o/r/issues/5' \
+    "self-hosted GitHub status lost the canonical link"
+  assert_contains "$out" 'not implemented for host ghe.example.com' \
+    "self-hosted GitHub status did not name the unsupported host"
+  assert_absent "$case_dir/gh-calls" \
+    "self-hosted GitHub status was silently addressed to github.com"
+  pass "self-hosted GitHub status is reported without a github.com lookup"
 }
 
 # Every failure mode must still hand back the link plus a readable reason, and
@@ -660,7 +678,7 @@ test_github_status_lookup_is_bounded() {
     "a timed-out lookup lost its canonical URL"
   assert_contains "$out" 'unavailable' "a timed-out lookup was not marked unavailable"
   assert_contains "$out" 'timed out after 1s' "a timed-out lookup did not name its deadline"
-  pass "a hung GitHub lookup degrades within the configured deadline"
+  pass "a TERM-ignoring GitHub lookup degrades within the configured deadline"
 }
 
 test_gitea_status_enrichment_and_title_sanitizing() {
@@ -706,6 +724,34 @@ test_long_multibyte_title_stays_valid_utf8() {
       || fail "$locale-locale multibyte title was truncated into invalid UTF-8: $out"
   done
   pass "a long multibyte title is truncated without producing invalid UTF-8"
+}
+
+make_no_perl_toolbin() {  # <case-dir>
+  local case_dir=$1 toolbin tool path
+  toolbin="$case_dir/no-perl-bin"
+  mkdir -p "$toolbin"
+  for tool in awk bash chmod date dirname head mkdir mktemp mv rm sed sha256sum stat timeout tr uname; do
+    path=$(command -v "$tool") || fail "no-perl fixture needs $tool"
+    ln -s "$path" "$toolbin/$tool"
+  done
+  printf '%s\n' "$toolbin"
+}
+
+test_long_multibyte_title_is_capped_without_perl() {
+  local case_dir out long toolbin
+  command -v jq >/dev/null 2>&1 || { pass "no-perl multibyte truncation (skipped: jq absent)"; return; }
+  case_dir=$(status_case gh-multibyte-no-perl)
+  long=$(printf '測%.0s' {1..300})
+  fake_gh_axi_issue "$case_dir" open "$long"
+  toolbin=$(make_no_perl_toolbin "$case_dir")
+  out=$(LC_ALL=C PATH="$case_dir/fakebin:$toolbin" run_status "$case_dir" --format json \
+    'declared|github|https://github.com/x/y/issues/9') \
+    || fail "no-perl multibyte enrichment failed"
+  printf '%s' "$out" | jq -e '.[0].status == "ok" and (.[0].title | length) == 200' >/dev/null \
+    || fail "no-perl multibyte title broke the JSON document or cap: $out"
+  printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+    || fail "no-perl multibyte title produced invalid UTF-8: $out"
+  pass "a long multibyte title remains capped and valid without Perl"
 }
 
 test_status_caches_and_rate_limits() {
@@ -795,6 +841,40 @@ test_status_throttles_bursts_per_host() {
   pass "status enrichment spaces live lookups per host and still returns every link"
 }
 
+test_unusable_cache_refuses_live_status_lookup() {
+  local case_dir out
+  case_dir=$(status_case unusable-cache)
+  ln -s "$case_dir/not-a-directory" "$case_dir/state/issue-status"
+  fake_gh_axi_issue "$case_dir" open 'Live call escaped limiter'
+  out=$(FM_TEST_GH_CALLS="$case_dir/gh-calls" run_status "$case_dir" \
+    'declared|github|https://github.com/x/y/issues/9') \
+    || fail "unusable-cache status degradation failed"
+  assert_contains "$out" 'https://github.com/x/y/issues/9' \
+    "unusable-cache degradation lost the canonical link"
+  assert_contains "$out" 'cache/rate limiter is unavailable' \
+    "unusable-cache degradation did not name the limiter failure"
+  assert_absent "$case_dir/gh-calls" \
+    "an unusable cache authorized a live forge lookup"
+  pass "an unusable status cache refuses live lookups with a visible reason"
+}
+
+test_malformed_record_cannot_forge_output_structure() {
+  local case_dir record tsv json
+  case_dir=$(status_case hostile-record)
+  record=$'bad\tfield\nnext'
+  tsv=$(run_status "$case_dir" "$record") || fail "hostile malformed TSV record failed"
+  [ "$(printf '%s\n' "$tsv" | wc -l)" -eq 1 ] \
+    || fail "a malformed record forged extra TSV lines: $tsv"
+  [ "$(printf '%s' "$tsv" | tr -cd '\t' | wc -c)" -eq 3 ] \
+    || fail "a malformed record forged extra TSV columns: $tsv"
+  json=$(run_status "$case_dir" --format json "$record") \
+    || fail "hostile malformed JSON record failed"
+  printf '%s' "$json" | jq -e \
+    'length == 1 and .[0].status == "unavailable" and .[0].reason == "malformed work-item record"' \
+    >/dev/null || fail "a malformed record broke JSON output: $json"
+  pass "a malformed record cannot forge TSV or JSON structure"
+}
+
 # --- credential contract ----------------------------------------------------
 
 test_forge_token_is_used_without_reaching_the_process_arguments() {
@@ -875,13 +955,17 @@ test_spawn_upgrades_a_legacy_issue_marker_through_the_declared_tracker
 test_spawn_warns_when_a_legacy_marker_has_no_declared_tracker
 test_spawn_refuses_a_malformed_work_item_marker
 test_github_status_enrichment
+test_self_hosted_github_status_is_reported_without_a_live_call
 test_status_degrades_cleanly_on_every_failure_mode
 test_github_status_lookup_is_bounded
 test_gitea_status_enrichment_and_title_sanitizing
 test_long_multibyte_title_stays_valid_utf8
+test_long_multibyte_title_is_capped_without_perl
 test_status_caches_and_rate_limits
 test_cached_unavailable_entry_keeps_its_reason
 test_status_throttles_bursts_per_host
+test_unusable_cache_refuses_live_status_lookup
+test_malformed_record_cannot_forge_output_structure
 test_forge_token_is_used_without_reaching_the_process_arguments
 test_loose_token_permissions_are_refused
 test_forge_tokens_are_not_inheritable_config

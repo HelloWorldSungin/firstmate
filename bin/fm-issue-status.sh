@@ -142,14 +142,59 @@ run_timed() {  # <seconds> <command...>
   local seconds=$1
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
+    timeout --kill-after=1 "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
+    gtimeout --kill-after=1 "$seconds" "$@"
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
   else
     return 125
   fi
+}
+
+utf8_prefix_shell() {  # <text> <code-points>
+  local text=$1 limit=$2 output= count=0 width b1 b2 b3 b4
+  local LC_ALL=C
+  while [ -n "$text" ] && [ "$count" -lt "$limit" ]; do
+    printf -v b1 '%d' "'${text:0:1}"
+    width=0
+    if [ "$b1" -le 127 ]; then
+      width=1
+    elif [ "$b1" -ge 194 ] && [ "$b1" -le 223 ] && [ "${#text}" -ge 2 ]; then
+      printf -v b2 '%d' "'${text:1:1}"
+      [ "$b2" -ge 128 ] && [ "$b2" -le 191 ] && width=2
+    elif [ "$b1" -ge 224 ] && [ "$b1" -le 239 ] && [ "${#text}" -ge 3 ]; then
+      printf -v b2 '%d' "'${text:1:1}"
+      printf -v b3 '%d' "'${text:2:1}"
+      if [ "$b3" -ge 128 ] && [ "$b3" -le 191 ]; then
+        case "$b1" in
+          224) [ "$b2" -ge 160 ] && [ "$b2" -le 191 ] && width=3 ;;
+          237) [ "$b2" -ge 128 ] && [ "$b2" -le 159 ] && width=3 ;;
+          *) [ "$b2" -ge 128 ] && [ "$b2" -le 191 ] && width=3 ;;
+        esac
+      fi
+    elif [ "$b1" -ge 240 ] && [ "$b1" -le 244 ] && [ "${#text}" -ge 4 ]; then
+      printf -v b2 '%d' "'${text:1:1}"
+      printf -v b3 '%d' "'${text:2:1}"
+      printf -v b4 '%d' "'${text:3:1}"
+      if [ "$b3" -ge 128 ] && [ "$b3" -le 191 ] \
+        && [ "$b4" -ge 128 ] && [ "$b4" -le 191 ]; then
+        case "$b1" in
+          240) [ "$b2" -ge 144 ] && [ "$b2" -le 191 ] && width=4 ;;
+          244) [ "$b2" -ge 128 ] && [ "$b2" -le 143 ] && width=4 ;;
+          *) [ "$b2" -ge 128 ] && [ "$b2" -le 191 ] && width=4 ;;
+        esac
+      fi
+    fi
+    if [ "$width" -eq 0 ]; then
+      text=${text:1}
+      continue
+    fi
+    output="${output}${text:0:$width}"
+    text=${text:$width}
+    count=$((count + 1))
+  done
+  printf '%s' "$output"
 }
 
 utf8_prefix() {  # <text> <code-points>
@@ -162,7 +207,7 @@ utf8_prefix() {  # <text> <code-points>
       print encode("UTF-8", substr(decode("UTF-8", $bytes, FB_DEFAULT), 0, shift));
     ' "$limit"
   else
-    printf '%s' "$text"
+    utf8_prefix_shell "$text" "$limit"
   fi
 }
 
@@ -237,16 +282,26 @@ cache_write() {  # <url> <status> <state> <detail>
 # before the request so a slow or hanging forge cannot let a burst through.
 host_may_call() {  # <host>
   local host=$1 marker stamp
-  [ "$CACHE_OK" -eq 1 ] || return 0
+  HOST_CALL_REASON=
+  if [ "$CACHE_OK" -ne 1 ]; then
+    HOST_CALL_REASON="status cache/rate limiter is unavailable"
+    return 2
+  fi
   marker="$CACHE/.host-$(digest "$host")"
-  if [ -f "$marker" ] && [ ! -L "$marker" ]; then
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    if [ ! -f "$marker" ] || [ -L "$marker" ]; then
+      HOST_CALL_REASON="status cache/rate limiter marker is unusable for $host"
+      return 2
+    fi
     stamp=$(file_mtime "$marker") || stamp=
     if [ -n "$stamp" ] && [ $(( $(now) - stamp )) -lt "$MIN_INTERVAL" ]; then
       return 1
     fi
   fi
-  : > "$marker" 2>/dev/null || true
-  chmod 0600 "$marker" 2>/dev/null || true
+  if ! (umask 077 && : > "$marker") 2>/dev/null || ! chmod 0600 "$marker" 2>/dev/null; then
+    HOST_CALL_REASON="status cache/rate limiter cannot record a lookup for $host"
+    return 2
+  fi
   return 0
 }
 
@@ -273,8 +328,13 @@ read_forge_token() {  # <host> -> prints token, or returns 1
 # and LOOKUP_DETAIL (title, or the reason when unavailable), and always returns
 # 0. A forge without an adapter reports that as its reason.
 
-adapter_github() {  # <path> <number>
-  local path=$1 number=$2 output state title rc=0
+adapter_github() {  # <host> <path> <number>
+  local host=$1 path=$2 number=$3 output state title rc=0
+  if [ "$host" != github.com ]; then
+    LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+    LOOKUP_DETAIL="GitHub status enrichment is not implemented for host $host; the link still resolves"
+    return 0
+  fi
   if ! command -v gh-axi >/dev/null 2>&1; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="gh-axi is not installed"
     return 0
@@ -282,7 +342,7 @@ adapter_github() {  # <path> <number>
   output=$(run_timed "$LOOKUP_TIMEOUT" gh-axi issue view "$number" --repo "$path" --full 2>&1) || rc=$?
   case "$rc" in
     0) ;;
-    124)
+    124|137)
       LOOKUP_STATUS=unavailable; LOOKUP_STATE=
       LOOKUP_DETAIL="GitHub lookup timed out after ${LOOKUP_TIMEOUT}s"
       return 0
@@ -347,7 +407,7 @@ adapter_gitea() {  # <host> <path> <number>
   fi
   case "$response_rc" in
     0) ;;
-    28|124)
+    28|124|137)
       LOOKUP_STATUS=unavailable; LOOKUP_STATE=
       LOOKUP_DETAIL="Gitea lookup timed out after ${LOOKUP_TIMEOUT}s"
       return 0
@@ -400,7 +460,7 @@ adapter_gitea() {  # <host> <path> <number>
 lookup() {  # <forge> <host> <path> <number>
   LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL=
   case "$1" in
-    github) adapter_github "$3" "$4" ;;
+    github) adapter_github "$2" "$3" "$4" ;;
     gitea) adapter_gitea "$2" "$3" "$4" ;;
     gitlab)
       LOOKUP_DETAIL="GitLab issue status enrichment is not implemented; the link still resolves"
@@ -416,7 +476,28 @@ emit_tsv() {  # <url> <status> <state> <detail>
 }
 
 json_escape() {  # <text>
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  local text=$1 output= char code escaped
+  local LC_ALL=C
+  while [ -n "$text" ]; do
+    char=${text:0:1}
+    text=${text:1}
+    printf -v code '%d' "'$char"
+    case "$code" in
+      8) output="${output}\\b" ;;
+      9) output="${output}\\t" ;;
+      10) output="${output}\\n" ;;
+      12) output="${output}\\f" ;;
+      13) output="${output}\\r" ;;
+      34) output="${output}\\\"" ;;
+      92) output="${output}\\\\" ;;
+      0|[1-9]|1[0-9]|2[0-9]|3[01])
+        printf -v escaped '\\u%04x' "$code"
+        output="${output}${escaped}"
+        ;;
+      *) output="${output}${char}" ;;
+    esac
+  done
+  printf '%s' "$output"
 }
 
 RESULT_URLS=()
@@ -426,7 +507,7 @@ RESULT_DETAIL=()
 
 for record in "${RECORDS[@]}"; do
   if ! fm_issue_work_item_parse "$record"; then
-    RESULT_URLS+=("$record")
+    RESULT_URLS+=("$(sanitize "$record")")
     RESULT_STATUS+=(unavailable)
     RESULT_STATE+=("")
     RESULT_DETAIL+=("malformed work-item record")
@@ -434,20 +515,24 @@ for record in "${RECORDS[@]}"; do
   fi
   url=$FM_ISSUE_URL
   status=; state=; detail=
+  host_call_rc=0
   if [ "$REFRESH" -eq 0 ] && cache_read "$url" && [ "$CACHED_AGE" -lt "$TTL" ]; then
     status=$CACHED_STATUS; state=$CACHED_STATE; detail=$CACHED_DETAIL
-  elif host_may_call "$FM_ISSUE_HOST"; then
-    lookup "$FM_ISSUE_FORGE" "$FM_ISSUE_HOST" "$FM_ISSUE_PATH" "$FM_ISSUE_NUMBER"
-    status=$LOOKUP_STATUS; state=$LOOKUP_STATE; detail=$LOOKUP_DETAIL
-    cache_write "$url" "$status" "$state" "$detail"
-  elif cache_read "$url"; then
-    # Spacing blocked a live call, so serve the last known answer rather than
-    # losing the columns entirely, and say that it is stale.
-    status=$CACHED_STATUS; state=$CACHED_STATE
-    detail="$CACHED_DETAIL (cached ${CACHED_AGE}s ago)"
   else
-    status=unavailable; state=
-    detail="throttled: $FM_ISSUE_HOST was queried within the last ${MIN_INTERVAL}s"
+    host_may_call "$FM_ISSUE_HOST" || host_call_rc=$?
+    if [ "$host_call_rc" -eq 0 ]; then
+      lookup "$FM_ISSUE_FORGE" "$FM_ISSUE_HOST" "$FM_ISSUE_PATH" "$FM_ISSUE_NUMBER"
+      status=$LOOKUP_STATUS; state=$LOOKUP_STATE; detail=$LOOKUP_DETAIL
+      cache_write "$url" "$status" "$state" "$detail"
+    elif [ "$host_call_rc" -eq 2 ]; then
+      status=unavailable; state=; detail=$HOST_CALL_REASON
+    elif cache_read "$url"; then
+      status=$CACHED_STATUS; state=$CACHED_STATE
+      detail="$CACHED_DETAIL (cached ${CACHED_AGE}s ago)"
+    else
+      status=unavailable; state=
+      detail="throttled: $FM_ISSUE_HOST was queried within the last ${MIN_INTERVAL}s"
+    fi
   fi
   RESULT_URLS+=("$url")
   RESULT_STATUS+=("$status")

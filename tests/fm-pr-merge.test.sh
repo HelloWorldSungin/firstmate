@@ -618,6 +618,31 @@ test_non_github_work_item_is_reported_not_closed() {
   pass "fm-pr-merge reports a non-GitHub work item instead of closing it"
 }
 
+test_self_hosted_github_work_item_is_reported_not_closed() {
+  local case_dir rc
+  case_dir=$(make_case work-item-self-hosted-github)
+  printf 'work_item=declared|github|https://ghe.example.com/o/r/issues/5\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/55 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "work-item-self-hosted-github: a completed merge must remain successful"
+  assert_grep 'GitHub host ghe.example.com' "$case_dir/stderr" \
+    "work-item-self-hosted-github: the unsupported host was not reported"
+  assert_grep 'https://ghe.example.com/o/r/issues/5' "$case_dir/stderr" \
+    "work-item-self-hosted-github: the warning did not preserve the work-item link"
+  assert_no_grep '^issue ' "$case_dir/gh-axi.log" \
+    "work-item-self-hosted-github: the self-hosted issue was retargeted at github.com"
+  pass "fm-pr-merge reports a self-hosted GitHub work item without retargeting it"
+}
+
 test_invalid_or_multiple_work_items_warn_without_issue_calls() {
   local case_dir rc name expected
   for name in malformed multiple; do
@@ -698,5 +723,6 @@ test_issue_still_open_after_close_request_warns
 test_invalid_recorded_issue_metadata_warns_without_issue_calls
 test_work_item_closes_in_its_declared_repository_not_the_pr_repository
 test_non_github_work_item_is_reported_not_closed
+test_self_hosted_github_work_item_is_reported_not_closed
 test_invalid_or_multiple_work_items_warn_without_issue_calls
 test_work_item_record_wins_over_legacy_issue_line

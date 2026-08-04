@@ -8,11 +8,12 @@
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
 # After a successful merge, an optional work item recorded in task metadata is
-# verified and, when it is an open GitHub issue, closed with a comment linking
-# the merged PR. A work_item= record names the tracker the project declared and
-# is closed in THAT repository; only the legacy bare issue= number falls back to
-# the repository the PR landed in, which is all a bare number can mean. Several
-# recorded work items, or one on a forge with no write-back, warn instead.
+# verified and, when it is an open github.com issue, closed with a comment
+# linking the merged PR. A work_item= record names the tracker the project
+# declared and is closed on THAT host and in THAT repository; only the legacy
+# bare issue= number falls back to the repository the PR landed in, which is all
+# a bare number can mean. Several recorded work items, or one on a forge or host
+# with no write-back, warn instead.
 # Issue verification or closure failures warn while returning success, because
 # the already-completed merge must never look retryable.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
@@ -97,12 +98,20 @@ issue_close_warning() {  # <detail>
   echo "warning: PR merge succeeded: $URL; issue bookkeeping did not complete: $1" >&2
 }
 
-github_issue_state() {  # <repo-path> <issue-number>
-  local repo=$1 issue=$2 output state
+github_issue_state() {  # <host> <repo-path> <issue-number>
+  local host=$1 repo=$2 issue=$3 output state
+  [ "$host" = github.com ] || return 2
   output=$(gh-axi issue view "$issue" --repo "$repo" --full) || return 1
   state=$(printf '%s\n' "$output" | awk '$1 == "state:" { print $2; exit }')
   [ -n "$state" ] || return 1
   printf '%s\n' "$state"
+}
+
+github_issue_close() {  # <host> <repo-path> <issue-number>
+  local host=$1 repo=$2 issue=$3
+  [ "$host" = github.com ] || return 2
+  gh-axi issue close "$issue" --repo "$repo" --reason completed \
+    --comment "Closed after merge of $URL."
 }
 
 # Resolve which tracker this task's issue actually lives in. A work_item=
@@ -112,6 +121,7 @@ github_issue_state() {  # <repo-path> <issue-number>
 # and issues live on different hosts. Preferring the record is what stops a
 # mirrored project's bookkeeping going to the wrong forge.
 ISSUE_REPO=
+ISSUE_HOST=
 ISSUE=
 WORK_ITEM_COUNT=$(grep -c '^work_item=' "$META" 2>/dev/null || true)
 if [ "$WORK_ITEM_COUNT" -gt 1 ]; then
@@ -130,6 +140,11 @@ if [ "$WORK_ITEM_COUNT" -eq 1 ]; then
     issue_close_warning "the work item lives on $FM_ISSUE_FORGE ($FM_ISSUE_URL), which firstmate does not close automatically"
     exit 0
   fi
+  if [ "$FM_ISSUE_HOST" != github.com ]; then
+    issue_close_warning "the work item lives on GitHub host $FM_ISSUE_HOST ($FM_ISSUE_URL), which firstmate does not close automatically"
+    exit 0
+  fi
+  ISSUE_HOST="$FM_ISSUE_HOST"
   ISSUE_REPO="$FM_ISSUE_PATH"
   ISSUE="$FM_ISSUE_NUMBER"
 else
@@ -146,21 +161,22 @@ else
     issue_close_warning "recorded issue identity is malformed"
     exit 0
   fi
+  ISSUE_HOST=github.com
   ISSUE_REPO="$PR_OWNER/$PR_REPO"
 fi
 
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE_REPO" "$ISSUE"); then
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"); then
   issue_close_warning "could not verify $ISSUE_REPO#$ISSUE"
   exit 0
 fi
 [ "$ISSUE_STATE" = closed ] && exit 0
 
-if ! gh-axi issue close "$ISSUE" --repo "$ISSUE_REPO" --reason completed \
-  --comment "Closed after merge of $URL."; then
+if ! github_issue_close "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"; then
   issue_close_warning "could not close $ISSUE_REPO#$ISSUE"
   exit 0
 fi
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE_REPO" "$ISSUE") || [ "$ISSUE_STATE" != closed ]; then
+if ! ISSUE_STATE=$(github_issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE") \
+  || [ "$ISSUE_STATE" != closed ]; then
   issue_close_warning "$ISSUE_REPO#$ISSUE is still not closed after the close request"
 fi
 exit 0
