@@ -18,7 +18,9 @@
 #   prints the array of reference objects issue #18's outcome manifest carries.
 #
 #   --show-tracker prints the project's raw tracker declaration and exits 0, or
-#   explains that the project declares none and exits 3.
+#   explains that the project declares none and exits 3. It answers with a
+#   declaration rather than a reference, so it takes neither a <ref> nor a
+#   --format and refuses either as a usage error.
 #
 # Several references may be passed and none is also valid: with no <ref> the
 # command succeeds and prints nothing, which is how a task with no work item is
@@ -48,6 +50,7 @@ usage() {
 
 PROJECT=
 FORMAT=meta
+FORMAT_SET=0
 SHOW_TRACKER=0
 REFS=()
 want_value=
@@ -58,7 +61,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       project) PROJECT=$a ;;
-      format) FORMAT=$a ;;
+      format) FORMAT=$a; FORMAT_SET=1 ;;
     esac
     want_value=
     continue
@@ -68,7 +71,7 @@ for a in "$@"; do
     --project) want_value=project ;;
     --project=*) PROJECT=${a#--project=} ;;
     --format) want_value=format ;;
-    --format=*) FORMAT=${a#--format=} ;;
+    --format=*) FORMAT=${a#--format=}; FORMAT_SET=1 ;;
     --show-tracker) SHOW_TRACKER=1 ;;
     --*) echo "error: unknown option $a" >&2; exit 1 ;;
     *) REFS+=("$a") ;;
@@ -84,7 +87,8 @@ esac
 
 # An unreadable or malformed declaration must never read as "undeclared":
 # undeclared refuses a bare reference with an actionable reason, while a typo'd
-# declaration is a registry bug the captain has to see.
+# declaration is a registry bug the captain has to see. On that path the library
+# prints the detail phrase, so the refusal can point at the offending token.
 TRACKER=
 tracker_rc=0
 TRACKER=$(fm_issue_registry_tracker "$REGISTRY" "$PROJECT") || tracker_rc=$?
@@ -92,13 +96,19 @@ case "$tracker_rc" in
   0) ;;
   1) TRACKER= ;;
   *)
-    echo "error: project \"$PROJECT\" has a malformed tracker declaration in $REGISTRY" >&2
+    echo "error: project \"$PROJECT\" has a malformed tracker declaration in $REGISTRY${TRACKER:+: $TRACKER}" >&2
     exit 2
     ;;
 esac
 
 if [ "$SHOW_TRACKER" -eq 1 ]; then
   [ "${#REFS[@]}" -eq 0 ] || { echo "error: --show-tracker takes no references" >&2; exit 1; }
+  # --show-tracker answers with the raw declaration, which is not a reference
+  # and has no representation in any --format shape. Refusing the combination
+  # keeps every --format json call a parseable document; quietly printing a bare
+  # declaration to a caller that asked for json would not.
+  [ "$FORMAT_SET" -eq 0 ] \
+    || { echo "error: --show-tracker prints the raw tracker declaration and takes no --format" >&2; exit 1; }
   if [ -z "$TRACKER" ]; then
     echo "project \"$PROJECT\" declares no issue tracker in $REGISTRY" >&2
     exit 3

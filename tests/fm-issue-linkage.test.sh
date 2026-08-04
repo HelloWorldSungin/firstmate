@@ -16,16 +16,19 @@
 #   (d) a git remote pointing somewhere else never decides the tracker
 #   (e) a project with no declared tracker refuses a bare reference
 #   (f) tracker=none refuses with its own distinct reason
-#   (g) a malformed declaration is reported, never read as "undeclared"
+#   (g) a malformed declaration - unparseable, empty, or doubled - is reported,
+#       never read as "undeclared" and never resolved by position
 #   (h) malformed references are refused with an actionable message
 #   (i) owner/repo#N, full URLs, and forge-prefixed URLs resolve
 #   (j) an ambiguous self-hosted URL is refused rather than guessed
-#   (k) several references and zero references both work
+#   (k) several references and zero references both work, and zero still answers
+#       a json caller with a parseable document
 #   (l) the tracker token does not disturb delivery-posture parsing
 #   (m) briefs carry resolved markers and refuse unresolved ones, and a spawn
 #       records them in task metadata
 #   (n) status enrichment degrades cleanly on every failure mode
-#   (o) status enrichment caches and rate-limits
+#   (o) status enrichment caches and rate-limits, including when refreshes
+#       arrive at one host simultaneously
 #   (p) forge credentials are restrictive, never inherited, never in argv
 set -u
 
@@ -141,6 +144,53 @@ test_malformed_declaration_is_reported_not_treated_as_absent() {
     expect_code 2 "$rc" "$project: --show-tracker must report the malformed declaration"
   done
   pass "a malformed tracker declaration is reported rather than read as undeclared"
+}
+
+# Two tracker= tokens in one entry name no authoritative tracker. A parser that
+# stops at the first match resolves happily and silently, and the wrong tracker
+# is only discovered when an issue is closed on it, so the refusal is the whole
+# point: both the resolution path and --show-tracker must decline to choose.
+test_duplicate_tracker_declaration_is_refused() {
+  local out rc
+  set +e
+  out=$(resolve double-tracker-project '#5' 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "two tracker= tokens in one entry must fail"
+  assert_contains "$out" 'malformed tracker declaration' \
+    "a duplicate declaration was not reported as malformed"
+  assert_contains "$out" 'more than one tracker= token' \
+    "the refusal did not name the duplicate declaration"
+  assert_not_contains "$out" 'work_item=' \
+    "a duplicate declaration still resolved a reference"
+
+  set +e
+  out=$(resolve double-tracker-project --show-tracker 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "--show-tracker must report a duplicate declaration"
+  [ "$out" != 'github:github.com/HelloWorldSungin/first-tracker' ] \
+    || fail "--show-tracker picked the first of two declarations"
+  [ "$out" != 'gitea:gitea.example.com/DuckKingOri/second-tracker' ] \
+    || fail "--show-tracker picked the last of two declarations"
+  pass "two tracker declarations in one entry are refused rather than resolved by position"
+}
+
+# --show-tracker answers with a raw declaration, which has no representation in
+# any --format shape. A script that asked for json must not silently receive a
+# bare line instead, so the combination is a usage error rather than a surprise.
+test_show_tracker_refuses_a_format_it_cannot_honour() {
+  local out rc
+  set +e
+  out=$(resolve gitea-project --show-tracker --format json 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "--show-tracker with --format json must be a usage error"
+  assert_contains "$out" 'takes no --format' \
+    "the refusal did not name the flag combination"
+  assert_not_contains "$out" 'gitea:gitea.example.com' \
+    "--show-tracker printed a bare declaration to a caller that asked for json"
+  pass "--show-tracker refuses a --format it cannot honour"
 }
 
 test_malformed_references_are_refused() {
@@ -841,6 +891,100 @@ test_status_throttles_bursts_per_host() {
   pass "status enrichment spaces live lookups per host and still returns every link"
 }
 
+# The limiter exists for concurrency, so serial tests cannot prove it works. A
+# check-and-touch that is not atomic lets every simultaneous refresh read "no
+# recent call" and go live together, which is precisely the burst the spacing is
+# meant to prevent.
+#
+# The setup deliberately drives the widest window in the non-atomic shape: an
+# expired marker already exists, so each process forks `stat` to read its age
+# BEFORE deciding to write. Every racer therefore sits in that fork at the same
+# time and reads the same stale answer. Seeding no marker at all narrows the
+# window to two adjacent builtins and lets the broken shape pass by luck, which
+# is a vacuous test rather than a passing one. The racers are released from one
+# barrier file, and each takes a distinct URL so no cached answer can hide a
+# live call that did happen.
+test_concurrent_lookups_make_at_most_one_live_call() {
+  local case_dir cache calls marker made i n=12
+  case_dir=$(status_case concurrent)
+  fake_gh_axi_issue "$case_dir" open 'Concurrent title'
+  cache="$case_dir/state/issue-status"
+  calls="$case_dir/gh-calls"
+
+  FM_ISSUE_STATUS_MIN_INTERVAL=0 run_status "$case_dir" \
+    'declared|github|https://github.com/x/y/issues/100' >/dev/null \
+    || fail "the marker-seeding lookup failed"
+  marker=$(find "$cache" -maxdepth 1 -type f -name '.host-*' | head -n 1)
+  [ -n "$marker" ] || fail "the seeding lookup left no per-host marker"
+  touch -t 202001010000 "$marker" || fail "could not expire the seeded marker"
+
+  : > "$calls"
+  i=1
+  while [ "$i" -le "$n" ]; do
+    (
+      while [ ! -e "$case_dir/go" ]; do :; done
+      FM_TEST_GH_CALLS="$calls" FM_ISSUE_STATUS_MIN_INTERVAL=3600 \
+        run_status "$case_dir" "declared|github|https://github.com/x/y/issues/$i"
+    ) >/dev/null 2>&1 &
+    i=$((i + 1))
+  done
+  : > "$case_dir/go"
+  wait
+  made=$(wc -l < "$calls")
+  [ "$made" -eq 1 ] \
+    || fail "$n concurrent refreshes made $made live lookups to one host; the limiter is not atomic"
+  pass "concurrent lookups to one host make exactly one live call"
+}
+
+# A crashed holder must not wedge the limiter: once its claim is provably older
+# than any local stat-and-touch could take, the next caller reclaims it.
+test_a_stale_claim_does_not_wedge_the_limiter() {
+  local case_dir cache marker out
+  case_dir=$(status_case stale-claim)
+  fake_gh_axi_issue "$case_dir" open 'After the stale claim'
+  cache="$case_dir/state/issue-status"
+  # Seed one lookup so the per-host marker exists and its name is discoverable.
+  FM_ISSUE_STATUS_MIN_INTERVAL=0 run_status "$case_dir" \
+    'declared|github|https://github.com/x/y/issues/1' >/dev/null \
+    || fail "the seed lookup failed"
+  marker=$(find "$cache" -maxdepth 1 -type f -name '.host-*' | head -n 1)
+  [ -n "$marker" ] || fail "the seed lookup left no per-host marker"
+  # Leave a claim behind the way a process killed mid-claim would, dated far
+  # enough back that it is provably nobody's live claim.
+  mkdir "$marker.claim" || fail "could not seed a stale claim"
+  touch -t 202001010000 "$marker.claim" || fail "could not age the stale claim"
+  out=$(FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+    run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/1') \
+    || fail "a stale claim broke the status lookup"
+  assert_contains "$out" 'After the stale claim' \
+    "a stale claim permanently wedged the rate limiter"
+  assert_absent "$marker.claim" "the reclaimed claim was not released"
+  pass "a stale rate-limiter claim is reclaimed rather than wedging the limiter"
+}
+
+test_task_with_no_work_items_still_emits_a_json_document() {
+  local case_dir out
+  case_dir=$(status_case no-work-items)
+  printf 'project=demo\nmode=no-mistakes\n' > "$case_dir/state/t-none.meta"
+  out=$(run_status "$case_dir" --format json --task t-none) \
+    || fail "a task with no work items must succeed in json mode"
+  [ "$out" = '[]' ] \
+    || fail "a task with no work items did not emit the empty array: $out"
+  out=$(run_status "$case_dir" --task t-none) \
+    || fail "a task with no work items must succeed in tsv mode"
+  [ -z "$out" ] || fail "tsv for a task with no work items emitted output: $out"
+  # A task whose metadata does not exist at all is the same first-class case.
+  out=$(run_status "$case_dir" --format json --task t-absent) \
+    || fail "a task with no metadata must succeed in json mode"
+  [ "$out" = '[]' ] \
+    || fail "a task with no metadata did not emit the empty array: $out"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$out" | jq -e 'length == 0' >/dev/null \
+      || fail "the empty work-item document did not parse as an empty array: $out"
+  fi
+  pass "a task with no work items still emits a parseable json document"
+}
+
 test_unusable_cache_refuses_live_status_lookup() {
   local case_dir out
   case_dir=$(status_case unusable-cache)
@@ -939,6 +1083,8 @@ test_git_remote_never_decides_the_tracker
 test_undeclared_tracker_refuses_bare_reference
 test_explicit_none_refuses_with_its_own_reason
 test_malformed_declaration_is_reported_not_treated_as_absent
+test_duplicate_tracker_declaration_is_refused
+test_show_tracker_refuses_a_format_it_cannot_honour
 test_malformed_references_are_refused
 test_qualified_reference_forms_resolve
 test_ambiguous_self_hosted_url_is_refused_not_guessed
@@ -964,6 +1110,9 @@ test_long_multibyte_title_is_capped_without_perl
 test_status_caches_and_rate_limits
 test_cached_unavailable_entry_keeps_its_reason
 test_status_throttles_bursts_per_host
+test_concurrent_lookups_make_at_most_one_live_call
+test_a_stale_claim_does_not_wedge_the_limiter
+test_task_with_no_work_items_still_emits_a_json_document
 test_unusable_cache_refuses_live_status_lookup
 test_malformed_record_cannot_forge_output_structure
 test_forge_token_is_used_without_reaching_the_process_arguments

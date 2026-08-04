@@ -235,7 +235,14 @@ fm_issue_tracker_parse() {  # <forge>:<host>/<path> | none
 # Read a project's tracker declaration out of a registry file. Prints the raw
 # declaration ("<forge>:<host>/<path>" or "none") and returns 0; prints nothing
 # and returns 1 when the project is absent or declares no tracker. A malformed
-# declaration returns 2 so a typo is reported rather than read as "undeclared".
+# declaration returns 2 so a typo is reported rather than read as "undeclared",
+# printing a one-line detail phrase a caller can quote after its own sentence.
+#
+# Two tracker= tokens in one entry are malformed for the same reason a typo is:
+# an entry that names two trackers has not said which one is authoritative, and
+# taking whichever was written first would silently close an issue on the wrong
+# tracker. The count is taken across the whole annotation rather than stopping
+# at the first match, so the ambiguity is seen instead of resolved by position.
 fm_issue_registry_tracker() {  # <registry-file> <project>
   local registry=$1 project=$2 token
   [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
@@ -246,19 +253,36 @@ fm_issue_registry_tracker() {  # <registry-file> <project>
         for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
         gsub(/^\[|\]$/, "", s);
         k = split(s, a, " ");
+        count = 0; first = ""; all = "";
         for (j=1; j<=k; j++) if (a[j] ~ /^tracker=/) {
-          sub(/^tracker=/, "", a[j]); print "tracker-present:" a[j]; exit
+          v = a[j]; sub(/^tracker=/, "", v);
+          count++;
+          if (count == 1) first = v;
+          all = all (all == "" ? "" : ", ") "tracker=" v;
         }
+        if (count > 1) { print "tracker-duplicate:" all; exit }
+        if (count == 1) { print "tracker-present:" first; exit }
       }
       exit
     }
   ' "$registry")
   case "$token" in
+    tracker-duplicate:*)
+      printf 'more than one tracker= token in one entry (%s); exactly one is required\n' \
+        "${token#tracker-duplicate:}"
+      return 2
+      ;;
     tracker-present:*) token=${token#tracker-present:} ;;
     *) return 1 ;;
   esac
-  [ -n "$token" ] || return 2
-  fm_issue_tracker_parse "$token" || return 2
+  if [ -z "$token" ]; then
+    echo 'the tracker= token has an empty value'
+    return 2
+  fi
+  if ! fm_issue_tracker_parse "$token"; then
+    printf 'tracker=%s is not <forge>:<host>/<path> or none\n' "$token"
+    return 2
+  fi
   printf '%s\n' "$token"
 }
 

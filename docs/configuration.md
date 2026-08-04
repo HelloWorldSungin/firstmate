@@ -45,9 +45,10 @@ Firstmate resolves references once at intake with `bin/fm-issue-ref.sh`, exactly
 `bin/fm-spawn.sh` records those resolved markers as they stand and consults the registry only to upgrade a legacy bare `issue=` number through the project's declared tracker, reporting rather than guessing when that project declares none.
 A task may carry several references or none, and one unresolvable reference refuses the whole set rather than recording a partial one.
 Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in task metadata and handed to the outcome manifest's work-item field.
-`bin/fm-pr-merge.sh` closes a recorded GitHub work item in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
+`bin/fm-pr-merge.sh` closes a recorded work item only when it is a `github.com` issue, and then in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
+A work item on a self-hosted GitHub host, or on any other forge, is reported as one Firstmate does not close automatically rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
 
-`bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters, with GitHub and Gitea implemented and GitLab reporting that it has none.
+`bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters: `github.com` and Gitea on any host are implemented, while a self-hosted GitHub host and GitLab report that they have no adapter and keep the plain link.
 Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
 Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900) and live lookups to one host are spaced by `FM_ISSUE_STATUS_MIN_INTERVAL` seconds (default 2), so repeated dashboard refreshes cannot hammer a forge.
 

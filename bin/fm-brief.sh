@@ -21,9 +21,14 @@
 #   "this issue lives in whichever repository the PR lands in". It still works
 #   for a task shipping to its own GitHub tracker, but it cannot express a
 #   mirrored project, so prefer --work-item. The two are mutually exclusive.
-#   Either way the generated brief requires a substantive issue comment and a
-#   `Closes` line in the PR body, and fm-spawn.sh copies the explicit markers
-#   into task metadata.
+#   The generated --issue section requires a substantive issue comment and a
+#   `Closes` line in the PR body. The --work-item section instead records the
+#   links and requires the worker to reference each full URL in the PR body,
+#   with a `Closes` line only for an item whose tracker is the same repository
+#   the PR opens against; tracker write-back across forges is deliberately out
+#   of scope here, because it needs a per-forge write-credential design of its
+#   own rather than arriving through brief scaffolding. Either way fm-spawn.sh
+#   copies the explicit markers into task metadata.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list

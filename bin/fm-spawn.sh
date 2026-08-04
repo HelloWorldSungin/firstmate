@@ -1234,7 +1234,7 @@ if [ "$KIND" = ship ]; then
         fi
         ;;
       2)
-        echo "warning: $ID records issue #$ISSUE as a bare same-repository number because $PROJ_NAME's tracker= declaration in data/projects.md is malformed; correct that declaration so this task's work item points at the project's own tracker" >&2
+        echo "warning: $ID records issue #$ISSUE as a bare same-repository number because $PROJ_NAME's tracker= declaration in data/projects.md is malformed${LEGACY_TRACKER:+ ($LEGACY_TRACKER)}; correct that declaration so this task's work item points at the project's own tracker" >&2
         ;;
       *)
         echo "warning: $ID records issue #$ISSUE as a bare same-repository number because $PROJ_NAME declares no issue tracker in data/projects.md; add a tracker= token there so this task's work item points at the project's own tracker" >&2

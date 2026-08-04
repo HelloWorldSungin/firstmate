@@ -17,7 +17,9 @@
 # Output is one record per line, four tab-separated columns:
 #   <url>  ok|unavailable  open|closed|-  <title>|<reason>
 # --format json emits the same fields as an array, with null title/state when
-# the lookup did not succeed.
+# the lookup did not succeed. A task with no work items is a first-class case
+# and still answers with the empty array, so a dashboard is never handed empty
+# input where it asked for a document.
 #
 # Rate limiting and caching (a dashboard refresh must never hammer a forge):
 #   Results are cached under state/issue-status/ keyed by URL digest and reused
@@ -26,6 +28,9 @@
 #   (default 2); when that spacing would be violated, a stale cache entry is
 #   served if one exists and the reference reports "throttled" if not. --refresh
 #   ignores a fresh cache entry but still respects the per-host spacing.
+#   The spacing decision is taken under a per-host mkdir claim, so simultaneous
+#   refreshes cannot each observe "no recent call" and each go live; a claim
+#   that cannot be taken reports that and makes no call at all.
 #
 # Credentials, per host, never in tracked files and never inherited:
 #   github  uses the ambient gh-axi authentication, like every other GitHub
@@ -53,6 +58,10 @@ MIN_INTERVAL=${FM_ISSUE_STATUS_MIN_INTERVAL:-2}
 LOOKUP_TIMEOUT=${FM_ISSUE_STATUS_TIMEOUT:-10}
 case "$LOOKUP_TIMEOUT" in
   ''|*[!0-9]*|0) LOOKUP_TIMEOUT=10 ;;
+esac
+CLAIM_STALE_AFTER=${FM_ISSUE_STATUS_CLAIM_STALE:-30}
+case "$CLAIM_STALE_AFTER" in
+  ''|*[!0-9]*|0) CLAIM_STALE_AFTER=30 ;;
 esac
 
 # shellcheck source=bin/fm-issue-lib.sh
@@ -118,7 +127,14 @@ if [ -n "$TASK" ]; then
   fi
 fi
 
-[ "${#RECORDS[@]}" -ne 0 ] || exit 0
+if [ "${#RECORDS[@]}" -eq 0 ]; then
+  # A task with no work items is a first-class case, the same way it is in
+  # bin/fm-issue-ref.sh. The line-oriented format says that with no lines; json
+  # must still emit a document a consumer can parse, so it emits the empty array
+  # rather than handing a dashboard empty input.
+  [ "$FORMAT" != json ] || printf '[]\n'
+  exit 0
+fi
 
 now() { date +%s; }
 
@@ -153,7 +169,7 @@ run_timed() {  # <seconds> <command...>
 }
 
 utf8_prefix_shell() {  # <text> <code-points>
-  local text=$1 limit=$2 output= count=0 width b1 b2 b3 b4
+  local text=$1 limit=$2 output='' count=0 width b1 b2 b3 b4
   local LC_ALL=C
   while [ -n "$text" ] && [ "$count" -lt "$limit" ]; do
     printf -v b1 '%d' "'${text:0:1}"
@@ -278,31 +294,64 @@ cache_write() {  # <url> <status> <state> <detail>
   return 0
 }
 
+# Take the exclusive claim that serializes one host's check-and-touch. mkdir is
+# the atomic primitive: it either creates the directory or fails, with no window
+# between testing and claiming, and it needs no filesystem feature beyond POSIX.
+#
+# A holder that died mid-claim must not wedge the limiter, so a claim older than
+# any stat-and-touch could take is reclaimed once. That reclaim is safe because
+# the claim is held only across local filesystem calls - never across the forge
+# request itself, which is bounded separately by run_timed.
+host_claim() {  # <claim-dir>
+  local claim=$1 stamp
+  mkdir "$claim" 2>/dev/null && return 0
+  [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
+  stamp=$(file_mtime "$claim") || return 1
+  [ -n "$stamp" ] || return 1
+  [ $(( $(now) - stamp )) -ge "$CLAIM_STALE_AFTER" ] || return 1
+  rmdir "$claim" 2>/dev/null || return 1
+  mkdir "$claim" 2>/dev/null
+}
+
 # One live lookup per host per MIN_INTERVAL seconds. The marker is touched
-# before the request so a slow or hanging forge cannot let a burst through.
+# before the request so a slow or hanging forge cannot let a burst through, and
+# the whole read-decide-touch sequence runs under the per-host claim above:
+# concurrent dashboard refreshes are exactly the load this limiter exists for,
+# and a check and a write that are separate steps let every one of them read
+# "no recent call" and go live together. A claim that cannot be taken degrades
+# like an unusable cache - no live lookup, link and reason preserved - because
+# a limiter that cannot serialize must not authorize.
 host_may_call() {  # <host>
-  local host=$1 marker stamp
+  local host=$1 marker claim stamp rc=0
   HOST_CALL_REASON=
   if [ "$CACHE_OK" -ne 1 ]; then
     HOST_CALL_REASON="status cache/rate limiter is unavailable"
     return 2
   fi
   marker="$CACHE/.host-$(digest "$host")"
+  claim="$marker.claim"
+  if ! host_claim "$claim"; then
+    HOST_CALL_REASON="status cache/rate limiter is busy for $host, so no live lookup was made"
+    return 2
+  fi
   if [ -e "$marker" ] || [ -L "$marker" ]; then
     if [ ! -f "$marker" ] || [ -L "$marker" ]; then
       HOST_CALL_REASON="status cache/rate limiter marker is unusable for $host"
-      return 2
-    fi
-    stamp=$(file_mtime "$marker") || stamp=
-    if [ -n "$stamp" ] && [ $(( $(now) - stamp )) -lt "$MIN_INTERVAL" ]; then
-      return 1
+      rc=2
+    else
+      stamp=$(file_mtime "$marker") || stamp=
+      if [ -n "$stamp" ] && [ $(( $(now) - stamp )) -lt "$MIN_INTERVAL" ]; then
+        rc=1
+      fi
     fi
   fi
-  if ! (umask 077 && : > "$marker") 2>/dev/null || ! chmod 0600 "$marker" 2>/dev/null; then
+  if [ "$rc" -eq 0 ] \
+    && { ! (umask 077 && : > "$marker") 2>/dev/null || ! chmod 0600 "$marker" 2>/dev/null; }; then
     HOST_CALL_REASON="status cache/rate limiter cannot record a lookup for $host"
-    return 2
+    rc=2
   fi
-  return 0
+  rmdir "$claim" 2>/dev/null || true
+  return "$rc"
 }
 
 # Read a per-host token from its restrictive local path. A token file that is a
@@ -476,7 +525,7 @@ emit_tsv() {  # <url> <status> <state> <detail>
 }
 
 json_escape() {  # <text>
-  local text=$1 output= char code escaped
+  local text=$1 output='' char code escaped
   local LC_ALL=C
   while [ -n "$text" ]; do
     char=${text:0:1}
