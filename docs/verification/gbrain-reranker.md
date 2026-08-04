@@ -79,6 +79,7 @@ The unit pins the GPU by UUID with `CUDA_VISIBLE_DEVICES`, loads the CUDA backen
 The server is launched with `--reranking --offline --no-webui --host 127.0.0.1 --port 8081 --ctx-size 4096 --batch-size 512 --ubatch-size 512 --parallel 1 --n-gpu-layers 999`.
 The service uses `Restart=on-failure`, a two-second restart delay, a startup HTTP health probe, journal output, and a 200-message-per-30-second log rate limit.
 
+GBrain v0.40.6.1 or newer is required because that release added the [`llama-server-reranker` recipe](https://github.com/garrytan/gbrain/blob/master/docs/ai-providers/llama-server-reranker.md#4-wire-gbrain-at-your-server).
 Configure GBrain with:
 
 ```sh
