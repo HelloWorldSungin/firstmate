@@ -719,13 +719,24 @@ async function collect(db, roots, stamp) {
   return summary;
 }
 
+// A derived table is rebuilt in place, so its wipe and its repopulation commit
+// together: a failure between them would leave an empty usage_session, which is
+// the only thing bindLiveSessions reads, and that run would bind nothing and
+// publish no session map while the store still reported success.
 function rebuildSessions(db) {
-  db.exec(`DELETE FROM usage_session`);
-  db.exec(`INSERT INTO usage_session
-      (harness, session_id, source_kind, cwd, first_seen, last_seen, event_count)
-    SELECT harness, session_id, MIN(source_kind), MAX(cwd),
-           MIN(occurred_at), MAX(occurred_at), COUNT(*)
-    FROM usage_event GROUP BY harness, session_id`);
+  db.exec("BEGIN");
+  try {
+    db.exec(`DELETE FROM usage_session`);
+    db.exec(`INSERT INTO usage_session
+        (harness, session_id, source_kind, cwd, first_seen, last_seen, event_count)
+      SELECT harness, session_id, MIN(source_kind), MAX(cwd),
+             MIN(occurred_at), MAX(occurred_at), COUNT(*)
+      FROM usage_event GROUP BY harness, session_id`);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +759,7 @@ function syncTasks(db, dirs, stamp) {
     ON CONFLICT(task_id) DO UPDATE SET
       -- A source that does not report a fact does not erase it: the live
       -- metadata and the durable manifest each know things the other may not.
+      -- This merge describes ONE occupancy of a task id; see restartOccupancy.
       project = COALESCE(excluded.project, usage_task.project),
       kind = COALESCE(excluded.kind, usage_task.kind),
       harness = COALESCE(excluded.harness, usage_task.harness),
@@ -770,6 +782,17 @@ function syncTasks(db, dirs, stamp) {
       task_id = excluded.task_id, project = excluded.project,
       worktree = excluded.worktree, source = excluded.source,
       recorded_at = excluded.recorded_at`);
+  // A task id is an operator-supplied slug, and data/<id>/ outlives teardown, so
+  // the same slug can be dispatched again long after an earlier task of that
+  // name finished. A row describes ONE occupancy: observing an id live again
+  // while its row describes a finished occupancy starts the row over, because
+  // merging two lifetimes would hand the new task the old one's closed window
+  // and orphan every token it goes on to spend. Within one occupancy the merge
+  // above still holds, which is what keeps the anti-drift MIN on started_at.
+  const restartOccupancy = db.prepare(`UPDATE usage_task
+      SET project = NULL, kind = NULL, harness = NULL, model = NULL, effort = NULL,
+          worktree = NULL, started_at = NULL, completed_at = NULL, outcome = NULL
+    WHERE task_id = ? AND source <> 'meta'`);
 
   const counts = { live: 0, archived: 0, live_records_gone: 0, bindings_from_manifest: 0 };
   const state = dirs.state;
@@ -789,34 +812,45 @@ function syncTasks(db, dirs, stamp) {
     entries = [];
     stateReadable = false;
   }
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".meta")) continue;
-    const id = entry.name.slice(0, -".meta".length);
-    const file = path.join(state, entry.name);
-    let text;
-    let started = null;
-    try {
-      text = fs.readFileSync(file, "utf8");
-      started = normalizeIso(new Date(fs.statSync(file).mtimeMs).toISOString());
-    } catch {
-      continue;
+  // Restarting a row and re-describing it are one change, so they commit
+  // together: a failure between them would leave a task with no worktree and no
+  // window, matching nothing until a later run repaired it.
+  db.exec("BEGIN");
+  try {
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".meta")) continue;
+      const id = entry.name.slice(0, -".meta".length);
+      const file = path.join(state, entry.name);
+      let text;
+      let started = null;
+      try {
+        text = fs.readFileSync(file, "utf8");
+        started = normalizeIso(new Date(fs.statSync(file).mtimeMs).toISOString());
+      } catch {
+        continue;
+      }
+      restartOccupancy.run(id);
+      upsert.run(
+        id,
+        metaValue(text, "project"),
+        metaValue(text, "kind") || "ship",
+        metaValue(text, "harness"),
+        metaValue(text, "model"),
+        metaValue(text, "effort"),
+        metaValue(text, "worktree"),
+        started,
+        null,
+        null,
+        "meta",
+        stamp,
+      );
+      liveIds.add(id);
+      counts.live += 1;
     }
-    upsert.run(
-      id,
-      metaValue(text, "project"),
-      metaValue(text, "kind") || "ship",
-      metaValue(text, "harness"),
-      metaValue(text, "model"),
-      metaValue(text, "effort"),
-      metaValue(text, "worktree"),
-      started,
-      null,
-      null,
-      "meta",
-      stamp,
-    );
-    liveIds.add(id);
-    counts.live += 1;
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
 
   // Completed tasks: the durable manifest is the only record left once teardown
@@ -1055,18 +1089,25 @@ function loadRates(file) {
 }
 
 function applyCost(db, rates, stamp) {
-  db.exec("DELETE FROM usage_cost_estimate");
-  if (!rates) return { rate_version: null, currency: null, events_priced: 0, events_unpriced: null };
-  const insert = db.prepare(`INSERT INTO usage_cost_estimate
-      (event_id, rate_version, currency, estimated_cost, computed_at) VALUES (?,?,?,?,?)`);
-  const events = db
-    .prepare(`SELECT event_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-              FROM usage_event`)
-    .all();
+  const insert = rates
+    ? db.prepare(`INSERT INTO usage_cost_estimate
+        (event_id, rate_version, currency, estimated_cost, computed_at) VALUES (?,?,?,?,?)`)
+    : null;
+  const events = rates
+    ? db
+        .prepare(`SELECT event_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+                  FROM usage_event`)
+        .all()
+    : [];
   let priced = 0;
   let unpriced = 0;
+  // The estimate is rebuilt in place, so clearing it and repricing commit
+  // together: a failure between them would report a null cost on every rollup
+  // despite a valid rate file, which reads as "cost unknown" rather than as the
+  // failure it is.
   db.exec("BEGIN");
   try {
+    db.exec("DELETE FROM usage_cost_estimate");
     for (const event of events) {
       const rate = event.model ? rates.models.get(event.model) : null;
       if (!rate) {
@@ -1088,6 +1129,7 @@ function applyCost(db, rates, stamp) {
     db.exec("ROLLBACK");
     throw error;
   }
+  if (!rates) return { rate_version: null, currency: null, events_priced: 0, events_unpriced: null };
   return {
     rate_version: rates.version,
     currency: rates.currency,

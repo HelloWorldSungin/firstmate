@@ -17,7 +17,8 @@ bin/fm-usage.mjs attribution
 
 `ingest` scans this machine's Claude Code transcripts and Codex rollouts, stores every token-usage event, attributes what it can, and prints a JSON summary.
 It is safe to run on any cadence, including concurrently with an earlier run that has not finished, because ingestion is idempotent rather than incremental-only.
-Each derived stage - attribution, cost, the published session maps - is atomic on its own, so a stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
+Every derived table is rebuilt in place, and each rebuild commits its wipe and its repopulation together, so a failed run leaves the previous derivation rather than an empty table that would read as "nothing to report".
+A stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
 The remaining subcommands are read-only projections and print JSON: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.
 
 The store lives at `data/usage.db` under the operational home and is private to it.
@@ -81,6 +82,9 @@ Worktree paths are recycled between tasks, which is precisely why the bound exis
 A task counts as live only while its own `state/<id>.meta` is present in the scan that is running now, never because an earlier scan saw it.
 Once that record is gone, the durable manifest supersedes what the live record said, and a task that left no manifest is retired at the moment its absence was first observed.
 Either way the claim on the worktree ends when the task's hold on it ended, so the next task in that pool slot owns its own usage.
+
+Task ids are operator-supplied slugs and `data/<id>/` outlives cleanup, so a stored task record describes one *occupancy* of an id.
+Seeing an id live again while its record describes a finished occupancy starts that record over, which is why a re-dispatched slug gets its own window instead of inheriting the closed one.
 
 Unattributed usage is preserved with explicit unknown fields and reported in every projection, including firstmate's own sessions, which belong to no task.
 `bin/fm-usage.mjs attribution` reports the method and confidence breakdown plus the percentage of events and tokens matched.

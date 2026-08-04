@@ -417,6 +417,59 @@ test_a_recycled_worktree_slot_belongs_to_the_task_holding_it() {
   pass "a recycled worktree slot attributes usage to the task holding it"
 }
 
+# Task ids are operator-supplied slugs and data/<id>/ outlives cleanup, so the
+# same slug can be dispatched again after an earlier task of that name finished.
+# A task row describes one occupancy: the new one must start its own window
+# rather than inherit the closed one, or nothing it spends is ever attributed and
+# its manifest archives the previous occupancy's session instead.
+test_a_redispatched_task_id_starts_a_fresh_window() {
+  local case_root
+  case_root=$(new_case recycled-id)
+  local worktree="$case_root/worktrees/slot-id"
+  mkdir -p "$worktree" "$case_root/home/data/ship-login"
+  printf 'brief\n' > "$case_root/home/data/ship-login/brief.md"
+  local dir="$case_root/claude/-slot-id"
+  mkdir -p "$dir"
+
+  write_meta_at "$case_root/home/state/ship-login.meta" 202608010900.00 \
+    "window=fm:ship-login" "worktree=$worktree" "project=demo" "harness=claude" \
+    "model=claude-opus-5" "effort=high" "kind=ship" "mode=no-mistakes"
+  printf 'done: PR https://example.invalid/pr/1 checks green\n' \
+    > "$case_root/home/state/ship-login.status"
+  claude_line "$dir/one.jsonl" session-run-one "$worktree" 2026-08-01T10:00:00Z msg_one 10 20 30 40
+  usage_run "$case_root" ingest >/dev/null || fail "the first occupancy's ingest failed"
+
+  FM_HOME="$case_root/home" "$MANIFEST" write ship-login >/dev/null || fail "manifest write failed"
+  rm -f "$case_root/home/state/ship-login.meta" "$case_root/home/state/ship-login.status" \
+    "$case_root/home/state/ship-login.usage-sessions"
+  usage_run "$case_root" ingest >/dev/null || fail "the post-teardown ingest failed"
+
+  # The operator dispatches the same slug again days later.
+  write_meta_at "$case_root/home/state/ship-login.meta" 202608050900.00 \
+    "window=fm:ship-login" "worktree=$worktree" "project=demo" "harness=claude" \
+    "model=claude-opus-5" "effort=high" "kind=ship" "mode=no-mistakes"
+  claude_line "$dir/two.jsonl" session-run-two "$worktree" 2026-08-05T10:00:00Z msg_two 1 2 3 4
+
+  local out
+  out=$(FM_USAGE_NOW=2026-08-05T12:00:00Z usage_run "$case_root" ingest) \
+    || fail "the second occupancy's ingest failed"
+  [ "$(jq -r '.sessions_bound' <<<"$out")" = 1 ] \
+    || fail "a re-dispatched task id must bind its own session: $out"
+  local sidecar="$case_root/home/state/ship-login.usage-sessions"
+  assert_present "$sidecar" "the re-dispatched task must publish a session map"
+  jq -e '[.sessions[].session_id] | index("session-run-two")' "$sidecar" >/dev/null \
+    || fail "the session map must carry the running occupancy's session: $(cat "$sidecar")"
+
+  local total unattributed
+  total=$(usage_run "$case_root" report --by task \
+    | jq -r '.rows[] | select(.key == "ship-login") | .total_tokens')
+  [ "$total" = 110 ] || fail "both occupancies of the id must keep their usage, got $total"
+  unattributed=$(usage_run "$case_root" attribution | jq -r '.unattributed_tokens')
+  [ "$unattributed" = 0 ] \
+    || fail "the re-dispatched occupancy's usage was orphaned by the old window: $unattributed"
+  pass "a re-dispatched task id starts a fresh window instead of inheriting a closed one"
+}
+
 # The same slot, but the first task's records vanish without a manifest ever
 # being published. Liveness is a fact about the current scan, so the vanished
 # task stops claiming the slot instead of contesting every later task forever.
@@ -654,6 +707,7 @@ test_malformed_and_rotated_sources
 test_live_attribution_and_session_map
 test_totals_survive_teardown
 test_a_recycled_worktree_slot_belongs_to_the_task_holding_it
+test_a_redispatched_task_id_starts_a_fresh_window
 test_a_task_whose_live_records_vanish_stops_claiming_its_slot
 test_unattributed_usage_is_preserved
 test_ambiguous_attribution_is_refused
