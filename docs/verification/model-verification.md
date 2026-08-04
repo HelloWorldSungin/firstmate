@@ -75,7 +75,7 @@ jq -r 'select(.type=="assistant") | .message.model // empty' "$BIG"  0.09s user 
 
 ## 2026-08-01: transcript directory path encoding
 
-Claude Code stores transcripts under `<config>/projects/<encoded-cwd>/`.
+Claude Code stores transcripts under `<transcript-store>/projects/<encoded-cwd>/`.
 The encoding was established empirically rather than assumed, using a working directory containing `/`, `.`, `_`, and a space:
 
 ```sh
