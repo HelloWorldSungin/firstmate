@@ -920,8 +920,8 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     # The shared wall-clock bound: brain retrieval owns its portable regression,
-    # and the PR observation path is its other consumer.
-    bin/fm-bounded-lib.sh)
+    # and the forge observation and write-back paths are its other consumers.
+    bin/fm-timeout-lib.sh)
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
       ;;

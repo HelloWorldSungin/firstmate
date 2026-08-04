@@ -61,7 +61,6 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-gbrain-lib.sh`       | Resolve a home's own brain, validate the three brain-configuration planes, and read a credential only from a restrictively stored file |
 | `fm-gbrain.sh`           | Inspect a home's brain configuration, and grant, rotate, revoke, or retire read-only access to the main brain |
 | `fm-recall.sh`           | The retrieval surface firstmate and crewmates use to search a home's brain and the shared main brain, and to run hosted `think` |
-| `fm-bounded-lib.sh`      | Shared simple wall-clock bound over `timeout`, `gtimeout`, or perl for one command |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |

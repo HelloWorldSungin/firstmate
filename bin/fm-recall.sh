@@ -91,8 +91,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
-# shellcheck source=bin/fm-bounded-lib.sh
-. "$SCRIPT_DIR/fm-bounded-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 GBRAIN_BIN="${FM_GBRAIN_BIN:-gbrain}"
 SCHEMA=fm-recall.v1
@@ -286,7 +286,7 @@ gbrain_local_call() {  # <tool> <params-json> <seconds> -> 0
     export GBRAIN_HOME="$FM_GBRAIN_HOME_DIR"
     [ -z "$EMBED_URL" ] || export OLLAMA_BASE_URL="$EMBED_URL"
     [ -z "$GBRAIN_CALL_HOSTED_KEY" ] || export MINIMAX_API_KEY="$GBRAIN_CALL_HOSTED_KEY"
-    fm_run_bounded "$secs" "$GBRAIN_BIN" call "$tool" "$params"
+    fm_run_timed "$secs" "$GBRAIN_BIN" call "$tool" "$params"
   ) >"$out_file" 2>"$err_file" || rc=$?
   LOCAL_OUT=$(cat "$out_file")
   LOCAL_ERR=$(tr -s '[:space:]' ' ' < "$err_file")
@@ -294,7 +294,7 @@ gbrain_local_call() {  # <tool> <params-json> <seconds> -> 0
   rm -f "$out_file" "$err_file"
   case $rc in
     0) ;;
-    124) LOCAL_ERR="the local brain did not answer within ${secs}s"; return 1 ;;
+    124|137) LOCAL_ERR="the local brain did not answer within ${secs}s"; return 1 ;;
     125) LOCAL_ERR="no timeout implementation on PATH, so this call cannot be bounded"; return 1 ;;
     *) [ -n "$LOCAL_ERR" ] || LOCAL_ERR="gbrain exited $rc"; return 1 ;;
   esac

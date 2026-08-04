@@ -275,13 +275,13 @@ if command -v perl >/dev/null 2>&1; then
   stub_reply "$SEARCH_HIT"
   export FM_STUB_SLEEP=5
   RECALL_RC=0
-  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_BOUNDED_FORCE_FALLBACK=1 bash "$CLI" search --json --timeout 1 teardown 2>&1) || RECALL_RC=$?
+  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_TIMEOUT_FORCE_FALLBACK=1 bash "$CLI" search --json --timeout 1 teardown 2>&1) || RECALL_RC=$?
   unset FM_STUB_SLEEP
   expect_code 3 "$RECALL_RC" "the fallback bound must expire an overrunning call the same way timeout(1) does"
   assert_contains "$RECALL_OUT" "did not answer within" "the fallback bound must report an overrun as an overrun"
   stub_reply "$SEARCH_HIT"
   RECALL_RC=0
-  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_BOUNDED_FORCE_FALLBACK=1 bash "$CLI" search --json teardown 2>&1) || RECALL_RC=$?
+  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_TIMEOUT_FORCE_FALLBACK=1 bash "$CLI" search --json teardown 2>&1) || RECALL_RC=$?
   expect_code 0 "$RECALL_RC" "the fallback bound must return an ordinary answer unchanged: $RECALL_OUT"
   [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 1 ] \
     || fail "the fallback bound should deliver the brain's own results: $RECALL_OUT"

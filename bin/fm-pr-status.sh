@@ -47,9 +47,9 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-pr-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"
-# shellcheck source=bin/fm-bounded-lib.sh
+# shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-bounded-lib.sh"
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 FM_PR_STATUS_TIMEOUT=${FM_PR_STATUS_TIMEOUT:-20}
 case "$FM_PR_STATUS_TIMEOUT" in
@@ -79,8 +79,8 @@ command -v jq >/dev/null 2>&1 || { echo "fm-pr-status: jq not found" >&2; exit 1
 
 run_bounded() {  # <cmd...>
   local rc=0
-  FM_BOUNDED_FORCE_FALLBACK=${FM_PR_STATUS_FORCE_FALLBACK:-0} \
-    fm_run_bounded "$FM_PR_STATUS_TIMEOUT" "$@" || rc=$?
+  FM_TIMEOUT_FORCE_FALLBACK=${FM_PR_STATUS_FORCE_FALLBACK:-0} \
+    fm_run_timed "$FM_PR_STATUS_TIMEOUT" "$@" || rc=$?
   [ "$rc" -ne 125 ] || echo "fm-pr-status: no timeout implementation on PATH" >&2
   return "$rc"
 }
