@@ -108,10 +108,30 @@ for (const missing of ["state", "review", "checks", "mergeable"]) {
 const stale = prReadiness(task("t", { pr: pr(GREEN, { age: POLICY.prStatusMaxAgeSeconds + 1 }) }));
 equal("an observation past the freshness limit withdraws its verdict", stale.verdict, "unknown");
 check("a stale observation is marked stale", stale.stale === true);
+// A withdrawn verdict withdraws its fields too, or the card still prints
+// "checks passing" in confident styling for a reading nobody believes.
+check("a stale observation renders no field as passing",
+  Object.values(stale.fields).every((value) => value === "unknown"), JSON.stringify(stale.fields));
+check("a stale observation names every withdrawn field",
+  stale.unknown_fields.join(",") === "state,review,checks,mergeable", stale.unknown_fields.join(","));
 const ageless = prReadiness(task("t", { pr: pr(GREEN, { age: null }) }));
 equal("an observation with no readable age renders unknown", ageless.verdict, "unknown");
+check("an observation with no readable age renders no field as passing",
+  Object.values(ageless.fields).every((value) => value === "unknown"), JSON.stringify(ageless.fields));
 const overridden = prReadiness(task("t", { pr: pr(GREEN, { age: 5_000 }) }), { prStatusMaxAgeSeconds: 10_000 });
 equal("a widened freshness limit is honoured", overridden.verdict, "merge_ready");
+
+// --- a terminal pull request stays terminal at any age ----------------------
+
+const staleMerged = prReadiness(task("t", { pr: pr({ ...GREEN, state: "merged" }, { age: POLICY.prStatusMaxAgeSeconds + 1 }) }));
+equal("a stale merged pull request is still merged", staleMerged.verdict, "merged");
+equal("a monotonic terminal state survives its own staleness", staleMerged.fields.state, "merged");
+check("a stale merged pull request still withdraws its perishable fields",
+  ["review", "checks", "mergeable"].every((name) => staleMerged.fields[name] === "unknown"), JSON.stringify(staleMerged.fields));
+equal("a stale closed pull request is still closed",
+  prReadiness(task("t", { pr: pr({ ...GREEN, state: "closed" }, { age: 86_400 }) })).verdict, "closed");
+equal("a stale draft is not terminal and withdraws normally",
+  prReadiness(task("t", { pr: pr({ ...GREEN, state: "draft" }, { age: POLICY.prStatusMaxAgeSeconds + 1 }) })).verdict, "unknown");
 
 equal("a bare pull-request URL alone is never ready",
   prReadiness(task("t", { pr: { url: PR_URL } })).verdict, "unknown");
@@ -135,6 +155,12 @@ const membership = inboxOf([
 const present = membership.items.map((item) => item.id).sort();
 equal("only actionable and unknown pull requests reach the inbox",
   present.join(","), "merge-ready,pr-unknown,review-ready");
+
+const settled = inboxOf([
+  task("landed", { card: { column: "done" }, pr: pr({ ...GREEN, state: "merged" }, { age: POLICY.prStatusMaxAgeSeconds * 4 }) }),
+  task("abandoned", { card: { column: "done" }, pr: pr({ ...GREEN, state: "closed" }, { age: POLICY.prStatusMaxAgeSeconds * 4 }) }),
+]);
+equal("an aged terminal pull request never reopens an inbox item", settled.items.length, 0);
 
 // --- full text and full URLs ----------------------------------------------
 
@@ -276,6 +302,18 @@ equal("an unreadable event age is unknown, not green",
 equal("a completed task no longer counts against activity",
   health(fleet({ tasks: [task("landed", { card: { column: "done" }, paths: { status_log: { last_event_age_seconds: 99_999 } } })] })).byId.events.tone, "green");
 
+// A secondmate reports only when it is asked to do something, so its silence is
+// health, not a stalled task. It is answered for by its own signal instead.
+const idleMate = health(fleet({ tasks: [task("mate", {
+  kind: "secondmate",
+  endpoint: { exists: true, status: "alive" },
+  card: { column: "secondmate", action: "route_work" },
+  paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds * 2 } },
+})] }));
+equal("an idle secondmate never counts as a stalled task", idleMate.byId.events.tone, "green");
+equal("a secondmate answers through its own signal", idleMate.byId.secondmates.tone, "green");
+equal("a home holding only an idle secondmate reads healthy", idleMate.overall.label, "Healthy");
+
 // --- uncertainty never summarizes as healthy -------------------------------
 
 const partly = health(fleet({ main_inventory: undefined }));
@@ -312,5 +350,6 @@ NODE
 
 pass "pull-request readiness is green only when normalized checks, review, and mergeability agree"
 pass "missing, stale, and out-of-enumeration provider data render as explicit unknown"
+pass "merged and closed pull requests stay terminal at any observation age"
 pass "inbox items deduplicate overlapping signals, keep full text, and sort oldest evidence first"
 pass "health signals produce the documented states and never summarize uncertainty as healthy"

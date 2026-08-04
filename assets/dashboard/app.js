@@ -48,7 +48,7 @@ const badgeOrder = [
   ["decisions", "Decisions", "amber"],
   ["credentials", "Credentials", "amber"],
   ["blocked", "Blocked", "red"],
-  ["failed", "Failing", "red"],
+  ["failed", "Needs attention", "red"],
   ["merge_ready", "Merge ready", "green"],
   ["review_ready", "Review ready", "blue"],
   ["unknown", "PR unknown", "unknown"],
@@ -131,7 +131,7 @@ function paintNotifyButtons() {
     if (button !== ui.notifyButtons[0]) button.setAttribute("aria-label", `${label}. Toggle desktop alerts for new inbox items.`);
   }
   ui.notifyButtons[1].disabled = !supported;
-  ui.notifyButtons[1].textContent = state.notifyEnabled ? "☀" : "☾";
+  ui.notifyButtons[1].textContent = state.notifyEnabled ? "🔔" : "🔕";
 }
 
 async function toggleNotifications() {
@@ -157,7 +157,11 @@ function initializeNotifications() {
   paintNotifyButtons();
 }
 
-function announceNewItems(items) {
+function announceNewItems(items, observed) {
+  // A render that carried no snapshot saw nothing, so it cannot be the
+  // baseline: treating its empty inbox as "what was already there" would make
+  // every waiting item alert as new the moment the first snapshot arrives.
+  if (!observed) return;
   const ids = new Set(items.map((item) => item.id));
   if (state.seenInboxIds === null) {
     // The first render is the baseline; everything already waiting is not new.
@@ -531,7 +535,7 @@ function render(envelope) {
   renderHealthStrip(health);
   renderBadges(inbox.counts);
   renderInbox(inbox, envelope);
-  announceNewItems(inbox.items);
+  announceNewItems(inbox.items, Boolean(snapshot));
   renderNotices(envelope);
   const status = envelope?.status;
   ui.refreshNote.textContent = status?.last_success_at

@@ -199,7 +199,8 @@ Firstmate's skills live in two separate places with different audiences:
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
-- [docs/dashboard.md](docs/dashboard.md) - install and operate the loopback-only, read-only fleet kanban service.
+- [docs/dashboard.md](docs/dashboard.md) - install and operate the loopback-only, read-only captain inbox and fleet kanban service.
+- [docs/dashboard-inbox-policy.md](docs/dashboard-inbox-policy.md) - the single documented statement of what reaches the captain inbox, what makes a pull request green, and what turns each health signal amber or red.
 - [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
 - [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.

@@ -26,9 +26,9 @@ The first matching rule below wins.
 | Verdict | Tone | Wins when |
 | --- | --- | --- |
 | `none` | unknown | no PR URL is recorded |
+| `merged` | green | `state: merged`, at any observation age |
+| `closed` | unknown | `state: closed`, at any observation age |
 | `unknown` | unknown | no observation is cached, the observation is older than the freshness limit, or any of the four fields is missing or `unknown` |
-| `merged` | green | `state: merged` |
-| `closed` | unknown | `state: closed` |
 | `draft` | unknown | `state: draft` |
 | `checks_failing` | red | `checks: failing` |
 | `conflicting` | red | `mergeable: conflicting` |
@@ -37,14 +37,19 @@ The first matching rule below wins.
 | `merge_ready` | green | `checks: passing` **and** `review: approved` **and** `mergeable: mergeable` |
 | `review_ready` | blue | everything else that is open and not failing |
 
-Two consequences are deliberate.
+Three consequences are deliberate.
 
 `merge_ready` is the only green open verdict, and it requires all three fields to agree.
 `checks: none` means the forge reported no checks at all, which is a definite reading but not a passing one, so it can never produce `merge_ready`; it downgrades to `review_ready` and states "no checks reported" as a caveat on the card.
 
 Staleness is treated exactly like a missing field.
 An observation older than the freshness limit described a pull request as it was, not as it is, so its verdict is withdrawn rather than shown with a caveat.
+Withdrawal covers the individual fields too: a stale observation's `state`, `review`, `checks`, and `mergeable` chips all render as `unknown`, because a value the verdict above them has already disowned must not be drawn in the same confident style as one that still holds.
 The limit is `POLICY.prStatusMaxAgeSeconds`, 900 seconds by default, and the age itself is always displayed next to the verdict.
+
+`merged` and `closed` are the exception, and they are settled before the freshness gate rather than after it.
+Both are monotonic, so an aged reading of either is still true, and letting age withdraw them would file every landed pull request back into the inbox as an unknown the captain can do nothing about.
+Only the state itself survives that withdrawal; the other three fields of a stale terminal observation still render as `unknown`.
 
 ## Inbox items
 
@@ -81,7 +86,8 @@ Items sort oldest evidence first, because the longest-waiting item is the one mo
 An item whose age cannot be read sorts ahead of every dated one.
 Ties break by reason severity, then by identity, so the order is stable between refreshes.
 
-An item's age is the age of the newest evidence supporting it, and the card names which evidence that was.
+An item's age is the age of the oldest evidence supporting it, and the card names which evidence that was.
+A decision that has waited three hours must not read as one minute old because its pull request was polled a minute ago.
 The snapshot carries no per-decision timestamp, so a status-derived reason is aged by its task's last event (`last update`) and a pull-request reason by its observation (`status observed`).
 A captain-held backlog row carries no timestamp at all and renders as "age unknown".
 
@@ -109,6 +115,10 @@ The snapshot answers two different questions through one endpoint field, so the 
 For a secondmate it reports whether the agent is alive, so anything short of `alive` is not a live return channel.
 For every other task it reports only whether the runtime endpoint is present, so a present endpoint is the strongest true statement available and an unreadable one stays unknown.
 
+Task activity and Workers both read live tasks only, and neither counts a secondmate.
+A secondmate writes a status event only when it is asked to do something, so an idle one is healthy; counting its silence as a stalled task would drive the whole strip to "Attention needed" in a home where nothing is wrong.
+Secondmates report through their own signal instead.
+
 ### Overall verdict
 
 The overall verdict is the worst signal present, ranked `red` > `amber` > `unknown` > `green`.
@@ -121,10 +131,12 @@ Red readings survive the demotion: an old alarm is still an alarm.
 
 The header shows one badge per non-empty inbox category and the sidebar shows the total.
 When nothing is outstanding the header says so in words rather than showing an empty row.
+One badge covers every attention state at once - a reported failure, failing checks, a conflict, or requested changes - and is labelled "Needs attention" rather than "Failing", because requested changes are amber and calling them a failure overstates them.
 
 Desktop alerts are entirely client-side and off by default.
 The toggle requests browser notification permission on click and nothing else; the server never learns that a browser wants them, and a denied or unsupported permission leaves the control off without affecting anything else on the page.
-The first render after a page load establishes the baseline, so alerts fire only for items that appear afterwards.
+The first render that actually carries a fleet snapshot establishes the baseline, so alerts fire only for items that appear afterwards.
+A first-run or unavailable render is skipped rather than treated as an empty baseline, because doing otherwise would alert on every item that was already waiting.
 
 ## Verification
 

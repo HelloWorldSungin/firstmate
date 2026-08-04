@@ -97,6 +97,13 @@ function terminalColumn(task) {
   return task?.card?.column === "done";
 }
 
+// The tasks the fleet is actually working on right now. A secondmate is live
+// but not work: it reports only when it is asked to do something, so an idle
+// one is healthy and must never be counted as a task that has gone quiet.
+function liveWorkTasks(tasks) {
+  return tasks.filter((task) => !terminalColumn(task) && text(task?.kind) !== "secondmate");
+}
+
 /**
  * Normalized pull-request readiness for one task.
  *
@@ -132,18 +139,45 @@ export function prReadiness(task, options = {}) {
   const stale = base.age_seconds === null || base.age_seconds > maxAge;
   const shared = { ...base, fields, unknown_fields: unknownFields, stale };
 
-  if (base.freshness !== "cached") {
+  // A withdrawn reading renders exactly like one that was never taken: every
+  // value it reported goes back to `unknown`, so no chip states a fact in
+  // confident styling that the verdict above it has already disowned. `keep`
+  // names the fields whose truth age cannot undo.
+  const withdraw = (keep = []) => {
+    const held = Object.fromEntries(keep.map((name) => [name, resolved[name]]));
+    const blanked = { ...base.fields, ...held };
     return {
       ...shared,
+      fields: blanked,
+      unknown_fields: Object.keys(blanked).filter((name) => blanked[name] === "unknown"),
+    };
+  };
+
+  if (base.freshness !== "cached") {
+    return {
+      ...withdraw(),
       verdict: "unknown",
       tone: "unknown",
       label: "Status unknown",
       detail: "No normalized review, check, or mergeability observation has been recorded for this pull request.",
     };
   }
+
+  // `merged` and `closed` are monotonic, so age cannot make them untrue. They
+  // settle before the freshness gate: a landed pull request stays terminal
+  // instead of reappearing as an unknown the captain can do nothing about.
+  // Only the state survives the withdrawal, because the other three fields are
+  // as perishable here as anywhere else.
+  if (resolved.state === "merged" || resolved.state === "closed") {
+    const settled = stale ? withdraw(["state"]) : shared;
+    return resolved.state === "merged"
+      ? { ...settled, verdict: "merged", tone: "green", label: "Merged", detail: "This pull request has landed." }
+      : { ...settled, verdict: "closed", tone: "unknown", label: "Closed", detail: "This pull request was closed without merging." };
+  }
+
   if (stale) {
     return {
-      ...shared,
+      ...withdraw(),
       verdict: "unknown",
       tone: "unknown",
       label: "Status unknown",
@@ -162,12 +196,6 @@ export function prReadiness(task, options = {}) {
     };
   }
 
-  if (resolved.state === "merged") {
-    return { ...shared, verdict: "merged", tone: "green", label: "Merged", detail: "This pull request has landed." };
-  }
-  if (resolved.state === "closed") {
-    return { ...shared, verdict: "closed", tone: "unknown", label: "Closed", detail: "This pull request was closed without merging." };
-  }
   if (resolved.state === "draft") {
     return { ...shared, verdict: "draft", tone: "unknown", label: "Draft", detail: "This pull request is still a draft." };
   }
@@ -431,8 +459,8 @@ function snapshotSignal(envelope) {
 }
 
 function eventSignal(tasks) {
-  const live = tasks.filter((task) => !terminalColumn(task));
-  const tooltip = `How long ago the slowest live task last reported anything. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
+  const live = liveWorkTasks(tasks);
+  const tooltip = `How long ago the slowest live task last reported anything. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
   if (!live.length) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
@@ -465,7 +493,7 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
 }
 
 function workerSignal(tasks) {
-  const live = tasks.filter((task) => !terminalColumn(task) && text(task?.kind) !== "secondmate");
+  const live = liveWorkTasks(tasks);
   const tooltip = "Whether each live task's recorded runtime endpoint is still there. The snapshot reports agent liveness only for secondmates, so ordinary tasks report endpoint presence.";
   if (!live.length) {
     return { id: "workers", label: "Workers", tone: "green", value: "none live", detail: "No live task has a runtime endpoint to check.", tooltip };
