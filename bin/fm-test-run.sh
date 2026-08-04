@@ -201,7 +201,8 @@ family_for_basename() {
     fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' afk
       ;;
-    fm-bearings-snapshot.test.sh|fm-dashboard.test.sh|fm-fleet-snapshot-view.test.sh)
+    fm-bearings-snapshot.test.sh|fm-dashboard.test.sh|fm-dashboard-inbox.test.sh|\
+    fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -392,6 +393,7 @@ tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
 tests/fm-documentation-audiences.test.sh 572
+tests/fm-dashboard-inbox.test.sh 300
 tests/fm-dashboard.test.sh 5000
 tests/fm-fleet-snapshot-view.test.sh 5902
 tests/fm-fleet-sync.test.sh 16417
@@ -993,6 +995,12 @@ families_for_changed_path() {
       ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
+      ;;
+    assets/dashboard/*)
+      # The dashboard assets are no longer pure presentation: the inbox and
+      # health policy lives in one of them, so a change there must select the
+      # suites that own that behavior.
+      printf '%s\n' snapshot-bearings
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;

@@ -232,8 +232,7 @@ test_stale_transition_streams_without_refresh() {
 
 test_browser_renders_contract_actions_and_liveness() {
   node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser contract rendering failed"
-const fs = require("fs");
-const vm = require("vm");
+const { pathToFileURL } = require("node:url");
 
 class FakeNode {
   constructor(tagName, text = "") {
@@ -278,7 +277,7 @@ class FakeNode {
 }
 
 const selectors = new Map();
-for (const id of ["signals", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button"]) {
+for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -296,6 +295,9 @@ const document = {
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
+
+const PR_URL = "https://github.com/HelloWorldSungin/firstmate/pull/31";
+const DECISION_TEXT = "Should the retention window stay at 40 records, or drop to 20 so the manifest history fits one screen? Either is defensible.";
 
 function task(id, kind, status, exists, action) {
   return {
@@ -323,9 +325,23 @@ const envelope = {
       task("alive-mate", "secondmate", "alive", true, "route_work"),
       task("dead-mate", "secondmate", "dead", true, "route_work"),
       task("unknown-mate", "secondmate", "unknown", true, "route_work"),
+      {
+        ...task("waiting-on-you", "ship", "unknown", true, "decide"),
+        current_state: { state: "parked", detail: "Parked at a gate" },
+        hints: { open_decisions: [{ key: "retention", verb: "needs-decision", summary: DECISION_TEXT }] },
+        pr: {
+          url: PR_URL,
+          number: 31,
+          status: { state: "open", review: "approved", checks: "unknown", mergeable: "mergeable" },
+          status_age_seconds: 12,
+          status_freshness: "cached",
+        },
+        card: { column: "needs_decision", action: "decide" },
+      },
     ],
     card_precedence: ["active", "secondmate"],
-    supervision: { watcher: { present: true, age_seconds: 1, stale: false }, afk: { active: false } },
+    supervision: { watcher: { present: true, age_seconds: 1, grace_seconds: 120, stale: false }, afk: { active: false } },
+    main_inventory: { valid: true, orphan_in_flight: [] },
   },
 };
 
@@ -334,21 +350,19 @@ class FakeEventSource {
   close() {}
 }
 
+// The browser app is an ES module that imports the inbox policy module beside
+// it, so it is loaded through a real module graph rather than a flat script
+// evaluation. Its DOM and platform dependencies are resolved from globals.
 const storage = new Map();
-const context = vm.createContext({
+Object.assign(globalThis, {
   document,
   EventSource: FakeEventSource,
   fetch: async () => ({ ok: true, json: async () => envelope }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
   matchMedia: () => ({ matches: false }),
-  setTimeout,
-  clearTimeout,
-  console,
-  Math,
 });
-vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context, { filename: process.argv[2] });
 
-setImmediate(() => {
+import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
   const all = (root, predicate, matches = []) => {
     if (predicate(root)) matches.push(root);
     for (const child of root.children) all(child, predicate, matches);
@@ -377,9 +391,177 @@ setImmediate(() => {
     const mateAction = one(mate, (node) => hasClass(node, "mate-action"), `${id} action`);
     if (mateAction.textContent !== "ACTIONroute_work") throw new Error(`${id} action was not literal: ${mateAction.textContent}`);
   }
-});
+
+  const inboxCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "inbox card");
+  const reasonTexts = all(inboxCard, (node) => hasClass(node, "reason-text")).map((node) => node.textContent);
+  if (!reasonTexts.includes(DECISION_TEXT)) throw new Error(`decision text was not rendered in full: ${reasonTexts.join(" | ")}`);
+  const link = one(inboxCard, (node) => hasClass(node, "pr-link"), "inbox pull-request link");
+  if (link.textContent !== PR_URL || link.href !== PR_URL) {
+    throw new Error(`pull-request link was not the full https URL: ${link.textContent} / ${link.href}`);
+  }
+  const checks = one(inboxCard, (node) => hasClass(node, "pr-field") && node.textContent.startsWith("checks"), "checks field");
+  if (!hasClass(checks, "unknown") || checks.textContent !== "checksunknown") {
+    throw new Error(`an unreadable check state was not rendered as an explicit unknown: ${checks.textContent}`);
+  }
+  const prPanel = one(inboxCard, (node) => hasClass(node, "pr-panel"), "inbox pull-request panel");
+  if (!hasClass(prPanel, "unknown")) throw new Error("a pull request with an unreadable field was not toned unknown");
+  const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
+  if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
+  if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
+}).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions and keeps dead and unknown liveness distinct"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, and explicit unknown pull-request fields"
+}
+
+# Desktop alerts are entirely client-side and must fire only for items the
+# captain has not already seen. The two ways to get this wrong are both silent:
+# alerting for the whole backlog on the first render, and treating a render that
+# carried no snapshot as proof the inbox was empty.
+test_browser_alerts_only_for_new_inbox_items() {
+  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser alert behavior failed"
+const { pathToFileURL } = require("node:url");
+
+class FakeNode {
+  constructor(tagName, text = "") {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.className = "";
+    this.dataset = {};
+    this.listeners = {};
+    this.value = "";
+    this._text = String(text);
+  }
+
+  get options() { return this.children; }
+  get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
+  set textContent(value) {
+    this._text = String(value ?? "");
+    this.children = [];
+  }
+
+  append(...children) {
+    for (const child of children) {
+      if (child === null || child === undefined) continue;
+      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+    }
+  }
+
+  replaceChildren(...children) {
+    this._text = "";
+    this.children = [];
+    this.append(...children);
+  }
+
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
+}
+
+const selectors = new Map();
+for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button"]) {
+  selectors.set(`#${id}`, new FakeNode("div"));
+}
+const filterForm = new FakeNode("form");
+filterForm.elements = {};
+for (const key of ["project", "harness", "model", "kind", "state"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  filterForm.elements[key] = select;
+}
+selectors.set("#filter-form", filterForm);
+
+const document = {
+  documentElement: new FakeNode("html"),
+  querySelector: (selector) => selectors.get(selector),
+  createElement: (tagName) => new FakeNode(tagName),
+  createTextNode: (text) => new FakeNode("#text", text),
+};
+
+function decisionTask(id) {
+  return {
+    id,
+    kind: "ship",
+    project: "firstmate",
+    backlog: { title: `${id} title` },
+    current_state: { state: "parked", detail: "Parked at a gate" },
+    endpoint: { status: "unknown", exists: true },
+    paths: { status_log: { last_event_age_seconds: 5 } },
+    work_items: [],
+    hints: { open_decisions: [{ key: "shape", verb: "needs-decision", summary: `Decide the ${id} shape` }] },
+    card: { column: "needs_decision", action: "decide" },
+  };
+}
+
+function envelopeWith(ids) {
+  return {
+    schema: "fm-dashboard-envelope.v1",
+    status: { phase: "ready", stale: false, last_success_at: "2026-08-04T00:00:00Z", last_success_age_seconds: 0 },
+    snapshot: {
+      tasks: ids.map(decisionTask),
+      card_precedence: ["needs_decision"],
+      supervision: { watcher: { present: true, age_seconds: 1, grace_seconds: 120, stale: false }, afk: { active: false } },
+      main_inventory: { valid: true, orphan_in_flight: [] },
+    },
+  };
+}
+
+const UNREACHABLE = {
+  schema: "fm-dashboard-envelope.v1",
+  status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "HTTP 503" } },
+  snapshot: null,
+};
+
+const notifications = [];
+class FakeNotification {
+  constructor(title, options) {
+    notifications.push({ title, body: String(options?.body ?? ""), tag: String(options?.tag ?? "") });
+  }
+}
+FakeNotification.permission = "granted";
+FakeNotification.requestPermission = async () => "granted";
+
+let streamed = null;
+class FakeEventSource {
+  addEventListener(name, listener) { if (name === "snapshot") streamed = listener; }
+  close() {}
+}
+
+const storage = new Map([["fm-dashboard-alerts", "on"]]);
+Object.assign(globalThis, {
+  document,
+  EventSource: FakeEventSource,
+  Notification: FakeNotification,
+  fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),
+  localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+  matchMedia: () => ({ matches: false }),
+});
+
+import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
+  const push = (envelope) => streamed({ data: JSON.stringify(envelope) });
+  if (selectors.get("#notify-button").textContent !== "Alerts on") {
+    throw new Error(`a granted saved preference did not restore the alert control: ${selectors.get("#notify-button").textContent}`);
+  }
+  if (notifications.length) throw new Error(`the first render alerted for items already waiting: ${JSON.stringify(notifications)}`);
+
+  // A render that carried no snapshot saw nothing, so it must not become the
+  // baseline: the item still waiting is not new when the server recovers.
+  push(UNREACHABLE);
+  push(envelopeWith(["already-waiting"]));
+  if (notifications.length) throw new Error(`a failed refresh made a waiting item alert as new: ${JSON.stringify(notifications)}`);
+
+  push(envelopeWith(["already-waiting", "just-arrived"]));
+  if (notifications.length !== 1) throw new Error(`expected exactly one alert for the new item, received ${JSON.stringify(notifications)}`);
+  const [alert] = notifications;
+  if (!alert.title.includes("Decision")) throw new Error(`the alert did not name what needs the captain: ${alert.title}`);
+  if (!alert.body.includes("just-arrived title") || !alert.body.includes("Decide the just-arrived shape")) {
+    throw new Error(`the alert did not carry the new item's title and reason: ${alert.body}`);
+  }
+
+  push(envelopeWith(["already-waiting", "just-arrived"]));
+  if (notifications.length !== 1) throw new Error(`an unchanged inbox alerted again: ${JSON.stringify(notifications)}`);
+}).catch((error) => { console.error(error); process.exit(1); });
+NODE
+  pass "desktop alerts fire only for genuinely new inbox items and never for a failed refresh"
 }
 
 test_timeout_is_single_flight() {
@@ -473,6 +655,7 @@ test_loopback_is_mandatory
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
 test_browser_renders_contract_actions_and_liveness
+test_browser_alerts_only_for_new_inbox_items
 test_timeout_is_single_flight
 test_first_run_failures_are_explicit
 test_real_snapshot_makes_zero_fleet_writes

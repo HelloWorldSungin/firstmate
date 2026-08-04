@@ -1,6 +1,6 @@
 # Fleet dashboard
 
-The fleet dashboard is a mobile-first, read-only kanban view over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
+The fleet dashboard is a mobile-first, read-only captain inbox and kanban view over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
 It never dispatches, steers, merges, tears down, or writes fleet state.
 Stopping the dashboard has no effect on Firstmate supervision.
 
@@ -33,6 +33,14 @@ A failed refresh keeps the last valid snapshot visible and labels it stale with 
 The server also pushes a stale transition as soon as the last successful snapshot reaches the configured age threshold, even when the next poll has not started.
 The empty, first-run, missing-command, timeout, malformed-JSON, unsupported-schema, and stale-last-good cases remain explicit in the same board surface.
 The browser reconnects its event stream with bounded exponential backoff, while periodic polling guarantees eventual updates even when a filesystem notification is unavailable.
+
+## Needs you
+
+The first view is the captain inbox: open decisions, blockers, failures, credential requests, and pull requests whose normalized status is genuinely review or merge ready, sorted oldest first, above a fleet health strip.
+[`docs/dashboard-inbox-policy.md`](dashboard-inbox-policy.md) owns that policy in full, including what makes a pull request green, what turns each health signal amber or red, and how overlapping signals deduplicate into one item.
+The short version worth knowing before reading it: a pull request is shown as green only when its normalized checks, review, and mergeability all say so, and anything missing or stale is drawn as an explicit unknown rather than as a pass.
+
+## Board
 
 Every card column and displayed action comes directly from `tasks[].card` in the snapshot, and the top-level `card_precedence` array determines column order.
 Each task card renders its id, title, project, kind, harness, model, effort, state detail, full PR URL, endpoint liveness, last-event age, and available work-item links from that same task row.

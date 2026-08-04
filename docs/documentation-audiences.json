@@ -242,6 +242,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/dashboard-inbox-policy.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/documentation-audiences.md",
       "audience": "maintainer-architecture"
     },
