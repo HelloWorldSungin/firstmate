@@ -41,7 +41,9 @@
 #   exit 2  usage, or a configuration this command refuses to guess at.
 #   exit 3  retrieval failed - NO requested corpus answered. "No match" and
 #           "could not be read" are never rendered as the same outcome, so an
-#           empty result list with exit 0 always means the corpora were read.
+#           empty result list with exit 0 means at least one requested corpus
+#           was read and had no match; the per-source rows say which were read
+#           and which were not.
 #   exit 4  HOSTED synthesis is unavailable or produced no answer while local
 #           retrieval worked. Every such refusal names `search` as the path that
 #           still works.
@@ -219,18 +221,35 @@ resolve_context() {
 
 # --- the shape a retrieval reply must have ----------------------------------
 #
-# Checked at each leg's own boundary rather than by the renderer: a renderer that
-# meets an unexpected shape dies mid-document with a raw jq error, which is
-# neither a structured refusal nor an honest per-source verdict. The container's
-# type alone is not enough, because a row is indexed by name - a reply of
-# [1, 2] or ["note"] passes a `type == "array"` test and then kills the render.
-expected_shape() {  # <json> <expected-json-type>
-  printf '%s' "$1" | jq -e --arg t "$2" '
-    if type != $t then false
-    elif $t == "array" then all(.[]; type == "object")
-    else true
-    end' >/dev/null 2>&1
+# A reply is unreadable in two different ways, and each has one owner here
+# rather than a copy per leg, because a rule written once per leg is a rule the
+# next leg is added without.
+#
+# Structure is REFUSED. A renderer that indexes an unexpected shape by name dies
+# mid-document with a raw jq error, which is neither a structured refusal nor an
+# honest per-source verdict, so every value a renderer indexes is constrained
+# below. The reply is validated by the SAME name that selects the operation, so
+# no call site picks its own contract or forgets one, and an operation with no
+# contract here is refused rather than waved through.
+reply_shape_ok() {  # <operation> <json>
+  local predicate
+  case $1 in
+    search) predicate='type == "array" and all(.[]; type == "object")' ;;
+    think) predicate='type == "object"
+                      and ((.citations // []) | type == "array" and all(.[]; type == "object"))
+                      and ((.warnings // []) | type == "array")' ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$2" | jq -e "$predicate" >/dev/null 2>&1
 }
+
+# A field's TYPE is coerced. Every renderer prefixes this, so neither command
+# can be total in a way the other is not: a field of an unexpected type is a
+# value worth less, never a document that cannot be produced.
+JQ_RENDER_PRELUDE='
+  def text(v): if v == null then "" elif (v | type) == "string" then v else (v | tostring) end;
+  def capped(v; cap): text(v) | if length > cap then .[0:cap] + "..." else . end;
+'
 
 # --- the local leg ----------------------------------------------------------
 #
@@ -245,8 +264,8 @@ LOCAL_ERR=""
 # gbrain_local_call exports it for that call only; the caller clears it after.
 GBRAIN_CALL_HOSTED_KEY=""
 
-gbrain_local_call() {  # <tool> <params-json> <seconds> <expected-json-type> -> 0
-  local tool=$1 params=$2 secs=$3 want=$4 out_file err_file rc=0
+gbrain_local_call() {  # <tool> <params-json> <seconds> -> 0
+  local tool=$1 params=$2 secs=$3 out_file err_file rc=0
   LOCAL_OUT=""; LOCAL_ERR=""
   out_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
     LOCAL_ERR="could not create a temporary file"; return 1
@@ -270,8 +289,8 @@ gbrain_local_call() {  # <tool> <params-json> <seconds> <expected-json-type> -> 
     125) LOCAL_ERR="no timeout implementation on PATH, so this call cannot be bounded"; return 1 ;;
     *) [ -n "$LOCAL_ERR" ] || LOCAL_ERR="gbrain exited $rc"; return 1 ;;
   esac
-  if ! expected_shape "$LOCAL_OUT" "$want"; then
-    LOCAL_ERR="gbrain returned a $tool result this command cannot read (expected a JSON $want)"
+  if ! reply_shape_ok "$tool" "$LOCAL_OUT"; then
+    LOCAL_ERR="gbrain returned a $tool result this command cannot read"
     return 1
   fi
   return 0
@@ -318,7 +337,7 @@ mcp_unpack() {  # <raw-body> -> 0 with MAIN_OUT set
       || MAIN_ERR="the main brain refused the read"
     return 1
   fi
-  if ! expected_shape "$text" array; then
+  if ! reply_shape_ok search "$text"; then
     MAIN_ERR="the main brain returned a result this command cannot read"
     return 1
   fi
@@ -358,14 +377,11 @@ main_brain_search() {  # <query> <limit> <seconds> -> 0 with MAIN_OUT set
 
 # --- shaping results --------------------------------------------------------
 
-# One GBrain result row becomes one citable line. Every field is coerced to the
-# type this document promises, so a row whose slug is a number or whose score
-# arrived as a string is still rendered and still citable rather than aborting
-# the whole read: a field of the wrong type is a row worth less, not a corpus
-# that cannot be reported.
+# One GBrain result row becomes one citable line, through the shared coercion so
+# a row whose slug is a number or whose score arrived as a string is still
+# rendered and still citable rather than aborting the whole read.
 shape_results() {  # <source> <results-json> <excerpt-chars>
-  jq -c --arg src "$1" --argjson cap "$3" '
-    def text(v): if v == null then "" elif (v | type) == "string" then v else (v | tostring) end;
+  jq -c --arg src "$1" --argjson cap "$3" "$JQ_RENDER_PRELUDE"'
     [ .[]? | {
         source: $src,
         citation: ($src + ":" + (if .slug == null or .slug == "" then "?" else text(.slug) end)),
@@ -373,13 +389,15 @@ shape_results() {  # <source> <results-json> <excerpt-chars>
         title: text(.title),
         score: (if (.score | type) == "number" then .score else null end),
         stale: (.stale == true),
-        excerpt: (text(.chunk_text) | if length > $cap then .[0:$cap] + "..." else . end)
+        excerpt: capped(.chunk_text; $cap)
       } ]
   ' <<EOF
 $2
 EOF
 }
 
+# A row's count is the number of entries in `.results` that carry its source, so
+# summing the rows can never disagree with the list they describe.
 source_row() {  # <source> <state> <brain> <count> [detail]
   jq -cn --arg s "$1" --arg st "$2" --arg b "$3" --argjson n "$4" --arg d "${5:-}" '
     {source: $s, state: $st, brain: $b, results: $n}
@@ -409,7 +427,8 @@ cmd_search() {
   # so neither leg decides the other's outcome. A home with no GBrain installed
   # still reaches the fleet's shared corpus, which needs only curl and a token,
   # and a home whose main brain is stopped still reads its own index.
-  local rows=() results='[]' answered=0 owner=0 params shaped count local_count=0
+  local rows=() results='[]' answered=0 owner=0 params shaped count
+  local local_state="" local_detail="" local_count=0
   if fm_gbrain_is_main_brain_owner "$HOME_PATH"; then owner=1; fi
 
   local read_local=0 read_main=0 main_is_local=0
@@ -428,24 +447,33 @@ cmd_search() {
 
   if [ "$read_local" -eq 1 ]; then
     if ! command -v "$GBRAIN_BIN" >/dev/null 2>&1; then
-      rows+=("$(source_row local failed "$FM_GBRAIN_BRAIN_ROOT" 0 "gbrain is not installed (set FM_GBRAIN_BIN), so this home's own index cannot be read")")
+      local_state=failed
+      local_detail="gbrain is not installed (set FM_GBRAIN_BIN), so this home's own index cannot be read"
     else
       params=$(jq -cn --arg q "$query" --argjson n "$LIMIT" '{query: $q, limit: $n}')
-      if gbrain_local_call search "$params" "$secs" array; then
+      if gbrain_local_call search "$params" "$secs"; then
         shaped=$(shape_results local "$LOCAL_OUT" "$EXCERPT")
         local_count=$(printf '%s' "$shaped" | jq 'length')
         results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
-        rows+=("$(source_row local ok "$FM_GBRAIN_BRAIN_ROOT" "$local_count")")
+        local_state=ok
         answered=1
       else
-        rows+=("$(source_row local failed "$FM_GBRAIN_BRAIN_ROOT" 0 "$LOCAL_ERR")")
+        local_state=failed
+        local_detail=$LOCAL_ERR
       fi
     fi
+    rows+=("$(source_row local "$local_state" "$FM_GBRAIN_BRAIN_ROOT" "$local_count" "$local_detail")")
   fi
 
   if [ "$read_main" -eq 1 ]; then
     if [ "$main_is_local" -eq 1 ]; then
-      rows+=("$(source_row main same-as-local "$FM_GBRAIN_BRAIN_ROOT" "$local_count" "this home owns the main brain, so the main corpus is its own index and those results are the local rows, cited local:<slug>")")
+      # The alias row counts nothing, because no entry in the result list carries
+      # this source, and it never claims a read the local leg did not perform.
+      if [ "$local_state" = ok ]; then
+        rows+=("$(source_row main same-as-local "$FM_GBRAIN_BRAIN_ROOT" 0 "this home owns the main brain, so the main corpus is its own index and its results are the local rows, cited local:<slug>")")
+      else
+        rows+=("$(source_row main failed "$FM_GBRAIN_BRAIN_ROOT" 0 "this home owns the main brain, so the main corpus is its own index, which could not be read: $local_detail")")
+      fi
     elif [ -z "$MAIN_MCP_URL" ]; then
       if [ "$SCOPE" = main ]; then
         die 2 no_main_brain "no main brain is configured for $HOME_PATH"
@@ -530,7 +558,7 @@ cmd_think() {
   params=$(jq -cn --arg q "$question" '{question: $q, rounds: 1}')
   GBRAIN_CALL_HOSTED_KEY=$FM_GBRAIN_SECRET
   FM_GBRAIN_SECRET=""
-  if gbrain_local_call think "$params" "$secs" object; then ok=1; fi
+  if gbrain_local_call think "$params" "$secs"; then ok=1; fi
   GBRAIN_CALL_HOSTED_KEY=""
   [ "$ok" -eq 1 ] || die 3 local_retrieval_failed "$HOME_PATH: $LOCAL_ERR"
 
@@ -539,18 +567,20 @@ cmd_think() {
   local synth_ok doc
   synth_ok=$(printf '%s' "$LOCAL_OUT" | jq -r '.synthesisOk == true')
   doc=$(printf '%s' "$LOCAL_OUT" | jq -c --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$question" \
-    --argjson cap "$ANSWER_MAX" --arg brain "$FM_GBRAIN_BRAIN_ROOT" '
+    --argjson cap "$ANSWER_MAX" --arg brain "$FM_GBRAIN_BRAIN_ROOT" "$JQ_RENDER_PRELUDE"'
     {
       schema: $s, command: "think", home: $h, question: $q,
-      sources: [{source: "local", state: "ok", brain: $brain, results: (.pagesGathered // 0)}],
+      sources: [{source: "local", state: "ok", brain: $brain,
+                 results: (if (.pagesGathered | type) == "number" then .pagesGathered else 0 end)}],
       synthesis: {
         state: (if .synthesisOk == true then "ok" else "failed" end),
-        model: (.modelUsed // null),
-        warnings: (.warnings // []),
-        truncated: (((.answer // "") | length) > $cap),
-        answer: ((.answer // "") | if length > $cap then .[0:$cap] + "..." else . end)
+        model: (if .modelUsed == null then null else text(.modelUsed) end),
+        warnings: [ (.warnings // [])[] | text(.) ],
+        truncated: ((text(.answer) | length) > $cap),
+        answer: capped(.answer; $cap)
       },
-      citations: [ (.citations // [])[] | "local:" + (.page_slug // "?") ]
+      citations: [ (.citations // [])[]
+                   | "local:" + (if .page_slug == null or .page_slug == "" then "?" else text(.page_slug) end) ]
     }')
 
   if [ "$JSON_MODE" -eq 1 ]; then

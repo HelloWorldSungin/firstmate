@@ -80,7 +80,7 @@ That refusal matters because a crewmate on a firstmate task stands in a worktree
 Each corpus a search reads, and hosted synthesis, are reported as separate facts and never as one outcome.
 A main brain that is stopped, unreachable, or not shared with this home reads as a degraded source and does not fail a run that also read this home's own index, so a home's own memory never depends on another home being up.
 The same independence runs the other way: a home with no GBrain installed reports its own index as failed and still reads the shared corpus, which needs only `curl` and a token.
-A search fails only when no corpus it was asked for could be read at all, so an empty result list with exit 0 always means the corpora were read and had no match.
+A search fails only when no corpus it was asked for could be read at all, so an empty result list with exit 0 means at least one requested corpus was read and had no match, and the per-source rows say which were read and which were not.
 A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
 
 A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh` adds one instruction naming the command, the citation label, and the hosted-provider boundary, and adds it only when the home actually has an index, so a fleet with no brain carries no dead pointer.

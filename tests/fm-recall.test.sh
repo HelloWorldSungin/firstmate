@@ -90,6 +90,22 @@ mkdir -p "$CHECKOUT/bin" "$CHECKOUT/state"
 PROJECT_WT="$TMP_ROOT/project-worktree"
 mkdir -p "$PROJECT_WT"
 
+# The document's own consistency rule: every source row counts exactly the
+# entries in the result list that carry its source, so summing the rows and
+# counting the list can never disagree about what was returned.
+assert_rows_match_results() {  # <document> <what>
+  local doc=$1 what=$2 mismatch
+  mismatch=$(printf '%s' "$doc" | jq -r '
+    . as $d
+    | [ $d.sources[]
+        | . as $row
+        | select($row.results != ([$d.results[] | select(.source == $row.source)] | length))
+        | $row.source ]
+    | join(",")' 2>/dev/null) || mismatch="unreadable"
+  [ -z "$mismatch" ] \
+    || fail "$what: source rows disagree with the result list for [$mismatch]: $doc"
+}
+
 run_recall() {  # <home-env-or-empty> <args...> -> RECALL_OUT / RECALL_RC
   local home=$1
   shift
@@ -310,7 +326,49 @@ expect_code 4 "$RECALL_RC" "a placeholder answer must not be reported as success
   || fail "the local half of a failed synthesis still worked and must say so"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[0].results')" = 3 ] \
   || fail "the pages the local half gathered should still be reported"
-pass "hosted synthesis failure is reported as hosted, keeps local retrieval's own verdict, and never fails search"
+
+# think renders values the provider chose, so it must survive an unexpected
+# shape exactly as search does: a nested value indexed by name is refused as a
+# local retrieval failure, and a value that is only printed is coerced. Either
+# way the wrapper leaves a document behind rather than a raw parser error.
+for THINK_UNREADABLE in \
+  '{"answer":"ok","citations":[1],"synthesisOk":true}' \
+  '{"answer":"ok","citations":["teardown-notes"],"synthesisOk":true}' \
+  '{"answer":"ok","warnings":"LLM_OUTPUT_NOT_JSON","synthesisOk":true}' \
+  '["not","an","object"]'; do
+  stub_reply "$THINK_UNREADABLE"
+  run_recall "$MAIN_HOME" think --json "what does teardown refuse"
+  expect_code 3 "$RECALL_RC" "an unreadable think reply is a local retrieval failure: $THINK_UNREADABLE"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r .error.code)" = local_retrieval_failed ] \
+    || fail "an unreadable think reply must be named as one ($THINK_UNREADABLE): $RECALL_OUT"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r .schema)" = fm-recall.v1 ] \
+    || fail "an unreadable think reply must still leave the document behind ($THINK_UNREADABLE): $RECALL_OUT"
+  assert_not_contains "$RECALL_OUT" "jq:" "an unreadable think reply must not surface a raw parser error"
+done
+
+# A field of the wrong TYPE is a value worth less, not an unreadable reply: the
+# answer, the warnings, the model and the page count all still render.
+stub_reply '{"answer":5000,"citations":[{"page_slug":7}],"pagesGathered":"three","modelUsed":{"name":"m"},"warnings":[{"code":"X"},9],"synthesisOk":true}'
+run_recall "$MAIN_HOME" think --json --max-answer 2 "what does teardown refuse"
+expect_code 0 "$RECALL_RC" "a think reply with odd field types should still render: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .synthesis.answer)" = "50..." ] \
+  || fail "a non-string answer should be coerced and capped: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .synthesis.truncated)" = true ] \
+  || fail "a coerced answer over the cap must report itself truncated: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.synthesis.warnings | join("|")')" = '{"code":"X"}|9' ] \
+  || fail "non-string warnings should be coerced rather than break the render: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.citations[0]')" = local:7 ] \
+  || fail "a non-string page slug should still be citable: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[0].results')" = 0 ] \
+  || fail "a non-numeric page count must not be reported as a number it is not: $RECALL_OUT"
+
+# The same reply through the human renderer, which joins the warnings it was
+# handed and would die on a value the document promised was a string.
+stub_reply '{"answer":5000,"citations":[{"page_slug":7}],"pagesGathered":"three","modelUsed":{"name":"m"},"warnings":[{"code":"X"},9],"synthesisOk":true}'
+run_recall "$MAIN_HOME" think "what does teardown refuse"
+expect_code 0 "$RECALL_RC" "the human renderer must survive the same reply: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "jq:" "the human renderer must not surface a raw parser error"
+pass "hosted synthesis failure is reported as hosted, keeps local retrieval's own verdict, never fails search, and an unreadable or oddly typed reply degrades instead of crashing"
 
 # --- 6. the hosted credential reaches one process and nothing else -----------
 
@@ -363,6 +421,13 @@ expect_code 0 "$RECALL_RC" "the owning home's search should succeed"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = same-as-local ] \
   || fail "the owning home should report the main brain as its own: $RECALL_OUT"
 
+# Every row counts the entries that actually carry its source, so the alias row
+# cannot claim a hit that only exists once and consumers summing rows cannot
+# double count the same result against the list it came from.
+assert_rows_match_results "$RECALL_OUT" "the owning home's default search"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .results')" = 0 ] \
+  || fail "the alias row contributes no main-sourced result and must count none: $RECALL_OUT"
+
 # On that home the local index IS the main corpus, so a main-only search asks a
 # question with a real answer and must be answered rather than returned empty.
 run_recall "$MAIN_HOME" search --json --scope main teardown
@@ -371,8 +436,19 @@ expect_code 0 "$RECALL_RC" "the owning home must answer a main-only search: $REC
   || fail "a main-only search on the owning home must read the corpus it owns: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = same-as-local ] \
   || fail "the owning home should still report the main corpus as its own: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .results')" = 1 ] \
-  || fail "the main row must count the results it actually returned: $RECALL_OUT"
+assert_rows_match_results "$RECALL_OUT" "the owning home's main-only search"
+
+# The alias row must never read as though the corpus was consulted when the leg
+# that stands in for it did not answer, or a consumer filtering on state alone
+# sees the main corpus succeed while nothing was ever read.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$TMP_ROOT/not-installed" bash "$CLI" search --json --scope main teardown 2>&1) || RECALL_RC=$?
+expect_code 3 "$RECALL_RC" "the owning home cannot answer a main-only search with no readable index"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = failed ] \
+  || fail "the alias row must carry the failure of the leg that stands in for it: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "gbrain is not installed" \
+  "the alias row must say why the corpus could not be read"
+assert_rows_match_results "$RECALL_OUT" "the owning home with no readable index"
 
 # An unreachable main brain is a soft fact only while another corpus answered.
 # Asked for that corpus alone, the run fails rather than reporting no matches.
