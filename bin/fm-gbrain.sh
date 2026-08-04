@@ -38,14 +38,19 @@
 #                install it into <target-home>: the client id into that home's
 #                config/gbrain-local.json, the secret into its
 #                config/gbrain-secrets/ at mode 0600. Run it in the home that
-#                owns the main brain. --replace revokes the target's previous
-#                client after the new one is installed, which is the rotation
-#                path: no secret is ever copied through inherited config.
+#                owns the main brain; that home records its own ownership here.
+#                --replace revokes the target's previous client after the new
+#                one is installed, which is the rotation path: no secret is ever
+#                copied through inherited config.
 #   revoke-read  Revoke a client on THIS home's brain. GBrain cascades its
 #                tokens and authorization codes.
 #   retire       Secondmate retirement cleanup: revoke that home's client, then
-#                remove its credentials and its own brain. Destructive, so it
-#                refuses without --yes.
+#                remove its credentials and the brain directories this tool
+#                derives - runtime/, pglite/, and archive/ - leaving the brain
+#                root itself in place, because an operator-supplied brain_root
+#                may hold a deployment this tool did not create. A revocation
+#                that fails stops the retirement with nothing removed, so it can
+#                be retried. Destructive, so it refuses without --yes.
 #
 # Environment:
 #   FM_HOME        active firstmate home (default: this code root)
@@ -176,7 +181,7 @@ probe_url() {  # <url> -> 0 reachable
 }
 
 cmd_check() {
-  local json_mode=0 hard=0 shared local_file url secret_name rc token
+  local json_mode=0 hard=0 shared local_file url secret_name rc
   [ "${1:-}" = --json ] && json_mode=1
 
   shared=$(fm_gbrain_shared_path "$FM_HOME")
@@ -235,12 +240,20 @@ cmd_check() {
       check_row reranker degraded "no answer at $url; search falls back to non-reranked ordering"
     fi
   fi
+  # Each row states what this run established and nothing else: the home that
+  # owns the main brain reads it directly rather than minting a token to
+  # itself, a home that was never granted a client has no outage to report, and
+  # only a home that holds a client can call an unanswered mint degraded.
   url=$(shared_str '.main_brain.mcp_url')
   if [ -n "$url" ]; then
     if [ "$hard" -ne 0 ]; then
       check_row main-brain skipped "local plane must be fixed first"
-    elif token=$(mint_token 2>/dev/null); then
-      [ -n "$token" ] && check_row main-brain ok "read-only token issued for $url"
+    elif fm_gbrain_is_main_brain_owner "$FM_HOME"; then
+      check_row main-brain ok "this home owns the main brain at $url and reads its own index directly"
+    elif [ -z "$(fm_gbrain_json_str "$local_file" '.client_id')" ]; then
+      check_row main-brain absent "this home holds no read-only client for $url; run grant-read from the home that owns it"
+    elif mint_token >/dev/null 2>&1; then
+      check_row main-brain ok "read-only token issued for $url"
     else
       check_row main-brain degraded "no read-only access to $url right now; this home's own search is unaffected"
     fi
@@ -248,12 +261,19 @@ cmd_check() {
   url=$(shared_str '.think.base_url')
   if [ -n "$url" ]; then
     secret_name=$(shared_str '.think.secret')
-    if [ -n "$secret_name" ] && fm_gbrain_read_secret "$FM_HOME" "$secret_name"; then
+    rc=1
+    if [ -n "$secret_name" ]; then
+      rc=0
+      fm_gbrain_read_secret "$FM_HOME" "$secret_name" || rc=$?
+      FM_GBRAIN_SECRET=""
+    fi
+    if [ "$rc" -ne 0 ]; then
+      check_row think degraded "no usable key for $url; synthesis is unavailable and local search is unaffected"
+    elif probe_url "${url%/}/models"; then
       check_row think ok "$url"
     else
-      check_row think degraded "no usable key for $url; synthesis is unavailable and local search is unaffected"
+      check_row think degraded "no answer at $url; synthesis is unavailable and local search is unaffected"
     fi
-    FM_GBRAIN_SECRET=""
   fi
 
   local row name state detail
@@ -286,19 +306,42 @@ write_secret_file() {  # <target-home> <name> <value>
   mv -f "$tmp" "$path"
 }
 
-write_local_client_id() {  # <target-home> <client-id>
-  local home=$1 client_id=$2 path tmp dir
+# Install an already-computed home-local plane. The merge that produced it runs
+# first and in full, so a jq that cannot read the existing file leaves that file
+# exactly as it was instead of truncating it to nothing.
+install_local_plane() {  # <target-home> <json>
+  local home=$1 json=$2 path tmp dir
   path=$(fm_gbrain_local_path "$home")
   dir=${path%/*}
-  mkdir -p "$dir"
-  tmp=$(mktemp "$dir/.fm-gbrain-local.XXXXXX") || return 1
+  mkdir -p "$dir" || return 1
+  tmp=$(umask 077 && mktemp "$dir/.fm-gbrain-local.XXXXXX") || return 1
+  printf '%s\n' "$json" > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$path" || { rm -f "$tmp"; return 1; }
+}
+
+write_local_client_id() {  # <target-home> <client-id>
+  local home=$1 client_id=$2 path json
+  path=$(fm_gbrain_local_path "$home")
+  fm_gbrain_validate_local "$path" || return 1
   if [ -f "$path" ]; then
-    jq --arg c "$client_id" '.version = 1 | .client_id = $c' "$path" > "$tmp"
+    json=$(jq --arg c "$client_id" '.version = 1 | .client_id = $c' "$path") || return 1
   else
-    jq -n --arg c "$client_id" '{version: 1, client_id: $c}' > "$tmp"
+    json=$(jq -n --arg c "$client_id" '{version: 1, client_id: $c}') || return 1
   fi
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$path"
+  install_local_plane "$home" "$json"
+}
+
+mark_main_brain_owner() {  # <home>
+  local home=$1 path json
+  path=$(fm_gbrain_local_path "$home")
+  fm_gbrain_validate_local "$path" || return 1
+  if [ -f "$path" ]; then
+    json=$(jq '.version = 1 | .main_brain_owner = true' "$path") || return 1
+  else
+    json=$(jq -n '{version: 1, main_brain_owner: true}') || return 1
+  fi
+  install_local_plane "$home" "$json"
 }
 
 gbrain_call() {  # <args...> - run gbrain against THIS home's brain
@@ -335,13 +378,23 @@ cmd_grant_read() {
   command -v "$GBRAIN_BIN" >/dev/null 2>&1 || die "gbrain is not installed (set FM_GBRAIN_BIN)"
   resolve_or_die
 
-  local secret_name previous
+  local secret_name previous target_local
   secret_name=$(shared_str '.main_brain.secret')
   [ -n "$secret_name" ] || die "this fleet's $FM_GBRAIN_SHARED_FILE sets no main_brain.secret name"
-  previous=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$target")" '.client_id')
+  # Refused before anything is registered or written: a local plane that cannot
+  # be read is one whose existing client id cannot be seen either, so rewriting
+  # it blind would both hide a live client and drop that home's brain_root.
+  target_local=$(fm_gbrain_local_path "$target")
+  fm_gbrain_validate_local "$target_local" || die "$target: $FM_GBRAIN_ERROR"
+  previous=$(fm_gbrain_json_str "$target_local" '.client_id')
   if [ -n "$previous" ] && [ "$replace" -eq 0 ]; then
     die "$target already reads the main brain as $previous; pass --replace to rotate"
   fi
+  # Registering a client on this home's brain is what makes it the main brain
+  # for whoever reads it, so that fact is recorded here rather than left for
+  # `check` to guess from a missing client id.
+  mark_main_brain_owner "$FM_HOME" \
+    || die "could not record this home as the main brain's owner: ${FM_GBRAIN_ERROR:-write failed}"
 
   # The scope is fixed at "read" here and refused anywhere else by
   # fm_gbrain_validate_shared, so no caller can widen this registration.
@@ -387,6 +440,14 @@ cmd_revoke_read() {
   printf '%s\n' "$out"
 }
 
+# Retirement removes only what this tool creates: the retiring home's credential
+# directory and the runtime/, pglite/, and archive/ children it derives under
+# that home's brain root. The root itself is never removed, because brain_root
+# may point at a GBrain deployment this tool did not create and whose siblings
+# are not ours to delete. Every path is resolved from the named home, and a
+# revocation that fails stops the retirement with nothing removed, because a
+# home whose local credential record is gone while its client still reads the
+# main brain leaves access no one can find again.
 cmd_retire() {
   local target="" yes=0
   while [ $# -gt 0 ]; do
@@ -400,31 +461,50 @@ cmd_retire() {
   [ -d "$target" ] || die "target home does not exist: $target"
   require_tool jq
 
-  local client_id secrets_dir
-  client_id=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$target")" '.client_id')
+  local client_id target_local secrets_dir brain_root dir
+  target_local=$(fm_gbrain_local_path "$target")
+  fm_gbrain_validate_local "$target_local" || die "$target: $FM_GBRAIN_ERROR"
+  client_id=$(fm_gbrain_json_str "$target_local" '.client_id')
   fm_gbrain_resolve_paths "$target" || die "$FM_GBRAIN_ERROR"
   secrets_dir="$(fm_gbrain_config_dir "$target")/$FM_GBRAIN_SECRETS_DIR"
+  brain_root=$FM_GBRAIN_BRAIN_ROOT
+  local derived=("$FM_GBRAIN_HOME_DIR" "$FM_GBRAIN_PGLITE" "$FM_GBRAIN_ARCHIVE")
 
   if [ "$yes" -eq 0 ]; then
     printf 'retiring %s would:\n' "$target"
     [ -n "$client_id" ] && printf '  revoke its main-brain client %s\n' "$client_id"
     printf '  remove its credentials at %s\n' "$secrets_dir"
-    printf '  remove its own brain at %s\n' "$FM_GBRAIN_BRAIN_ROOT"
+    for dir in "${derived[@]}"; do
+      printf '  remove %s\n' "$dir"
+    done
+    printf '  leave the brain root %s itself in place\n' "$brain_root"
     die "this destroys that home's brain; re-run with --yes once the captain has approved"
   fi
 
+  # Nothing is removed until every path is one this tool would have created, so
+  # a refusal leaves the home as it was and the command can simply be re-run.
+  for dir in "$secrets_dir" "${derived[@]}"; do
+    [ -e "$dir" ] || [ -L "$dir" ] || continue
+    [ -d "$dir" ] && [ ! -L "$dir" ] \
+      || die "refusing to remove $dir: it is not a directory this command created"
+  done
+
   if [ -n "$client_id" ]; then
-    if fm_gbrain_resolve_paths "$FM_HOME" && command -v "$GBRAIN_BIN" >/dev/null 2>&1 \
-      && gbrain_call auth revoke-client "$client_id" >/dev/null 2>&1; then
-      printf 'revoked %s\n' "$client_id"
-    else
-      printf 'WARNING: could not revoke %s; revoke it on the main brain before reusing this label\n' "$client_id" >&2
-    fi
-    fm_gbrain_resolve_paths "$target" || die "$FM_GBRAIN_ERROR"
+    command -v "$GBRAIN_BIN" >/dev/null 2>&1 \
+      || die "cannot revoke $client_id: gbrain is not installed (set FM_GBRAIN_BIN); revoke it on the main brain, then re-run"
+    fm_gbrain_resolve_paths "$FM_HOME" || die "$FM_GBRAIN_ERROR"
+    local out rc=0
+    out=$(gbrain_call auth revoke-client "$client_id" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id"
+    printf 'revoked %s\n' "$client_id"
   fi
+
   rm -rf "$secrets_dir"
-  rm -rf "$FM_GBRAIN_BRAIN_ROOT"
+  for dir in "${derived[@]}"; do
+    rm -rf "$dir"
+  done
   printf 'retired the brain and credentials for %s\n' "$target"
+  printf '  left in place %s\n' "$brain_root"
 }
 
 # --- dispatch ---------------------------------------------------------------

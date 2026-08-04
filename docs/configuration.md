@@ -176,8 +176,8 @@ The location is derived from the home path, so two homes never collide by omissi
 The configuration is split across three local, gitignored planes because they must propagate differently.
 `config/gbrain.json` is fleet-shared and IS inherited: it holds the local embedding and reranker endpoints and models, the hosted synthesis provider reference, the main brain's addresses and mount name, and the *names* of credentials.
 Its schema is closed, so it refuses an unknown field, a `brain_root` or `client_id` that belongs to one home alone, a credential pasted where a credential name belongs, a `main_brain.scopes` value other than exactly `read`, and a main-brain URL that would carry a client secret in plaintext to a non-loopback host.
-That closure is what lets the file be inherited verbatim while every home still writes its own brain.
-`config/gbrain-local.json` holds this home's `brain_root` override and its own OAuth `client_id`, and is never inherited.
+That closure is what lets the file be inherited verbatim while every home still writes its own brain, and it is enforced at each boundary that copies the file - local propagation and both ends of the remote route - so a credential pasted into the file is refused before any home or config-reread instruction receives it.
+`config/gbrain-local.json` holds this home's `brain_root` override, its own OAuth `client_id`, and `main_brain_owner` when this home's brain is the one the fleet reads, and is never inherited.
 `config/gbrain-secrets/<name>` holds one credential per file, each a regular file with mode 0600 and refused when stored more loosely, exactly as `config/forge-tokens/<host>` is; it is never inherited, so a rotation never copies a secret through inherited configuration.
 
 `bin/fm-gbrain-lib.sh` owns validation, path derivation, and credential reading, `bin/fm-gbrain.sh` is the operator surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.

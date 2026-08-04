@@ -146,6 +146,15 @@ case "$COMMAND" in
     [ "$BYTES" -eq "$EXPECTED_BYTES" ] || die "inherited material length does not match its commitment"
     ACTUAL_HASH=$(sha256_file "$TMP") || die "cannot hash inherited material"
     [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || die "inherited material digest does not match its commitment"
+    # Checked against this code root's own schema rather than trusted from the
+    # sender, exactly as the allowlist above is: a credential pasted into the
+    # shared brain plane must not be installed in this home whatever revision
+    # pushed it. Refused before the generation is committed, so the whole
+    # transfer fails closed and can be retried after the file is fixed.
+    if [ "$REL" = "config/$FM_GBRAIN_SHARED_FILE" ]; then
+      command -v jq >/dev/null 2>&1 || die "jq is required to validate $REL before installing it"
+      fm_gbrain_validate_shared "$TMP" || die "$FM_GBRAIN_ERROR"
+    fi
     commit_generation
     if [ -f "$DEST" ] && cmp -s "$TMP" "$DEST"; then
       [ "$REL" != data/captain-shared.md ] || chmod 444 "$DEST"

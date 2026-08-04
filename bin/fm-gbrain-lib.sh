@@ -18,7 +18,8 @@
 #                               identity, so inheriting it verbatim can never
 #                               point two homes at one index.
 #   config/gbrain-local.json    HOME-LOCAL, never inherited. This home's own
-#                               brain root override and its own OAuth client id.
+#                               brain root override, its own OAuth client id,
+#                               and whether this home owns the main brain.
 #   config/gbrain-secrets/<n>   CREDENTIALS, never inherited. Each is a regular
 #                               file with mode 0600, refused when stored more
 #                               loosely, exactly as config/forge-tokens/<host>
@@ -50,8 +51,16 @@ fm_gbrain_fail() {
   return 1
 }
 
+# FM_CONFIG_OVERRIDE addresses the ACTIVE home and only it. The commands that
+# name another home must resolve THAT home's own directory, or an ambient
+# override would send a credential write, or a removal, to a home the operator
+# never named.
 fm_gbrain_config_dir() {  # <home>
-  printf '%s\n' "${FM_CONFIG_OVERRIDE:-$1/config}"
+  if [ -n "${FM_CONFIG_OVERRIDE:-}" ] && [ -n "${FM_HOME:-}" ] && [ "$1" = "$FM_HOME" ]; then
+    printf '%s\n' "$FM_CONFIG_OVERRIDE"
+    return 0
+  fi
+  printf '%s\n' "$1/config"
 }
 
 fm_gbrain_shared_path() {  # <home>
@@ -100,13 +109,18 @@ fm_gbrain_is_positive_int() {  # <value>
   [ "$1" -gt 0 ]
 }
 
+# A bracketed IPv6 literal is stripped whole before the port is split off, so
+# ::1 reads as the host it is rather than as the leading bracket.
 fm_gbrain_url_host() {  # <url> -> host, or empty
   local rest=$1
   rest=${rest#http://}
   rest=${rest#https://}
   rest=${rest%%/*}
   rest=${rest##*@}
-  printf '%s\n' "${rest%%:*}"
+  case $rest in
+    \[*\]*) printf '%s\n' "${rest%%]*}]" ;;
+    *) printf '%s\n' "${rest%%:*}" ;;
+  esac
 }
 
 fm_gbrain_host_is_loopback() {  # <host>
@@ -276,6 +290,7 @@ fm_gbrain_local_fields() {
 version
 brain_root
 client_id
+main_brain_owner
 EOF
 }
 
@@ -319,7 +334,23 @@ EOF
         ;;
     esac
   fi
+  value=$(jq -r '.main_brain_owner | type' "$file" 2>/dev/null || true)
+  case $value in
+    null | boolean ) ;;
+    *)
+      fm_gbrain_fail "$FM_GBRAIN_LOCAL_FILE field \"main_brain_owner\" must be true or false"
+      return 1
+      ;;
+  esac
   return 0
+}
+
+# True when this home declares that the fleet's main brain IS its own brain.
+# Such a home reads that brain directly and never registers a read-only client
+# with itself, so the declaration lives in the plane that never propagates:
+# marking one home the owner can never mark another.
+fm_gbrain_is_main_brain_owner() {  # <home>
+  [ "$(fm_gbrain_json_str "$(fm_gbrain_local_path "$1")" '.main_brain_owner')" = true ]
 }
 
 # --- credential plane -------------------------------------------------------

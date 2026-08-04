@@ -32,7 +32,7 @@ All three live under a home's gitignored `config/`.
 | Plane | File | Propagation | Holds |
 | --- | --- | --- | --- |
 | Shared | `config/gbrain.json` | inherited by every secondmate home | endpoints, model choices, the main brain's address, and the *names* of credentials |
-| Home-local | `config/gbrain-local.json` | never inherited | this home's `brain_root` override and its own OAuth `client_id` |
+| Home-local | `config/gbrain-local.json` | never inherited | this home's `brain_root` override, its own OAuth `client_id`, and `main_brain_owner` when this home's brain IS the main brain |
 | Credentials | `config/gbrain-secrets/<name>` | never inherited | one credential per file, regular file, mode 0600 |
 
 The shared plane has a closed schema, so it cannot carry what must not propagate.
@@ -42,6 +42,8 @@ The result is that the shared file can be inherited verbatim by any number of ho
 
 Credentials follow the same restrictive-path precedent as `config/forge-tokens/<host>`: a credential that is a symlink, is not a regular file, or is readable beyond its owner is refused rather than quietly used, and the refusal names the file.
 `bin/fm-config-inherit-lib.sh` carries `config/gbrain.json` and deliberately carries neither of the other two planes, so a rotation never copies a secret through inherited configuration.
+The schema is checked at every boundary that copies the file rather than only where `bin/fm-gbrain.sh` later reads it: the local propagation path, the remote sender, and the remote receiver, which validates against its own code root rather than trusting the pushing one.
+A credential pasted into the file is therefore refused before any home receives it and before it can be inlined verbatim into that home's config-reread instruction.
 
 ## Sharing the main brain read-only
 
@@ -53,6 +55,8 @@ FM_HOME=<main-home> bin/fm-gbrain.sh grant-read <label> --home <reading-home>
 ```
 
 That records the client id in the reading home's `config/gbrain-local.json`, writes the client secret to its `config/gbrain-secrets/` at mode 0600, and prints neither.
+It also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home that registers clients on its brain is by construction the brain the others read.
+That home reads its own index directly and never grants itself a client, so `bin/fm-gbrain.sh check` reports it as reading the main brain rather than as having lost access to it.
 The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it.
 
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
@@ -95,5 +99,12 @@ Retiring a secondmate revokes its client and removes its credentials and its own
 ```sh
 FM_HOME=<main-home> bin/fm-gbrain.sh retire <retiring-home> --yes
 ```
+
+Retirement removes only what this tool creates: the retiring home's `config/gbrain-secrets/` and the `runtime/`, `pglite/`, and `archive/` directories it derives under that home's brain root.
+The brain root itself is left in place, because a configured `brain_root` may name a GBrain deployment Firstmate did not create and whose neighbours are not Firstmate's to delete.
+A path that is not a plain directory this tool would have created is refused rather than guessed at, and nothing is removed until every path has passed that check.
+
+Revocation happens first and a revocation that fails stops the retirement with nothing removed, because a home whose local record of the credential is gone while its client still reads the main brain leaves access no one can find again.
+Re-run the command once the reported cause is cleared, most often a served main brain holding the single-writer lock.
 
 This destroys that home's index, so it refuses without `--yes` and belongs with the rest of the retirement decision in [`.agents/skills/secondmate-provisioning/SKILL.md`](../.agents/skills/secondmate-provisioning/SKILL.md), never as a routine cleanup.
