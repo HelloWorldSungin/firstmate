@@ -110,8 +110,6 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
-# shellcheck source=bin/fm-busy-lib.sh
-. "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -383,22 +381,13 @@ model_verdict_precedes_any_turn() {  # <verdict>
   return 1
 }
 
-model_verdict_has_unknown_evidence_location() {  # <verdict> <detail>
-  local rc
-  [ "$1" = unverifiable ] \
-    && [ "$2" = "durable record names no model-evidence store for this dispatch" ] \
-    || return 1
-  if grep -q '^model_evidence_store=' "$META" 2>/dev/null; then
-    return 1
-  else
-    rc=$?
-  fi
-  [ "$rc" -eq 1 ]
-}
-
+# Every status line that is not one of the harness files bin/fm-spawn.sh writes
+# itself. Untracked entries arrive as `?? <path>` and ignored entries as
+# `!! <path>`; both carry the same allowlist, because an ignored file a worker
+# produced is work exactly as an untracked one is.
 worktree_changes_except_harness_files() {  # <porcelain-status>
   printf '%s\n' "$1" \
-    | grep -vE '^\?\? (\.claude/settings\.local\.json|\.opencode/plugins/fm-(turn-end|busy-state)\.js|\.fm-(grok|kimi)-turnend)$' \
+    | grep -vE '^[?!]{2} (\.claude/settings\.local\.json|\.opencode/plugins/fm-(turn-end|busy-state)\.js|\.fm-(grok|kimi)-turnend)$' \
     | head -1 || true
 }
 
@@ -419,7 +408,11 @@ worker_left_nothing_to_preserve() {
   git -C "$wt" show-ref --verify --quiet "$task_ref" 2>/dev/null
   ref_rc=$?
   [ "$ref_rc" -eq 1 ] || return 1
-  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null) || return 1
+  # --untracked-files=all does NOT report ignored content, and plain --ignored
+  # collapses an ignored directory into one summary line. `--ignored=matching`
+  # with it lists every ignored FILE, so no directory entry can stand in for
+  # arbitrarily much real work underneath it.
+  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null) || return 1
   dirty=$(worktree_changes_except_harness_files "$dirty_raw")
   [ -z "$dirty" ] || return 1
   # Reachability from an existing branch, not remote-tracking state: it answers
@@ -446,7 +439,6 @@ refresh_terminal_model_verdict() {
   esac
   MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
   MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
-  MODEL_VERDICT_DETAIL=${MODEL_VERIFY_OUTPUT##*' · '}
 }
 
 attempt_no_verdict_endpoint_close() {
@@ -490,7 +482,6 @@ NO_VERDICT_CLEANUP_CANDIDATE=0
 NO_VERDICT_LIVENESS_UNDETERMINED=0
 NO_VERDICT_LIVENESS_STATE=not-checked
 NO_VERDICT_RETAIN_WORKTREE=0
-NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=0
 refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
@@ -498,12 +489,12 @@ refresh_terminal_model_verdict
 # verifiable in principle. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
+  # An unknown evidence location cannot prove the absent turn at all, so it is
+  # deliberately NOT a cleanup candidate: the task has not been shown to be
+  # never-started, only not shown to have run, and the metadata linking it to
+  # its evidence is the one record that could ever prove a wrong-model run.
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
     NO_VERDICT_CLEANUP_CANDIDATE=1
-  elif model_verdict_has_unknown_evidence_location "$MODEL_VERDICT" "$MODEL_VERDICT_DETAIL" \
-       && worker_left_nothing_to_preserve; then
-    NO_VERDICT_CLEANUP_CANDIDATE=1
-    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=1
   else
     echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
     exit 1
@@ -2014,11 +2005,7 @@ if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
   attempt_no_verdict_endpoint_close || exit 1
   refresh_terminal_model_verdict
   printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-  if model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
-    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=0
-  elif model_verdict_has_unknown_evidence_location "$MODEL_VERDICT" "$MODEL_VERDICT_DETAIL"; then
-    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=1
-  else
+  if ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
     case "$MODEL_VERDICT" in
       match|mismatch)
         echo "REFUSED: task $ID gained a model-attributed turn before cleanup; preserving its worktree and metadata." >&2
@@ -2033,32 +2020,16 @@ if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
     echo "REFUSED: task $ID gained work before cleanup; preserving its worktree and metadata." >&2
     exit 1
   fi
-  if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
-    NO_VERDICT_RETAIN_WORKTREE=1
-    echo "teardown: task $ID has no recorded model-evidence store, so its evidence location is unknown and no authoritative model-routing verdict could be obtained." >&2
-  else
-    echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
-  fi
+  echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
   if [ "$NO_VERDICT_LIVENESS_UNDETERMINED" -eq 1 ]; then
     NO_VERDICT_RETAIN_WORKTREE=1
     echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_VERDICT_LIVENESS_STATE)." >&2
   fi
   if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
-    if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ] \
-       && [ "$NO_VERDICT_LIVENESS_UNDETERMINED" -eq 1 ]; then
-      retain_reason="the model-evidence location and endpoint liveness could not be determined"
-    elif [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
-      retain_reason="the model-evidence location could not be determined"
-    else
-      retain_reason="liveness could not be determined"
-    fi
-    if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
-      echo "The recomputed worktree proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
-    else
-      echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
-    fi
+    retain_reason="liveness could not be determined"
+    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked or ignored files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
   else
-    echo "Backend $BACKEND reports no live worker (state: $NO_VERDICT_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; proceeding." >&2
+    echo "Backend $BACKEND reports no live worker (state: $NO_VERDICT_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked or ignored files; proceeding." >&2
   fi
 fi
 

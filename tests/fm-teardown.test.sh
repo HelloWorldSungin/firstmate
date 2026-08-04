@@ -883,7 +883,12 @@ test_unknown_liveness_completes_cleanup_and_retains_worktree() {
   pass "unknown endpoint liveness completes cleanup and retains the worktree"
 }
 
-test_missing_recorded_store_completes_cleanup_and_retains_worktree() {
+# An unknown evidence location cannot prove the absent turn at all, so the
+# never-started allowance does not apply: the task has not been shown to be
+# never-started, only not shown to have run. Retention is not enough here,
+# because releasing the records would discard the metadata linking the task to
+# its evidence - the one record that could ever prove a wrong-model run.
+test_missing_recorded_store_refuses_and_preserves_metadata() {
   local case_dir rc
   case_dir=$(make_case missing-recorded-store)
   write_meta "$case_dir" no-mistakes ship
@@ -899,21 +904,68 @@ test_missing_recorded_store_completes_cleanup_and_retains_worktree() {
   FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-  expect_code 0 "$rc" "missing-recorded-store: retained cleanup did not complete"
+  [ "$rc" -ne 0 ] || fail "missing-recorded-store: an unknown evidence location did not refuse"
   assert_grep "verdict: unverifiable" "$case_dir/stderr" \
     "missing-recorded-store: the missing store identity was not unverifiable"
-  assert_grep "durable record names no model-evidence store" "$case_dir/stderr" \
-    "missing-recorded-store: the unknown evidence location was not stated"
-  assert_grep "worktree $case_dir/wt is retained rather than recycled because the model-evidence location could not be determined" "$case_dir/stderr" \
-    "missing-recorded-store: the retained path and reason were not stated"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "missing-recorded-store: no refusal was printed"
   assert_absent "$case_dir/treehouse-returned" \
-    "missing-recorded-store: the retained worktree reached treehouse return"
-  assert_present "$case_dir/wt" "missing-recorded-store: the retained worktree was removed"
-  assert_present "$case_dir/data/task-x1/outcome.json" \
-    "missing-recorded-store: the durable outcome was not published"
-  assert_absent "$case_dir/state/task-x1.meta" \
-    "missing-recorded-store: task metadata was left behind"
-  pass "a missing recorded evidence store completes cleanup and retains the worktree"
+    "missing-recorded-store: the preserved worktree reached treehouse return"
+  assert_present "$case_dir/wt" "missing-recorded-store: the worktree was removed"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "missing-recorded-store: the task metadata linking task to evidence was erased"
+  assert_absent "$case_dir/data/task-x1/outcome.json" \
+    "missing-recorded-store: a refused teardown published a completion outcome"
+  pass "a missing recorded evidence store refuses and preserves worktree and metadata"
+}
+
+# Ignored content is work exactly as untracked content is, and `git status
+# --untracked-files=all` does not report it at all. A cleanliness proof that
+# cannot see it would authorize discarding real files.
+test_ignored_content_refuses_while_allowlisted_harness_files_do_not() {
+  local case_dir rc
+  case_dir=$(make_case ignored-content)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  printf 'build/\n' > "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add -- .gitignore
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore build output"
+  git -C "$case_dir/wt" checkout --detach -q
+  git -C "$case_dir/project" branch -D fm/task-x1 >/dev/null 2>&1 || true
+  mkdir -p "$case_dir/wt/build"
+  printf 'hours of generated work\n' > "$case_dir/wt/build/artifact.txt"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ignored-content: ignored work was discarded"
+  assert_grep "REFUSED" "$case_dir/stderr" "ignored-content: no refusal was printed"
+  assert_present "$case_dir/wt/build/artifact.txt" "ignored-content: ignored work was removed"
+  assert_present "$case_dir/state/task-x1.meta" "ignored-content: task metadata was erased"
+  pass "ignored content beyond the allowlist refuses rather than being discarded"
+}
+
+# The mirror case: the harness files bin/fm-spawn.sh writes itself are the only
+# content the proof may look past, whether they arrive untracked or ignored.
+test_allowlisted_harness_files_still_tear_down() {
+  local case_dir rc
+  case_dir=$(make_case ignored-allowlisted)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf '{}\n' > "$case_dir/wt/.claude/settings.local.json"
+  printf 'x\n' > "$case_dir/wt/.fm-grok-turnend"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "ignored-allowlisted: harness-owned files blocked teardown"
+  assert_absent "$case_dir/state/task-x1.meta" "ignored-allowlisted: task metadata was left behind"
+  pass "harness-owned files alone do not block the never-started allowance"
 }
 
 test_authoritative_dead_endpoint_recycles_worktree() {
@@ -2559,7 +2611,9 @@ test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_before_final_recompute_refuses
 test_unknown_liveness_completes_cleanup_and_retains_worktree
-test_missing_recorded_store_completes_cleanup_and_retains_worktree
+test_missing_recorded_store_refuses_and_preserves_metadata
+test_ignored_content_refuses_while_allowlisted_harness_files_do_not
+test_allowlisted_harness_files_still_tear_down
 test_authoritative_dead_endpoint_recycles_worktree
 test_authoritative_live_endpoint_refuses
 test_recomputed_on_disk_proof_refuses_each_failed_condition
