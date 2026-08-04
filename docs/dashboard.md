@@ -1,6 +1,6 @@
 # Fleet dashboard
 
-The fleet dashboard is a mobile-first, read-only captain inbox and kanban view over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
+The fleet dashboard is a mobile-first, read-only captain inbox, kanban view, and completed-work history over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
 It never dispatches, steers, merges, tears down, or writes fleet state.
 Stopping the dashboard has no effect on Firstmate supervision.
 
@@ -50,8 +50,40 @@ Project, harness, model, kind, and state filters derive their choices from the s
 The UI contains no forge adapter or independent fleet-state parser.
 Persistent secondmates stay in their own lane.
 
+## History
+
+History lists completed work from the durable completion manifests in `data/<id>/outcome.json`, which [`docs/fleet-data-contracts.md`](fleet-data-contracts.md) owns.
+This page states the history policy for humans, and [`assets/dashboard/history.js`](../assets/dashboard/history.js) is its single executable copy.
+It is deliberately not built from task metadata or from the Done backlog: cleanup removes the volatile records and the backlog keeps only its recent Done entries, so a view sourced from either would lose a task that finished a few weeks ago.
+A completed investigation therefore stays browsable, with its report, after cleanup and after backlog pruning.
+
+Each record shows the task title and id, project, kind, harness, model, effort, its recorded timestamps and duration, the outcome, the complete pull request URL with the pull-request fields that were recorded at completion, any linked work item, and token usage when it is available.
+Work delivered against an issue links back to that issue; an unreachable or unsupported tracker stays a plain link, and work with no linked item simply has none.
+History computes no pull-request readiness verdict of its own - [`docs/dashboard-inbox-policy.md`](dashboard-inbox-policy.md) owns that judgment for live work, and history shows the observation that was recorded, including its unknowns.
+
+Project, harness, model, kind, outcome, and completion-date filters, a bounded text search over the indexed fields, and pagination all run over the records the server read.
+Search covers ids, titles, projects, dispatch metadata, outcome detail, pull request URLs, and work-item links; it does not read report bodies.
+The server reads a bounded number of records per refresh, and says so in the view when more completed work is stored than was read - raise `--history-limit` to widen it.
+A manifest that is missing, corrupt, or written against a schema version this dashboard does not accept is listed with its id and the reason it could not be used, never silently skipped.
+Token usage is presence-gated on the fleet's token-usage collector: totals appear when that collector is installed in this home and has attributed usage to a task, and anything else - no collector, no attributed row, an output this dashboard does not recognize, an unreadable total - renders as `unavailable` with its reason rather than as a zero.
+A blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
+Semantic search over report content is a separate integration; history is fully usable without it.
+
+## Rendered reports
+
+A retained report is arbitrary content written by a worker, so the dashboard renders it under an explicit policy that [`assets/dashboard/markdown.js`](../assets/dashboard/markdown.js) implements and `tests/fm-dashboard-history.test.sh` pins with hostile fixtures.
+
+The renderer never produces an HTML string and the browser never parses one: Markdown becomes a tree of plain nodes that the page builds with `createElement`, `createTextNode`, and an attribute allowlist.
+Raw HTML in a report is therefore never markup - a `<script>` tag arrives on the page as the literal characters a reader sees.
+A link survives only when it is absolute and its protocol is `http`, `https`, or `mailto`; `javascript:`, `data:`, and every other protocol, along with protocol-relative and relative references, are refused and the refusal is shown next to the surviving label rather than hidden.
+Images are rendered as labeled external links instead of `<img>` elements, because the page's content-security policy forbids remote images and a broken-image icon would read as a corrupt report rather than as policy.
+Document size, line count, node count, and nesting are all bounded, and every truncation is stated above the report.
+
+The report itself is fetched by task id, and that id selects nothing on its own: it must name a task the current history published with a retained report, and the file is then read from this home's own data directory rather than from the path recorded in the manifest.
+A report that is missing, is no longer a plain file, or resolves outside that directory is refused with a reason, and a report larger than the configured byte limit is served truncated and labeled.
+
 ## Updating configuration
 
 Re-run the installer with the desired values to replace the environment file and restart the enabled service.
-The environment file owns the operational home, loopback address, port, poll interval, snapshot timeout, and stale threshold for the service.
+The environment file carries the service's value for every configuration name [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header documents.
 Use ordinary user-level systemd status and journal commands to inspect startup failures.

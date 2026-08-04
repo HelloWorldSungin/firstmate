@@ -51,7 +51,7 @@ Launching a supported harness inside it instantiates your first mate - and makes
 - **Optional X mode** - opt in with one local `.env` token so firstmate can answer your public `@myfirstmate` mentions, act on normal reversible mention requests through the same lifecycle as chat requests, acknowledge spawned work, and post up to three public-safe completion follow-ups within seven days for genuine milestones and the final outcome without changing non-X behavior; a final reply promised in a thread becomes durable state that is reconciled from disk, so a restart or a compacted conversation cannot lose it; dry-run preview records would-be replies and dismissals locally before go-live.
 - **Strict project boundary** - the first mate is read-only over your projects except for the narrow guarded and captain-approved operations authorized by [hard rule 1](AGENTS.md#1-identity-and-prime-directives), including fleet sync's guarded safe branch pruning; crewmates make every other project change behind the configured merge authority.
 - **Restart-proof** - all state lives on disk and in the active session backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected); kill the session anytime and the next one reconciles, including confirmed-dead secondmate agents, and carries on.
-- **Read-only captain inbox and fleet board** - an optional loopback-only, mobile-first view renders the versioned fleet snapshot contract as an age-sorted inbox of what needs you, a fleet health strip, and a kanban, without owning dispatch, lifecycle, or fleet writes.
+- **Read-only captain inbox, fleet board, and completed-work history** - an optional loopback-only, mobile-first view renders the versioned fleet snapshot contract as an age-sorted inbox of what needs you, a fleet health strip, and a kanban, and browses finished work with its rendered reports from the durable completion manifests that outlive cleanup, without owning dispatch, lifecycle, or fleet writes.
 
 Full detail on every feature lives in [docs/architecture.md](docs/architecture.md).
 
@@ -199,7 +199,7 @@ Firstmate's skills live in two separate places with different audiences:
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
-- [docs/dashboard.md](docs/dashboard.md) - install and operate the loopback-only, read-only captain inbox and fleet kanban service.
+- [docs/dashboard.md](docs/dashboard.md) - install and operate the loopback-only, read-only captain inbox, fleet kanban, and completed-work history service.
 - [docs/dashboard-inbox-policy.md](docs/dashboard-inbox-policy.md) - the single documented statement of what reaches the captain inbox, what makes a pull request green, and what turns each health signal amber or red.
 - [docs/usage-accounting.md](docs/usage-accounting.md) - collect token usage from Claude Code and Codex, keep it attributed to its task after cleanup, and opt into cost estimates.
 - [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.

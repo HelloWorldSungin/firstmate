@@ -21,12 +21,18 @@ Options:
   --poll SECONDS       snapshot poll interval (default: 5)
   --timeout SECONDS    hard snapshot deadline (default: 15)
   --stale SECONDS      last-good stale threshold (default: 30)
+  --history-limit N    completion records read per history refresh (default: 500)
+  --history-poll SEC   history refresh interval (default: 60)
+  --report-bytes N     report bytes returned per request (default: 262144)
   --no-start           install files without enabling or starting the service
   -h, --help           show this help
 
 The environment variables FM_DASHBOARD_ADDRESS, FM_DASHBOARD_PORT,
-FM_DASHBOARD_POLL_SECONDS, FM_DASHBOARD_TIMEOUT_SECONDS, and
-FM_DASHBOARD_STALE_SECONDS provide the same defaults as their options.
+FM_DASHBOARD_POLL_SECONDS, FM_DASHBOARD_TIMEOUT_SECONDS,
+FM_DASHBOARD_STALE_SECONDS, FM_DASHBOARD_HISTORY_LIMIT,
+FM_DASHBOARD_HISTORY_POLL_SECONDS, and FM_DASHBOARD_REPORT_MAX_BYTES provide
+the same defaults as their options. Raise --history-limit when retained history
+has grown past the default read bound; the dashboard says so when it has.
 EOF
 }
 
@@ -36,11 +42,15 @@ FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
 FM_DASHBOARD_POLL_SECONDS=${FM_DASHBOARD_POLL_SECONDS:-5}
 FM_DASHBOARD_TIMEOUT_SECONDS=${FM_DASHBOARD_TIMEOUT_SECONDS:-15}
 FM_DASHBOARD_STALE_SECONDS=${FM_DASHBOARD_STALE_SECONDS:-30}
+FM_DASHBOARD_HISTORY_LIMIT=${FM_DASHBOARD_HISTORY_LIMIT:-500}
+FM_DASHBOARD_HISTORY_POLL_SECONDS=${FM_DASHBOARD_HISTORY_POLL_SECONDS:-60}
+FM_DASHBOARD_REPORT_MAX_BYTES=${FM_DASHBOARD_REPORT_MAX_BYTES:-262144}
 START_SERVICE=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --fm-home|--address|--port|--poll|--timeout|--stale)
+    --fm-home|--address|--port|--poll|--timeout|--stale|\
+    --history-limit|--history-poll|--report-bytes)
       [ "$#" -ge 2 ] || { printf 'fm-dashboard-install: %s requires a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --fm-home) FM_DASHBOARD_HOME=$2 ;;
@@ -49,6 +59,9 @@ while [ "$#" -gt 0 ]; do
         --poll) FM_DASHBOARD_POLL_SECONDS=$2 ;;
         --timeout) FM_DASHBOARD_TIMEOUT_SECONDS=$2 ;;
         --stale) FM_DASHBOARD_STALE_SECONDS=$2 ;;
+        --history-limit) FM_DASHBOARD_HISTORY_LIMIT=$2 ;;
+        --history-poll) FM_DASHBOARD_HISTORY_POLL_SECONDS=$2 ;;
+        --report-bytes) FM_DASHBOARD_REPORT_MAX_BYTES=$2 ;;
       esac
       shift 2
       ;;
@@ -77,6 +90,11 @@ case "$FM_DASHBOARD_PORT" in *.*) echo "fm-dashboard-install: port must be an in
 validate_positive_number poll "$FM_DASHBOARD_POLL_SECONDS"
 validate_positive_number timeout "$FM_DASHBOARD_TIMEOUT_SECONDS"
 validate_positive_number stale "$FM_DASHBOARD_STALE_SECONDS"
+validate_positive_number history-poll "$FM_DASHBOARD_HISTORY_POLL_SECONDS"
+validate_positive_number history-limit "$FM_DASHBOARD_HISTORY_LIMIT"
+validate_positive_number report-bytes "$FM_DASHBOARD_REPORT_MAX_BYTES"
+case "$FM_DASHBOARD_HISTORY_LIMIT" in *.*) echo "fm-dashboard-install: history-limit must be an integer" >&2; exit 2 ;; esac
+case "$FM_DASHBOARD_REPORT_MAX_BYTES" in *.*) echo "fm-dashboard-install: report-bytes must be an integer" >&2; exit 2 ;; esac
 
 command -v node >/dev/null 2>&1 || { echo "fm-dashboard-install: node not found" >&2; exit 1; }
 [ -f "$SERVER" ] || { echo "fm-dashboard-install: dashboard server not found at $SERVER" >&2; exit 1; }
@@ -111,6 +129,9 @@ trap 'rm -f "$ENV_TMP" "$UNIT_TMP"' EXIT HUP INT TERM
   printf 'FM_DASHBOARD_POLL_SECONDS="%s"\n' "$(systemd_quote "$FM_DASHBOARD_POLL_SECONDS")"
   printf 'FM_DASHBOARD_TIMEOUT_SECONDS="%s"\n' "$(systemd_quote "$FM_DASHBOARD_TIMEOUT_SECONDS")"
   printf 'FM_DASHBOARD_STALE_SECONDS="%s"\n' "$(systemd_quote "$FM_DASHBOARD_STALE_SECONDS")"
+  printf 'FM_DASHBOARD_HISTORY_LIMIT="%s"\n' "$(systemd_quote "$FM_DASHBOARD_HISTORY_LIMIT")"
+  printf 'FM_DASHBOARD_HISTORY_POLL_SECONDS="%s"\n' "$(systemd_quote "$FM_DASHBOARD_HISTORY_POLL_SECONDS")"
+  printf 'FM_DASHBOARD_REPORT_MAX_BYTES="%s"\n' "$(systemd_quote "$FM_DASHBOARD_REPORT_MAX_BYTES")"
 } > "$ENV_TMP"
 chmod 600 "$ENV_TMP"
 
