@@ -11,7 +11,8 @@
 #   (b) a pinned specific model matches only itself
 #   (c) a downgrade below the dispatched family is a mismatch
 #   (d) a mid-dispatch model change is a mismatch even when one value matches
-#   (e) evidence that cannot be located or read is LOUD, never a quiet pass
+#   (e) evidence that cannot be located or read is LOUD, never a quiet pass, and
+#       an absent session (`unstarted`) is distinguished from unreadable evidence
 #   (f) `pending` (nothing to compare yet) and `unpinned` (nothing promised) are
 #       distinct no-verdict outcomes and never render as `match`
 #   (g) spawned_at binds evidence to THIS dispatch, so a reused worktree's
@@ -147,12 +148,99 @@ pass "mid-dispatch model change is detected"
 
 # --- (e) evidence that cannot be located or read is loud --------------------
 
+# An absent transcript directory means the runtime wrote no session for this
+# worker at all. That is still no verdict and still exits 4, but it is a
+# distinct cause from evidence that exists and cannot be read, so it carries its
+# own verdict rather than being folded into `unverifiable`.
+fresh_store="$TMP_ROOT/fresh-claude-store"
+mkdir -p "$fresh_store"
+meta fresh-store opus >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$fresh_store|" "$HOME_DIR/state/fresh-store.meta"
+rm -f "$HOME_DIR/state/fresh-store.meta.bak"
+out=$(run_verify fresh-store); code=$?
+expect_code 4 "$code" "fresh evidence store exits 4"
+assert_contains "$out" "verdict: unstarted" "a fresh store without a transcript parent is unstarted"
+assert_not_contains "$out" "verdict: unverifiable" "a provably absent transcript parent is not unreadable evidence"
+assert_contains "$out" "no transcript parent or session" "the fresh-store cause is named"
+pass "a fresh inspectable store without a transcript parent is unstarted"
+
 meta no-evidence opus >/dev/null
 out=$(run_verify no-evidence); code=$?
 expect_code 4 "$code" "missing transcript directory exits 4"
-assert_contains "$out" "verdict: unverifiable" "a worker with no locatable evidence is unverifiable"
+assert_contains "$out" "verdict: unstarted" "a worker whose runtime wrote no session is unstarted"
+assert_not_contains "$out" "verdict: unverifiable" "an absent session is not conflated with unreadable evidence"
 assert_not_contains "$out" "verdict: match" "unlocatable evidence never reads as a match"
-pass "evidence that cannot be located fails loudly"
+assert_contains "$out" "no evidence of its own to read" "the unstarted reason names its cause"
+pass "an absent transcript directory is distinguished from unreadable evidence"
+out=$(run_verify no-evidence --terminal); code=$?
+expect_code 4 "$code" "terminal verification still rejects an unstarted worker"
+assert_contains "$out" "verdict: unstarted" "terminal rejection preserves the unstarted verdict"
+pass "terminal verification rejects unstarted as no verdict"
+
+wt=$(meta non-directory-session opus)
+dir=$(encoded_dir "$wt")
+printf 'not transcript data\n' > "$dir"
+out=$(run_verify non-directory-session); code=$?
+expect_code 4 "$code" "non-directory transcript path exits 4"
+assert_contains "$out" "verdict: unverifiable" "a non-directory transcript path is unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a present transcript path is not treated as absent"
+assert_contains "$out" "transcript path is not a directory" "the non-directory cause is named"
+pass "a present non-directory transcript path fails loudly"
+
+non_directory_parent_store="$TMP_ROOT/non-directory-parent-store"
+mkdir -p "$non_directory_parent_store"
+printf 'not a transcript parent\n' > "$non_directory_parent_store/projects"
+meta non-directory-parent opus >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$non_directory_parent_store|" "$HOME_DIR/state/non-directory-parent.meta"
+rm -f "$HOME_DIR/state/non-directory-parent.meta.bak"
+out=$(run_verify non-directory-parent); code=$?
+expect_code 4 "$code" "non-directory transcript parent exits 4"
+assert_contains "$out" "verdict: unverifiable" "a non-directory transcript parent is unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a present transcript parent path is not treated as absent"
+assert_contains "$out" "transcript parent path is not a directory" "the non-directory parent cause is named"
+pass "a present non-directory transcript parent fails loudly"
+
+unreadable_store="$TMP_ROOT/unreadable-parent-store"
+mkdir -p "$unreadable_store/projects"
+wt=$(meta unreadable-parent opus)
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$unreadable_store|" "$HOME_DIR/state/unreadable-parent.meta"
+rm -f "$HOME_DIR/state/unreadable-parent.meta.bak"
+chmod 000 "$unreadable_store/projects"
+out=$(run_verify unreadable-parent); code=$?
+chmod 755 "$unreadable_store/projects"
+if [ "$(id -u)" = 0 ]; then
+  pass "unreadable transcript parent case skipped (running as root)"
+else
+  expect_code 4 "$code" "unreadable transcript parent exits 4"
+  assert_contains "$out" "verdict: unverifiable" "an unreadable transcript parent is unverifiable"
+  assert_not_contains "$out" "verdict: unstarted" "a hidden transcript path is not treated as absent"
+  assert_contains "$out" "transcript parent directory is not readable" "the unreadable parent cause is named"
+  pass "an unreadable transcript parent fails loudly"
+fi
+
+missing_store="$TMP_ROOT/missing-claude-store"
+meta missing-store opus model_evidence_watermark=claude-transcript-v1 >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$missing_store|" "$HOME_DIR/state/missing-store.meta"
+rm -f "$HOME_DIR/state/missing-store.meta.bak"
+out=$(run_verify missing-store); code=$?
+expect_code 4 "$code" "missing recorded evidence store exits 4"
+assert_contains "$out" "verdict: unverifiable" "a missing evidence store remains unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a missing evidence store is not treated as an absent worker session"
+assert_contains "$out" "model-evidence store is missing" "the unverifiable reason names the missing store"
+pass "a missing recorded evidence store is not mistaken for an unstarted worker"
+
+wt=$(meta legacy-missing-store opus)
+sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/legacy-missing-store.meta"
+rm -f "$HOME_DIR/state/legacy-missing-store.meta.bak"
+out=$(run_verify legacy-missing-store); code=$?
+expect_code 4 "$code" "a legacy record without an evidence-store identity exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "a legacy record without an evidence-store identity remains unverifiable"
+assert_not_contains "$out" "verdict: unstarted" \
+  "ambient session absence did not authorize an unstarted verdict"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "the unverifiable reason names the unknown evidence location"
+pass "a missing persisted evidence-store identity never falls back to ambient state"
 
 out=$(run_verify never-dispatched); code=$?
 expect_code 4 "$code" "absent durable record exits 4"
@@ -399,8 +487,8 @@ out=$(CLAUDE_CONFIG_DIR="$newline_root-link" run_verify newline-store); code=$?
 expect_code 4 "$code" "newline-bearing physical evidence store exits 4"
 assert_contains "$out" "verdict: unverifiable" \
   "newline-bearing physical evidence store did not fail loudly"
-assert_contains "$out" "could not be canonicalized" \
-  "newline-bearing physical evidence store lost its failure cause"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "an unrecorded ambient store did not become authoritative"
 assert_not_contains "$out" "verdict: match" \
   "newline-bearing physical evidence store manufactured a match"
 pass "newline-bearing physical evidence stores are unverifiable"
@@ -415,20 +503,23 @@ write_transcript "$wt" b claude-opus-4-8
 out=$(run_verify unbound-ambiguous); code=$?
 expect_code 4 "$code" "unattributable evidence exits 4"
 assert_contains "$out" "verdict: unverifiable" "disagreeing unbound evidence is unverifiable"
-pass "unattributable evidence fails loudly instead of guessing"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "unbound evidence did not bypass the missing recorded store"
+pass "unbound evidence without a recorded store fails loudly"
 
-# Unbound but unanimous evidence is still attributable, and discloses that the
-# scan was not time-bounded.
+# Unanimous ambient evidence is not attributable without a persisted store.
 wt=$(meta unbound-agreed opus)
 sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/unbound-agreed.meta"
 rm -f "$HOME_DIR/state/unbound-agreed.meta.bak"
 write_transcript "$wt" a claude-opus-5
 write_transcript "$wt" b claude-opus-5
 out=$(run_verify unbound-agreed); code=$?
-expect_code 0 "$code" "unanimous unbound evidence does not alarm"
-assert_contains "$out" "verdict: match" "unanimous evidence is attributable"
-assert_contains "$out" "not time-bounded" "the weaker binding is disclosed rather than hidden"
-pass "unbound but unanimous evidence is matched with disclosure"
+expect_code 4 "$code" "unanimous ambient evidence without a recorded store exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "unanimous ambient evidence without a recorded store remains unverifiable"
+assert_not_contains "$out" "verdict: match" \
+  "unanimous ambient evidence did not manufacture an authoritative match"
+pass "unanimous ambient evidence requires a recorded store identity"
 
 # --- secondmate: the worker runs in its own home, not a worktree ------------
 

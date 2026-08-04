@@ -28,9 +28,9 @@
 #     actually RAN: {verdict,recorded,actual[],source,detail}. The two are
 #     deliberately separate keys: `model` stays the plain recorded string every
 #     other consumer reads, and the verdict never overwrites the record it
-#     judges. `match` means a model was read and compared; `mismatch` and
-#     `unverifiable` both need attention, and `pending`/`unpinned` are
-#     explicitly no-verdict rather than a pass.
+#     judges. `match` means a model was read and compared; `mismatch`,
+#     `unverifiable`, and `unstarted` all need attention, and `pending`/
+#     `unpinned` are explicitly no-verdict rather than a pass.
 #     paths.status_log.last_event is historical wake-event data only, never
 #     current state. Its last_event_at and last_event_age_seconds report WHEN
 #     that event landed, from the log's mtime, so a renderer can age a task

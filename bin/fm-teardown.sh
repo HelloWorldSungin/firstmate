@@ -364,30 +364,142 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
+# The helpers below distinguish a proven no-turn worker from evidence whose
+# location was never persisted. Only the clean proven no-turn worker can enter
+# the allowance. An unknown evidence location cannot prove that boundary and
+# must refuse while preserving both worktree and task metadata, exactly like a
+# worker that ran without a usable verdict.
+
+# 0 iff this verdict means the worker never produced a model-attributed turn.
+# Every other no-verdict cause is handled separately: unreadable evidence, an
+# absent adapter, jq missing, evidence that cannot be attributed, and a missing
+# persisted evidence-store identity all keep refusing.
+model_verdict_precedes_any_turn() {  # <verdict>
+  case "$1" in
+    unstarted|pending) return 0 ;;
+  esac
+  return 1
+}
+
+# Every status line that is not one of the harness files bin/fm-spawn.sh writes
+# itself. Untracked entries arrive as `?? <path>` and ignored entries as
+# `!! <path>`; both carry the same allowlist, because an ignored file a worker
+# produced is work exactly as an untracked one is.
+worktree_changes_except_harness_files() {  # <porcelain-status>
+  printf '%s\n' "$1" \
+    | grep -vE '^[?!]{2} (\.claude/settings\.local\.json|\.opencode/plugins/fm-(turn-end|busy-state)\.js|\.fm-(grok|kimi)-turnend)$' \
+    | head -1 || true
+}
+
+# 0 iff the recorded worktree provably carries nothing worth preserving: it is
+# inspectable, sits on no branch, holds no commit that no existing ref already
+# contains, and is clean apart from the harness files fm-spawn itself writes.
+# Anything that cannot be inspected or proven is treated as work to preserve.
+worker_left_nothing_to_preserve() {
+  local wt dirty_raw dirty contained task_ref ref_rc
+  wt=$(fm_meta_get "$META" worktree)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  # A branch at HEAD means the worker got as far as creating one, which the
+  # ship brief makes its first action.
+  ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1 || return 1
+  task_ref="refs/heads/fm/$ID"
+  git -C "$wt" check-ref-format "$task_ref" >/dev/null 2>&1 || return 1
+  git -C "$wt" show-ref --verify --quiet "$task_ref" 2>/dev/null
+  ref_rc=$?
+  [ "$ref_rc" -eq 1 ] || return 1
+  # This check must enumerate files: `--ignored=traditional` together with
+  # `--untracked-files=all` does so for ignored and untracked content. Any
+  # status mode that can collapse a directory into a single entry silently
+  # breaks the exact-file allowlist, so these flags are load-bearing and must
+  # not be simplified.
+  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) || return 1
+  dirty=$(worktree_changes_except_harness_files "$dirty_raw")
+  [ -z "$dirty" ] || return 1
+  # Reachability from an existing branch, not remote-tracking state: it answers
+  # "did this worker commit anything of its own" for a project with no remote
+  # exactly as it does for one with several.
+  contained=$(git -C "$wt" for-each-ref --contains HEAD --count=1 --format='%(refname)' \
+    refs/heads refs/remotes 2>/dev/null) || return 1
+  [ -n "$contained" ] || return 1
+  return 0
+}
+
+refresh_terminal_model_verdict() {
+  MODEL_VERIFY_RC=0
+  MODEL_VERIFY_OUTPUT=$(
+    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-model-verify.sh" "$ID" --terminal 2>&1
+  ) || MODEL_VERIFY_RC=$?
+  case "$MODEL_VERIFY_OUTPUT" in
+    *' · verdict: '*) ;;
+    *)
+      MODEL_VERIFY_OUTPUT="$ID · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${MODEL_VERIFY_OUTPUT:+: $MODEL_VERIFY_OUTPUT}"
+      MODEL_VERIFY_RC=4
+      ;;
+  esac
+  MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
+  MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
+}
+
+attempt_no_verdict_endpoint_close() {
+  NO_VERDICT_LIVENESS_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$NO_VERDICT_LIVENESS_STATE" in
+    alive)
+      echo "REFUSED: task $ID has a live worker according to backend $BACKEND; preserving its endpoint, worktree, and metadata." >&2
+      return 1
+      ;;
+    dead|missing) ;;
+    *)
+      NO_VERDICT_LIVENESS_UNDETERMINED=1
+      ;;
+  esac
+
+  case "$BACKEND" in
+    herdr)
+      teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION" || return 1
+      if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
+        fm_backend_herdr_projection_close_pane_focus_preserving \
+          "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" 2>/dev/null || true
+      else
+        fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
+      fi
+      if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+        echo "REFUSED: task $ID Herdr endpoint close could not be confirmed before its final evidence check; preserving its worktree and metadata." >&2
+        return 1
+      fi
+      ;;
+    *)
+      fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
+      ;;
+  esac
+}
+
 # This is the first cleanup authorization check. It is metadata-only and must
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
-MODEL_VERIFY_RC=0
-MODEL_VERIFY_OUTPUT=$(
-  FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$SCRIPT_DIR/fm-model-verify.sh" "$ID" --terminal 2>&1
-) || MODEL_VERIFY_RC=$?
-case "$MODEL_VERIFY_OUTPUT" in
-  *' · verdict: '*) ;;
-  *)
-    MODEL_VERIFY_OUTPUT="$ID · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${MODEL_VERIFY_OUTPUT:+: $MODEL_VERIFY_OUTPUT}"
-    MODEL_VERIFY_RC=4
-    ;;
-esac
+NO_VERDICT_CLEANUP_CANDIDATE=0
+NO_VERDICT_LIVENESS_UNDETERMINED=0
+NO_VERDICT_LIVENESS_STATE=not-checked
+NO_VERDICT_RETAIN_WORKTREE=0
+refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
 # verifiable in principle. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
-  echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
-  exit 1
+  # An unknown evidence location cannot prove the absent turn at all, so it is
+  # deliberately NOT a cleanup candidate: the task has not been shown to be
+  # never-started, only not shown to have run, and the metadata linking it to
+  # its evidence is the one record that could ever prove a wrong-model run.
+  if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
+    NO_VERDICT_CLEANUP_CANDIDATE=1
+  else
+    echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
+    exit 1
+  fi
 fi
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
@@ -1033,7 +1145,7 @@ validate_worktree_teardown_safety() {
     secondmate|scout) return 0 ;;
   esac
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+  if ! dirty_raw=$(git -C "$WT" status --porcelain=v1 --untracked-files=all 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
@@ -1041,7 +1153,7 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  dirty=$(worktree_changes_except_harness_files "$dirty_raw")
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -1866,10 +1978,68 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
 
+HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
+HERDR_PRESENTATION_RETIRE_CANDIDATE=0
+HERDR_PRESENTATION_SESSION=
+HERDR_PRESENTATION_PANE=
+if [ "$BACKEND" = herdr ] \
+   && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
+  fm_backend_source herdr || true
+  HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
+  HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
+  HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
+  if [ -n "$HERDR_PRESENTATION_SESSION" ] \
+     && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
+     && [ -n "$HERDR_PRESENTATION_PANE" ] \
+     && [ "$T" = "$HERDR_PRESENTATION_SESSION:$HERDR_PRESENTATION_PANE" ] \
+     && fm_backend_herdr_projection_endpoint_matches_journal \
+       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
+       "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
+    HERDR_PRESENTATION_RETIRE_CANDIDATE=1
+  fi
+fi
+
+if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
+  # fm_backend_target_exists intentionally maps read failures onto false for
+  # cheap observational callers, so a failure-collapsing helper cannot be used
+  # as a destructive safety predicate without a stronger wrapper.
+  attempt_no_verdict_endpoint_close || exit 1
+  refresh_terminal_model_verdict
+  printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+  if ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
+    case "$MODEL_VERDICT" in
+      match|mismatch)
+        echo "REFUSED: task $ID gained a model-attributed turn before cleanup; preserving its worktree and metadata." >&2
+        ;;
+      *)
+        echo "REFUSED: task $ID model-routing evidence became unverifiable before cleanup; preserving its worktree and metadata." >&2
+        ;;
+    esac
+    exit 1
+  fi
+  if ! worker_left_nothing_to_preserve; then
+    echo "REFUSED: task $ID gained work before cleanup; preserving its worktree and metadata." >&2
+    exit 1
+  fi
+  echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
+  if [ "$NO_VERDICT_LIVENESS_UNDETERMINED" -eq 1 ]; then
+    NO_VERDICT_RETAIN_WORKTREE=1
+    echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_VERDICT_LIVENESS_STATE)." >&2
+  fi
+  if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
+    retain_reason="liveness could not be determined"
+    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked or ignored files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
+  else
+    echo "Backend $BACKEND reports no live worker (state: $NO_VERDICT_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked or ignored files; proceeding." >&2
+  fi
+fi
+
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
+if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
+  :
+elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
     ORCA_PATH_MATCH_VERIFIED=1
@@ -1909,27 +2079,6 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
-fi
-
-HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
-HERDR_PRESENTATION_RETIRE_CANDIDATE=0
-HERDR_PRESENTATION_SESSION=
-HERDR_PRESENTATION_PANE=
-if [ "$BACKEND" = herdr ] \
-   && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
-  fm_backend_source herdr || true
-  HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
-  HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
-  HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
-  if [ -n "$HERDR_PRESENTATION_SESSION" ] \
-     && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
-     && [ -n "$HERDR_PRESENTATION_PANE" ] \
-     && [ "$T" = "$HERDR_PRESENTATION_SESSION:$HERDR_PRESENTATION_PANE" ] \
-     && fm_backend_herdr_projection_endpoint_matches_journal \
-       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
-       "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
-    HERDR_PRESENTATION_RETIRE_CANDIDATE=1
-  fi
 fi
 
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
@@ -1977,14 +2126,17 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
 fi
-# Every refusal gate has passed and the endpoint is confirmed gone, so this is
-# the last point at which the records the manifest is composed from all still
-# exist: a retired secondmate's own state and data directories can live INSIDE
-# the home removed on the next line.
+# Every refusal gate has passed. Any worktree whose endpoint liveness remains
+# unconfirmed was retained rather than recycled, so this is the last point at
+# which the records the manifest is composed from all still exist: a retired
+# secondmate's own state and data directories can live INSIDE the home removed
+# on the next line.
 publish_outcome_manifest "$FORCE" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
+  if [ "$NO_VERDICT_RETAIN_WORKTREE" -ne 1 ]; then
+    remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
+  fi
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
@@ -1998,7 +2150,9 @@ if [ -n "$T" ]; then
 fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+if [ "$NO_VERDICT_RETAIN_WORKTREE" -ne 1 ] && [ -n "$TASK_TMP" ]; then
+  rm -rf "$TASK_TMP"
+fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \

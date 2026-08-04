@@ -39,6 +39,16 @@
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #
+# Also covers the model-routing refusal's never-started boundary: a worker that
+# died before its first model-attributed turn can never produce a verdict, so
+# refusing it forever preserves nothing, while a worker that RAN without a usable
+# verdict, or one with work in its worktree, must keep refusing.
+#   (z1) no model-attributed turn + clean detached worktree     -> ALLOW  (no verdict possible)
+#   (z2) session opened but no turn + clean detached worktree   -> ALLOW  (same, other shape)
+#   (z3) no turn + uncommitted changes                          -> REFUSE (work to lose)
+#   (z4) no turn + commits on a task branch                     -> REFUSE (work to lose)
+#   (z5) worker RAN, evidence unattributable, worktree clean    -> REFUSE (evidence to protect)
+#
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
 #   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
@@ -473,7 +483,8 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-if [ -n "$dir" ] && [ "${args[2]:-}" = status ] && [ "${args[3]:-}" = --porcelain ]; then
+if [ -n "$dir" ] && [ "${args[2]:-}" = status ]; then
+  case "${args[3]:-}" in --porcelain|--porcelain=v1) ;; *) exec "$real" "${args[@]}" ;; esac
   lock=$("$real" -C "$dir" rev-parse --git-path index.lock 2>/dev/null || true)
   case "$lock" in
     /*|'') ;;
@@ -530,6 +541,637 @@ test_terminal_model_verdict_blocks_cleanup_then_allows_match() {
     || fail "matching terminal model verdict blocked teardown"
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "matching terminal verdict left task metadata behind"
   pass "terminal teardown preserves mismatches and proceeds on a model match"
+}
+
+# Point the task at a claude dispatch with a pinned model, so its routing is
+# verifiable IN PRINCIPLE and an absent verdict is meaningful. Echoes the
+# transcript directory the verifier will look in; the caller decides whether it
+# exists, and with what in it. Args: case_dir
+claude_dispatch_meta() {
+  local case_dir=$1 cfg
+  cfg="$case_dir/claude-config"
+  mkdir -p "$cfg/projects"
+  printf '%s\n' \
+    'harness=claude' \
+    'model=opus' \
+    "model_evidence_store=$cfg" \
+    'model_evidence_watermark=claude-transcript-v1' >> "$case_dir/state/task-x1.meta"
+  printf '%s/projects/%s\n' "$cfg" "$(printf '%s' "$case_dir/wt" | sed 's/[^A-Za-z0-9]/-/g')"
+}
+
+use_unverified_zellij_backend() {
+  local case_dir=$1
+  sed -i.bak 's|^window=.*$|window=firstmate:7|' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=zellij' \
+    'zellij_session=firstmate' \
+    'zellij_tab_id=3' \
+    'zellij_pane_id=7' >> "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/fakebin/zellij" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" list-sessions "*) printf '%s\n' firstmate ;;
+  *" action list-panes --json "*)
+    printf '%s\n' '[{"id":7,"tab_id":3,"is_plugin":false}]'
+    ;;
+  *" action list-tabs --json "*)
+    printf '%s\n' '[{"tab_id":3,"name":"fm-task-x1"}]'
+    ;;
+  *" action close-tab-by-id "*)
+    : > "${FM_TEST_ENDPOINT_CLOSE_ATTEMPTED:?}"
+    exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/zellij"
+}
+
+install_tmux_close_mutation() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = kill-window ]; then
+  [ -z "${FM_TEST_ENDPOINT_CLOSE_ATTEMPTED:-}" ] || : > "$FM_TEST_ENDPOINT_CLOSE_ATTEMPTED"
+  case "${FM_TEST_CLOSE_MUTATION:-}" in
+    model-turn)
+      mkdir -p "${FM_TEST_TRANSCRIPT_DIR:?}"
+      printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "${FM_TEST_TRANSCRIPT_DIR:?}/current.jsonl"
+      ;;
+    task-branch)
+      git -C "${FM_TEST_PROJECT:?}" branch fm/task-x1
+      ;;
+    own-commit)
+      git -C "${FM_TEST_WT:?}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "detached worker commit"
+      ;;
+    tracked-change)
+      printf 'staged work\n' > "${FM_TEST_WT:?}/staged.txt"
+      git -C "${FM_TEST_WT:?}" add staged.txt
+      ;;
+    untracked-file)
+      printf 'untracked work\n' > "${FM_TEST_WT:?}/scratch.txt"
+      ;;
+  esac
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+install_authoritative_live_tmux() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  list-windows) printf '%s\n' fm-task-x1 ;;
+  display-message)
+    case "\${*: -1}" in
+      '#{pane_tty}') printf '\n' ;;
+      '#{pane_current_command}') printf '%s\n' claude ;;
+    esac
+    ;;
+  kill-window) : > '$case_dir/endpoint-close-attempted' ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+install_authoritative_dead_tmux() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-windows) printf '%s\n' fm-task-x1 ;;
+  display-message)
+    case "${*: -1}" in
+      '#{pane_tty}') printf '\n' ;;
+      '#{pane_current_command}') printf '%s\n' bash ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+install_destructive_treehouse_probe() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "return --force" ]; then
+  : > "${FM_TEST_TREEHOUSE_RETURNED:?}"
+  rm -rf -- "${@: -1}"
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# Leave the worktree exactly as a worker that died before its first turn does:
+# detached at the base commit, with the task branch never created. Args: case_dir
+never_started_worktree() {
+  local case_dir=$1
+  git -C "$case_dir/wt" checkout --detach -q
+  git -C "$case_dir/project" branch -D fm/task-x1 >/dev/null 2>&1 || true
+}
+
+# A worker stranded before its first model-attributed turn can never produce a
+# verdict, so refusing it forever preserves nothing and strands its records. The
+# allowance is evidence-based: it holds only while the worktree also proves there
+# is no work to lose, and the absent verdict is still stated plainly.
+test_never_started_and_clean_tears_down_without_force() {
+  local case_dir dir rc
+  case_dir=$(make_case never-started-clean)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  never_started_worktree "$case_dir"
+  mkdir -p "$case_dir/wt/.claude" "$case_dir/wt/.opencode/plugins"
+  : > "$case_dir/wt/.claude/settings.local.json"
+  : > "$case_dir/wt/.opencode/plugins/fm-turn-end.js"
+  : > "$case_dir/wt/.opencode/plugins/fm-busy-state.js"
+  : > "$case_dir/wt/.fm-grok-turnend"
+  : > "$case_dir/wt/.fm-kimi-turnend"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "never-started-clean: a worker that never took a turn stayed blocked"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-clean: task metadata was left behind"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "never-started-clean: the absent session was not surfaced"
+  assert_grep "no model-routing verdict could be obtained" "$case_dir/stderr" \
+    "never-started-clean: teardown did not state that no verdict was obtained"
+  [ ! -d "$dir" ] || fail "never-started-clean: fixture wrote a transcript directory"
+  pass "a never-started worker with nothing to lose tears down and still reports no verdict"
+}
+
+test_fresh_store_and_clean_tears_down_without_force() {
+  local case_dir rc
+  case_dir=$(make_case fresh-store-clean)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  rmdir "$case_dir/claude-config/projects"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "fresh-store-clean: a fresh store without a transcript parent stayed blocked"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "fresh-store-clean: the absent transcript parent was not surfaced as unstarted"
+  assert_grep "no transcript parent or session" "$case_dir/stderr" \
+    "fresh-store-clean: the fresh-store cause was not named"
+  assert_absent "$case_dir/state/task-x1.meta" "fresh-store-clean: task metadata was left behind"
+  pass "a never-started worker with a fresh evidence store tears down"
+}
+
+test_uninspectable_evidence_store_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case uninspectable-evidence-store)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  rm -rf "$case_dir/claude-config"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "uninspectable-evidence-store: teardown discarded evidence it could not inspect"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "uninspectable-evidence-store: the store failure was not unverifiable"
+  assert_grep "model-evidence store is missing" "$case_dir/stderr" \
+    "uninspectable-evidence-store: the missing store was not named"
+  assert_grep "REFUSED" "$case_dir/stderr" "uninspectable-evidence-store: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "uninspectable-evidence-store: task metadata was erased"
+  pass "an uninspectable recorded evidence store remains unverifiable and refuses teardown"
+}
+
+test_non_directory_session_path_still_refuses() {
+  local case_dir dir rc
+  case_dir=$(make_case non-directory-session-path)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  printf 'not transcript data\n' > "$dir"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "non-directory-session-path: teardown discarded uninspectable evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "non-directory-session-path: the present path was not unverifiable"
+  assert_grep "transcript path is not a directory" "$case_dir/stderr" \
+    "non-directory-session-path: the path cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "non-directory-session-path: task metadata was erased"
+  pass "a present non-directory session path remains unverifiable and refuses teardown"
+}
+
+test_non_directory_session_parent_still_refuses() {
+  local case_dir dir parent rc
+  case_dir=$(make_case non-directory-session-parent)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  parent=${dir%/*}
+  rmdir "$parent"
+  printf 'not a transcript parent\n' > "$parent"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "non-directory-session-parent: teardown discarded uninspectable evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "non-directory-session-parent: the present parent was not unverifiable"
+  assert_grep "transcript parent path is not a directory" "$case_dir/stderr" \
+    "non-directory-session-parent: the parent cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "non-directory-session-parent: task metadata was erased"
+  pass "a present non-directory session parent remains unverifiable and refuses teardown"
+}
+
+test_unreadable_session_parent_still_refuses() {
+  local case_dir dir parent rc
+  case_dir=$(make_case unreadable-session-parent)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  parent=${dir%/*}
+  never_started_worktree "$case_dir"
+  chmod 000 "$parent"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  chmod 755 "$parent"
+  if [ "$(id -u)" = 0 ]; then
+    pass "unreadable session parent teardown case skipped (running as root)"
+    return
+  fi
+  [ "$rc" -ne 0 ] || fail "unreadable-session-parent: teardown discarded hidden evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "unreadable-session-parent: the hidden path was not unverifiable"
+  assert_grep "transcript parent directory is not readable" "$case_dir/stderr" \
+    "unreadable-session-parent: the parent cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "unreadable-session-parent: task metadata was erased"
+  pass "an unreadable session parent remains unverifiable and refuses teardown"
+}
+
+test_first_turn_before_final_recompute_refuses() {
+  local case_dir dir rc
+  case_dir=$(make_case first-turn-before-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  never_started_worktree "$case_dir"
+  install_tmux_close_mutation "$case_dir"
+
+  rc=0
+  FM_TEST_CLOSE_MUTATION=model-turn \
+    FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TRANSCRIPT_DIR="$dir" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "first-turn-before-cleanup: teardown discarded a mismatched first turn"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "first-turn-before-cleanup: the initial unstarted verdict was not surfaced"
+  assert_grep "verdict: mismatch" "$case_dir/stderr" \
+    "first-turn-before-cleanup: the recomputed mismatch was not surfaced"
+  assert_grep "gained a model-attributed turn" "$case_dir/stderr" \
+    "first-turn-before-cleanup: the changed no-turn condition was not named"
+  assert_present "$case_dir/endpoint-close-attempted" \
+    "first-turn-before-cleanup: the best-effort close did not trigger the late turn"
+  assert_present "$dir/current.jsonl" \
+    "first-turn-before-cleanup: the late transcript was erased"
+  assert_present "$case_dir/wt" \
+    "first-turn-before-cleanup: the task worktree was returned"
+  assert_present "$case_dir/state/task-x1.meta" "first-turn-before-cleanup: task metadata was erased"
+  pass "a first mismatched turn before final recomputation is preserved"
+}
+
+test_unknown_liveness_completes_cleanup_and_retains_worktree() {
+  local case_dir rc
+  case_dir=$(make_case unknown-liveness-clean)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  use_unverified_zellij_backend "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  mkdir -p "$case_dir/task-tmp"
+  printf 'task temp evidence\n' > "$case_dir/task-tmp/evidence.txt"
+  printf '%s\n' "tasktmp=$case_dir/task-tmp" >> "$case_dir/state/task-x1.meta"
+
+  rc=0
+  FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "unknown-liveness-clean: every on-disk protection still stayed blocked"
+  assert_grep "Endpoint liveness could not be determined on backend zellij (state: unverified)" "$case_dir/stderr" \
+    "unknown-liveness-clean: the missing recovery classifier was not stated"
+  assert_grep "recomputed on-disk proof" "$case_dir/stderr" \
+    "unknown-liveness-clean: the protections carrying the decision were not stated"
+  assert_grep "worktree $case_dir/wt is retained rather than recycled because liveness could not be determined" "$case_dir/stderr" \
+    "unknown-liveness-clean: the retained worktree and reason were not stated"
+  assert_present "$case_dir/endpoint-close-attempted" \
+    "unknown-liveness-clean: the best-effort endpoint close was not attempted"
+  assert_absent "$case_dir/treehouse-returned" \
+    "unknown-liveness-clean: the retained worktree reached treehouse return"
+  assert_present "$case_dir/wt" "unknown-liveness-clean: the retained worktree was removed"
+  assert_present "$case_dir/task-tmp/evidence.txt" \
+    "unknown-liveness-clean: the retained task temp root was removed"
+  assert_present "$case_dir/data/task-x1/outcome.json" \
+    "unknown-liveness-clean: the durable outcome was not published"
+  assert_absent "$case_dir/state/task-x1.meta" "unknown-liveness-clean: task metadata was left behind"
+  pass "unknown endpoint liveness completes cleanup and retains the worktree"
+}
+
+# An unknown evidence location cannot prove the absent turn at all, so the
+# never-started allowance does not apply: the task has not been shown to be
+# never-started, only not shown to have run. Retention is not enough here,
+# because releasing the records would discard the metadata linking the task to
+# its evidence - the one record that could ever prove a wrong-model run.
+test_missing_recorded_store_refuses_and_preserves_metadata() {
+  local case_dir rc
+  case_dir=$(make_case missing-recorded-store)
+  write_meta "$case_dir" no-mistakes ship
+  sed -i.bak 's/^model=default$/model=opus/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' 'harness=claude' >> "$case_dir/state/task-x1.meta"
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  mkdir -p "$case_dir/ambient-claude/projects"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "missing-recorded-store: an unknown evidence location did not refuse"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "missing-recorded-store: the missing store identity was not unverifiable"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "missing-recorded-store: no refusal was printed"
+  assert_absent "$case_dir/treehouse-returned" \
+    "missing-recorded-store: the preserved worktree reached treehouse return"
+  assert_present "$case_dir/wt" "missing-recorded-store: the worktree was removed"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "missing-recorded-store: the task metadata linking task to evidence was erased"
+  assert_absent "$case_dir/data/task-x1/outcome.json" \
+    "missing-recorded-store: a refused teardown published a completion outcome"
+  pass "a missing recorded evidence store refuses and preserves worktree and metadata"
+}
+
+# Ignored content is work exactly as untracked content is, and `git status
+# --untracked-files=all` does not report it at all. A cleanliness proof that
+# cannot see it would authorize discarding real files.
+test_ignored_content_refuses_while_allowlisted_harness_files_do_not() {
+  local case_dir rc
+  case_dir=$(make_case ignored-content)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  printf 'build/\n' > "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add -- .gitignore
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore build output"
+  git -C "$case_dir/project" merge -q --ff-only fm/task-x1
+  git -C "$case_dir/project" push -q origin main
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  mkdir -p "$case_dir/wt/build"
+  printf 'hours of generated work\n' > "$case_dir/wt/build/artifact.txt"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ignored-content: ignored work was discarded"
+  assert_grep "REFUSED" "$case_dir/stderr" "ignored-content: no refusal was printed"
+  assert_present "$case_dir/wt/build/artifact.txt" "ignored-content: ignored work was removed"
+  assert_present "$case_dir/state/task-x1.meta" "ignored-content: task metadata was erased"
+  pass "ignored content beyond the allowlist refuses rather than being discarded"
+}
+
+# The mirror case: the harness files bin/fm-spawn.sh writes itself are the only
+# content the proof may look past, whether they arrive untracked or ignored.
+test_allowlisted_harness_files_still_tear_down() {
+  local case_dir rc
+  case_dir=$(make_case ignored-allowlisted)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  printf '.claude/\n' > "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add -- .gitignore
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore harness files"
+  git -C "$case_dir/project" merge -q --ff-only fm/task-x1
+  git -C "$case_dir/project" push -q origin main
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf '{}\n' > "$case_dir/wt/.claude/settings.local.json"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "ignored-allowlisted: harness-owned files blocked teardown"
+  assert_absent "$case_dir/state/task-x1.meta" "ignored-allowlisted: task metadata was left behind"
+  pass "harness-owned files alone do not block the never-started allowance"
+}
+
+test_authoritative_dead_endpoint_recycles_worktree() {
+  local case_dir rc
+  case_dir=$(make_case authoritative-dead-endpoint)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "authoritative-dead-endpoint: teardown did not complete"
+  assert_grep "Backend tmux reports no live worker (state: dead)" "$case_dir/stderr" \
+    "authoritative-dead-endpoint: authoritative dead liveness was not stated"
+  assert_present "$case_dir/treehouse-returned" \
+    "authoritative-dead-endpoint: the worktree was not recycled"
+  assert_absent "$case_dir/wt" "authoritative-dead-endpoint: the recycled worktree remained"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "authoritative-dead-endpoint: task metadata was left behind"
+  pass "an authoritative dead endpoint recycles its worktree normally"
+}
+
+test_authoritative_live_endpoint_refuses() {
+  local case_dir rc
+  case_dir=$(make_case authoritative-live-endpoint)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_live_tmux "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "authoritative-live-endpoint: teardown killed a verified live worker"
+  assert_grep "live worker according to backend tmux" "$case_dir/stderr" \
+    "authoritative-live-endpoint: authoritative liveness was not named"
+  assert_absent "$case_dir/endpoint-close-attempted" \
+    "authoritative-live-endpoint: a close was attempted for the live endpoint"
+  assert_present "$case_dir/state/task-x1.meta" "authoritative-live-endpoint: task metadata was erased"
+  pass "an authoritative live endpoint refuses never-started teardown"
+}
+
+test_recomputed_on_disk_proof_refuses_each_failed_condition() {
+  local case_dir dir failure rc
+  for failure in model-turn task-branch own-commit tracked-change untracked-file; do
+    case_dir=$(make_case "recomputed-proof-$failure")
+    write_meta "$case_dir" no-mistakes ship
+    dir=$(claude_dispatch_meta "$case_dir")
+    never_started_worktree "$case_dir"
+    install_tmux_close_mutation "$case_dir"
+
+    rc=0
+    FM_TEST_CLOSE_MUTATION="$failure" \
+      FM_TEST_TRANSCRIPT_DIR="$dir" \
+      FM_TEST_PROJECT="$case_dir/project" \
+      FM_TEST_WT="$case_dir/wt" \
+      FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "recomputed-proof-$failure: teardown proceeded without every protection"
+    assert_grep "REFUSED" "$case_dir/stderr" \
+      "recomputed-proof-$failure: the missing protection did not refuse loudly"
+    assert_present "$case_dir/state/task-x1.meta" \
+      "recomputed-proof-$failure: task metadata was erased"
+  done
+  pass "the recomputed on-disk proof refuses each failed protection"
+}
+
+# The same allowance for the other no-turn shape: the runtime DID open a session
+# but the worker never reached a model-attributed turn (Claude's first-run
+# onboarding leaves exactly this). Its detail differs from the absent-session
+# case, and both must clear.
+test_never_started_with_session_but_no_turn_tears_down() {
+  local case_dir dir rc
+  case_dir=$(make_case never-started-pending)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  mkdir -p "$dir"
+  printf '{"type":"user","message":{"role":"user"}}\n' > "$dir/current.jsonl"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "never-started-pending: a session with no turn stayed blocked"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-pending: task metadata was left behind"
+  assert_grep "verdict: pending" "$case_dir/stderr" \
+    "never-started-pending: the pending verdict was not surfaced"
+  assert_grep "no model-routing verdict could be obtained" "$case_dir/stderr" \
+    "never-started-pending: teardown did not state that no verdict was obtained"
+  pass "a worker whose session never reached a turn tears down and still reports no verdict"
+}
+
+# Half the evidence is not enough. Uncommitted changes are work to lose whatever
+# the routing verdict says, and this boundary must not move with it.
+test_never_started_but_dirty_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-dirty)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  printf 'half-written work\n' > "$case_dir/wt/scratch.txt"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-dirty: teardown discarded uncommitted work"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-dirty: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-dirty: task metadata was erased"
+  [ -f "$case_dir/wt/scratch.txt" ] || fail "never-started-dirty: uncommitted work was removed"
+  pass "a never-started worker with uncommitted changes still refuses"
+}
+
+test_never_started_with_untracked_claude_file_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-claude-file)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  mkdir -p "$case_dir/wt/.claude"
+  printf 'recovery notes\n' > "$case_dir/wt/.claude/recovery.md"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-claude-file: teardown discarded an untracked file under .claude"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-claude-file: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-claude-file: task metadata was erased"
+  assert_present "$case_dir/wt/.claude/recovery.md" "never-started-claude-file: untracked work was removed"
+  pass "an untracked file under .claude remains work to preserve"
+}
+
+# The other half: a branch with its own commits is unlanded work, and the
+# no-turn allowance must not reach it either.
+test_never_started_but_committed_on_a_branch_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-branch)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  wt_commit "$case_dir" "work nobody has seen"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-branch: teardown discarded an unlanded branch"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-branch: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-branch: task metadata was erased"
+  [ -d "$case_dir/wt" ] || fail "never-started-branch: the task worktree was returned"
+  pass "a never-started worker whose branch carries commits still refuses"
+}
+
+test_never_started_with_detached_head_and_surviving_task_branch_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-detached-surviving-branch)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  wt_commit "$case_dir" "work retained only by the task branch"
+  git -C "$case_dir/wt" checkout --detach -q main
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-detached-surviving-branch: teardown discarded a surviving task branch"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "never-started-detached-surviving-branch: no refusal was printed"
+  git -C "$case_dir/wt" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "never-started-detached-surviving-branch: the task branch was removed"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "never-started-detached-surviving-branch: task metadata was erased"
+  pass "a surviving task branch refuses teardown even while HEAD is detached and clean"
+}
+
+# The boundary this whole guard exists to hold: a worker that RAN, on evidence
+# that cannot be attributed, keeps refusing even when its worktree is as clean
+# as a never-started one. The allowance is keyed on the absent turn, not on the
+# clean worktree.
+test_ran_but_unverifiable_still_refuses_on_a_clean_worktree() {
+  local case_dir dir rc
+  case_dir=$(make_case ran-unverifiable)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  # Drop the dispatch binding, then record two disagreeing models: evidence that
+  # exists, was written by a worker that ran, and cannot be tied to this task.
+  sed -i.bak '/^model_evidence_watermark=/d' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  mkdir -p "$dir"
+  printf '{"type":"assistant","message":{"model":"claude-opus-5"}}\n' > "$dir/one.jsonl"
+  printf '{"type":"assistant","message":{"model":"claude-sonnet-5"}}\n' > "$dir/two.jsonl"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ran-unverifiable: unattributable evidence was discarded unseen"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "ran-unverifiable: the unverifiable verdict was not surfaced"
+  assert_grep "REFUSED" "$case_dir/stderr" "ran-unverifiable: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "ran-unverifiable: task metadata was erased"
+  pass "a worker that ran on unattributable evidence still refuses despite a clean worktree"
 }
 
 test_forced_teardown_surfaces_mismatch_before_discarding() {
@@ -1964,6 +2606,26 @@ test_teardown_publishes_outcome_manifest_before_removing_records
 test_forced_teardown_records_a_discarded_outcome
 test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match
+test_never_started_and_clean_tears_down_without_force
+test_fresh_store_and_clean_tears_down_without_force
+test_uninspectable_evidence_store_still_refuses
+test_non_directory_session_path_still_refuses
+test_non_directory_session_parent_still_refuses
+test_unreadable_session_parent_still_refuses
+test_never_started_with_session_but_no_turn_tears_down
+test_first_turn_before_final_recompute_refuses
+test_unknown_liveness_completes_cleanup_and_retains_worktree
+test_missing_recorded_store_refuses_and_preserves_metadata
+test_ignored_content_refuses_while_allowlisted_harness_files_do_not
+test_allowlisted_harness_files_still_tear_down
+test_authoritative_dead_endpoint_recycles_worktree
+test_authoritative_live_endpoint_refuses
+test_recomputed_on_disk_proof_refuses_each_failed_condition
+test_never_started_but_dirty_still_refuses
+test_never_started_with_untracked_claude_file_still_refuses
+test_never_started_but_committed_on_a_branch_still_refuses
+test_never_started_with_detached_head_and_surviving_task_branch_still_refuses
+test_ran_but_unverifiable_still_refuses_on_a_clean_worktree
 test_forced_teardown_surfaces_mismatch_before_discarding
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
