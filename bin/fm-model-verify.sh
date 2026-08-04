@@ -316,8 +316,12 @@ claude_models() {  # <transcript-store> <transcript-dir> <spawned-at-epoch|empty
   fi
 
   parent=${dir%/*}
+  if [ -L "$parent" ] && [ ! -e "$parent" ]; then
+    printf 'ERR:transcript parent path is a broken symbolic link: %s\n' "$parent"
+    return 0
+  fi
   if [ ! -e "$parent" ]; then
-    printf 'ERR:transcript parent directory is missing: %s\n' "$parent"
+    printf 'NOSESSION:the runtime wrote no transcript parent or session for the working directory recorded for this worker, so it has no evidence of its own to read: %s\n' "$dir"
     return 0
   fi
   if [ ! -d "$parent" ]; then

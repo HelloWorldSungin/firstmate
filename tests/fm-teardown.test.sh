@@ -559,6 +559,53 @@ claude_dispatch_meta() {
   printf '%s/projects/%s\n' "$cfg" "$(printf '%s' "$case_dir/wt" | sed 's/[^A-Za-z0-9]/-/g')"
 }
 
+use_unverified_zellij_backend() {
+  local case_dir=$1
+  sed -i.bak 's|^window=.*$|window=firstmate:7|' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=zellij' \
+    'zellij_session=firstmate' \
+    'zellij_tab_id=3' \
+    'zellij_pane_id=7' >> "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/fakebin/zellij" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = list-sessions ]; then
+  case "${FM_TEST_ZELLIJ_MUTATION:-}" in
+    model-turn)
+      mkdir -p "${FM_TEST_ZELLIJ_TRANSCRIPT_DIR:?}"
+      printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "${FM_TEST_ZELLIJ_TRANSCRIPT_DIR:?}/current.jsonl"
+      ;;
+    task-branch)
+      git -C "${FM_TEST_ZELLIJ_PROJECT:?}" branch fm/task-x1
+      ;;
+    own-commit)
+      git -C "${FM_TEST_ZELLIJ_WT:?}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "detached worker commit"
+      ;;
+    tracked-change)
+      printf 'staged work\n' > "${FM_TEST_ZELLIJ_WT:?}/staged.txt"
+      git -C "${FM_TEST_ZELLIJ_WT:?}" add staged.txt
+      ;;
+    untracked-file)
+      printf 'untracked work\n' > "${FM_TEST_ZELLIJ_WT:?}/scratch.txt"
+      ;;
+  esac
+  [ "${FM_TEST_ZELLIJ_LIVE:-0}" = 1 ] && printf '%s\n' firstmate
+  exit 0
+fi
+case " $* " in
+  *" action list-panes --json "*)
+    printf '%s\n' '[{"id":7,"tab_id":3,"is_plugin":false}]'
+    ;;
+  *" action list-tabs --json "*)
+    printf '%s\n' '[{"tab_id":3,"name":"fm-task-x1"}]'
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/zellij"
+}
+
 # Leave the worktree exactly as a worker that died before its first turn does:
 # detached at the base commit, with the task branch never created. Args: case_dir
 never_started_worktree() {
@@ -595,6 +642,26 @@ test_never_started_and_clean_tears_down_without_force() {
     "never-started-clean: teardown did not state that no verdict was obtained"
   [ ! -d "$dir" ] || fail "never-started-clean: fixture wrote a transcript directory"
   pass "a never-started worker with nothing to lose tears down and still reports no verdict"
+}
+
+test_fresh_store_and_clean_tears_down_without_force() {
+  local case_dir rc
+  case_dir=$(make_case fresh-store-clean)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  rmdir "$case_dir/claude-config/projects"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "fresh-store-clean: a fresh store without a transcript parent stayed blocked"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "fresh-store-clean: the absent transcript parent was not surfaced as unstarted"
+  assert_grep "no transcript parent or session" "$case_dir/stderr" \
+    "fresh-store-clean: the fresh-store cause was not named"
+  assert_absent "$case_dir/state/task-x1.meta" "fresh-store-clean: task metadata was left behind"
+  pass "a never-started worker with a fresh evidence store tears down"
 }
 
 test_uninspectable_evidence_store_still_refuses() {
@@ -636,6 +703,28 @@ test_non_directory_session_path_still_refuses() {
     "non-directory-session-path: the path cause was not named"
   assert_present "$case_dir/state/task-x1.meta" "non-directory-session-path: task metadata was erased"
   pass "a present non-directory session path remains unverifiable and refuses teardown"
+}
+
+test_non_directory_session_parent_still_refuses() {
+  local case_dir dir parent rc
+  case_dir=$(make_case non-directory-session-parent)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  parent=${dir%/*}
+  rmdir "$parent"
+  printf 'not a transcript parent\n' > "$parent"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "non-directory-session-parent: teardown discarded uninspectable evidence"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "non-directory-session-parent: the present parent was not unverifiable"
+  assert_grep "transcript parent path is not a directory" "$case_dir/stderr" \
+    "non-directory-session-parent: the parent cause was not named"
+  assert_present "$case_dir/state/task-x1.meta" "non-directory-session-parent: task metadata was erased"
+  pass "a present non-directory session parent remains unverifiable and refuses teardown"
 }
 
 test_unreadable_session_parent_still_refuses() {
@@ -719,6 +808,56 @@ test_first_turn_during_quiescence_recheck_refuses() {
   assert_present "$case_dir/endpoint-killed" "first-turn-during-quiescence: endpoint was not quiesced"
   assert_present "$case_dir/state/task-x1.meta" "first-turn-during-quiescence: task metadata was erased"
   pass "a first mismatched turn during endpoint quiescence is recomputed and preserved"
+}
+
+test_unverified_backend_allows_only_with_every_other_protection() {
+  local case_dir rc
+  case_dir=$(make_case unverified-backend-clean)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  use_unverified_zellij_backend "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "unverified-backend-clean: absent endpoint plus every other protection stayed blocked"
+  assert_grep "Endpoint quiescence could not be determined" "$case_dir/stderr" \
+    "unverified-backend-clean: the missing recovery classifier was not stated"
+  assert_grep "cheaper endpoint presence read found no live endpoint" "$case_dir/stderr" \
+    "unverified-backend-clean: the protections carrying the decision were not stated"
+  assert_absent "$case_dir/state/task-x1.meta" "unverified-backend-clean: task metadata was left behind"
+  pass "an unverified backend proceeds only with every independent protection"
+}
+
+test_unverified_backend_refuses_each_missing_protection() {
+  local case_dir dir failure rc
+  for failure in model-turn task-branch own-commit tracked-change untracked-file live-endpoint; do
+    case_dir=$(make_case "unverified-backend-$failure")
+    write_meta "$case_dir" no-mistakes ship
+    dir=$(claude_dispatch_meta "$case_dir")
+    use_unverified_zellij_backend "$case_dir"
+    never_started_worktree "$case_dir"
+
+    rc=0
+    if [ "$failure" = live-endpoint ]; then
+      FM_TEST_ZELLIJ_LIVE=1 FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+        run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    else
+      FM_TEST_ZELLIJ_MUTATION="$failure" \
+        FM_TEST_ZELLIJ_TRANSCRIPT_DIR="$dir" \
+        FM_TEST_ZELLIJ_PROJECT="$case_dir/project" \
+        FM_TEST_ZELLIJ_WT="$case_dir/wt" \
+        FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+        run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    fi
+    [ "$rc" -ne 0 ] || fail "unverified-backend-$failure: teardown proceeded without every protection"
+    assert_grep "REFUSED" "$case_dir/stderr" \
+      "unverified-backend-$failure: the missing protection did not refuse loudly"
+    assert_present "$case_dir/state/task-x1.meta" \
+      "unverified-backend-$failure: task metadata was erased"
+  done
+  pass "an unverified backend refuses when any independent protection fails"
 }
 
 # The same allowance for the other no-turn shape: the runtime DID open a session
@@ -2287,11 +2426,15 @@ test_forced_teardown_records_a_discarded_outcome
 test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match
 test_never_started_and_clean_tears_down_without_force
+test_fresh_store_and_clean_tears_down_without_force
 test_uninspectable_evidence_store_still_refuses
 test_non_directory_session_path_still_refuses
+test_non_directory_session_parent_still_refuses
 test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_during_quiescence_recheck_refuses
+test_unverified_backend_allows_only_with_every_other_protection
+test_unverified_backend_refuses_each_missing_protection
 test_never_started_but_dirty_still_refuses
 test_never_started_with_untracked_claude_file_still_refuses
 test_never_started_but_committed_on_a_branch_still_refuses

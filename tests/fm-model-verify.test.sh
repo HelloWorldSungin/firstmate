@@ -152,6 +152,18 @@ pass "mid-dispatch model change is detected"
 # worker at all. That is still no verdict and still exits 4, but it is a
 # distinct cause from evidence that exists and cannot be read, so it carries its
 # own verdict rather than being folded into `unverifiable`.
+fresh_store="$TMP_ROOT/fresh-claude-store"
+mkdir -p "$fresh_store"
+meta fresh-store opus >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$fresh_store|" "$HOME_DIR/state/fresh-store.meta"
+rm -f "$HOME_DIR/state/fresh-store.meta.bak"
+out=$(run_verify fresh-store); code=$?
+expect_code 4 "$code" "fresh evidence store exits 4"
+assert_contains "$out" "verdict: unstarted" "a fresh store without a transcript parent is unstarted"
+assert_not_contains "$out" "verdict: unverifiable" "a provably absent transcript parent is not unreadable evidence"
+assert_contains "$out" "no transcript parent or session" "the fresh-store cause is named"
+pass "a fresh inspectable store without a transcript parent is unstarted"
+
 meta no-evidence opus >/dev/null
 out=$(run_verify no-evidence); code=$?
 expect_code 4 "$code" "missing transcript directory exits 4"
@@ -174,6 +186,19 @@ assert_contains "$out" "verdict: unverifiable" "a non-directory transcript path 
 assert_not_contains "$out" "verdict: unstarted" "a present transcript path is not treated as absent"
 assert_contains "$out" "transcript path is not a directory" "the non-directory cause is named"
 pass "a present non-directory transcript path fails loudly"
+
+non_directory_parent_store="$TMP_ROOT/non-directory-parent-store"
+mkdir -p "$non_directory_parent_store"
+printf 'not a transcript parent\n' > "$non_directory_parent_store/projects"
+meta non-directory-parent opus >/dev/null
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$non_directory_parent_store|" "$HOME_DIR/state/non-directory-parent.meta"
+rm -f "$HOME_DIR/state/non-directory-parent.meta.bak"
+out=$(run_verify non-directory-parent); code=$?
+expect_code 4 "$code" "non-directory transcript parent exits 4"
+assert_contains "$out" "verdict: unverifiable" "a non-directory transcript parent is unverifiable"
+assert_not_contains "$out" "verdict: unstarted" "a present transcript parent path is not treated as absent"
+assert_contains "$out" "transcript parent path is not a directory" "the non-directory parent cause is named"
+pass "a present non-directory transcript parent fails loudly"
 
 unreadable_store="$TMP_ROOT/unreadable-parent-store"
 mkdir -p "$unreadable_store/projects"
