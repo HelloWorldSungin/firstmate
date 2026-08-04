@@ -77,8 +77,10 @@ It runs only against this home's own brain: GBrain classifies `think` as a write
 The home a command reads is resolved from `--home`, then `FM_HOME`, then the directory the wrapper was invoked from, and a candidate that is a source checkout rather than an operating home is refused by name.
 That refusal matters because a crewmate on a firstmate task stands in a worktree of this repository: without it, the wrapper would build an empty brain inside a directory that cleanup is about to delete and report success while doing it.
 
-Local retrieval and hosted synthesis are reported as separate facts and never as one outcome.
-A main brain that is stopped, unreachable, or not shared with this home reads as a degraded source and does not fail the run, so a home's own memory never depends on another home being up.
+Each corpus a search reads, and hosted synthesis, are reported as separate facts and never as one outcome.
+A main brain that is stopped, unreachable, or not shared with this home reads as a degraded source and does not fail a run that also read this home's own index, so a home's own memory never depends on another home being up.
+The same independence runs the other way: a home with no GBrain installed reports its own index as failed and still reads the shared corpus, which needs only `curl` and a token.
+A search fails only when no corpus it was asked for could be read at all, so an empty result list with exit 0 always means the corpora were read and had no match.
 A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
 
 A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh` adds one instruction naming the command, the citation label, and the hosted-provider boundary, and adds it only when the home actually has an index, so a fleet with no brain carries no dead pointer.
@@ -98,6 +100,7 @@ Keep it stable across the fleet for both reasons.
 
 Local retrieval never depends on the main brain or on the hosted synthesis provider.
 When the main brain is stopped or unreachable, the reading home's own search continues to answer from its own index, `bin/fm-gbrain.sh check` reports the main brain as degraded, and the run still exits 0.
+A search asking for the main corpus alone with `--scope main` has no local half to fall back on, so the same outage fails that run with exit 3 rather than reporting an empty result list as an answer.
 When the MiniMax credential is absent or its endpoint is down, synthesis is unavailable and local search is unaffected, matching the single-brain behavior in [`gbrain.md`](gbrain.md).
 A credential that is present but stored too loosely to use is the one credential-related condition that fails the check outright, because that is a finding rather than an outage.
 

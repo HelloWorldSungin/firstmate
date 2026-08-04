@@ -30,14 +30,18 @@
 #           GBrain classifies think as a write-scope operation, which a
 #           read-only client is refused.
 #
-# Failure separation. Local retrieval and hosted synthesis fail for unrelated
-# reasons and are never reported as one outcome:
-#   exit 0  local retrieval answered. A main brain that is stopped, unreachable,
-#           or not shared with this home is reported per source as degraded and
-#           does not fail the run, because a home's own memory does not depend
-#           on another home being up.
+# Failure separation. The corpora a search reads, and hosted synthesis, fail for
+# unrelated reasons and are never reported as one outcome. Each source succeeds,
+# degrades, or fails on its own, every one of those verdicts is a row in the
+# document, and the exit status reports whether the search as a whole answered:
+#   exit 0  a requested corpus answered, whether or not it had a match. Another
+#           requested corpus that is stopped, unreachable, or not shared with
+#           this home is reported per source as degraded or failed and does not
+#           fail the run, because one corpus answering is a real answer.
 #   exit 2  usage, or a configuration this command refuses to guess at.
-#   exit 3  LOCAL retrieval failed - no brain, no index, or GBrain refused.
+#   exit 3  retrieval failed - NO requested corpus answered. "No match" and
+#           "could not be read" are never rendered as the same outcome, so an
+#           empty result list with exit 0 always means the corpora were read.
 #   exit 4  HOSTED synthesis is unavailable or produced no answer while local
 #           retrieval worked. Every such refusal names `search` as the path that
 #           still works.
@@ -213,6 +217,21 @@ resolve_context() {
   MAIN_MCP_URL=$(fm_gbrain_json_str "$shared" '.main_brain.mcp_url')
 }
 
+# --- the shape a retrieval reply must have ----------------------------------
+#
+# Checked at each leg's own boundary rather than by the renderer: a renderer that
+# meets an unexpected shape dies mid-document with a raw jq error, which is
+# neither a structured refusal nor an honest per-source verdict. The container's
+# type alone is not enough, because a row is indexed by name - a reply of
+# [1, 2] or ["note"] passes a `type == "array"` test and then kills the render.
+expected_shape() {  # <json> <expected-json-type>
+  printf '%s' "$1" | jq -e --arg t "$2" '
+    if type != $t then false
+    elif $t == "array" then all(.[]; type == "object")
+    else true
+    end' >/dev/null 2>&1
+}
+
 # --- the local leg ----------------------------------------------------------
 #
 # `gbrain call <tool> <json>` is GBrain's trusted local dispatch surface and
@@ -251,10 +270,7 @@ gbrain_local_call() {  # <tool> <params-json> <seconds> <expected-json-type> -> 
     125) LOCAL_ERR="no timeout implementation on PATH, so this call cannot be bounded"; return 1 ;;
     *) [ -n "$LOCAL_ERR" ] || LOCAL_ERR="gbrain exited $rc"; return 1 ;;
   esac
-  # The shape is checked here, not by the renderer: a renderer that meets an
-  # unexpected shape dies mid-document with a raw jq error, which is neither a
-  # structured refusal nor an honest local-failure verdict.
-  if ! printf '%s' "$LOCAL_OUT" | jq -e --arg t "$want" 'type == $t' >/dev/null 2>&1; then
+  if ! expected_shape "$LOCAL_OUT" "$want"; then
     LOCAL_ERR="gbrain returned a $tool result this command cannot read (expected a JSON $want)"
     return 1
   fi
@@ -302,7 +318,7 @@ mcp_unpack() {  # <raw-body> -> 0 with MAIN_OUT set
       || MAIN_ERR="the main brain refused the read"
     return 1
   fi
-  if ! printf '%s' "$text" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  if ! expected_shape "$text" array; then
     MAIN_ERR="the main brain returned a result this command cannot read"
     return 1
   fi
@@ -342,17 +358,22 @@ main_brain_search() {  # <query> <limit> <seconds> -> 0 with MAIN_OUT set
 
 # --- shaping results --------------------------------------------------------
 
-# One GBrain result row becomes one citable line.
+# One GBrain result row becomes one citable line. Every field is coerced to the
+# type this document promises, so a row whose slug is a number or whose score
+# arrived as a string is still rendered and still citable rather than aborting
+# the whole read: a field of the wrong type is a row worth less, not a corpus
+# that cannot be reported.
 shape_results() {  # <source> <results-json> <excerpt-chars>
   jq -c --arg src "$1" --argjson cap "$3" '
+    def text(v): if v == null then "" elif (v | type) == "string" then v else (v | tostring) end;
     [ .[]? | {
         source: $src,
-        citation: ($src + ":" + (.slug // "?")),
-        slug: (.slug // ""),
-        title: (.title // ""),
-        score: (.score // null),
+        citation: ($src + ":" + (if .slug == null or .slug == "" then "?" else text(.slug) end)),
+        slug: text(.slug),
+        title: text(.title),
+        score: (if (.score | type) == "number" then .score else null end),
         stale: (.stale == true),
-        excerpt: ((.chunk_text // "") | if length > $cap then .[0:$cap] + "..." else . end)
+        excerpt: (text(.chunk_text) | if length > $cap then .[0:$cap] + "..." else . end)
       } ]
   ' <<EOF
 $2
@@ -384,44 +405,62 @@ cmd_search() {
   resolve_context
   local secs=${TIMEOUT:-${FM_RECALL_TIMEOUT:-60}}
 
-  local rows=() results='[]' local_failed=0 owner=0 params shaped count
+  # Each requested corpus is read on its own terms and reports its own verdict,
+  # so neither leg decides the other's outcome. A home with no GBrain installed
+  # still reaches the fleet's shared corpus, which needs only curl and a token,
+  # and a home whose main brain is stopped still reads its own index.
+  local rows=() results='[]' answered=0 owner=0 params shaped count local_count=0
   if fm_gbrain_is_main_brain_owner "$HOME_PATH"; then owner=1; fi
 
-  if [ "$SCOPE" = local ] || [ "$SCOPE" = all ]; then
-    command -v "$GBRAIN_BIN" >/dev/null 2>&1 \
-      || die 3 gbrain_missing "gbrain is not installed (set FM_GBRAIN_BIN); this home's brain cannot be read"
-    params=$(jq -cn --arg q "$query" --argjson n "$LIMIT" '{query: $q, limit: $n}')
-    if gbrain_local_call search "$params" "$secs" array; then
-      shaped=$(shape_results local "$LOCAL_OUT" "$EXCERPT")
-      count=$(printf '%s' "$shaped" | jq 'length')
-      results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
-      rows+=("$(source_row local ok "$FM_GBRAIN_BRAIN_ROOT" "$count")")
+  local read_local=0 read_main=0 main_is_local=0
+  case $SCOPE in
+    local) read_local=1 ;;
+    main) read_main=1 ;;
+    all) read_local=1; read_main=1 ;;
+  esac
+  # On the home that owns the main brain, the main corpus IS this home's own
+  # index, so a main-scoped read there is a legitimate question with a real
+  # answer and is served by the local leg rather than answered with nothing.
+  if [ "$read_main" -eq 1 ] && [ "$owner" -eq 1 ]; then
+    main_is_local=1
+    read_local=1
+  fi
+
+  if [ "$read_local" -eq 1 ]; then
+    if ! command -v "$GBRAIN_BIN" >/dev/null 2>&1; then
+      rows+=("$(source_row local failed "$FM_GBRAIN_BRAIN_ROOT" 0 "gbrain is not installed (set FM_GBRAIN_BIN), so this home's own index cannot be read")")
     else
-      local_failed=1
-      rows+=("$(source_row local failed "$FM_GBRAIN_BRAIN_ROOT" 0 "$LOCAL_ERR")")
+      params=$(jq -cn --arg q "$query" --argjson n "$LIMIT" '{query: $q, limit: $n}')
+      if gbrain_local_call search "$params" "$secs" array; then
+        shaped=$(shape_results local "$LOCAL_OUT" "$EXCERPT")
+        local_count=$(printf '%s' "$shaped" | jq 'length')
+        results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
+        rows+=("$(source_row local ok "$FM_GBRAIN_BRAIN_ROOT" "$local_count")")
+        answered=1
+      else
+        rows+=("$(source_row local failed "$FM_GBRAIN_BRAIN_ROOT" 0 "$LOCAL_ERR")")
+      fi
     fi
   fi
 
-  if [ "$SCOPE" = main ] || [ "$SCOPE" = all ]; then
-    if [ -z "$MAIN_MCP_URL" ]; then
+  if [ "$read_main" -eq 1 ]; then
+    if [ "$main_is_local" -eq 1 ]; then
+      rows+=("$(source_row main same-as-local "$FM_GBRAIN_BRAIN_ROOT" "$local_count" "this home owns the main brain, so the main corpus is its own index and those results are the local rows, cited local:<slug>")")
+    elif [ -z "$MAIN_MCP_URL" ]; then
       if [ "$SCOPE" = main ]; then
         die 2 no_main_brain "no main brain is configured for $HOME_PATH"
       fi
       rows+=("$(source_row main absent "" 0 "no main brain is configured for this fleet")")
-    elif [ "$owner" -eq 1 ]; then
-      rows+=("$(source_row main same-as-local "$MAIN_MCP_URL" 0 "this home owns the main brain, so its own results above are the main brain's")")
+    elif ! command -v curl >/dev/null 2>&1; then
+      rows+=("$(source_row main degraded "$MAIN_MCP_URL" 0 "curl is not installed, so the main brain cannot be reached")")
+    elif main_brain_search "$query" "$LIMIT" "$secs"; then
+      shaped=$(shape_results main "$MAIN_OUT" "$EXCERPT")
+      count=$(printf '%s' "$shaped" | jq 'length')
+      results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
+      rows+=("$(source_row main ok "$MAIN_MCP_URL" "$count")")
+      answered=1
     else
-      require_tool curl
-      if main_brain_search "$query" "$LIMIT" "$secs"; then
-        shaped=$(shape_results main "$MAIN_OUT" "$EXCERPT")
-        count=$(printf '%s' "$shaped" | jq 'length')
-        results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
-        rows+=("$(source_row main ok "$MAIN_MCP_URL" "$count")")
-      else
-        # Deliberately not a failure: this home's own memory answered, and the
-        # fleet's shared memory being unreachable is a different, softer fact.
-        rows+=("$(source_row main degraded "$MAIN_MCP_URL" 0 "$MAIN_ERR")")
-      fi
+      rows+=("$(source_row main degraded "$MAIN_MCP_URL" 0 "$MAIN_ERR")")
     fi
   fi
 
@@ -442,7 +481,15 @@ cmd_search() {
        else (.results[] | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\n  \(.excerpt)")
        end)'
   fi
-  [ "$local_failed" -eq 0 ] || exit 3
+
+  # No corpus answered, so an empty result list here would be the one lie this
+  # command must never tell: "nothing was found" reads the same as "nothing
+  # could be read" only to a caller that was never told the difference.
+  if [ "$answered" -eq 0 ]; then
+    [ "$JSON_MODE" -eq 1 ] \
+      || printf 'fm-recall: no corpus could be read, so this is not an empty result set - see the source states above\n' >&2
+    exit 3
+  fi
 }
 
 # --- think ------------------------------------------------------------------

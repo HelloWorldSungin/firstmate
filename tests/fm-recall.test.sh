@@ -201,11 +201,16 @@ expect_code 3 "$RECALL_RC" "a local retrieval failure has its own exit status"
   || fail "the local source should read as failed: $RECALL_OUT"
 assert_contains "$RECALL_OUT" "No brain configured" "the refusal must carry GBrain's own reason"
 
+# A missing GBrain is this home's own index failing, and it is reported through
+# the same document as every other source verdict rather than as its own shape.
 RECALL_RC=0
 RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$TMP_ROOT/not-installed" bash "$CLI" search --json teardown 2>&1) || RECALL_RC=$?
-expect_code 3 "$RECALL_RC" "a missing GBrain is a local retrieval failure"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r .error.code)" = gbrain_missing \
-  ] || fail "a missing GBrain should be reported as gbrain_missing: $RECALL_OUT"
+expect_code 3 "$RECALL_RC" "a missing GBrain with no other corpus to read is a retrieval failure"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .schema)" = fm-recall.v1 ] \
+  || fail "a missing GBrain must still leave the documented document behind: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "a missing GBrain should read as a failed local source: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "gbrain is not installed" "the local verdict must say GBrain is missing"
 
 # A result of an unexpected shape must fail as a local retrieval failure with
 # the usual document, not die mid-render with a raw parser error.
@@ -217,13 +222,55 @@ expect_code 3 "$RECALL_RC" "a malformed local result is a local retrieval failur
 [ "$(printf '%s' "$RECALL_OUT" | jq -r .schema)" = fm-recall.v1 ] \
   || fail "a malformed local result must still produce the documented shape"
 
+# The container being the right type is not enough: a row is indexed by name, so
+# a reply whose ROWS are not objects reaches the renderer and dies there, with a
+# raw parser error and an exit status outside this command's contract.
+for MALFORMED in '[1,2]' '["teardown-notes"]' '[null]' '[[]]'; do
+  stub_reply "$MALFORMED"
+  run_recall "$MAIN_HOME" search --json teardown
+  expect_code 3 "$RECALL_RC" "a malformed result ROW is a local retrieval failure, not a crash: $MALFORMED"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r .schema)" = fm-recall.v1 ] \
+    || fail "a malformed result row must still produce the documented shape ($MALFORMED): $RECALL_OUT"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+    || fail "a malformed result row should read as a failed local source ($MALFORMED): $RECALL_OUT"
+  assert_not_contains "$RECALL_OUT" "jq:" "a malformed row must not surface a raw parser error ($MALFORMED)"
+done
+
+# A row that IS an object but carries a field of the wrong type is a poorer row,
+# not an unreadable corpus: it stays citable and the read still answers.
+stub_reply '[{"slug":7,"title":null,"chunk_text":42,"score":"high"}]'
+run_recall "$MAIN_HOME" search --json teardown
+expect_code 0 "$RECALL_RC" "a row with unexpected field types should still be rendered: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].citation')" = local:7 ] \
+  || fail "a non-string slug should still produce a citation: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].score')" = null ] \
+  || fail "a non-numeric score must not be ranked on: $RECALL_OUT"
+
 stub_reply "$SEARCH_HIT"
 export FM_STUB_SLEEP=5
 run_recall "$MAIN_HOME" search --json --timeout 1 teardown
 unset FM_STUB_SLEEP
 expect_code 3 "$RECALL_RC" "a call that overruns its bound is a local retrieval failure"
 assert_contains "$RECALL_OUT" "did not answer within" "an overrun must say the brain did not answer in time"
-pass "a missing brain, a refusing brain, and an overrunning brain each fail as LOCAL retrieval"
+
+# The same bound taken through the perl arm, which is the one macOS actually
+# uses and which a host with timeout(1) would otherwise never reach.
+if command -v perl >/dev/null 2>&1; then
+  stub_reply "$SEARCH_HIT"
+  export FM_STUB_SLEEP=5
+  RECALL_RC=0
+  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_BOUNDED_FORCE_FALLBACK=1 bash "$CLI" search --json --timeout 1 teardown 2>&1) || RECALL_RC=$?
+  unset FM_STUB_SLEEP
+  expect_code 3 "$RECALL_RC" "the fallback bound must expire an overrunning call the same way timeout(1) does"
+  assert_contains "$RECALL_OUT" "did not answer within" "the fallback bound must report an overrun as an overrun"
+  stub_reply "$SEARCH_HIT"
+  RECALL_RC=0
+  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_BOUNDED_FORCE_FALLBACK=1 bash "$CLI" search --json teardown 2>&1) || RECALL_RC=$?
+  expect_code 0 "$RECALL_RC" "the fallback bound must return an ordinary answer unchanged: $RECALL_OUT"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 1 ] \
+    || fail "the fallback bound should deliver the brain's own results: $RECALL_OUT"
+fi
+pass "a missing brain, a refusing brain, a malformed row, and an overrunning brain each fail as LOCAL retrieval"
 
 # --- 5. hosted synthesis fails on its own, and never takes search with it ----
 
@@ -315,7 +362,29 @@ run_recall "$MAIN_HOME" search --json teardown
 expect_code 0 "$RECALL_RC" "the owning home's search should succeed"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = same-as-local ] \
   || fail "the owning home should report the main brain as its own: $RECALL_OUT"
-pass "an unreachable main brain degrades without touching local results, and its owner reports it as its own"
+
+# On that home the local index IS the main corpus, so a main-only search asks a
+# question with a real answer and must be answered rather than returned empty.
+run_recall "$MAIN_HOME" search --json --scope main teardown
+expect_code 0 "$RECALL_RC" "the owning home must answer a main-only search: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 1 ] \
+  || fail "a main-only search on the owning home must read the corpus it owns: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = same-as-local ] \
+  || fail "the owning home should still report the main corpus as its own: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .results')" = 1 ] \
+  || fail "the main row must count the results it actually returned: $RECALL_OUT"
+
+# An unreachable main brain is a soft fact only while another corpus answered.
+# Asked for that corpus alone, the run fails rather than reporting no matches.
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=2 bash "$CLI" search --json --scope main policy 2>&1) || RECALL_RC=$?
+expect_code 3 "$RECALL_RC" "an unreachable main brain must fail a main-only search instead of reporting no matches"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
+  || fail "a main-only search should still carry the main source's own verdict: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 0 ] \
+  || fail "an unreachable main brain returns no results: $RECALL_OUT"
+pass "an unreachable main brain degrades without touching local results, fails a main-only search, and its owner answers from the corpus it owns"
 
 # The main brain answers over SSE, and a refused read arrives as an in-band
 # error rather than an HTTP failure. Both are parsed here rather than at the
@@ -324,11 +393,27 @@ FAKE_BIN="$TMP_ROOT/fakebin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/curl" <<'CURLEOF'
 #!/usr/bin/env bash
-# Answers the token mint, then replies to the MCP call with whatever the current
-# case asked for. Reads nothing from the request, so it cannot leak a credential.
+# Answers the token mint with whatever token the current case asked for, then
+# replies to the MCP call with whatever body it asked for. It reads nothing out
+# of the request, so it cannot leak a credential, and the token is encoded with
+# jq so a case can hand back one containing bytes a config file treats as
+# syntax - the shape the wrapper has to refuse.
+#
+# It does reproduce the one config-file behavior that makes that refusal matter:
+# a curl config file is line-oriented, so an `output = <path>` line WRITES that
+# path. Honoring it here is what makes "a token can never become a directive" a
+# property this suite proves rather than one it asserts about the source.
+CONFIG=$(cat)
+while IFS= read -r line; do
+  case $line in
+    'output = '*) printf 'injected\n' > "${line#output = }" ;;
+  esac
+done <<CFGEOF
+$CONFIG
+CFGEOF
 for a in "$@"; do
   case $a in
-    */token) printf '{"access_token":"fake-token","token_type":"Bearer"}'; exit 0 ;;
+    */token) jq -cn --arg t "${FM_FAKE_TOKEN:-fake-token}" '{access_token: $t, token_type: "Bearer"}'; exit 0 ;;
   esac
 done
 cat "$FM_FAKE_MCP_REPLY"
@@ -384,7 +469,76 @@ assert_contains "$RECALL_OUT" "insufficient_scope" \
   "a refused main-brain read must carry GBrain's own reason"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "local")] | length')" -eq 1 ] \
   || fail "local results must survive a refused main-brain read"
-pass "the main-brain leg reads an SSE answer, and an in-band refusal degrades that source alone"
+
+# A main-brain result row of the wrong shape must degrade that source, not kill
+# the render: the shape is checked at this leg's boundary too, not once.
+for MAIN_MALFORMED in '[1,2]' '{"not":"a list"}' '["fleet-policy"]'; do
+  {
+    printf 'event: message\n'
+    printf 'data: %s\n' "$(jq -cn --arg t "$MAIN_MALFORMED" '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+  } > "$FM_FAKE_MCP_REPLY"
+  stub_reply "$SEARCH_HIT"
+  RECALL_RC=0
+  RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+  expect_code 0 "$RECALL_RC" "a malformed main-brain row must not fail this home's own search: $MAIN_MALFORMED"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
+    || fail "a malformed main-brain row should degrade that source ($MAIN_MALFORMED): $RECALL_OUT"
+  assert_not_contains "$RECALL_OUT" "jq:" "a malformed main-brain row must not surface a raw parser error"
+done
+
+# The two legs are independent in both directions: a home with no GBrain
+# installed has no local index to read and still reaches the shared corpus,
+# which needs only curl and a token.
+{
+  printf 'event: message\n'
+  printf 'data: %s\n' "$(jq -cn --arg t "$MAIN_HIT" '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+} > "$FM_FAKE_MCP_REPLY"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$TMP_ROOT/not-installed" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a missing local GBrain must not cut this home off from the shared corpus: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .schema)" = fm-recall.v1 ] \
+  || fail "a missing GBrain must leave the same document behind as every other verdict: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "the local source must report its own failure: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = ok ] \
+  || fail "the main brain must still be read when the local leg cannot run: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "main")] | length')" -eq 1 ] \
+  || fail "main-brain results must survive a missing local GBrain: $RECALL_OUT"
+
+# A curl config file is line-oriented, so a token carrying a newline stops being
+# header text and becomes a DIRECTIVE - an attacker-chosen output path, from a
+# token endpoint that is only semi-trusted. Such a token is refused outright.
+HOSTILE_TOKEN=$(printf 'abc\noutput = %s/INJECTED\nurl = http://127.0.0.1:9/pwned' "$TMP_ROOT")
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" FM_FAKE_TOKEN="$HOSTILE_TOKEN" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a refused token must not fail this home's own search: $RECALL_OUT"
+assert_absent "$TMP_ROOT/INJECTED" "a token must never be able to add a curl directive"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
+  || fail "a refused token should degrade the main source: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "refusing to use it" \
+  "a token that cannot be passed verbatim must be refused rather than repaired"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "local")] | length')" -eq 1 ] \
+  || fail "local results must survive a refused token: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "$TMP_ROOT/INJECTED" \
+  "a refused token must not be echoed back into the output"
+
+# The same refusal for the quote that would end the config file's quoted value.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" FM_FAKE_TOKEN='abc"def' PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a quoted-value break must degrade the main source, not corrupt a header"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
+  || fail "a token containing a double quote should be refused: $RECALL_OUT"
+
+# Asked for the main corpus alone, that refusal is the whole run failing.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" FM_FAKE_TOKEN="$HOSTILE_TOKEN" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope main policy 2>&1) || RECALL_RC=$?
+expect_code 3 "$RECALL_RC" "a refused token on a main-only search must fail the run: $RECALL_OUT"
+pass "the main-brain leg reads an SSE answer, an in-band refusal or malformed row degrades that source alone, a missing local GBrain still reaches it, and a token that curl would read as configuration is refused"
 
 # --- 8. caps, flags, and a stable document ----------------------------------
 

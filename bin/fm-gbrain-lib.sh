@@ -508,6 +508,22 @@ fm_gbrain_resolve_home() {  # <explicit-home-or-empty> <code-root>
 # to the subshell and leave the credential in a captured output buffer.
 FM_GBRAIN_TOKEN=""
 
+# Both credentials on this path travel to curl through a config file, which is
+# line-oriented: a newline or carriage return starts a new DIRECTIVE, and inside
+# a quoted value a double quote ends the string while a backslash escapes what
+# follows. A credential carrying any of those does not reach curl as the value
+# it claims to be - at worst it becomes an attacker-chosen `output` or `url`
+# directive - so such a value is REFUSED rather than repaired. The token
+# endpoint is only semi-trusted, and a credential this command cannot hand over
+# verbatim is one it cannot trust, so failing closed costs nothing a real
+# credential needs.
+fm_gbrain_is_config_safe() {  # <value>
+  case $1 in
+    '' | *'"'* | *"\\"* | *$'\n'* | *$'\r'* ) return 1 ;;
+  esac
+  return 0
+}
+
 fm_gbrain_mint_token() {  # <home>
   local home=$1 shared local_file token_url client_id secret_name body rc=0
   # Cleared for the caller, which reads it after a failure return.
@@ -528,6 +544,11 @@ fm_gbrain_mint_token() {  # <home>
     1) FM_GBRAIN_SECRET=""; fm_gbrain_fail "main-brain client secret is absent"; return 1 ;;
     *) FM_GBRAIN_SECRET=""; return 1 ;;
   esac
+  if ! fm_gbrain_is_config_safe "$FM_GBRAIN_SECRET"; then
+    FM_GBRAIN_SECRET=""
+    fm_gbrain_fail "refusing config/$FM_GBRAIN_SECRETS_DIR/$secret_name: it holds a character that curl would read as configuration rather than as the client secret"
+    return 1
+  fi
   # The secret travels through a stdin config file, so it never appears in this
   # process's arguments and cannot be read from the process table.
   body=$(printf 'data-urlencode = "client_secret=%s"\n' "$FM_GBRAIN_SECRET" \
@@ -541,6 +562,11 @@ fm_gbrain_mint_token() {  # <home>
   fi
   FM_GBRAIN_TOKEN=$(printf '%s' "$body" | jq -r '.access_token // empty' 2>/dev/null)
   [ -n "$FM_GBRAIN_TOKEN" ] || { fm_gbrain_fail "main brain issued no access token"; return 1; }
+  if ! fm_gbrain_is_config_safe "$FM_GBRAIN_TOKEN"; then
+    FM_GBRAIN_TOKEN=""
+    fm_gbrain_fail "main brain issued an access token holding a character that curl would read as configuration rather than as header text; refusing to use it"
+    return 1
+  fi
   return 0
 }
 
