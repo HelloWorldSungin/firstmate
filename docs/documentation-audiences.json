@@ -303,6 +303,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/gbrain-retrieval.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },

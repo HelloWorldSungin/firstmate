@@ -231,8 +231,8 @@ That closure is what lets the file be inherited verbatim while every home still 
 `config/gbrain-local.json` holds this home's `brain_root` override, its own OAuth `client_id`, and `main_brain_owner` when this home's brain is the one the fleet reads, and is never inherited.
 `config/gbrain-secrets/<name>` holds one credential per file, each a regular file with mode 0600 and refused when stored more loosely, exactly as `config/forge-tokens/<host>` is; it is never inherited, so a rotation never copies a secret through inherited configuration.
 
-`bin/fm-gbrain-lib.sh` owns validation, path derivation, and credential reading, `bin/fm-gbrain.sh` is the operator surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
-[`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
+`bin/fm-gbrain-lib.sh` owns validation, path derivation, home resolution, credential reading, and the main-brain token mint, `bin/fm-gbrain.sh` is the operator surface, `bin/fm-recall.sh` is the agent-facing retrieval surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
+[`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, how a brain is read, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
 
 ## Gate defaults (.no-mistakes.yaml)
 
@@ -626,8 +626,9 @@ FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per GitHub call fm-issue-comment.sh makes for the living status comment
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
-FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients; see "Brain scoping"
-FM_GBRAIN_TIMEOUT=10    # seconds allowed per HTTP call fm-gbrain.sh makes: the main-brain token mint and each reachability probe in its check
+FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, and by fm-recall.sh to read this home's own brain; see "Brain scoping"
+FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either surface, and per reachability probe in fm-gbrain.sh check
+FM_RECALL_TIMEOUT=      # optional seconds per fm-recall.sh retrieval call, overriding its per-command defaults (search 60, think 300)
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision

@@ -264,7 +264,7 @@ If no secondmate scope fits, use the main home or discuss creating an appropriat
 For one-off or infrequent operational work, start with the simplest direct end-to-end path.
 Do not build wrappers, control planes, policy layers, custom verifiers, or automation unless the direct path exposes a concrete blocker or repeated need that justifies the added machinery.
 
-Before commissioning an investigation, consult existing reports and established evidence.
+Before commissioning an investigation, consult existing reports and established evidence, including this home's brain through `bin/fm-recall.sh search`.
 Classify the deliverable:
 
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.

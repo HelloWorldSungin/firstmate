@@ -1,7 +1,7 @@
 # Per-home GBrain scoping and read-only main-brain sharing
 
 This operator reference owns how a Firstmate home scopes its own brain and how the main brain is shared with secondmate homes without letting them write it.
-[`gbrain.md`](gbrain.md) owns the GBrain installation, archive, and rebuild procedure for a single brain, [`gbrain-endpoints.md`](gbrain-endpoints.md) owns the local embedding endpoint, [`configuration.md`](configuration.md) owns the configuration schemas, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) holds the dated evidence for the guarantees below.
+[`gbrain.md`](gbrain.md) owns the GBrain installation, archive, and rebuild procedure for a single brain, [`gbrain-endpoints.md`](gbrain-endpoints.md) owns the local embedding endpoint, [`configuration.md`](configuration.md) owns the configuration schemas, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) plus [`verification/gbrain-retrieval.md`](verification/gbrain-retrieval.md) hold the dated evidence for the guarantees below.
 
 ## One brain per home
 
@@ -21,7 +21,8 @@ A direct mount is therefore read-write by construction, because it hands the rea
 That version also resolves its mount registry from the UNIX user's home directory rather than from `GBRAIN_HOME`, so mounts are shared by every Firstmate home on one account, which is the opposite of per-home scoping.
 
 GBrain's OAuth 2.1 server is shipped and does enforce read-only access: `gbrain serve --http` checks the required scope of each operation against the token's granted scopes and refuses the call with `insufficient_scope`.
-So the read-only share uses that native mechanism, and Firstmate adds no router of its own: no query fan-out, no result merging, and no Firstmate-side precedence engine.
+So the read-only share uses that native mechanism, and Firstmate adds no access model of its own: no Firstmate-side scope check and no precedence engine deciding what a home may read.
+[Reading a brain](#reading-a-brain) does query both corpora in one command and rank their results together, but only over what each brain already agreed to return.
 When GBrain ships mounts over HTTP MCP with OAuth, a mount entry consumes the same read-scoped client registered here, so this is the forward-compatible shape rather than a parallel one.
 
 ## The three configuration planes
@@ -58,16 +59,38 @@ That records the client id in the reading home's `config/gbrain-local.json` and 
 Once that registration succeeds it also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home whose brain accepted the registration is by construction the brain the others read.
 A registration the brain refused records nothing, so a refused grant leaves the granting home's local plane exactly as it found it.
 That home reads its own index directly and never grants itself a client, so `bin/fm-gbrain.sh check` reports it as reading the main brain rather than as having lost access to it.
-The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it.
+The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it, which is what [Reading a brain](#reading-a-brain) does for a worker.
 
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
 Do not use `gbrain auth create` tokens or any legacy bearer token as a read-only credential: those carry no scope and are full-access.
 Do not enable Dynamic Client Registration's consent-bypassing `client_credentials` variant to obtain one, because a self-registering client would choose its own scopes.
 
+## Reading a brain
+
+`bin/fm-recall.sh` is the retrieval surface firstmate and every crewmate use, and no worker calls a raw GBrain command.
+The wrapper exists because a raw call resolves whatever brain the caller's directory implies, and because GBrain returns a placeholder answer and exit 0 when it has no usable model, so a raw `think` reports a non-answer as an answer.
+Its `--help` owns the flags, the caps, and the `fm-recall.v1` document it prints; what follows is only the part an operator has to know.
+
+`search` reads this home's own index and, when the main brain is configured and this home holds a read-only client, the main brain's index too, labelling each result `local:<slug>` or `main:<slug>`.
+`think` is a separate command rather than a flag, because it sends the question and the excerpts it selects to the configured hosted provider.
+It runs only against this home's own brain: GBrain classifies `think` as a write-scope operation, so a read-scoped client is refused it, which is the same enforcement that makes the share read-only at all.
+
+The home a command reads is resolved from `--home`, then `FM_HOME`, then the directory the wrapper was invoked from, and a candidate that is a source checkout rather than an operating home is refused by name.
+That refusal matters because a crewmate on a firstmate task stands in a worktree of this repository: without it, the wrapper would build an empty brain inside a directory that cleanup is about to delete and report success while doing it.
+
+Each corpus a search reads, and hosted synthesis, are reported as separate facts and never as one outcome.
+A main brain that is stopped, unreachable, or not shared with this home reads as a degraded source and does not fail a run that also read this home's own index, so a home's own memory never depends on another home being up.
+The same independence runs the other way: a home with no GBrain installed reports its own index as failed and still reads the shared corpus, which needs only `curl` and a token.
+A search fails only when no corpus it was asked for could be read at all, so an empty result list with exit 0 means at least one requested corpus was read and had no match, and the per-source rows say which were read and which were not.
+A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
+
+A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh` adds one instruction naming the command, the citation label, and the hosted-provider boundary, and adds it only when the home actually has an index, so a fleet with no brain carries no dead pointer.
+
 ## Source precedence and name collisions
 
-A home's own brain is the only thing it writes and the only thing its ordinary local search reads.
-The main brain is a separate database, reached only through an explicit read over the shared client, so there is no implicit fan-out and no merged ranking to reason about.
+A home's own brain is the only thing it writes, and a GBrain call against that home reads that brain alone.
+The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list ordered by the score each brain returned, which is why every result carries its `local:` or `main:` label.
+A rank therefore compares two brains' own scores rather than a Firstmate-computed relevance.
 Within a single brain, GBrain's own sources decide breadth: a federated source appears in cross-source default search, and an isolated source is searched only when named with `--source`.
 
 Because the two brains are separate databases, a slug that exists in both is two distinct pages rather than a collision.
@@ -79,6 +102,7 @@ Keep it stable across the fleet for both reasons.
 
 Local retrieval never depends on the main brain or on the hosted synthesis provider.
 When the main brain is stopped or unreachable, the reading home's own search continues to answer from its own index, `bin/fm-gbrain.sh check` reports the main brain as degraded, and the run still exits 0.
+A search asking for the main corpus alone with `--scope main` has no local half to fall back on, so the same outage fails that run with exit 3 rather than reporting an empty result list as an answer.
 When the MiniMax credential is absent or its endpoint is down, synthesis is unavailable and local search is unaffected, matching the single-brain behavior in [`gbrain.md`](gbrain.md).
 A credential that is present but stored too loosely to use is the one credential-related condition that fails the check outright, because that is a finding rather than an outage.
 
