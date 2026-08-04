@@ -3,7 +3,7 @@
 //
 // Configuration is environment-only:
 //   FM_HOME                         operational home passed to the snapshot command
-//   FM_DASHBOARD_ADDRESS            127.0.0.1, localhost, or ::1 (default 127.0.0.1)
+//   FM_DASHBOARD_ADDRESS            127.0.0.1 or ::1 (default 127.0.0.1)
 //   FM_DASHBOARD_PORT               listen port (default 8787)
 //   FM_DASHBOARD_POLL_SECONDS       periodic refresh interval (default 5)
 //   FM_DASHBOARD_TIMEOUT_SECONDS    hard snapshot deadline (default 15)
