@@ -937,12 +937,17 @@ test_concurrent_lookups_make_at_most_one_live_call() {
 }
 
 # A crashed holder must not wedge the limiter: once its claim is provably older
-# than any local stat-and-touch could take, the next caller reclaims it.
-test_a_stale_claim_does_not_wedge_the_limiter() {
-  local case_dir cache marker out
+# than any local stat-and-touch could take, it is cleared. Clearing must not
+# ALSO authorize the clearing pass, because "stale" only means the holder
+# stopped reporting - a merely stalled holder can still be about to call. So the
+# clearing pass reports and spends the interval, and the pass after it succeeds,
+# which is what proves the limiter recovers without ever being wedged.
+test_a_stale_claim_is_cleared_without_authorizing_the_clearing_pass() {
+  local case_dir cache marker calls out
   case_dir=$(status_case stale-claim)
   fake_gh_axi_issue "$case_dir" open 'After the stale claim'
   cache="$case_dir/state/issue-status"
+  calls="$case_dir/gh-calls"
   # Seed one lookup so the per-host marker exists and its name is discoverable.
   FM_ISSUE_STATUS_MIN_INTERVAL=0 run_status "$case_dir" \
     'declared|github|https://github.com/x/y/issues/1' >/dev/null \
@@ -953,13 +958,117 @@ test_a_stale_claim_does_not_wedge_the_limiter() {
   # enough back that it is provably nobody's live claim.
   mkdir "$marker.claim" || fail "could not seed a stale claim"
   touch -t 202001010000 "$marker.claim" || fail "could not age the stale claim"
-  out=$(FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+
+  : > "$calls"
+  out=$(FM_TEST_GH_CALLS="$calls" FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
     run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/1') \
     || fail "a stale claim broke the status lookup"
+  assert_contains "$out" 'https://github.com/x/y/issues/1' \
+    "the clearing pass lost the canonical link"
+  assert_contains "$out" 'cleared a stale claim' \
+    "the clearing pass did not name why it made no call"
+  [ ! -s "$calls" ] \
+    || fail "clearing a stale claim authorized a live lookup on the same pass"
+  assert_absent "$marker.claim" "the stale claim was not cleared"
+
+  # The very next pass competes normally, so nothing is wedged.
+  out=$(FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+    run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/1') \
+    || fail "the pass after the stale claim was cleared failed"
   assert_contains "$out" 'After the stale claim' \
     "a stale claim permanently wedged the rate limiter"
-  assert_absent "$marker.claim" "the reclaimed claim was not released"
-  pass "a stale rate-limiter claim is reclaimed rather than wedging the limiter"
+  pass "a stale claim is cleared without authorizing the clearing pass"
+}
+
+# Install a `stat` that blocks the FIRST read of the per-host marker's mtime
+# until a resume file appears, delegating every other call to the real stat.
+# That is the exact window a holder occupies between taking its claim and
+# releasing it, so the stalled-holder race can be driven by file barriers
+# instead of by sleeping and hoping.
+make_stalling_stat() {  # <case-dir>
+  local case_dir=$1 real
+  real=$(command -v stat) || fail "no stat on PATH to delegate to"
+  cat > "$case_dir/fakebin/stat" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    *.host-*.claim|*.host-*.claim/*) ;;
+    *.host-*)
+      if [ ! -e "$case_dir/stalled" ]; then
+        : > "$case_dir/stalled"
+        deadline=\$((SECONDS + 60))
+        while [ ! -e "$case_dir/resume" ] && [ "\$SECONDS" -lt "\$deadline" ]; do :; done
+      fi
+      ;;
+  esac
+done
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/stat"
+}
+
+# The race this pins: a holder takes the claim, stalls past the staleness
+# window, gets cleared by another caller, and then resumes. On resume it must
+# NOT delete whichever claim it now finds. Deleting one it cannot prove is its
+# own puts its lookup alongside the new holder's and leaves the claim free for a
+# third caller, which is the exact burst the limiter exists to prevent.
+test_a_resumed_stalled_holder_does_not_release_another_claim() {
+  local case_dir cache marker calls out foreign deadline
+  case_dir=$(status_case stalled-holder)
+  fake_gh_axi_issue "$case_dir" open 'Stalled holder title'
+  cache="$case_dir/state/issue-status"
+  calls="$case_dir/gh-calls"
+
+  FM_ISSUE_STATUS_MIN_INTERVAL=0 run_status "$case_dir" \
+    'declared|github|https://github.com/x/y/issues/1' >/dev/null \
+    || fail "the marker-seeding lookup failed"
+  marker=$(find "$cache" -maxdepth 1 -type f -name '.host-*' | head -n 1)
+  [ -n "$marker" ] || fail "the seeding lookup left no per-host marker"
+
+  : > "$calls"
+  make_stalling_stat "$case_dir"
+  # The stalled holder: it takes the claim, then blocks reading the marker.
+  ( FM_TEST_GH_CALLS="$calls" FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+      run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/2' ) \
+    >/dev/null 2>&1 &
+  deadline=$((SECONDS + 60))
+  while [ ! -e "$case_dir/stalled" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || { : > "$case_dir/resume"; fail "the stalled holder never reached its claim window"; }
+  done
+  [ -d "$marker.claim" ] || { : > "$case_dir/resume"; fail "the stalled holder never took a claim"; }
+
+  # It stalls past the staleness window, and another caller clears its claim.
+  touch -t 202001010000 "$marker.claim" || fail "could not age the stalled claim"
+  out=$(FM_TEST_GH_CALLS="$calls" FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+    run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/3') \
+    || fail "the clearing caller failed"
+  assert_contains "$out" 'cleared a stale claim' \
+    "the clearing caller did not report clearing the stalled holder's claim"
+
+  # A new holder takes the freed claim, exactly as a real caller would.
+  mkdir "$marker.claim" || fail "the cleared claim was not free for a new holder"
+  foreign="$marker.claim"
+
+  : > "$case_dir/resume"
+  wait
+
+  [ -d "$foreign" ] \
+    || fail "the resumed stalled holder deleted a claim it did not own"
+  [ "$(wc -l < "$calls")" -eq 1 ] \
+    || fail "expected only the stalled holder's own lookup, got $(wc -l < "$calls")"
+
+  # And a claim carrying someone else's token is equally untouchable.
+  printf 'another-holder\n' > "$foreign/owner"
+  out=$(FM_TEST_GH_CALLS="$calls" FM_ISSUE_STATUS_TTL=0 FM_ISSUE_STATUS_MIN_INTERVAL=0 \
+    run_status "$case_dir" 'declared|github|https://github.com/x/y/issues/4') \
+    || fail "a caller facing a held claim failed"
+  assert_contains "$out" 'is busy' "a held claim did not report the limiter as busy"
+  [ -d "$foreign" ] || fail "a caller removed a claim held by another token"
+  [ "$(cat "$foreign/owner")" = 'another-holder' ] \
+    || fail "a caller rewrote another holder's claim token"
+  [ "$(wc -l < "$calls")" -eq 1 ] \
+    || fail "a caller facing a held claim performed a live lookup"
+  pass "a resumed stalled holder never releases a claim it cannot prove is its own"
 }
 
 test_task_with_no_work_items_still_emits_a_json_document() {
@@ -1111,7 +1220,8 @@ test_status_caches_and_rate_limits
 test_cached_unavailable_entry_keeps_its_reason
 test_status_throttles_bursts_per_host
 test_concurrent_lookups_make_at_most_one_live_call
-test_a_stale_claim_does_not_wedge_the_limiter
+test_a_stale_claim_is_cleared_without_authorizing_the_clearing_pass
+test_a_resumed_stalled_holder_does_not_release_another_claim
 test_task_with_no_work_items_still_emits_a_json_document
 test_unusable_cache_refuses_live_status_lookup
 test_malformed_record_cannot_forge_output_structure

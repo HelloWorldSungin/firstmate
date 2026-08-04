@@ -28,9 +28,12 @@
 #   (default 2); when that spacing would be violated, a stale cache entry is
 #   served if one exists and the reference reports "throttled" if not. --refresh
 #   ignores a fresh cache entry but still respects the per-host spacing.
-#   The spacing decision is taken under a per-host mkdir claim, so simultaneous
-#   refreshes cannot each observe "no recent call" and each go live; a claim
-#   that cannot be taken reports that and makes no call at all.
+#   The spacing decision is taken under a per-host mkdir claim carrying its
+#   holder's token, so simultaneous refreshes cannot each observe "no recent
+#   call" and each go live; a claim that cannot be taken reports that and makes
+#   no call at all. A claim left by a holder that stopped reporting is cleared
+#   rather than inherited: the clearing pass consumes the interval and reports,
+#   because a holder that only stalled may still be about to call.
 #
 # Credentials, per host, never in tracked files and never inherited:
 #   github  uses the ambient gh-axi authentication, like every other GitHub
@@ -63,6 +66,9 @@ CLAIM_STALE_AFTER=${FM_ISSUE_STATUS_CLAIM_STALE:-30}
 case "$CLAIM_STALE_AFTER" in
   ''|*[!0-9]*|0) CLAIM_STALE_AFTER=30 ;;
 esac
+# Identifies this process inside a rate-limiter claim. A PID is unique among
+# live processes, which is exactly the set that can contend for one claim.
+CLAIM_TOKEN="$$.$RANDOM"
 
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
@@ -297,20 +303,51 @@ cache_write() {  # <url> <status> <state> <detail>
 # Take the exclusive claim that serializes one host's check-and-touch. mkdir is
 # the atomic primitive: it either creates the directory or fails, with no window
 # between testing and claiming, and it needs no filesystem feature beyond POSIX.
+# The claim carries its holder's token so it can only be released by that holder.
+#
+# Returns 0 when this caller holds the claim, 1 when another caller holds it or
+# it cannot be taken, and 2 when a stale claim was cleared.
 #
 # A holder that died mid-claim must not wedge the limiter, so a claim older than
-# any stat-and-touch could take is reclaimed once. That reclaim is safe because
-# the claim is held only across local filesystem calls - never across the forge
-# request itself, which is bounded separately by run_timed.
+# any stat-and-touch could take is cleared. Clearing deliberately does NOT hand
+# the claim to the clearer: "stale" only means the holder stopped reporting, not
+# that it stopped existing, and a holder that merely stalled can still be about
+# to call. So the clearing pass reports instead of calling, and the next pass
+# competes normally. Spending the interval on a claim that might still be live
+# is what puts two lookups on one host.
 host_claim() {  # <claim-dir>
   local claim=$1 stamp
-  mkdir "$claim" 2>/dev/null && return 0
+  if mkdir "$claim" 2>/dev/null; then
+    if ! (umask 077 && printf '%s\n' "$CLAIM_TOKEN" > "$claim/owner") 2>/dev/null; then
+      rmdir "$claim" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
   [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
   stamp=$(file_mtime "$claim") || return 1
   [ -n "$stamp" ] || return 1
   [ $(( $(now) - stamp )) -ge "$CLAIM_STALE_AFTER" ] || return 1
+  rm -f -- "$claim/owner" 2>/dev/null || true
   rmdir "$claim" 2>/dev/null || return 1
-  mkdir "$claim" 2>/dev/null
+  return 2
+}
+
+# Release a claim only while it still carries this caller's token. A holder that
+# stalled past the staleness window, was cleared, and then resumed would
+# otherwise delete whichever claim it found, putting its own lookup alongside
+# the new holder's and leaving the claim free for a third caller. A claim whose
+# ownership cannot be read is left alone: a lingering claim costs one skipped
+# optional enrichment until it goes stale, while deleting another holder's claim
+# costs the serialization itself.
+host_claim_release() {  # <claim-dir>
+  local claim=$1 owner=
+  [ -d "$claim" ] && [ ! -L "$claim" ] || return 0
+  [ -f "$claim/owner" ] && [ ! -L "$claim/owner" ] || return 0
+  IFS= read -r owner < "$claim/owner" 2>/dev/null || owner=
+  [ "$owner" = "$CLAIM_TOKEN" ] || return 0
+  rm -f -- "$claim/owner" 2>/dev/null || true
+  rmdir "$claim" 2>/dev/null || true
 }
 
 # One live lookup per host per MIN_INTERVAL seconds. The marker is touched
@@ -322,7 +359,7 @@ host_claim() {  # <claim-dir>
 # like an unusable cache - no live lookup, link and reason preserved - because
 # a limiter that cannot serialize must not authorize.
 host_may_call() {  # <host>
-  local host=$1 marker claim stamp rc=0
+  local host=$1 marker claim stamp rc=0 claim_rc=0
   HOST_CALL_REASON=
   if [ "$CACHE_OK" -ne 1 ]; then
     HOST_CALL_REASON="status cache/rate limiter is unavailable"
@@ -330,7 +367,16 @@ host_may_call() {  # <host>
   fi
   marker="$CACHE/.host-$(digest "$host")"
   claim="$marker.claim"
-  if ! host_claim "$claim"; then
+  host_claim "$claim" || claim_rc=$?
+  if [ "$claim_rc" -eq 2 ]; then
+    if [ ! -L "$marker" ] && { [ ! -e "$marker" ] || [ -f "$marker" ]; }; then
+      (umask 077 && : > "$marker") 2>/dev/null || true
+      chmod 0600 "$marker" 2>/dev/null || true
+    fi
+    HOST_CALL_REASON="status cache/rate limiter cleared a stale claim for $host, so no live lookup was made"
+    return 2
+  fi
+  if [ "$claim_rc" -ne 0 ]; then
     HOST_CALL_REASON="status cache/rate limiter is busy for $host, so no live lookup was made"
     return 2
   fi
@@ -350,7 +396,7 @@ host_may_call() {  # <host>
     HOST_CALL_REASON="status cache/rate limiter cannot record a lookup for $host"
     rc=2
   fi
-  rmdir "$claim" 2>/dev/null || true
+  host_claim_release "$claim"
   return "$rc"
 }
 
