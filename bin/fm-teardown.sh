@@ -364,6 +364,50 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
+# The two helpers below draw ONE boundary inside the model-routing refusal: a
+# worker that RAN without a usable verdict still blocks non-forced cleanup,
+# while a worker that never reached its first model-attributed turn does not.
+# The second case can never produce a verdict no matter how long it is kept, so
+# the refusal there is permanent rather than protective - and permanent refusal
+# also strands the endpoint name the task holds. The distinction is drawn on
+# evidence, never on a flag: no turn of its own AND nothing in the worktree
+# worth keeping. Either half alone still refuses.
+
+# 0 iff this verdict means the worker never produced a model-attributed turn.
+# Every other no-verdict cause - unreadable evidence, an absent adapter, jq
+# missing, evidence that cannot be attributed - is a worker that may well have
+# run, and keeps refusing.
+model_verdict_precedes_any_turn() {  # <verdict>
+  case "$1" in
+    unstarted|pending) return 0 ;;
+  esac
+  return 1
+}
+
+# 0 iff the recorded worktree provably carries nothing worth preserving: it is
+# inspectable, sits on no branch, holds no commit that no existing ref already
+# contains, and is clean apart from the harness files fm-spawn itself writes.
+# Anything that cannot be inspected or proven is treated as work to preserve.
+worker_left_nothing_to_preserve() {
+  local wt dirty contained
+  wt=$(fm_meta_get "$META" worktree)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  # A branch at HEAD means the worker got as far as creating one, which the
+  # ship brief makes its first action.
+  ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1 || return 1
+  dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 1
+  dirty=$(printf '%s\n' "$dirty" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  [ -z "$dirty" ] || return 1
+  # Reachability from an existing branch, not remote-tracking state: it answers
+  # "did this worker commit anything of its own" for a project with no remote
+  # exactly as it does for one with several.
+  contained=$(git -C "$wt" for-each-ref --contains HEAD --count=1 --format='%(refname)' \
+    refs/heads refs/remotes 2>/dev/null) || return 1
+  [ -n "$contained" ] || return 1
+  return 0
+}
+
 # This is the first cleanup authorization check. It is metadata-only and must
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
@@ -385,9 +429,16 @@ esac
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
 # verifiable in principle. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
+MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
-  echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
-  exit 1
+  if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
+    echo "teardown: task $ID never produced a model-attributed turn, so no model-routing verdict could be obtained for it." >&2
+    echo "Its worktree is on no branch, carries no commits of its own, and has no uncommitted changes, so there is no work or routing evidence to preserve; proceeding." >&2
+  else
+    echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
+    exit 1
+  fi
 fi
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET

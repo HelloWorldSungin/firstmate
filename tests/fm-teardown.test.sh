@@ -39,6 +39,16 @@
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #
+# Also covers the model-routing refusal's never-started boundary: a worker that
+# died before its first model-attributed turn can never produce a verdict, so
+# refusing it forever preserves nothing, while a worker that RAN without a usable
+# verdict, or one with work in its worktree, must keep refusing.
+#   (z1) no model-attributed turn + clean detached worktree     -> ALLOW  (no verdict possible)
+#   (z2) session opened but no turn + clean detached worktree   -> ALLOW  (same, other shape)
+#   (z3) no turn + uncommitted changes                          -> REFUSE (work to lose)
+#   (z4) no turn + commits on a task branch                     -> REFUSE (work to lose)
+#   (z5) worker RAN, evidence unattributable, worktree clean    -> REFUSE (evidence to protect)
+#
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
 #   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
@@ -530,6 +540,146 @@ test_terminal_model_verdict_blocks_cleanup_then_allows_match() {
     || fail "matching terminal model verdict blocked teardown"
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "matching terminal verdict left task metadata behind"
   pass "terminal teardown preserves mismatches and proceeds on a model match"
+}
+
+# Point the task at a claude dispatch with a pinned model, so its routing is
+# verifiable IN PRINCIPLE and an absent verdict is meaningful. Echoes the
+# transcript directory the verifier will look in; the caller decides whether it
+# exists, and with what in it. Args: case_dir
+claude_dispatch_meta() {
+  local case_dir=$1 cfg
+  cfg="$case_dir/claude-config"
+  printf '%s\n' \
+    'harness=claude' \
+    'model=opus' \
+    "model_evidence_store=$cfg" \
+    'model_evidence_watermark=claude-transcript-v1' >> "$case_dir/state/task-x1.meta"
+  printf '%s/projects/%s\n' "$cfg" "$(printf '%s' "$case_dir/wt" | sed 's/[^A-Za-z0-9]/-/g')"
+}
+
+# Leave the worktree exactly as a worker that died before its first turn does:
+# detached at the base commit, with the task branch never created. Args: case_dir
+never_started_worktree() {
+  local case_dir=$1
+  git -C "$case_dir/wt" checkout --detach -q
+  git -C "$case_dir/project" branch -D fm/task-x1 >/dev/null 2>&1 || true
+}
+
+# A worker stranded before its first model-attributed turn can never produce a
+# verdict, so refusing it forever preserves nothing and strands its records. The
+# allowance is evidence-based: it holds only while the worktree also proves there
+# is no work to lose, and the absent verdict is still stated plainly.
+test_never_started_and_clean_tears_down_without_force() {
+  local case_dir dir rc
+  case_dir=$(make_case never-started-clean)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "never-started-clean: a worker that never took a turn stayed blocked"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-clean: task metadata was left behind"
+  assert_grep "verdict: unstarted" "$case_dir/stderr" \
+    "never-started-clean: the absent session was not surfaced"
+  assert_grep "never produced a model-attributed turn" "$case_dir/stderr" \
+    "never-started-clean: teardown did not state that no verdict was obtained"
+  [ ! -d "$dir" ] || fail "never-started-clean: fixture wrote a transcript directory"
+  pass "a never-started worker with nothing to lose tears down and still reports no verdict"
+}
+
+# The same allowance for the other no-turn shape: the runtime DID open a session
+# but the worker never reached a model-attributed turn (Claude's first-run
+# onboarding leaves exactly this). Its detail differs from the absent-session
+# case, and both must clear.
+test_never_started_with_session_but_no_turn_tears_down() {
+  local case_dir dir rc
+  case_dir=$(make_case never-started-pending)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  mkdir -p "$dir"
+  printf '{"type":"user","message":{"role":"user"}}\n' > "$dir/current.jsonl"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "never-started-pending: a session with no turn stayed blocked"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-pending: task metadata was left behind"
+  assert_grep "verdict: pending" "$case_dir/stderr" \
+    "never-started-pending: the pending verdict was not surfaced"
+  assert_grep "never produced a model-attributed turn" "$case_dir/stderr" \
+    "never-started-pending: teardown did not state that no verdict was obtained"
+  pass "a worker whose session never reached a turn tears down and still reports no verdict"
+}
+
+# Half the evidence is not enough. Uncommitted changes are work to lose whatever
+# the routing verdict says, and this boundary must not move with it.
+test_never_started_but_dirty_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-dirty)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  printf 'half-written work\n' > "$case_dir/wt/scratch.txt"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-dirty: teardown discarded uncommitted work"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-dirty: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-dirty: task metadata was erased"
+  [ -f "$case_dir/wt/scratch.txt" ] || fail "never-started-dirty: uncommitted work was removed"
+  pass "a never-started worker with uncommitted changes still refuses"
+}
+
+# The other half: a branch with its own commits is unlanded work, and the
+# no-turn allowance must not reach it either.
+test_never_started_but_committed_on_a_branch_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case never-started-branch)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  wt_commit "$case_dir" "work nobody has seen"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "never-started-branch: teardown discarded an unlanded branch"
+  assert_grep "REFUSED" "$case_dir/stderr" "never-started-branch: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "never-started-branch: task metadata was erased"
+  [ -d "$case_dir/wt" ] || fail "never-started-branch: the task worktree was returned"
+  pass "a never-started worker whose branch carries commits still refuses"
+}
+
+# The boundary this whole guard exists to hold: a worker that RAN, on evidence
+# that cannot be attributed, keeps refusing even when its worktree is as clean
+# as a never-started one. The allowance is keyed on the absent turn, not on the
+# clean worktree.
+test_ran_but_unverifiable_still_refuses_on_a_clean_worktree() {
+  local case_dir dir rc
+  case_dir=$(make_case ran-unverifiable)
+  write_meta "$case_dir" no-mistakes ship
+  dir=$(claude_dispatch_meta "$case_dir")
+  # Drop the dispatch binding, then record two disagreeing models: evidence that
+  # exists, was written by a worker that ran, and cannot be tied to this task.
+  sed -i.bak '/^model_evidence_watermark=/d' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  mkdir -p "$dir"
+  printf '{"type":"assistant","message":{"model":"claude-opus-5"}}\n' > "$dir/one.jsonl"
+  printf '{"type":"assistant","message":{"model":"claude-sonnet-5"}}\n' > "$dir/two.jsonl"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ran-unverifiable: unattributable evidence was discarded unseen"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "ran-unverifiable: the unverifiable verdict was not surfaced"
+  assert_grep "REFUSED" "$case_dir/stderr" "ran-unverifiable: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" "ran-unverifiable: task metadata was erased"
+  pass "a worker that ran on unattributable evidence still refuses despite a clean worktree"
 }
 
 test_forced_teardown_surfaces_mismatch_before_discarding() {
@@ -1964,6 +2114,11 @@ test_teardown_publishes_outcome_manifest_before_removing_records
 test_forced_teardown_records_a_discarded_outcome
 test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match
+test_never_started_and_clean_tears_down_without_force
+test_never_started_with_session_but_no_turn_tears_down
+test_never_started_but_dirty_still_refuses
+test_never_started_but_committed_on_a_branch_still_refuses
+test_ran_but_unverifiable_still_refuses_on_a_clean_worktree
 test_forced_teardown_surfaces_mismatch_before_discarding
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

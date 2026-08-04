@@ -11,7 +11,8 @@
 #   (b) a pinned specific model matches only itself
 #   (c) a downgrade below the dispatched family is a mismatch
 #   (d) a mid-dispatch model change is a mismatch even when one value matches
-#   (e) evidence that cannot be located or read is LOUD, never a quiet pass
+#   (e) evidence that cannot be located or read is LOUD, never a quiet pass, and
+#       an absent session (`unstarted`) is distinguished from unreadable evidence
 #   (f) `pending` (nothing to compare yet) and `unpinned` (nothing promised) are
 #       distinct no-verdict outcomes and never render as `match`
 #   (g) spawned_at binds evidence to THIS dispatch, so a reused worktree's
@@ -147,12 +148,22 @@ pass "mid-dispatch model change is detected"
 
 # --- (e) evidence that cannot be located or read is loud --------------------
 
+# An absent transcript directory means the runtime wrote no session for this
+# worker at all. That is still no verdict and still exits 4, but it is a
+# distinct cause from evidence that exists and cannot be read, so it carries its
+# own verdict rather than being folded into `unverifiable`.
 meta no-evidence opus >/dev/null
 out=$(run_verify no-evidence); code=$?
 expect_code 4 "$code" "missing transcript directory exits 4"
-assert_contains "$out" "verdict: unverifiable" "a worker with no locatable evidence is unverifiable"
+assert_contains "$out" "verdict: unstarted" "a worker whose runtime wrote no session is unstarted"
+assert_not_contains "$out" "verdict: unverifiable" "an absent session is not conflated with unreadable evidence"
 assert_not_contains "$out" "verdict: match" "unlocatable evidence never reads as a match"
-pass "evidence that cannot be located fails loudly"
+assert_contains "$out" "no evidence of its own to read" "the unstarted reason names its cause"
+pass "an absent transcript directory is distinguished from unreadable evidence"
+out=$(run_verify no-evidence --terminal); code=$?
+expect_code 4 "$code" "terminal verification still rejects an unstarted worker"
+assert_contains "$out" "verdict: unstarted" "terminal rejection preserves the unstarted verdict"
+pass "terminal verification rejects unstarted as no verdict"
 
 out=$(run_verify never-dispatched); code=$?
 expect_code 4 "$code" "absent durable record exits 4"

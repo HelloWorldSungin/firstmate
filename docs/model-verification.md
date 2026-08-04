@@ -62,15 +62,18 @@ A verdict is never `match` unless a model was actually read and actually compare
 | `match` | every model attributed to this worker satisfies the record | 0 |
 | `mismatch` | at least one attributed model does not | 3 |
 | `unverifiable` | the record cannot be checked at all | 4 |
-| `pending` | an adapter exists and the worker has not produced a model-attributed turn yet | 0 |
+| `unstarted` | the runtime wrote no session for this worker at all, so it has no evidence of its own | 4 |
+| `pending` | a session exists and the worker has not produced a model-attributed turn yet | 0 |
 | `unpinned` | `model=default`: no tier was pinned, so there is no record for the runtime to contradict | 0 |
 
-`pending` and `unpinned` are explicitly no-verdict outcomes, not passes.
+`unstarted`, `pending`, and `unpinned` are explicitly no-verdict outcomes, not passes.
 Nothing may render them as verified.
 Only the exact record `model=default` is unpinned.
 A missing or empty `model=` is malformed dispatch metadata and therefore `unverifiable`.
 
-`unverifiable` covers a harness with no evidence adapter, evidence that cannot be located or read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+`unverifiable` covers a harness with no evidence adapter, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+`unstarted` is separated from it because the two ask different questions of a caller: evidence that exists and cannot be read may belong to a worker that ran, while a working directory the runtime never wrote a session for has no turn of its own to read at all.
+Neither is a pass, and both exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
 Every unreadable path therefore ends in `unverifiable`, never in silence and never in `match`.
 
@@ -108,20 +111,27 @@ An unreadable or absent verifier answer becomes an explicit `unverifiable` verdi
 
 `bin/fm-teardown.sh` always runs terminal verification before cleanup, and always surfaces the verdict, so no worker's model provenance is discarded unseen.
 Only the refusal is conditional.
-Non-forced teardown refuses on `mismatch` always, and on `unverifiable` or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
+Non-forced teardown refuses on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
 It then preserves the worktree, transcript evidence, and task metadata for inspection.
 Refusing whenever a verdict was absent would make non-forced cleanup impossible for every harness that can never produce one, which is a fleet-wide regression rather than the boundary this refusal exists to draw.
+
+One further boundary sits inside that refusal, for the same reason.
+A worker that died before its first model-attributed turn - `unstarted` or `pending` - can never produce a verdict however long its records are kept, so the refusal there is permanent rather than protective, and it strands the endpoint name the task holds.
+Non-forced teardown therefore proceeds for such a task when its recorded worktree independently proves there is nothing to preserve: inspectable, on no branch, carrying no commit that no existing ref already contains, and clean apart from the harness files `bin/fm-spawn.sh` writes itself.
+The absent verdict is stated plainly in the teardown output either way.
+Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
 
-`bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch` or `unverifiable`.
+`bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch`, `unverifiable`, or `unstarted`.
 It deliberately omits `pending` because every healthy worker is briefly pending before its first model-attributed turn, and a routine false alarm would make the section less useful.
-The residual gap is explicit: a worker that never produces a readable model turn remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object, and blocks non-forced teardown when that dispatch was verifiable in principle.
+The residual gap is explicit: a worker whose runtime opened a session it never took a turn in remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object, and blocks non-forced teardown when that dispatch was verifiable in principle.
+`unstarted` is listed rather than omitted, because a dispatched worker whose runtime wrote no session at all is not the routine transient state `pending` is.
 Deliberate `unpinned` dispatches are also omitted, and correctly routed work therefore looks exactly as it did before.
 
 ## Automated validation
 
 `tests/fm-model-verify.test.sh` owns the acceptance matrix and is registered in the `pure-contract-unit` family in `bin/fm-test-run.sh`.
-It covers family-alias and pinned-id comparison, the context-window suffix, a downgrade below the dispatched family, a mid-dispatch model change where one value still matches, enumeration and modification-time failures, the `pending` and exact-`default` `unpinned` outcomes, missing model metadata, malformed timestamps, canonical evidence-store binding across ambient configuration changes, symlink-plus-parent paths, and newline-bearing physical paths, the synthetic placeholder in both directions, exact transcript-identity binding including the equal-second boundary, legacy timestamp binding, secondmate evidence resolved from its own home, `--all` exiting on the worst verdict, and the structured output.
+It covers family-alias and pinned-id comparison, the context-window suffix, a downgrade below the dispatched family, a mid-dispatch model change where one value still matches, enumeration and modification-time failures, the `pending`, `unstarted`, and exact-`default` `unpinned` outcomes, missing model metadata, malformed timestamps, canonical evidence-store binding across ambient configuration changes, symlink-plus-parent paths, and newline-bearing physical paths, the synthetic placeholder in both directions, exact transcript-identity binding including the equal-second boundary, legacy timestamp binding, secondmate evidence resolved from its own home, `--all` exiting on the worst verdict, and the structured output.
 
 `tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section.
 It also proves that bounded secondmate-home summaries do not scan model transcripts.
@@ -129,6 +139,7 @@ It also proves that bounded secondmate-home summaries do not scan model transcri
 `tests/fm-spawn-dispatch-profile.test.sh` covers durable metadata publication before watermark capture, preservation when capture fails, explicit config forwarding over a backend daemon's ambient configuration, default config discovery without conflating it with the transcript store, and refusal before launch for a newline-bearing physical store.
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
+It also owns the never-started boundary: both no-turn shapes tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for uncommitted changes, for commits on a task branch, and for a worker that ran on unattributable evidence with a clean worktree.
 
 Run:
 

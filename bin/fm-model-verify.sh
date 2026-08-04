@@ -35,8 +35,11 @@
 #   unverifiable the record CANNOT be checked - no evidence adapter for the
 #                harness, evidence unreadable, jq absent, or evidence that
 #                cannot be attributed to this task.                      exit 4
-#   pending      an adapter exists and the worker has simply not produced a
-#                model-attributed turn yet. NOT a pass - no verdict yet.
+#   unstarted    the runtime never wrote a session for this worker's working
+#                directory at all, so no turn of its own exists to read.
+#                NOT a pass - no verdict yet.                            exit 4
+#   pending      an adapter exists, a session exists, and the worker has simply
+#                not produced a model-attributed turn yet. NOT a pass.
 #   unpinned     meta records `model=default`: firstmate pinned no tier, so
 #                there is no dispatch record for the runtime to contradict.
 #
@@ -70,7 +73,7 @@ usage: fm-model-verify.sh <task-id> [--json]
 Verify the model a dispatched worker actually ran on against the model recorded
 for it in state/<id>.meta.
 
-Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable · 2 usage error.
+Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted · 2 usage error.
 With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
 dispatch was verifiable in principle (a claude-harness task with a pinned model);
 otherwise it exits 0 so cleanup is not blocked for a harness that can never
@@ -300,12 +303,15 @@ claude_models() {  # <transcript-dir> <spawned-at-epoch|empty> <watermark> <base
   local dir=$1 anchor=$2 watermark=$3 baseline=$4 files=() f listing name
 
   # No transcript directory at all means the runtime never wrote a session for
-  # this working directory. For a dispatched worker that is a failure to LOCATE
-  # the evidence, not evidence of a well-behaved worker, so it must not read as
-  # the benign "not yet" case. A worker spawned seconds ago lands here briefly
-  # and clears itself on its first turn.
+  # this working directory. That is still no verdict, but it is a DIFFERENT
+  # no-verdict cause from evidence that exists and cannot be read, so it gets
+  # its own marker and its own `unstarted` verdict: a caller deciding whether
+  # any evidence could exist must be able to tell the two apart. It is likewise
+  # not the benign "not yet" case, because a worker whose session was written
+  # elsewhere would land here too. A worker spawned seconds ago lands here
+  # briefly and clears itself on its first turn.
   if [ ! -d "$dir" ]; then
-    printf 'ERR:no transcript directory for the working directory recorded for this worker, so its evidence cannot be located: %s\n' "$dir"
+    printf 'NOSESSION:the runtime wrote no session for the working directory recorded for this worker, so it has no evidence of its own to read: %s\n' "$dir"
     return 0
   fi
   if [ ! -r "$dir" ] || [ ! -x "$dir" ]; then
@@ -533,6 +539,11 @@ EOF
   dir=$(claude_transcript_dir "$store" "$cwd")
   models=$(claude_models "$dir" "$anchor" "$watermark" "$baseline")
   case "$models" in
+    NOSESSION:*)
+      VERDICT=unstarted
+      DETAIL=${models#NOSESSION:}
+      return
+      ;;
     ERR:*)
       VERDICT=unverifiable
       DETAIL=${models#ERR:}
@@ -584,7 +595,7 @@ EOF
 exit_for_verdict() {  # <verdict>
   case "$1" in
     mismatch) printf '3' ;;
-    unverifiable) printf '4' ;;
+    unverifiable|unstarted) printf '4' ;;
     *) printf '0' ;;
   esac
 }

@@ -68,7 +68,7 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     else "\($r.blocked_by) - \($r.blocked_reason)" end;
   def backlog_row($r):
     "| \($r.id // "-") | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) | \(dash($r.pr_url // $r.report_path // $r.local_note)) |";
-  def model_suspect($t): $t.model_verification.verdict == "mismatch" or $t.model_verification.verdict == "unverifiable";
+  def model_suspect($t): $t.model_verification.verdict == "mismatch" or $t.model_verification.verdict == "unverifiable" or $t.model_verification.verdict == "unstarted";
   def model_row($t):
     "| \($t.id) | \($t.model_verification.verdict) | \(dash($t.model_verification.recorded)) | \(if ($t.model_verification.actual | length) == 0 then "-" else ($t.model_verification.actual | join(", ")) end) | \($t.model_verification.detail) |";
 
