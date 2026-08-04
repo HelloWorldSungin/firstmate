@@ -571,6 +571,7 @@ use_unverified_zellij_backend() {
   cat > "$case_dir/fakebin/zellij" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = list-sessions ]; then
+  [ "${FM_TEST_ZELLIJ_PRESENCE_STATE:-missing}" != unreadable ] || exit 1
   case "${FM_TEST_ZELLIJ_MUTATION:-}" in
     model-turn)
       mkdir -p "${FM_TEST_ZELLIJ_TRANSCRIPT_DIR:?}"
@@ -590,7 +591,7 @@ if [ "${1:-}" = list-sessions ]; then
       printf 'untracked work\n' > "${FM_TEST_ZELLIJ_WT:?}/scratch.txt"
       ;;
   esac
-  [ "${FM_TEST_ZELLIJ_LIVE:-0}" = 1 ] && printf '%s\n' firstmate
+  [ "${FM_TEST_ZELLIJ_PRESENCE_STATE:-missing}" = ambiguous ] && printf '%s\n' firstmate
   exit 0
 fi
 case " $* " in
@@ -824,15 +825,39 @@ test_unverified_backend_allows_only_with_every_other_protection() {
   expect_code 0 "$rc" "unverified-backend-clean: absent endpoint plus every other protection stayed blocked"
   assert_grep "Endpoint quiescence could not be determined" "$case_dir/stderr" \
     "unverified-backend-clean: the missing recovery classifier was not stated"
-  assert_grep "cheaper endpoint presence read found no live endpoint" "$case_dir/stderr" \
+  assert_grep "authoritative endpoint presence state is missing" "$case_dir/stderr" \
     "unverified-backend-clean: the protections carrying the decision were not stated"
   assert_absent "$case_dir/state/task-x1.meta" "unverified-backend-clean: task metadata was left behind"
   pass "an unverified backend proceeds only with every independent protection"
 }
 
+test_unverified_backend_unreadable_and_ambiguous_presence_refuse() {
+  local case_dir presence rc
+  for presence in unreadable ambiguous; do
+    case_dir=$(make_case "unverified-backend-presence-$presence")
+    write_meta "$case_dir" no-mistakes ship
+    claude_dispatch_meta "$case_dir" >/dev/null
+    never_started_worktree "$case_dir"
+    use_unverified_zellij_backend "$case_dir"
+
+    rc=0
+    FM_TEST_ZELLIJ_PRESENCE_STATE="$presence" \
+      FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "unverified-backend-presence-$presence: teardown treated uncertain presence as absence"
+    assert_grep "quiescence could not be determined" "$case_dir/stderr" \
+      "unverified-backend-presence-$presence: the classifier limitation was not stated"
+    assert_grep "presence state is $presence" "$case_dir/stderr" \
+      "unverified-backend-presence-$presence: the observed presence state was not surfaced"
+    assert_present "$case_dir/state/task-x1.meta" \
+      "unverified-backend-presence-$presence: task metadata was erased"
+  done
+  pass "an unverified backend refuses unreadable and ambiguous endpoint presence"
+}
+
 test_unverified_backend_refuses_each_missing_protection() {
   local case_dir dir failure rc
-  for failure in model-turn task-branch own-commit tracked-change untracked-file live-endpoint; do
+  for failure in model-turn task-branch own-commit tracked-change untracked-file; do
     case_dir=$(make_case "unverified-backend-$failure")
     write_meta "$case_dir" no-mistakes ship
     dir=$(claude_dispatch_meta "$case_dir")
@@ -840,17 +865,12 @@ test_unverified_backend_refuses_each_missing_protection() {
     never_started_worktree "$case_dir"
 
     rc=0
-    if [ "$failure" = live-endpoint ]; then
-      FM_TEST_ZELLIJ_LIVE=1 FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
-        run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-    else
-      FM_TEST_ZELLIJ_MUTATION="$failure" \
-        FM_TEST_ZELLIJ_TRANSCRIPT_DIR="$dir" \
-        FM_TEST_ZELLIJ_PROJECT="$case_dir/project" \
-        FM_TEST_ZELLIJ_WT="$case_dir/wt" \
-        FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
-        run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-    fi
+    FM_TEST_ZELLIJ_MUTATION="$failure" \
+      FM_TEST_ZELLIJ_TRANSCRIPT_DIR="$dir" \
+      FM_TEST_ZELLIJ_PROJECT="$case_dir/project" \
+      FM_TEST_ZELLIJ_WT="$case_dir/wt" \
+      FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+      run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     [ "$rc" -ne 0 ] || fail "unverified-backend-$failure: teardown proceeded without every protection"
     assert_grep "REFUSED" "$case_dir/stderr" \
       "unverified-backend-$failure: the missing protection did not refuse loudly"
@@ -2434,6 +2454,7 @@ test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_during_quiescence_recheck_refuses
 test_unverified_backend_allows_only_with_every_other_protection
+test_unverified_backend_unreadable_and_ambiguous_presence_refuse
 test_unverified_backend_refuses_each_missing_protection
 test_never_started_but_dirty_still_refuses
 test_never_started_with_untracked_claude_file_still_refuses

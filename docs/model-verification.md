@@ -120,7 +120,8 @@ A worker that died before its first model-attributed turn - `unstarted` or `pend
 Non-forced teardown therefore proceeds for such a task when its recorded worktree independently proves there is nothing to preserve: inspectable, on no branch, with no `refs/heads/fm/<task-id>` task branch, carrying no commit that no existing ref already contains, and clean after enumerating every untracked file apart from `.claude/settings.local.json`, `.opencode/plugins/fm-turn-end.js`, `.opencode/plugins/fm-busy-state.js`, `.fm-grok-turnend`, and `.fm-kimi-turnend`, which `bin/fm-spawn.sh` writes itself.
 Before that allowance reaches any destructive cleanup, teardown uses the recorded backend's strongest available endpoint evidence, then recomputes both the terminal model-routing verdict and the complete no-work proof at the shared teardown boundary.
 A recovery-grade agent classifier must establish quiescence, and a live or inconclusive endpoint state refuses.
-When a backend has no recovery-grade classifier, teardown states that limitation plainly and proceeds only when its cheaper presence read finds no live endpoint and the recomputed protections still prove no model-attributed turn, no task branch or own commit, and no tracked or non-allowlisted untracked work.
+When a backend has no recovery-grade classifier, teardown states that limitation plainly and proceeds only when a safety-grade tri-state inventory authoritatively reports the endpoint `missing` and the recomputed protections still prove no model-attributed turn, no task branch or own commit, and no tracked or non-allowlisted untracked work.
+An endpoint inventory that is unreadable or leaves endpoint identity ambiguous refuses rather than converting an unsuccessful read into absence.
 A turn or worktree change observed by the recomputation follows the ordinary terminal-verdict and work-preservation refusal rules.
 The absent verdict is stated plainly in the teardown output either way.
 Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
@@ -144,7 +145,7 @@ It also proves that bounded secondmate-home summaries do not scan model transcri
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
 It also owns the never-started boundary: both no-turn shapes and a fresh inspectable store with no transcript parent tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, uncommitted changes including any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced between the initial check and endpoint quiescence.
-The same coverage exercises a backend without a recovery-grade classifier in both directions: absence by its cheaper endpoint read plus every recomputed protection permits cleanup with an explicit caveat, while each missing protection refuses independently.
+The same coverage exercises a backend without a recovery-grade classifier in both directions: authoritative `missing` presence plus every recomputed protection permits cleanup with an explicit caveat, `unreadable` and `ambiguous` presence each refuse, and every other missing protection refuses independently.
 
 Run:
 
