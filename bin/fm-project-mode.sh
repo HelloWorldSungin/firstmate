@@ -13,8 +13,11 @@
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
-#   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
-#   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
+#   - <name> [<mode> ...] - <desc> (added <date>)      -> <mode> off
+#   - <name> [<mode> +yolo ...] - <desc> (added <date>) -> <mode> on
+# This parser consumes only the leading mode and optional +yolo token and
+# deliberately ignores later annotation tokens. docs/configuration.md owns the
+# full registry schemas, and fm-issue-lib.sh owns tracker= parsing.
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)

@@ -109,9 +109,13 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
-#   For a ship brief scaffolded with fm-brief.sh --issue, spawn validates its one
-#   explicit firstmate-task-issue marker and records issue=<number> in task meta.
-#   Brief prose and PR bodies are never searched to infer an issue identity.
+#   For a ship brief scaffolded with fm-brief.sh --work-item, spawn validates
+#   every repeatable firstmate-work-item marker and records one fully qualified
+#   work_item= line per marker in task meta. The legacy --issue path still
+#   records issue=<number>; when the project declares a tracker, spawn also
+#   upgrades that bare number to one project-scoped work_item= record, while a
+#   missing, trackerless, or malformed declaration warns instead of guessing.
+#   Brief prose, git remotes, and PR bodies are never searched to infer identity.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
@@ -216,6 +220,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-issue-lib.sh
+. "$SCRIPT_DIR/fm-issue-lib.sh"
 # shellcheck source=bin/fm-launch-lib.sh
 . "$SCRIPT_DIR/fm-launch-lib.sh"
 # shellcheck source=bin/fm-agy-trust-lib.sh
@@ -1190,6 +1196,57 @@ if [ "$KIND" = ship ]; then
   esac
 fi
 
+# Work-item markers carry a whole tracker identity rather than a bare number, so
+# a task on a mirrored project records the tracker the captain declared instead
+# of whichever repository its PR happens to open against. A brief may carry any
+# number of them, including none.
+WORK_ITEM_RECORDS=()
+if [ "$KIND" = ship ]; then
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    case "$marker" in
+      '<!-- firstmate-work-item='*' -->')
+        WORK_ITEM_REF=${marker#'<!-- firstmate-work-item='}
+        WORK_ITEM_REF=${WORK_ITEM_REF%' -->'}
+        ;;
+      *) echo "error: malformed work-item marker in $BRIEF" >&2; exit 1 ;;
+    esac
+    if ! fm_issue_ref_resolve "$WORK_ITEM_REF" "" "$PROJ_NAME"; then
+      echo "error: work-item marker in $BRIEF is unresolvable: $FM_ISSUE_ERROR" >&2
+      exit 1
+    fi
+    WORK_ITEM_RECORDS+=("$(fm_issue_work_item_format declared "$FM_ISSUE_FORGE" "$FM_ISSUE_URL")")
+  done < <(grep '^<!-- firstmate-work-item=' "$BRIEF_REAL" 2>/dev/null || true)
+
+  # The legacy bare-number marker means "whichever repository the PR lands in",
+  # which is exactly the assumption that sends a mirrored project's bookkeeping
+  # to the wrong tracker. When the project declares a tracker, upgrade it to a
+  # full identity here; when it does not, say so loudly rather than recording a
+  # reference that only looks project-scoped.
+  if [ -n "$ISSUE" ] && [ "${#WORK_ITEM_RECORDS[@]}" -eq 0 ]; then
+    LEGACY_TRACKER=
+    legacy_rc=0
+    LEGACY_TRACKER=$(fm_issue_registry_tracker "$DATA/projects.md" "$PROJ_NAME") || legacy_rc=$?
+    case "$legacy_rc" in
+      0)
+        if [ "$LEGACY_TRACKER" = none ]; then
+          echo "warning: $ID records issue #$ISSUE but $PROJ_NAME declares no issue tracker (tracker=none); the issue stays a bare same-repository number and will not be resolved against a tracker" >&2
+        elif fm_issue_ref_resolve "#$ISSUE" "$LEGACY_TRACKER" "$PROJ_NAME"; then
+          WORK_ITEM_RECORDS+=("$(fm_issue_work_item_format declared "$FM_ISSUE_FORGE" "$FM_ISSUE_URL")")
+        else
+          echo "warning: $ID records issue #$ISSUE but it could not be resolved against $PROJ_NAME's tracker: $FM_ISSUE_ERROR" >&2
+        fi
+        ;;
+      2)
+        echo "warning: $ID records issue #$ISSUE as a bare same-repository number because $PROJ_NAME's tracker= declaration in data/projects.md is malformed${LEGACY_TRACKER:+ ($LEGACY_TRACKER)}; correct that declaration so this task's work item points at the project's own tracker" >&2
+        ;;
+      *)
+        echo "warning: $ID records issue #$ISSUE as a bare same-repository number because $PROJ_NAME declares no issue tracker in data/projects.md; add a tracker= token there so this task's work item points at the project's own tracker" >&2
+        ;;
+    esac
+  fi
+fi
+
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
 # Every backend's own current-path read (tmux's pane_current_path, herdr's
@@ -2030,6 +2087,11 @@ META_WINDOW=$T
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   [ -z "$ISSUE" ] || echo "issue=$ISSUE"
+  # One line per resolved work item, in brief order. The URL is the identity;
+  # bin/fm-issue-lib.sh re-derives forge, host, path, and number from it.
+  for work_item_record in ${WORK_ITEM_RECORDS[@]+"${WORK_ITEM_RECORDS[@]}"}; do
+    echo "work_item=$work_item_record"
+  done
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;

@@ -375,6 +375,10 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/fixtures/issue-linkage/projects-cross-forge.md",
+      "audience": "maintainer-verification"
     }
   ]
 }

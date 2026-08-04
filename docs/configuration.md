@@ -23,6 +23,45 @@ Wake, watcher, away-mode, and X-specific state mechanics remain with their named
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Project issue trackers
+
+A task's work item almost always lives in the managed project's own tracker rather than in the Firstmate repository, and Firstmate manages projects across several forges and hosts.
+A bare `#42` is therefore meaningless without a project, and the tracker is never implied by a git remote: a project may be mirrored on one host while its issues are tracked on another, so the declaration below is the only authority.
+
+Each newly registered project must carry one explicit `tracker=` declaration inside the existing bracket annotation in `data/projects.md`; legacy entries may still omit it and remain undeclared:
+
+```
+- <name> [<mode> +yolo tracker=<forge>:<host>/<path>] - <desc> (added <date>)
+- <name> [<mode> tracker=none] - <desc> (added <date>)
+```
+
+`<forge>` is `github`, `gitlab`, or `gitea`; `<host>` is the tracker's DNS host; `<path>` is `owner/repository` on GitHub and Gitea, and the full nested namespace on GitLab.
+`tracker=none` declares that a project has no tracker, which is distinct from an absent token meaning undeclared; both refuse to resolve a bare reference, with different reasons.
+The token rides inside the delivery-posture annotation that `bin/fm-project-mode.sh` already parses, so adding it never changes a project's registered mode or yolo posture.
+
+`bin/fm-issue-lib.sh` is the single owner of this declaration and of the reference forms resolved against it: a full canonical issue URL, a `<forge>:<url>` prefixed URL for the self-hosted shape several forges share, `<owner>/<repo>#<n>`, and a bare `#<n>` or `<n>`.
+Firstmate resolves references once at intake with `bin/fm-issue-ref.sh`, exactly as it resolves delivery mode and yolo, and passes the resolved result explicitly onward.
+`bin/fm-brief.sh --work-item` accepts only a fully qualified reference and never reads the registry at all.
+`bin/fm-spawn.sh` records those resolved markers as they stand and consults the registry only to upgrade a legacy bare `issue=` number through the project's declared tracker, reporting rather than guessing when that project declares none.
+A task may carry several references or none, and one unresolvable reference refuses the whole set rather than recording a partial one.
+Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in task metadata, and `bin/fm-issue-ref.sh --format json` emits the reference-object array in the shape defined by issue #18's outcome-manifest contract.
+`bin/fm-pr-merge.sh` closes a recorded work item only when it is a `github.com` issue, and then in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
+A work item on a self-hosted GitHub host, or on any other forge, is reported as one Firstmate does not close automatically rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
+
+`bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters: `github.com` and Gitea on any host are implemented, while a self-hosted GitHub host and GitLab report that they have no adapter and keep the plain link.
+Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
+Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900), and that cache is what stops repeated dashboard refreshes hammering a forge: every refresh inside the TTL is answered from disk without contacting the host at all.
+The live lookups that miss the cache are additionally spaced per host by `FM_ISSUE_STATUS_MIN_INTERVAL` seconds (default 2).
+Each live request is bounded by `FM_ISSUE_STATUS_TIMEOUT` seconds (default 10); an empty, zero, or non-numeric value uses the default.
+That spacing is deliberately best-effort rather than guaranteed: there is no lock, so two concurrent processes may each observe no recent call and each perform one lookup.
+Cache entries and the per-host timestamp are replaced atomically, so a concurrent reader always sees a whole record rather than a torn one.
+
+Per-host credentials live in `config/forge-tokens/<host>`, which must be a regular file with mode 0600; a token stored more loosely is refused rather than used.
+GitHub needs no entry because it uses the ambient `gh-axi` authentication.
+Gitea uses its host entry when present and otherwise attempts an unauthenticated read, which can enrich public repositories while private repositories retain only the link and reason.
+`config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
+The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
@@ -512,6 +551,9 @@ FM_HEARTBEAT=600        # base seconds between heartbeat scans; no-change heartb
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or X-mode dispatch)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
+FM_ISSUE_STATUS_TTL=900   # seconds a cached work-item enrichment result stays fresh
+FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work-item lookups to one host
+FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision

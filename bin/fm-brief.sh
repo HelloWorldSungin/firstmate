@@ -6,12 +6,29 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
-#   --issue records a same-repository GitHub issue number for a PR-based ship task.
-#   The generated brief requires a substantive issue comment and `Closes #<number>`
-#   in the PR body, and fm-spawn.sh copies the explicit marker into task metadata.
+#   --work-item records a resolved work item that lives in the MANAGED PROJECT's
+#   tracker, which is usually not this repository. It is repeatable, so a task
+#   may carry several references or none, and it takes only a fully resolved
+#   "<forge>:<url>" argument. Resolving a loose reference (a bare number, an
+#   owner/repo#N, a project's declared tracker) is intake's job, exactly like
+#   delivery mode: firstmate runs bin/fm-issue-ref.sh --format brief and passes
+#   the result here. This script never reads data/projects.md and never guesses
+#   a forge, so a brief cannot silently point at the wrong tracker.
+#   --issue is the older same-repository GitHub form: a bare number that means
+#   "this issue lives in whichever repository the PR lands in". It still works
+#   for a task shipping to its own GitHub tracker, but it cannot express a
+#   mirrored project, so prefer --work-item. The two are mutually exclusive.
+#   The generated --issue section requires a substantive issue comment and a
+#   `Closes` line in the PR body. The --work-item section instead records the
+#   links and requires the worker to reference each full URL in the PR body,
+#   with a `Closes` line only for an item whose tracker is the same repository
+#   the PR opens against; tracker write-back across forges is deliberately out
+#   of scope here, because it needs a per-forge write-credential design of its
+#   own rather than arriving through brief scaffolding. Either way fm-spawn.sh
+#   copies the explicit markers into task metadata.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -82,6 +99,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-issue-lib.sh
+. "$SCRIPT_DIR/fm-issue-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -115,6 +134,7 @@ MODE=
 MODE_SET=0
 ISSUE=
 ISSUE_SET=0
+WORK_ITEMS=()
 POS=()
 want_value=
 for a in "$@"; do
@@ -125,6 +145,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       issue) ISSUE=$a; ISSUE_SET=1 ;;
+      work-item) WORK_ITEMS+=("$a") ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -139,6 +160,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --issue) want_value=issue ;;
     --issue=*) ISSUE=${a#--issue=}; ISSUE_SET=1 ;;
+    --work-item) want_value=work-item ;;
+    --work-item=*) WORK_ITEMS+=("${a#--work-item=}") ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -154,6 +177,30 @@ if [ "$ISSUE_SET" -eq 1 ]; then
   esac
   [ "$ISSUE" -gt 0 ] || { echo "error: --issue requires a positive GitHub issue number" >&2; exit 1; }
   [ "$KIND" = ship ] || { echo "error: --issue applies only to ship briefs" >&2; exit 1; }
+fi
+
+# A resolved work item is validated here but never resolved here: only the
+# fully qualified "<forge>:<url>" form is accepted, so this script needs no
+# registry, no network, and no forge guess. Anything looser is intake's job.
+if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
+  [ "$KIND" = ship ] || { echo "error: --work-item applies only to ship briefs" >&2; exit 1; }
+  [ "$ISSUE_SET" -eq 0 ] || {
+    echo "error: --issue and --work-item are mutually exclusive; --work-item states the tracker explicitly, which is what --issue cannot do" >&2
+    exit 1
+  }
+  for item in "${WORK_ITEMS[@]}"; do
+    case "$item" in
+      *:https://*) ;;
+      *)
+        echo "error: --work-item requires a resolved <forge>:<url> argument (got '$item'); resolve loose references at intake with bin/fm-issue-ref.sh --project <name> --format brief" >&2
+        exit 1
+        ;;
+    esac
+    if ! fm_issue_ref_resolve "$item" "" ""; then
+      echo "error: --work-item $item: $FM_ISSUE_ERROR" >&2
+      exit 1
+    fi
+  done
 fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
@@ -333,6 +380,30 @@ EOF
 "
 fi
 
+if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
+  # Cross-forge tracker write-back requires its own per-forge credential contract.
+  WORK_ITEM_MARKERS=
+  WORK_ITEM_LINES=
+  for item in "${WORK_ITEMS[@]}"; do
+    fm_issue_ref_resolve "$item" "" "" || { echo "error: --work-item $item: $FM_ISSUE_ERROR" >&2; exit 1; }
+    WORK_ITEM_MARKERS="$WORK_ITEM_MARKERS<!-- firstmate-work-item=$FM_ISSUE_FORGE:$FM_ISSUE_URL -->
+"
+    WORK_ITEM_LINES="$WORK_ITEM_LINES- $FM_ISSUE_URL
+"
+  done
+  IFS= read -r -d '' ISSUE_SECTION <<EOF || true
+${WORK_ITEM_MARKERS}# Work item traceability
+This task is linked to the work items below.
+They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
+${WORK_ITEM_LINES}Reference each full URL in the PR body.
+Add a \`Closes\` line only for an item whose tracker is the same repository the PR opens against, because a forge can only auto-close its own issues; firstmate closes anything else through its own merge path.
+EOF
+  ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
+  ISSUE_SECTION="$ISSUE_SECTION
+
+"
+fi
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -391,6 +462,10 @@ fi
 # Issue traceability rides the PR, so it is meaningless without one.
 if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
   echo "error: --issue requires a PR-based delivery mode" >&2
+  exit 1
+fi
+if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
+  echo "error: --work-item requires a PR-based delivery mode" >&2
   exit 1
 fi
 
