@@ -223,6 +223,59 @@ test_reprocessing_is_idempotent() {
   pass "reprocessing the same sources produces no duplicate usage"
 }
 
+# Collector windows overlap in the real fleet: an operator or a scheduler runs
+# ingest on a cadence while teardown calls the collector best-effort for the task
+# it is about to archive. The hardest moment is the FIRST overlap, when the store
+# itself still has to be created - a collector that loses that race has to wait
+# for the store rather than exit with a bare lock error and no usage collected.
+test_overlapping_collector_windows() {
+  local case_root
+  case_root=$(new_case concurrent)
+  local dir="$case_root/claude/-home-worker-race"
+  mkdir -p "$dir"
+  local index
+  for index in $(seq 1 30); do
+    claude_line "$dir/session-r.jsonl" session-r /home/worker/race \
+      "2026-08-01T10:$(printf '%02d' "$index"):00Z" "msg_r$index" 1 2 3 4
+  done
+  local rollout="$case_root/codex/2026/08/01/rollout-session-r.jsonl"
+  codex_rollout "$rollout" session-rc /home/worker/race gpt-5.6-sol
+  codex_token_count "$rollout" 2026-08-01T10:00:10Z 500 50 100 10
+
+  # What one collector stores when nothing competes with it.
+  usage_run "$case_root" ingest --db "$case_root/sequential.db" >/dev/null \
+    || fail "the sequential baseline ingest failed"
+  local sequential
+  sequential=$(usage_run "$case_root" report --db "$case_root/sequential.db" --by harness | jq -Sc '.rows')
+
+  # Three collectors open the same not-yet-created store at the same moment.
+  local pids=()
+  for index in 1 2 3; do
+    usage_run "$case_root" ingest >"$case_root/race-$index.json" 2>"$case_root/race-$index.err" &
+    pids+=("$!")
+  done
+  for index in 1 2 3; do
+    wait "${pids[$((index - 1))]}" \
+      || fail "an overlapping collector window failed: $(cat "$case_root/race-$index.err")"
+    [ ! -s "$case_root/race-$index.err" ] \
+      || fail "an overlapping collector window complained: $(cat "$case_root/race-$index.err")"
+    [ "$(jq -c '.failures' "$case_root/race-$index.json")" = '[]' ] \
+      || fail "an overlapping collector window reported stage failures: $(jq -c '.failures' "$case_root/race-$index.json")"
+  done
+
+  # Overlapping windows converge on exactly what one collector alone stores:
+  # every event once, the same totals, nothing lost and nothing doubled.
+  local raced
+  raced=$(usage_run "$case_root" report --by harness | jq -Sc '.rows')
+  [ "$raced" = "$sequential" ] \
+    || fail "overlapping windows must converge on the sequential result"$'\n'"$sequential"$'\n'"$raced"
+  local settled
+  settled=$(usage_run "$case_root" ingest) || fail "the settling ingest failed"
+  [ "$(jq -r '.collected.events_new' <<<"$settled")" = 0 ] \
+    || fail "the raced store must already hold every event: $(jq -c '.collected' <<<"$settled")"
+  pass "overlapping collector windows converge instead of failing on a locked store"
+}
+
 test_malformed_and_rotated_sources() {
   local case_root
   case_root=$(new_case rotation)
@@ -725,6 +778,7 @@ test_store_carries_no_transcript_content() {
 test_claude_adapter
 test_codex_adapter
 test_reprocessing_is_idempotent
+test_overlapping_collector_windows
 test_malformed_and_rotated_sources
 test_live_attribution_and_session_map
 test_totals_survive_teardown

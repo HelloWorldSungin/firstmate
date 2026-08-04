@@ -285,14 +285,48 @@ const MIGRATIONS = [
 ];
 
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
+// How long a collector waits for another collector to get out of the way.
+// Collector windows overlap by design - a run on a cadence, teardown's
+// best-effort call for the task it is about to archive - so losing a race has to
+// mean waiting, never "database is locked" with nothing collected at all.
+const BUSY_TIMEOUT_MS = 10000;
+
+// A synchronous pause. Every collector stage is synchronous, and the store has
+// to be open and migrated before any of them can start.
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// PRAGMA journal_mode does NOT honor the busy timeout: SQLite takes the brief
+// exclusive lock that switching a store to WAL needs without ever calling the
+// busy handler, so a second collector creating the same store gets SQLITE_BUSY
+// back in well under a millisecond however long the timeout is. The switch is
+// therefore retried explicitly on the same budget. Only the first open of a
+// store can contend at all - a store that is already in WAL needs no lock to be
+// told it is in WAL, which is why steady-state overlapping runs never wait here.
+function enableWalMode(db) {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      db.exec("PRAGMA journal_mode = WAL");
+      return;
+    } catch (error) {
+      const busy = /\b(locked|busy)\b/i.test(String(error?.message ?? error));
+      if (!busy || Date.now() >= deadline) throw error;
+      sleepMs(20);
+    }
+  }
+}
 
 function openStore(dbPath, { create = true } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
   if (!create && !fs.existsSync(dbPath)) return null;
   const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA busy_timeout = 10000");
+  // The busy timeout is installed FIRST, before anything that can contend, so
+  // every later statement waits for a competing collector instead of failing.
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  enableWalMode(db);
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db);
   try {
@@ -304,16 +338,26 @@ function openStore(dbPath, { create = true } = {}) {
 }
 
 function migrate(db) {
-  const current = db.prepare("PRAGMA user_version").get().user_version ?? 0;
-  if (current > SCHEMA_VERSION) {
+  const version = () => db.prepare("PRAGMA user_version").get().user_version ?? 0;
+  const opening = version();
+  if (opening > SCHEMA_VERSION) {
     throw new Error(
-      `store schema version ${current} is newer than this collector understands (${SCHEMA_VERSION})`,
+      `store schema version ${opening} is newer than this collector understands (${SCHEMA_VERSION})`,
     );
   }
   for (const migration of MIGRATIONS) {
-    if (migration.version <= current) continue;
-    db.exec("BEGIN");
+    if (migration.version <= opening) continue;
+    // BEGIN IMMEDIATE, and the version is re-read inside that write transaction:
+    // two collectors opening the same new store both read version 0 outside any
+    // transaction, so the one that arrives second must observe the winner's
+    // committed version and skip a migration already applied rather than re-run
+    // its CREATE TABLEs and die on "table usage_event already exists".
+    db.exec("BEGIN IMMEDIATE");
     try {
+      if (version() >= migration.version) {
+        db.exec("COMMIT");
+        continue;
+      }
       for (const statement of migration.statements) db.exec(statement);
       db.exec(`PRAGMA user_version = ${migration.version}`);
       db.exec("COMMIT");
