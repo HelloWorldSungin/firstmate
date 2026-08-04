@@ -261,6 +261,14 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/gbrain-endpoints.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/verification/gbrain-embedding.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },
