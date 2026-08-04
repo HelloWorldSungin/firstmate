@@ -32,12 +32,16 @@ case "${1:-}" in
       for a in "$@"; do
         if [ "$prev" = "-l" ]; then
           printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
-          if [ -n "${FM_FAKE_RESOLVED_CLAUDE_STORE_LOG:-}" ]; then
+          if [ -n "${FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG:-}" ]; then
             case "$a" in
               *claude*)
                 pinned=$(printf '%s\n' "$a" | sed -n "s/^CLAUDE_CONFIG_DIR='\([^']*\)'.*/\1/p")
-                printf '%s\n' "${pinned:-${FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR:-}}" \
-                  > "$FM_FAKE_RESOLVED_CLAUDE_STORE_LOG"
+                config_dir=${pinned:-${FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR:-}}
+                if [ -n "$config_dir" ]; then
+                  printf '%s/.claude.json\n' "$config_dir"
+                else
+                  printf '%s/.claude.json\n' "$HOME"
+                fi > "$FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG"
                 ;;
             esac
           fi
@@ -93,9 +97,8 @@ run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
   shift 4
   : > "$launchlog"
-  # CLAUDE_CONFIG_DIR is forwarded onto claude launches by fm-spawn, so pin it
-  # explicitly (empty by default) instead of leaking the invoking shell's value,
-  # which would make launch assertions depend on the developer's environment.
+  # An explicitly set CLAUDE_CONFIG_DIR is forwarded onto Claude launches, so
+  # pin it empty by default instead of leaking the invoking shell's value.
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
@@ -104,7 +107,7 @@ run_spawn() {
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" \
     FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR="${FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR:-}" \
-    FM_FAKE_RESOLVED_CLAUDE_STORE_LOG="${FM_FAKE_RESOLVED_CLAUDE_STORE_LOG:-}" \
+    FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG="${FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG:-}" \
     GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -144,7 +147,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="CLAUDE_CONFIG_DIR='$runtime_home/.claude' CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -704,45 +707,67 @@ test_batch_forwards_shared_profile_flags() {
 }
 
 test_claude_forwards_firstmate_config_dir_when_set() {
-  local rec id out status launch
+  local rec id out status launch canonical_root relative_cfg cfg daemon_cfg resolved_config recorded_store
   id=profile-claude-cfgdir-z17
   rec=$(make_spawn_case profile-claude-cfgdir claude "$id")
   read_case_record "$rec"
+  canonical_root="$CASE_DIR/canonical-root"
+  relative_cfg=link/../cfg
+  cfg="$canonical_root/real/cfg"
+  daemon_cfg="$CASE_DIR/daemon-claude-config"
+  resolved_config="$CASE_DIR/resolved-claude-config.log"
+  mkdir -p "$canonical_root/real/child" "$cfg" "$daemon_cfg"
+  ln -s "$canonical_root/real/child" "$canonical_root/link"
+  printf '{"hasCompletedOnboarding":true}\n' > "$cfg/.claude.json"
+  printf '{}\n' > "$daemon_cfg/.claude.json"
 
-  out=$(FM_TEST_CLAUDE_CONFIG_DIR="/opt/test/claude-work" \
-    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(cd "$canonical_root" && \
+    FM_TEST_CLAUDE_CONFIG_DIR="$relative_cfg" \
+      FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR="$daemon_cfg" \
+      FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG="$resolved_config" \
+      run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='/opt/test/claude-work' CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude" \
-    "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
-  pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
+  recorded_store=$(sed -n 's/^model_evidence_store=//p' "$HOME_DIR/state/$id.meta")
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$cfg' CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude" \
+    "claude launch did not forward firstmate's canonical CLAUDE_CONFIG_DIR to the crewmate pane"
+  [ "$recorded_store" = "$cfg" ] \
+    || fail "explicit Claude config did not record its canonical evidence store: $recorded_store"
+  [ "$(cat "$resolved_config")" = "$cfg/.claude.json" ] \
+    || fail "daemon ambient config overrode firstmate's explicit Claude config"
+  jq -e '.hasCompletedOnboarding == true' "$cfg/.claude.json" >/dev/null \
+    || fail "explicitly forwarded Claude config was not onboarded"
+  pass "claude forwards the canonical explicit config and evidence store"
 }
 
-test_claude_pins_default_store_over_daemon_ambient_config() {
-  local rec id out status launch runtime_home daemon_cfg resolved_log recorded_store
+test_claude_default_uses_home_config_and_records_evidence_store() {
+  local rec id out status launch runtime_home resolved_config recorded_store
   id=profile-claude-nocfgdir-z18
   rec=$(make_spawn_case profile-claude-nocfgdir claude "$id")
   read_case_record "$rec"
   runtime_home="$CASE_DIR/runtime-home"
-  daemon_cfg="$CASE_DIR/daemon-claude-config"
-  resolved_log="$CASE_DIR/resolved-claude-store.log"
-  mkdir -p "$runtime_home/.claude" "$daemon_cfg"
+  resolved_config="$CASE_DIR/resolved-claude-config.log"
+  mkdir -p "$runtime_home/.claude"
+  printf '{"hasCompletedOnboarding":true}\n' > "$runtime_home/.claude.json"
+  printf '{}\n' > "$runtime_home/.claude/.claude.json"
 
-  out=$(HOME="$runtime_home" FM_FAKE_DAEMON_CLAUDE_CONFIG_DIR="$daemon_cfg" \
-    FM_FAKE_RESOLVED_CLAUDE_STORE_LOG="$resolved_log" \
+  out=$(HOME="$runtime_home" \
+    FM_FAKE_RESOLVED_CLAUDE_CONFIG_LOG="$resolved_config" \
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn without CLAUDE_CONFIG_DIR should succeed"
   launch=$(cat "$LAUNCH_LOG")
   recorded_store=$(sed -n 's/^model_evidence_store=//p' "$HOME_DIR/state/$id.meta")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$runtime_home/.claude'" \
-    "claude launch did not pin the recorded default evidence store"
+  assert_not_contains "$launch" "CLAUDE_CONFIG_DIR=" \
+    "default Claude launch confused the transcript store with the config directory"
   [ "$recorded_store" = "$runtime_home/.claude" ] \
     || fail "default-store spawn recorded the wrong evidence store: $recorded_store"
-  [ "$(cat "$resolved_log")" = "$recorded_store" ] \
-    || fail "daemon ambient config overrode the recorded evidence store"
-  pass "claude pins the recorded default store over daemon ambient config"
+  [ "$(cat "$resolved_config")" = "$runtime_home/.claude.json" ] \
+    || fail "default Claude launch resolved the wrong config: $(cat "$resolved_config")"
+  jq -e '.hasCompletedOnboarding == true' "$(cat "$resolved_config")" >/dev/null \
+    || fail "default Claude launch did not resolve an onboarded config"
+  pass "default Claude launch uses the onboarded home config and records its transcript store separately"
 }
 
 test_non_claude_harness_ignores_config_dir() {
@@ -805,7 +830,7 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
 test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
-test_claude_pins_default_store_over_daemon_ambient_config
+test_claude_default_uses_home_config_and_records_evidence_store
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
 

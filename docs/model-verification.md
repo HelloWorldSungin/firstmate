@@ -39,11 +39,13 @@ Only a harness with an empirically verified evidence source is ever treated as v
 
 | Harness | Evidence source | Status |
 | --- | --- | --- |
-| Claude | `<config>/projects/<encoded-cwd>/<session>.jsonl`, `.message.model` per assistant record | Verified and wired. |
+| Claude | `<transcript-store>/projects/<encoded-cwd>/<session>.jsonl`, `.message.model` per assistant record | Verified and wired. |
 | Codex, OpenCode, Pi, Grok, Kimi | not established | Reported `unverifiable`, never assumed correct. |
 
-`<config>` is the canonical `model_evidence_store=` persisted in the dispatch record.
-`bin/fm-spawn.sh` resolves symlinks and parent components in filesystem order for `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`, records that physical identity before launch, and explicitly sets every Claude launch to the same store.
+`<transcript-store>` is the canonical `model_evidence_store=` persisted in the dispatch record.
+`bin/fm-spawn.sh` resolves symlinks and parent components in filesystem order for `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and records that physical transcript-store identity before launch.
+When firstmate has an explicit `$CLAUDE_CONFIG_DIR`, spawn forwards it so the worker uses the same credential, config, and transcript store even though the pane daemon does not inherit firstmate's environment.
+When the variable is unset or empty, spawn does not export it: Claude's default config comes from `~/.claude.json`, while transcript evidence remains under `~/.claude`.
 If the resolved physical path contains a newline, canonicalization fails and spawn refuses before serializing or launching with an altered store.
 Later verification never replaces that recorded store with the verifier process's ambient configuration.
 The directory name encodes the worker's working directory with every character outside `[A-Za-z0-9]` replaced by `-`.
@@ -124,7 +126,7 @@ It covers family-alias and pinned-id comparison, the context-window suffix, a do
 `tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section.
 It also proves that bounded secondmate-home summaries do not scan model transcripts.
 
-`tests/fm-spawn-dispatch-profile.test.sh` covers durable metadata publication before watermark capture, preservation when capture fails, explicit default-store pinning over a backend daemon's ambient configuration, and refusal before launch for a newline-bearing physical store.
+`tests/fm-spawn-dispatch-profile.test.sh` covers durable metadata publication before watermark capture, preservation when capture fails, explicit config forwarding over a backend daemon's ambient configuration, default config discovery without conflating it with the transcript store, and refusal before launch for a newline-bearing physical store.
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
 

@@ -179,12 +179,12 @@ models_match() {  # <normalized-recorded> <normalized-actual>
 # --- claude evidence adapter ------------------------------------------------
 #
 # Claude Code writes one JSONL transcript per session under
-# <config>/projects/<encoded-cwd>/, and records the serving model on every
+# <transcript-store>/projects/<encoded-cwd>/, and records the serving model on every
 # assistant record as `.message.model`. The encoding replaces every character
 # outside [A-Za-z0-9] with `-` (verified on this host against paths containing
 # `/`, `.`, `_`, and a space).
 #
-# <config> is the canonical evidence store persisted by bin/fm-spawn.sh.
+# <transcript-store> is the canonical evidence store persisted by bin/fm-spawn.sh.
 #
 # `<synthetic>` is a runtime placeholder the CLI records for messages no model
 # served (injected notices and the like). It names no model and is dropped, so
@@ -231,7 +231,7 @@ mtime_of() {  # <file>
   stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 
-claude_transcript_dir() {  # <config-store> <worker-cwd>
+claude_transcript_dir() {  # <transcript-store> <worker-cwd>
   local store=$1 cwd=$2 encoded
   encoded=$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
   printf '%s/projects/%s' "$store" "$encoded"

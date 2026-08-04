@@ -75,7 +75,7 @@ jq -r 'select(.type=="assistant") | .message.model // empty' "$BIG"  0.09s user 
 
 ## 2026-08-01: transcript directory path encoding
 
-Claude Code stores transcripts under `<config>/projects/<encoded-cwd>/`.
+Claude Code stores transcripts under `<transcript-store>/projects/<encoded-cwd>/`.
 The encoding was established empirically rather than assumed, using a working directory containing `/`, `.`, `_`, and a space:
 
 ```sh
@@ -111,7 +111,8 @@ It binds a mismatched worker to store A, invokes verification under store B cont
 It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record without binding fields retains its disclosed weaker attribution.
 
 The lifecycle cases require base endpoint metadata to exist when watermark capture fails, require forced teardown to print a mismatch without losing discard authority, and require recursive secondmate cleanup to print each child's verdict before removing its record.
-The store-binding cases require a default-store Claude launch to override a different backend-daemon ambient store, and require `link/../cfg` to resolve the link before applying the parent component.
+The store-binding cases require an explicitly configured Claude launch to override a different backend-daemon ambient store, and require `link/../cfg` to resolve the link before applying the parent component.
+The default-store case requires the launch to leave `CLAUDE_CONFIG_DIR` unset, resolve an onboarded `~/.claude.json`, and still record `~/.claude` as the separate transcript evidence store.
 They also require a newline introduced only by physical symlink resolution to remain detectable, produce an `unverifiable` legacy verdict, and prevent a Claude launch.
 
 Focused command:
