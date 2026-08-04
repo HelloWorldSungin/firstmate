@@ -132,6 +132,29 @@ EOF
     "mode=ship"
 }
 
+# write_model_task <home> <claude-config> <id> <recorded-model> <actual-model>:
+# a dispatched claude worker plus the transcript the runtime would have written
+# for it. The transcript directory encodes the worker's working directory with
+# every character outside [A-Za-z0-9] replaced by '-'.
+write_model_task() {
+  local home=$1 cfg=$2 id=$3 recorded=$4 actual=$5 wt dir
+  wt="$home/projects/$id-worktree"
+  mkdir -p "$wt"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "worktree=$wt" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=ship" \
+    "model=$recorded" \
+    "model_evidence_store=$cfg" \
+    "spawned_at=1"
+  dir="$cfg/projects/$(printf '%s' "$wt" | sed 's/[^A-Za-z0-9]/-/g')"
+  mkdir -p "$dir"
+  printf '{"type":"assistant","message":{"model":"%s"}}\n' "$actual" > "$dir/session.jsonl"
+}
+
 test_empty_fleet_json() {
   local home out view
   home=$(make_home empty)
@@ -1019,12 +1042,91 @@ test_history_is_projected_after_teardown() {
   pass "the snapshot projects durable history and discloses unreadable manifests"
 }
 
+# The snapshot carries bin/fm-model-verify.sh's verdict on whether each worker
+# actually ran on the model recorded for it, and the view raises a section only
+# when a worker did not provably do so - correctly routed work renders exactly
+# as before.
+test_model_verification_surfaces_in_snapshot_and_view() {
+  local home fakebin cfg out wt
+  home=$(make_home model-verify)
+  fakebin=$(make_fakebin "$home")
+  cfg="$home/claude-config"
+  mkdir -p "$cfg/projects"
+
+  write_model_task "$home" "$cfg" routed-well opus claude-opus-5
+  write_model_task "$home" "$cfg" routed-badly opus claude-sonnet-5
+
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "routed-well") | .model_verification.verdict == "match"
+  ' >/dev/null || fail "a correctly routed worker must verify as match: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "routed-badly")
+    | .model_verification.verdict == "mismatch"
+      and .model_verification.recorded == "opus"
+      and (.model_verification.actual | index("claude-sonnet-5") != null)
+      and .model == "opus"
+  ' >/dev/null || fail "a downgraded worker must verify as mismatch naming both models: $out"
+  pass "the snapshot carries a model verdict per task"
+
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$VIEW")
+  assert_contains "$out" "## Model Routing" "the view raises a section when a worker did not provably run as dispatched"
+  assert_contains "$out" "routed-badly" "the mismatched worker is named"
+  assert_contains "$out" "claude-sonnet-5" "the model it actually ran on is named"
+  printf '%s' "$out" | grep -q '^| routed-well |.*mismatch' \
+    && fail "a correctly routed worker must not appear in the model-routing section"
+  pass "the view raises a model-routing section for a worker that did not run as dispatched"
+
+  # No behavior change for a fleet that is entirely correctly routed.
+  home=$(make_home model-verify-clean)
+  fakebin=$(make_fakebin "$home")
+  cfg="$home/claude-config"
+  mkdir -p "$cfg/projects"
+  write_model_task "$home" "$cfg" routed-well opus claude-opus-5
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$VIEW")
+  assert_not_contains "$out" "## Model Routing" "a correctly routed fleet renders no model-routing section"
+  pass "a correctly routed fleet renders no model-routing section"
+}
+
+test_secondmate_home_summary_skips_model_enrichment() {
+  local home fakebin cfg wt dir find_log real_find out
+  home=$(make_home summary-skips-model)
+  fakebin=$(make_fakebin "$home")
+  cfg="$home/claude-config"
+  wt="$home/projects/worker"
+  mkdir -p "$wt" "$cfg/projects"
+  printf '%s\n' '## In flight' '- [ ] worker - Worker (repo: alpha) (kind: ship)' > "$home/data/backlog.md"
+  fm_write_meta "$home/state/worker.meta" \
+    "window=firstmate:fm-worker" "worktree=$wt" "project=alpha" \
+    "harness=claude" "kind=ship" "model=opus" \
+    "model_evidence_store=$cfg" "spawned_at=1"
+  dir="$cfg/projects/$(printf '%s' "$wt" | sed 's/[^A-Za-z0-9]/-/g')"
+  mkdir -p "$dir"
+  find_log="$home/model-find.log"
+  real_find=$(command -v find)
+  cat > "$fakebin/find" <<SH
+#!/usr/bin/env bash
+case "\$*" in *"*.jsonl"*) printf 'model transcript scan\n' >> "$find_log" ;; esac
+exec "$real_find" "\$@"
+SH
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" \
+    "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '.schema == "fm-secondmate-home-summary.v1"' >/dev/null \
+    || fail "bounded secondmate summary was not produced: $out"
+  [ ! -e "$find_log" ] || fail "bounded secondmate summary scanned model transcripts"
+  pass "bounded secondmate home summary skips model enrichment"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
 test_watcher_beacon_staleness_and_absence
 test_card_column_precedence
 test_history_is_projected_after_teardown
+test_model_verification_surfaces_in_snapshot_and_view
+test_secondmate_home_summary_skips_model_enrichment
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

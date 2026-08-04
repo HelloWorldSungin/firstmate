@@ -41,6 +41,9 @@
 # device. It refuses and preserves task state when that proof fails; otherwise
 # it removes the task's check, trust record, PR sidecar, publication record, and
 # quarantine entries with the rest of the volatile state.
+# Before cleanup, teardown also enforces the terminal dispatched-model check
+# owned by docs/model-verification.md; --force surfaces that verdict while
+# retaining its explicitly authorized discard behavior.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -365,6 +368,27 @@ fi
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+MODEL_VERIFY_RC=0
+MODEL_VERIFY_OUTPUT=$(
+  FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-model-verify.sh" "$ID" --terminal 2>&1
+) || MODEL_VERIFY_RC=$?
+case "$MODEL_VERIFY_OUTPUT" in
+  *' · verdict: '*) ;;
+  *)
+    MODEL_VERIFY_OUTPUT="$ID · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${MODEL_VERIFY_OUTPUT:+: $MODEL_VERIFY_OUTPUT}"
+    MODEL_VERIFY_RC=4
+    ;;
+esac
+# The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
+# unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
+# nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
+# verifiable in principle. --force retains its existing discard authority.
+printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
+  echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
+  exit 1
+fi
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
@@ -1612,12 +1636,21 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_nativeturnend_key
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_nativeturnend_key child_model_output
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
+    child_model_output=$(
+      FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$sub_state" \
+        "$SCRIPT_DIR/fm-model-verify.sh" "$child_id" --terminal 2>&1
+    ) || true
+    case "$child_model_output" in
+      *' · verdict: '*) ;;
+      *) child_model_output="$child_id · verdict: unverifiable · recorded: - · actual: - · source: none · terminal verifier returned no parseable verdict${child_model_output:+: $child_model_output}" ;;
+    esac
+    printf '%s\n' "$child_model_output" >&2
     child_wt=$(meta_value "$child_meta" worktree)
     child_proj=$(meta_value "$child_meta" project)
     child_kind=$(meta_value "$child_meta" kind)
