@@ -45,10 +45,44 @@ _hb_surfaced_path() {
   printf '%s/.hb-surfaced-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"
 }
 
-# Record a captain-relevant status after its durable wake has been enqueued.
+_fm_surface_digest() {
+  if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d ' ' -f1; fi
+}
+
+open_decision_id() {  # <task>
+  local task=$1 open
+  [ -n "$task" ] || return 0
+  open=$(status_open_decisions "$STATE/$task.status")
+  [ -n "$open" ] || return 0
+  printf '%s' "$open" | _fm_surface_digest
+}
+
+_stale_decision_marker_path() {  # <task>
+  local task=$1 target key
+  target=$(fm_backend_target_of_meta "$STATE/$task.meta")
+  [ -n "$target" ] || return 0
+  key=$(printf '%s' "$target" | tr ':/.' '___')
+  printf '%s/.stale-decision-%s' "$STATE" "$key"
+}
+
+_reconcile_surfaced_open_decision() {  # <task>
+  local task=$1 marker decision
+  marker=$(_stale_decision_marker_path "$task")
+  [ -n "$marker" ] || return 0
+  decision=$(open_decision_id "$task")
+  if [ -n "$decision" ]; then
+    printf '%s' "$decision" > "$marker"
+  else
+    rm -f "$marker"
+  fi
+}
+
+# Record a surfaced status after its durable wake has been enqueued.
 mark_surfaced() {  # <status-file>
   local f=$1 task last
   task=$(basename "$f"); task="${task%.status}"
+  case "$f" in *.status) ;; *) return 0 ;; esac
+  _reconcile_surfaced_open_decision "$task"
   last=$(last_status_line "$f")
   [ -n "$last" ] || return 0
   status_is_captain_relevant "$last" || return 0

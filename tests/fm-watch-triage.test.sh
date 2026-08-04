@@ -543,29 +543,28 @@ prime_status_seen() {  # <state> <task>
 }
 
 test_parked_decision_survives_pane_repaint() {
-  local dir state fakebin out drain_out capture window key pid
+  local dir state fakebin out drain_out capture window pid
   dir=$(make_case parked-decision-repaint); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
   window="test:fm-parked"
-  key=$(printf '%s' "$window" | tr ':/.' '___')
   printf 'window=%s\nkind=ship\n' "$window" > "$state/parked.meta"
   printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
     > "$state/parked.status"
-  prime_status_seen "$state" parked
   # A live agent: this crew is waiting, not wedged.
   export FM_FAKE_TMUX_CURRENT_COMMAND=claude
 
-  # Phase A: first sighting of the parked decision surfaces exactly as before.
-  prime_stale_pane "$state" "$window" 'awaiting decision · context 41%' "$capture"
+  # Phase A: the normal first sighting is the status signal.
+  printf '%s' 'awaiting decision · context 41%' > "$capture"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher did not surface a newly parked captain decision"
-  grep -Fx "stale: $window" "$out" >/dev/null || fail "the parked decision did not print a stale wake"
+  grep -F "signal: $state/parked.status" "$out" >/dev/null \
+    || fail "the parked decision did not print its initial status signal"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the parked decision failed"
-  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null \
-    || fail "the parked decision was not queued on its first sighting"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "parked.status" >/dev/null \
+    || fail "the parked decision signal was not queued on its first sighting"
 
   # Phase B: the pane repaints (a moving context percentage) while the SAME
   # decision stays open. The hash changes; the decision does not. Nothing may
@@ -584,6 +583,49 @@ test_parked_decision_survives_pane_repaint() {
   reap "$pid"
   unset FM_FAKE_TMUX_CURRENT_COMMAND
   pass "a parked keyed decision surfaces once, not once per pane repaint"
+}
+
+test_resolved_decision_can_reopen_identically() {
+  local dir state fakebin out capture window pid
+  dir=$(make_case parked-decision-reopen); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-reopen"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/reopen.meta"
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    > "$state/reopen.status"
+  prime_status_seen "$state" reopen
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 41%' "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface the original keyed decision"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  printf 'resolved [key=review-gate]: migration will ship as-is\n' >> "$state/reopen.status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "the decision resolution did not surface"
+  grep -F "signal: $state/reopen.status" "$out" >/dev/null || fail "the resolution did not print a signal wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    >> "$state/reopen.status"
+  prime_status_seen "$state" reopen
+  prime_stale_pane "$state" "$window" 'awaiting decision again · context 38%' "$capture"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an identical decision did not surface after resolving and reopening"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "the identically reopened decision did not print a stale wake"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a resolved keyed decision can reopen identically and surface again"
 }
 
 # The suppressor must be scoped to the decision that was surfaced, never to the
@@ -1724,6 +1766,7 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_parked_decision_survives_pane_repaint
+test_resolved_decision_can_reopen_identically
 test_new_keyed_decision_on_parked_pane_surfaces
 test_parked_decision_with_dead_agent_wedge_escalates
 test_nonterminal_stale_provably_working_absorbed_then_escalated

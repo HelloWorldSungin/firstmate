@@ -173,7 +173,7 @@ _event_cap_fails=0
 afk_present() { [ -e "$STATE/.afk" ]; }
 
 hash_pane() {
-  if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
+  _fm_surface_digest
 }
 
 # window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
@@ -406,23 +406,6 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
-# Identity of the captain decisions a task currently has OPEN, from the durable
-# keyed fold owned by fm-classify-lib.sh (status_open_decisions): a
-# needs-decision/blocked line opens a key, and only a matching resolution or
-# verified captain-held transfer closes it. Prints a stable digest of that open
-# set, or nothing when no decision is open. This is what the terminal stale path
-# suppresses a repeat surface on, INSTEAD of the pane hash: a crew parked on a
-# captain decision keeps the same open set no matter how its pane repaints,
-# while a new status line, a new decision key, and the decision resolving all
-# change it.
-open_decision_id() {  # <task>
-  local task=$1 open
-  [ -n "$task" ] || return 0
-  open=$(status_open_decisions "$STATE/$task.status")
-  [ -n "$open" ] || return 0
-  printf '%s' "$open" | hash_pane
-}
-
 # 0 when a parked crew has stopped responding: its recorded endpoint no longer
 # carries a live agent. Only the confident `dead` verdict counts (an ambiguous,
 # unreadable, or unverified backend read stays absorbed), so suppressing the
@@ -571,7 +554,7 @@ mark_all_captain_relevant_surfaced() {
   local f task last
   while IFS=$(printf '\t') read -r f task last; do
     [ -n "$f" ] || continue
-    printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
+    mark_surfaced "$f"
   done < <(scan_captain_relevant_statuses "$STATE")
 }
 
@@ -975,7 +958,6 @@ EOF
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
-              [ -n "$did" ] && printf '%s' "$did" > "$dsf"
               rm -f "$ssf"
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
