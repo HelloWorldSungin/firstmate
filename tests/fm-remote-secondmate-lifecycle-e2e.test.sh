@@ -745,7 +745,30 @@ inherit_wait=0
 while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
   kill -0 "$config_first" 2>/dev/null || fail "first inheritance transaction exited before its blocked write"
   inherit_wait=$((inherit_wait + 1))
-  [ "$inherit_wait" -le 250 ] || fail "first inheritance transaction never reached its blocked write"
+  if [ "$inherit_wait" -gt 250 ]; then
+    # TEMPORARY INSTRUMENTATION - removed in the following commit.
+    printf '### DIAG begin: blocked-write wait exhausted\n' >&2
+    printf '### DIAG mode=%s pid=%s alive=%s\n' "inherit-block" "$config_first" \
+      "$(kill -0 "$config_first" 2>/dev/null && echo yes || echo no)" >&2
+    printf '### DIAG ps:\n' >&2; ps -o pid,ppid,stat,etime,args -p "$config_first" >&2 2>/dev/null || true
+    printf '### DIAG descendants:\n' >&2; ps -eo pid,ppid,stat,args 2>/dev/null | grep -E "fm-config-push|fm-remote-inherit|fake-ssh|fm-on" | grep -v grep >&2 || true
+    printf '### DIAG config-concurrent-first.out:\n' >&2
+    sed -n '1,80p' "$TMP_ROOT/config-concurrent-first.out" >&2 2>/dev/null || printf '  (absent)\n' >&2
+    printf '### DIAG TMP_ROOT listing:\n' >&2; ls -la "$TMP_ROOT" >&2 2>/dev/null || true
+    printf '### DIAG inherit markers: entered=%s release=%s payload=%s\n' \
+      "$([ -e "$TMP_ROOT/inherit.entered" ] && echo yes || echo no)" \
+      "$([ -e "$TMP_ROOT/inherit.release" ] && echo yes || echo no)" \
+      "$([ -e "$TMP_ROOT/inherit.payload" ] && echo yes || echo no)" >&2
+    printf '### DIAG generation records in PARENT:\n' >&2
+    ls -la "$PARENT"/.fm-inherit-*.generation >&2 2>/dev/null || printf '  (none)\n' >&2
+    printf '### DIAG nudge-pending:\n' >&2; ls -la "$PARENT/state/.secondmate-nudge-pending" >&2 2>/dev/null || printf '  (none)\n' >&2
+    printf '### DIAG ssh invocation count: %s\n' "$(cat "$SSH_COUNT" 2>/dev/null | wc -l)" >&2
+    printf '### DIAG fake-ssh tail:\n' >&2; tail -25 "$SSH_COUNT" >&2 2>/dev/null || true
+    printf '### DIAG required tools: %s\n' "$(for t in git jq herdr tasks-axi treehouse; do printf '%s=%s ' "$t" "$(command -v "$t" >/dev/null 2>&1 && echo y || echo n)"; done)" >&2
+    printf '### DIAG remote-jobs state:\n' >&2; ls -laR "$TMP_ROOT/remote-jobs" >&2 2>/dev/null | head -40 || printf '  (none)\n' >&2
+    printf '### DIAG end\n' >&2
+    fail "first inheritance transaction never reached its blocked write"
+  fi
   sleep 0.02
 done
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
