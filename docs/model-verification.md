@@ -123,8 +123,9 @@ The allowance requires four backend-independent protections to hold together: no
 A recovery-grade classifier that authoritatively reports a live worker refuses and preserves the endpoint, worktree, and metadata.
 A recovery-grade `dead` or `missing` result permits the best-effort close and on-disk proof to decide, while `ambiguous`, `unreadable`, or `unverified` liveness is stated plainly and does not become either a safety proof or a permanent block.
 A turn or worktree change observed by the recomputation refuses under the ordinary terminal-verdict and work-preservation rules.
-The residual race is unmitigated pending separately tracked confirmed-termination support: a worker that begins its first model-attributed turn after the final recomputation but during record removal can have that routing evidence lost because the best-effort close is not confirmation.
-The bounded consequence is one unverified model attribution rather than loss of committed or uncommitted work, because all four on-disk conditions were verified immediately beforehand.
+When liveness is unknown, task cleanup publishes the durable outcome and removes the volatile task records, but retains the worktree and task temp root rather than resetting, returning, removing, or recycling them.
+The teardown output names the retained worktree and the unknown-liveness reason, leaving any later committed or uncommitted write recoverable.
+The residual gap pending separately tracked confirmed-termination support is one possible unverified model attribution: a worker that begins its first turn after the final recomputation can write routing evidence while its task records are being removed, but no path discards its worktree contents.
 The absent verdict is stated plainly in the teardown output either way.
 Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
@@ -147,7 +148,7 @@ It also proves that bounded secondmate-home summaries do not scan model transcri
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
 It also owns the never-started boundary: both no-turn shapes and a fresh inspectable store with no transcript parent tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, uncommitted changes including any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced during the best-effort close before the final recomputation.
-The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, and unknown liveness permits cleanup only with an explicit disclosure and the complete recomputed proof.
+The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, and unknown liveness completes record cleanup with explicit disclosure while retaining the worktree and task temp root.
 
 Run:
 

@@ -478,6 +478,7 @@ fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 NO_TURN_ALLOWANCE_CANDIDATE=0
 NO_TURN_LIVENESS_UNDETERMINED=0
 NO_TURN_LIVENESS_STATE=not-checked
+NO_TURN_RETAIN_WORKTREE=0
 refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
@@ -2007,8 +2008,9 @@ if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
   fi
   echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
   if [ "$NO_TURN_LIVENESS_UNDETERMINED" -eq 1 ]; then
+    NO_TURN_RETAIN_WORKTREE=1
     echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_TURN_LIVENESS_STATE)." >&2
-    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files, so there is no work or routing evidence to preserve; proceeding." >&2
+    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because liveness could not be determined." >&2
   else
     echo "Backend $BACKEND reports no live worker (state: $NO_TURN_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; proceeding." >&2
   fi
@@ -2017,7 +2019,9 @@ fi
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
+if [ "$NO_TURN_RETAIN_WORKTREE" -eq 1 ]; then
+  :
+elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
     ORCA_PATH_MATCH_VERIFIED=1
@@ -2111,7 +2115,9 @@ fi
 publish_outcome_manifest "$FORCE" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
+  if [ "$NO_TURN_RETAIN_WORKTREE" -ne 1 ]; then
+    remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
+  fi
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
@@ -2125,7 +2131,9 @@ if [ -n "$T" ]; then
 fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+if [ "$NO_TURN_RETAIN_WORKTREE" -ne 1 ] && [ -n "$TASK_TMP" ]; then
+  rm -rf "$TASK_TMP"
+fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \

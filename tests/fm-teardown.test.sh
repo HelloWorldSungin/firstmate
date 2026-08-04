@@ -637,6 +637,37 @@ SH
   chmod +x "$case_dir/fakebin/tmux"
 }
 
+install_authoritative_dead_tmux() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-windows) printf '%s\n' fm-task-x1 ;;
+  display-message)
+    case "${*: -1}" in
+      '#{pane_tty}') printf '\n' ;;
+      '#{pane_current_command}') printf '%s\n' bash ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+}
+
+install_destructive_treehouse_probe() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "return --force" ]; then
+  : > "${FM_TEST_TREEHOUSE_RETURNED:?}"
+  rm -rf -- "${@: -1}"
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
 # Leave the worktree exactly as a worker that died before its first turn does:
 # detached at the base commit, with the task branch never created. Args: case_dir
 never_started_worktree() {
@@ -815,16 +846,21 @@ test_first_turn_before_final_recompute_refuses() {
   pass "a first mismatched turn before final recomputation is preserved"
 }
 
-test_unknown_liveness_proceeds_with_on_disk_proof() {
+test_unknown_liveness_completes_cleanup_and_retains_worktree() {
   local case_dir rc
   case_dir=$(make_case unknown-liveness-clean)
   write_meta "$case_dir" no-mistakes ship
   claude_dispatch_meta "$case_dir" >/dev/null
   never_started_worktree "$case_dir"
   use_unverified_zellij_backend "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  mkdir -p "$case_dir/task-tmp"
+  printf 'task temp evidence\n' > "$case_dir/task-tmp/evidence.txt"
+  printf '%s\n' "tasktmp=$case_dir/task-tmp" >> "$case_dir/state/task-x1.meta"
 
   rc=0
   FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
+    FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "unknown-liveness-clean: every on-disk protection still stayed blocked"
@@ -832,10 +868,43 @@ test_unknown_liveness_proceeds_with_on_disk_proof() {
     "unknown-liveness-clean: the missing recovery classifier was not stated"
   assert_grep "recomputed on-disk proof" "$case_dir/stderr" \
     "unknown-liveness-clean: the protections carrying the decision were not stated"
+  assert_grep "worktree $case_dir/wt is retained rather than recycled because liveness could not be determined" "$case_dir/stderr" \
+    "unknown-liveness-clean: the retained worktree and reason were not stated"
   assert_present "$case_dir/endpoint-close-attempted" \
     "unknown-liveness-clean: the best-effort endpoint close was not attempted"
+  assert_absent "$case_dir/treehouse-returned" \
+    "unknown-liveness-clean: the retained worktree reached treehouse return"
+  assert_present "$case_dir/wt" "unknown-liveness-clean: the retained worktree was removed"
+  assert_present "$case_dir/task-tmp/evidence.txt" \
+    "unknown-liveness-clean: the retained task temp root was removed"
+  assert_present "$case_dir/data/task-x1/outcome.json" \
+    "unknown-liveness-clean: the durable outcome was not published"
   assert_absent "$case_dir/state/task-x1.meta" "unknown-liveness-clean: task metadata was left behind"
-  pass "unknown endpoint liveness proceeds after a best-effort close failure"
+  pass "unknown endpoint liveness completes cleanup and retains the worktree"
+}
+
+test_authoritative_dead_endpoint_recycles_worktree() {
+  local case_dir rc
+  case_dir=$(make_case authoritative-dead-endpoint)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "authoritative-dead-endpoint: teardown did not complete"
+  assert_grep "Backend tmux reports no live worker (state: dead)" "$case_dir/stderr" \
+    "authoritative-dead-endpoint: authoritative dead liveness was not stated"
+  assert_present "$case_dir/treehouse-returned" \
+    "authoritative-dead-endpoint: the worktree was not recycled"
+  assert_absent "$case_dir/wt" "authoritative-dead-endpoint: the recycled worktree remained"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "authoritative-dead-endpoint: task metadata was left behind"
+  pass "an authoritative dead endpoint recycles its worktree normally"
 }
 
 test_authoritative_live_endpoint_refuses() {
@@ -2456,7 +2525,8 @@ test_non_directory_session_parent_still_refuses
 test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_before_final_recompute_refuses
-test_unknown_liveness_proceeds_with_on_disk_proof
+test_unknown_liveness_completes_cleanup_and_retains_worktree
+test_authoritative_dead_endpoint_recycles_worktree
 test_authoritative_live_endpoint_refuses
 test_recomputed_on_disk_proof_refuses_each_failed_condition
 test_never_started_but_dirty_still_refuses
