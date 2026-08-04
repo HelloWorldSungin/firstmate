@@ -352,13 +352,25 @@ gbrain_call() {  # <args...> - run gbrain against THIS home's brain
 # single-writer: while `gbrain serve` is up it holds an exclusive lock and every
 # CLI write is refused. That refusal is safe - nothing is half-applied - but the
 # raw message does not say what an operator has to do, so name it here.
-explain_gbrain_failure() {  # <captured-output> <action>
-  case $1 in
+#
+# Every other failure shape has no friendlier phrasing to offer, so --with-cause
+# carries gbrain's own words through instead of dropping them. Revocation output
+# names a client id and a status and can carry no credential; registration output
+# can, which is why its caller does not pass the flag.
+explain_gbrain_failure() {  # <captured-output> <action> [--with-cause]
+  local out=$1 action=$2 mode=${3:-} cause
+  case $out in
     *'already open through'* | *.gbrain-lock*)
-      die "the main brain is currently being served, and its index takes one writer at a time; stop the served main brain, $2, then start it again"
+      die "the main brain is currently being served, and its index takes one writer at a time; stop the served main brain, $action, then start it again"
       ;;
   esac
-  die "gbrain refused to $2"
+  if [ "$mode" = --with-cause ]; then
+    cause=$(printf '%s' "$out" | tr -s '[:space:]' ' ')
+    cause=${cause# }
+    cause=${cause% }
+    [ -z "$cause" ] || die "gbrain refused to $action: $cause"
+  fi
+  die "gbrain refused to $action"
 }
 
 cmd_grant_read() {
@@ -390,11 +402,6 @@ cmd_grant_read() {
   if [ -n "$previous" ] && [ "$replace" -eq 0 ]; then
     die "$target already reads the main brain as $previous; pass --replace to rotate"
   fi
-  # Registering a client on this home's brain is what makes it the main brain
-  # for whoever reads it, so that fact is recorded here rather than left for
-  # `check` to guess from a missing client id.
-  mark_main_brain_owner "$FM_HOME" \
-    || die "could not record this home as the main brain's owner: ${FM_GBRAIN_ERROR:-write failed}"
 
   # The scope is fixed at "read" here and refused anywhere else by
   # fm_gbrain_validate_shared, so no caller can widen this registration.
@@ -419,14 +426,28 @@ cmd_grant_read() {
   printf '  home       %s\n' "$target"
   printf '  client id  %s\n' "$client_id"
   printf '  credential %s\n' "$(fm_gbrain_secret_path "$target" "$secret_name")"
+
+  # Recorded only now: a registration this home's brain accepted is what makes
+  # it the main brain for whoever reads it. Claiming ownership any earlier would
+  # survive a refused registration and leave `check` reporting a relationship
+  # that was never established.
+  local followup=0
+  if mark_main_brain_owner "$FM_HOME"; then
+    printf '  owner      this home is recorded as the main brain\n'
+  else
+    printf '  owner      WARNING: could not record this home as the main brain: %s\n' \
+      "${FM_GBRAIN_ERROR:-write failed}"
+    followup=1
+  fi
   if [ -n "$previous" ]; then
     if gbrain_call auth revoke-client "$previous" >/dev/null 2>&1; then
       printf '  rotated    revoked the previous client %s\n' "$previous"
     else
       printf '  rotated    WARNING: the previous client %s could not be revoked; revoke it before trusting the rotation\n' "$previous"
-      return 1
+      followup=1
     fi
   fi
+  return "$followup"
 }
 
 cmd_revoke_read() {
@@ -436,7 +457,7 @@ cmd_revoke_read() {
   resolve_or_die
   local out rc=0
   out=$(gbrain_call auth revoke-client "$client_id" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id"
+  [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id" --with-cause
   printf '%s\n' "$out"
 }
 
@@ -495,7 +516,7 @@ cmd_retire() {
     fm_gbrain_resolve_paths "$FM_HOME" || die "$FM_GBRAIN_ERROR"
     local out rc=0
     out=$(gbrain_call auth revoke-client "$client_id" 2>&1) || rc=$?
-    [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id"
+    [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id" --with-cause
     printf 'revoked %s\n' "$client_id"
   fi
 

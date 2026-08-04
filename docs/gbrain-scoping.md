@@ -55,7 +55,8 @@ FM_HOME=<main-home> bin/fm-gbrain.sh grant-read <label> --home <reading-home>
 ```
 
 That records the client id in the reading home's `config/gbrain-local.json`, writes the client secret to its `config/gbrain-secrets/` at mode 0600, and prints neither.
-It also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home that registers clients on its brain is by construction the brain the others read.
+Once that registration succeeds it also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home whose brain accepted the registration is by construction the brain the others read.
+A registration the brain refused records nothing, so a refused grant leaves the granting home's local plane exactly as it found it.
 That home reads its own index directly and never grants itself a client, so `bin/fm-gbrain.sh check` reports it as reading the main brain rather than as having lost access to it.
 The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it.
 

@@ -416,19 +416,24 @@ export FAKE_CLIENT_SECRET=gbrain_cs_fakefakefakefakefakefake0001
 cat > "$TMP_ROOT/fake-gbrain" <<'SH'
 #!/usr/bin/env bash
 # Enough of the gbrain CLI to drive registration and revocation where a real
-# brain is not available. Both refusals mimic the single-writer lock message.
+# brain is not available. Setting a FAILS variable to "lock" mimics the
+# single-writer refusal; any other value is emitted as the raw failure text, so
+# a test can tell a recognized failure shape from an unrecognized one.
+fake_gbrain_refuse() {  # <mode>
+  case $1 in
+    lock) echo "brain already open through .gbrain-lock" ;;
+    *) echo "$1" ;;
+  esac
+  exit 1
+}
 case "${1:-} ${2:-}" in
   "auth register-client")
-    if [ -n "${FAKE_GBRAIN_REGISTER_FAILS:-}" ]; then
-      echo "brain already open through .gbrain-lock"; exit 1
-    fi
+    [ -z "${FAKE_GBRAIN_REGISTER_FAILS:-}" ] || fake_gbrain_refuse "$FAKE_GBRAIN_REGISTER_FAILS"
     echo "Client ID: ${FAKE_CLIENT_ID:?}"
     echo "Client Secret: ${FAKE_CLIENT_SECRET:?}"
     ;;
   "auth revoke-client")
-    if [ -n "${FAKE_GBRAIN_REVOKE_FAILS:-}" ]; then
-      echo "brain already open through .gbrain-lock"; exit 1
-    fi
+    [ -z "${FAKE_GBRAIN_REVOKE_FAILS:-}" ] || fake_gbrain_refuse "$FAKE_GBRAIN_REVOKE_FAILS"
     echo "revoked ${3:-}"
     ;;
   *) echo "unexpected gbrain call: $*" >&2; exit 2 ;;
@@ -450,6 +455,27 @@ assert_contains "$CLI_OUT" "not valid JSON" "the refusal must name the mistake"
 assert_absent "$bad_target/config/gbrain-secrets/main-brain-client-secret" \
   "a refused grant must not install a credential"
 pass "a grant into a home whose local plane cannot be read changes nothing"
+
+# A registration the brain refused establishes nothing, so the granting home
+# must not come away claiming to be the main brain. The claim is sticky and
+# `check` reports it confidently, so a refused grant that left one behind would
+# be worse than no claim at all.
+refused_owner=$(make_home grant-refused)
+refused_target=$(make_home grant-refused-target)
+export FAKE_GBRAIN_REGISTER_FAILS=lock
+cli "$refused_owner" grant-read fm-refused --home "$refused_target"
+unset FAKE_GBRAIN_REGISTER_FAILS
+expect_code 1 "$CLI_RC" "a registration the main brain refused must fail the grant"
+assert_contains "$CLI_OUT" "being served" "the refusal must name the single-writer cause"
+assert_absent "$refused_owner/config/gbrain-local.json" \
+  "a refused grant recorded an ownership claim it never established"
+assert_absent "$refused_target/config/gbrain-secrets/main-brain-client-secret" \
+  "a refused grant installed a credential"
+cli "$refused_owner" check --json
+expect_code 0 "$CLI_RC" "a home whose grant was refused must still check cleanly"
+[ "$(state_of main-brain)" = absent ] \
+  || fail "a home whose grant was refused must not report owning the main brain, got '$(state_of main-brain)'"
+pass "a refused registration leaves the granting home's local plane exactly as it found it"
 
 good_target=$(make_home grant-good)
 jq -n --arg r "$TMP_ROOT/grant-good-brain" '{version:1, brain_root:$r}' \
@@ -485,7 +511,7 @@ install_secret "$revoke_home" main-brain-client-secret "$CLIENT_SECRET"
 jq -n --arg c "$FAKE_CLIENT_ID" '{version:1, client_id:$c}' \
   > "$revoke_home/config/gbrain-local.json"
 
-export FAKE_GBRAIN_REVOKE_FAILS=1
+export FAKE_GBRAIN_REVOKE_FAILS=lock
 cli "$main_home" retire "$revoke_home" --yes
 unset FAKE_GBRAIN_REVOKE_FAILS
 expect_code 1 "$CLI_RC" "a retirement that cannot revoke must not report success"
@@ -496,12 +522,36 @@ assert_present "$revoke_home/config/gbrain-secrets/main-brain-client-secret" \
 assert_present "$revoke_home/config/gbrain-local.json" \
   "a failed revocation must leave the record of which client to revoke"
 
+# A failure shape with no friendlier phrasing must still reach the operator: a
+# blocking refusal that does not say why cannot be acted on.
+cause_home=$(make_home retiring-cause)
+mkdir -p "$cause_home/data/gbrain/pglite"
+install_secret "$cause_home" main-brain-client-secret "$CLIENT_SECRET"
+jq -n --arg c "$FAKE_CLIENT_ID" '{version:1, client_id:$c}' \
+  > "$cause_home/config/gbrain-local.json"
+
+export FAKE_GBRAIN_REVOKE_FAILS='no such client gbrain_cl_fake0001'
+cli "$main_home" retire "$cause_home" --yes
+unset FAKE_GBRAIN_REVOKE_FAILS
+expect_code 1 "$CLI_RC" "an unrecognized revocation failure must still stop the retirement"
+assert_contains "$CLI_OUT" "no such client gbrain_cl_fake0001" \
+  "the refusal must carry the cause gbrain reported"
+assert_present "$cause_home/data/gbrain/pglite" \
+  "a refused retirement must leave the brain intact whatever the cause"
+
+export FAKE_GBRAIN_REVOKE_FAILS='the auth store is unreadable'
+cli "$main_home" revoke-read "$FAKE_CLIENT_ID"
+unset FAKE_GBRAIN_REVOKE_FAILS
+expect_code 1 "$CLI_RC" "a failed revoke-read must fail"
+assert_contains "$CLI_OUT" "the auth store is unreadable" \
+  "revoke-read must carry the cause gbrain reported too"
+
 cli "$main_home" retire "$revoke_home" --yes
 expect_code 0 "$CLI_RC" "the retry after a successful revocation should complete"
 assert_contains "$CLI_OUT" "revoked $FAKE_CLIENT_ID" "a completed retirement must report the revocation"
 assert_absent "$revoke_home/data/gbrain/pglite" "a completed retirement must remove that home's index"
 assert_absent "$revoke_home/config/gbrain-secrets" "a completed retirement must remove that home's credentials"
-pass "a retirement whose revocation fails removes nothing, says why, and can be retried"
+pass "a retirement whose revocation fails removes nothing, says why in gbrain's own words, and can be retried"
 
 # An ambient FM_CONFIG_OVERRIDE addresses the ACTIVE home. A command that names
 # another home must still resolve that home's own directory, or it would write a
