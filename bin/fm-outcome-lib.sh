@@ -679,16 +679,17 @@ fm_outcome_pr_status_write() {  # <state-dir> <id> <document-json>
 }
 
 # ---------------------------------------------------------------------------
-# GBrain capture receipt (optional provider)
+# GBrain capture receipt (bin/fm-gbrain-capture.sh)
 # ---------------------------------------------------------------------------
 
 fm_outcome_gbrain_path() {  # <state-dir> <id>
   printf '%s/%s.gbrain' "$1" "$2"
 }
 
-# An absent provider is a first-class answer, not an error: status=absent with
-# every other field null. A present record contributes only an enumerated
-# status, an opaque receipt token, a timestamp, and capped detail text.
+# An absent receipt is a first-class answer, not an error: status=absent with
+# every other field null, which is what a home with no brain always records. A
+# present record contributes only an enumerated status, an opaque receipt token,
+# a timestamp, and capped detail text.
 fm_outcome_gbrain_json() {  # <state-dir> <id>
   local path status='' receipt='' observed='' detail=''
   path=$(fm_outcome_gbrain_path "$1" "$2")

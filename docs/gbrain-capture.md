@@ -12,6 +12,7 @@ Capture turns each finished task into a page in the home's own brain, addressed 
 
 Capture is inert until a home has an initialized brain.
 A home that has not adopted GBrain creates no outbox, writes no receipt, and its cleanup behaves exactly as it did before.
+Inertness covers the subcommands a lifecycle step or `/stow` calls; the two operator sweeps below, `process` and `backfill`, instead name the missing index and exit non-zero, because they were asked to work on an outbox that cannot exist.
 
 ## What is captured, and what is never read
 
