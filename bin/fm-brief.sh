@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --work-item records a resolved work item that lives in the MANAGED PROJECT's
@@ -22,13 +22,22 @@
 #   for a task shipping to its own GitHub tracker, but it cannot express a
 #   mirrored project, so prefer --work-item. The two are mutually exclusive.
 #   The generated --issue section requires a substantive issue comment and a
-#   `Closes` line in the PR body. The --work-item section instead records the
-#   links and requires the worker to reference each full URL in the PR body,
-#   with a `Closes` line only for an item whose tracker is the same repository
-#   the PR opens against; tracker write-back across forges is deliberately out
-#   of scope here, because it needs a per-forge write-credential design of its
-#   own rather than arriving through brief scaffolding. Either way fm-spawn.sh
-#   copies the explicit markers into task metadata.
+#   `Closes` line in the PR body. The --work-item section decides that per item
+#   against --pr-target: an item whose tracker IS the repository the PR opens
+#   against carries the same substantive-comment and `Closes` contract, because
+#   that is exactly where firstmate already holds write access, and every other
+#   item stays link-only. Write-back to a foreign forge needs a per-host
+#   write-credential design of its own and is deliberately out of scope, so a
+#   cross-forge item is linked and left to firstmate's own merge path.
+#   --pr-target is therefore REQUIRED with --work-item and names the tracker
+#   identity of the repository this task's PR opens against, in the same
+#   <forge>:<host>/<path> spelling data/projects.md uses. It is required rather
+#   than optional because an absent PR target would silently drop the write-back
+#   contract from every brief - the exact regression this flag exists to end -
+#   and firstmate already resolves the project's forge identity at intake.
+#   Either way fm-spawn.sh copies the explicit markers into task metadata, where
+#   bin/fm-issue-comment.sh reads the recorded PR target to decide whether it may
+#   write firstmate's own living status comment to that tracker.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -135,6 +144,8 @@ MODE_SET=0
 ISSUE=
 ISSUE_SET=0
 WORK_ITEMS=()
+PR_TARGET=
+PR_TARGET_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -146,6 +157,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       issue) ISSUE=$a; ISSUE_SET=1 ;;
       work-item) WORK_ITEMS+=("$a") ;;
+      pr-target) PR_TARGET=$a; PR_TARGET_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -162,6 +174,8 @@ for a in "$@"; do
     --issue=*) ISSUE=${a#--issue=}; ISSUE_SET=1 ;;
     --work-item) want_value=work-item ;;
     --work-item=*) WORK_ITEMS+=("${a#--work-item=}") ;;
+    --pr-target) want_value=pr-target ;;
+    --pr-target=*) PR_TARGET=${a#--pr-target=}; PR_TARGET_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -201,6 +215,24 @@ if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
       exit 1
     fi
   done
+  # Required, not optional: without the PR target this scaffold cannot tell an
+  # item it may write back to from one it may not, and its only safe guess is
+  # link-only - which is how the write-back contract silently disappeared from
+  # every --work-item brief in the first place.
+  [ "$PR_TARGET_SET" -eq 1 ] || {
+    echo "error: --work-item requires --pr-target <forge>:<host>/<path> naming the repository this task's PR opens against; resolve it at intake from the project, the same way the work item itself is resolved" >&2
+    exit 1
+  }
+  if ! fm_issue_tracker_parse "$PR_TARGET" || [ -z "$FM_ISSUE_TRACKER_FORGE" ]; then
+    echo "error: --pr-target must be <forge>:<host>/<path> (got '$PR_TARGET')" >&2
+    exit 1
+  fi
+  PR_TARGET_FORGE=$FM_ISSUE_TRACKER_FORGE
+  PR_TARGET_HOST=$FM_ISSUE_TRACKER_HOST
+  PR_TARGET_PATH=$FM_ISSUE_TRACKER_PATH
+elif [ "$PR_TARGET_SET" -eq 1 ]; then
+  echo "error: --pr-target describes where --work-item references may be written back and is meaningless without one" >&2
+  exit 1
 fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
@@ -381,22 +413,48 @@ EOF
 fi
 
 if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
-  # Cross-forge tracker write-back requires its own per-forge credential contract.
+  # Each item is classified against the PR target: same repository means the
+  # worker owes it a substantive delivery summary and a Closes line, because a
+  # forge can only auto-close its own issues and this is the one tracker
+  # firstmate is already authenticated to write. Every other item is linked and
+  # left to firstmate's own merge path - write-back to a foreign forge needs a
+  # per-host write credential that does not exist yet.
   WORK_ITEM_MARKERS=
   WORK_ITEM_LINES=
+  SAME_REPO_ITEMS=0
   for item in "${WORK_ITEMS[@]}"; do
     fm_issue_ref_resolve "$item" "" "" || { echo "error: --work-item $item: $FM_ISSUE_ERROR" >&2; exit 1; }
     WORK_ITEM_MARKERS="$WORK_ITEM_MARKERS<!-- firstmate-work-item=$FM_ISSUE_FORGE:$FM_ISSUE_URL -->
 "
-    WORK_ITEM_LINES="$WORK_ITEM_LINES- $FM_ISSUE_URL
+    if [ "$FM_ISSUE_FORGE" = "$PR_TARGET_FORGE" ] && [ "$FM_ISSUE_HOST" = "$PR_TARGET_HOST" ] \
+      && [ "$FM_ISSUE_PATH" = "$PR_TARGET_PATH" ]; then
+      SAME_REPO_ITEMS=$((SAME_REPO_ITEMS + 1))
+      WORK_ITEM_LINES="$WORK_ITEM_LINES- $FM_ISSUE_URL lives in the repository this PR opens against: before reporting the PR ready, comment on it with a substantive summary of what you found and what you actually changed, and put \`Closes #$FM_ISSUE_NUMBER\` in the PR body.
 "
+    else
+      WORK_ITEM_LINES="$WORK_ITEM_LINES- $FM_ISSUE_URL lives on another tracker: reference it in the PR body and leave its bookkeeping to firstmate, which closes it through its own merge path.
+"
+    fi
   done
+  SUMMARY_BAR=
+  if [ "$SAME_REPO_ITEMS" -gt 0 ]; then
+    SUMMARY_BAR='A bare "done" comment does not satisfy this contract: someone reading the issue later must be able to understand the outcome without opening the PR.
+Firstmate keeps its own running status comment on the same issue, so write yours as the delivery summary rather than a progress note.
+'
+  fi
+  # Both parts carry their own line terminators, so the block is trimmed to end
+  # without one: the heredoc below then supplies exactly one, as the --issue form
+  # already does, and the separator appended after it is what spaces the section.
+  # Without the trim the section is the document's only double-blank boundary.
+  WORK_ITEM_BLOCK="${WORK_ITEM_LINES}${SUMMARY_BAR}"
+  WORK_ITEM_BLOCK=${WORK_ITEM_BLOCK%$'\n'}
   IFS= read -r -d '' ISSUE_SECTION <<EOF || true
-${WORK_ITEM_MARKERS}# Work item traceability
+${WORK_ITEM_MARKERS}<!-- firstmate-pr-target=$PR_TARGET_FORGE:$PR_TARGET_HOST/$PR_TARGET_PATH -->
+# Work item traceability
 This task is linked to the work items below.
 They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
-${WORK_ITEM_LINES}Reference each full URL in the PR body.
-Add a \`Closes\` line only for an item whose tracker is the same repository the PR opens against, because a forge can only auto-close its own issues; firstmate closes anything else through its own merge path.
+Reference each full URL in the PR body.
+${WORK_ITEM_BLOCK}
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
   ISSUE_SECTION="$ISSUE_SECTION

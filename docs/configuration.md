@@ -49,6 +49,34 @@ Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in 
 `bin/fm-pr-merge.sh` closes a recorded work item only when it is a `github.com` issue, and then in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
 A work item on a self-hosted GitHub host, or on any other forge, is reported as one Firstmate does not close automatically rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
 
+Firstmate also writes back, so a tracker shows where its work stands without anyone opening the pull request.
+`bin/fm-work-item-milestone.sh` records one lifecycle milestone - `queued`, `dispatched`, `implemented`, `validated`, `in-review`, `landed`, `blocked`, or `stopped` - on every surface Firstmate keeps true, so those surfaces cannot drift into different opinions about the same task.
+`bin/fm-milestone-lib.sh` owns that vocabulary, so a token one surface knows is a token every surface knows.
+`bin/fm-spawn.sh`, `bin/fm-pr-check.sh`, and `bin/fm-pr-merge.sh` post `dispatched`, `in-review`, and `landed` themselves, each after the line that reports its own success; Firstmate posts the rest with a note written for a human reading the issue.
+The whole fan-out is bounded as one operation by `FM_WORK_ITEM_MILESTONE_TIMEOUT` seconds (default 40), of which the comment surface may spend at most half and the board gets the rest, because per-call bounds alone would add up to minutes on a black-holing network.
+Every argument is validated before either surface runs, so a caller's mistake is one usage error with nothing written, and after that neither surface's failure can stop or fail the other.
+
+`bin/fm-issue-comment.sh` owns the tracker comment: ONE living status comment per work item, created once and thereafter edited in place, located idempotently by a Firstmate-owned marker in its body so a restart, a partial failure, or a repeated milestone all correct the same comment rather than adding another.
+It carries the current status, the note, the pull request when one is recorded, and a short dated timeline of the milestones so far.
+The task's worker owns exactly one separate comment, its substantive delivery summary, which `bin/fm-brief.sh` requires of it before the PR is ready.
+Write-back applies only where a write credential genuinely exists: exactly one recorded work item, a `github.com` issue, in the repository the PR opens against, which `bin/fm-brief.sh --pr-target` records as `pr_target=` in task metadata.
+Cross-forge write-back needs a per-host write-credential design of its own and is deliberately out of scope, because `config/forge-tokens/` is read-side only.
+The note is withheld when it carries a Firstmate marker, a credential, an absolute filesystem path, or a value the task's own record marks as private, because a leak cannot be undone and a marker in a note could forge entries into the machine-owned timeline.
+Withholding is not losing: the milestone still lands without the note and one warning on stderr says what was withheld and why, so a false positive costs a sentence rather than the whole update.
+An absolute path is recognised by the roots a filesystem path actually starts at, so a project's own route such as `/api/v2/reports`, and a Markdown link whose target starts at the site root, read as the project prose they are.
+Each call is bounded by `FM_ISSUE_COMMENT_TIMEOUT` seconds (default 10), and the marker lookup asks for 100 comments per page so a busy issue does not spend that bound on round trips.
+
+`config/project-board` optionally names the captain's GitHub Projects board as one line, `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`; absent, `bin/fm-project-board.sh` does nothing and contacts no host.
+It adds board membership for each tracked work item and drives the board's existing Status field from the same milestones, and it ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
+It never creates, renames, or deletes a view, filter, field, status option, or item: a milestone with no matching status option is reported and the status left alone.
+That last one is a hard safety rule rather than a matter of taste, because `updateProjectV2Field` replaces a single-select field's whole option set and reassigns every option id, which detaches every item already using them: adding one option to the real Firstmate board blanked the status of all twenty items instantly.
+A missing option is therefore the captain's to add by hand, and each call is bounded by `FM_PROJECT_BOARD_TIMEOUT` seconds (default 15).
+Projects v2 is GraphQL-only and `gh-axi` does not implement it, so that one path uses `gh api graphql` directly and additionally needs the token's `project` scope, which `repo` does not imply.
+The file is inherited by secondmate homes, so their work appears on the same board.
+
+Every write-back path fails open exactly as enrichment does: an unreachable, unauthenticated, rate-limited, or missing target prints one warning on stderr and exits 0, so it can never block or fail dispatch, validation, merge, or cleanup.
+What it is never allowed to be is silent, which is why each non-write reports its own reason rather than passing quietly.
+
 `bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters: `github.com` and Gitea on any host are implemented, while a self-hosted GitHub host and GitLab report that they have no adapter and keep the plain link.
 Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
 Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900), and that cache is what stops repeated dashboard refreshes hammering a forge: every refresh inside the TTL is answered from disk without contacting the host at all.
@@ -595,6 +623,9 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_ISSUE_STATUS_TTL=900   # seconds a cached work-item enrichment result stays fresh
 FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work-item lookups to one host
 FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
+FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per GitHub call fm-issue-comment.sh makes for the living status comment
+FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
+FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
 FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients; see "Brain scoping"
 FM_GBRAIN_TIMEOUT=10    # seconds allowed per HTTP call fm-gbrain.sh makes: the main-brain token mint and each reachability probe in its check
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result

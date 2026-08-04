@@ -14,8 +14,10 @@
 # bare issue= number falls back to the repository the PR landed in, which is all
 # a bare number can mean. Several recorded work items, or one on a forge or host
 # with no write-back, warn instead.
-# Issue verification or closure failures warn while returning success, because
-# the already-completed merge must never look retryable.
+# The landed milestone is recorded on every tracker surface firstmate keeps true
+# (bin/fm-work-item-milestone.sh) before that close bookkeeping runs.
+# Issue verification, closure, or write-back failures warn while returning
+# success, because the already-completed merge must never look retryable.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -101,6 +103,13 @@ gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${mer
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
   "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" >/dev/null 2>&1 || \
   echo "warning: PR merge succeeded: $URL; the cached PR state could not be refreshed" >&2
+
+# Record the landing on every tracker surface before the close bookkeeping below,
+# which has several legitimate early exits. Best effort by design: the merge has
+# already happened and must never look retryable, which is also why the fan-out
+# bounds itself as one operation rather than only bounding each call inside it.
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  "$SCRIPT_DIR/fm-work-item-milestone.sh" "$ID" --milestone landed || true
 
 issue_close_warning() {  # <detail>
   echo "warning: PR merge succeeded: $URL; issue bookkeeping did not complete: $1" >&2

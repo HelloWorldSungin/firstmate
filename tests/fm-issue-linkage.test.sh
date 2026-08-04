@@ -356,6 +356,14 @@ test_tracker_token_does_not_disturb_delivery_posture() {
 
 # --- brief scaffolding ------------------------------------------------------
 
+# One blank line separates every section of a generated brief. A second one
+# renders identically in Markdown, so nothing a reader or a grep-based assertion
+# does will ever surface it, and a scaffold that composes its own document
+# sloppily is one a worker has less reason to trust.
+assert_single_blank_lines() {  # <brief> <message>
+  awk 'prev == "" && $0 == "" { exit 1 } { prev = $0 }' "$1" || fail "$2"
+}
+
 test_brief_records_resolved_work_items() {
   local home brief out
   home="$TMP_ROOT/brief-home"
@@ -366,22 +374,94 @@ test_brief_records_resolved_work_items() {
 
   FM_HOME="$home" "$BRIEF" wi-task gitea-project --mode no-mistakes \
     --work-item "$out" \
-    --work-item 'github:https://github.com/x/y/issues/9' >/dev/null \
+    --work-item 'github:https://github.com/x/y/issues/9' \
+    --pr-target 'gitea:gitea.example.com/DuckKingOri/somewhere-else' >/dev/null \
     || fail "brief scaffolding with work items failed"
   brief="$home/data/wi-task/brief.md"
   assert_grep '<!-- firstmate-work-item=gitea:https://gitea.example.com/DuckKingOri/gitea-project/issues/7 -->' \
     "$brief" "brief lost the Gitea work-item marker"
   assert_grep '<!-- firstmate-work-item=github:https://github.com/x/y/issues/9 -->' \
     "$brief" "brief lost the GitHub work-item marker"
+  assert_grep '<!-- firstmate-pr-target=gitea:gitea.example.com/DuckKingOri/somewhere-else -->' \
+    "$brief" "brief lost the PR-target marker"
   assert_grep 'https://gitea.example.com/DuckKingOri/gitea-project/issues/7' \
     "$brief" "brief did not show the worker the full tracker URL"
   assert_grep 'Reference each full URL in the PR body' \
     "$brief" "brief did not require full tracker URLs in the PR body"
-  assert_no_grep 'comment on each one with a substantive summary' \
+  assert_grep 'leave its bookkeeping to firstmate' \
+    "$brief" "brief did not tell the worker who owns cross-tracker bookkeeping"
+  assert_no_grep 'comment on it with a substantive summary' \
     "$brief" "brief added cross-forge tracker write-back"
   assert_no_grep 'A bare "done" comment does not satisfy this contract' \
     "$brief" "brief retained cross-forge comment requirements"
+  assert_single_blank_lines "$brief" \
+    "the link-only work-item section left a double blank line between sections"
   pass "a ship brief records every resolved work item as a marker and a full URL"
+}
+
+# The write-back contract must appear for exactly the items firstmate can
+# actually write to: matching the PR target is the whole test, because guessing
+# either way is how it went missing before.
+test_brief_requires_write_back_only_where_the_pr_target_matches() {
+  local home brief
+  home="$TMP_ROOT/brief-target"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$BRIEF" same-repo gh-project --mode no-mistakes \
+    --work-item 'github:https://github.com/DuckKingOri/gh-project/issues/42' \
+    --work-item 'github:https://github.com/other/elsewhere/issues/9' \
+    --pr-target 'github:github.com/DuckKingOri/gh-project' >/dev/null \
+    || fail "brief scaffolding with a matching PR target failed"
+  brief="$home/data/same-repo/brief.md"
+  assert_grep 'https://github.com/DuckKingOri/gh-project/issues/42 lives in the repository this PR opens against' \
+    "$brief" "the same-repository item did not get the write-back contract"
+  assert_grep 'comment on it with a substantive summary' \
+    "$brief" "the same-repository item did not require a substantive delivery summary"
+  assert_grep 'Closes #42' "$brief" "the same-repository item did not get its Closes line"
+  assert_grep 'A bare "done" comment does not satisfy this contract' \
+    "$brief" "the substantive-summary bar is missing"
+  assert_grep 'https://github.com/other/elsewhere/issues/9 lives on another tracker' \
+    "$brief" "the foreign-repository item was not marked link-only"
+  assert_no_grep 'Closes #9' "$brief" "a foreign-repository item was given a Closes line it cannot honour"
+  assert_single_blank_lines "$brief" \
+    "the write-back work-item section left a double blank line between sections"
+  pass "the substantive-comment contract is emitted for the PR target's own tracker and no other"
+}
+
+test_brief_refuses_work_items_with_no_pr_target() {
+  local home rc
+  home="$TMP_ROOT/brief-notarget"
+  mkdir -p "$home/data"
+  set +e
+  FM_HOME="$home" "$BRIEF" no-target gh-project --mode no-mistakes \
+    --work-item 'github:https://github.com/DuckKingOri/gh-project/issues/42' \
+    >/dev/null 2>"$TMP_ROOT/brief-notarget.err"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a work-item brief without a PR target was accepted"
+  assert_grep 'requires --pr-target' "$TMP_ROOT/brief-notarget.err" \
+    "the refusal did not name the missing PR target"
+
+  set +e
+  FM_HOME="$home" "$BRIEF" lone-target gh-project --mode no-mistakes \
+    --pr-target 'github:github.com/DuckKingOri/gh-project' \
+    >/dev/null 2>"$TMP_ROOT/brief-lonetarget.err"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a PR target with no work item was accepted"
+  assert_grep 'meaningless without one' "$TMP_ROOT/brief-lonetarget.err" \
+    "the refusal did not explain why a lone PR target is refused"
+
+  set +e
+  FM_HOME="$home" "$BRIEF" bad-target gh-project --mode no-mistakes \
+    --work-item 'github:https://github.com/DuckKingOri/gh-project/issues/42' \
+    --pr-target 'github.com/DuckKingOri/gh-project' \
+    >/dev/null 2>"$TMP_ROOT/brief-badtarget.err"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a malformed PR target was accepted"
+  assert_grep 'must be <forge>:<host>/<path>' "$TMP_ROOT/brief-badtarget.err" \
+    "the refusal did not state the expected PR-target form"
+  pass "a work-item brief refuses to guess where its references may be written back"
 }
 
 test_brief_refuses_unresolved_work_items() {
@@ -422,6 +502,17 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  # A refusing gh, so the dispatch milestone a spawn now posts is exercised
+  # against a forge that says no, never against the real one. It records that it
+  # was called, which is how the milestone attempt itself is observed.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -z "${FM_FAKE_GH_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_GH_LOG"
+echo "gh: refused by the test fake" >&2
+exit 1
+SH
+  chmod +x "$fakebin/gh"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -457,6 +548,7 @@ run_spawn() {  # <home> <wt> <fakebin> <id> <project-dir>
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_GH_LOG="${FM_FAKE_GH_LOG:-}" \
     PATH="$fakebin:$PATH" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" --mode no-mistakes --yolo off 2>&1
 }
@@ -498,7 +590,50 @@ EOF
   assert_grep 'issue=42' "$meta" "the legacy issue number stopped being recorded"
   assert_grep 'work_item=declared|github|https://github.com/HelloWorldSungin/renamed-upstream/issues/42' \
     "$meta" "the legacy marker was not upgraded through the declared tracker"
+  assert_grep 'pr_target=github:github.com/HelloWorldSungin/renamed-upstream' \
+    "$meta" "a legacy bare number did not record the tracker it resolved against as the PR target"
   pass "a spawn upgrades a legacy issue marker through the project's declared tracker"
+}
+
+# The PR target is what later decides whether firstmate may write its own status
+# comment to that tracker, so it has to survive from the brief into the record.
+test_spawn_records_the_pr_target_and_posts_the_dispatch_milestone() {
+  local record home proj wt fakebin id out meta log
+  record=$(make_spawn_case prtarget \
+    '- proj [no-mistakes tracker=github:github.com/acme/widget] - fixture (added 2026-08-04)' \
+    '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
+    '<!-- firstmate-pr-target=github:github.com/acme/widget -->')
+  IFS='|' read -r home proj wt fakebin id <<EOF
+$record
+EOF
+  log="$TMP_ROOT/spawn-prtarget-gh.log"
+  out=$(FM_FAKE_GH_LOG="$log" run_spawn "$home" "$wt" "$fakebin" "$id" "$proj") \
+    || fail "a spawn must not fail because a tracker refused its milestone: $out"
+  meta="$home/state/$id.meta"
+  assert_grep 'pr_target=github:github.com/acme/widget' "$meta" \
+    "the brief's PR target was not recorded in task metadata"
+  assert_present "$log" "the dispatch milestone never reached the tracker"
+  assert_contains "$out" 'spawned' "the spawn did not complete"
+  assert_contains "$out" 'warning:' "a refused milestone was not reported"
+  pass "a spawn records the PR target and posts the dispatch milestone without ever failing on it"
+}
+
+test_spawn_refuses_a_malformed_pr_target_marker() {
+  local record home proj wt fakebin id out rc
+  record=$(make_spawn_case badtarget \
+    '- proj [no-mistakes tracker=github:github.com/o/r] - fixture (added 2026-08-04)' \
+    '<!-- firstmate-work-item=github:https://github.com/o/r/issues/1 -->' \
+    '<!-- firstmate-pr-target=not-a-tracker -->')
+  IFS='|' read -r home proj wt fakebin id <<EOF
+$record
+EOF
+  set +e
+  out=$(run_spawn "$home" "$wt" "$fakebin" "$id" "$proj")
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "spawn accepted a malformed PR-target marker"
+  assert_contains "$out" 'malformed PR-target marker' "the refusal was not explicit"
+  pass "a spawn refuses a malformed PR-target marker rather than recording a scope it cannot trust"
 }
 
 # Without a declaration the bare number cannot be project-scoped, so the spawn
@@ -1045,9 +1180,13 @@ test_json_output_carries_the_manifest_fields
 test_show_tracker_reports_declaration_and_absence
 test_tracker_token_does_not_disturb_delivery_posture
 test_brief_records_resolved_work_items
+test_brief_requires_write_back_only_where_the_pr_target_matches
+test_brief_refuses_work_items_with_no_pr_target
 test_brief_refuses_unresolved_work_items
 test_spawn_records_resolved_work_items_in_metadata
 test_spawn_upgrades_a_legacy_issue_marker_through_the_declared_tracker
+test_spawn_records_the_pr_target_and_posts_the_dispatch_milestone
+test_spawn_refuses_a_malformed_pr_target_marker
 test_spawn_warns_when_a_legacy_marker_has_no_declared_tracker
 test_spawn_refuses_a_malformed_work_item_marker
 test_github_status_enrichment

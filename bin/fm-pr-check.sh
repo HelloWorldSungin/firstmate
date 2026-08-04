@@ -5,6 +5,8 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# Arming also records the in-review milestone on every tracker surface firstmate
+# keeps true (bin/fm-work-item-milestone.sh), best effort and never fatal.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -126,3 +128,10 @@ fm_pr_poll_publish_prepared || {
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
   "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" >/dev/null 2>&1 || true
 printf 'armed: state/%s.check.sh\n' "$ID"
+# An open PR is the milestone a tracker reader most wants to see, so it is
+# recorded from the same call that arms the watch. Best effort by design, and
+# deliberately after the armed line: the watch is armed and the PR is open
+# whatever a forge says about the comment, so a slow forge must not be able to
+# make an arm that succeeded read as one that did not.
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  "$SCRIPT_DIR/fm-work-item-milestone.sh" "$ID" --milestone in-review || true

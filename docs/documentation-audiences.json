@@ -187,6 +187,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/work-item-visibility/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "AGENTS.md",
       "audience": "agent-runtime"
     },
@@ -372,6 +376,10 @@
     },
     {
       "path": "docs/verification/gbrain-reranker.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/issue-write-back.md",
       "audience": "maintainer-verification"
     },
     {
