@@ -21,7 +21,8 @@ A direct mount is therefore read-write by construction, because it hands the rea
 That version also resolves its mount registry from the UNIX user's home directory rather than from `GBRAIN_HOME`, so mounts are shared by every Firstmate home on one account, which is the opposite of per-home scoping.
 
 GBrain's OAuth 2.1 server is shipped and does enforce read-only access: `gbrain serve --http` checks the required scope of each operation against the token's granted scopes and refuses the call with `insufficient_scope`.
-So the read-only share uses that native mechanism, and Firstmate adds no router of its own: no query fan-out, no result merging, and no Firstmate-side precedence engine.
+So the read-only share uses that native mechanism, and Firstmate adds no access model of its own: no Firstmate-side scope check and no precedence engine deciding what a home may read.
+[Reading a brain](#reading-a-brain) does query both corpora in one command and rank their results together, but only over what each brain already agreed to return.
 When GBrain ships mounts over HTTP MCP with OAuth, a mount entry consumes the same read-scoped client registered here, so this is the forward-compatible shape rather than a parallel one.
 
 ## The three configuration planes
@@ -58,7 +59,7 @@ That records the client id in the reading home's `config/gbrain-local.json` and 
 Once that registration succeeds it also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home whose brain accepted the registration is by construction the brain the others read.
 A registration the brain refused records nothing, so a refused grant leaves the granting home's local plane exactly as it found it.
 That home reads its own index directly and never grants itself a client, so `bin/fm-gbrain.sh check` reports it as reading the main brain rather than as having lost access to it.
-The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it.
+The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it, which is what [Reading a brain](#reading-a-brain) does for a worker.
 
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
 Do not use `gbrain auth create` tokens or any legacy bearer token as a read-only credential: those carry no scope and are full-access.
@@ -87,8 +88,9 @@ A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh`
 
 ## Source precedence and name collisions
 
-A home's own brain is the only thing it writes and the only thing its ordinary local search reads.
-The main brain is a separate database, reached only through an explicit read over the shared client, so there is no implicit fan-out and no merged ranking to reason about.
+A home's own brain is the only thing it writes, and a GBrain call against that home reads that brain alone.
+The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list ordered by the score each brain returned, which is why every result carries its `local:` or `main:` label.
+A rank therefore compares two brains' own scores rather than a Firstmate-computed relevance.
 Within a single brain, GBrain's own sources decide breadth: a federated source appears in cross-source default search, and an isolated source is searched only when named with `--source`.
 
 Because the two brains are separate databases, a slug that exists in both is two distinct pages rather than a collision.

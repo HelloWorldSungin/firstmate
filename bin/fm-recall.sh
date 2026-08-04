@@ -55,6 +55,15 @@
 #
 # --json prints one "fm-recall.v1" document: the resolved home, a per-source
 # state, and capped results. Human output renders the same content as lines.
+# A source's state is one of:
+#   ok             it was read, and its results are the rows labelled with it.
+#   degraded       the main brain is configured but this read did not reach it,
+#                  was refused by it, or had no curl to reach it with.
+#   failed         it could not be read at all.
+#   absent         no such corpus is configured for this fleet.
+#   same-as-local  this home OWNS the main brain, so the main corpus is its own
+#                  index: the local row carries the read, and those results are
+#                  cited local:<slug>.
 #
 # Options:
 #   --scope     search only. Which corpora to read (default: all).

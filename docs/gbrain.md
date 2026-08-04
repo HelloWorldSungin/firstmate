@@ -109,7 +109,8 @@ The file must remain mode `0600`.
 Do not place that value in GBrain configuration, a repository, a test, a log, or a service unit.
 A home that uses per-home brain scoping may instead keep its own copy in that home's credential plane, `config/gbrain-secrets/<name>` named by `think.secret`, under the same mode `0600` requirement ([gbrain-scoping.md](gbrain-scoping.md)).
 Either way the key reaches only the synthesizing process: `bin/fm-gbrain.sh` reports such a credential as present, absent, or refused and never prints its bytes.
-Use an untraced shell to inject it only into the `think` process:
+A Firstmate worker never runs the raw path below: `bin/fm-recall.sh` is the retrieval surface it uses, and it performs this same one-process injection for `think` ([gbrain-scoping.md](gbrain-scoping.md)).
+For a raw operator run, use an untraced shell to inject the key only into the `think` process:
 
 ```sh
 task_minimax_key=$(jq -er '.minimax.key | select(type == "string" and length > 0)' /home/sungin/.pi/agent/auth.json)
