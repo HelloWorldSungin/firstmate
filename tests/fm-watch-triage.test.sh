@@ -516,14 +516,9 @@ test_stale_terminal_status_overridden_by_active_run() {
 }
 
 # --- a parked keyed decision is surfaced once, not once per pane repaint -------
-# Regression for the 2026-08-01 parked-decision noise: a crew that correctly
-# appends "needs-decision [key=...]: ..." and stops is genuinely not working, so
-# crew_is_provably_working rightly refuses to absorb its stale pane. The one-shot
-# suppressor used to be keyed on the pane hash, and an idle harness pane is not
-# static (a live context/quota footer repaints on its own), so every repaint
-# re-surfaced the identical already-escalated waiting state - twenty-two
-# consecutive times on one pane. Suppression must key on the OPEN DECISION
-# (fm-classify-lib.sh's status_open_decisions fold) so a repaint alone is silent.
+# A parked decision is genuinely not working, so crew_is_provably_working rightly
+# refuses to absorb its first stale pane. The separate repaint suppressor must key
+# on the complete open-decision set so volatile footer changes alone stay silent.
 #
 # Fixture note: each phase primes .hash-/.count- so the FIRST poll already sees a
 # stably stale pane, exactly as the terminal-stale cases above do.
@@ -628,9 +623,9 @@ test_resolved_decision_can_reopen_identically() {
   pass "a resolved keyed decision can reopen identically and surface again"
 }
 
-# The suppressor must be scoped to the decision that was surfaced, never to the
-# pane: a genuinely NEW decision on the same (still repainting) pane is new work
-# firstmate has not acted on and must wake normally. The status write's own
+# The suppressor must be scoped to the open-decision set that was surfaced,
+# never to the pane: a genuinely NEW decision on the same repainting pane is new
+# work firstmate has not acted on and must wake normally. The status write's own
 # signal wake is suppressed here so only the stale path can surface it.
 test_new_keyed_decision_on_parked_pane_surfaces() {
   local dir state fakebin out drain_out capture window pid
