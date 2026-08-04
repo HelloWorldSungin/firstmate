@@ -182,7 +182,7 @@ family_for_basename() {
       ;;
     fm-afk-pi-dual-supervision-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
-    fm-gbrain-readonly-e2e.test.sh|\
+    fm-gbrain-readonly-e2e.test.sh|fm-gbrain-capture-e2e.test.sh|\
     fm-cursor-agy-smoke.test.sh|fm-grok-stop-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
@@ -915,6 +915,7 @@ families_for_changed_path() {
     # Brain scoping owns its own contract, propagates through the inherited-
     # config path, and is the subject of the opt-in live read-only proof.
     bin/fm-gbrain.sh|bin/fm-gbrain-lib.sh|bin/fm-recall.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       printf '%s\n' live-harness-optin
@@ -923,6 +924,18 @@ families_for_changed_path() {
     # and the forge observation and write-back paths are its other consumers.
     bin/fm-timeout-lib.sh)
       printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      ;;
+    # Task-knowledge capture rides that scoping and hooks the teardown step
+    # between manifest publication and cleanup, so it selects both.
+    bin/fm-gbrain-capture.sh|bin/fm-gbrain-capture-lib.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-teardown.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
       printf '%s\n' pr-forge
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
@@ -935,7 +948,7 @@ families_for_changed_path() {
     bin/fm-gate-refuse*|bin/fm-lock*|bin/fm-quota-axi-lib.sh)
       printf '%s\n' session-bootstrap
       ;;
-    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
+    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;

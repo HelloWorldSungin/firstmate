@@ -287,6 +287,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/gbrain-capture.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/gbrain-scoping.md",
       "audience": "operator-current"
     },
@@ -296,6 +300,10 @@
     },
     {
       "path": "docs/verification/gbrain-init-retrieval.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/gbrain-capture.md",
       "audience": "maintainer-verification"
     },
     {

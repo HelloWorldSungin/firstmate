@@ -139,6 +139,7 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 ```
 
 Stop every `gbrain serve` process before copying PGLite because it is a single-writer database.
+Task-knowledge capture is the other writer of a home's index ([gbrain-capture.md](gbrain-capture.md)), so take the copy when no teardown and no `bin/fm-gbrain-capture.sh` run can start; a capture that finds the brain busy leaves a pending outbox item and is retried later.
 Back up the archive, PGLite directory, and runtime configuration together to an on-box directory:
 
 ```sh

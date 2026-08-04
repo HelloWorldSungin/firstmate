@@ -46,10 +46,11 @@ The manifest never contacts a forge and never reads brief contents, a prompt, a 
 | `attribution.*` | `state/<id>.meta` | the references a later usage read needs, see below |
 | `attribution.sessions` | `state/<id>.usage-sessions` | the live session-to-task map, so token usage keeps its task after cleanup |
 | `work_items` | `data/<id>/work-items.json` | embedded so the manifest is self-contained |
-| `gbrain` | `state/<id>.gbrain`, an optional provider | `status` is `absent` when no provider wrote one |
+| `gbrain` | `state/<id>.gbrain`, written by [`bin/fm-gbrain-capture.sh`](../bin/fm-gbrain-capture.sh) | `status` is `absent` until a receipt exists, permanently so in a home with no brain; see [`gbrain-capture.md`](gbrain-capture.md) |
 
 Every listed manifest key is required except the additive `attribution.sessions` described below, while fields whose source may be absent retain an explicit null value with the documented type-or-null contract.
-A null `title` is intended for a secondmate because secondmates are never backlog items, and an absent GBrain provider retains null receipt, observation, and detail fields.
+A null `title` is intended for a secondmate because secondmates are never backlog items, and an absent capture receipt retains null receipt, observation, and detail fields.
+Teardown captures the task's knowledge between publishing this manifest and removing anything, then republishes it, which is how a torn-down task's manifest carries the capture receipt at all.
 Task identifiers are capped at 64 characters, general text at 240, paths at 480, source and backend tokens at 40, session identifiers at 128, receipts at 200, URLs at 512, and hosts at 253 characters.
 The shared reader validates the complete shape, types, enums, nullability, caps, task identity, and timestamp provenance before a manifest reaches `show`, history, or the fleet snapshot.
 
@@ -62,6 +63,11 @@ The records firstmate keeps do not all carry an explicit stamp, so the manifest 
 - `completed` is the write time (`manifest_write`) unless the caller pins one (`explicit`).
 
 A future explicit recorded stamp can supersede any of these without a schema change: only the `timestamp_sources` value moves.
+
+Teardown's republish is one such pin, so which token a torn-down task carries records which write path ran, not how its completion was obtained.
+A home with a brain republishes the manifest so the capture receipt can reach it, and that republish supplies the completion the first write recorded rather than deriving a second one, which is exactly what `explicit` names.
+The pin is what keeps the manifest agreeing with the body already captured from it, because re-deriving would move the recorded completion forward by the whole capture window.
+A home with no brain has nothing to capture, so it never republishes and its single write records `manifest_write`.
 
 ### Attribution after teardown
 
