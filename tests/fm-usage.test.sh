@@ -288,17 +288,19 @@ test_malformed_and_rotated_sources() {
   baseline=$(usage_run "$case_root" report --by harness | jq -r '.rows[0].total_tokens')
 
   # Malformed, truncated, and empty lines around a good one.
-  printf '{"type":"assistant","message":{"usage":\n' >> "$file"
-  printf 'not json at all\n\n' >> "$file"
-  # A well-formed line that IS a usage record but whose timestamp the adapter
-  # cannot read: a field the harness changed, not a parse failure. It has its own
-  # counter, so a harness that renames a field can never report zero new events,
-  # zero malformed lines, and look like a quiet fleet.
-  jq -cn '{type:"assistant",uuid:"u-skip",sessionId:"session-e",cwd:"/home/worker/echo",
-           timestamp:"08/01/2026 10:06",
-           message:{id:"msg_unreadable",model:"claude-opus-5",
-                    usage:{input_tokens:9,output_tokens:9,
-                           cache_read_input_tokens:0,cache_creation_input_tokens:0}}}' >> "$file"
+  {
+    printf '{"type":"assistant","message":{"usage":\n'
+    printf 'not json at all\n\n'
+    # A well-formed line that IS a usage record but whose timestamp the adapter
+    # cannot read: a field the harness changed, not a parse failure. It has its own
+    # counter, so a harness that renames a field can never report zero new events,
+    # zero malformed lines, and look like a quiet fleet.
+    jq -cn '{type:"assistant",uuid:"u-skip",sessionId:"session-e",cwd:"/home/worker/echo",
+             timestamp:"08/01/2026 10:06",
+             message:{id:"msg_unreadable",model:"claude-opus-5",
+                      usage:{input_tokens:9,output_tokens:9,
+                             cache_read_input_tokens:0,cache_creation_input_tokens:0}}}'
+  } >> "$file"
   claude_line "$file" session-e /home/worker/echo 2026-08-01T10:05:00Z msg_after 1 1 1 1
   local out
   out=$(usage_run "$case_root" ingest) || fail "ingest must survive malformed input"
