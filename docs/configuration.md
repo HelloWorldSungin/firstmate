@@ -50,7 +50,10 @@ A work item on a self-hosted GitHub host, or on any other forge, is reported as 
 
 `bin/fm-issue-status.sh` adds optional title and open/closed enrichment behind per-forge adapters: `github.com` and Gitea on any host are implemented, while a self-hosted GitHub host and GitLab report that they have no adapter and keep the plain link.
 Enrichment is decoration on a link that already resolves: an unreachable host, an expired or missing credential, an unsupported forge, a deleted issue, or a private repository degrades to the canonical URL plus a one-line reason and still exits 0, so no consumer stalls or blanks.
-Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900) and live lookups to one host are spaced by `FM_ISSUE_STATUS_MIN_INTERVAL` seconds (default 2), so repeated dashboard refreshes cannot hammer a forge.
+Results are cached under `state/issue-status/` for `FM_ISSUE_STATUS_TTL` seconds (default 900), and that cache is what stops repeated dashboard refreshes hammering a forge: every refresh inside the TTL is answered from disk without contacting the host at all.
+The live lookups that miss the cache are additionally spaced per host by `FM_ISSUE_STATUS_MIN_INTERVAL` seconds (default 2).
+That spacing is deliberately best-effort rather than guaranteed: there is no lock, so two concurrent processes may each observe no recent call and each perform one lookup.
+Cache entries and the per-host timestamp are replaced atomically, so a concurrent reader always sees a whole record rather than a torn one.
 
 Per-host credentials live in `config/forge-tokens/<host>`, which must be a regular file with mode 0600; a token stored more loosely is refused rather than used.
 GitHub needs no entry because it uses the ambient `gh-axi` authentication.
