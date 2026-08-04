@@ -233,6 +233,7 @@ That closure is what lets the file be inherited verbatim while every home still 
 
 `bin/fm-gbrain-lib.sh` owns validation, path derivation, home resolution, credential reading, and the main-brain token mint, `bin/fm-gbrain.sh` is the operator surface, `bin/fm-recall.sh` is the agent-facing retrieval surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
 [`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, how a brain is read, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
+[`gbrain-capture.md`](gbrain-capture.md) owns what a finished task writes into that brain, and `data/gbrain-outbox/` holds its durable pending records.
 
 ## Gate defaults (.no-mistakes.yaml)
 
@@ -626,7 +627,7 @@ FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per GitHub call fm-issue-comment.sh makes for the living status comment
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
-FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, and by fm-recall.sh to read this home's own brain; see "Brain scoping"
+FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, by fm-recall.sh to read this home's own brain, and by fm-gbrain-capture.sh to deliver a captured document; see "Brain scoping"
 FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either surface, and per reachability probe in fm-gbrain.sh check
 FM_RECALL_TIMEOUT=      # optional seconds per fm-recall.sh retrieval call, overriding its per-command defaults (search 60, think 300)
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result

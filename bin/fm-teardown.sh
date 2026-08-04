@@ -11,6 +11,12 @@
 # durable history afterwards. A manifest that cannot be published refuses the
 # cleanup rather than erasing a task that could not be archived; see
 # publish_outcome_manifest below and bin/fm-outcome-manifest.sh.
+# Between publishing that manifest and removing anything, teardown captures the
+# task's knowledge into the home's own brain through bin/fm-gbrain-capture.sh,
+# which enqueues durably first and delivers under a tight timeout. That step is
+# advisory in both directions: it is inert in a home with no brain, and a brain
+# that is stopped or slow leaves a pending item for a later retry rather than
+# delaying or failing the cleanup.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -162,13 +168,18 @@ case "$FM_TEARDOWN_USAGE_TIMEOUT" in ''|*[!0-9]*) FM_TEARDOWN_USAGE_TIMEOUT=60 ;
 
 # Bounded execution, mirroring bin/fm-fleet-snapshot.sh's selection so a host
 # without GNU coreutils still bounds the call rather than skipping the bound.
+# Every branch escalates to SIGKILL, because SIGTERM alone is not a bound: a
+# child that ignores it, or that is stuck in uninterruptible IO, would keep this
+# lifecycle-critical path parked forever. run_bounded in
+# bin/fm-gbrain-capture.sh bounds the other call on this path the same way.
+FM_TEARDOWN_KILL_GRACE=5
 run_timed() {  # <seconds> <command...>
   local seconds=$1
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
+    timeout -k "$FM_TEARDOWN_KILL_GRACE" "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
+    gtimeout -k "$FM_TEARDOWN_KILL_GRACE" "$seconds" "$@"
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
   else
@@ -184,19 +195,59 @@ refresh_usage_sessions() {
     node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
 }
 
-publish_outcome_manifest() {  # <force-flag>
+write_outcome_manifest() {  # <force-flag> [<completed-at>]
   local rc=0
-  refresh_usage_sessions
-  if [ "${1:-}" = "--force" ]; then
-    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" --forced >/dev/null || rc=$?
-  else
-    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" >/dev/null || rc=$?
-  fi
+  local -a args=(write "$ID")
+  [ "${1:-}" = "--force" ] && args+=(--forced)
+  [ -n "${2:-}" ] && args+=(--completed-at "$2")
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-outcome-manifest.sh" "${args[@]}" >/dev/null || rc=$?
   [ "$rc" -eq 0 ] && return 0
   echo "error: could not publish the durable outcome manifest for $ID; retaining every task record" >&2
   return 1
+}
+
+manifest_completed_at() {
+  jq -r '.timestamps.completed // empty' "$DATA/$ID/outcome.json" 2>/dev/null || true
+}
+
+# Capture this task's knowledge into the home's own brain, between publishing
+# the manifest and removing anything. bin/fm-gbrain-capture.sh writes its durable
+# outbox record synchronously and only then attempts a bounded delivery, so a
+# stopped or slow brain leaves a pending item for a later retry instead of
+# delaying cleanup. It is inert in a home with no brain and never fails, so
+# teardown treats it as advisory throughout.
+#
+# Returns 0 when it left a capture receipt, which is the only reason to
+# republish: the manifest reads state/<ID>.gbrain at composition time.
+capture_task_knowledge() {
+  local receipt="$STATE/$ID.gbrain" before="" after=""
+  if [ -f "$receipt" ]; then before=$(cat "$receipt" 2>/dev/null) || before=""; fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-gbrain-capture.sh" task "$ID" >/dev/null || true
+  if [ -f "$receipt" ]; then after=$(cat "$receipt" 2>/dev/null) || after=""; fi
+  if [ -n "$after" ] && [ "$before" != "$after" ]; then return 0; fi
+  return 1
+}
+
+# The session refresh belongs here rather than in write_outcome_manifest: the
+# manifest is written twice so the capture receipt can reach it, and the map
+# cannot change in that window, so the machine-wide collector scan runs once.
+#
+# The republish is pinned to the completion the first write recorded. It is a
+# republish of one completion, not a second one, and capture composed its body
+# from that first manifest: re-deriving the timestamp would move the recorded
+# completion forward by the whole capture window and leave the manifest on disk
+# disagreeing with the body already delivered, which a later backfill would see
+# as changed content and re-deliver.
+publish_outcome_manifest() {  # <force-flag>
+  refresh_usage_sessions
+  write_outcome_manifest "${1:-}" || return 1
+  local completed
+  completed=$(manifest_completed_at)
+  capture_task_knowledge || return 0
+  write_outcome_manifest "${1:-}" "$completed" || return 1
+  return 0
 }
 
 REMOTE_HANDOFF_DIR_PRESENT=0
@@ -372,7 +423,8 @@ remote_secondmate_teardown() {
   tmp="$SECONDMATE_REG.tmp.$$"
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
-  rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended"
+  rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended" \
+    "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
 }

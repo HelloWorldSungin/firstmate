@@ -21,7 +21,11 @@
 #   data/<id>/report.md      the scout deliverable pointer
 #   data/<id>/work-items.json  work-item references (bin/fm-work-item.sh owns the store)
 #   state/<id>.pr-status     the normalized PR observation (bin/fm-pr-status.sh)
-#   state/<id>.gbrain        the optional capture receipt, absent by default
+#   state/<id>.gbrain        the task-knowledge capture receipt written by
+#                            bin/fm-gbrain-capture.sh; teardown writes this
+#                            manifest, captures, then republishes it so the
+#                            receipt reaches history, and a home with no brain
+#                            has none
 #   state/<id>.usage-sessions  the sessions bound to this task while it was live
 #                            (bin/fm-usage.mjs owns the sidecar), carried into
 #                            attribution.sessions so token usage keeps its task
