@@ -246,12 +246,18 @@ fm_issue_registry_tracker() {  # <registry-file> <project>
         for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
         gsub(/^\[|\]$/, "", s);
         k = split(s, a, " ");
-        for (j=1; j<=k; j++) if (a[j] ~ /^tracker=/) { sub(/^tracker=/, "", a[j]); print a[j]; exit }
+        for (j=1; j<=k; j++) if (a[j] ~ /^tracker=/) {
+          sub(/^tracker=/, "", a[j]); print "tracker-present:" a[j]; exit
+        }
       }
       exit
     }
   ' "$registry")
-  [ -n "$token" ] || return 1
+  case "$token" in
+    tracker-present:*) token=${token#tracker-present:} ;;
+    *) return 1 ;;
+  esac
+  [ -n "$token" ] || return 2
   fm_issue_tracker_parse "$token" || return 2
   printf '%s\n' "$token"
 }
@@ -260,8 +266,8 @@ fm_issue_registry_tracker() {  # <registry-file> <project>
 # the shape is decisive, and otherwise from <hint-forge>. github.com always
 # means github and never a self-hosted forge, and the "/-/issues/" route is
 # GitLab's alone. The remaining shape, https://<host>/<owner>/<repo>/issues/<n>,
-# is what Gitea and several other forges all serve, so it is resolved only with
-# an explicit hint - never by guessing from the host name.
+# is what Gitea, self-hosted GitHub, and several other forges all serve, so it
+# is resolved only with an explicit hint - never by guessing from the host name.
 fm_issue_url_parse() {  # <url> [hint-forge]
   local raw=${1-} hint=${2-} pattern host path number
   local LC_ALL=C
@@ -297,10 +303,10 @@ fm_issue_url_parse() {  # <url> [hint-forge]
   fm_issue_owner_valid "${BASH_REMATCH[2]}" || return 1
   fm_issue_repo_valid "${BASH_REMATCH[3]}" || return 1
   case "$hint" in
-    gitea) ;;
+    github|gitea) ;;
     *) return 1 ;;
   esac
-  fm_issue_identity_set gitea "$host" \
+  fm_issue_identity_set "$hint" "$host" \
     "${BASH_REMATCH[2]}/${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" || return 1
   [ "$FM_ISSUE_URL" = "$raw" ]
 }
@@ -312,14 +318,19 @@ fm_issue_url_parse() {  # <url> [hint-forge]
 # On success the FM_ISSUE_* identity is set and FM_ISSUE_ORIGIN is "declared".
 # On refusal FM_ISSUE_ERROR carries a reason a captain-facing message can quote.
 fm_issue_ref_resolve() {  # <ref> <tracker> <project>
-  local ref=${1-} tracker=${2-} project=${3-} forge hint url owner repo number
+  local ref=${1-} tracker=${2-} project=${3-} forge hint url ref_host owner repo number
   FM_ISSUE_ERROR=
   fm_issue_identity_clear
-  if [ -n "$tracker" ] && ! fm_issue_tracker_parse "$tracker"; then
-    FM_ISSUE_ERROR="project \"$project\" has a malformed tracker declaration: $tracker"
-    return 1
+  if [ -n "$tracker" ]; then
+    if ! fm_issue_tracker_parse "$tracker"; then
+      FM_ISSUE_ERROR="project \"$project\" has a malformed tracker declaration: $tracker"
+      return 1
+    fi
+  else
+    FM_ISSUE_TRACKER_FORGE=
+    FM_ISSUE_TRACKER_HOST=
+    FM_ISSUE_TRACKER_PATH=
   fi
-  hint=$FM_ISSUE_TRACKER_FORGE
 
   # An explicit "<forge>:<url>" prefix states the forge for URL shapes that
   # several forges share, so a cross-host reference never needs a guess.
@@ -339,6 +350,12 @@ fm_issue_ref_resolve() {  # <ref> <tracker> <project>
       return 0
       ;;
     https://*)
+      hint=
+      ref_host=${ref#https://}
+      ref_host=${ref_host%%/*}
+      if [ -n "$FM_ISSUE_TRACKER_HOST" ] && [ "$ref_host" = "$FM_ISSUE_TRACKER_HOST" ]; then
+        hint=$FM_ISSUE_TRACKER_FORGE
+      fi
       if fm_issue_url_parse "$ref" "$hint"; then
         FM_ISSUE_ORIGIN=declared
         return 0
@@ -360,6 +377,12 @@ fm_issue_ref_resolve() {  # <ref> <tracker> <project>
 
   case "$ref" in
     */*'#'*)
+      case "$ref" in
+        *'#'*'#'*)
+          FM_ISSUE_ERROR="reference \"$ref\" is malformed; expected <owner>/<repo>#<number>"
+          return 1
+          ;;
+      esac
       owner=${ref%%#*}
       number=${ref##*#}
       repo=${owner#*/}

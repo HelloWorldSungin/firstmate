@@ -50,7 +50,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 CACHE="$STATE/issue-status"
 TTL=${FM_ISSUE_STATUS_TTL:-900}
 MIN_INTERVAL=${FM_ISSUE_STATUS_MIN_INTERVAL:-2}
-HTTP_TIMEOUT=${FM_ISSUE_STATUS_TIMEOUT:-10}
+LOOKUP_TIMEOUT=${FM_ISSUE_STATUS_TIMEOUT:-10}
+case "$LOOKUP_TIMEOUT" in
+  ''|*[!0-9]*|0) LOOKUP_TIMEOUT=10 ;;
+esac
 
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
@@ -135,22 +138,49 @@ digest() {  # <string>
   fi
 }
 
+run_timed() {  # <seconds> <command...>
+  local seconds=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+  else
+    return 125
+  fi
+}
+
+utf8_prefix() {  # <text> <code-points>
+  local text=$1 limit=$2
+  if command -v perl >/dev/null 2>&1; then
+    printf '%s' "$text" | perl -MEncode=decode,encode,FB_DEFAULT -e '
+      local $/;
+      my $bytes = <STDIN>;
+      $bytes = "" unless defined $bytes;
+      print encode("UTF-8", substr(decode("UTF-8", $bytes, FB_DEFAULT), 0, shift));
+    ' "$limit"
+  else
+    printf '%s' "$text"
+  fi
+}
+
 # A forge title is untrusted remote text that lands in status output, task
 # metadata consumers, and eventually a dashboard cell. Strip control characters
 # (which would forge extra TSV columns or lines), collapse whitespace, and cap
 # the length so one pathological title cannot distort a whole view.
 #
-# The cap uses bash substring extraction rather than `cut -c`, which counts
-# bytes in GNU coreutils: byte-truncating a CJK or emoji title splits a
-# multibyte character and emits an invalid UTF-8 fragment into the JSON a
-# dashboard has to parse.
+# The cap decodes UTF-8 explicitly before taking a prefix, so the ambient locale
+# cannot turn code-point truncation into byte truncation and split a CJK or emoji
+# character inside the JSON a dashboard has to parse.
 sanitize() {  # <text>
   local text
   text=$(printf '%s' "$1" \
     | tr -d '\000-\037\177' \
     | tr -s ' \t' ' ' \
     | sed 's/^ //; s/ $//')
-  printf '%s' "${text:0:200}"
+  utf8_prefix "$text" 200
 }
 
 cache_dir_ready() {
@@ -244,16 +274,30 @@ read_forge_token() {  # <host> -> prints token, or returns 1
 # 0. A forge without an adapter reports that as its reason.
 
 adapter_github() {  # <path> <number>
-  local path=$1 number=$2 output state title
+  local path=$1 number=$2 output state title rc=0
   if ! command -v gh-axi >/dev/null 2>&1; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="gh-axi is not installed"
     return 0
   fi
-  if ! output=$(gh-axi issue view "$number" --repo "$path" --full 2>&1); then
-    LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-    LOOKUP_DETAIL="GitHub lookup failed (issue missing, repository private, or credential expired)"
-    return 0
-  fi
+  output=$(run_timed "$LOOKUP_TIMEOUT" gh-axi issue view "$number" --repo "$path" --full 2>&1) || rc=$?
+  case "$rc" in
+    0) ;;
+    124)
+      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+      LOOKUP_DETAIL="GitHub lookup timed out after ${LOOKUP_TIMEOUT}s"
+      return 0
+      ;;
+    125)
+      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+      LOOKUP_DETAIL="GitHub lookup unavailable because no bounded timeout runner could start"
+      return 0
+      ;;
+    *)
+      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+      LOOKUP_DETAIL="GitHub lookup failed (issue missing, repository private, or credential expired)"
+      return 0
+      ;;
+  esac
   state=$(printf '%s\n' "$output" | awk '$1 == "state:" { print $2; exit }')
   title=$(printf '%s\n' "$output" | awk '
     $1 == "title:" { sub(/^[[:space:]]*title:[[:space:]]*/, ""); print; exit }')
@@ -274,7 +318,7 @@ adapter_github() {  # <path> <number>
 # and pull-request numbering share one sequence, so a number that names a pull
 # request answers here too; that is Gitea's own identity model, not a mismatch.
 adapter_gitea() {  # <host> <path> <number>
-  local host=$1 path=$2 number=$3 token token_rc=0 body code response
+  local host=$1 path=$2 number=$3 token token_rc=0 body code response response_rc=0
   if ! command -v curl >/dev/null 2>&1; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="curl is not installed"
     return 0
@@ -293,14 +337,27 @@ adapter_gitea() {  # <host> <path> <number>
   # this process's arguments and never reaches a log or the cache.
   if [ "$token_rc" -eq 0 ] && [ -n "$token" ]; then
     response=$(printf 'header = "Authorization: token %s"\n' "$token" \
-      | curl -sS -K - -m "$HTTP_TIMEOUT" -w '\n%{http_code}' \
+      | run_timed "$LOOKUP_TIMEOUT" curl -sS -K - -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
         -H 'Accept: application/json' \
-        "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response=
+        "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
   else
-    response=$(curl -sS -m "$HTTP_TIMEOUT" -w '\n%{http_code}' \
+    response=$(run_timed "$LOOKUP_TIMEOUT" curl -sS -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
       -H 'Accept: application/json' \
-      "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response=
+      "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
   fi
+  case "$response_rc" in
+    0) ;;
+    28|124)
+      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+      LOOKUP_DETAIL="Gitea lookup timed out after ${LOOKUP_TIMEOUT}s"
+      return 0
+      ;;
+    125)
+      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+      LOOKUP_DETAIL="Gitea lookup unavailable because no bounded timeout runner could start"
+      return 0
+      ;;
+  esac
   if [ -z "$response" ]; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=
     LOOKUP_DETAIL="Gitea host $host is unreachable"

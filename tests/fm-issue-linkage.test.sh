@@ -125,25 +125,27 @@ test_explicit_none_refuses_with_its_own_reason() {
 # A typo must never read as "this project has no tracker": that would silently
 # downgrade a configured project into the refusing path and hide the bug.
 test_malformed_declaration_is_reported_not_treated_as_absent() {
-  local out rc
-  set +e
-  out=$(resolve malformed-project '#5' 2>&1)
-  rc=$?
-  set -e
-  expect_code 2 "$rc" "malformed-project: a malformed declaration must fail"
-  assert_contains "$out" 'malformed tracker declaration' \
-    "malformed-project: the declaration bug was not reported"
-  set +e
-  out=$(resolve malformed-project --show-tracker 2>&1)
-  rc=$?
-  set -e
-  expect_code 2 "$rc" "malformed-project: --show-tracker must report the malformed declaration"
+  local project out rc
+  for project in malformed-project empty-tracker-project; do
+    set +e
+    out=$(resolve "$project" '#5' 2>&1)
+    rc=$?
+    set -e
+    expect_code 2 "$rc" "$project: a malformed declaration must fail"
+    assert_contains "$out" 'malformed tracker declaration' \
+      "$project: the declaration bug was not reported"
+    set +e
+    out=$(resolve "$project" --show-tracker 2>&1)
+    rc=$?
+    set -e
+    expect_code 2 "$rc" "$project: --show-tracker must report the malformed declaration"
+  done
   pass "a malformed tracker declaration is reported rather than read as undeclared"
 }
 
 test_malformed_references_are_refused() {
   local ref out rc
-  for ref in 'nonsense' '#' '#0' '#-3' 'a/b/c#1' 'owner/repo#' '#9999999999999'; do
+  for ref in 'nonsense' '#' '#0' '#-3' 'a/b/c#1' 'owner/repo#' 'owner/repo#1#2' '#9999999999999'; do
     set +e
     out=$(resolve gh-project "$ref" 2>&1)
     rc=$?
@@ -175,6 +177,11 @@ test_qualified_reference_forms_resolve() {
   [ "$out" = 'https://gitea.example.com/a/b/issues/3' ] \
     || fail "forge-prefixed URL resolved wrongly: $out"
 
+  out=$(resolve gh-project 'github:https://github.example.com/a/b/issues/3' --format url) \
+    || fail "an explicitly prefixed self-hosted GitHub URL did not resolve"
+  [ "$out" = 'https://github.example.com/a/b/issues/3' ] \
+    || fail "self-hosted GitHub URL round-trip failed: $out"
+
   out=$(resolve gitlab-project 5 --format url) || fail "a nested GitLab namespace did not resolve"
   [ "$out" = 'https://gitlab.example.com/group/subgroup/proj/-/issues/5' ] \
     || fail "GitLab nested path resolved wrongly: $out"
@@ -193,6 +200,19 @@ test_ambiguous_self_hosted_url_is_refused_not_guessed() {
   expect_code 2 "$rc" "an ambiguous self-hosted URL was resolved by guessing"
   assert_contains "$out" 'prefix it with a forge' \
     "the ambiguous-URL refusal did not offer the qualified form"
+
+  set +e
+  out=$(resolve gitea-project 'https://other.example.com/a/b/issues/3' 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a foreign host inherited the project's Gitea forge"
+  assert_contains "$out" 'prefix it with a forge' \
+    "the foreign-host refusal did not offer the qualified form"
+
+  out=$(resolve gitea-project 'https://gitea.example.com/a/b/issues/3' --format url) \
+    || fail "the declared Gitea host did not supply its implicit forge"
+  [ "$out" = 'https://gitea.example.com/a/b/issues/3' ] \
+    || fail "the declared-host URL resolved wrongly: $out"
   pass "an ambiguous self-hosted issue URL is refused rather than guessed"
 }
 
@@ -305,6 +325,12 @@ test_brief_records_resolved_work_items() {
     "$brief" "brief lost the GitHub work-item marker"
   assert_grep 'https://gitea.example.com/DuckKingOri/gitea-project/issues/7' \
     "$brief" "brief did not show the worker the full tracker URL"
+  assert_grep 'Reference each full URL in the PR body' \
+    "$brief" "brief did not require full tracker URLs in the PR body"
+  assert_no_grep 'comment on each one with a substantive summary' \
+    "$brief" "brief added cross-forge tracker write-back"
+  assert_no_grep 'A bare "done" comment does not satisfy this contract' \
+    "$brief" "brief retained cross-forge comment requirements"
   pass "a ship brief records every resolved work item as a marker and a full URL"
 }
 
@@ -501,6 +527,14 @@ SH
   chmod +x "$1/fakebin/gh-axi"
 }
 
+fake_gh_axi_hanging() {  # <case-dir>
+  cat > "$1/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+  chmod +x "$1/fakebin/gh-axi"
+}
+
 # A curl stub that answers with a fixed HTTP code and body, and records both its
 # arguments and anything handed to it on stdin so credential handling can be
 # asserted without a real forge.
@@ -609,6 +643,26 @@ test_status_degrades_cleanly_on_every_failure_mode() {
   pass "status enrichment degrades to a link plus a reason on every failure mode"
 }
 
+test_github_status_lookup_is_bounded() {
+  local case_dir out rc started elapsed
+  case_dir=$(status_case gh-timeout)
+  fake_gh_axi_hanging "$case_dir"
+  started=$(date +%s)
+  set +e
+  out=$(FM_ISSUE_STATUS_TIMEOUT=1 run_status "$case_dir" \
+    'declared|github|https://github.com/x/y/issues/9')
+  rc=$?
+  set -e
+  elapsed=$(( $(date +%s) - started ))
+  expect_code 0 "$rc" "a timed-out GitHub lookup must not fail the command"
+  [ "$elapsed" -lt 5 ] || fail "a hung GitHub lookup exceeded its bound (${elapsed}s)"
+  assert_contains "$out" 'https://github.com/x/y/issues/9' \
+    "a timed-out lookup lost its canonical URL"
+  assert_contains "$out" 'unavailable' "a timed-out lookup was not marked unavailable"
+  assert_contains "$out" 'timed out after 1s' "a timed-out lookup did not name its deadline"
+  pass "a hung GitHub lookup degrades within the configured deadline"
+}
+
 test_gitea_status_enrichment_and_title_sanitizing() {
   local case_dir out
   command -v jq >/dev/null 2>&1 || { pass "gitea enrichment (skipped: jq absent)"; return; }
@@ -629,19 +683,28 @@ test_gitea_status_enrichment_and_title_sanitizing() {
 # A long multibyte title must not be truncated mid-character: the fragment would
 # be invalid UTF-8 in the JSON a dashboard parses.
 test_long_multibyte_title_stays_valid_utf8() {
-  local case_dir out long
+  local case_dir out long locale
   command -v jq >/dev/null 2>&1 || { pass "multibyte title truncation (skipped: jq absent)"; return; }
-  long=$(awk 'BEGIN { s = ""; while (length(s) < 300) s = s "\346\270\254"; print s }')
-  case_dir=$(status_case gitea-multibyte)
-  fake_curl "$case_dir" 200 "{\"state\":\"open\",\"title\":\"$long\"}"
-  out=$(FM_TEST_CURL_ARGS="$case_dir/args" FM_TEST_CURL_STDIN="$case_dir/stdin" \
-    run_status "$case_dir" --format json \
-    'declared|gitea|https://gitea.example.com/a/b/issues/3') \
-    || fail "multibyte enrichment failed"
-  printf '%s' "$out" | jq -e '.[0].status == "ok"' >/dev/null \
-    || fail "multibyte title broke the JSON document: $out"
-  printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
-    || fail "multibyte title was truncated into invalid UTF-8: $out"
+  long=$(printf '測%.0s' {1..300})
+  for locale in default C; do
+    case_dir=$(status_case "gitea-multibyte-$locale")
+    fake_curl "$case_dir" 200 "{\"state\":\"open\",\"title\":\"$long\"}"
+    if [ "$locale" = C ]; then
+      out=$(LC_ALL=C FM_TEST_CURL_ARGS="$case_dir/args" FM_TEST_CURL_STDIN="$case_dir/stdin" \
+        run_status "$case_dir" --format json \
+        'declared|gitea|https://gitea.example.com/a/b/issues/3') \
+        || fail "C-locale multibyte enrichment failed"
+    else
+      out=$(FM_TEST_CURL_ARGS="$case_dir/args" FM_TEST_CURL_STDIN="$case_dir/stdin" \
+        run_status "$case_dir" --format json \
+        'declared|gitea|https://gitea.example.com/a/b/issues/3') \
+        || fail "multibyte enrichment failed"
+    fi
+    printf '%s' "$out" | jq -e '.[0].status == "ok" and (.[0].title | length) == 200' >/dev/null \
+      || fail "$locale-locale multibyte title broke the JSON document or cap: $out"
+    printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+      || fail "$locale-locale multibyte title was truncated into invalid UTF-8: $out"
+  done
   pass "a long multibyte title is truncated without producing invalid UTF-8"
 }
 
@@ -813,6 +876,7 @@ test_spawn_warns_when_a_legacy_marker_has_no_declared_tracker
 test_spawn_refuses_a_malformed_work_item_marker
 test_github_status_enrichment
 test_status_degrades_cleanly_on_every_failure_mode
+test_github_status_lookup_is_bounded
 test_gitea_status_enrichment_and_title_sanitizing
 test_long_multibyte_title_stays_valid_utf8
 test_status_caches_and_rate_limits

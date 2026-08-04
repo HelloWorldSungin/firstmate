@@ -376,6 +376,7 @@ EOF
 fi
 
 if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
+  # Cross-forge tracker write-back requires its own per-forge credential contract.
   WORK_ITEM_MARKERS=
   WORK_ITEM_LINES=
   for item in "${WORK_ITEMS[@]}"; do
@@ -389,9 +390,7 @@ if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
 ${WORK_ITEM_MARKERS}# Work item traceability
 This task is linked to the work items below.
 They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
-${WORK_ITEM_LINES}Before reporting the PR ready, comment on each one with a substantive summary of what you found and what you actually changed.
-A bare "done" comment does not satisfy this contract: someone reading the item later must be able to understand the outcome without opening the PR.
-Reference each full URL in the PR body.
+${WORK_ITEM_LINES}Reference each full URL in the PR body.
 Add a \`Closes\` line only for an item whose tracker is the same repository the PR opens against, because a forge can only auto-close its own issues; firstmate closes anything else through its own merge path.
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}

@@ -13,4 +13,5 @@ has none, and a project whose declaration is malformed.
 - untracked-project [no-mistakes +yolo] - declares no tracker at all (added 2026-08-04)
 - trackerless-project [direct-PR tracker=none] - explicitly declares it has no tracker (added 2026-08-04)
 - malformed-project [no-mistakes tracker=bogus:not-a-host] - a typo'd declaration that must be reported, never read as undeclared (added 2026-08-04)
+- empty-tracker-project [no-mistakes tracker=] - an empty declaration that must be reported, never read as undeclared (added 2026-08-04)
 - gitlab-project [no-mistakes tracker=gitlab:gitlab.example.com/group/subgroup/proj] - nested GitLab namespace (added 2026-08-04)
