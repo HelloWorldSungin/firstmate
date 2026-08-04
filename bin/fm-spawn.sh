@@ -2163,13 +2163,12 @@ LAUNCH=$(fm_launch_render \
   exit 1
 }
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
-# inherit firstmate's current environment, so a bare `claude` in the pane falls
-# back to the default ~/.claude store even when firstmate itself runs under a
-# different CLAUDE_CONFIG_DIR (for example a work-vs-personal subscription split).
-# Forward firstmate's own resolved store onto the claude launch so the crewmate
-# uses the same credential/config firstmate is authenticated with.
-if [ "$HARNESS" = claude ]; then
-  LAUNCH="CLAUDE_CONFIG_DIR=$(fm_launch_shell_quote "$MODEL_EVIDENCE_STORE") $LAUNCH"
+# inherit firstmate's current environment. Forward an explicit config directory
+# so the worker uses the same credential/config store as firstmate. The default
+# transcript store is ~/.claude, but Claude's default config is ~/.claude.json;
+# do not conflate them by exporting the transcript store as CLAUDE_CONFIG_DIR.
+if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  LAUNCH="CLAUDE_CONFIG_DIR=$(fm_launch_shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")

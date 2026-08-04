@@ -43,7 +43,9 @@ Only a harness with an empirically verified evidence source is ever treated as v
 | Codex, OpenCode, Pi, Grok, Kimi | not established | Reported `unverifiable`, never assumed correct. |
 
 `<config>` is the canonical `model_evidence_store=` persisted in the dispatch record.
-`bin/fm-spawn.sh` resolves symlinks and parent components in filesystem order for `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`, records that physical identity before launch, and explicitly sets every Claude launch to the same store.
+`bin/fm-spawn.sh` resolves symlinks and parent components in filesystem order for `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and records that physical transcript-store identity before launch.
+When firstmate has an explicit `$CLAUDE_CONFIG_DIR`, spawn forwards it so the worker uses the same credential, config, and transcript store even though the pane daemon does not inherit firstmate's environment.
+When the variable is unset, spawn leaves Claude's defaults untouched: config comes from `~/.claude.json`, while transcript evidence remains under `~/.claude`.
 If the resolved physical path contains a newline, canonicalization fails and spawn refuses before serializing or launching with an altered store.
 Later verification never replaces that recorded store with the verifier process's ambient configuration.
 The directory name encodes the worker's working directory with every character outside `[A-Za-z0-9]` replaced by `-`.
