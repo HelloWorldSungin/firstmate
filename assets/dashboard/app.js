@@ -755,15 +755,17 @@ function renderHistoryFilters(view) {
   for (const key of ["project", "harness", "model", "kind", "outcome"]) {
     const select = ui.historyForm.elements[key];
     const values = view.facets[key];
-    const selected = state.history.filters[key];
+    // buildHistory has already dropped a filter whose value left the facets, so
+    // the control shows exactly what the list below it was built from.
+    const selected = view.filters[key];
+    state.history.filters[key] = selected;
     const first = select.options[0];
     replaceChildren(select, [first, ...values.map((value) => {
       const option = element("option", "", value);
       option.value = value;
       return option;
     })]);
-    select.value = values.includes(selected) ? selected : "";
-    if (!values.includes(selected)) state.history.filters[key] = "";
+    select.value = selected;
   }
   const count = Object.values(view.filters).filter(Boolean).length;
   ui.historyFilterCount.textContent = count ? `(${count} active)` : "";

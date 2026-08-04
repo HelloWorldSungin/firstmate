@@ -22,7 +22,7 @@ const { pathToFileURL } = require("node:url");
 (async () => {
 const markdown = await import(pathToFileURL(process.argv[2]).href);
 const history = await import(pathToFileURL(process.argv[3]).href);
-const { renderMarkdown, safeUrl, MARKDOWN_TAGS, MARKDOWN_CLASSES } = markdown;
+const { renderMarkdown, safeUrl, MARKDOWN_TAGS, MARKDOWN_CLASSES, MARKDOWN_LIMITS } = markdown;
 const { buildHistory, historyRow, formatDuration, formatTokens, normalizeQuery } = history;
 
 const failures = [];
@@ -45,6 +45,13 @@ function tags(result) {
   const seen = [];
   walk(result.nodes, (node) => { if (node.tag) seen.push(node.tag); });
   return seen;
+}
+// Every node here becomes one real DOM node in the browser, so the node cap is
+// only meaningful when the text nodes are counted alongside the elements.
+function nodeCount(result) {
+  let total = 0;
+  walk(result.nodes, () => { total += 1; });
+  return total;
 }
 function textOf(result) {
   let out = "";
@@ -201,6 +208,39 @@ function result_has_truncation_notice(result) {
   return noticeKinds(result).some((kind) => kind.endsWith("_truncated"));
 }
 check("an enormous report emits a bounded node count", tags(bounded).length <= 12_001, String(tags(bounded).length));
+check("an enormous report counts every node against the cap",
+  nodeCount(bounded) <= MARKDOWN_LIMITS.maxNodes, String(nodeCount(bounded)));
+
+// A pipe table is the cheapest way to ask for an enormous number of nodes from
+// a small amount of source: one line of pipes buys a cell for every column. The
+// paragraph case above cannot catch a block that meters itself once and then
+// emits without limit, so the table is driven on its own.
+const columns = 60;
+const tableRow = (cell) => `|${` ${cell} |`.repeat(columns)}`;
+const tableOnly = [
+  tableRow("head"),
+  tableRow("---"),
+  ...Array.from({ length: 8_000 }, (_unused, row) => tableRow(`r${row}`)),
+].join("\n");
+const tableStarted = Date.now();
+const tableBounded = renderMarkdown(tableOnly);
+check("a table-only report renders within a few seconds", Date.now() - tableStarted < 10_000, `${Date.now() - tableStarted}ms`);
+check("a table-only report emits no node beyond the cap",
+  nodeCount(tableBounded) <= MARKDOWN_LIMITS.maxNodes, String(nodeCount(tableBounded)));
+check("a table-only report reports its node budget as spent", tableBounded.truncated.nodes === true, JSON.stringify(tableBounded.truncated));
+check("a table-only report discloses that it was cut short",
+  noticeKinds(tableBounded).includes("nodes_truncated"), JSON.stringify(noticeKinds(tableBounded)));
+const tableForbidden = tags(tableBounded).filter((tag) => !MARKDOWN_TAGS.has(tag));
+check("a table-only report emits no unexpected tag", tableForbidden.length === 0, tableForbidden.join(","));
+// A table small enough to fit the budget still renders whole, so the metering
+// cannot be mistaken for the renderer simply refusing large tables.
+const smallTable = renderMarkdown([
+  "| field | value |",
+  "| --- | --- |",
+  ...Array.from({ length: 40 }, (_unused, row) => `| row ${row} | value ${row} |`),
+].join("\n"));
+equal("a table within the budget keeps every row", tags(smallTable).filter((tag) => tag === "tr").length, 41);
+equal("a table within the budget reports nothing removed", smallTable.notices.length, 0);
 
 // --- ordinary Markdown still renders ------------------------------------------
 

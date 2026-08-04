@@ -500,9 +500,25 @@ function parseBlocks(lines, budget, depth) {
         rows.push(splitRow(lines[index]));
         index += 1;
       }
-      if (budget.spend()) {
-        const headCells = header.map((cell) => elementNode("th", parseInline(cell, budget, 0)));
-        const bodyRows = rows.map((row) => elementNode("tr", row.slice(0, header.length).map((cell) => elementNode("td", parseInline(cell, budget, 0)))));
+      // Every row and every cell is a node, so each one is metered. A document
+      // that is nothing but pipe characters would otherwise emit a cell per
+      // source column and walk straight past the node cap.
+      if (budget.spend() && budget.spend() && budget.spend() && budget.spend()) {
+        const headCells = [];
+        for (const cell of header) {
+          if (!budget.spend()) break;
+          headCells.push(elementNode("th", parseInline(cell, budget, 0)));
+        }
+        const bodyRows = [];
+        for (const row of rows) {
+          if (!budget.spend()) break;
+          const cells = [];
+          for (const cell of row.slice(0, header.length)) {
+            if (!budget.spend()) break;
+            cells.push(elementNode("td", parseInline(cell, budget, 0)));
+          }
+          bodyRows.push(elementNode("tr", cells));
+        }
         push(elementNode("table", [
           elementNode("thead", [elementNode("tr", headCells)]),
           elementNode("tbody", bodyRows),

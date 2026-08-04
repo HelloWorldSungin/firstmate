@@ -262,12 +262,29 @@ export function buildHistory(envelope, view = {}) {
   const usage = envelope?.usage && typeof envelope.usage === "object" ? envelope.usage : null;
   const rows = records.map((record) => historyRow(record, usage)).filter((row) => row.id);
 
+  const facets = {
+    project: facetValues(rows, "project"),
+    harness: facetValues(rows, "harness"),
+    model: facetValues(rows, "model"),
+    kind: facetValues(rows, "kind"),
+    outcome: facetValues(rows, "outcome"),
+  };
+  // A facet filter whose value no longer appears in anything that was read can
+  // never match, and a record can leave the read set at any time - by ageing
+  // past the record limit or by turning up malformed. Dropping it here, before
+  // the view is derived, is what keeps the controls and the list describing the
+  // same frame: a select reading "All projects" above an empty list would be
+  // the view contradicting itself.
+  const facetFilter = (key, raw) => {
+    const value = text(raw);
+    return facets[key].includes(value) ? value : "";
+  };
   const active = {
-    project: text(view.project),
-    harness: text(view.harness),
-    model: text(view.model),
-    kind: text(view.kind),
-    outcome: text(view.outcome),
+    project: facetFilter("project", view.project),
+    harness: facetFilter("harness", view.harness),
+    model: facetFilter("model", view.model),
+    kind: facetFilter("kind", view.kind),
+    outcome: facetFilter("outcome", view.outcome),
     from: text(view.from),
     to: text(view.to),
     query: normalizeQuery(view.query),
@@ -291,13 +308,7 @@ export function buildHistory(envelope, view = {}) {
 
   return {
     rows: visible,
-    facets: {
-      project: facetValues(rows, "project"),
-      harness: facetValues(rows, "harness"),
-      model: facetValues(rows, "model"),
-      kind: facetValues(rows, "kind"),
-      outcome: facetValues(rows, "outcome"),
-    },
+    facets,
     filters: active,
     page: {
       index,

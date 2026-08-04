@@ -451,6 +451,7 @@ class DashboardState {
     this.staleTimer = null;
     this.stopped = false;
     this.activeChild = null;
+    this.durablePending = false;
   }
 
   envelope() {
@@ -505,9 +506,14 @@ class DashboardState {
     }, Math.min(Math.max(0, remaining), 2_147_483_647));
   }
 
-  trigger(source) {
+  trigger(source, durable = false) {
     if (this.stopped) return;
     if (source === "file") {
+      // Only data/ can carry a completion manifest. state/<id>.status is
+      // appended continuously by every live agent, so a shared trigger would
+      // keep re-reading the whole durable archive for events that cannot
+      // change it.
+      if (durable) this.durablePending = true;
       clearTimeout(this.fileTimer);
       this.fileTimer = setTimeout(() => this.trigger("file-debounced"), FILE_DEBOUNCE_MS);
       return;
@@ -516,7 +522,10 @@ class DashboardState {
     // notification is what makes newly finished work appear in history without
     // a reload. Sharing the debounce keeps a burst of writes from turning into
     // a burst of history reads.
-    if (source === "file-debounced") this.history?.trigger();
+    if (source === "file-debounced" && this.durablePending) {
+      this.durablePending = false;
+      this.history?.trigger();
+    }
     if (this.refreshing) {
       this.pending = true;
       return;
@@ -570,11 +579,12 @@ class DashboardState {
     this.heartbeatTimer = setInterval(() => {
       for (const response of this.clients.set) response.write(`: heartbeat ${Date.now()}\n\n`);
     }, SSE_HEARTBEAT_MS);
-    for (const directory of ["data", "state", "projects"].map((name) => path.join(this.config.fmHome, name))) {
+    for (const name of ["data", "state", "projects"]) {
+      const directory = path.join(this.config.fmHome, name);
       try {
         const info = await stat(directory);
         if (!info.isDirectory()) continue;
-        const watcher = watch(directory, { persistent: false }, () => this.trigger("file"));
+        const watcher = watch(directory, { persistent: false }, () => this.trigger("file", name === "data"));
         watcher.on("error", () => {});
         this.watchers.push(watcher);
       } catch {
@@ -654,38 +664,42 @@ async function serveReport(request, response, history, config) {
 
   const file = path.join(config.dataDir, id, "report.md");
   let size = 0;
+  let truncated = false;
+  let text;
+  // The containment check and the read that trusts it belong to the same
+  // guarded block. Cleanup can remove the directory between them, and a read
+  // that failed after the check would otherwise reject with nobody to catch it.
   try {
     const info = await lstat(file);
     if (!info.isFile()) throw new Error("not a regular file");
     const [resolved, dataRoot] = await Promise.all([realpath(file), realpath(config.dataDir)]);
     if (resolved !== path.join(dataRoot, id, "report.md")) throw new Error("resolved outside the data directory");
     size = info.size;
+    truncated = size > config.reportMaxBytes;
+    if (truncated) {
+      const handle = await open(file, "r");
+      try {
+        const buffer = Buffer.alloc(config.reportMaxBytes);
+        const { bytesRead } = await handle.read(buffer, 0, config.reportMaxBytes, 0);
+        text = new TextDecoder("utf-8").decode(buffer.subarray(0, bytesRead));
+      } finally {
+        await handle.close();
+      }
+    } else {
+      text = new TextDecoder("utf-8").decode(await readFile(file));
+    }
   } catch {
     sendJson(response, 404, {
       schema: REPORT_SCHEMA,
       task_id: id,
       present: false,
-      // The manifest says a report was retained and the file is gone or is no
-      // longer a plain file. That is a fact worth showing, not a blank panel.
+      // The manifest says a report was retained and the file is gone, is no
+      // longer a plain file, or cannot be read. That is a fact worth showing,
+      // not a blank panel.
       reason: "report_missing",
       recorded_path: typeof record.report.path === "string" ? record.report.path : null,
     });
     return;
-  }
-
-  const truncated = size > config.reportMaxBytes;
-  let text;
-  if (truncated) {
-    const handle = await open(file, "r");
-    try {
-      const buffer = Buffer.alloc(config.reportMaxBytes);
-      const { bytesRead } = await handle.read(buffer, 0, config.reportMaxBytes, 0);
-      text = new TextDecoder("utf-8").decode(buffer.subarray(0, bytesRead));
-    } finally {
-      await handle.close();
-    }
-  } else {
-    text = new TextDecoder("utf-8").decode(await readFile(file));
   }
 
   sendJson(response, 200, {
@@ -767,6 +781,14 @@ async function main() {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 }
+
+// Every request handler is an async callback, so a rejection one of them fails
+// to catch would reach Node's default --unhandled-rejections=throw and take the
+// whole view down. A read-only loopback dashboard reports the request it could
+// not answer and keeps serving the rest.
+process.on("unhandledRejection", (error) => {
+  console.error(`fm-dashboard: unhandled rejection: ${safeText(error instanceof Error ? error.message : String(error))}`);
+});
 
 main().catch((error) => {
   console.error(`fm-dashboard: ${safeText(error.message)}`);
