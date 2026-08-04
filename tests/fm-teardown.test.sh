@@ -927,13 +927,13 @@ test_ignored_content_refuses_while_allowlisted_harness_files_do_not() {
   case_dir=$(make_case ignored-content)
   write_meta "$case_dir" no-mistakes ship
   claude_dispatch_meta "$case_dir" >/dev/null
-  never_started_worktree "$case_dir"
-  install_authoritative_dead_tmux "$case_dir"
   printf 'build/\n' > "$case_dir/wt/.gitignore"
   git -C "$case_dir/wt" add -- .gitignore
   git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore build output"
-  git -C "$case_dir/wt" checkout --detach -q
-  git -C "$case_dir/project" branch -D fm/task-x1 >/dev/null 2>&1 || true
+  git -C "$case_dir/project" merge -q --ff-only fm/task-x1
+  git -C "$case_dir/project" push -q origin main
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
   mkdir -p "$case_dir/wt/build"
   printf 'hours of generated work\n' > "$case_dir/wt/build/artifact.txt"
 
@@ -954,11 +954,15 @@ test_allowlisted_harness_files_still_tear_down() {
   case_dir=$(make_case ignored-allowlisted)
   write_meta "$case_dir" no-mistakes ship
   claude_dispatch_meta "$case_dir" >/dev/null
+  printf '.claude/\n' > "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add -- .gitignore
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore harness files"
+  git -C "$case_dir/project" merge -q --ff-only fm/task-x1
+  git -C "$case_dir/project" push -q origin main
   never_started_worktree "$case_dir"
   install_authoritative_dead_tmux "$case_dir"
   mkdir -p "$case_dir/wt/.claude"
   printf '{}\n' > "$case_dir/wt/.claude/settings.local.json"
-  printf 'x\n' > "$case_dir/wt/.fm-grok-turnend"
 
   rc=0
   FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \

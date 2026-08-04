@@ -408,11 +408,12 @@ worker_left_nothing_to_preserve() {
   git -C "$wt" show-ref --verify --quiet "$task_ref" 2>/dev/null
   ref_rc=$?
   [ "$ref_rc" -eq 1 ] || return 1
-  # --untracked-files=all does NOT report ignored content, and plain --ignored
-  # collapses an ignored directory into one summary line. `--ignored=matching`
-  # with it lists every ignored FILE, so no directory entry can stand in for
-  # arbitrarily much real work underneath it.
-  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null) || return 1
+  # This check must enumerate files: `--ignored=traditional` together with
+  # `--untracked-files=all` does so for ignored and untracked content. Any
+  # status mode that can collapse a directory into a single entry silently
+  # breaks the exact-file allowlist, so these flags are load-bearing and must
+  # not be simplified.
+  dirty_raw=$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) || return 1
   dirty=$(worktree_changes_except_harness_files "$dirty_raw")
   [ -z "$dirty" ] || return 1
   # Reachability from an existing branch, not remote-tracking state: it answers
