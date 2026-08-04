@@ -71,7 +71,8 @@ Nothing may render them as verified.
 Only the exact record `model=default` is unpinned.
 A missing or empty `model=` is malformed dispatch metadata and therefore `unverifiable`.
 
-`unverifiable` covers a harness with no evidence adapter, a recorded evidence store that is missing or inaccessible, a transcript parent or session path entry that exists as a non-directory or broken symbolic link or is inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+`unverifiable` covers a harness with no evidence adapter, a durable record with no persisted evidence-store identity, a recorded evidence store that is missing or inaccessible, a transcript parent or session path entry that exists as a non-directory or broken symbolic link or is inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+The verifier never substitutes its ambient Claude store when the durable record names none, because absence in an unrecorded location cannot prove that the worker produced no evidence.
 `unstarted` is separated from it because the two ask different questions of a caller: evidence that exists or may exist behind an uninspectable path may belong to a worker that ran, while a genuinely absent transcript parent or per-worktree session path entry beneath an inspectable store has no turn of its own to read at all.
 Neither is a pass, and both exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
@@ -123,8 +124,9 @@ The allowance requires four backend-independent protections to hold together: no
 A recovery-grade classifier that authoritatively reports a live worker refuses and preserves the endpoint, worktree, and metadata.
 A recovery-grade `dead` or `missing` result permits the best-effort close and on-disk proof to decide, while `ambiguous`, `unreadable`, or `unverified` liveness is stated plainly and does not become either a safety proof or a permanent block.
 A turn or worktree change observed by the recomputation refuses under the ordinary terminal-verdict and work-preservation rules.
-When liveness is unknown, task cleanup publishes the durable outcome and removes the volatile task records, but retains the worktree and task temp root rather than resetting, returning, removing, or recycling them.
-The teardown output names the retained worktree and the unknown-liveness reason, leaving any later committed or uncommitted write recoverable.
+When liveness is unknown or the durable record has no persisted evidence-store identity, task cleanup publishes the durable outcome and removes the volatile task records, but retains the worktree and task temp root rather than resetting, returning, removing, or recycling them.
+An unknown evidence location cannot satisfy the no-turn proof and therefore never authorizes recycling; cleanup completes only when the independent worktree proof holds and retention makes the operation non-destructive.
+The teardown output names the retained worktree and each unknown reason, leaving any later committed or uncommitted write recoverable.
 The residual gap pending separately tracked confirmed-termination support is one possible unverified model attribution: a worker that begins its first turn after the final recomputation can write routing evidence while its task records are being removed, but no path discards its worktree contents.
 The absent verdict is stated plainly in the teardown output either way.
 Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
@@ -148,7 +150,7 @@ It also proves that bounded secondmate-home summaries do not scan model transcri
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
 It also owns the never-started boundary: both no-turn shapes and a fresh inspectable store with no transcript parent tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, uncommitted changes including any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced during the best-effort close before the final recomputation.
-The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, and unknown liveness completes record cleanup with explicit disclosure while retaining the worktree and task temp root.
+The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, and unknown liveness or a missing persisted evidence-store identity completes record cleanup with explicit disclosure while retaining the worktree and task temp root.
 
 Run:
 

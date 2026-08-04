@@ -523,13 +523,9 @@ verify_one() {  # <id>
         return
         ;;
     esac
-  elif [ "$anchor_present" -eq 1 ] || [ -n "$watermark" ]; then
+  else
     VERDICT=unverifiable
     DETAIL="durable record names no model-evidence store for this dispatch"
-    return
-  elif ! store=$(canonical_path "$(claude_config_dir)"); then
-    VERDICT=unverifiable
-    DETAIL="legacy model-evidence store could not be canonicalized"
     return
   fi
 

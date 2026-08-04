@@ -883,6 +883,39 @@ test_unknown_liveness_completes_cleanup_and_retains_worktree() {
   pass "unknown endpoint liveness completes cleanup and retains the worktree"
 }
 
+test_missing_recorded_store_completes_cleanup_and_retains_worktree() {
+  local case_dir rc
+  case_dir=$(make_case missing-recorded-store)
+  write_meta "$case_dir" no-mistakes ship
+  sed -i.bak 's/^model=default$/model=opus/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' 'harness=claude' >> "$case_dir/state/task-x1.meta"
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+  mkdir -p "$case_dir/ambient-claude/projects"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "missing-recorded-store: retained cleanup did not complete"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "missing-recorded-store: the missing store identity was not unverifiable"
+  assert_grep "durable record names no model-evidence store" "$case_dir/stderr" \
+    "missing-recorded-store: the unknown evidence location was not stated"
+  assert_grep "worktree $case_dir/wt is retained rather than recycled because the model-evidence location could not be determined" "$case_dir/stderr" \
+    "missing-recorded-store: the retained path and reason were not stated"
+  assert_absent "$case_dir/treehouse-returned" \
+    "missing-recorded-store: the retained worktree reached treehouse return"
+  assert_present "$case_dir/wt" "missing-recorded-store: the retained worktree was removed"
+  assert_present "$case_dir/data/task-x1/outcome.json" \
+    "missing-recorded-store: the durable outcome was not published"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "missing-recorded-store: task metadata was left behind"
+  pass "a missing recorded evidence store completes cleanup and retains the worktree"
+}
+
 test_authoritative_dead_endpoint_recycles_worktree() {
   local case_dir rc
   case_dir=$(make_case authoritative-dead-endpoint)
@@ -2526,6 +2559,7 @@ test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
 test_first_turn_before_final_recompute_refuses
 test_unknown_liveness_completes_cleanup_and_retains_worktree
+test_missing_recorded_store_completes_cleanup_and_retains_worktree
 test_authoritative_dead_endpoint_recycles_worktree
 test_authoritative_live_endpoint_refuses
 test_recomputed_on_disk_proof_refuses_each_failed_condition

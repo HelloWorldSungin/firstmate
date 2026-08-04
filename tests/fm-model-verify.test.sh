@@ -229,6 +229,19 @@ assert_not_contains "$out" "verdict: unstarted" "a missing evidence store is not
 assert_contains "$out" "model-evidence store is missing" "the unverifiable reason names the missing store"
 pass "a missing recorded evidence store is not mistaken for an unstarted worker"
 
+wt=$(meta legacy-missing-store opus)
+sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/legacy-missing-store.meta"
+rm -f "$HOME_DIR/state/legacy-missing-store.meta.bak"
+out=$(run_verify legacy-missing-store); code=$?
+expect_code 4 "$code" "a legacy record without an evidence-store identity exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "a legacy record without an evidence-store identity remains unverifiable"
+assert_not_contains "$out" "verdict: unstarted" \
+  "ambient session absence did not authorize an unstarted verdict"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "the unverifiable reason names the unknown evidence location"
+pass "a missing persisted evidence-store identity never falls back to ambient state"
+
 out=$(run_verify never-dispatched); code=$?
 expect_code 4 "$code" "absent durable record exits 4"
 assert_contains "$out" "verdict: unverifiable" "no record means no verdict, loudly"
@@ -474,8 +487,8 @@ out=$(CLAUDE_CONFIG_DIR="$newline_root-link" run_verify newline-store); code=$?
 expect_code 4 "$code" "newline-bearing physical evidence store exits 4"
 assert_contains "$out" "verdict: unverifiable" \
   "newline-bearing physical evidence store did not fail loudly"
-assert_contains "$out" "could not be canonicalized" \
-  "newline-bearing physical evidence store lost its failure cause"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "an unrecorded ambient store did not become authoritative"
 assert_not_contains "$out" "verdict: match" \
   "newline-bearing physical evidence store manufactured a match"
 pass "newline-bearing physical evidence stores are unverifiable"
@@ -490,20 +503,23 @@ write_transcript "$wt" b claude-opus-4-8
 out=$(run_verify unbound-ambiguous); code=$?
 expect_code 4 "$code" "unattributable evidence exits 4"
 assert_contains "$out" "verdict: unverifiable" "disagreeing unbound evidence is unverifiable"
-pass "unattributable evidence fails loudly instead of guessing"
+assert_contains "$out" "durable record names no model-evidence store" \
+  "unbound evidence did not bypass the missing recorded store"
+pass "unbound evidence without a recorded store fails loudly"
 
-# Unbound but unanimous evidence is still attributable, and discloses that the
-# scan was not time-bounded.
+# Unanimous ambient evidence is not attributable without a persisted store.
 wt=$(meta unbound-agreed opus)
 sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/unbound-agreed.meta"
 rm -f "$HOME_DIR/state/unbound-agreed.meta.bak"
 write_transcript "$wt" a claude-opus-5
 write_transcript "$wt" b claude-opus-5
 out=$(run_verify unbound-agreed); code=$?
-expect_code 0 "$code" "unanimous unbound evidence does not alarm"
-assert_contains "$out" "verdict: match" "unanimous evidence is attributable"
-assert_contains "$out" "not time-bounded" "the weaker binding is disclosed rather than hidden"
-pass "unbound but unanimous evidence is matched with disclosure"
+expect_code 4 "$code" "unanimous ambient evidence without a recorded store exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "unanimous ambient evidence without a recorded store remains unverifiable"
+assert_not_contains "$out" "verdict: match" \
+  "unanimous ambient evidence did not manufacture an authoritative match"
+pass "unanimous ambient evidence requires a recorded store identity"
 
 # --- secondmate: the worker runs in its own home, not a worktree ------------
 

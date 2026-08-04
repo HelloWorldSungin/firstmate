@@ -366,24 +366,35 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
-# The two helpers below draw ONE boundary inside the model-routing refusal: a
-# worker that RAN without a usable verdict still blocks non-forced cleanup,
-# while a worker that never reached its first model-attributed turn does not.
-# The second case can never produce a verdict no matter how long it is kept, so
-# the refusal there is permanent rather than protective - and permanent refusal
-# also strands the endpoint name the task holds. The distinction is drawn on
-# evidence, never on a flag: no turn of its own AND nothing in the worktree
-# worth keeping. Either half alone still refuses.
+# The helpers below distinguish a proven no-turn worker from evidence whose
+# location was never persisted. A clean proven no-turn worker can complete
+# cleanup, while a clean worker with an unknown evidence location can complete
+# cleanup only by retaining its worktree. A worker that ran without a usable
+# verdict still blocks non-forced cleanup.
 
 # 0 iff this verdict means the worker never produced a model-attributed turn.
-# Every other no-verdict cause - unreadable evidence, an absent adapter, jq
-# missing, evidence that cannot be attributed - is a worker that may well have
-# run, and keeps refusing.
+# Every other no-verdict cause is handled separately: unreadable evidence, an
+# absent adapter, jq missing, and evidence that cannot be attributed keep
+# refusing, while a missing persisted evidence-store identity retains the
+# worktree during cleanup.
 model_verdict_precedes_any_turn() {  # <verdict>
   case "$1" in
     unstarted|pending) return 0 ;;
   esac
   return 1
+}
+
+model_verdict_has_unknown_evidence_location() {  # <verdict> <detail>
+  local rc
+  [ "$1" = unverifiable ] \
+    && [ "$2" = "durable record names no model-evidence store for this dispatch" ] \
+    || return 1
+  if grep -q '^model_evidence_store=' "$META" 2>/dev/null; then
+    return 1
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ]
 }
 
 worktree_changes_except_harness_files() {  # <porcelain-status>
@@ -436,18 +447,19 @@ refresh_terminal_model_verdict() {
   esac
   MODEL_VERDICT=${MODEL_VERIFY_OUTPUT#*' · verdict: '}
   MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
+  MODEL_VERDICT_DETAIL=${MODEL_VERIFY_OUTPUT##*' · '}
 }
 
-attempt_no_turn_endpoint_close() {
-  NO_TURN_LIVENESS_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
-  case "$NO_TURN_LIVENESS_STATE" in
+attempt_no_verdict_endpoint_close() {
+  NO_VERDICT_LIVENESS_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$NO_VERDICT_LIVENESS_STATE" in
     alive)
       echo "REFUSED: task $ID has a live worker according to backend $BACKEND; preserving its endpoint, worktree, and metadata." >&2
       return 1
       ;;
     dead|missing) ;;
     *)
-      NO_TURN_LIVENESS_UNDETERMINED=1
+      NO_VERDICT_LIVENESS_UNDETERMINED=1
       ;;
   esac
 
@@ -475,10 +487,11 @@ attempt_no_turn_endpoint_close() {
 # complete before fm-guard, a backend command, file removal, branch deletion,
 # worktree return, registry change, or process termination can run.
 fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
-NO_TURN_ALLOWANCE_CANDIDATE=0
-NO_TURN_LIVENESS_UNDETERMINED=0
-NO_TURN_LIVENESS_STATE=not-checked
-NO_TURN_RETAIN_WORKTREE=0
+NO_VERDICT_CLEANUP_CANDIDATE=0
+NO_VERDICT_LIVENESS_UNDETERMINED=0
+NO_VERDICT_LIVENESS_STATE=not-checked
+NO_VERDICT_RETAIN_WORKTREE=0
+NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=0
 refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
@@ -487,7 +500,11 @@ refresh_terminal_model_verdict
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
-    NO_TURN_ALLOWANCE_CANDIDATE=1
+    NO_VERDICT_CLEANUP_CANDIDATE=1
+  elif model_verdict_has_unknown_evidence_location "$MODEL_VERDICT" "$MODEL_VERDICT_DETAIL" \
+       && worker_left_nothing_to_preserve; then
+    NO_VERDICT_CLEANUP_CANDIDATE=1
+    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=1
   else
     echo "REFUSED: task $ID has no successful terminal model-routing verdict; preserving its worktree and metadata." >&2
     exit 1
@@ -1991,35 +2008,65 @@ if [ "$BACKEND" = herdr ] \
   fi
 fi
 
-if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
+if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
   # fm_backend_target_exists intentionally maps read failures onto false for
   # cheap observational callers, so a failure-collapsing helper cannot be used
   # as a destructive safety predicate without a stronger wrapper.
-  attempt_no_turn_endpoint_close || exit 1
+  attempt_no_verdict_endpoint_close || exit 1
   refresh_terminal_model_verdict
   printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
-  if ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
-    echo "REFUSED: task $ID gained a model-attributed turn before cleanup; preserving its worktree and metadata." >&2
+  if model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
+    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=0
+  elif model_verdict_has_unknown_evidence_location "$MODEL_VERDICT" "$MODEL_VERDICT_DETAIL"; then
+    NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED=1
+  else
+    case "$MODEL_VERDICT" in
+      match|mismatch)
+        echo "REFUSED: task $ID gained a model-attributed turn before cleanup; preserving its worktree and metadata." >&2
+        ;;
+      *)
+        echo "REFUSED: task $ID model-routing evidence became unverifiable before cleanup; preserving its worktree and metadata." >&2
+        ;;
+    esac
     exit 1
   fi
   if ! worker_left_nothing_to_preserve; then
     echo "REFUSED: task $ID gained work before cleanup; preserving its worktree and metadata." >&2
     exit 1
   fi
-  echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
-  if [ "$NO_TURN_LIVENESS_UNDETERMINED" -eq 1 ]; then
-    NO_TURN_RETAIN_WORKTREE=1
-    echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_TURN_LIVENESS_STATE)." >&2
-    echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because liveness could not be determined." >&2
+  if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
+    NO_VERDICT_RETAIN_WORKTREE=1
+    echo "teardown: task $ID has no recorded model-evidence store, so its evidence location is unknown and no authoritative model-routing verdict could be obtained." >&2
   else
-    echo "Backend $BACKEND reports no live worker (state: $NO_TURN_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; proceeding." >&2
+    echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
+  fi
+  if [ "$NO_VERDICT_LIVENESS_UNDETERMINED" -eq 1 ]; then
+    NO_VERDICT_RETAIN_WORKTREE=1
+    echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_VERDICT_LIVENESS_STATE)." >&2
+  fi
+  if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
+    if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ] \
+       && [ "$NO_VERDICT_LIVENESS_UNDETERMINED" -eq 1 ]; then
+      retain_reason="the model-evidence location and endpoint liveness could not be determined"
+    elif [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
+      retain_reason="the model-evidence location could not be determined"
+    else
+      retain_reason="liveness could not be determined"
+    fi
+    if [ "$NO_VERDICT_EVIDENCE_LOCATION_UNDETERMINED" -eq 1 ]; then
+      echo "The recomputed worktree proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
+    else
+      echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; task cleanup will proceed while worktree $WT is retained rather than recycled because $retain_reason." >&2
+    fi
+  else
+    echo "Backend $BACKEND reports no live worker (state: $NO_VERDICT_LIVENESS_STATE), and the recomputed on-disk proof found no task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files; proceeding." >&2
   fi
 fi
 
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-if [ "$NO_TURN_RETAIN_WORKTREE" -eq 1 ]; then
+if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
   :
 elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2108,14 +2155,15 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
 fi
-# Every refusal gate has passed and the endpoint is confirmed gone, so this is
-# the last point at which the records the manifest is composed from all still
-# exist: a retired secondmate's own state and data directories can live INSIDE
-# the home removed on the next line.
+# Every refusal gate has passed, and any worktree whose endpoint liveness or
+# evidence location remains unconfirmed was retained rather than recycled, so
+# this is the last point at which the records the manifest is composed from all
+# still exist: a retired secondmate's own state and data directories can live
+# INSIDE the home removed on the next line.
 publish_outcome_manifest "$FORCE" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
-  if [ "$NO_TURN_RETAIN_WORKTREE" -ne 1 ]; then
+  if [ "$NO_VERDICT_RETAIN_WORKTREE" -ne 1 ]; then
     remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
   fi
   remove_secondmate_registry_entry "$ID"
@@ -2131,7 +2179,7 @@ if [ -n "$T" ]; then
 fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-if [ "$NO_TURN_RETAIN_WORKTREE" -ne 1 ] && [ -n "$TASK_TMP" ]; then
+if [ "$NO_VERDICT_RETAIN_WORKTREE" -ne 1 ] && [ -n "$TASK_TMP" ]; then
   rm -rf "$TASK_TMP"
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
