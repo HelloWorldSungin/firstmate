@@ -63,6 +63,13 @@ init_repo() {
   git -C "$dir" init -q
   git -C "$dir" config user.name fmtest
   git -C "$dir" config user.email fmtest@example.invalid
+  # Git 2.54 runs automatic maintenance by default. Against the rapid fixture
+  # commits below it races the index and deletes loose objects those commits
+  # still reference, failing the build with "invalid object". Fixture history
+  # has to be deterministic, and nothing here is large enough to need
+  # maintenance. gc.auto=0 alone does not cover it: this is the maintenance
+  # path, not the gc one.
+  git -C "$dir" config maintenance.auto false
   commit_at "$dir" "$epoch" README.md "# $(basename "$dir")" initial
 }
 
