@@ -19,6 +19,7 @@ Copy the tracked service and health-check files to their absolute paths under `/
 The service requires `loginctl enable-linger sungin` so the user manager starts at boot without an interactive login.
 Reload and enable the service with `systemctl --user daemon-reload` and `systemctl --user enable --now gbrain-embedding.service`.
 Run the health check with `/home/sungin/.local/gbrain-endpoints/bin/check-embedding.sh`.
+The tracked unit owns the boot target, on-failure restart policy, and per-unit journal rate limit.
 
 ## GBrain #6 configuration and probe
 
@@ -55,4 +56,4 @@ curl --fail --silent --show-error http://127.0.0.1:11434/v1/embeddings \
 
 The expected result identifies `snowflake-arctic-embed2:568m` and reports `dimensions: 1024`.
 The endpoint is local and requires no API key.
-The current service-recovery and local-network evidence is in [`verification/gbrain-embedding.md`](verification/gbrain-embedding.md).
+The current service-recovery and local-network evidence, including the tracked unit revision it covers, is in [`verification/gbrain-embedding.md`](verification/gbrain-embedding.md).
