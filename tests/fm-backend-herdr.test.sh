@@ -2650,6 +2650,50 @@ test_composer_state_bare_prompt_is_empty() {
   pass "fm_backend_herdr_composer_state: a bare '❯' composer row reads empty"
 }
 
+# Live-captured incident (task fm-afk-injection-wedge): real claude 2.x under
+# herdr 0.7.5 renders its EMPTY composer as a bare `❯` padded with U+00A0
+# NO-BREAK SPACE, between two `─` rules. Bash's `[:space:]` trims do not treat
+# U+00A0 as whitespace under any locale the fleet runs, so the pad survived
+# trimming as "real typed content", the row read `pending`, and
+# the away-mode injector deferred every escalation against an idle, injectable
+# primary for as long as the captain stayed away. The rows below are the exact
+# shape captured from the live primary pane; the ❯ row's bytes are spelled out
+# so the NBSP pad cannot be silently normalized away by an editor.
+test_composer_state_claude_nbsp_pad_is_empty() {
+  local dir log resp fb out rule
+  dir="$TMP_ROOT/composer-nbsp"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  rule=$(printf '\xe2\x94\x80%.0s' $(seq 53))
+  { printf '%s\n' "$rule"
+    printf '\xe2\x9d\xaf\xc2\xa0\n'
+    printf '%s\n' "$rule"
+    printf '  Opus 5 (1M context) (xhigh) | Context: 47%% used\n'
+  } > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "a real claude empty composer padded with U+00A0 must read empty (this is the away-mode injection wedge), got '$out'"
+  pass "fm_backend_herdr_composer_state: claude's U+00A0-padded empty composer reads empty, not pending (the wedge fix)"
+}
+
+# The same row carrying real text must still refuse injection: the NBSP fold
+# must not become a general "treat a non-empty composer as empty" escape.
+test_composer_state_claude_nbsp_pad_with_text_is_pending() {
+  local dir log resp fb out rule
+  dir="$TMP_ROOT/composer-nbsp-text"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  rule=$(printf '\xe2\x94\x80%.0s' $(seq 53))
+  { printf '%s\n' "$rule"
+    printf '\xe2\x9d\xaf\xc2\xa0half-typed question for the captain\n'
+    printf '%s\n' "$rule"
+  } > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = pending ] \
+    || fail "real unsubmitted text after an NBSP pad must still read pending, got '$out'"
+  pass "fm_backend_herdr_composer_state: real text after a U+00A0 pad still reads pending (no over-strip)"
+}
+
 test_composer_state_ghost_placeholder_is_empty() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-ghost"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3961,6 +4005,8 @@ test_busy_state_unknown_on_no_agent
 test_composer_state_bare_prompt_is_empty
 test_composer_state_ghost_placeholder_is_empty
 test_composer_state_real_text_is_pending
+test_composer_state_claude_nbsp_pad_is_empty
+test_composer_state_claude_nbsp_pad_with_text_is_pending
 test_composer_state_popup_placeholder_fill_is_pending
 test_composer_state_unknown_on_capture_failure
 test_composer_state_unknown_when_no_composer_row_found

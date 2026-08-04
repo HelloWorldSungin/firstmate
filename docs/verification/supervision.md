@@ -292,3 +292,60 @@ Observed output:
 ```
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
+
+## Composer emptiness on an idle primary
+
+The away-mode injector types only into an affirmatively `empty` composer, so what a real idle primary renders decides whether escalations are delivered or deferred.
+This pass ran on 2026-08-01 with Claude Code 2.1.220 under Herdr 0.7.5 on Linux, against the live primary supervisor pane, and with GNU bash 5.2.21.
+
+Claude renders its EMPTY composer row as the agent glyph followed by a NO-BREAK SPACE, not an ASCII space:
+
+```sh
+herdr pane read <pane> --format ansi | hexdump -C   # composer row only
+```
+
+Observed output:
+
+```
+00000000  e2 9d af c2 a0 0d                                 |......|
+```
+
+Those bytes are `❯` (U+276F), U+00A0 NO-BREAK SPACE, and CR.
+
+Bash's own `[:space:]` trims leave that pad in place under every locale the fleet runs:
+
+```sh
+for L in C C.utf8 en_US.utf8 POSIX; do
+  ( export LC_ALL=$L; c=$(printf '\xe2\x9d\xaf\xc2\xa0'); printf '%s' "${c%"${c##*[![:space:]]}"}" | hexdump -C | head -1 )
+done
+```
+
+Observed output, identical for all four locales and showing the pad surviving as apparent typed content:
+
+```
+00000000  e2 9d af c2 a0                                    |.....|
+```
+
+Check this with bash rather than grep: glibc's `grep -E '^[[:space:]]+$'` DOES match U+00A0 in both C and `en_US.utf8`, so a grep spot check suggests the opposite of what the trims actually do.
+`fm_composer_blank_normalize` (`bin/fm-composer-lib.sh`) folds U+00A0 and the other non-ASCII blank and zero-width characters to an ASCII space before the verdict, which is safe in one direction only: every folded character is invisible, so any visible byte still reads `pending`.
+
+Under an EXPORTED C/POSIX locale, bash counts pattern-prefix characters as bytes, so a leading multibyte glyph must be removed as a literal prefix rather than by character count:
+
+```sh
+( export LC_ALL=C; c='❯ hello'; printf '%s' "${c#??}" | hexdump -C )
+```
+
+Observed output, the two trailing bytes of `❯` surviving as spurious content:
+
+```
+00000000  af 20 68 65 6c 6c 6f                              |. hello|
+```
+
+Both conditions are covered by `tests/fm-composer-lib.test.sh` and, at the adapter level with the captured row, by `tests/fm-backend-herdr.test.sh`.
+
+A genuinely mid-turn primary is a separate case that the current away-mode path deliberately does not inject into.
+Herdr's native agent state reports `busy` for a Claude pane during its turn, so the busy guard rejects `inject_msg` rather than typing into an in-use composer.
+`escalate_flush` retains the durable buffer after that rejection, and every housekeeping retry follows the same guarded path until the turn ends.
+Normal pane delivery resumes after the turn ends, but this does not provide in-turn responsiveness and can defer for the full duration of the turn.
+For a genuinely urgent away-mode escalation, configure the existing active alert through `config/wedge-alarm`, whose channel contract is owned by [`docs/wedge-alarm.md`](../wedge-alarm.md).
+That alert reports the delivery wedge and points to the durable marker, but it does not carry the buffered escalation digest itself.
