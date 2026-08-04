@@ -2,13 +2,16 @@
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
 # and keeps blocking; it queues and exits only for actionable wakes.
-# The no-verb signal and stale path is absorb-only-when-provably-working: a wake
-# is absorbed only when the crew shows POSITIVE evidence it is still working (an
-# actively-running no-mistakes step, or a backend busy signal), and surfaced
-# otherwise, so a crew that finishes (or stops and waits) without a current
-# working signal is never silently swallowed. A declared external-wait pause is
-# the separate idle absorb case and re-surfaces only on its long bounded cadence,
-# although its initial no-verb status signal still surfaces in normal mode.
+# The no-verb signal and first-sighting stale paths are
+# absorb-only-when-provably-working: a wake is absorbed only when the crew shows
+# POSITIVE evidence it is still working (an actively-running no-mistakes step,
+# or a backend busy signal), and surfaced otherwise, so a crew that finishes
+# without a current working signal is never silently swallowed. A declared
+# external-wait pause is the separate idle absorb case and re-surfaces only on
+# its long bounded cadence. A repaint-only repeat of an already-surfaced keyed
+# open-decision set is also absorbed, but a confidently dead parked agent still
+# enters the wedge timer. The initial no-verb status signal still surfaces in
+# normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -20,8 +23,11 @@
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
 #                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
-#                          absorb class applies does the log's last line decide:
+#                          re-surface cadence, never as a wedge. An unchanged keyed
+#                          open-decision set is deduped across pane repaint, unless
+#                          the backend confidently reports the parked agent dead and
+#                          routes it through the wedge timer. Only when none of these
+#                          absorb classes applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
@@ -124,20 +130,22 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
 # and ABSORBS the benign majority - it advances the suppression marker, logs to a
 # debug log, and keeps blocking WITHOUT enqueuing or exiting. The no-verb signal
-# / stale path is absorb-only-when-provably-working: such a wake is absorbed ONLY
-# while the crew shows positive evidence it is still working (an actively-running
-# no-mistakes step, or a busy pane, via crew_is_provably_working over
-# fm-crew-state.sh); a crew that stopped its turn with no running pipeline and no
+# / first-sighting stale path is absorb-only-when-provably-working: such a wake
+# is absorbed ONLY while the crew shows positive evidence it is still working
+# (an actively-running no-mistakes step, or a busy pane, via
+# crew_is_provably_working over fm-crew-state.sh); a crew that stopped its turn
+# with no running pipeline and no
 # busy pane is SURFACED, so a finish reported only through interactive pane menus
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
-# signal, a no-verb signal whose crew is not provably working, any check, a stale
-# pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
-# is what wakes the LLM through the background-task completion. The same classifier
+# signal, a no-verb signal whose crew is not provably working, any check, a
+# first-sighting stale pane whose crew is not provably working, a
+# provably-working stale past the threshold, or anything unknown) is written to
+# the durable queue and exits, which is what wakes the LLM through the
+# background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
-STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
+STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale or dead parked-decision repeat escalates as a possible wedge
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
@@ -178,7 +186,7 @@ _event_cap_fails=0
 afk_present() { [ -e "$STATE/.afk" ]; }
 
 hash_pane() {
-  if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
+  _fm_surface_digest
 }
 
 # window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
@@ -454,6 +462,16 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
+# 0 when a parked crew has stopped responding: its recorded endpoint no longer
+# carries a live agent. Only the confident `dead` verdict counts (an ambiguous,
+# unreadable, or unverified backend read stays absorbed), so suppressing the
+# repeat surface above never costs wedge detection for a parked crew that dies.
+parked_agent_is_dead() {  # <window>
+  local win=$1 state
+  state=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || return 1
+  [ "$state" = dead ]
+}
+
 surface_nonterminal_stale() {  # <window> <hash>
   local win=$1 h=$2 key task last
   key=$(printf '%s' "$win" | tr ':/.' '___')
@@ -641,7 +659,7 @@ mark_all_captain_relevant_surfaced() {
   local f task last
   while IFS=$(printf '\t') read -r f task last; do
     [ -n "$f" ] || continue
-    printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
+    mark_surfaced "$f"
   done < <(scan_captain_relevant_statuses "$STATE")
 }
 
@@ -1070,7 +1088,24 @@ EOF
           # line. On a NEW hash, give an active run/busy pane (the same
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
-          if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
+          #
+          # Key this one-shot on the complete open-decision set, not volatile
+          # pane bytes. mark_surfaced reconciles this marker for every surfaced
+          # status, while a confidently dead parked agent still advances the
+          # shared wedge timer below. docs/architecture.md owns the full wake
+          # contract.
+          did=$(open_decision_id "$task")
+          dsf="$STATE/.stale-decision-$key"
+          [ -n "$did" ] || rm -f "$dsf"
+          if [ -n "$did" ] && [ "$(cat "$dsf" 2>/dev/null || true)" = "$did" ]; then
+            printf '%s' "$h" > "$sf"
+            if parked_agent_is_dead "$w"; then
+              wedge_timer_check "$w" "$ssf" "stale (parked on an open decision, agent gone)" "$ewf"
+            else
+              rm -f "$ssf" "$ewf"
+              triage_log "absorbed stale (open decision already surfaced): $w"
+            fi
+          elif [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"

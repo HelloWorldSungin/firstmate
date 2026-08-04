@@ -515,6 +515,199 @@ test_stale_terminal_status_overridden_by_active_run() {
   pass "a stale terminal-looking status is overridden and absorbed while a run is actively working, then wedge-escalated"
 }
 
+# --- a parked keyed decision is surfaced once, not once per pane repaint -------
+# A parked decision is genuinely not working, so crew_is_provably_working rightly
+# refuses to absorb its first stale pane. The separate repaint suppressor must key
+# on the complete open-decision set so volatile footer changes alone stay silent.
+#
+# Fixture note: each phase primes .hash-/.count- so the FIRST poll already sees a
+# stably stale pane, exactly as the terminal-stale cases above do.
+prime_stale_pane() {  # <state> <window> <pane-text> <capture-file>
+  local state=$1 window=$2 text=$3 capture=$4 key
+  printf '%s' "$text" > "$capture"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text "$text")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+}
+
+# Prime the .seen-* signal suppressor for a status file so only the STALE path
+# under test can surface a wake (a status write otherwise fires its own signal).
+prime_status_seen() {  # <state> <task>
+  local state=$1 task=$2
+  printf '%s' "$(seen_sig "$state/$task.status")" > "$state/.seen-${task}_status"
+}
+
+test_parked_decision_survives_pane_repaint() {
+  local dir state fakebin out drain_out capture window pid
+  dir=$(make_case parked-decision-repaint); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  window="test:fm-parked"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parked.meta"
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    > "$state/parked.status"
+  # A live agent: this crew is waiting, not wedged.
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+
+  # Phase A: the normal first sighting is the status signal.
+  printf '%s' 'awaiting decision · context 41%' > "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a newly parked captain decision"
+  grep -F "signal: $state/parked.status" "$out" >/dev/null \
+    || fail "the parked decision did not print its initial status signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the parked decision failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "parked.status" >/dev/null \
+    || fail "the parked decision signal was not queued on its first sighting"
+
+  # Phase B: the pane repaints (a moving context percentage) while the SAME
+  # decision stays open. The hash changes; the decision does not. Nothing may
+  # surface.
+  : > "$out"
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 39%' "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a pane repaint re-surfaced an already-escalated parked decision: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a pane repaint printed a wake for an unchanged parked decision"
+  [ ! -s "$state/.wake-queue" ] || fail "a pane repaint queued a wake for an unchanged parked decision"
+  reap "$pid"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a parked keyed decision surfaces once, not once per pane repaint"
+}
+
+test_resolved_decision_can_reopen_identically() {
+  local dir state fakebin out capture window pid
+  dir=$(make_case parked-decision-reopen); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-reopen"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/reopen.meta"
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    > "$state/reopen.status"
+  prime_status_seen "$state" reopen
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 41%' "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface the original keyed decision"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  printf 'resolved [key=review-gate]: migration will ship as-is\n' >> "$state/reopen.status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "the decision resolution did not surface"
+  grep -F "signal: $state/reopen.status" "$out" >/dev/null || fail "the resolution did not print a signal wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    >> "$state/reopen.status"
+  prime_status_seen "$state" reopen
+  prime_stale_pane "$state" "$window" 'awaiting decision again · context 38%' "$capture"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an identical decision did not surface after resolving and reopening"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "the identically reopened decision did not print a stale wake"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a resolved keyed decision can reopen identically and surface again"
+}
+
+# The suppressor must be scoped to the open-decision set that was surfaced,
+# never to the pane: a genuinely NEW decision on the same repainting pane is new
+# work firstmate has not acted on and must wake normally. The status write's own
+# signal wake is suppressed here so only the stale path can surface it.
+test_new_keyed_decision_on_parked_pane_surfaces() {
+  local dir state fakebin out drain_out capture window pid
+  dir=$(make_case parked-decision-new-key); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  window="test:fm-parked2"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parked2.meta"
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    > "$state/parked2.status"
+  prime_status_seen "$state" parked2
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 41%' "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface the first parked decision"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  # A second, different decision opens on the same pane, which also repaints.
+  printf 'needs-decision [key=schema-choice]: single table or one per tenant\n' \
+    >> "$state/parked2.status"
+  prime_status_seen "$state" parked2
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 38%' "$capture"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a NEW keyed decision on a parked pane did not surface"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "the new keyed decision did not print a stale wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the new keyed decision failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null \
+    || fail "the new keyed decision was not queued"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a new keyed decision on an already-parked pane still surfaces"
+}
+
+# Suppressing the repeat surface must not cost wedge detection: a crew parked on
+# an open decision whose agent then dies is a wedge suspect and must escalate
+# through the shared timer. Only a confident dead verdict counts, so the live
+# agent above stays absorbed while a shell-at-the-prompt endpoint escalates.
+test_parked_decision_with_dead_agent_wedge_escalates() {
+  local dir state fakebin out capture window key pid
+  dir=$(make_case parked-decision-dead); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"
+  window="test:fm-parked3"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parked3.meta"
+  printf 'needs-decision [key=review-gate]: ship as-is or split the migration\n' \
+    > "$state/parked3.status"
+  prime_status_seen "$state" parked3
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 41%' "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface the parked decision before the wedge case"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > /dev/null 2>&1 || true
+
+  # The agent exits, leaving a bare shell at the endpoint, and the pane repaints
+  # once more. The decision is unchanged, so the repeat surface stays suppressed,
+  # but the wedge timer - backdated past the threshold - must still escalate.
+  export FM_FAKE_TMUX_CURRENT_COMMAND=zsh
+  prime_stale_pane "$state" "$window" 'awaiting decision · context 37%' "$capture"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a parked crew whose agent died was not detected as a wedge suspect"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the dead parked crew did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the dead parked crew was not flagged as a possible wedge"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a parked crew that stops responding is still detected as a wedge suspect"
+}
+
 # --- non-terminal stale, crew provably working: absorbed, then wedge-escalated ---
 # A provably-working crew (an actively-running pipeline) legitimately sits on a
 # static pane (e.g. waiting on CI), so a non-terminal stale is absorbed and only
@@ -1814,6 +2007,10 @@ test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
+test_parked_decision_survives_pane_repaint
+test_resolved_decision_can_reopen_identically
+test_new_keyed_decision_on_parked_pane_surfaces
+test_parked_decision_with_dead_agent_wedge_escalates
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
