@@ -8,7 +8,7 @@ The matching user service and health check are in [`deploy/gbrain-endpoints/`](.
 The endpoint is loopback-only at `http://127.0.0.1:11434/v1`.
 Use model `snowflake-arctic-embed2:568m` with `POST /embeddings`.
 The verified native vector width is 1024.
-The service pins the process to physical GPU 0 through `CUDA_VISIBLE_DEVICES=0`.
+The service pins the process to GPU `GPU-d8875f51-293f-a66f-71c2-b6da16c568d0` through `CUDA_VISIBLE_DEVICES`.
 The Ollama v0.32.5 archive SHA-256 is `f7d6bdbcf71b83aa8670c4e7dc4b6936c0952fcf8b114eaf6a11cbadb9684214`.
 The pulled model is F16 and its Ollama digest is `5de93a84837d0ff00da872e90830df5d973f616cbf1e5c198731ab19dd7b776b`.
 The underlying GGUF blob SHA-256 is `8c625c9569c3c799f5f9595b5a141f91d224233055608189d66746347c14e613`.
@@ -22,7 +22,25 @@ Run the health check with `/home/sungin/.local/gbrain-endpoints/bin/check-embedd
 
 ## GBrain #6 configuration and probe
 
-Initialize or configure GBrain with `--embedding-model ollama:snowflake-arctic-embed2:568m --embedding-dimensions 1024`.
+During story #6, initialize a new PGLite brain with:
+
+```sh
+OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  gbrain init --pglite \
+  --embedding-model ollama:snowflake-arctic-embed2:568m \
+  --embedding-dimensions 1024
+```
+
+For an existing PGLite brain, use the supported reinitialization path:
+
+```sh
+OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  gbrain reinit-pglite \
+  --embedding-model ollama:snowflake-arctic-embed2:568m \
+  --embedding-dimensions 1024
+```
+
+Reinitialization backs up and rebuilds the existing PGLite brain, so run it only as part of story #6.
 Verify the endpoint directly before initialization:
 
 ```sh
