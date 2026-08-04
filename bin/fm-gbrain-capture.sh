@@ -292,7 +292,7 @@ compose_task_body() {  # <task-id> <out>
     fi
     if [ "$report_present" -eq 1 ]; then
       printf '## Report\n\n'
-      cat "$report"
+      head -c "$FM_GBRAIN_CAPTURE_MAX_BYTES" "$report"
       printf '\n'
     fi
   } > "$out" || return 1

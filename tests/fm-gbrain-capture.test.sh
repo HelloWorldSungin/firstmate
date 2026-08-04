@@ -94,6 +94,7 @@ cap() {  # <home> <args...>
   shift
   FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_TEST_PAGES="$home/pages" \
+    FM_GBRAIN_BIN="$home/fakebin/gbrain" \
     PATH="$home/fakebin:$PATH" "$CAPTURE" "$@"
 }
 
@@ -579,6 +580,7 @@ run_teardown() {  # <case-dir>
   FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_TEST_PAGES="$case_dir/pages" \
+  FM_GBRAIN_BIN="$case_dir/fakebin/gbrain" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
 }
