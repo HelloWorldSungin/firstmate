@@ -277,7 +277,10 @@ class FakeNode {
 }
 
 const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button"]) {
+for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
+  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
+  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
+  "report-body", "report-close"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -288,6 +291,14 @@ for (const key of ["project", "harness", "model", "kind", "state"]) {
   filterForm.elements[key] = select;
 }
 selectors.set("#filter-form", filterForm);
+const historyForm = new FakeNode("form");
+historyForm.elements = {};
+for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
+  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
+  field.append(new FakeNode("option", `All ${key}`));
+  historyForm.elements[key] = field;
+}
+selectors.set("#history-form", historyForm);
 
 const document = {
   documentElement: new FakeNode("html"),
@@ -458,7 +469,10 @@ class FakeNode {
 }
 
 const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button"]) {
+for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
+  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
+  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
+  "report-body", "report-close"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -469,6 +483,14 @@ for (const key of ["project", "harness", "model", "kind", "state"]) {
   filterForm.elements[key] = select;
 }
 selectors.set("#filter-form", filterForm);
+const historyForm = new FakeNode("form");
+historyForm.elements = {};
+for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
+  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
+  field.append(new FakeNode("option", `All ${key}`));
+  historyForm.elements[key] = field;
+}
+selectors.set("#history-form", historyForm);
 
 const document = {
   documentElement: new FakeNode("html"),
@@ -651,6 +673,309 @@ test_installer_writes_hardened_user_service() {
   pass "installer configures a hardened boot-persistent user service without sudo"
 }
 
+wait_for_history() {  # <case-root> <jq-expression>
+  local case_root=$1 expression=$2
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    curl -fsS "http://127.0.0.1:$TEST_PORT/api/history" > "$case_root/history.json" || true
+    if jq -e "$expression" "$case_root/history.json" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  fail "dashboard history condition did not arrive ($expression): $(cat "$case_root/history.json" 2>/dev/null)"
+}
+
+# A completed task, recorded exactly the way a real one is: metadata, brief,
+# terminal status event, backlog row, and a retained report, published through
+# the real completion-manifest writer.
+seed_completed_task() {  # <home> <id> <kind> <title> [pr-url]
+  local home=$1 id=$2 kind=$3 title=$4 pr=${5:-}
+  mkdir -p "$home/state" "$home/data/$id"
+  {
+    printf 'window=%s\n' "fm:$id"
+    printf 'kind=%s\n' "$kind"
+    printf 'project=firstmate\n'
+    printf 'harness=codex\n'
+    printf 'model=gpt-5.6-terra\n'
+    printf 'effort=medium\n'
+    printf 'mode=no-mistakes\n'
+    printf 'yolo=off\n'
+    printf 'backend=tmux\n'
+    [ -n "$pr" ] && printf 'pr=%s\n' "$pr"
+  } > "$home/state/$id.meta"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  printf 'working: started\ndone: finished the work\n' > "$home/state/$id.status"
+  printf -- '- [x] %s - %s (since 2026-08-01)\n' "$id" "$title" >> "$home/data/backlog.md"
+  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "$id" >/dev/null \
+    || fail "could not publish the completion record for $id"
+}
+
+# Exactly what cleanup and backlog pruning leave behind: the durable completion
+# record and the retained report, and nothing else.
+retire_completed_task() {  # <home> <id>
+  local home=$1 id=$2
+  rm -f "$home/state/$id.meta" "$home/state/$id.status"
+  grep -v -- "- \[x\] $id - " "$home/data/backlog.md" > "$home/data/backlog.md.next" || true
+  mv "$home/data/backlog.md.next" "$home/data/backlog.md"
+}
+
+test_history_survives_teardown_and_backlog_pruning() {
+  local case_root home report
+  case_root="$TMP_ROOT/history-durable"
+  home="$case_root/home"
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+
+  seed_completed_task "$home" "old-scout" scout "Investigate the slow merge poll"
+  report="$home/data/old-scout/report.md"
+  cat > "$report" <<'MD'
+# Findings
+
+The **root cause** is a stale cache, see [issue 16](https://github.com/o/r/issues/16).
+
+<script>alert(1)</script>
+
+[bad](javascript:alert(1))
+MD
+  # Republish so the manifest records the retained report.
+  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "old-scout" >/dev/null \
+    || fail "could not republish the completion record with its report"
+  seed_completed_task "$home" "old-ship" ship "Land the merge poll fix" "https://github.com/o/r/pull/42"
+
+  # Cleanup removed the volatile records and the recent-work list has pruned
+  # both rows away. Only the durable completion records remain.
+  retire_completed_task "$home" "old-scout"
+  retire_completed_task "$home" "old-ship"
+  [ -f "$home/state/old-scout.meta" ] && fail "the test did not actually remove the volatile task record"
+  grep -q "old-scout" "$home/data/backlog.md" && fail "the test did not actually prune the recent-work list"
+
+  start_real_server "$case_root"
+  wait_for_history "$case_root" '.status.phase == "ready" and (.history.records | length) == 2'
+
+  jq -e '[.history.records[] | select(.task_id == "old-scout")] | length == 1' "$case_root/history.json" >/dev/null \
+    || fail "a completed investigation stopped being browsable after cleanup and pruning"
+  jq -e '.history.records[] | select(.task_id == "old-scout")
+         | .title == "Investigate the slow merge poll" and .kind == "scout"
+           and .harness == "codex" and .model == "gpt-5.6-terra" and .effort == "medium"
+           and .report.present == true' "$case_root/history.json" >/dev/null \
+    || fail "the retained investigation lost its title, dispatch metadata, or report pointer"
+  jq -e '.history.records[] | select(.task_id == "old-ship")
+         | .pr.url == "https://github.com/o/r/pull/42" and .outcome.state == "done"' "$case_root/history.json" >/dev/null \
+    || fail "a done task lost its complete pull request URL or its outcome"
+  jq -e '.usage.available == false and (.usage.reason | length) > 0' "$case_root/history.json" >/dev/null \
+    || fail "absent token usage did not render as an explained unavailable"
+
+  curl -fsS "http://127.0.0.1:$TEST_PORT/api/report?task=old-scout" > "$case_root/report.json" \
+    || fail "the retained report could not be read after cleanup"
+  jq -e '.present == true and (.text | contains("root cause")) and .truncated == false' "$case_root/report.json" >/dev/null \
+    || fail "the retained report was not served intact"
+  # The server hands the browser raw Markdown; nothing is interpreted here.
+  jq -e '.text | contains("<script>alert(1)</script>")' "$case_root/report.json" >/dev/null \
+    || fail "the report body was altered in transit instead of being rendered safely in the browser"
+  stop_server
+  pass "completed work stays browsable after cleanup and recent-work pruning, with its report intact"
+}
+
+test_report_reads_cannot_select_a_path() {
+  local case_root home status
+  case_root="$TMP_ROOT/history-paths"
+  home="$case_root/home"
+  mkdir -p "$home/data" "$home/state" "$home/projects" "$home/secret"
+  printf 'top secret\n' > "$home/secret/report.md"
+  seed_completed_task "$home" "with-report" scout "Has a report"
+  printf 'a real report\n' > "$home/data/with-report/report.md"
+  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "with-report" >/dev/null
+  seed_completed_task "$home" "no-report" ship "Has no report"
+  retire_completed_task "$home" "with-report"
+  retire_completed_task "$home" "no-report"
+
+  # A task whose completion record claims a report, whose file is a symlink out
+  # of the data directory. The link must not be followed.
+  seed_completed_task "$home" "linked" scout "Points elsewhere"
+  printf 'placeholder\n' > "$home/data/linked/report.md"
+  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "linked" >/dev/null
+  rm -f "$home/data/linked/report.md"
+  ln -s "$home/secret/report.md" "$home/data/linked/report.md"
+  retire_completed_task "$home" "linked"
+
+  start_real_server "$case_root"
+  wait_for_history "$case_root" '(.history.records | length) == 3'
+
+  for probe in "../../etc/passwd" "..%2f..%2fetc%2fpasswd" "with-report/../../secret" ".ssh" "with report" ""; do
+    status=$(curl -s -o "$case_root/probe.json" -w '%{http_code}' \
+      "http://127.0.0.1:$TEST_PORT/api/report?task=$(printf '%s' "$probe" | jq -sRr @uri)")
+    [ "$status" = "400" ] || [ "$status" = "404" ] \
+      || fail "a report read for '$probe' answered $status instead of refusing"
+    jq -e '.present == false' "$case_root/probe.json" >/dev/null \
+      || fail "a refused report read for '$probe' did not say so"
+    grep -q "top secret" "$case_root/probe.json" && fail "a report read for '$probe' returned content outside the data directory"
+  done
+
+  status=$(curl -s -o "$case_root/unknown.json" -w '%{http_code}' "http://127.0.0.1:$TEST_PORT/api/report?task=never-existed")
+  [ "$status" = "404" ] || fail "an unrecorded task answered $status instead of 404"
+  jq -e '.reason == "unknown_task"' "$case_root/unknown.json" >/dev/null || fail "an unrecorded task did not name its reason"
+
+  status=$(curl -s -o "$case_root/none.json" -w '%{http_code}' "http://127.0.0.1:$TEST_PORT/api/report?task=no-report")
+  [ "$status" = "404" ] || fail "a task with no retained report answered $status instead of 404"
+  jq -e '.reason == "no_retained_report"' "$case_root/none.json" >/dev/null || fail "a task with no report did not name its reason"
+
+  status=$(curl -s -o "$case_root/linked.json" -w '%{http_code}' "http://127.0.0.1:$TEST_PORT/api/report?task=linked")
+  [ "$status" = "404" ] || fail "a symlinked report answered $status instead of refusing"
+  grep -q "top secret" "$case_root/linked.json" && fail "a symlinked report leaked content from outside the data directory"
+  jq -e '.reason == "report_missing"' "$case_root/linked.json" >/dev/null || fail "a symlinked report did not explain itself"
+
+  curl -fsS "http://127.0.0.1:$TEST_PORT/api/report?task=with-report" > "$case_root/ok.json" \
+    || fail "a legitimate report read failed"
+  jq -e '.present == true and (.text | contains("a real report"))' "$case_root/ok.json" >/dev/null \
+    || fail "a legitimate report was not served"
+  stop_server
+  pass "report reads select only among recorded tasks and never follow a path out of the data directory"
+}
+
+test_a_huge_report_is_bounded_and_says_so() {
+  local case_root home
+  case_root="$TMP_ROOT/history-huge"
+  home="$case_root/home"
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  seed_completed_task "$home" "huge" scout "Very long report"
+  node -e 'process.stdout.write("x".repeat(300000))' > "$home/data/huge/report.md"
+  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "huge" >/dev/null
+  retire_completed_task "$home" "huge"
+
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_TIMEOUT_SECONDS=6 \
+    FM_DASHBOARD_POLL_SECONDS=1 FM_DASHBOARD_REPORT_MAX_BYTES=4096 \
+    node "$SERVER" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '(.history.records | length) == 1'
+
+  curl -fsS "http://127.0.0.1:$TEST_PORT/api/report?task=huge" > "$case_root/report.json" || fail "the oversized report was not served"
+  jq -e '.truncated == true and (.text | length) == 4096 and .bytes == 300000 and .max_bytes == 4096' "$case_root/report.json" >/dev/null \
+    || fail "an oversized report was not bounded, or did not disclose that it was cut short"
+  stop_server
+  pass "an oversized report is bounded to the configured limit and discloses the truncation"
+}
+
+test_usage_totals_are_presence_gated() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+
+  # No collector installed at all: unavailable with a reason, never a zero.
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/absent.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.status.phase == "ready"'
+  jq -e '.usage.available == false and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
+    || fail "an absent usage collector did not render as an explained unavailable"
+  stop_server
+
+  # A collector that reports totals: the totals are carried through.
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: "task",
+  rows: [
+    { key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15, cost: { estimated: 0.25, currency: "USD", unpriced_events: 0 } },
+    { key: "../escape", total_tokens: 99 },
+  ],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/present.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
+    || fail "attributed usage totals were not carried into the history document"
+  jq -e '.usage.tasks | has("../escape") | not' "$case_root/history.json" >/dev/null \
+    || fail "a usage row with an unsafe task name was accepted"
+  stop_server
+
+  # An output this dashboard does not recognize is unavailable, never guessed at.
+  printf '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({schema:"fm-usage-report.v99",rows:[]}))\n' > "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/unknown.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.status.phase == "ready"'
+  jq -e '.usage.available == false and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
+    || fail "an unrecognized usage report was not refused as unavailable"
+
+  # And with usage explicitly switched off, history stays fully usable.
+  jq -e '(.history.records | length) == 1' "$case_root/history.json" >/dev/null \
+    || fail "history stopped working when the usage read did"
+  stop_server
+  pass "token usage is presence-gated and renders as unavailable rather than zero"
+}
+
+test_history_streams_and_isolates_bad_records() {
+  local case_root runtime home sse_log
+  case_root="$TMP_ROOT/history-stream"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$case_root/control"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+cat "${DASH_TEST_CONTROL:?}/history.json"
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[{"id":"legacy","path":"/h/data/legacy/outcome.json","reason":"unexpected_fields"}]}\n' \
+    > "$case_root/control/history.json"
+
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 DASH_TEST_CONTROL="$case_root/control" \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.status.phase == "ready"'
+  # An unreadable record is disclosed by id and reason rather than dropped, so
+  # "nothing completed" and "one record is unusable" stay distinguishable.
+  jq -e '(.history.malformed | length) == 1 and .history.malformed[0].id == "legacy"' "$case_root/history.json" >/dev/null \
+    || fail "an unreadable completion record was not disclosed"
+
+  sse_log="$case_root/sse.log"
+  curl --max-time 5 -Ns "http://127.0.0.1:$TEST_PORT/api/events" > "$sse_log" 2>/dev/null &
+  SSE_PID=$!
+  sleep 0.3
+  printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"streamed","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n' \
+    > "$case_root/control/history.json"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    grep -q "streamed" "$sse_log" && break
+    sleep 0.2
+  done
+  kill "$SSE_PID" 2>/dev/null || true
+  SSE_PID=
+  grep -q "^event: history" "$sse_log" || fail "the event stream carried no history event"
+  grep -q "streamed" "$sse_log" || fail "newly completed work did not reach the browser without a reload"
+  stop_server
+  pass "completed work streams to the browser and unreadable records stay disclosed"
+}
+
 test_loopback_is_mandatory
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
@@ -659,4 +984,9 @@ test_browser_alerts_only_for_new_inbox_items
 test_timeout_is_single_flight
 test_first_run_failures_are_explicit
 test_real_snapshot_makes_zero_fleet_writes
+test_history_survives_teardown_and_backlog_pruning
+test_report_reads_cannot_select_a_path
+test_a_huge_report_is_bounded_and_says_so
+test_usage_totals_are_presence_gated
+test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service

@@ -1,4 +1,6 @@
 import { buildHealth, buildInbox, formatAge } from "./inbox.js";
+import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
+import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 
 const ui = {
   signals: document.querySelector("#signals"),
@@ -14,6 +16,20 @@ const ui = {
   mateList: document.querySelector("#secondmate-list"),
   mateCount: document.querySelector("#secondmate-count"),
   kanban: document.querySelector("#kanban"),
+  historyForm: document.querySelector("#history-form"),
+  historyFilterCount: document.querySelector("#history-filter-count"),
+  historyClear: document.querySelector("#history-clear"),
+  historyNote: document.querySelector("#history-note"),
+  historyWarnings: document.querySelector("#history-warnings"),
+  historySummary: document.querySelector("#history-summary"),
+  historyList: document.querySelector("#history-list"),
+  historyPager: document.querySelector("#history-pager"),
+  reportDialog: document.querySelector("#report-dialog"),
+  reportTask: document.querySelector("#report-task"),
+  reportTitle: document.querySelector("#report-title"),
+  reportNotices: document.querySelector("#report-notices"),
+  reportBody: document.querySelector("#report-body"),
+  reportClose: document.querySelector("#report-close"),
   themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
   notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
 };
@@ -62,6 +78,12 @@ const state = {
   reconnectMs: 1_000,
   notifyEnabled: false,
   seenInboxIds: null,
+  history: {
+    envelope: null,
+    filters: { query: "", project: "", harness: "", model: "", kind: "", outcome: "", from: "", to: "" },
+    page: 0,
+    pageSize: HISTORY_LIMITS.defaultPageSize,
+  },
 };
 
 function element(tag, className, text) {
@@ -526,6 +548,330 @@ function renderBoard(snapshot, envelope) {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Completed-work history
+// ---------------------------------------------------------------------------
+
+// The only path from report text to the page. Every node is built with
+// createElement and createTextNode against markdown.js's tag allowlist, the
+// class name must be one of its closed vocabulary, and `href` is re-validated
+// here even though the parser already applied the same policy. No other
+// attribute is ever set, so an `onerror` or `style` carried by a crafted node
+// cannot reach the DOM. There is no innerHTML on this path by construction.
+function markdownDom(node) {
+  if (typeof node?.text === "string") return document.createTextNode(node.text);
+  if (!node || !MARKDOWN_TAGS.has(node.tag)) return document.createTextNode("");
+  const el = document.createElement(node.tag);
+  if (typeof node.className === "string" && MARKDOWN_CLASSES.has(node.className)) el.className = node.className;
+  if (node.tag === "a") {
+    const href = safeUrl(node.href);
+    if (!href) return document.createTextNode(plainText(node));
+    el.setAttribute("href", href);
+    el.setAttribute("target", "_blank");
+    el.setAttribute("rel", "noreferrer noopener");
+  }
+  for (const child of Array.isArray(node.children) ? node.children : []) el.append(markdownDom(child));
+  return el;
+}
+
+function plainText(node) {
+  if (typeof node?.text === "string") return node.text;
+  return (Array.isArray(node?.children) ? node.children : []).map(plainText).join("");
+}
+
+function ageSince(millis) {
+  if (typeof millis !== "number") return null;
+  return Math.max(0, Math.floor((Date.now() - millis) / 1000));
+}
+
+function historyWarning(tone, heading, detail) {
+  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
+  const copy = element("div");
+  copy.append(element("strong", "", heading));
+  copy.append(document.createTextNode(detail));
+  notice.append(dot(tone), copy);
+  return notice;
+}
+
+function renderHistoryWarnings(view, envelope) {
+  const notices = [];
+  const status = envelope?.status;
+  if (status?.error) {
+    notices.push(historyWarning(envelope?.history ? "amber" : "red",
+      envelope?.history ? "Showing the last completed-work records that could be read" : "Completed-work history unavailable",
+      ` ${status.error.kind}: ${status.error.message}. Retrying automatically.`));
+  }
+  if (view.truncated) {
+    notices.push(historyWarning("amber", "More completed work exists than is shown",
+      ` This view reads the most recent ${envelope?.config?.record_limit ?? "bounded set of"} completion records; ${view.record_total ?? "more"} are stored. Narrow the filters or raise the record limit to see older work.`));
+  }
+  if (view.malformed.length) {
+    const notice = element("div", "notice");
+    const copy = element("div");
+    copy.append(element("strong", "", `${view.malformed.length} completion record${view.malformed.length === 1 ? "" : "s"} could not be read`));
+    copy.append(document.createTextNode(" These tasks completed but their durable records are unusable, so they are missing from the list below rather than absent from history."));
+    const list = element("ul", "malformed-list");
+    for (const entry of view.malformed) {
+      const item = element("li");
+      item.append(element("code", "", entry.id));
+      item.append(document.createTextNode(` ${entry.explanation}`));
+      if (entry.path) item.append(element("code", "quiet-path", entry.path));
+      list.append(item);
+    }
+    copy.append(list);
+    notice.append(dot("amber"), copy);
+    notices.push(notice);
+  }
+  replaceChildren(ui.historyWarnings, notices);
+}
+
+function usagePanel(row) {
+  const panel = element("div", `usage-panel ${row.usage.available ? "" : "unknown"}`.trim());
+  panel.append(element("span", "label", "USAGE"));
+  if (!row.usage.available) {
+    // Never a blank cell and never a zero: "unavailable" and "nothing happened"
+    // are different facts.
+    panel.append(element("span", "usage-total", "unavailable"));
+    panel.append(element("span", "usage-reason", row.usage.reason));
+    return panel;
+  }
+  panel.append(element("span", "usage-total", `${formatTokens(row.usage.totals.total_tokens)} tokens`));
+  const parts = [
+    ["in", row.usage.totals.input_tokens],
+    ["out", row.usage.totals.output_tokens],
+    ["cache read", row.usage.totals.cache_read_tokens],
+    ["reasoning", row.usage.totals.reasoning_tokens],
+  ].filter(([, value]) => typeof value === "number");
+  for (const [name, value] of parts) {
+    const chip = element("span", "usage-part");
+    chip.append(element("span", "key", name), element("span", "value", formatTokens(value)));
+    panel.append(chip);
+  }
+  if (row.usage.cost) {
+    panel.append(element("span", "usage-part", `≈ ${row.usage.cost.estimated.toFixed(2)} ${row.usage.cost.currency || ""}`.trim()));
+  }
+  return panel;
+}
+
+function historyPrPanel(row) {
+  const panel = element("div", `pr-panel ${row.pr.tone}`);
+  const head = element("div", "pr-head");
+  head.append(dot(row.pr.tone), element("span", "label", row.pr.state.toUpperCase()));
+  head.append(element("span", "pr-observed", row.pr.observed
+    ? `recorded ${row.pr.observed_at}`
+    : "no status was recorded at completion"));
+  panel.append(head);
+  const fields = element("div", "pr-fields");
+  for (const field of row.pr.fields) {
+    const chip = element("span", `pr-field ${field.value === "unknown" ? "unknown" : ""}`.trim());
+    chip.append(element("span", "key", field.name), element("span", "value", field.value));
+    fields.append(chip);
+  }
+  panel.append(fields);
+  // Always the complete https URL, never a bare number.
+  const link = element("a", "pr-link", row.pr.url);
+  link.href = row.pr.url;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  panel.append(link);
+  return panel;
+}
+
+function historyCard(row) {
+  const card = element("article", `history-card ${row.outcome.tone}`);
+  card.setAttribute("aria-label", `${row.outcome.label}: ${row.title || row.id}`);
+
+  const head = element("div", "card-head");
+  head.append(dot(row.outcome.tone));
+  head.append(element("span", "pill", row.outcome.label));
+  head.append(element("span", "pill", row.kind));
+  if (row.project) head.append(element("span", "pill project-pill", row.project));
+  const age = ageSince(row.completed_millis);
+  head.append(element("span", "age", row.timestamps.completed
+    ? `${row.timestamps.completed}${age === null ? "" : ` · ${formatAge(age)} ago`}`
+    : "completion time unknown"));
+  card.append(head);
+
+  card.append(element("div", "task-id", row.id));
+  card.append(element("h3", "", row.title || "No recorded title"));
+
+  const dispatch = [row.harness, row.model, row.effort].filter(Boolean).join(" · ");
+  card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
+
+  const meta = element("div", "history-meta");
+  meta.append(element("span", "", `took ${formatDuration(row.duration)}`));
+  if (row.mode) meta.append(element("span", "", `delivery ${row.mode}`));
+  if (row.yolo) meta.append(element("span", "", `autonomy ${row.yolo}`));
+  if (row.outcome.forced) meta.append(element("span", "warn", "cleaned up with unlanded work discarded"));
+  if (row.outcome.state === "unknown") meta.append(element("span", "warn", `final result not recorded (${row.outcome.source})`));
+  card.append(meta);
+
+  if (row.outcome.detail) card.append(element("div", "detail", row.outcome.detail));
+
+  if (row.pr.present) card.append(historyPrPanel(row));
+
+  for (const reference of row.work_items) {
+    const link = workItemLink(reference);
+    if (link) card.append(link);
+  }
+
+  card.append(usagePanel(row));
+
+  const actions = element("div", "history-actions");
+  if (row.report.present) {
+    const button = element("button", "report-button", "Read report");
+    button.type = "button";
+    button.addEventListener("click", () => void openReport(row));
+    actions.append(button);
+  } else if (row.kind === "scout") {
+    actions.append(element("span", "quiet", "No report was retained for this investigation"));
+  }
+  if (row.gbrain.status === "captured") actions.append(element("span", "pill quiet", "captured for search"));
+  card.append(actions);
+  return card;
+}
+
+function renderHistoryPager(view) {
+  if (view.page.pages <= 1) {
+    replaceChildren(ui.historyPager, []);
+    return;
+  }
+  const previous = element("button", "pager-button", "Newer");
+  previous.type = "button";
+  previous.disabled = view.page.index === 0;
+  previous.addEventListener("click", () => { state.history.page = view.page.index - 1; renderHistory(); });
+  const next = element("button", "pager-button", "Older");
+  next.type = "button";
+  next.disabled = view.page.index >= view.page.pages - 1;
+  next.addEventListener("click", () => { state.history.page = view.page.index + 1; renderHistory(); });
+  replaceChildren(ui.historyPager, [
+    previous,
+    element("span", "pager-label", `Page ${view.page.index + 1} of ${view.page.pages}`),
+    next,
+  ]);
+}
+
+function renderHistoryFilters(view) {
+  for (const key of ["project", "harness", "model", "kind", "outcome"]) {
+    const select = ui.historyForm.elements[key];
+    const values = view.facets[key];
+    const selected = state.history.filters[key];
+    const first = select.options[0];
+    replaceChildren(select, [first, ...values.map((value) => {
+      const option = element("option", "", value);
+      option.value = value;
+      return option;
+    })]);
+    select.value = values.includes(selected) ? selected : "";
+    if (!values.includes(selected)) state.history.filters[key] = "";
+  }
+  const count = Object.values(view.filters).filter(Boolean).length;
+  ui.historyFilterCount.textContent = count ? `(${count} active)` : "";
+}
+
+function renderHistory() {
+  const envelope = state.history.envelope;
+  const view = buildHistory(envelope, { ...state.history.filters, page: state.history.page, pageSize: state.history.pageSize });
+  state.history.page = view.page.index;
+  renderHistoryFilters(view);
+  renderHistoryWarnings(view, envelope);
+
+  const status = envelope?.status;
+  ui.historyNote.textContent = status?.last_success_at
+    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+    : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
+
+  const summary = element("div", "summary-line");
+  if (view.page.matched) {
+    summary.append(element("strong", "", `${view.page.first}-${view.page.last} of ${view.page.matched}`));
+    summary.append(document.createTextNode(view.page.matched === view.page.total
+      ? " completed records"
+      : ` completed records matching, from ${view.page.total} read`));
+  } else {
+    summary.append(element("strong", "", "No matching completed records"));
+  }
+  if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
+  else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
+  if (view.semantic_search.captured_records) {
+    summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
+  }
+  replaceChildren(ui.historySummary, [summary]);
+
+  if (!view.page.matched) {
+    const empty = element("div", "inbox-empty");
+    const waiting = !envelope?.history;
+    empty.append(dot(waiting ? "amber" : "green"));
+    const copy = element("div");
+    copy.append(element("strong", "", waiting ? "No history yet" : view.empty ? "Nothing has completed in this home" : "Nothing matches these filters"));
+    copy.append(element("p", "", waiting
+      ? "Completed work appears once the durable completion records have been read. Until then this list is empty because nothing has been read, not because nothing has finished."
+      : view.empty
+        ? "No task has published a completion record here yet. Completed work stays listed after cleanup and after the recent-work list is pruned."
+        : "Clear or widen the filters to see the rest of the retained history."));
+    empty.append(copy);
+    replaceChildren(ui.historyList, [empty]);
+  } else {
+    replaceChildren(ui.historyList, view.rows.map(historyCard));
+  }
+  renderHistoryPager(view);
+}
+
+function reportNotice(tone, message) {
+  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
+  notice.append(dot(tone), element("div", "", message));
+  return notice;
+}
+
+const REPORT_FAILURES = {
+  invalid_task_id: "That task name is not one this dashboard will look up.",
+  history_unavailable: "The completed-work records have not been read yet, so the report cannot be located.",
+  unknown_task: "This task is no longer in the completed-work records that were read.",
+  no_retained_report: "This task's completion record says no report was retained.",
+  report_missing: "The completion record says a report was retained, but the file is missing or is no longer a plain file.",
+};
+
+async function openReport(row) {
+  ui.reportTask.textContent = `${row.id}${row.project ? ` · ${row.project}` : ""}`;
+  ui.reportTitle.textContent = row.title || row.id;
+  replaceChildren(ui.reportNotices, [reportNotice("amber", "Loading the report.")]);
+  replaceChildren(ui.reportBody, []);
+  if (typeof ui.reportDialog.showModal === "function") ui.reportDialog.showModal();
+  else ui.reportDialog.setAttribute("open", "");
+
+  let payload;
+  try {
+    const response = await fetch(`/api/report?task=${encodeURIComponent(row.id)}`, { cache: "no-store" });
+    payload = await response.json();
+  } catch (error) {
+    replaceChildren(ui.reportNotices, [reportNotice("red", `The report could not be loaded: ${error.message}`)]);
+    return;
+  }
+  if (!payload || payload.schema !== "fm-dashboard-report.v1" || payload.present !== true) {
+    const reason = REPORT_FAILURES[payload?.reason] || "The report could not be loaded.";
+    const notices = [reportNotice("red", reason)];
+    if (payload?.recorded_path) notices.push(reportNotice("amber", `The completion record points at ${payload.recorded_path}.`));
+    replaceChildren(ui.reportNotices, notices);
+    return;
+  }
+
+  const rendered = renderMarkdown(payload.text);
+  const notices = [];
+  if (payload.truncated) {
+    notices.push(reportNotice("amber",
+      `This report is ${payload.bytes} bytes and only the first ${payload.max_bytes} are shown. The full file is at ${payload.recorded_path || "its recorded path"}.`));
+  }
+  for (const notice of rendered.notices) notices.push(reportNotice("amber", noticeSentence(notice)));
+  replaceChildren(ui.reportNotices, notices);
+  replaceChildren(ui.reportBody, rendered.nodes.map(markdownDom));
+}
+
+function closeReport() {
+  if (typeof ui.reportDialog.close === "function") ui.reportDialog.close();
+  else ui.reportDialog.removeAttribute("open");
+  replaceChildren(ui.reportBody, []);
+  replaceChildren(ui.reportNotices, []);
+}
+
 function render(envelope) {
   state.envelope = envelope;
   const snapshot = envelope?.snapshot;
@@ -560,6 +906,28 @@ async function fetchSnapshot() {
   }
 }
 
+function renderHistoryEnvelope(envelope) {
+  state.history.envelope = envelope;
+  renderHistory();
+}
+
+async function fetchHistory() {
+  try {
+    const response = await fetch("/api/history", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const envelope = await response.json();
+    if (envelope.schema !== "fm-dashboard-history.v1") throw new Error("unsupported history envelope");
+    renderHistoryEnvelope(envelope);
+  } catch (error) {
+    renderHistoryEnvelope({
+      schema: "fm-dashboard-history.v1",
+      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
+      history: null,
+      usage: null,
+    });
+  }
+}
+
 function connectEvents() {
   clearTimeout(state.reconnectTimer);
   state.eventSource?.close();
@@ -570,6 +938,14 @@ function connectEvents() {
     try {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-envelope.v1") render(envelope);
+    } catch {
+      source.close();
+    }
+  });
+  source.addEventListener("history", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-dashboard-history.v1") renderHistoryEnvelope(envelope);
     } catch {
       source.close();
     }
@@ -592,7 +968,44 @@ ui.clearFilters.addEventListener("click", () => {
   renderBoard(state.envelope?.snapshot, state.envelope);
 });
 
+function readHistoryForm() {
+  for (const key of Object.keys(state.history.filters)) {
+    state.history.filters[key] = ui.historyForm.elements[key].value;
+  }
+  const size = Number(ui.historyForm.elements.pageSize.value);
+  state.history.pageSize = HISTORY_LIMITS.pageSizes.includes(size) ? size : HISTORY_LIMITS.defaultPageSize;
+  // Any change to what is being asked for restarts at the newest page, so the
+  // reader is never left looking at page 7 of a three-page result.
+  state.history.page = 0;
+  renderHistory();
+}
+
+ui.historyForm.addEventListener("change", readHistoryForm);
+ui.historyForm.addEventListener("input", (event) => {
+  if (event.target?.name === "query") readHistoryForm();
+});
+ui.historyForm.addEventListener("submit", (event) => event.preventDefault());
+
+ui.historyClear.addEventListener("click", () => {
+  for (const key of Object.keys(state.history.filters)) {
+    state.history.filters[key] = "";
+    ui.historyForm.elements[key].value = "";
+  }
+  state.history.pageSize = HISTORY_LIMITS.defaultPageSize;
+  ui.historyForm.elements.pageSize.value = String(HISTORY_LIMITS.defaultPageSize);
+  state.history.page = 0;
+  renderHistory();
+});
+
+ui.reportClose.addEventListener("click", closeReport);
+ui.reportDialog.addEventListener("close", () => {
+  replaceChildren(ui.reportBody, []);
+  replaceChildren(ui.reportNotices, []);
+});
+
 initializeTheme();
 initializeNotifications();
 void fetchSnapshot();
+void fetchHistory();
+renderHistory();
 connectEvents();
