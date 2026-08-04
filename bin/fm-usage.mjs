@@ -1237,13 +1237,18 @@ function burnSeries(db, bucket, buckets, stamp) {
   const width = bucket === "day" ? 86400 : 3600;
   const now = isoToEpoch(stamp);
   const start = now - width * buckets;
+  // The bucket width is an integer LITERAL, not a bound parameter: node:sqlite
+  // binds a JavaScript number as REAL, and SQLite's `/` on a REAL is floating
+  // division, so a bound width silently loses the integer floor that defines a
+  // bucket and every event lands in a bucket of its own. `width` comes from the
+  // two-value enum above, so interpolating it carries no injection surface.
   const rows = db
-    .prepare(`SELECT (occurred_epoch / ?) * ? AS bucket_start,
+    .prepare(`SELECT (occurred_epoch / ${width}) * ${width} AS bucket_start,
         COUNT(*) AS events, SUM(total_tokens) AS total_tokens,
         SUM(output_tokens) AS output_tokens
       FROM usage_event WHERE occurred_epoch >= ?
       GROUP BY bucket_start ORDER BY bucket_start ASC`)
-    .all(width, width, start);
+    .all(start);
   const series = rows.map((row) => ({
     bucket_start: new Date(row.bucket_start * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"),
     events: row.events,

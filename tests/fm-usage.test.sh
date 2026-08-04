@@ -625,12 +625,34 @@ test_rollups_reconcile() {
   # of its input count, so neither is added again.
   [ "$task_total" = 230 ] || fail "per-task rows must match their events, got $task_total"
 
+  # A burn RATE is only a rate if events actually aggregate into their bucket.
+  # The four events sit in two hours - 10:00, 10:30, and 10:45 in the first,
+  # 11:00 in the second - so an hourly series has exactly two buckets, each
+  # stamped on its hour boundary rather than on some event's own second. A
+  # per-event series would still reconcile with the totals, which is why the
+  # shape is asserted and not just the sum.
   local burn
   burn=$(FM_USAGE_NOW=2026-08-01T12:00:00Z usage_run "$case_root" burn --bucket hour --buckets 6)
   [ "$(jq -r '.schema' <<<"$burn")" = fm-usage-burn.v1 ] || fail "burn schema wrong"
-  [ "$(jq '.series | length' <<<"$burn")" -ge 1 ] || fail "the burn series should cover recent usage"
+  [ "$(jq -c '[.series[] | {bucket_start,events}]' <<<"$burn")" \
+    = '[{"bucket_start":"2026-08-01T10:00:00Z","events":3},{"bucket_start":"2026-08-01T11:00:00Z","events":1}]' ] \
+    || fail "hourly buckets must aggregate on hour boundaries, got $(jq -c '.series' <<<"$burn")"
   [ "$(jq '[.series[].total_tokens] | add' <<<"$burn")" = "$total" ] \
     || fail "the burn series must reconcile with stored totals"
+  # The series is bounded by the window it was asked for, not by how many events
+  # happen to fall inside it. A rolling window starts mid-bucket, so N buckets of
+  # history can touch N+1 bucket boundaries - and never more.
+  [ "$(jq '(.series | length) <= (.buckets + 1)' <<<"$burn")" = true ] \
+    || fail "the series must stay bounded by the buckets requested"
+  # The same events under a daily bucket collapse to one midnight-aligned day.
+  local daily
+  daily=$(FM_USAGE_NOW=2026-08-01T12:00:00Z usage_run "$case_root" burn --bucket day --buckets 3)
+  [ "$(jq -c '[.series[] | {bucket_start,events}]' <<<"$daily")" \
+    = '[{"bucket_start":"2026-08-01T00:00:00Z","events":4}]' ] \
+    || fail "daily buckets must aggregate on day boundaries, got $(jq -c '.series' <<<"$daily")"
+  [ "$(jq -r '.series[0].tokens_per_hour' <<<"$daily")" \
+    = "$(jq -rn --argjson t "$total" '($t / 86400 * 3600) | round')" ] \
+    || fail "the daily rate must spread the day's tokens over the day, got $(jq -c '.series' <<<"$daily")"
   local refused
   refused=$(usage_run "$case_root" burn --buckets 1000 2>&1); local code=$?
   expect_code 2 "$code" "an unbounded burn series must be refused"
