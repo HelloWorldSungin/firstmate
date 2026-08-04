@@ -160,23 +160,11 @@ fm_composer_strip_ghost() {
   '
 }
 
-# NON-ASCII BLANK PADDING is the third concern of this owner (task
-# fm-afk-injection-wedge): a harness may pad an otherwise-empty composer row
-# with a non-ASCII blank rather than an ASCII space. Verified claude 2.x renders
-# its EMPTY composer row as `❯` + U+00A0 NO-BREAK SPACE (bytes e2 9d af c2 a0),
-# and bash's own `[:space:]` trims treat no non-ASCII blank as whitespace under
-# any locale the fleet runs (verified C, C.utf8, en_US.utf8, and POSIX - note
-# that glibc's grep DOES match U+00A0 there, so a grep-based spot check is
-# misleading), so the pad survived every trim as "real typed content" and the
-# row classified `pending`. The away-mode injector (bin/fm-supervise-daemon.sh)
-# refuses to inject unless the composer is affirmatively `empty`, so an idle,
-# perfectly injectable primary deferred EVERY escalation until the captain
-# returned - three overnight wedges of 7.8h, 11.0h, and 10.1h, all buffered and
-# replayed intact but none delivered on time. fm_composer_blank_normalize folds
-# these into an ASCII space before the emptiness decision. That is safe in the
-# one direction that matters here: every character it folds is invisible, so a
-# row reducing to blank carried no visible typed content, while any visible byte
-# survives untouched and still reads `pending`.
+# A harness may pad an otherwise-empty composer row with a non-ASCII blank that
+# bash's `[:space:]` trims retain as apparent typed content. Normalize only the
+# enumerated invisible characters before the emptiness decision, so any visible
+# byte survives and still reads `pending`. Live evidence and the supported
+# mid-turn limitation are recorded in docs/verification/supervision.md.
 #
 # fm_composer_blank_normalize: replace every non-ASCII blank or zero-width
 # character with an ASCII space so the shared trims below see it as whitespace.

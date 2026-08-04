@@ -281,8 +281,9 @@ Observed output, the two trailing bytes of `❯` surviving as spurious content:
 
 Both conditions are covered by `tests/fm-composer-lib.test.sh` and, at the adapter level with the captured row, by `tests/fm-backend-herdr.test.sh`.
 
-A genuinely mid-turn primary is a separate case in which in-turn pane injection is not possible.
+A genuinely mid-turn primary is a separate case that the current away-mode path deliberately does not inject into.
 Herdr's native agent state reports `busy` for a Claude pane during its turn, so the busy guard rejects `inject_msg` rather than typing into an in-use composer.
 `escalate_flush` retains the durable buffer after that rejection, and every housekeeping retry follows the same guarded path until the turn ends.
 Normal pane delivery resumes after the turn ends, but this does not provide in-turn responsiveness and can defer for the full duration of the turn.
-For a genuinely urgent away-mode escalation, the concrete out-of-band path is the existing active alert configured by `config/wedge-alarm`, whose channel contract is owned by [`docs/wedge-alarm.md`](../wedge-alarm.md).
+For a genuinely urgent away-mode escalation, configure the existing active alert through `config/wedge-alarm`, whose channel contract is owned by [`docs/wedge-alarm.md`](../wedge-alarm.md).
+That alert reports the delivery wedge and points to the durable marker, but it does not carry the buffered escalation digest itself.

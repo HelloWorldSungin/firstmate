@@ -214,6 +214,8 @@ A working Pi, pending middle row, missing identity, incomplete separator pair, o
 
 ANSI capture preserves de-emphasized placeholder style.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
+Before classification, that owner folds its enumerated invisible non-ASCII blanks and zero-width padding to ASCII whitespace and removes recognized prompt glyphs as literal prefixes so C/POSIX byte semantics cannot leave multibyte fragments behind.
+The fold never removes visible input, so visible content remains `pending` and continues to refuse injection.
 If a future Herdr version strips ANSI style, ghost suggestions become pending rather than empty, which safely defers injection and eventually raises the wedge alarm.
 
 A bare shell prompt is never an empty agent composer.
