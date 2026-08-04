@@ -23,14 +23,18 @@ Integrate [gbrain](https://github.com/garrytan/gbrain) as a **searchable archive
 - **Ingestion at natural lifecycle points:** task teardown and the `/stow` knowledge-routing sweep.
 - **Scoping:** one brain per `FM_HOME`; the main home's brain shared read-only to secondmate homes (mirrors the existing `captain-shared.md` inheritance pattern).
 
-### Stories
+### Stories and dispatch plan
 
-1. Local embedding + reranker serving on the GPU rig
-2. gbrain install, init, and smoke test (PGLite + local recipes)
-3. Archive-tier ingestion: teardown and /stow hooks + backfill
-4. Retrieval integration for firstmate and crewmates
-5. Brain scoping and secondmate inheritance policy
-6. Evaluation, migration playbook, and dream-cycle decision
+| # | Story | Harness / model | Effort | Why |
+|---|---|---|---|---|
+| 1 | Local embedding + reranker serving on the GPU rig | codex | medium | Documented ops work; bump to high only if source-building llama.cpp for Blackwell gets fiddly |
+| 2 | gbrain install, init, and smoke test | codex | medium | Explicit, well-documented steps against a new tool |
+| 3 | Archive-tier ingestion: teardown and /stow hooks + backfill | claude / Opus | high | Touches firstmate shared tracked material and teardown safety contracts |
+| 4 | Retrieval integration for firstmate and crewmates | claude / Opus | high | Edits brief scaffolds and AGENTS.md contract wording |
+| 5 | Brain scoping and secondmate inheritance policy | claude / Opus | xhigh | Ambiguous design across FM_HOME isolation and secondmate-provisioning machinery |
+| 6 | Evaluation, migration playbook, and dream-cycle decision | claude / Opus | xhigh | Scout-type investigation and judgment-heavy go/no-go |
+
+Rationale: the $200 Claude subscription carries the contract-sensitive firstmate-internals stories (plus primary supervision itself); the $100 Codex subscription carries the bounded, spec-driven infra stories. Per-task overrides remain the captain's call at dispatch time.
 
 ### Epic acceptance criteria
 
@@ -62,6 +66,8 @@ Integrate [gbrain](https://github.com/garrytan/gbrain) as a **searchable archive
 **Body:**
 
 Part of the gbrain memory epic. Stand up OpenAI-compatible embedding and rerank endpoints on the homelab GPUs so gbrain (and anything else) can use them with zero cloud calls.
+
+**Suggested dispatch:** codex, medium effort (bump to high only if a source build of llama.cpp for Blackwell is needed).
 
 #### Hardware and compatibility notes
 
@@ -110,6 +116,8 @@ Start with **`snowflake-arctic-embed-l-v2` (1024d)** - upstream gbrain guidance 
 
 Part of the gbrain memory epic. Depends on story 1 (local endpoints).
 
+**Suggested dispatch:** codex, medium effort.
+
 #### Scope
 
 - [ ] Install gbrain at a **pinned version/tag** (`bun install -g github:garrytan/gbrain#<tag>`) - the project is young and fast-moving; upgrades should be deliberate
@@ -135,6 +143,8 @@ Part of the gbrain memory epic. Depends on story 1 (local endpoints).
 **Body:**
 
 Part of the gbrain memory epic. Depends on story 2. This is the story that actually relieves memory pressure: knowledge that today gets pruned or buried becomes searchable instead.
+
+**Suggested dispatch:** claude (Opus), high effort - touches firstmate shared tracked material and teardown safety contracts.
 
 #### Ingestion sources
 
@@ -176,6 +186,8 @@ Part of the gbrain memory epic. Depends on story 2. This is the story that actua
 
 Part of the gbrain memory epic. Depends on story 2 (works best after story 3 has populated the brain).
 
+**Suggested dispatch:** claude (Opus), high effort - edits brief scaffolds and AGENTS.md contract wording.
+
 #### Design
 
 - **CLI-first for workers.** Crewmates get one line in the generated brief: consult the brain before investigating (e.g. `gbrain search "<topic>"` / `gbrain think "<question>"`). This avoids attaching gbrain's 30+ MCP tool schemas to every worker context - the exact context bloat this epic is fighting
@@ -205,6 +217,8 @@ Part of the gbrain memory epic. Depends on story 2 (works best after story 3 has
 **Body:**
 
 Part of the gbrain memory epic. Depends on stories 2-4.
+
+**Suggested dispatch:** claude (Opus), xhigh effort - ambiguous design across FM_HOME isolation and secondmate provisioning.
 
 #### Design
 
@@ -237,6 +251,8 @@ Secondmate homes are deliberately isolated (`FM_HOME` selects private `data/`, `
 **Body:**
 
 Part of the gbrain memory epic. Depends on stories 1-4 running for at least a couple of weeks of real fleet work.
+
+**Suggested dispatch:** claude (Opus), xhigh effort - scout-type investigation and judgment-heavy decisions.
 
 #### Scope
 

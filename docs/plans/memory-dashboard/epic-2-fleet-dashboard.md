@@ -22,14 +22,18 @@ A locally-hosted, phone-friendly web dashboard: kanban board of all fleet work f
 - **Event/token sources per harness:** Claude Code hooks + `~/.claude/projects` JSONL (ccusage-style parsing) or built-in OTEL; Codex `notify`/hooks + built-in OTEL (`[otel]` in `~/.codex/config.toml`); opencode plugin event bus (existing token plugins); pi via the pi-agent-observability extension pattern (disler's Bun+SQLite+SSE stack, MIT).
 - **Stack:** small Bun (or Python) server on the homelab; snapshot poll + fs-watch on `state/`; SSE to a single-page UI; SQLite for the event/token store. Bound to the Twingate-reachable interface with basic auth.
 
-### Stories
+### Stories and dispatch plan
 
-1. Kanban dashboard MVP over `fm-fleet-snapshot.v1`
-2. "Needs you" inbox and fleet health signals
-3. Per-harness token usage collectors joined to tasks
-4. Live agent event stream (hooks per harness)
-5. Remote access hardening + tmux pane click-through (ttyd)
-6. History browser: done tasks, PRs, scout reports
+| # | Story | Harness / model | Effort | Why |
+|---|---|---|---|---|
+| 1 | Kanban dashboard MVP over `fm-fleet-snapshot.v1` | codex | high | Large, well-specified greenfield build (server + SPA) - prime Codex territory |
+| 2 | "Needs you" inbox and fleet health signals | claude / Sonnet | medium | Needs correct reading of firstmate state semantics; UI itself is simple |
+| 3 | Per-harness token usage collectors joined to tasks | codex | high | Fiddly multi-format data engineering, fully specified |
+| 4 | Live agent event stream (hooks per harness) | claude / Opus | high | Wires into Claude Code's own hook system inside crew spawn env without breaking firstmate guards |
+| 5 | Remote access hardening + ttyd click-through | codex | medium | Well-understood ops/security configuration |
+| 6 | History browser: done tasks, PRs, scout reports | codex | low | Simple read-only views; bump to medium if sanitized rendering gets involved |
+
+Rationale: Codex ($100 sub) takes the bounded implementation volume; Claude ($200 sub) takes the stories requiring firstmate-internals judgment, and its larger allowance also funds primary supervision. Per-task overrides remain the captain's call at dispatch time.
 
 ### Epic acceptance criteria
 
@@ -63,6 +67,8 @@ A locally-hosted, phone-friendly web dashboard: kanban board of all fleet work f
 
 Part of the fleet dashboard epic. The MVP: a board that renders what the fleet is doing right now.
 
+**Suggested dispatch:** codex, high effort - large, well-specified greenfield build.
+
 #### Design
 
 - Server (Bun or Python, single process): every 10-15s - or on fs events under `state/` and `data/backlog.md`, debounced - run `bin/fm-fleet-snapshot.sh --json`, diff against the last snapshot, push changes over SSE. Serve the SPA statically. Read-only by construction: the only fleet interaction is executing the snapshot script, which is documented read-only (no lock, no wake drain, no mutation).
@@ -94,6 +100,8 @@ Part of the fleet dashboard epic. The MVP: a board that renders what the fleet i
 **Body:**
 
 Part of the fleet dashboard epic. Depends on story 1. This is the highest-value screen for away-from-desk use.
+
+**Suggested dispatch:** claude (Sonnet), medium effort - correct reading of firstmate state semantics matters more than UI volume.
 
 #### Design
 
@@ -130,6 +138,8 @@ Health strip (machinery, not tasks): watcher liveness (`state/.last-watcher-beat
 **Body:**
 
 Part of the fleet dashboard epic. Depends on story 1 (dashboard exists to display it). Independent of stories 2/4.
+
+**Suggested dispatch:** codex, high effort - fiddly multi-format data engineering, fully specified.
 
 #### Design
 
@@ -171,6 +181,8 @@ Start with Claude Code (biggest share, easiest source) + one more; grok/cursor/a
 
 Part of the fleet dashboard epic. Depends on story 1; shares storage with story 3. This layer answers "what is that agent actually doing right now" without attaching to tmux.
 
+**Suggested dispatch:** claude (Opus), high effort - wires into Claude Code's own hook system inside the crew spawn environment without breaking firstmate guards.
+
 #### Design
 
 Adopt the disler observability pattern (agent lifecycle hooks -> `POST /events` -> SQLite -> SSE -> timeline UI), extended with the task join:
@@ -207,6 +219,8 @@ UI: per-task timeline drawer from the kanban card (story 1), plus an all-agents 
 
 Part of the fleet dashboard epic. Depends on story 1.
 
+**Suggested dispatch:** codex, medium effort - well-understood ops/security configuration.
+
 #### Scope
 
 - [ ] Bind dashboard to the Twingate-reachable interface; TLS (self-signed or internal CA) or an SSH-tunnel-only stance - decide and document
@@ -230,6 +244,8 @@ Part of the fleet dashboard epic. Depends on story 1.
 **Body:**
 
 Part of the fleet dashboard epic. Depends on story 1. Pairs with the gbrain memory epic (the dashboard shows recent history; the brain answers deep questions).
+
+**Suggested dispatch:** codex, low effort (bump to medium if sanitized rendering grows involved).
 
 #### Scope
 
