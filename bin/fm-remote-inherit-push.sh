@@ -75,6 +75,13 @@ while IFS= read -r rel; do
     if [ "$rel" = data/captain-shared.md ]; then
       shared_captain_header_valid "$source" || die "shared captain preferences have no valid primary-authoritative header"
     fi
+    # The shared brain plane's closed schema is what keeps a credential and a
+    # per-home brain location out of inherited material, so it is checked on
+    # every route that carries the file, not only the local one.
+    if [ "$rel" = "config/$FM_GBRAIN_SHARED_FILE" ]; then
+      command -v jq >/dev/null 2>&1 || die "jq is required to validate $rel before pushing it"
+      fm_gbrain_validate_shared "$source" || die "$FM_GBRAIN_ERROR"
+    fi
     snapshot="$TMP/$(printf '%s' "$rel" | tr '/' '_')"
     cp -p -- "$source" "$snapshot" || die "cannot snapshot inherited source: $source"
     [ -f "$snapshot" ] && [ ! -L "$snapshot" ] || die "inherited source snapshot is unsafe: $source"

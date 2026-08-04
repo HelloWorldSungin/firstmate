@@ -37,7 +37,15 @@
 # convergence point inherits it - no other change needed. config/secondmate-harness
 # is deliberately NOT in the list: it is the primary's own setting for launching
 # secondmates, and a secondmate never spawns secondmates, so it must not flow
-# downstream.
+# downstream. config/gbrain-local.json and config/gbrain-secrets/ are excluded
+# for the two other reasons a shared item can be wrong downstream: the first
+# names a home's OWN brain and OAuth client identity, which two homes must never
+# share, and the second holds credentials, which propagation must never carry
+# (bin/fm-gbrain-lib.sh, docs/gbrain-scoping.md). config/gbrain.json IS carried,
+# and its closed schema is enforced HERE, at the boundary that copies it and
+# feeds the config-reread instruction, rather than only where fm-gbrain.sh later
+# reads it: a credential pasted into that file must be refused before it reaches
+# another home or is inlined verbatim into that home's reread instruction.
 #
 # That single declaration is also the ONE owner of the inherited-material
 # allowlist for remote routes: bin/fm-remote-inherit-push.sh (sender) and
@@ -50,6 +58,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-gbrain-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-gbrain-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -60,7 +70,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context gbrain.json}"
 
 # Items whose value is a home-SESSION enablement decision rather than durable
 # local configuration. They are inherited at the launch convergence point, where
@@ -490,6 +500,27 @@ propagate_inheritable_config() {
           rc=1
           continue
         fi
+      fi
+    fi
+    # The shared brain plane is the one inherited item whose CONTENT carries a
+    # security property: its closed schema is what makes "this file can never
+    # carry a credential and can never point two homes at one brain" true of
+    # every copy and of the reread instruction built from that copy. Refuse the
+    # item here rather than copy first and discover it downstream.
+    if [ "$item" = "$FM_GBRAIN_SHARED_FILE" ] && { [ -e "$src" ] || [ -L "$src" ]; }; then
+      if ! command -v jq >/dev/null 2>&1; then
+        reason="jq is required to validate $item before propagating it"
+        warn_inheritable_config_error "$item" "$src" "$reason"
+        record_inheritable_config_result "$item" error "$reason"
+        rc=1
+        continue
+      fi
+      if ! fm_gbrain_validate_shared "$src"; then
+        reason="unsafe or invalid primary source: $FM_GBRAIN_ERROR"
+        warn_inheritable_config_error "$item" "$src" "$reason"
+        record_inheritable_config_result "$item" error "$reason"
+        rc=1
+        continue
       fi
     fi
     if [ -f "$src" ]; then

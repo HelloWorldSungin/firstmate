@@ -167,6 +167,22 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Brain scoping (config/gbrain.json, config/gbrain-local.json, config/gbrain-secrets/)
+
+Each Firstmate home owns exactly one GBrain brain and writes only that brain.
+The brain lives at `$FM_HOME/data/gbrain/`, with `runtime/` as its `GBRAIN_HOME`, `pglite/` as its index, and `archive/` as its markdown archive.
+The location is derived from the home path, so two homes never collide by omission; a home already running a GBrain deployment elsewhere points at it with `brain_root` in `config/gbrain-local.json`.
+
+The configuration is split across three local, gitignored planes because they must propagate differently.
+`config/gbrain.json` is fleet-shared and IS inherited: it holds the local embedding and reranker endpoints and models, the hosted synthesis provider reference, the main brain's addresses and mount name, and the *names* of credentials.
+Its schema is closed, so it refuses an unknown field, a `brain_root` or `client_id` that belongs to one home alone, a credential pasted where a credential name belongs, a `main_brain.scopes` value other than exactly `read`, and a main-brain URL that would carry a client secret in plaintext to a non-loopback host.
+That closure is what lets the file be inherited verbatim while every home still writes its own brain, and it is enforced at each boundary that copies the file - local propagation and both ends of the remote route - so a credential pasted into the file is refused before any home or config-reread instruction receives it.
+`config/gbrain-local.json` holds this home's `brain_root` override, its own OAuth `client_id`, and `main_brain_owner` when this home's brain is the one the fleet reads, and is never inherited.
+`config/gbrain-secrets/<name>` holds one credential per file, each a regular file with mode 0600 and refused when stored more loosely, exactly as `config/forge-tokens/<host>` is; it is never inherited, so a rotation never copies a secret through inherited configuration.
+
+`bin/fm-gbrain-lib.sh` owns validation, path derivation, and credential reading, `bin/fm-gbrain.sh` is the operator surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
+[`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
@@ -363,7 +379,8 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each declared inherited item's result for each live home as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+The declared set is the `FM_INHERITABLE_CONFIG` items plus `data/captain-shared.md`, owned by `bin/fm-config-inherit-lib.sh`; the inventory in `AGENTS.md` section 2 records whether each config item is inherited.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
@@ -555,6 +572,8 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_ISSUE_STATUS_TTL=900   # seconds a cached work-item enrichment result stays fresh
 FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work-item lookups to one host
 FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
+FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients; see "Brain scoping"
+FM_GBRAIN_TIMEOUT=10    # seconds allowed per HTTP call fm-gbrain.sh makes: the main-brain token mint and each reachability probe in its check
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision

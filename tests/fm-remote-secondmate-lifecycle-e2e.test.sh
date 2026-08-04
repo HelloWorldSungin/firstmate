@@ -345,6 +345,22 @@ cmp -s "$TMP_ROOT/inherit-complete" "$PROTOCOL_HOME/config/crew-harness" \
   || fail "superseded inheritance replaced the current payload"
 pass "remote inheritance rejects incomplete and superseded payload generations"
 
+# The shared brain plane's closed schema is enforced by the RECEIVING code root
+# rather than trusted from the sender, the same way the allowlist is, so no
+# revision that pushes a credential pasted into that file can install it here.
+printf '%s\n' '{"version":1,"main_brain":{"secret":"gbrain_cs_testonlytestonlytestonly00"}}' \
+  > "$TMP_ROOT/inherit-gbrain-leak"
+leak_bytes=$(LC_ALL=C wc -c < "$TMP_ROOT/inherit-gbrain-leak" | tr -d ' ')
+leak_hash=$(sha256_file "$TMP_ROOT/inherit-gbrain-leak")
+if FM_HOME="$PROTOCOL_HOME" "$REMOTE_ROOT/bin/fm-remote-inherit.sh" \
+  put config/gbrain.json "$leak_bytes" "$leak_hash" 3 \
+  < "$TMP_ROOT/inherit-gbrain-leak" >/dev/null 2>&1; then
+  fail "remote inheritance installed a credential pasted into the shared brain plane"
+fi
+assert_absent "$PROTOCOL_HOME/config/gbrain.json" \
+  "a refused shared brain plane was still published into the remote home"
+pass "remote inheritance refuses a credential pasted into the shared brain plane"
+
 # Add one local route to prove mixed fleets remain parseable and projected.
 mkdir -p "$LOCAL_HOME/data" "$LOCAL_HOME/state" "$LOCAL_HOME/config" "$LOCAL_HOME/projects" "$LOCAL_HOME/bin"
 printf 'local\n' > "$LOCAL_HOME/.fm-secondmate-home"

@@ -75,12 +75,16 @@ config/herdr-presentation-spaces  optional presence flag for Herdr's default-off
 config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; inherited by secondmate homes; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/forge-tokens/<host>  per-host issue-tracker credential for optional work-item status enrichment; LOCAL, gitignored, must be mode 0600, and deliberately NOT inherited by secondmate homes; see docs/configuration.md "Project issue trackers"
+config/gbrain.json  fleet-shared brain endpoints, model choices, main-brain address, and credential NAMES; LOCAL, gitignored, closed schema, inherited by secondmate homes; see docs/configuration.md "Brain scoping" and docs/gbrain-scoping.md
+config/gbrain-local.json  this home's own brain-root override and OAuth client id; LOCAL, gitignored, and deliberately NOT inherited, because two homes must never share a brain or a client identity
+config/gbrain-secrets/<name>  one brain credential per file; LOCAL, gitignored, must be mode 0600, and deliberately NOT inherited, so a rotation never copies a secret downstream
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
+  gbrain/            this home's OWN GBrain brain - runtime/ (its GBRAIN_HOME), pglite/ (its index), archive/; derived from the home path so no two homes collide, and the only brain this home writes (docs/gbrain-scoping.md)
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture and issue-tracker schemas, while fm-project-mode.sh and fm-issue-lib.sh parse those respective fields (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
