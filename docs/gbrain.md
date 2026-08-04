@@ -11,6 +11,8 @@ The PGLite database and index live at `/home/sungin/.local/share/gbrain/pglite`.
 The GBrain runtime configuration lives at `/home/sungin/.local/share/gbrain/runtime/.gbrain` through `GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime`.
 The canonical markdown archive is the remote-less Git repository at `/home/sungin/.local/share/gbrain/archive`, outside both Firstmate project roots and the Firstmate source tree.
 Do not add a third-party Git remote to that archive.
+Those brain paths belong to this one deployment rather than to every home: a Firstmate home reaches them only when its `config/gbrain-local.json` sets `brain_root` to `/home/sungin/.local/share/gbrain`, and otherwise resolves its own `runtime/`, `pglite/`, and `archive/` under `$FM_HOME/data/gbrain` ([gbrain-scoping.md](gbrain-scoping.md)).
+Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute those values for the absolute paths in the commands below.
 
 ## Pinned installation and upgrade
 
@@ -105,6 +107,8 @@ Operators must treat that visible failure as a failed rerank rather than success
 The MiniMax credential is read only at runtime from `/home/sungin/.pi/agent/auth.json`, field `minimax.key`.
 The file must remain mode `0600`.
 Do not place that value in GBrain configuration, a repository, a test, a log, or a service unit.
+A home that uses per-home brain scoping may instead keep its own copy in that home's credential plane, `config/gbrain-secrets/<name>` named by `think.secret`, under the same mode `0600` requirement ([gbrain-scoping.md](gbrain-scoping.md)).
+Either way the key reaches only the synthesizing process: `bin/fm-gbrain.sh` reports such a credential as present, absent, or refused and never prints its bytes.
 Use an untraced shell to inject it only into the `think` process:
 
 ```sh

@@ -53,8 +53,10 @@
 #                be retried. Destructive, so it refuses without --yes.
 #
 # Environment:
-#   FM_HOME        active firstmate home (default: this code root)
-#   FM_GBRAIN_BIN  gbrain executable (default: gbrain on PATH)
+#   FM_HOME            active firstmate home (default: this code root)
+#   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
+#   FM_GBRAIN_TIMEOUT  seconds allowed per HTTP call this script makes - the
+#                      token mint and each reachability probe (default: 10)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

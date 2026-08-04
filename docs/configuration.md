@@ -379,7 +379,8 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each declared inherited item's result for each live home as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+The declared set is the `FM_INHERITABLE_CONFIG` items plus `data/captain-shared.md`, owned by `bin/fm-config-inherit-lib.sh`; the inventory in `AGENTS.md` section 2 records whether each config item is inherited.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
@@ -571,6 +572,8 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_ISSUE_STATUS_TTL=900   # seconds a cached work-item enrichment result stays fresh
 FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work-item lookups to one host
 FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
+FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients; see "Brain scoping"
+FM_GBRAIN_TIMEOUT=10    # seconds allowed per HTTP call fm-gbrain.sh makes: the main-brain token mint and each reachability probe in its check
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision

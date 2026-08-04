@@ -54,7 +54,7 @@ Each reading home gets its OWN OAuth client, registered with the single scope `r
 FM_HOME=<main-home> bin/fm-gbrain.sh grant-read <label> --home <reading-home>
 ```
 
-That records the client id in the reading home's `config/gbrain-local.json`, writes the client secret to its `config/gbrain-secrets/` at mode 0600, and prints neither.
+That records the client id in the reading home's `config/gbrain-local.json` and writes the client secret to its `config/gbrain-secrets/` at mode 0600, reporting the new client id and the credential's path but never the secret itself.
 Once that registration succeeds it also records `main_brain_owner` in the granting home's own `config/gbrain-local.json`, because a home whose brain accepted the registration is by construction the brain the others read.
 A registration the brain refused records nothing, so a refused grant leaves the granting home's local plane exactly as it found it.
 That home reads its own index directly and never grants itself a client, so `bin/fm-gbrain.sh check` reports it as reading the main brain rather than as having lost access to it.
@@ -71,8 +71,9 @@ The main brain is a separate database, reached only through an explicit read ove
 Within a single brain, GBrain's own sources decide breadth: a federated source appears in cross-source default search, and an isolated source is searched only when named with `--source`.
 
 Because the two brains are separate databases, a slug that exists in both is two distinct pages rather than a collision.
-The local page is the one this home writes; the main brain's page is read-only and is addressed through the configured `main_brain.mount` name.
-Keep that mount name stable across the fleet, since it is what distinguishes "the main brain's copy" from "this home's copy" wherever both are cited.
+The local page is the one this home writes, and the main brain's page is read-only, reached over `main_brain.mcp_url` with the read-scoped token.
+`main_brain.mount` names that remote brain: today it is the fleet-wide label that distinguishes "the main brain's copy" from "this home's copy" wherever both are cited, and it is the mount id a future GBrain mount entry would carry once mounts can hold an OAuth client.
+Keep it stable across the fleet for both reasons.
 
 ## Offline behavior
 
