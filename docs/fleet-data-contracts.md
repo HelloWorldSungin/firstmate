@@ -44,6 +44,7 @@ The manifest never contacts a forge and never reads brief contents, a prompt, a 
 | `pr.status.*` | the cached observation, see [Normalized PR state](#normalized-pr-state) | never refreshed at write time |
 | `report.path`, `report.present` | `data/<id>/report.md` | the scout deliverable pointer |
 | `attribution.*` | `state/<id>.meta` | the references a later usage read needs, see below |
+| `attribution.sessions` | `state/<id>.usage-sessions` | the live session-to-task map, so token usage keeps its task after cleanup |
 | `work_items` | `data/<id>/work-items.json` | embedded so the manifest is self-contained |
 | `gbrain` | `state/<id>.gbrain`, an optional provider | `status` is `absent` when no provider wrote one |
 
@@ -67,6 +68,10 @@ A future explicit recorded stamp can supersede any of these without a schema cha
 `attribution` retains what a delayed usage read needs once the task's runtime is gone: the backend, the endpoint target and its task id, the worktree, the per-task temp root, the trace context when trace propagation is enabled, and the secondmate home for a retired secondmate.
 The project it ran against is the top-level `project` field, recorded once so the two can never disagree.
 Together with `harness`, `model`, and `effort` these are enough to attribute a session's token usage to a task that no longer exists.
+
+`attribution.sessions` carries the harness sessions that were bound to the task while it was live, each as `harness`, `session_id`, and `source_kind`, capped at 64 entries.
+[`bin/fm-usage.mjs`](../bin/fm-usage.mjs) publishes that map to `state/<id>.usage-sessions` and [usage accounting](usage-accounting.md) owns the attribution ladder; the manifest is the durable handoff, published before teardown removes the volatile map.
+The field is additive: a manifest written before this contract carries no `sessions` key and stays valid, and a task whose usage was never collected archives with an empty list rather than failing to archive.
 
 ## Work-item references
 

@@ -22,6 +22,10 @@
 #   data/<id>/work-items.json  work-item references (bin/fm-work-item.sh owns the store)
 #   state/<id>.pr-status     the normalized PR observation (bin/fm-pr-status.sh)
 #   state/<id>.gbrain        the optional capture receipt, absent by default
+#   state/<id>.usage-sessions  the sessions bound to this task while it was live
+#                            (bin/fm-usage.mjs owns the sidecar), carried into
+#                            attribution.sessions so token usage keeps its task
+#                            after teardown removes the volatile records
 # A secondmate has no backlog row by contract, so its title is null rather than
 # synthesized from a registry or intake record.
 # It never contacts a forge and never reads brief contents, a prompt, a tool
@@ -228,8 +232,9 @@ cmd_write() {
   local report="$DATA/$id/report.md" report_present=false
   [ -f "$report" ] && report_present=true
 
-  local pr_identity pr_status work_items gbrain title manifest
+  local pr_identity pr_status work_items gbrain title manifest usage_sessions
   pr_identity=$(pr_identity_json "$pr_url" "$pr_head")
+  usage_sessions=$(fm_outcome_usage_sessions_json "$STATE" "$id")
   pr_status=$(fm_outcome_pr_status_read "$STATE" "$id" "$pr_url")
   work_items=$(fm_outcome_work_items_read "$DATA" "$id")
   gbrain=$(fm_outcome_gbrain_json "$STATE" "$id")
@@ -268,6 +273,7 @@ cmd_write() {
     --arg task_tmp "$task_tmp" \
     --arg traceparent "$traceparent" \
     --arg secondmate_home "$secondmate_home" \
+    --argjson usage_sessions "$usage_sessions" \
     --argjson work_items "$work_items" \
     --argjson gbrain "$gbrain" \
     --arg recorded_at "$completed" \
@@ -298,7 +304,8 @@ cmd_write() {
                    worktree:blank($worktree),
                    task_tmp:blank($task_tmp),
                    traceparent:blank($traceparent),
-                   secondmate_home:blank($secondmate_home)},
+                   secondmate_home:blank($secondmate_home),
+                   sessions:$usage_sessions},
       work_items:{schema:($work_items.schema),references:($work_items.references)},
       gbrain:$gbrain,
       recorded_at:$recorded_at}') || {

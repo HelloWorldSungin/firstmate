@@ -145,8 +145,26 @@ META="$STATE/$ID.meta"
 # Teardown refuses when that fails: the manifest is the canonical structured
 # completion record, so a task that cannot be archived must not be erased.
 # Rerun teardown once the cause is fixed - the write is idempotent.
+# Best-effort refresh of the task's usage session map, immediately before the
+# manifest that carries it into durable history is composed. This is the last
+# moment the live records exist, so a session that started after the previous
+# collector run would otherwise lose its task forever.
+#
+# Deliberately conditional on an existing store: usage accounting activates only
+# after an operator has run bin/fm-usage.mjs once, so a home that never opted in
+# pays nothing here and a failure never blocks cleanup.
+# docs/usage-accounting.md owns the contract.
+refresh_usage_sessions() {
+  [ -f "$DATA/usage.db" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  local home=$FM_HOME
+  FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$home" >/dev/null 2>&1 || true
+}
+
 publish_outcome_manifest() {  # <force-flag>
   local rc=0
+  refresh_usage_sessions
   if [ "${1:-}" = "--force" ]; then
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" --forced >/dev/null || rc=$?
@@ -1851,7 +1869,8 @@ cleanup_firstmate_home_children() {
     rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" \
       "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" \
       "$sub_state/$child_id.run-step" \
-      "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token"
+      "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
+      "$sub_state/$child_id.usage-sessions"
   done
 }
 
@@ -2158,7 +2177,7 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.run-step" \
   "$STATE/$ID.grok-turnend-token" "$STATE/$ID.kimi-turnend-token" \
-  "$STATE/$ID.pr-status" "$STATE/$ID.gbrain"
+  "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

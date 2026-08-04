@@ -130,6 +130,13 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # The usage store uses the built-in node:sqlite module, so this lane pins
+      # the same Node 22 floor the dashboard carries rather than accepting
+      # whatever the runner image ships. Without it tests/fm-usage.test.sh would
+      # self-skip and the collector would go unverified.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Require tmux for e2e tests
         run: |
           set -eu
