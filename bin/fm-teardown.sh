@@ -367,16 +367,15 @@ fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
 # The helpers below distinguish a proven no-turn worker from evidence whose
-# location was never persisted. A clean proven no-turn worker can complete
-# cleanup, while a clean worker with an unknown evidence location can complete
-# cleanup only by retaining its worktree. A worker that ran without a usable
-# verdict still blocks non-forced cleanup.
+# location was never persisted. Only the clean proven no-turn worker can enter
+# the allowance. An unknown evidence location cannot prove that boundary and
+# must refuse while preserving both worktree and task metadata, exactly like a
+# worker that ran without a usable verdict.
 
 # 0 iff this verdict means the worker never produced a model-attributed turn.
 # Every other no-verdict cause is handled separately: unreadable evidence, an
-# absent adapter, jq missing, and evidence that cannot be attributed keep
-# refusing, while a missing persisted evidence-store identity retains the
-# worktree during cleanup.
+# absent adapter, jq missing, evidence that cannot be attributed, and a missing
+# persisted evidence-store identity all keep refusing.
 model_verdict_precedes_any_turn() {  # <verdict>
   case "$1" in
     unstarted|pending) return 0 ;;
@@ -2155,11 +2154,11 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
 fi
-# Every refusal gate has passed, and any worktree whose endpoint liveness or
-# evidence location remains unconfirmed was retained rather than recycled, so
-# this is the last point at which the records the manifest is composed from all
-# still exist: a retired secondmate's own state and data directories can live
-# INSIDE the home removed on the next line.
+# Every refusal gate has passed. Any worktree whose endpoint liveness remains
+# unconfirmed was retained rather than recycled, so this is the last point at
+# which the records the manifest is composed from all still exist: a retired
+# secondmate's own state and data directories can live INSIDE the home removed
+# on the next line.
 publish_outcome_manifest "$FORCE" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
