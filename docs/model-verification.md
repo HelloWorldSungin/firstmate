@@ -72,7 +72,6 @@ Only the exact record `model=default` is unpinned.
 A missing or empty `model=` is malformed dispatch metadata and therefore `unverifiable`.
 
 `unverifiable` covers a harness with no evidence adapter, a durable record with no persisted evidence-store identity, a recorded evidence store that is missing or inaccessible, a transcript parent or session path entry that exists as a non-directory or broken symbolic link or is inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
-The verifier never substitutes its ambient Claude store when the durable record names none, because absence in an unrecorded location cannot prove that the worker produced no evidence.
 `unstarted` is separated from it because the two ask different questions of a caller: evidence that exists or may exist behind an uninspectable path may belong to a worker that ran, while a genuinely absent transcript parent or per-worktree session path entry beneath an inspectable store has no turn of its own to read at all.
 Neither is a pass, and both exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
@@ -97,13 +96,13 @@ The endpoint, worktree, requested model, and dispatch timestamp are published fi
 A worktree drawn from a reusable pool can still carry the transcripts of a previous occupant, whose model would otherwise be attributed to the current task.
 The verifier excludes exactly those identities, so a prior transcript and the new worker's transcript remain distinguishable even when both files share the one-second modification timestamp recorded by the filesystem.
 
-`spawned_at=` remains as a compatibility anchor for records without an identity watermark.
+`spawned_at=` remains as a compatibility anchor for records that have a persisted evidence-store identity but no identity watermark.
 A transcript whose modification time equals that legacy anchor is ambiguous and therefore `unverifiable`, never a match.
-A present but empty or nonnumeric `spawned_at=` is malformed and therefore `unverifiable`; only a genuinely absent field enters legacy attribution.
-A current record with a timestamp or watermark but no evidence-store identity is also `unverifiable`.
+A present but empty or nonnumeric `spawned_at=` is malformed and therefore `unverifiable`; only a genuinely absent field enters weaker legacy attribution, and only when the persisted store still binds the evidence location.
+A record with no persisted evidence-store identity has an unknown evidence location, so the verifier reads no ambient Claude store, reports `unverifiable`, and teardown retains its worktree rather than recycling it.
 
-A record written before either binding existed cannot be bound.
-In that case unanimous evidence is still attributed, with the weaker binding disclosed in the detail text, and disagreeing evidence is reported `unverifiable` rather than guessed at.
+A record with a persisted evidence-store identity but written before either time binding existed cannot be time-bound.
+In that case unanimous evidence from the recorded store is still attributed, with the weaker binding disclosed in the detail text, and disagreeing evidence is reported `unverifiable` rather than guessed at.
 
 ## Surfacing
 
@@ -129,7 +128,7 @@ An unknown evidence location cannot satisfy the no-turn proof and therefore neve
 The teardown output names the retained worktree and each unknown reason, leaving any later committed or uncommitted write recoverable.
 The residual gap pending separately tracked confirmed-termination support is one possible unverified model attribution: a worker that begins its first turn after the final recomputation can write routing evidence while its task records are being removed, but no path discards its worktree contents.
 The absent verdict is stated plainly in the teardown output either way.
-Both halves are required and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
+Both halves are required for recycling and both are read from evidence rather than a flag: a worker that RAN without a usable verdict keeps refusing even on a spotless worktree, and any uncommitted change or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
 
 `bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch`, `unverifiable`, or `unstarted`.
