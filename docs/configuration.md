@@ -167,6 +167,22 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Brain scoping (config/gbrain.json, config/gbrain-local.json, config/gbrain-secrets/)
+
+Each Firstmate home owns exactly one GBrain brain and writes only that brain.
+The brain lives at `$FM_HOME/data/gbrain/`, with `runtime/` as its `GBRAIN_HOME`, `pglite/` as its index, and `archive/` as its markdown archive.
+The location is derived from the home path, so two homes never collide by omission; a home already running a GBrain deployment elsewhere points at it with `brain_root` in `config/gbrain-local.json`.
+
+The configuration is split across three local, gitignored planes because they must propagate differently.
+`config/gbrain.json` is fleet-shared and IS inherited: it holds the local embedding and reranker endpoints and models, the hosted synthesis provider reference, the main brain's addresses and mount name, and the *names* of credentials.
+Its schema is closed, so it refuses an unknown field, a `brain_root` or `client_id` that belongs to one home alone, a credential pasted where a credential name belongs, a `main_brain.scopes` value other than exactly `read`, and a main-brain URL that would carry a client secret in plaintext to a non-loopback host.
+That closure is what lets the file be inherited verbatim while every home still writes its own brain.
+`config/gbrain-local.json` holds this home's `brain_root` override and its own OAuth `client_id`, and is never inherited.
+`config/gbrain-secrets/<name>` holds one credential per file, each a regular file with mode 0600 and refused when stored more loosely, exactly as `config/forge-tokens/<host>` is; it is never inherited, so a rotation never copies a secret through inherited configuration.
+
+`bin/fm-gbrain-lib.sh` owns validation, path derivation, and credential reading, `bin/fm-gbrain.sh` is the operator surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
+[`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.

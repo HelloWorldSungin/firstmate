@@ -218,6 +218,10 @@ Before either return or direct removal, teardown asks the target home's process-
 It refuses retirement while that cleanup is uncertain or unavailable, preserving the home and retirement records for a later retry.
 Raw deletion is unsupported because a blocking process-event child can outlive its home.
 
+If the retiring home reads the main brain, revoke that access BEFORE teardown removes the home, because the record of which credential to revoke lives inside the home being deleted.
+`FM_HOME=<main-home> bin/fm-gbrain.sh retire <retiring-home> --yes` revokes its read-only client and removes its credentials and its own brain; teardown then removes the home as usual.
+Skipping this leaves a working read credential for a home that no longer exists ([`docs/gbrain-scoping.md`](../../../docs/gbrain-scoping.md)).
+
 With `--force`, teardown is the explicit discard path.
 It kills child windows, discards child work and state inside the secondmate home, removes the route, releases the lease, and removes the retired secondmate home.
 Never use `--force` unless the captain explicitly said to discard the work.

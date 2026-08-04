@@ -37,7 +37,11 @@
 # convergence point inherits it - no other change needed. config/secondmate-harness
 # is deliberately NOT in the list: it is the primary's own setting for launching
 # secondmates, and a secondmate never spawns secondmates, so it must not flow
-# downstream.
+# downstream. config/gbrain-local.json and config/gbrain-secrets/ are excluded
+# for the two other reasons a shared item can be wrong downstream: the first
+# names a home's OWN brain and OAuth client identity, which two homes must never
+# share, and the second holds credentials, which propagation must never carry
+# (bin/fm-gbrain-lib.sh, docs/gbrain-scoping.md).
 #
 # That single declaration is also the ONE owner of the inherited-material
 # allowlist for remote routes: bin/fm-remote-inherit-push.sh (sender) and
@@ -60,7 +64,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context gbrain.json}"
 
 # Items whose value is a home-SESSION enablement decision rather than durable
 # local configuration. They are inherited at the launch convergence point, where

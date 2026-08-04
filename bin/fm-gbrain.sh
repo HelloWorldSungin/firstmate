@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# fm-gbrain.sh - operator surface for per-home GBrain scoping and the read-only
+# share of the main brain.
+#
+# Every Firstmate home owns exactly one brain and writes only that brain. A
+# secondmate reads the main brain through GBrain's own OAuth 2.1 server using a
+# client registered with the single scope "read", so the refusal to write is
+# enforced by GBrain per operation rather than by a Firstmate convention.
+# docs/gbrain-scoping.md owns the contract; bin/fm-gbrain-lib.sh owns the
+# configuration planes, path derivation, and credential handling.
+#
+# Usage:
+#   fm-gbrain.sh paths [--json]
+#   fm-gbrain.sh config [--json]
+#   fm-gbrain.sh env
+#   fm-gbrain.sh check [--json]
+#   fm-gbrain.sh token
+#   fm-gbrain.sh grant-read <label> --home <target-home> [--replace]
+#   fm-gbrain.sh revoke-read <client-id>
+#   fm-gbrain.sh retire <target-home> [--yes]
+#
+# Commands:
+#   paths        This home's own brain root, GBRAIN_HOME, index, and archive.
+#   config       The effective configuration, always redacted: a credential is
+#                reported as a name and a present/absent/refused state, never as
+#                bytes. Safe for a status surface, a log, or a reread nudge.
+#   env          The environment a gbrain call against THIS home needs. Prints
+#                no credential; the MiniMax key is injected separately and only
+#                into the one process that synthesizes.
+#   check        Validate the local plane and report reachability. A main brain
+#                or MiniMax endpoint that is down is reported as degraded and
+#                exits 0, because local search does not depend on either. A
+#                broken local plane - invalid configuration, or a credential
+#                stored too loosely to use - exits non-zero.
+#   token        Mint a short-lived read-only access token for the main brain.
+#                This is the one command that writes a credential to stdout.
+#   grant-read   Register a read-scoped OAuth client on THIS home's brain and
+#                install it into <target-home>: the client id into that home's
+#                config/gbrain-local.json, the secret into its
+#                config/gbrain-secrets/ at mode 0600. Run it in the home that
+#                owns the main brain. --replace revokes the target's previous
+#                client after the new one is installed, which is the rotation
+#                path: no secret is ever copied through inherited config.
+#   revoke-read  Revoke a client on THIS home's brain. GBrain cascades its
+#                tokens and authorization codes.
+#   retire       Secondmate retirement cleanup: revoke that home's client, then
+#                remove its credentials and its own brain. Destructive, so it
+#                refuses without --yes.
+#
+# Environment:
+#   FM_HOME        active firstmate home (default: this code root)
+#   FM_GBRAIN_BIN  gbrain executable (default: gbrain on PATH)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+
+# shellcheck source=bin/fm-gbrain-lib.sh
+. "$SCRIPT_DIR/fm-gbrain-lib.sh"
+
+GBRAIN_BIN="${FM_GBRAIN_BIN:-gbrain}"
+
+# Print the header comment block, whatever length it grows to, rather than a
+# hard-coded line range that silently starts spilling code into --help.
+usage() { awk 'NR == 1 {next} !/^#/ {exit} {sub(/^# ?/, ""); print}' "${BASH_SOURCE[0]}"; }
+die() { printf 'fm-gbrain: %s\n' "$1" >&2; exit 1; }
+
+require_tool() {  # <tool>
+  command -v "$1" >/dev/null 2>&1 || die "$1 is not installed"
+}
+
+shared_str() { fm_gbrain_json_str "$(fm_gbrain_shared_path "$FM_HOME")" "$1"; }
+
+resolve_or_die() {
+  fm_gbrain_validate_shared "$(fm_gbrain_shared_path "$FM_HOME")" || die "$FM_GBRAIN_ERROR"
+  fm_gbrain_resolve_paths "$FM_HOME" || die "$FM_GBRAIN_ERROR"
+}
+
+# --- paths / config / env ---------------------------------------------------
+
+cmd_paths() {
+  resolve_or_die
+  if [ "${1:-}" = --json ]; then
+    jq -n --arg r "$FM_GBRAIN_BRAIN_ROOT" --arg h "$FM_GBRAIN_HOME_DIR" \
+      --arg p "$FM_GBRAIN_PGLITE" --arg a "$FM_GBRAIN_ARCHIVE" \
+      '{brain_root: $r, gbrain_home: $h, pglite: $p, archive: $a}'
+    return 0
+  fi
+  printf 'brain_root  %s\n' "$FM_GBRAIN_BRAIN_ROOT"
+  printf 'gbrain_home %s\n' "$FM_GBRAIN_HOME_DIR"
+  printf 'pglite      %s\n' "$FM_GBRAIN_PGLITE"
+  printf 'archive     %s\n' "$FM_GBRAIN_ARCHIVE"
+}
+
+cmd_config() {
+  local json
+  # Validated in this shell first: fm_gbrain_effective_json runs in a command
+  # substitution below, whose FM_GBRAIN_ERROR would die with the subshell.
+  resolve_or_die
+  json=$(fm_gbrain_effective_json "$FM_HOME") || die "could not render the configuration"
+  if [ "${1:-}" = --json ]; then
+    printf '%s\n' "$json"
+    return 0
+  fi
+  printf '%s\n' "$json" | jq -r '
+    "brain_root  \(.paths.brain_root)",
+    "gbrain_home \(.paths.gbrain_home)",
+    "embedding   \(.local.embedding_model // "<unset>") @ \(.local.embedding_base_url // "<unset>")",
+    "reranker    \(.local.reranker_model // "<unset>") @ \(.local.reranker_base_url // "<unset>")",
+    "think       \(.think.model // "<unset>") @ \(.think.base_url // "<unset>")",
+    "main_brain  \(.main_brain.mcp_url // "<unshared>") scopes=\(.main_brain.scopes // "<unset>") client=\(if (.main_brain.client_id // "") == "" then "<none>" else .main_brain.client_id end)",
+    (.secrets | to_entries[] | "secret      \(.key) name=\(.value.name) \(.value.state)")
+  '
+}
+
+cmd_env() {
+  resolve_or_die
+  local embed
+  embed=$(shared_str '.local.embedding_base_url')
+  printf 'GBRAIN_HOME=%s\n' "$FM_GBRAIN_HOME_DIR"
+  [ -n "$embed" ] && printf 'OLLAMA_BASE_URL=%s\n' "$embed"
+  return 0
+}
+
+# --- main-brain read path ---------------------------------------------------
+
+# Mint a client_credentials token for the configured main brain. Prints the
+# token on stdout; every failure path prints a reason on stderr and returns
+# non-zero without emitting a partial credential.
+mint_token() {
+  local token_url client_id secret_name secret body token
+  token_url=$(shared_str '.main_brain.token_url')
+  [ -n "$token_url" ] || { echo "no main_brain.token_url configured" >&2; return 1; }
+  client_id=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$FM_HOME")" '.client_id')
+  [ -n "$client_id" ] || { echo "this home has no main-brain client id" >&2; return 1; }
+  secret_name=$(shared_str '.main_brain.secret')
+  [ -n "$secret_name" ] || { echo "no main_brain.secret configured" >&2; return 1; }
+  local rc=0
+  fm_gbrain_read_secret "$FM_HOME" "$secret_name" || rc=$?
+  secret=$FM_GBRAIN_SECRET
+  FM_GBRAIN_SECRET=""
+  case $rc in
+    0) ;;
+    1) echo "main-brain client secret is absent" >&2; return 1 ;;
+    *) echo "$FM_GBRAIN_ERROR" >&2; return 1 ;;
+  esac
+  # The secret travels through a stdin config file, so it never appears in this
+  # process's arguments and cannot be read from the process table.
+  body=$(printf 'data-urlencode = "client_secret=%s"\n' "$secret" \
+    | curl -sS -m "${FM_GBRAIN_TIMEOUT:-10}" -K - -X POST "$token_url" \
+      --data-urlencode grant_type=client_credentials \
+      --data-urlencode "client_id=$client_id" 2>/dev/null) || {
+    unset secret
+    echo "main brain did not answer at $token_url" >&2; return 1
+  }
+  unset secret
+  token=$(printf '%s' "$body" | jq -r '.access_token // empty' 2>/dev/null)
+  [ -n "$token" ] || { echo "main brain issued no access token" >&2; return 1; }
+  printf '%s\n' "$token"
+}
+
+cmd_token() {
+  require_tool curl; require_tool jq
+  resolve_or_die
+  mint_token
+}
+
+# --- check ------------------------------------------------------------------
+
+CHECK_ROWS=()
+check_row() { CHECK_ROWS+=("$1|$2|$3"); }   # <name> <state> <detail>
+
+probe_url() {  # <url> -> 0 reachable
+  curl -sS -o /dev/null -m "${FM_GBRAIN_TIMEOUT:-10}" "$1" >/dev/null 2>&1
+}
+
+cmd_check() {
+  local json_mode=0 hard=0 shared local_file url secret_name rc token
+  [ "${1:-}" = --json ] && json_mode=1
+
+  shared=$(fm_gbrain_shared_path "$FM_HOME")
+  local_file=$(fm_gbrain_local_path "$FM_HOME")
+
+  if fm_gbrain_validate_shared "$shared"; then
+    check_row config ok "shared configuration valid"
+  else
+    check_row config failed "$FM_GBRAIN_ERROR"; hard=1
+  fi
+  if fm_gbrain_validate_local "$local_file"; then
+    check_row config-local ok "home-local configuration valid"
+  else
+    check_row config-local failed "$FM_GBRAIN_ERROR"; hard=1
+  fi
+
+  if [ "$hard" -eq 0 ] && fm_gbrain_resolve_paths "$FM_HOME"; then
+    if [ -d "$FM_GBRAIN_PGLITE" ]; then
+      check_row brain ok "$FM_GBRAIN_PGLITE"
+    else
+      check_row brain absent "no index yet at $FM_GBRAIN_PGLITE"
+    fi
+  fi
+
+  # A credential that exists but is stored too loosely is a finding, not a
+  # degradation: it is refused rather than used, so the run fails.
+  local plane
+  for plane in think main_brain; do
+    secret_name=$(shared_str ".$plane.secret")
+    [ -n "$secret_name" ] || continue
+    rc=0
+    fm_gbrain_read_secret "$FM_HOME" "$secret_name" || rc=$?
+    FM_GBRAIN_SECRET=""
+    case $rc in
+      0) check_row "secret:$secret_name" ok "mode 0600" ;;
+      1) check_row "secret:$secret_name" absent "not installed" ;;
+      *) check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1 ;;
+    esac
+  done
+
+  # Everything below is reachability. Local retrieval does not depend on the
+  # main brain or on MiniMax, so neither can turn this run into a failure.
+  url=$(shared_str '.local.embedding_base_url')
+  if [ -n "$url" ]; then
+    if probe_url "${url%/}/models"; then
+      check_row embedding ok "$url"
+    else
+      check_row embedding degraded "no answer at $url; embedding and hybrid search are unavailable until it returns"
+    fi
+  fi
+  url=$(shared_str '.local.reranker_base_url')
+  if [ -n "$url" ]; then
+    if probe_url "${url%/}/models"; then
+      check_row reranker ok "$url"
+    else
+      check_row reranker degraded "no answer at $url; search falls back to non-reranked ordering"
+    fi
+  fi
+  url=$(shared_str '.main_brain.mcp_url')
+  if [ -n "$url" ]; then
+    if [ "$hard" -ne 0 ]; then
+      check_row main-brain skipped "local plane must be fixed first"
+    elif token=$(mint_token 2>/dev/null); then
+      [ -n "$token" ] && check_row main-brain ok "read-only token issued for $url"
+    else
+      check_row main-brain degraded "no read-only access to $url right now; this home's own search is unaffected"
+    fi
+  fi
+  url=$(shared_str '.think.base_url')
+  if [ -n "$url" ]; then
+    secret_name=$(shared_str '.think.secret')
+    if [ -n "$secret_name" ] && fm_gbrain_read_secret "$FM_HOME" "$secret_name"; then
+      check_row think ok "$url"
+    else
+      check_row think degraded "no usable key for $url; synthesis is unavailable and local search is unaffected"
+    fi
+    FM_GBRAIN_SECRET=""
+  fi
+
+  local row name state detail
+  if [ "$json_mode" -eq 1 ]; then
+    for row in "${CHECK_ROWS[@]+"${CHECK_ROWS[@]}"}"; do
+      name=${row%%|*}; detail=${row#*|}; state=${detail%%|*}; detail=${detail#*|}
+      jq -cn --arg n "$name" --arg s "$state" --arg d "$detail" \
+        '{check: $n, state: $s, detail: $d}'
+    done | jq -s '.'
+  else
+    for row in "${CHECK_ROWS[@]+"${CHECK_ROWS[@]}"}"; do
+      name=${row%%|*}; detail=${row#*|}; state=${detail%%|*}; detail=${detail#*|}
+      printf '%-24s %-9s %s\n' "$name" "$state" "$detail"
+    done
+  fi
+  return "$hard"
+}
+
+# --- granting and revoking the read-only share ------------------------------
+
+write_secret_file() {  # <target-home> <name> <value>
+  local home=$1 name=$2 value=$3 dir path tmp
+  dir="$(fm_gbrain_config_dir "$home")/$FM_GBRAIN_SECRETS_DIR"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  path="$dir/$name"
+  tmp=$(umask 077 && mktemp "$dir/.fm-gbrain.XXXXXX") || return 1
+  printf '%s\n' "$value" > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$path"
+}
+
+write_local_client_id() {  # <target-home> <client-id>
+  local home=$1 client_id=$2 path tmp dir
+  path=$(fm_gbrain_local_path "$home")
+  dir=${path%/*}
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.fm-gbrain-local.XXXXXX") || return 1
+  if [ -f "$path" ]; then
+    jq --arg c "$client_id" '.version = 1 | .client_id = $c' "$path" > "$tmp"
+  else
+    jq -n --arg c "$client_id" '{version: 1, client_id: $c}' > "$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$path"
+}
+
+gbrain_call() {  # <args...> - run gbrain against THIS home's brain
+  GBRAIN_HOME="$FM_GBRAIN_HOME_DIR" "$GBRAIN_BIN" "$@"
+}
+
+# Registering and revoking a client are database writes, and a PGLite brain is
+# single-writer: while `gbrain serve` is up it holds an exclusive lock and every
+# CLI write is refused. That refusal is safe - nothing is half-applied - but the
+# raw message does not say what an operator has to do, so name it here.
+explain_gbrain_failure() {  # <captured-output> <action>
+  case $1 in
+    *'already open through'* | *.gbrain-lock*)
+      die "the main brain is currently being served, and its index takes one writer at a time; stop the served main brain, $2, then start it again"
+      ;;
+  esac
+  die "gbrain refused to $2"
+}
+
+cmd_grant_read() {
+  local label="" target="" replace=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --home) target=${2:-}; shift 2 ;;
+      --replace) replace=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) [ -n "$label" ] && die "unexpected argument: $1"; label=$1; shift ;;
+    esac
+  done
+  [ -n "$label" ] || die "usage: fm-gbrain.sh grant-read <label> --home <target-home>"
+  [ -n "$target" ] || die "grant-read needs --home <target-home>"
+  [ -d "$target" ] || die "target home does not exist: $target"
+  require_tool jq
+  command -v "$GBRAIN_BIN" >/dev/null 2>&1 || die "gbrain is not installed (set FM_GBRAIN_BIN)"
+  resolve_or_die
+
+  local secret_name previous
+  secret_name=$(shared_str '.main_brain.secret')
+  [ -n "$secret_name" ] || die "this fleet's $FM_GBRAIN_SHARED_FILE sets no main_brain.secret name"
+  previous=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$target")" '.client_id')
+  if [ -n "$previous" ] && [ "$replace" -eq 0 ]; then
+    die "$target already reads the main brain as $previous; pass --replace to rotate"
+  fi
+
+  # The scope is fixed at "read" here and refused anywhere else by
+  # fm_gbrain_validate_shared, so no caller can widen this registration.
+  local out client_id client_secret rc=0
+  out=$(gbrain_call auth register-client "$label" --scopes read --grant-types client_credentials 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "register the read-only client"
+  client_id=$(printf '%s\n' "$out" | awk '/Client ID:/{print $NF}')
+  client_secret=$(printf '%s\n' "$out" | awk '/Client Secret:/{print $NF}')
+  [ -n "$client_id" ] || die "could not read the new client id from gbrain's output"
+  case $client_secret in
+    gbrain_cs_*) ;;
+    *) die "gbrain issued no client secret; a public client cannot read the main brain unattended" ;;
+  esac
+
+  write_secret_file "$target" "$secret_name" "$client_secret" \
+    || die "could not install the credential into $target"
+  write_local_client_id "$target" "$client_id" \
+    || die "could not record the client id in $target"
+  unset client_secret
+
+  printf 'granted read-only access to the main brain\n'
+  printf '  home       %s\n' "$target"
+  printf '  client id  %s\n' "$client_id"
+  printf '  credential %s\n' "$(fm_gbrain_secret_path "$target" "$secret_name")"
+  if [ -n "$previous" ]; then
+    if gbrain_call auth revoke-client "$previous" >/dev/null 2>&1; then
+      printf '  rotated    revoked the previous client %s\n' "$previous"
+    else
+      printf '  rotated    WARNING: the previous client %s could not be revoked; revoke it before trusting the rotation\n' "$previous"
+      return 1
+    fi
+  fi
+}
+
+cmd_revoke_read() {
+  local client_id=${1:-}
+  [ -n "$client_id" ] || die "usage: fm-gbrain.sh revoke-read <client-id>"
+  command -v "$GBRAIN_BIN" >/dev/null 2>&1 || die "gbrain is not installed (set FM_GBRAIN_BIN)"
+  resolve_or_die
+  local out rc=0
+  out=$(gbrain_call auth revoke-client "$client_id" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || explain_gbrain_failure "$out" "revoke $client_id"
+  printf '%s\n' "$out"
+}
+
+cmd_retire() {
+  local target="" yes=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --yes) yes=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) [ -n "$target" ] && die "unexpected argument: $1"; target=$1; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "usage: fm-gbrain.sh retire <target-home> [--yes]"
+  [ -d "$target" ] || die "target home does not exist: $target"
+  require_tool jq
+
+  local client_id secrets_dir
+  client_id=$(fm_gbrain_json_str "$(fm_gbrain_local_path "$target")" '.client_id')
+  fm_gbrain_resolve_paths "$target" || die "$FM_GBRAIN_ERROR"
+  secrets_dir="$(fm_gbrain_config_dir "$target")/$FM_GBRAIN_SECRETS_DIR"
+
+  if [ "$yes" -eq 0 ]; then
+    printf 'retiring %s would:\n' "$target"
+    [ -n "$client_id" ] && printf '  revoke its main-brain client %s\n' "$client_id"
+    printf '  remove its credentials at %s\n' "$secrets_dir"
+    printf '  remove its own brain at %s\n' "$FM_GBRAIN_BRAIN_ROOT"
+    die "this destroys that home's brain; re-run with --yes once the captain has approved"
+  fi
+
+  if [ -n "$client_id" ]; then
+    if fm_gbrain_resolve_paths "$FM_HOME" && command -v "$GBRAIN_BIN" >/dev/null 2>&1 \
+      && gbrain_call auth revoke-client "$client_id" >/dev/null 2>&1; then
+      printf 'revoked %s\n' "$client_id"
+    else
+      printf 'WARNING: could not revoke %s; revoke it on the main brain before reusing this label\n' "$client_id" >&2
+    fi
+    fm_gbrain_resolve_paths "$target" || die "$FM_GBRAIN_ERROR"
+  fi
+  rm -rf "$secrets_dir"
+  rm -rf "$FM_GBRAIN_BRAIN_ROOT"
+  printf 'retired the brain and credentials for %s\n' "$target"
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+main() {
+  local cmd=${1:-}
+  [ $# -gt 0 ] && shift
+  case $cmd in
+    paths) cmd_paths "$@" ;;
+    config) cmd_config "$@" ;;
+    env) cmd_env "$@" ;;
+    check) cmd_check "$@" ;;
+    token) cmd_token "$@" ;;
+    grant-read) cmd_grant_read "$@" ;;
+    revoke-read) cmd_revoke_read "$@" ;;
+    retire) cmd_retire "$@" ;;
+    -h | --help | help | '') usage ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

@@ -1,6 +1,7 @@
 # Local GBrain archive
 
-This operator reference owns the Firstmate GBrain installation, archive setup, retrieval configuration, privacy boundary, and recovery procedure.
+This operator reference owns the Firstmate GBrain installation, archive setup, retrieval configuration, privacy boundary, and recovery procedure for one brain.
+How a Firstmate home scopes its OWN brain, and how the main brain is shared read-only with secondmate homes, is owned by [gbrain-scoping.md](gbrain-scoping.md).
 The local embedding endpoint contract is in [gbrain-endpoints.md](gbrain-endpoints.md), the local reranker evidence is in [verification/gbrain-reranker.md](verification/gbrain-reranker.md), and the empirical installation evidence is in [verification/gbrain-init-retrieval.md](verification/gbrain-init-retrieval.md).
 
 ## Operating paths
