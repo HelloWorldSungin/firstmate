@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
-# clear volatile state, refresh/prune the project's clone for PR-based ship
-# tasks, then print a backlog-refresh reminder for ship and scout teardowns
-# (a secondmate teardown prints none, since secondmates are not backlog items).
+# publish the durable outcome manifest, clear volatile state, refresh/prune the
+# project's clone for PR-based ship tasks, then print a backlog-refresh reminder
+# for ship and scout teardowns (a secondmate teardown prints none, since
+# secondmates are not backlog items).
+# The manifest at data/<task-id>/outcome.json is written atomically BEFORE the
+# volatile records it is composed from are removed - including before a retired
+# secondmate's home, which can contain those records - so the task stays in
+# durable history afterwards. A manifest that cannot be published refuses the
+# cleanup rather than erasing a task that could not be archived; see
+# publish_outcome_manifest below and bin/fm-outcome-manifest.sh.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -127,6 +134,27 @@ FM_LOCK_LOG_PREFIX=teardown
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+
+# Durable history is published BEFORE the volatile records that feed it are
+# removed. bin/fm-outcome-manifest.sh composes data/<ID>/outcome.json from the
+# task metadata, status log, backlog row, report, work-item store, and cached PR
+# observation while they all still exist, then writes it atomically.
+# Teardown refuses when that fails: the manifest is the canonical structured
+# completion record, so a task that cannot be archived must not be erased.
+# Rerun teardown once the cause is fixed - the write is idempotent.
+publish_outcome_manifest() {  # <force-flag>
+  local rc=0
+  if [ "${1:-}" = "--force" ]; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" --forced >/dev/null || rc=$?
+  else
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" >/dev/null || rc=$?
+  fi
+  [ "$rc" -eq 0 ] && return 0
+  echo "error: could not publish the durable outcome manifest for $ID; retaining every task record" >&2
+  return 1
+}
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -297,6 +325,7 @@ remote_secondmate_teardown() {
   fi
   remote_pending_replies_cleanup \
     || { echo "error: remote pending-reply cleanup failed; preserving the local route for retry" >&2; return 1; }
+  publish_outcome_manifest "$FORCE" || return 1
   tmp="$SECONDMATE_REG.tmp.$$"
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
@@ -1915,6 +1944,11 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
 fi
+# Every refusal gate has passed and the endpoint is confirmed gone, so this is
+# the last point at which the records the manifest is composed from all still
+# exist: a retired secondmate's own state and data directories can live INSIDE
+# the home removed on the next line.
+publish_outcome_manifest "$FORCE" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
@@ -1936,8 +1970,8 @@ remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.run-step" \
-  "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token"
+  "$STATE/$ID.grok-turnend-token" "$STATE/$ID.kimi-turnend-token" \
+  "$STATE/$ID.pr-status" "$STATE/$ID.gbrain"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

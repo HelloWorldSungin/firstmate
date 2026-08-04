@@ -97,8 +97,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded `github.com` work item or report why it cannot |
+| `fm-pr-status.sh`        | Refresh and cache one task PR's normalized review, check, and mergeability observation |
 | `fm-issue-ref.sh`        | Resolve work-item references against a project's declared issue tracker, refusing to guess a forge |
 | `fm-issue-status.sh`     | Add optional cached work-item title and open/closed enrichment per forge, with best-effort per-host lookup spacing |
+| `fm-outcome-lib.sh`      | Own the durable manifest, work-item, PR-status, and history wire shapes plus their atomic publication |
+| `fm-outcome-manifest.sh` | Write, read, and list the durable completion manifest teardown publishes before cleanup |
+| `fm-work-item.sh`        | Maintain a task's durable forge- and host-agnostic work-item reference store          |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
