@@ -438,7 +438,7 @@ refresh_terminal_model_verdict() {
   MODEL_VERDICT=${MODEL_VERDICT%%' · '*}
 }
 
-terminate_no_turn_endpoint() {
+attempt_no_turn_endpoint_close() {
   NO_TURN_LIVENESS_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
   case "$NO_TURN_LIVENESS_STATE" in
     alive)
@@ -461,18 +461,14 @@ terminate_no_turn_endpoint() {
         fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
       fi
       if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
-        echo "REFUSED: task $ID endpoint could not be terminated before its final evidence check; preserving its worktree and metadata." >&2
+        echo "REFUSED: task $ID Herdr endpoint close could not be confirmed before its final evidence check; preserving its worktree and metadata." >&2
         return 1
       fi
       ;;
     *)
-      if ! fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null; then
-        echo "REFUSED: task $ID endpoint could not be terminated before its final evidence check; preserving its worktree and metadata." >&2
-        return 1
-      fi
+      fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
       ;;
   esac
-  NO_TURN_ENDPOINT_TERMINATED=1
 }
 
 # This is the first cleanup authorization check. It is metadata-only and must
@@ -482,7 +478,6 @@ fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 NO_TURN_ALLOWANCE_CANDIDATE=0
 NO_TURN_LIVENESS_UNDETERMINED=0
 NO_TURN_LIVENESS_STATE=not-checked
-NO_TURN_ENDPOINT_TERMINATED=0
 refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
@@ -1999,7 +1994,7 @@ if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
   # fm_backend_target_exists intentionally maps read failures onto false for
   # cheap observational callers, so a failure-collapsing helper cannot be used
   # as a destructive safety predicate without a stronger wrapper.
-  terminate_no_turn_endpoint || exit 1
+  attempt_no_turn_endpoint_close || exit 1
   refresh_terminal_model_verdict
   printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
   if ! model_verdict_precedes_any_turn "$MODEL_VERDICT"; then
@@ -2010,7 +2005,7 @@ if [ "$NO_TURN_ALLOWANCE_CANDIDATE" -eq 1 ]; then
     echo "REFUSED: task $ID gained work before cleanup; preserving its worktree and metadata." >&2
     exit 1
   fi
-  echo "teardown: task $ID never produced a model-attributed turn after endpoint termination, so no model-routing verdict could be obtained for it." >&2
+  echo "teardown: task $ID had not produced a model-attributed turn at the final pre-removal check, so no model-routing verdict could be obtained for it." >&2
   if [ "$NO_TURN_LIVENESS_UNDETERMINED" -eq 1 ]; then
     echo "Endpoint liveness could not be determined on backend $BACKEND (state: $NO_TURN_LIVENESS_STATE)." >&2
     echo "The recomputed on-disk proof found no attributed turn, task branch, commits of its own, uncommitted changes, or non-allowlisted untracked files, so there is no work or routing evidence to preserve; proceeding." >&2
@@ -2038,8 +2033,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
       "$WT/.opencode/plugins/fm-busy-state.js" \
       "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
   fi
-  [ -z "$T_ORCA" ] || [ "$NO_TURN_ENDPOINT_TERMINATED" = 1 ] \
-    || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
+  [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
@@ -2068,28 +2062,23 @@ fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.
-  if [ "$NO_TURN_ENDPOINT_TERMINATED" = 1 ]; then
-    :
-  elif teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
+  if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" 2>/dev/null || true
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
 elif [ "$BACKEND" = herdr ]; then
-  if [ "$NO_TURN_ENDPOINT_TERMINATED" = 1 ]; then
-    :
-  elif teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+  if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
   else
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
   fi
-elif [ "$BACKEND" != orca ] && [ "$NO_TURN_ENDPOINT_TERMINATED" != 1 ]; then
+elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$NO_TURN_ENDPOINT_TERMINATED" = 1 ] \
-     || [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
+  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
   else
     echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2

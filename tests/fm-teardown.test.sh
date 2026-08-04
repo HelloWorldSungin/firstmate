@@ -578,20 +578,23 @@ case " $* " in
   *" action list-tabs --json "*)
     printf '%s\n' '[{"tab_id":3,"name":"fm-task-x1"}]'
     ;;
-  *" action close-tab-by-id "*) : > "${FM_TEST_ENDPOINT_KILLED:?}" ;;
+  *" action close-tab-by-id "*)
+    : > "${FM_TEST_ENDPOINT_CLOSE_ATTEMPTED:?}"
+    exit 1
+    ;;
 esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/zellij"
 }
 
-install_tmux_liveness_mutation() {
+install_tmux_close_mutation() {
   local case_dir=$1
   cat > "$case_dir/fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = kill-window ]; then
-  [ -z "${FM_TEST_ENDPOINT_KILLED:-}" ] || : > "$FM_TEST_ENDPOINT_KILLED"
-  case "${FM_TEST_LIVENESS_MUTATION:-}" in
+  [ -z "${FM_TEST_ENDPOINT_CLOSE_ATTEMPTED:-}" ] || : > "$FM_TEST_ENDPOINT_CLOSE_ATTEMPTED"
+  case "${FM_TEST_CLOSE_MUTATION:-}" in
     model-turn)
       mkdir -p "${FM_TEST_TRANSCRIPT_DIR:?}"
       printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5"}}' > "${FM_TEST_TRANSCRIPT_DIR:?}/current.jsonl"
@@ -628,7 +631,7 @@ case "\${1:-}" in
       '#{pane_current_command}') printf '%s\n' claude ;;
     esac
     ;;
-  kill-window) : > '$case_dir/endpoint-killed' ;;
+  kill-window) : > '$case_dir/endpoint-close-attempted' ;;
 esac
 SH
   chmod +x "$case_dir/fakebin/tmux"
@@ -666,7 +669,7 @@ test_never_started_and_clean_tears_down_without_force() {
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-clean: task metadata was left behind"
   assert_grep "verdict: unstarted" "$case_dir/stderr" \
     "never-started-clean: the absent session was not surfaced"
-  assert_grep "never produced a model-attributed turn" "$case_dir/stderr" \
+  assert_grep "no model-routing verdict could be obtained" "$case_dir/stderr" \
     "never-started-clean: teardown did not state that no verdict was obtained"
   [ ! -d "$dir" ] || fail "never-started-clean: fixture wrote a transcript directory"
   pass "a never-started worker with nothing to lose tears down and still reports no verdict"
@@ -781,17 +784,17 @@ test_unreadable_session_parent_still_refuses() {
   pass "an unreadable session parent remains unverifiable and refuses teardown"
 }
 
-test_first_turn_during_endpoint_termination_refuses() {
+test_first_turn_before_final_recompute_refuses() {
   local case_dir dir rc
   case_dir=$(make_case first-turn-before-cleanup)
   write_meta "$case_dir" no-mistakes ship
   dir=$(claude_dispatch_meta "$case_dir")
   never_started_worktree "$case_dir"
-  install_tmux_liveness_mutation "$case_dir"
+  install_tmux_close_mutation "$case_dir"
 
   rc=0
-  FM_TEST_LIVENESS_MUTATION=model-turn \
-    FM_TEST_ENDPOINT_KILLED="$case_dir/endpoint-killed" \
+  FM_TEST_CLOSE_MUTATION=model-turn \
+    FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
     FM_TEST_TRANSCRIPT_DIR="$dir" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
@@ -802,14 +805,14 @@ test_first_turn_during_endpoint_termination_refuses() {
     "first-turn-before-cleanup: the recomputed mismatch was not surfaced"
   assert_grep "gained a model-attributed turn" "$case_dir/stderr" \
     "first-turn-before-cleanup: the changed no-turn condition was not named"
-  assert_present "$case_dir/endpoint-killed" \
-    "first-turn-before-cleanup: endpoint termination did not trigger the late turn"
+  assert_present "$case_dir/endpoint-close-attempted" \
+    "first-turn-before-cleanup: the best-effort close did not trigger the late turn"
   assert_present "$dir/current.jsonl" \
     "first-turn-before-cleanup: the late transcript was erased"
   assert_present "$case_dir/wt" \
     "first-turn-before-cleanup: the task worktree was returned"
   assert_present "$case_dir/state/task-x1.meta" "first-turn-before-cleanup: task metadata was erased"
-  pass "a first mismatched turn during endpoint termination is recomputed and preserved"
+  pass "a first mismatched turn before final recomputation is preserved"
 }
 
 test_unknown_liveness_proceeds_with_on_disk_proof() {
@@ -821,7 +824,7 @@ test_unknown_liveness_proceeds_with_on_disk_proof() {
   use_unverified_zellij_backend "$case_dir"
 
   rc=0
-  FM_TEST_ENDPOINT_KILLED="$case_dir/endpoint-killed" \
+  FM_TEST_ENDPOINT_CLOSE_ATTEMPTED="$case_dir/endpoint-close-attempted" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "unknown-liveness-clean: every on-disk protection still stayed blocked"
@@ -829,10 +832,10 @@ test_unknown_liveness_proceeds_with_on_disk_proof() {
     "unknown-liveness-clean: the missing recovery classifier was not stated"
   assert_grep "recomputed on-disk proof" "$case_dir/stderr" \
     "unknown-liveness-clean: the protections carrying the decision were not stated"
-  assert_present "$case_dir/endpoint-killed" \
-    "unknown-liveness-clean: the endpoint was not terminated before cleanup"
+  assert_present "$case_dir/endpoint-close-attempted" \
+    "unknown-liveness-clean: the best-effort endpoint close was not attempted"
   assert_absent "$case_dir/state/task-x1.meta" "unknown-liveness-clean: task metadata was left behind"
-  pass "unknown endpoint liveness proceeds with every on-disk protection"
+  pass "unknown endpoint liveness proceeds after a best-effort close failure"
 }
 
 test_authoritative_live_endpoint_refuses() {
@@ -849,7 +852,8 @@ test_authoritative_live_endpoint_refuses() {
   [ "$rc" -ne 0 ] || fail "authoritative-live-endpoint: teardown killed a verified live worker"
   assert_grep "live worker according to backend tmux" "$case_dir/stderr" \
     "authoritative-live-endpoint: authoritative liveness was not named"
-  assert_absent "$case_dir/endpoint-killed" "authoritative-live-endpoint: the live endpoint was killed"
+  assert_absent "$case_dir/endpoint-close-attempted" \
+    "authoritative-live-endpoint: a close was attempted for the live endpoint"
   assert_present "$case_dir/state/task-x1.meta" "authoritative-live-endpoint: task metadata was erased"
   pass "an authoritative live endpoint refuses never-started teardown"
 }
@@ -861,10 +865,10 @@ test_recomputed_on_disk_proof_refuses_each_failed_condition() {
     write_meta "$case_dir" no-mistakes ship
     dir=$(claude_dispatch_meta "$case_dir")
     never_started_worktree "$case_dir"
-    install_tmux_liveness_mutation "$case_dir"
+    install_tmux_close_mutation "$case_dir"
 
     rc=0
-    FM_TEST_LIVENESS_MUTATION="$failure" \
+    FM_TEST_CLOSE_MUTATION="$failure" \
       FM_TEST_TRANSCRIPT_DIR="$dir" \
       FM_TEST_PROJECT="$case_dir/project" \
       FM_TEST_WT="$case_dir/wt" \
@@ -899,7 +903,7 @@ test_never_started_with_session_but_no_turn_tears_down() {
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "never-started-pending: task metadata was left behind"
   assert_grep "verdict: pending" "$case_dir/stderr" \
     "never-started-pending: the pending verdict was not surfaced"
-  assert_grep "never produced a model-attributed turn" "$case_dir/stderr" \
+  assert_grep "no model-routing verdict could be obtained" "$case_dir/stderr" \
     "never-started-pending: teardown did not state that no verdict was obtained"
   pass "a worker whose session never reached a turn tears down and still reports no verdict"
 }
@@ -2451,7 +2455,7 @@ test_non_directory_session_path_still_refuses
 test_non_directory_session_parent_still_refuses
 test_unreadable_session_parent_still_refuses
 test_never_started_with_session_but_no_turn_tears_down
-test_first_turn_during_endpoint_termination_refuses
+test_first_turn_before_final_recompute_refuses
 test_unknown_liveness_proceeds_with_on_disk_proof
 test_authoritative_live_endpoint_refuses
 test_recomputed_on_disk_proof_refuses_each_failed_condition
