@@ -442,13 +442,19 @@ if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
 Firstmate keeps its own running status comment on the same issue, so write yours as the delivery summary rather than a progress note.
 '
   fi
+  # Both parts carry their own line terminators, so the block is trimmed to end
+  # without one: the heredoc below then supplies exactly one, as the --issue form
+  # already does, and the separator appended after it is what spaces the section.
+  # Without the trim the section is the document's only double-blank boundary.
+  WORK_ITEM_BLOCK="${WORK_ITEM_LINES}${SUMMARY_BAR}"
+  WORK_ITEM_BLOCK=${WORK_ITEM_BLOCK%$'\n'}
   IFS= read -r -d '' ISSUE_SECTION <<EOF || true
 ${WORK_ITEM_MARKERS}<!-- firstmate-pr-target=$PR_TARGET_FORGE:$PR_TARGET_HOST/$PR_TARGET_PATH -->
 # Work item traceability
 This task is linked to the work items below.
 They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
 Reference each full URL in the PR body.
-${WORK_ITEM_LINES}${SUMMARY_BAR}
+${WORK_ITEM_BLOCK}
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
   ISSUE_SECTION="$ISSUE_SECTION

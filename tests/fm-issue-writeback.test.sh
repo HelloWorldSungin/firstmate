@@ -30,6 +30,11 @@
 #   (i) the fan-out updates both surfaces, one broken surface never stops the
 #       other, every milestone in the vocabulary reaches both, and the whole
 #       operation is bounded rather than only the calls inside it
+#   (j) arming a PR watch and merging the PR record their own milestones on the
+#       one comment, and a tracker that refuses them cannot make a completed
+#       merge look retryable
+#   (k) the vocabulary and the bounded-call contract each keep exactly one
+#       owner, because a second copy drifts silently
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -770,6 +775,127 @@ test_an_unknown_milestone_is_a_usage_error() {
   pass "an unknown milestone is a caller error rather than a silently skipped update"
 }
 
+# --- (j) the milestones that must not depend on anyone remembering -----------
+#
+# A milestone firstmate has to remember to post is one it will eventually forget,
+# and the reader of the issue cannot tell a task that stalled from one nobody
+# reported on. So the three that matter most are posted by the scripts that
+# already perform the step. A merge runs the PR check first, which makes it the
+# one command that drives two of them, and therefore the one place a second
+# comment would appear if the two call sites did not find each other's work.
+
+test_the_merge_path_posts_its_own_milestones() {
+  local dir out rc body
+  dir=$(board_case mergepath)
+  mkdir -p "$dir/wt" "$dir/projects/widget"
+  # `gh api` is the fake GitHub; every other `gh` call fm-pr-check.sh makes
+  # answers as the PR-head lookup, and gh-axi records the merge.
+  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  exec "$(dirname "$0")/gh-api-fake" "$@"
+fi
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' deadbeefcafe ; exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  cat > "$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+
+  set +e
+  out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
+    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
+    "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "the merge path failed: $out"
+  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh-axi.log" "the PR was never merged"
+  [ "$(comment_count "$dir")" = 1 ] \
+    || fail "arming and merging produced $(comment_count "$dir") comments instead of one"
+  body=$(cat "$(firstmate_comment "$dir")")
+  assert_contains "$body" '**Status: landed**' "the merge did not record the landing"
+  assert_contains "$body" ' - in review' "arming the PR watch did not record the open PR"
+  assert_contains "$body" ' - landed' "the landing is missing from the timeline"
+  [ "$(wc -l < "$dir/store/board-items" | tr -d ' ')" = 1 ] \
+    || fail "the merge path left more than one board card"
+  pass "arming a PR and merging it record themselves on one comment, without anyone remembering to"
+}
+
+test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable() {
+  local dir out rc
+  dir=$(board_case mergepath-refused)
+  mkdir -p "$dir/wt" "$dir/projects/widget"
+  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  exec "$(dirname "$0")/gh-api-fake" "$@"
+fi
+exit 0
+SH
+  cat > "$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+
+  set +e
+  out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
+    FM_FAKE_GH_FAIL=all FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
+    "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a refusing tracker made a completed merge look retryable"
+  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh-axi.log" \
+    "the merge did not happen while the tracker was unreachable"
+  assert_contains "$out" 'warning: status comment not updated' \
+    "a tracker that refused the merge's milestone said nothing"
+  pass "a tracker that refuses a merge's milestone warns and the merge still stands"
+}
+
+# --- (k) one owner per shared contract ---------------------------------------
+#
+# The lifecycle vocabulary and the bounded-call contract were each given a
+# library precisely so a second copy could not drift from the first. A surface
+# that re-rolls either one reintroduces the defect the extraction removed, and it
+# does so invisibly: the duplicate keeps working right up to the day the two
+# disagree about which tokens exist or how long a forge may take.
+
+test_the_shared_contracts_have_exactly_one_owner() {
+  local script
+  for script in fm-issue-comment.sh fm-project-board.sh fm-work-item-milestone.sh; do
+    assert_grep 'fm-milestone-lib.sh' "$ROOT/bin/$script" \
+      "bin/$script does not take the milestone vocabulary from bin/fm-milestone-lib.sh"
+  done
+  for script in fm-issue-comment.sh fm-project-board.sh fm-work-item-milestone.sh \
+    fm-issue-status.sh; do
+    assert_grep 'fm-timeout-lib.sh' "$ROOT/bin/$script" \
+      "bin/$script does not take the bounded-call contract from bin/fm-timeout-lib.sh"
+    if grep -Eq '^[[:space:]]*(fm_)?run_timed\(\)' "$ROOT/bin/$script"; then
+      fail "bin/$script defines its own bounded runner instead of using bin/fm-timeout-lib.sh"
+    fi
+    if grep -q 'FM_MILESTONE_TOKENS=' "$ROOT/bin/$script"; then
+      fail "bin/$script owns a second copy of the vocabulary bin/fm-milestone-lib.sh owns"
+    fi
+  done
+  pass "the vocabulary and the bounded-call contract each have one owner, not a copy per surface"
+}
+
 test_first_milestone_creates_one_comment
 test_the_comment_carries_nothing_fleet_private
 test_repeated_milestones_edit_exactly_one_comment
@@ -796,3 +922,6 @@ test_every_milestone_in_the_vocabulary_reaches_both_surfaces
 test_a_caller_error_is_caught_before_either_surface_runs
 test_the_whole_fanout_is_bounded_not_just_each_call
 test_an_unknown_milestone_is_a_usage_error
+test_the_merge_path_posts_its_own_milestones
+test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable
+test_the_shared_contracts_have_exactly_one_owner

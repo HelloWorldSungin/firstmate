@@ -356,6 +356,14 @@ test_tracker_token_does_not_disturb_delivery_posture() {
 
 # --- brief scaffolding ------------------------------------------------------
 
+# One blank line separates every section of a generated brief. A second one
+# renders identically in Markdown, so nothing a reader or a grep-based assertion
+# does will ever surface it, and a scaffold that composes its own document
+# sloppily is one a worker has less reason to trust.
+assert_single_blank_lines() {  # <brief> <message>
+  awk 'prev == "" && $0 == "" { exit 1 } { prev = $0 }' "$1" || fail "$2"
+}
+
 test_brief_records_resolved_work_items() {
   local home brief out
   home="$TMP_ROOT/brief-home"
@@ -386,6 +394,8 @@ test_brief_records_resolved_work_items() {
     "$brief" "brief added cross-forge tracker write-back"
   assert_no_grep 'A bare "done" comment does not satisfy this contract' \
     "$brief" "brief retained cross-forge comment requirements"
+  assert_single_blank_lines "$brief" \
+    "the link-only work-item section left a double blank line between sections"
   pass "a ship brief records every resolved work item as a marker and a full URL"
 }
 
@@ -412,6 +422,8 @@ test_brief_requires_write_back_only_where_the_pr_target_matches() {
   assert_grep 'https://github.com/other/elsewhere/issues/9 lives on another tracker' \
     "$brief" "the foreign-repository item was not marked link-only"
   assert_no_grep 'Closes #9' "$brief" "a foreign-repository item was given a Closes line it cannot honour"
+  assert_single_blank_lines "$brief" \
+    "the write-back work-item section left a double blank line between sections"
   pass "the substantive-comment contract is emitted for the PR target's own tracker and no other"
 }
 
