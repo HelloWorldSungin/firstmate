@@ -1,0 +1,21 @@
+[Unit]
+Description=Local GBrain embedding endpoint (Ollama)
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_MODELS=/home/sungin/.local/gbrain-endpoints/ollama-models
+Environment=CUDA_VISIBLE_DEVICES=GPU-d8875f51-293f-a66f-71c2-b6da16c568d0
+ExecStart=/home/sungin/.local/gbrain-endpoints/ollama/bin/ollama serve
+ExecStartPost=/home/sungin/.local/gbrain-endpoints/bin/check-embedding.sh
+Restart=on-failure
+RestartSec=5s
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=50
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
