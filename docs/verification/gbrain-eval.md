@@ -81,7 +81,7 @@ $ bin/fm-gbrain-eval.sh run --home /home/sungin/firstmate --phase think --think-
 Three questions needed the second call and two of them succeeded on it.
 The one that failed twice, `q01`, produced 8003 characters on its retry, at the run's `think_max_answer` cap.
 
-**The remaining gap is explicit**: at the shipped one-call setting the home answers 85 to 90 percent of synthesis questions against a 95 percent threshold, and the shortfall is entirely the hosted provider's output format on long answers.
+**The remaining gap is explicit**: at the shipped one-call setting the home answered 75 to 90 percent of synthesis questions across the three runs above, against a 95 percent threshold, and the shortfall is entirely the hosted provider's output format on long answers.
 No embedding or reranker change addresses it, because retrieval already succeeds on every one of those questions - `q03` and `q17` both retrieved their expected source at rank one in the same run.
 A different embedding artifact was nevertheless measured, below, because the migration playbook had to be exercised end to end.
 

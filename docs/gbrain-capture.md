@@ -80,7 +80,7 @@ The receipt always names the page address, even while the item is pending, becau
 ```sh
 bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, redacted
 bin/fm-gbrain-capture.sh process                # retry every pending item
-bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted
+bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted, and re-deliver one already captured
 bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report
 bin/fm-gbrain-capture.sh backfill --dry-run     # report what a sweep would capture
 ```
