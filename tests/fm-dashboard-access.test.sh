@@ -101,6 +101,51 @@ status_for() {  # <path> [curl args...]
   curl -s -o /dev/null -w '%{http_code}' "$@" "http://127.0.0.1:$TEST_PORT$target"
 }
 
+# A dashboard on the given bind address, waited for over loopback. A server that
+# refused to start is the failure this reports, with its own log as the reason.
+start_server_on() {  # <case-root> <address>
+  local case_root=$1 address=$2 attempt
+  TEST_PORT=$(free_port)
+  mkdir -p "$case_root/home/data" "$case_root/home/state"
+  FM_HOME="$case_root/home" \
+    FM_DASHBOARD_ADDRESS="$address" \
+    FM_DASHBOARD_PORT="$TEST_PORT" \
+    FM_DASHBOARD_TIMEOUT_SECONDS=4 \
+    FM_DASHBOARD_POLL_SECONDS=5 \
+    FM_DASHBOARD_AUTH_FILE="$case_root/dashboard-auth.json" \
+    node "$SERVER" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ "$(status_for /api/snapshot)" != "000" ] && return 0
+    sleep 0.1
+  done
+  fail "the dashboard bound to $address never answered on loopback: $(cat "$case_root/server.log")"
+}
+
+# Stand in for systemctl, so the installer's post-restart contract can be
+# exercised without enabling or restarting anything on the developer's machine.
+# The read-backs answer out of the unit the installer just wrote, which is what
+# systemd does too; the liveness answers are the case under test.
+write_systemctl_stub() {  # <bin-dir> <active-state> <restart-count>
+  local bin_dir=$1 active_state=$2 restarts=$3
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/systemctl" <<EOF
+#!/usr/bin/env bash
+unit="\$XDG_CONFIG_HOME/systemd/user/firstmate-dashboard.service"
+case "\$*" in
+  *"-p EnvironmentFiles"*) sed -n 's/^EnvironmentFile=//p' "\$unit" ;;
+  *"-p Environment"*) sed -n 's/^Environment=//p' "\$unit" ;;
+  *"-p ReadWritePaths"*) sed -n 's/^ReadWritePaths=-//p' "\$unit" ;;
+  *"-p DropInPaths"*) : ;;
+  *"-p ActiveState"*) printf '%s\n' '$active_state' ;;
+  *"-p NRestarts"*) printf '%s\n' '$restarts' ;;
+  *status*) printf 'stub: %s\n' '$active_state'; [ '$active_state' = active ] || exit 3 ;;
+  *) : ;;
+esac
+EOF
+  chmod +x "$bin_dir/systemctl"
+}
+
 test_generated_unit_carries_literal_paths() {
   local case_root unit env_file directive path_entry
   case_root="$TMP_ROOT/literal"
@@ -232,6 +277,40 @@ test_installing_from_a_worktree_is_refused() {
   assert_not_contains "$exec_start" "$case_root/scratch/" \
     "the unit still points into the disposable worktree"
 
+  # The abbreviated form of the same install: a permanent checkout named and
+  # nothing else. The refusal above is only half the guard, because the unit
+  # pins an operational home too and derives the event store from it - a home
+  # left in the worktree hands the persistent service a fleet home and a store
+  # that are about to be reclaimed, which is the breakage --checkout exists to
+  # prevent arriving by the other pinned path.
+  rm -f "$unit"
+  local pinned_home
+  env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE -u FM_HOME \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+    "$case_root/scratch/bin/fm-dashboard-install.sh" \
+    --checkout "$case_root/checkout" --no-start >/dev/null \
+    || fail "installing for a permanent checkout without naming a home was refused"
+  pinned_home=$(sed -n 's/^FM_HOME="\(.*\)"$/\1/p' "$case_root/config/firstmate/dashboard.env")
+  [ "$pinned_home" = "$case_root/checkout" ] \
+    || fail "the unit pins its operational home at [$pinned_home] rather than the permanent checkout"
+
+  # An operational home that is itself a linked worktree is refused for the same
+  # reason the checkout is, however it came to be named.
+  rm -f "$unit"
+  set +e
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_HOME="$case_root/scratch" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+    "$case_root/scratch/bin/fm-dashboard-install.sh" \
+    --checkout "$case_root/checkout" --no-start 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "an operational home inside a linked worktree"
+  assert_contains "$out" "operational home" "the refusal did not name which path was disposable"
+  [ ! -f "$unit" ] || fail "a unit pinning a disposable operational home was written anyway"
+
   # Trying a change from a worktree stays possible when that is what was meant.
   rm -f "$unit"
   env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
@@ -277,6 +356,85 @@ test_exposure_requires_credentials() {
   [ "$rc" -ne 0 ] || fail "the dashboard started exposed with authentication disabled"
   assert_contains "$out" "only supported on a loopback bind" "disabling authentication while exposed was not refused"
   pass "a bind beyond loopback is refused by both the installer and the server until credentials exist"
+}
+
+# The installer's gate has to be the server's gate. A credentials file that is
+# there but that the server would refuse at startup is not credentials: taking
+# it as such writes a unit for a service that comes up only to exit, and leaves
+# an operator reading an installation report for a dashboard that is dead.
+test_exposure_requires_usable_credentials() {
+  local case_root out rc auth_file
+  case_root="$TMP_ROOT/unusable"
+  mkdir -p "$case_root/config" "$case_root/home"
+  auth_file="$case_root/dashboard-auth.json"
+
+  write_credentials "$auth_file" captain "$PASSWORD"
+  chmod 644 "$auth_file"
+  set +e
+  out=$(install_into "$case_root" --address 192.0.2.7 --auth-file "$auth_file" 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a non-loopback bind with credentials other users can read"
+  assert_contains "$out" "readable by other users" "the refusal did not say why the credentials were unusable"
+  [ ! -f "$case_root/config/systemd/user/firstmate-dashboard.service" ] \
+    || fail "an exposed unit was written over credentials the server will refuse"
+
+  printf '{"schema":"fm-dashboard-auth.v1"' > "$auth_file"
+  chmod 600 "$auth_file"
+  set +e
+  out=$(install_into "$case_root" --address 192.0.2.7 --auth-file "$auth_file" 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a non-loopback bind with credentials that will not parse"
+  assert_contains "$out" "could not be used" "the refusal did not say why the credentials were unusable"
+
+  # The same file, private and whole, is what opens the bind.
+  write_credentials "$auth_file" captain "$PASSWORD"
+  install_into "$case_root" --address 192.0.2.7 --auth-file "$auth_file" >/dev/null \
+    || fail "usable credentials did not open the exposed bind"
+  assert_contains "$(cat "$case_root/config/firstmate/dashboard.env")" 'FM_DASHBOARD_ADDRESS="192.0.2.7"' \
+    "the exposed bind was not written into the environment file"
+  pass "exposure is gated on credentials the server could serve behind, not on a file being present"
+}
+
+# systemctl restart returns for a Type=simple service the moment the process
+# forks, and every systemctl show read-back answers out of the unit file whether
+# or not that process is alive. An installer that reports success on those alone
+# reports success over a crash loop.
+test_a_service_that_did_not_stay_up_is_not_reported_as_installed() {
+  local case_root out rc
+  case_root="$TMP_ROOT/liveness"
+  mkdir -p "$case_root/config" "$case_root/home" "$case_root/bin"
+
+  run_install_with_stub() {  # <active-state> <restart-count>
+    write_systemctl_stub "$case_root/bin" "$1" "$2"
+    env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE -u FM_HOME \
+      PATH="$case_root/bin:$PATH" \
+      HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+      FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+      "$INSTALLER" --allow-worktree --fm-home "$case_root/fleet" 2>&1
+  }
+
+  set +e
+  out=$(run_install_with_stub failed 0)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a service that never came up was reported as installed"
+  assert_contains "$out" "did not stay up" "the failure did not say the service is not running"
+  assert_contains "$out" "journalctl" "the failure did not say where to read why"
+
+  # A service between crashes is waiting to be started again, not running, and a
+  # crash loop is mostly made of that state.
+  set +e
+  out=$(run_install_with_stub activating 1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a service waiting to be restarted was reported as installed"
+  assert_contains "$out" "did not stay up" "a restarting service was not reported as such"
+
+  out=$(run_install_with_stub active 0) || fail "a running service was not reported as installed"
+  assert_contains "$out" "the service is running" "a healthy install did not report the service as running"
+  pass "an install is reported as finished only once the service is still running"
 }
 
 test_loopback_stays_the_open_default() {
@@ -461,20 +619,7 @@ test_an_exposed_bind_keeps_loopback() {
   ')
   [ -n "$address" ] || { echo "skip: this host has no non-loopback IPv4 address"; return 0; }
 
-  TEST_PORT=$(free_port)
-  FM_HOME="$case_root/home" \
-    FM_DASHBOARD_ADDRESS="$address" \
-    FM_DASHBOARD_PORT="$TEST_PORT" \
-    FM_DASHBOARD_TIMEOUT_SECONDS=4 \
-    FM_DASHBOARD_POLL_SECONDS=5 \
-    FM_DASHBOARD_AUTH_FILE="$case_root/dashboard-auth.json" \
-    node "$SERVER" > "$case_root/server.log" 2>&1 &
-  SERVER_PID=$!
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ "$(status_for /api/snapshot)" != "000" ] && break
-    sleep 0.1
-  done
+  start_server_on "$case_root" "$address"
 
   code=$(status_for /api/snapshot -u "captain:$PASSWORD")
   expect_code 200 "$code" "an authenticated request over loopback while exposed"
@@ -489,17 +634,127 @@ test_an_exposed_bind_keeps_loopback() {
   pass "an exposed dashboard adds its outward address and keeps loopback, under the same authentication"
 }
 
+# The wildcard binds are the ones that already answer on 127.0.0.1 themselves, so
+# a companion loopback listener added for every non-loopback address would be a
+# second socket on an address this process is already holding - and the service
+# would not start at all on a configuration bin/fm-dashboard-install.sh permits
+# with a warning and docs/dashboard-remote-access.md calls supported. Keying this
+# on a real interface address would not have caught it.
+test_a_wildcard_bind_starts_and_still_answers_on_loopback() {
+  local case_root code
+  case_root="$TMP_ROOT/wildcard"
+  mkdir -p "$case_root"
+  write_credentials "$case_root/dashboard-auth.json" captain "$PASSWORD"
+
+  start_server_on "$case_root" 0.0.0.0
+  code=$(status_for /api/snapshot -u "captain:$PASSWORD")
+  expect_code 200 "$code" "an authenticated request over loopback under a wildcard bind"
+  code=$(status_for /api/snapshot)
+  expect_code 401 "$code" "an unauthenticated request over loopback under a wildcard bind"
+  assert_not_contains "$(cat "$case_root/server.log")" "EADDRINUSE" \
+    "the wildcard bind collided with a listener of its own"
+  kill -0 "$SERVER_PID" 2>/dev/null || fail "the wildcard-bound dashboard did not stay up"
+  stop_server
+
+  # The same, spelled as the IPv6 wildcard, which covers loopback on a
+  # dual-stack host the same way.
+  if node -e 'const s=require("net").createServer();s.once("error",()=>process.exit(1));s.listen(0,"::",()=>{s.close();process.exit(0)})' 2>/dev/null; then
+    start_server_on "$case_root" ::
+    code=$(status_for /api/snapshot -u "captain:$PASSWORD")
+    expect_code 200 "$code" "an authenticated request over loopback under an IPv6 wildcard bind"
+    kill -0 "$SERVER_PID" 2>/dev/null || fail "the ::-bound dashboard did not stay up"
+    stop_server
+  fi
+  pass "a wildcard bind starts and keeps answering on loopback under the same authentication"
+}
+
+# The startup path of the same rule test_credentials_losing_their_private_mode_
+# close_the_dashboard covers for a file that breaks later. Identical on-disk
+# state must get the identical answer whichever side of process start it broke
+# on: a credential this server cannot use closes the dashboard, because "I could
+# not read the credentials" is not "there are no credentials".
+test_credentials_already_unusable_at_startup_close_the_dashboard() {
+  local case_root code body
+  case_root="$TMP_ROOT/startup-credentials"
+  mkdir -p "$case_root"
+
+  # Present, but readable by other users - a file restored or copied under a
+  # default umask, which is how this state is reached in practice.
+  write_credentials "$case_root/dashboard-auth.json" captain "$PASSWORD"
+  chmod 644 "$case_root/dashboard-auth.json"
+  start_authenticated_server "$case_root"
+  code=$(status_for /api/snapshot)
+  expect_code 503 "$code" "an unauthenticated request against credentials exposed before startup"
+  code=$(status_for /api/snapshot -u "captain:$PASSWORD")
+  expect_code 503 "$code" "an authenticated request against credentials exposed before startup"
+
+  # A refusal an operator cannot act on is its own defect, so it names the file,
+  # what was wrong with it, and the command that puts a usable one back.
+  body=$(curl -s "http://127.0.0.1:$TEST_PORT/api/snapshot")
+  assert_contains "$body" "$case_root/dashboard-auth.json" "the refusal did not name the credentials file"
+  assert_contains "$body" "readable by other users" "the refusal did not say what was wrong with it"
+  assert_contains "$body" "--set-password" "the refusal did not say how to recover"
+  stop_server
+
+  # Present, private, and not a credentials document at all.
+  printf '{"schema":"fm-dashboard-auth.v1"' > "$case_root/dashboard-auth.json"
+  chmod 600 "$case_root/dashboard-auth.json"
+  start_authenticated_server "$case_root"
+  code=$(status_for /api/snapshot)
+  expect_code 503 "$code" "an unauthenticated request against credentials that will not parse"
+  body=$(curl -s "http://127.0.0.1:$TEST_PORT/api/snapshot")
+  assert_contains "$body" "$case_root/dashboard-auth.json" "the parse refusal did not name the credentials file"
+  assert_contains "$body" "--set-password" "the parse refusal did not say how to recover"
+  stop_server
+  pass "credentials that were already unusable at startup close the dashboard instead of opening it"
+}
+
+# The throttle protects the key derivation a guess would cost, so it is charged
+# before the derivation. What it must not do is charge the people it exists to
+# keep serving: the shared budget refills at one token a second, so a client
+# spending it on correct passwords - or an attacker spending it on wrong ones -
+# would otherwise hold every legitimate first login at 429.
+test_correct_credentials_do_not_spend_the_failure_budget() {
+  local case_root code attempt encoded spacing
+  case_root="$TMP_ROOT/refund"
+  mkdir -p "$case_root"
+  write_credentials "$case_root/dashboard-auth.json" captain "$PASSWORD"
+  start_authenticated_server "$case_root"
+  encoded=$(printf '%s' "captain:$PASSWORD" | base64 | tr -d '\n')
+
+  # Each request carries the same credential under a header this server has not
+  # seen before, so every one of them is a real verification rather than a
+  # remembered session, and each spends a token unless a success gives it back.
+  # The per-client budget is smaller than this many attempts.
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    spacing=$(printf "%${attempt}s" '')
+    code=$(status_for /api/snapshot -H "Authorization: Basic${spacing}${encoded}")
+    expect_code 200 "$code" "correct credentials on attempt $attempt"
+  done
+
+  # The budget still exists: a wrong password is still refused, not admitted.
+  code=$(status_for /api/snapshot -u "captain:$PASSWORD-wrong")
+  [ "$code" = "401" ] || [ "$code" = "429" ] || fail "a wrong password answered $code"
+  stop_server
+  pass "correct credentials are not charged the budget that throttles wrong ones"
+}
+
 test_generated_unit_carries_literal_paths
 test_a_path_the_unit_cannot_carry_is_refused
 test_an_exposed_bind_keeps_loopback
+test_a_wildcard_bind_starts_and_still_answers_on_loopback
 test_installing_from_a_worktree_is_refused
 test_exposure_requires_credentials
+test_exposure_requires_usable_credentials
+test_a_service_that_did_not_stay_up_is_not_reported_as_installed
 test_loopback_stays_the_open_default
 test_set_password_stores_only_a_digest
 test_a_short_password_is_refused
 test_authentication_accepts_and_rejects
 test_repeated_wrong_passwords_are_rate_limited
+test_correct_credentials_do_not_spend_the_failure_budget
 test_credentials_losing_their_private_mode_close_the_dashboard
+test_credentials_already_unusable_at_startup_close_the_dashboard
 test_ingest_keeps_its_own_boundary
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"

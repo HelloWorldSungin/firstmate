@@ -93,6 +93,13 @@ const AUTH_REALM = "Firstmate fleet dashboard";
 // The two addresses that reach nothing off this host. Every other bind is an
 // exposure, and exposure is gated on configured credentials.
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
+// The binds that already answer on 127.0.0.1 without a second listener: either
+// wildcard, loopback itself, and every other spelling of those. net.BlockList
+// does the parsing, so ::, 0:0:0:0:0:0:0:0 and ::ffff:0.0.0.0 are one answer.
+const LOOPBACK_COVERING_BINDS = new net.BlockList();
+LOOPBACK_COVERING_BINDS.addAddress("127.0.0.1", "ipv4");
+LOOPBACK_COVERING_BINDS.addAddress("0.0.0.0", "ipv4");
+LOOPBACK_COVERING_BINDS.addAddress("::", "ipv6");
 // Deriving a key is deliberately expensive, so a wrong password must cost the
 // client a budget before it costs this process a derivation. Absent credentials
 // spend nothing: an unauthenticated first request is how every browser starts.
@@ -110,6 +117,10 @@ const AUTH_SCRYPT_LIMITS = { maxN: 1 << 17, maxR: 16, maxP: 4, minKeylen: 16, ma
 const AUTH_SCRYPT_COST = { N: 16_384, r: 8, p: 1, keylen: 32 };
 const AUTH_USERNAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const AUTH_PASSWORD_MIN = 12;
+// Every refusal that comes from the credentials file names the one command that
+// puts a usable one back, because a refusal an operator cannot act on leaves
+// them with a closed dashboard and no next step.
+const AUTH_RECOVERY = "run bin/fm-dashboard-install.sh --set-password to restore it";
 // One posted document may carry a small batch, and nothing larger is read off
 // the socket. A producer that has more to say sends another request.
 const EVENT_BODY_MAX_BYTES = 16 * 1024;
@@ -159,6 +170,13 @@ function positiveNumber(name, fallback, { integer = false, maximum = Infinity } 
   return value;
 }
 
+// Where the credentials live, resolved once so the serving path and the
+// installer's usability check can never disagree about which file they mean.
+function resolveAuthFile() {
+  const configRoot = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || os.homedir(), ".config");
+  return process.env.FM_DASHBOARD_AUTH_FILE || path.join(configRoot, "firstmate", "dashboard-auth.json");
+}
+
 function resolveConfig() {
   const address = process.env.FM_DASHBOARD_ADDRESS || "127.0.0.1";
   // Only numeric addresses. A hostname would make what this process is
@@ -187,8 +205,7 @@ function resolveConfig() {
     address,
     loopback: LOOPBACK_ADDRESSES.has(address),
     auth,
-    authFile: process.env.FM_DASHBOARD_AUTH_FILE
-      || path.join(configRoot, "firstmate", "dashboard-auth.json"),
+    authFile: resolveAuthFile(),
     usage,
     events,
     eventsConfigFile: process.env.FM_DASHBOARD_EVENTS_CONFIG
@@ -203,6 +220,10 @@ function resolveConfig() {
     historyPollMs: positiveNumber("FM_DASHBOARD_HISTORY_POLL_SECONDS", 60) * 1000,
     reportMaxBytes: positiveNumber("FM_DASHBOARD_REPORT_MAX_BYTES", 262_144, { integer: true, maximum: 16 * 1024 * 1024 }),
   };
+}
+
+function coversLoopback(address) {
+  return LOOPBACK_COVERING_BINDS.check(address, net.isIPv4(address) ? "ipv4" : "ipv6");
 }
 
 function safeText(value, limit = 4_000) {
@@ -565,6 +586,14 @@ class RateLimiter {
     bucket.tokens -= 1;
     return true;
   }
+
+  // A budget that is spent before the work it protects has to be given back
+  // when the work turns out to have been legitimate, or the budget throttles
+  // the users it exists to keep serving rather than the attempts against them.
+  refund(key) {
+    const bucket = this.buckets.get(key);
+    if (bucket) bucket.tokens = Math.min(this.capacity, bucket.tokens + 1);
+  }
 }
 
 function scryptAsync(password, salt, keylen, cost) {
@@ -631,10 +660,11 @@ function parseBasicCredentials(header) {
 //
 // Two rules make exposure safe to reason about. A bind beyond loopback refuses
 // to start without a usable credential, so reachability and authentication
-// cannot be configured apart. And once a credential has been required or read,
-// enforcement is sticky: a credentials file that later disappears, is corrupted,
-// or loses its private mode answers 503 rather than reverting to an open
-// dashboard, because the operator's last expressed intent was authentication.
+// cannot be configured apart. And once a credential has been required or seen,
+// enforcement is sticky: a credentials file that is missing its private mode,
+// corrupted, or gone answers 503 rather than reverting to an open dashboard,
+// because the operator's last expressed intent was authentication. That holds
+// whichever side of process start the file broke on.
 class AuthState {
   constructor(config) {
     this.config = config;
@@ -674,18 +704,24 @@ class AuthState {
     this.credential = null;
     this.error = null;
     this.sessions.clear();
+    // A credentials file that is there is the operator's expressed intent to
+    // authenticate, so enforcement starts at presence and not at a successful
+    // parse. "I could not read the credentials" and "there are no credentials"
+    // are not the same answer, and only the second is safe to serve openly: a
+    // file this process cannot use has to close the dashboard whether it broke
+    // before this process started or while it was running.
+    this.enforced = true;
     // A credentials file other users can read is not a credential. Refusing is
     // the only answer that does not quietly accept a weaker secret than the
     // operator was told they had.
     if ((info.mode & 0o077) !== 0) {
-      this.error = `the dashboard credentials file must not be readable by other users: ${this.config.authFile}`;
+      this.error = `the dashboard credentials file must not be readable by other users: ${this.config.authFile} - ${AUTH_RECOVERY}`;
       return null;
     }
     try {
       this.credential = parseCredential(JSON.parse(fsReadFileSync(this.config.authFile, "utf8")));
-      this.enforced = true;
     } catch (error) {
-      this.error = `the dashboard credentials file could not be used (${safeText(error.message)})`;
+      this.error = `the dashboard credentials file ${this.config.authFile} could not be used (${safeText(error.message)}) - ${AUTH_RECOVERY}`;
     }
     return this.credential;
   }
@@ -736,7 +772,8 @@ async function authorize(request, response, auth) {
     sendJson(response, 503, {
       schema: AUTH_DENIAL_SCHEMA,
       reason: "credentials_unavailable",
-      detail: safeText(auth.error) || "the dashboard credentials file is no longer usable",
+      detail: safeText(auth.error)
+        || `the dashboard credentials file ${auth.config.authFile} is no longer there - ${AUTH_RECOVERY}`,
     });
     return false;
   }
@@ -753,7 +790,13 @@ async function authorize(request, response, auth) {
     sendJson(response, 429, { schema: AUTH_DENIAL_SCHEMA, reason: "too_many_attempts" });
     return false;
   }
+  // The charge above buys the key derivation below, so it is spent before the
+  // derivation and returned when the credential turns out to be the right one.
+  // Only failed attempts keep what they spent; otherwise anyone who can reach
+  // this server holds the shared budget empty and locks every real login out.
   if (await auth.verify(presented)) {
+    auth.globalLimiter.refund("global");
+    auth.clientLimiter.refund(client);
     auth.remember(presented.header);
     return true;
   }
@@ -1509,7 +1552,13 @@ async function main() {
   // both away in exchange for the one that was added. Loopback is not an
   // exposure, and every listener answers through the same handler, so the same
   // authentication applies to all of them.
-  const addresses = config.loopback ? [config.address] : [config.address, "127.0.0.1"];
+  //
+  // A wildcard bind is already answering there, so it gets no companion: the
+  // second listener would be a second socket on an address this process holds,
+  // and the service would fail to start on the very configuration the installer
+  // permits with a warning.
+  const addresses = [config.address];
+  if (!config.loopback && !coversLoopback(config.address)) addresses.push("127.0.0.1");
   const servers = [];
   for (const address of addresses) {
     const server = http.createServer(handler);
@@ -1583,14 +1632,42 @@ async function hashPasswordMode(argv) {
   }, null, 2));
 }
 
-// Two non-serving modes. The first prints where this configuration would keep
+// Answer whether the credentials on disk are ones this server could serve
+// behind, and print the username they carry when they are.
+//
+// The installer gates exposure on this rather than on the file existing,
+// because a file that is there but group-readable, truncated, or written with
+// work factors this server will not accept is not a credential: accepting it as
+// one writes a unit for a service that cannot come up. One owner of the rule is
+// the only way the two gates cannot drift apart.
+function checkCredentialsMode(argv) {
+  const flag = argv.indexOf("--auth-file");
+  const authFile = flag >= 0 && argv[flag + 1] ? argv[flag + 1] : resolveAuthFile();
+  const auth = new AuthState({ auth: "auto", authFile });
+  auth.read({ force: true });
+  if (auth.error) throw new Error(auth.error);
+  if (!auth.credential) {
+    throw new Error(`there are no dashboard credentials in ${authFile} - ${AUTH_RECOVERY}`);
+  }
+  console.log(auth.credential.username);
+}
+
+// Three non-serving modes. The first prints where this configuration would keep
 // its agent-event store: the installer needs that path to grant the hardened
 // user service write access to exactly that directory and nothing else, and a
-// single owner of the rule beats two programs deriving it. The second derives a
-// password digest for the installer to store.
+// single owner of the rule beats two programs deriving it. The second reports
+// whether the stored credentials are usable, and the third derives a password
+// digest for the installer to store.
 if (process.argv.includes("--event-store-path")) {
   const fmHome = path.resolve(process.env.FM_HOME || ROOT);
   console.log(resolveEventStorePath(fmHome));
+} else if (process.argv.includes("--check-credentials")) {
+  try {
+    checkCredentialsMode(process.argv);
+  } catch (error) {
+    console.error(`fm-dashboard: ${safeText(error.message)}`);
+    process.exit(1);
+  }
 } else if (process.argv.includes("--hash-password")) {
   hashPasswordMode(process.argv).catch((error) => {
     console.error(`fm-dashboard: ${safeText(error.message)}`);

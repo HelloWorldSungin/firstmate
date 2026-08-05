@@ -10,16 +10,18 @@ An install that never asks for exposure is unchanged by this page.
 
 Exposure is never a bind-address change alone.
 
-`bin/fm-dashboard-install.sh --address` accepts an address beyond loopback only once credentials exist, and [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) refuses to start on such an address without them.
-Editing the environment file by hand does not get past that: the server checks before it opens a socket, so there is no window in which the dashboard answers off this host with nothing in front of it.
+`bin/fm-dashboard-install.sh --address` accepts an address beyond loopback only once credentials the server could actually serve behind exist, and [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) refuses to start on such an address without them.
+The installer asks the server itself whether the stored credentials are usable rather than checking that the file is there, so a credentials document that is readable by other users or will not parse is refused at install time instead of taking down the service it was written for.
+Editing the environment file by hand does not get past that either: the server checks before it opens a socket, so there is no window in which the dashboard answers off this host with nothing in front of it.
 
 Enforcement is also sticky.
-Once credentials have been read, a credentials file that is later removed, corrupted, or made readable by other users refuses every request rather than reverting to an open dashboard.
-Losing a credential is not the same as deciding not to have one.
+A credentials file that is removed, corrupted, or made readable by other users refuses every request rather than reverting to an open dashboard.
+That holds whether it broke while the dashboard was running or was already broken when the dashboard started: a credential this server cannot use is not the same as a decision not to have one.
 
 An exposed dashboard keeps its loopback listener as well as the address you named.
 The activity-timeline producers post only to the loopback dashboard ([dashboard events](dashboard-events.md)), and a browser on the machine itself reaches it the same way, so exposure adds an address instead of moving one.
 Every listener answers through the same handler, so the same authentication applies to all of them.
+A wildcard bind is already answering on loopback and gets no second listener.
 
 ## Set a password
 
@@ -52,12 +54,17 @@ The installer refuses a name, so what the service is reachable on is a thing you
 
 The unit names one dashboard server by absolute path and keeps naming it across reboots, so the installer refuses to write a persistent service that runs from a linked git worktree: whoever made that worktree will reclaim it, and the service would work until the day it silently did not.
 
+The same refusal covers the operational home the unit pins, because a service whose fleet home and event store are reclaimed is as broken as one whose server is.
+
 Trying a change from a worktree is legitimate, so `--allow-worktree` says that is what you meant.
 To install the persistent service for a permanent checkout while running a newer installer from somewhere else, name it:
 
 ```sh
-bin/fm-dashboard-install.sh --checkout /path/to/firstmate --fm-home /path/to/firstmate
+bin/fm-dashboard-install.sh --checkout /path/to/firstmate
 ```
+
+With neither `FM_HOME` nor `--fm-home` set, the operational home follows `--checkout` rather than staying where the installer you ran happens to live.
+Pass `--fm-home` when the fleet home is somewhere else.
 
 ## The reverse proxy
 
@@ -74,7 +81,8 @@ A proxy that buffers a proxied response will hold that stream and make a working
 
 One consequence worth knowing before you debug it: failed-authentication throttling keys on the address the request arrives from, which behind a proxy is the proxy for everyone.
 Repeated wrong passwords therefore slow down every client behind that proxy, not only the one guessing.
-That is the safe direction to fail, and correct passwords are remembered briefly so ordinary use does not touch the limit.
+That is the safe direction to fail, and only failures pay for it: the budget is charged before the key derivation a guess would cost and returned as soon as the credentials turn out to be correct, so a stream of wrong passwords cannot hold a real login out indefinitely.
+Correct passwords are also remembered briefly, so one page load does not spend the budget once per asset.
 
 ## Twingate and anything else that is yours
 
@@ -102,6 +110,7 @@ systemctl --user show -p EnvironmentFiles -p Environment -p ReadWritePaths first
 ```
 
 The installer performs these same checks itself and refuses to report success without them, because a unit directive systemd read past leaves a service that starts, stays green, and runs on defaults it was never configured with.
+It then waits for the service to have had time to fail and refuses to report success unless it is still running, since `systemctl restart` returns for a `Type=simple` service the moment the process forks and says nothing about whether it survived.
 
 Then check the boundary from a machine that is not this one:
 

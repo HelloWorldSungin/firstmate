@@ -23,7 +23,13 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-SERVER="$SCRIPT_DIR/fm-dashboard-server.mjs"
+# The server beside THIS script, kept apart from the one the service will run,
+# because --checkout deliberately points that one at a possibly older tree. The
+# credentials document is defined by the code that writes it, so the digest and
+# the usability check are always asked of this installer's own sibling: an older
+# server does not recognise those flags and would fall through to serving.
+INSTALLER_SERVER="$SCRIPT_DIR/fm-dashboard-server.mjs"
+SERVER="$INSTALLER_SERVER"
 
 usage() {
   cat <<'EOF'
@@ -32,11 +38,15 @@ usage: fm-dashboard-install.sh [options]
 Install or update the read-only Firstmate fleet dashboard user service.
 
 Options:
-  --fm-home PATH       operational home (default: FM_HOME or repository root)
+  --fm-home PATH       operational home (default: FM_HOME, else the checkout
+                       the service runs from)
   --checkout PATH      tracked Firstmate checkout whose dashboard server the
                        service runs (default: the checkout this script is in).
                        Use it to install the persistent service for a permanent
                        checkout while running a newer installer from elsewhere.
+                       With neither FM_HOME nor --fm-home set, the operational
+                       home follows it rather than staying where this installer
+                       happens to be.
   --allow-worktree     install a persistent service that runs from a linked git
                        worktree anyway. Refused by default: a worktree is
                        disposable, and the service breaks when it is reclaimed.
@@ -74,7 +84,7 @@ transport steps that belong to the operator rather than to this script.
 EOF
 }
 
-FM_DASHBOARD_HOME=${FM_HOME:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)}
+FM_DASHBOARD_HOME=${FM_HOME:-}
 FM_DASHBOARD_ADDRESS=${FM_DASHBOARD_ADDRESS:-127.0.0.1}
 FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
 FM_DASHBOARD_POLL_SECONDS=${FM_DASHBOARD_POLL_SECONDS:-5}
@@ -152,21 +162,38 @@ else
   CHECKOUT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 fi
 [ -f "$SERVER" ] || { echo "fm-dashboard-install: dashboard server not found at $SERVER" >&2; exit 1; }
+[ -f "$INSTALLER_SERVER" ] \
+  || { echo "fm-dashboard-install: dashboard server not found beside this script at $INSTALLER_SERVER" >&2; exit 1; }
+
+# The operational home follows the checkout the service is being installed for
+# unless one was named, because the unit pins FM_HOME and derives the event
+# store from it: a home left pointing at wherever this installer happens to sit
+# would hand the persistent service a fleet home that is not the one it runs.
+[ -n "$FM_DASHBOARD_HOME" ] || FM_DASHBOARD_HOME=$CHECKOUT
 
 # A linked git worktree is disposable by construction: whoever created it will
 # reclaim it, and a boot-persistent unit pointing into one is a service that
-# works until the day it silently does not. Installing from a worktree to try a
-# change is legitimate, so this refuses with the way to say that is what you
-# meant rather than deciding for you.
+# works until the day it silently does not. Both pinned paths are checked, since
+# a service whose fleet home evaporates is as broken as one whose server does.
+# Installing from a worktree to try a change is legitimate, so this refuses with
+# the way to say that is what you meant rather than deciding for you.
+refuse_linked_worktree() {  # <label> <path> <way-out>
+  local git_dir common_dir
+  [ -d "$2" ] || return 0
+  git_dir=$(git -C "$2" rev-parse --absolute-git-dir 2>/dev/null || true)
+  common_dir=$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ] || return 0
+  printf 'fm-dashboard-install: the %s %s is a linked git worktree, which will be reclaimed.\n' "$1" "$2" >&2
+  printf 'fm-dashboard-install: %s\n' "$3" >&2
+  printf 'fm-dashboard-install: or pass --allow-worktree if a disposable service is what you meant.\n' >&2
+  exit 2
+}
+
 if command -v git >/dev/null 2>&1 && [ "$ALLOW_WORKTREE" -eq 0 ]; then
-  checkout_git_dir=$(git -C "$CHECKOUT" rev-parse --absolute-git-dir 2>/dev/null || true)
-  checkout_common_dir=$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [ -n "$checkout_git_dir" ] && [ -n "$checkout_common_dir" ] && [ "$checkout_git_dir" != "$checkout_common_dir" ]; then
-    printf 'fm-dashboard-install: %s is a linked git worktree, which will be reclaimed.\n' "$CHECKOUT" >&2
-    printf 'fm-dashboard-install: install the persistent service for a permanent checkout with --checkout PATH,\n' >&2
-    printf 'fm-dashboard-install: or pass --allow-worktree if a disposable service is what you meant.\n' >&2
-    exit 2
-  fi
+  refuse_linked_worktree "checkout" "$CHECKOUT" \
+    "install the persistent service for a permanent checkout with --checkout PATH,"
+  refuse_linked_worktree "operational home" "$FM_DASHBOARD_HOME" \
+    "name a permanent operational home with --fm-home PATH,"
 fi
 
 XDG_CONFIG_ROOT=${XDG_CONFIG_HOME:-"$HOME/.config"}
@@ -234,11 +261,16 @@ if [ "$SET_PASSWORD" -eq 1 ]; then
   chmod 600 "$AUTH_TMP"
   trap 'rm -f "$AUTH_TMP"' EXIT HUP INT TERM
   printf '%s' "$DASHBOARD_PASSWORD" \
-    | "$NODE_BIN" "$SERVER" --hash-password --username "$AUTH_USERNAME" > "$AUTH_TMP" \
+    | "$NODE_BIN" "$INSTALLER_SERVER" --hash-password --username "$AUTH_USERNAME" > "$AUTH_TMP" \
     || { echo "fm-dashboard-install: the dashboard password was not stored" >&2; exit 2; }
   DASHBOARD_PASSWORD=
   DASHBOARD_PASSWORD_CONFIRM=
-  install -d -m 700 "$(dirname -- "$AUTH_FILE")"
+  # Only a directory this script has to create is given a mode. install -d -m
+  # also re-modes one that was already there, and a credentials file the
+  # operator put somewhere of their own must not silently take the rest of that
+  # directory private with it.
+  AUTH_DIR=$(dirname -- "$AUTH_FILE")
+  [ -d "$AUTH_DIR" ] || install -d -m 700 "$AUTH_DIR"
   mv -f "$AUTH_TMP" "$AUTH_FILE"
   trap - EXIT HUP INT TERM
   printf 'Stored dashboard credentials for %s in %s\n' "$AUTH_USERNAME" "$AUTH_FILE"
@@ -247,14 +279,23 @@ fi
 # Exposure is opt-in and it is never a bind-address change alone. The server
 # enforces the same rule at startup; refusing here means the operator finds out
 # before a unit is written rather than from a service that will not come up.
+#
+# What is required is a credential the server could actually serve behind, not a
+# file at that path: a credentials document that is group-readable, truncated,
+# or written with work factors the server will not accept fails the server's own
+# gate at startup, so accepting it here would write a unit for a service that
+# can never come up. The server owns that judgement and is asked for it.
 case "$FM_DASHBOARD_ADDRESS" in
   127.0.0.1|::1) ;;
   *)
-    [ -f "$AUTH_FILE" ] || {
+    AUTH_CREDENTIAL_USER=$("$NODE_BIN" "$INSTALLER_SERVER" --check-credentials --auth-file "$AUTH_FILE" 2>&1) || {
       printf 'fm-dashboard-install: binding %s reaches beyond this host and needs credentials first.\n' "$FM_DASHBOARD_ADDRESS" >&2
+      printf 'fm-dashboard-install: %s\n' "$AUTH_CREDENTIAL_USER" >&2
       printf 'fm-dashboard-install: run %s --set-password (optionally with --username NAME) and try again.\n' "$0" >&2
       exit 2
     }
+    printf 'Exposing %s behind the stored credentials for %s in %s\n' \
+      "$FM_DASHBOARD_ADDRESS" "$AUTH_CREDENTIAL_USER" "$AUTH_FILE"
     case "$FM_DASHBOARD_ADDRESS" in
       0.0.0.0|::)
         printf 'warning: %s binds every interface on this host, not only the one you reach it on.\n' "$FM_DASHBOARD_ADDRESS" >&2
@@ -423,8 +464,33 @@ if [ "$START_SERVICE" -eq 1 ]; then
   [ -z "$drop_ins" ] \
     || printf 'warning: this service still has drop-in overrides that outrank the unit: %s\n' "$drop_ins" >&2
 
-  systemctl --user --no-pager --full status firstmate-dashboard.service
-  printf 'systemd accepted the environment file, the pinned PATH, and the agent-event write grant.\n'
+  # Every read-back above answers from the unit file whether or not a process is
+  # alive, and Type=simple calls a restart successful the moment the process
+  # forks. So the service is given time to fail and then asked whether it is
+  # still there: a refused credential, a port already taken, or a checkout that
+  # has gone away all leave a unit that reads as installed and a service that
+  # crash-loops, and reporting that as a finished install is how an operator
+  # ends up trusting a dashboard that is not running.
+  #
+  # Asked twice, because a service that dies at once and waits RestartSec to be
+  # started again spends nearly all of each cycle waiting rather than running,
+  # and one sample can land in the moment it is up.
+  service_state=
+  for _ in 1 2; do
+    sleep 1.5
+    service_state=$(systemctl --user show -p ActiveState --value firstmate-dashboard.service 2>/dev/null || true)
+    [ "$service_state" = "active" ] || break
+  done
+  if [ "$service_state" != "active" ]; then
+    printf 'fm-dashboard-install: the dashboard service did not stay up (state: %s).\n' \
+      "${service_state:-unknown}" >&2
+    printf 'fm-dashboard-install: read why with: journalctl --user -u firstmate-dashboard.service -n 50 --no-pager\n' >&2
+    systemctl --user --no-pager --full status firstmate-dashboard.service >&2 || true
+    exit 1
+  fi
+
+  systemctl --user --no-pager --full status firstmate-dashboard.service || true
+  printf 'systemd accepted the environment file, the pinned PATH, and the agent-event write grant, and the service is running.\n'
 else
   echo "Service not started (--no-start)."
 fi

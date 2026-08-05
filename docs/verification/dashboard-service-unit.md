@@ -2,7 +2,7 @@
 
 Why this record exists: a systemd unit fails in a way `systemctl status` reports as green.
 A directive systemd read past leaves a service that starts, stays active, and runs on defaults it was never configured with.
-The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, and that the installer refuses to report success unless systemd reads them back.
+The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, that the installer refuses to report success unless systemd reads them back, and that it refuses to report success over a service that did not stay running.
 
 Refresh with `bin/fm-test-run.sh tests/fm-dashboard-access.test.sh`, which pins the portable half without systemd.
 The observations below need a systemd host and are what the portable test cannot prove.
