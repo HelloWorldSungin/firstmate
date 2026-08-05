@@ -809,6 +809,7 @@
         "task/tsa-gnhf-plan-sol",
         "task/tsa-gnhf-plan"
       ],
+      "note": "Two documents cover one gnhf conversion plan - a plan and its solution revision - so either is a correct first result.",
       "key_facts": [
         [
           "sandbox family",

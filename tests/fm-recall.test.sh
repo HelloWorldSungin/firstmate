@@ -566,6 +566,9 @@ expect_code 0 "$RECALL_RC" "a two-corpus read should answer: $RECALL_OUT"
 # fixture scores are ever edited into agreement with the rank order.
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].score] == ([.results[].score] | sort | reverse)')" = false ] \
   || fail "the fixture must make score order and rank order disagree: $RECALL_OUT"
+# The merge is a permutation of what the two corpora returned, so every row each
+# source counts is still in the list and none was dropped or duplicated.
+assert_rows_match_results "$RECALL_OUT" "the two-corpus rank merge"
 
 # A corpus that runs out drops out of the cycle and the other keeps its order.
 stub_reply "$SEARCH_HIT"
@@ -575,6 +578,7 @@ expect_code 0 "$RECALL_RC" "an uneven two-corpus read should answer: $RECALL_OUT
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].citation] | join(",")')" \
   = "local:teardown-notes,main:main-first,main:main-second" ] \
   || fail "a corpus with fewer results should drop out of the cycle: $RECALL_OUT"
+assert_rows_match_results "$RECALL_OUT" "the uneven two-corpus merge"
 
 # GBrain refuses an out-of-scope operation in band, with isError and HTTP 200.
 {

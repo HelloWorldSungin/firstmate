@@ -100,9 +100,12 @@ The baseline above is the 18-of-20 run, which is what makes answered 0.90, and a
 So 0.90 is one draw from a spread of roughly 0.75 to 0.90, not a stable figure that a re-run would be expected to land on again.
 
 **What closing the gap costs.**
-An independent reproduction is roughly 20 paid outbound calls to the hosted provider, each carrying excerpts of this home's captured cross-project knowledge off the host.
+An independent reproduction against the current evaluation set is roughly 40 paid outbound calls to the hosted provider, each carrying excerpts of this home's captured cross-project knowledge off the host.
+That count is derived rather than measured: the set holds forty questions and the harness makes one synthesis call per question at the shipped `--think-attempts 1`, so it doubled when the set was widened to forty and not because any single call became more expensive.
 That export is a named privacy boundary of this repository, which is why authorizing it is the repository owner's decision rather than an agent's, and why the gap is recorded here instead of quietly measured away.
 The command is `bin/fm-gbrain-eval.sh run --home <home> --phase think --out think.json`, which scores the synthesis half alone and leaves the retrieval metrics above untouched.
+Unqualified it runs the default set, so it measures the current forty questions rather than the twenty the numbers above were taken against.
+Reproducing those recorded numbers like-for-like needs `--set` pointing at the twenty-question v1 set, whose bytes survive only in git history because the file name was deliberately kept: recover it with `git show efe56f4:docs/gbrain-eval-set.v1.json`, and it hashes to the `sha256:51238ce0...` named in the configuration table above.
 
 **What this limitation does not reach.**
 It is scoped to the hosted-synthesis metrics alone: think answered, think grounded, think key facts, and think citation precision.
@@ -156,7 +159,7 @@ The section below is the fix for that defect and its measurement, so the numbers
 The merge contract is owned by [`../gbrain-scoping.md`](../gbrain-scoping.md), which describes the rank merge rather than the superseded score sort.
 
 The evaluation set was widened from twenty questions to forty for this measurement, so the one-question effect above could be sized against a wider set rather than only re-detected.
-Both runs below therefore use `fleet-history` **v2**, `sha256:4779073ed365eed9924dc09fab455747c1b0ed7b6b3ec03b39b513904f9c18db`, against a live corpus that had grown to 78 documents, 547 chunks, revision `sha256:66a3805ea001e62fc3d658f3e97a47fd01827f0b23a6f0f5ba9c034d98043e6f`, with the GBrain version, embedding model, reranker, and query settings unchanged from the configuration table above.
+The two runs below - `score re-sort (pre-fix), set v2` and `rank merge (post-fix), set v2` - were both measured against `fleet-history` **v2**, `sha256:aae6e65e0baf556c6ef0d783500ea4cee9cbdcdc70bbe2ef6c65ca800d2ed13e`, on a live corpus that had grown to 78 documents, 547 chunks, revision `sha256:66a3805ea001e62fc3d658f3e97a47fd01827f0b23a6f0f5ba9c034d98043e6f`, with the GBrain version, embedding model, reranker, and query settings unchanged from the configuration table above.
 The baseline run drives the pre-fix wrapper through the harness's own `FM_RECALL_BIN`, so both runs are the same harness reading the same index and differ only in the wrapper's merge:
 
 ```console
