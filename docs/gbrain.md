@@ -129,9 +129,11 @@ Operators must treat that visible failure as a failed rerank rather than success
 `bin/fm-gbrain-eval.sh` runs a versioned evaluation set against a home's brain and prints one run document.
 Its `--help` owns the flags, the metric definitions, and the exit statuses; what follows is only what an operator has to decide.
 
-The shipped set is [`gbrain-eval-set.v1.json`](gbrain-eval-set.v1.json): twenty fleet-history questions, each with the source documents that answer it and the key facts a good answer contains.
+The shipped set is [`gbrain-eval-set.v1.json`](gbrain-eval-set.v1.json), currently at set version 2: forty fleet-history questions, each with the source documents that answer it and the key facts a good answer contains.
+Set version 1 held the first twenty, and version 2 added twenty more so a one-question effect could be sized against a wider set rather than only detected.
 A question's expected source is a slug SUFFIX, so the same set measures any home rather than only the one it was written against.
-Two of the twenty deliberately accept a family of near-duplicate documents, because a review thread that produced five revisions has no single correct member and scoring one of them as the answer would measure the set's arbitrariness rather than the brain's.
+Three questions deliberately accept a family of near-duplicate documents, because a review thread or a plan that produced several revisions has no single correct member and scoring one of them as the answer would measure the set's arbitrariness rather than the brain's.
+The file name carries the set SCHEMA version and the `version` field carries the set's own, so widening the set bumps the field and leaves every recorded run comparable to the set version it names.
 
 Local retrieval and hosted synthesis are scored and reported separately, and neither number is ever folded into the other.
 They fail for unrelated reasons: a weak embedding model and an unreachable hosted provider are different problems with different fixes, and a combined score would hide which one is in force.

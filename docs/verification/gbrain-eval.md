@@ -1,6 +1,6 @@
 # GBrain retrieval quality and the embedding-migration playbook
 
-Active empirical evidence for the evaluation and migration procedure in [`../gbrain.md`](../gbrain.md): the measured retrieval and synthesis quality of a real Firstmate home brain, the measured effect of the retrieval wrapper's own result ordering, and the recorded behaviour of the embedding migration, its rollback, its interruption, and the rebuild from durable source.
+Active empirical evidence for the evaluation and migration procedure in [`../gbrain.md`](../gbrain.md): the measured retrieval and synthesis quality of a real Firstmate home brain, the measured effect of the retrieval wrapper's own result ordering before and after it was corrected, and the recorded behaviour of the embedding migration, its rollback, its interruption, and the rebuild from durable source.
 
 Measured 2026-08-05 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
 Every migration, reinitialization, and rollback below ran on a disposable copy of the index under `/tmp`, never on the live one.
@@ -15,10 +15,11 @@ Every migration, reinitialization, and rollback below ran on a disposable copy o
 | Hosted synthesis | `minimax:MiniMax-M3` via `https://api.minimax.io/v1` |
 | Corpus | 64 documents, 532 chunks, 532 embedded; revision `sha256:b29c2dd31c3f3ec59f77895fdf745345fe70eb6d1fb78c5c445b70aa71892d92` from the capture outbox |
 | Query | `scope=local limit=8 top_k=5 excerpt=400 think_max_answer=8000` |
-| Evaluation set | `fleet-history` v1, `sha256:51238ce03cbe265ce6d797575a60b4502dba03efe1661122c733d4c7d4f3985f` |
+| Evaluation set | `fleet-history` v1, `sha256:51238ce03cbe265ce6d797575a60b4502dba03efe1661122c733d4c7d4f3985f`, the twenty-question version those runs were taken against |
 
-The corpus is the home's own captured task knowledge: 63 completed tasks composed from their durable outcome manifests and scout reports, plus one note.
-Sixteen of those documents are manifest-only ship records whose entire body is a title, an outcome line, and a pull-request URL, so the set measures retrieval over both long reports and near-empty records.
+That 64-document corpus was the home's own captured task knowledge: 63 completed tasks composed from their durable outcome manifests and scout reports, plus one note.
+Sixteen of those documents were manifest-only ship records whose entire body was a title, an outcome line, and a pull-request URL, so the runs below measured retrieval over both long reports and near-empty records.
+That is the composition those runs were taken against rather than a description of the live corpus, which has since grown; what it holds now is recorded with the post-fix runs below.
 
 ## Baseline
 
@@ -46,7 +47,7 @@ None exited 3, the local side, so the harness's later correction to exclude a qu
 That correction is why a run document now reports `think.read` alongside `think.questions`, and it changes nothing about the missed threshold discussed below: the two failures were hosted refusals of a successful local read, not corpora that could not be read.
 
 Retrieval clears its thresholds with a wide margin: every question retrieved an expected source within the first five results, and only `q01` placed it below rank one, at rank two.
-That single demotion is not the brain's: it is produced by the retrieval wrapper's own re-sort, measured below.
+That single demotion is not the brain's: it was produced by the retrieval wrapper's own score re-sort, measured below and since replaced.
 Hosted synthesis misses its threshold, and the next section establishes why and by how much.
 
 ## The missed threshold: hosted synthesis, not retrieval
@@ -90,7 +91,7 @@ A different embedding artifact was nevertheless measured, below, because the mig
 The two halves of this record do not carry the same weight of evidence, and the gap is wide enough that a reader should not average over it.
 
 **The replication asymmetry.**
-The retrieval half was independently reproduced by a separate verification pass at top-1 0.95 / top-5 1.00 / MRR 0.975, using the unchanged shipped evaluation set, on a live corpus that had since grown to 65 documents under a new revision hash, not the 64-document revision the baseline above was recorded against.
+The retrieval half was independently reproduced by a separate verification pass at top-1 0.95 / top-5 1.00 / MRR 0.975, using the then-shipped evaluation set unchanged, the twenty-question v1, on a live corpus that had since grown to 65 documents under a new revision hash, not the 64-document revision the baseline above was recorded against.
 The hosted-synthesis half was measured only by the worker that implemented this harness, from its own runs, and nobody has re-run it since.
 That is the weak case, and it should be read as one: an implementer confirming its own work is weaker evidence than an independent reproduction, so the four hosted numbers deserve less confidence than the retrieval numbers printed beside them.
 
@@ -100,19 +101,23 @@ The baseline above is the 18-of-20 run, which is what makes answered 0.90, and a
 So 0.90 is one draw from a spread of roughly 0.75 to 0.90, not a stable figure that a re-run would be expected to land on again.
 
 **What closing the gap costs.**
-An independent reproduction is roughly 20 paid outbound calls to the hosted provider, each carrying excerpts of this home's captured cross-project knowledge off the host.
+An independent reproduction against the current evaluation set is roughly 40 paid outbound calls to the hosted provider, each carrying excerpts of this home's captured cross-project knowledge off the host.
+That count is derived rather than measured: the set holds forty questions and the harness makes one synthesis call per question at the shipped `--think-attempts 1`, so it doubled when the set was widened to forty and not because any single call became more expensive.
 That export is a named privacy boundary of this repository, which is why authorizing it is the repository owner's decision rather than an agent's, and why the gap is recorded here instead of quietly measured away.
 The command is `bin/fm-gbrain-eval.sh run --home <home> --phase think --out think.json`, which scores the synthesis half alone and leaves the retrieval metrics above untouched.
+Unqualified it runs the default set, so it measures the current forty questions rather than the twenty the numbers above were taken against.
+Reproducing those recorded numbers like-for-like needs `--set` pointing at the twenty-question v1 set, whose bytes survive only in git history because the file name was deliberately kept: recover it with `git show efe56f4:docs/gbrain-eval-set.v1.json`, and it hashes to the `sha256:51238ce0...` named in the configuration table above.
 
 **What this limitation does not reach.**
 It is scoped to the hosted-synthesis metrics alone: think answered, think grounded, think key facts, and think citation precision.
 The retrieval numbers, the migration and rebuild timings, the wrapper re-sort result, the reranker finding, and every other measurement in this document were taken locally and are unaffected by it.
 
-## The retrieval wrapper re-sorts away GBrain's own ranking
+## The retrieval wrapper re-sorted away GBrain's own ranking
 
 This is a measured result of the baseline run, not an aside: it is where the missing top-1 above went.
+It records the wrapper as it behaved when the baseline was taken; the next section is the correction and its own before-and-after measurement.
 
-`bin/fm-recall.sh` merges results with `sort_by(-(.score // 0))`, which discards the order GBrain returned even when only one corpus was read.
+The wrapper then merged results with `sort_by(-(.score // 0))`, which discards the order GBrain returned even when only one corpus was read.
 GBrain does not rank by the score it prints: for `q01` it returns the correct document at position one with score 0.655 while a less relevant document carries 0.811.
 
 Measured over all twenty questions on the same index, comparing GBrain's own order against the same rows re-sorted by score:
@@ -135,6 +140,8 @@ jq -r '.questions[] | [.id, .question, (.expect | tojson)] | @tsv' docs/gbrain-e
       1 native=0  sorted=1
 ```
 
+The set path in that snippet then held the twenty-question v1 set, recoverable from git history as above; against the forty-question set shipped today it reads forty rows instead.
+
 | Ordering | top-1 |
 | --- | --- |
 | GBrain's own order | 20 / 20 |
@@ -147,9 +154,53 @@ That demotion is the entire difference between the 0.95 top-1 recorded above and
 One question on one 64-document corpus at one point in time is enough to show that the wrapper overrides an ordering that was better here, and it sizes nothing.
 A single case cannot say whether the re-sort costs one question in twenty generally, more, or almost nothing on a different corpus, and this record should not be read as if it had measured that.
 
-The merge order is a deliberate cross-brain contract owned by [`../gbrain-scoping.md`](../gbrain-scoping.md), where a rank is meant to compare two brains' own scores rather than a Firstmate-computed relevance, and what it should become when two brains answer is a genuine design fork with several defensible answers.
-It was therefore not changed here, deliberately: an evaluation that alters the thing it measures leaves no baseline for a later run to be compared against, and repeatability across corpus, model, and reranker changes is what this harness exists for.
-The fix is tracked as [issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49), whose acceptance criteria require before-and-after numbers from this harness on a question set at least as large as the one that found it, so widening the set is part of that work rather than a precondition for it.
+The section below is the fix for that defect and its measurement, so the numbers above remain the pre-fix record they were taken as.
+
+## The wrapper now preserves each corpus's own ranking
+
+[Issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49) replaced the score sort with a rank merge: each corpus keeps the order it returned, and two corpora are interleaved by rank rather than compared on a score column that is a different quantity in each brain.
+The merge contract is owned by [`../gbrain-scoping.md`](../gbrain-scoping.md), which describes the rank merge rather than the superseded score sort.
+
+The evaluation set was widened from twenty questions to forty for this measurement, so the one-question effect above could be sized against a wider set rather than only re-detected.
+The two runs below - `score re-sort (pre-fix), set v2` and `rank merge (post-fix), set v2` - were both measured against `fleet-history` **v2**, `sha256:8246d22fefc1d1abc3ea1430357758db7655de3fb2b44eb970017d41e11f3e38`, on a live corpus that had grown to 78 documents, 547 chunks, revision `sha256:66a3805ea001e62fc3d658f3e97a47fd01827f0b23a6f0f5ba9c034d98043e6f`, with the GBrain version, embedding model, reranker, and query settings unchanged from the configuration table above.
+That corpus is 73 completed tasks and 5 notes, 30 of them manifest-only ship records, so the widened set still measures retrieval over both long reports and near-empty records.
+The baseline run drives the pre-fix wrapper through the harness's own `FM_RECALL_BIN`, so both runs are the same harness reading the same index and differ only in the wrapper's merge:
+
+```console
+$ FM_RECALL_BIN=$scratch/oldbin/fm-recall.sh bin/fm-gbrain-eval.sh run \
+    --home /home/sungin/firstmate --phase search \
+    --label 'score re-sort (pre-fix), set v2' --out v2-before.json
+$ bin/fm-gbrain-eval.sh run --home /home/sungin/firstmate --phase search \
+    --label 'rank merge (post-fix), set v2' --out v2-after.json
+$ bin/fm-gbrain-eval.sh compare v2-before.json v2-after.json
+LIKE-FOR-LIKE
+  same     eval_set
+  same     corpus
+  same     gbrain
+  same     embedding
+  same     reranker
+  same     think_model
+  same     query
+
+METRICS
+  search_top1  92.5% -> 97.5%  (+5%)
+  search_topk  100% -> 100%  (0%)
+  search_mrr  96.3% -> 98.8%  (+2.5%)
+```
+
+| Ordering | top-1 | top-5 | MRR | below rank one |
+| --- | --- | --- | --- | --- |
+| score re-sort (pre-fix) | 0.925 | 1.00 | 0.9625 | `q01`, `q26`, `q35` |
+| rank merge (post-fix) | 0.975 | 1.00 | 0.9875 | `q26` |
+
+So on forty questions the re-sort demoted three, and the fix recovers two of them.
+`q26` is demoted by GBrain itself and not by the wrapper: read in the brain's own order its expected source `task/arknode-backfill-services-audit` still sits at rank two behind `task/arknode-nvme-wedge-third-occurrence`, which is a related report on the same outage.
+That is the honest boundary of this change - it stops the wrapper from overriding the brain's ranking, and it does not improve the brain's ranking.
+
+The magnitude is now measured on this corpus rather than only detected: three questions in forty, all recoverable ones recovered, on a 78-document corpus at one point in time.
+It remains a statement about this corpus and this question set, not a general claim about how much a score re-sort costs elsewhere.
+
+The regression that pins the behavior is `tests/fm-recall.test.sh`, which asserts that a single corpus comes back in exactly the order the brain returned and that two corpora interleave by rank with fixture scores built so a score sort would produce a different list.
 
 ## An alternative embedding artifact changes nothing measurable here
 
@@ -314,5 +365,6 @@ bin/fm-test-run.sh tests/fm-gbrain-eval.test.sh                   # the scoring 
 This record is the other half: it is the real corpus, and it has to be re-measured rather than re-reasoned.
 
 Re-run the evaluation after any corpus, GBrain, embedding, or reranker change, and re-take the migration timings whenever the corpus grows enough that the recorded durations stop being useful for planning.
-Three claims here are the most perishable, and all three are properties of a 64-document corpus and one provider's current behaviour rather than of this repository: the reranker's null effect, the hosted synthesis failure rate, and the size of what the wrapper's re-sort costs.
-Any of them can change without anything here changing, and the third is expected to be re-measured on a wider question set under [issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49).
+Three claims here are the most perishable, and all three are properties of one corpus at one point in time and one provider's current behaviour rather than of this repository: the reranker's null effect, the hosted synthesis failure rate, and the size of what the wrapper's score re-sort cost before it was replaced.
+Any of them can change without anything here changing.
+The first two still rest on the 64-document corpus and the twenty-question set; the third was re-measured on forty questions and 78 documents when the re-sort was replaced, and stays a statement about that corpus rather than a general one.

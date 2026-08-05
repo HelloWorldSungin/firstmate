@@ -1,9 +1,10 @@
 {
   "schema": "fm-gbrain-eval-set.v1",
   "id": "fleet-history",
-  "version": 1,
+  "version": 2,
   "created": "2026-08-04",
-  "corpus_shape": "Firstmate task knowledge captured from durable outcome manifests and scout reports (docs/gbrain-capture.md). Roughly a quarter of the documents are manifest-only ship records whose whole content is a title, an outcome line, and a pull-request URL; the rest are long investigation reports.",
+  "updated": "2026-08-05",
+  "corpus_shape": "Firstmate task knowledge captured from durable outcome manifests and scout reports (docs/gbrain-capture.md). At v1 authoring 16 of 64 documents were manifest-only ship records whose whole content is a title, an outcome line, and a pull-request URL. At v2 authoring the corpus had grown to 78 documents, of which 30 were manifest-only; the rest are long investigation reports.",
   "query": {
     "scope": "local",
     "limit": 8,
@@ -22,51 +23,117 @@
     {
       "id": "q01",
       "question": "Why did the ArkNode NVMe controller wedge a third time, and what was actually writing to the drive?",
-      "expect": ["task/arknode-nvme-wedge-third-occurrence"],
+      "expect": [
+        "task/arknode-nvme-wedge-third-occurrence"
+      ],
       "key_facts": [
-        ["CT100"],
-        ["OHLCV"],
-        ["Parquet"],
-        ["5.978"]
+        [
+          "CT100"
+        ],
+        [
+          "OHLCV"
+        ],
+        [
+          "Parquet"
+        ],
+        [
+          "5.978"
+        ]
       ]
     },
     {
       "id": "q02",
       "question": "Did ArkNode paper trading stop running after 17 June, or was it running and finding no eligible trade?",
-      "expect": ["task/arknode-paper-trading-silent-since-june"],
+      "expect": [
+        "task/arknode-paper-trading-silent-since-june"
+      ],
       "key_facts": [
-        ["continued to run", "kept running", "was running", "still running", "operational"],
-        ["long_only", "long-only", "long only"],
-        ["min_history", "minimum history", "minimum-history", "min history"]
+        [
+          "continued to run",
+          "kept running",
+          "was running",
+          "still running",
+          "operational"
+        ],
+        [
+          "long_only",
+          "long-only",
+          "long only"
+        ],
+        [
+          "min_history",
+          "minimum history",
+          "minimum-history",
+          "min history"
+        ]
       ]
     },
     {
       "id": "q03",
       "question": "What does a 0xDEADBEEF readback at VME address 0x65D001D0 mean on the DFD card?",
-      "expect": ["task/dfd-mixedmode-deadbeef"],
+      "expect": [
+        "task/dfd-mixedmode-deadbeef"
+      ],
       "key_facts": [
-        ["0x74", "x\"74\""],
-        ["stale build", "unmerged", "not merged", "not an ancestor", "predates"],
-        ["read mux", "read-mux", "read data mux", "fall-through", "fall through"]
+        [
+          "0x74",
+          "x\"74\""
+        ],
+        [
+          "stale build",
+          "unmerged",
+          "not merged",
+          "not an ancestor",
+          "predates"
+        ],
+        [
+          "read mux",
+          "read-mux",
+          "read data mux",
+          "fall-through",
+          "fall through"
+        ]
       ]
     },
     {
       "id": "q04",
       "question": "In the BZ-SIM RTL reconciliation, which copy of meg_fm_top_rev1.vhd is the damaged one, and what should not be pushed to the build server?",
-      "expect": ["task/bzsim-server-rtl-reconcile"],
+      "expect": [
+        "task/bzsim-server-rtl-reconcile"
+      ],
       "key_facts": [
-        ["ip/"],
-        ["reference/", "server's own copy", "server's copy", "build server"],
-        ["PR 28"]
+        [
+          "ip/"
+        ],
+        [
+          "reference/",
+          "server's own copy",
+          "server's copy",
+          "build server"
+        ],
+        [
+          "PR 28"
+        ]
       ]
     },
     {
       "id": "q05",
       "question": "Should ark-robinhood CI run on the CT110 self-hosted runner?",
-      "expect": ["task/arkrh-ci-design"],
+      "expect": [
+        "task/arkrh-ci-design"
+      ],
       "key_facts": [
-        ["GitHub-hosted", "github-hosted", "ubuntu-latest"],
-        ["blast radius", "actions-runner", "ci-venv", "cross-repo"]
+        [
+          "GitHub-hosted",
+          "github-hosted",
+          "ubuntu-latest"
+        ],
+        [
+          "blast radius",
+          "actions-runner",
+          "ci-venv",
+          "cross-repo"
+        ]
       ]
     },
     {
@@ -78,37 +145,77 @@
       ],
       "note": "Two documents cover this work - a review and a prototype - so either is a correct first result.",
       "key_facts": [
-        ["strengthen-before-build", "strengthen before build"],
-        ["gameable", "vacuous", "no minimum", "floor"]
+        [
+          "strengthen-before-build",
+          "strengthen before build"
+        ],
+        [
+          "gameable",
+          "vacuous",
+          "no minimum",
+          "floor"
+        ]
       ]
     },
     {
       "id": "q07",
       "question": "How many home-manager deprecation warnings are there on the dotfiles flake, and which block produces them?",
-      "expect": ["task/hm-deprecations"],
+      "expect": [
+        "task/hm-deprecations"
+      ],
       "key_facts": [
-        ["3", "three"],
-        ["programs.git"],
-        ["sungin-ct110.nix"]
+        [
+          "3",
+          "three"
+        ],
+        [
+          "programs.git"
+        ],
+        [
+          "sungin-ct110.nix"
+        ]
       ]
     },
     {
       "id": "q08",
       "question": "What produces the nvim lazy-lock.json startup error, and did it reproduce on the live machine?",
-      "expect": ["task/dotfiles-nvim-lock"],
+      "expect": [
+        "task/dotfiles-nvim-lock"
+      ],
       "key_facts": [
-        ["read-only", "read only", "permission denied"],
-        ["lazy-lock.json"],
-        ["did not reproduce", "could not reproduce", "not reproduce", "writable", "does not exhibit"]
+        [
+          "read-only",
+          "read only",
+          "permission denied"
+        ],
+        [
+          "lazy-lock.json"
+        ],
+        [
+          "did not reproduce",
+          "could not reproduce",
+          "not reproduce",
+          "writable",
+          "does not exhibit"
+        ]
       ]
     },
     {
       "id": "q09",
       "question": "Why does the DFD frequency register read back zero while pulse width and CW still work?",
-      "expect": ["task/ffc-freq-zero"],
+      "expect": [
+        "task/ffc-freq-zero"
+      ],
       "key_facts": [
-        ["MicroBlaze", "microblaze"],
-        ["bootloop", "data2mem", "ifmm_main.elf"]
+        [
+          "MicroBlaze",
+          "microblaze"
+        ],
+        [
+          "bootloop",
+          "data2mem",
+          "ifmm_main.elf"
+        ]
       ]
     },
     {
@@ -123,105 +230,643 @@
       ],
       "note": "Five near-duplicate documents cover one review thread, so any member of that family is a correct first result. This question measures whether the family is found at all, not which revision ranks first.",
       "key_facts": [
-        ["no-go", "not safe", "must-fix", "must fix"],
-        ["trust"],
-        ["turn-end", "turn end"]
+        [
+          "no-go",
+          "not safe",
+          "must-fix",
+          "must fix"
+        ],
+        [
+          "trust"
+        ],
+        [
+          "turn-end",
+          "turn end"
+        ]
       ]
     },
     {
       "id": "q11",
       "question": "What blocks the ark-hermes-agent pytest suite from running on CT110?",
-      "expect": ["task/hermes-ct110-audit"],
+      "expect": [
+        "task/hermes-ct110-audit"
+      ],
       "key_facts": [
-        ["jsonschema"],
-        ["pytest", "collection", "INTERNALERROR"]
+        [
+          "jsonschema"
+        ],
+        [
+          "pytest",
+          "collection",
+          "INTERNALERROR"
+        ]
       ]
     },
     {
       "id": "q12",
       "question": "Is the ark-robinhood repository ready to be worked on from CT110, and what are the headline gaps?",
-      "expect": ["task/arkrh-audit-ct110"],
+      "expect": [
+        "task/arkrh-audit-ct110"
+      ],
       "key_facts": [
-        ["macOS", "launchd", "sunginkim"],
-        ["uv sync", "91 tests", "mypy", "portable"]
+        [
+          "macOS",
+          "launchd",
+          "sunginkim"
+        ],
+        [
+          "uv sync",
+          "91 tests",
+          "mypy",
+          "portable"
+        ]
       ]
     },
     {
       "id": "q13",
       "question": "Should firstmate adopt Matt Pocock's to-tickets skill for filing issues, and was any setup already done?",
-      "expect": ["task/mattpocock-tickets-eval"],
+      "expect": [
+        "task/mattpocock-tickets-eval"
+      ],
       "key_facts": [
-        ["to-tickets"],
-        ["already", "setup-matt-pocock-skills"],
-        ["github issues", "GitHub Issues"]
+        [
+          "to-tickets"
+        ],
+        [
+          "already",
+          "setup-matt-pocock-skills"
+        ],
+        [
+          "github issues",
+          "GitHub Issues"
+        ]
       ]
     },
     {
       "id": "q14",
       "question": "What should firstmate borrow from Matt Pocock's planning workflow, and what should it not import?",
-      "expect": ["task/planning-workflow-eval"],
+      "expect": [
+        "task/planning-workflow-eval"
+      ],
       "key_facts": [
-        ["grill"],
-        ["tracer-bullet", "tracer bullet"],
-        ["wayfinder"]
+        [
+          "grill"
+        ],
+        [
+          "tracer-bullet",
+          "tracer bullet"
+        ],
+        [
+          "wayfinder"
+        ]
       ]
     },
     {
       "id": "q15",
       "question": "Which option was recommended for bounding the trading-signal probe, and what did it measure as costing per probe?",
-      "expect": ["task/tsa-probe-bounding-abstraction"],
+      "expect": [
+        "task/tsa-probe-bounding-abstraction"
+      ],
       "key_facts": [
-        ["fork"],
-        ["7 ms", "7ms", "+7"]
+        [
+          "fork"
+        ],
+        [
+          "7 ms",
+          "7ms",
+          "+7"
+        ]
       ]
     },
     {
       "id": "q16",
       "question": "What order of operations was recommended for the ArkNode nginx proxy manager hardening, and why was the approved order reversed?",
-      "expect": ["task/arknode-npm-hardening-plan"],
+      "expect": [
+        "task/arknode-npm-hardening-plan"
+      ],
       "key_facts": [
-        ["sweep", "encryption sweep"],
-        ["upgrade"],
-        ["regenerate", "nginx.js", "byte-identical", "does not regenerate"]
+        [
+          "sweep",
+          "encryption sweep"
+        ],
+        [
+          "upgrade"
+        ],
+        [
+          "regenerate",
+          "nginx.js",
+          "byte-identical",
+          "does not regenerate"
+        ]
       ]
     },
     {
       "id": "q17",
       "question": "Where should upstream reconciliation live for /updatefirstmate, and how is the merge landed on the fork?",
-      "expect": ["task/updatefirstmate-upstream-sync"],
+      "expect": [
+        "task/updatefirstmate-upstream-sync"
+      ],
       "key_facts": [
-        ["merge commit", "--merge", "true merge"],
-        ["ship task", "dispatched", "crewmate", "direct-PR", "direct PR"],
-        ["fast-forward", "fast forward", "append-only", "append only"]
+        [
+          "merge commit",
+          "--merge",
+          "true merge"
+        ],
+        [
+          "ship task",
+          "dispatched",
+          "crewmate",
+          "direct-PR",
+          "direct PR"
+        ],
+        [
+          "fast-forward",
+          "fast forward",
+          "append-only",
+          "append only"
+        ]
       ]
     },
     {
       "id": "q18",
       "question": "Which pull request fixed the spawn regression that pinned CLAUDE_CONFIG_DIR to the evidence store?",
-      "expect": ["task/fm-claude-config-dir-regression"],
+      "expect": [
+        "task/fm-claude-config-dir-regression"
+      ],
       "note": "A manifest-only document: its entire body is a title, an outcome line, and a pull-request URL.",
       "key_facts": [
-        ["pull/32", "#32", " 32"]
+        [
+          "pull/32",
+          "#32",
+          " 32"
+        ]
       ]
     },
     {
       "id": "q19",
       "question": "Which pull request delivered the usage storage and Claude and Codex usage collectors for the dashboard?",
-      "expect": ["task/dashboard-usage-collectors"],
+      "expect": [
+        "task/dashboard-usage-collectors"
+      ],
       "note": "A manifest-only document, and one of six sibling dashboard stories, so it also tests discrimination inside a near-duplicate family.",
       "key_facts": [
-        ["pull/39", "#39", " 39"]
+        [
+          "pull/39",
+          "#39",
+          " 39"
+        ]
       ]
     },
     {
       "id": "q20",
       "question": "How must the tea CLI be invoked for the Gitea-hosted projects, and what does fm-pr-check.sh do with a Gitea URL?",
-      "expect": ["note/gbrain-init-roundtrip-probe"],
+      "expect": [
+        "note/gbrain-init-roundtrip-probe"
+      ],
       "note": "The only captured note rather than a task, which is why it is in the set.",
       "key_facts": [
-        ["--login"],
-        ["--repo"],
-        ["reject", "rejects", "no merge poll"]
+        [
+          "--login"
+        ],
+        [
+          "--repo"
+        ],
+        [
+          "reject",
+          "rejects",
+          "no merge poll"
+        ]
+      ]
+    },
+    {
+      "id": "q21",
+      "question": "How much of BZ-SIM's system-level simulation closure is actually present in the clone, and what did GHDL find on master that the existing process missed?",
+      "expect": [
+        "task/bzsim-local-verification"
+      ],
+      "key_facts": [
+        [
+          "1,722",
+          "1722"
+        ],
+        [
+          "32"
+        ],
+        [
+          "98.1"
+        ],
+        [
+          "analyse",
+          "ghdl -a"
+        ]
+      ]
+    },
+    {
+      "id": "q22",
+      "question": "In the fable_ml qualifier harness, is a Card 0.1.5 GO verdict actually required before any GPU work starts?",
+      "expect": [
+        "task/arknode-fable-ml-gate-currency"
+      ],
+      "key_facts": [
+        [
+          "wave_1_gpu_authorized"
+        ],
+        [
+          "gpu_guard",
+          "acquire_gpu"
+        ],
+        [
+          "zero production callers",
+          "no production callers",
+          "not an interlock"
+        ]
+      ]
+    },
+    {
+      "id": "q23",
+      "question": "What evidence shows an ArkNode research-loop subagent silently ran on a weaker model than its parent, and which field exposes the model that really ran?",
+      "expect": [
+        "task/arknode-loop-architecture-review"
+      ],
+      "key_facts": [
+        [
+          "resolvedModel"
+        ],
+        [
+          "PostToolUse"
+        ],
+        [
+          "cost-ledger",
+          "cost ledger"
+        ],
+        [
+          "Sonnet 5",
+          "sonnet"
+        ]
+      ]
+    },
+    {
+      "id": "q24",
+      "question": "Does the production platt_confidence field in trading-signal-ai still hold a Platt-calibrated probability?",
+      "expect": [
+        "task/tsa-domain-model"
+      ],
+      "key_facts": [
+        [
+          "platt_confidence"
+        ],
+        [
+          "sigmoid"
+        ],
+        [
+          "metalabel_threshold"
+        ]
+      ]
+    },
+    {
+      "id": "q25",
+      "question": "Which pull request actually caused the sandbox DSR batch values to be rewritten, and what is still wrong in the correction sidecar?",
+      "expect": [
+        "task/arknode-dsr-revision-impact"
+      ],
+      "key_facts": [
+        [
+          "#498",
+          "498"
+        ],
+        [
+          "#488",
+          "488"
+        ],
+        [
+          "scoreless"
+        ],
+        [
+          "fable30m_sigmacap"
+        ]
+      ]
+    },
+    {
+      "id": "q26",
+      "question": "After the NVMe outage, which CT100 ingestion timer never resumed, and how much was the OHLCV service writing to the drive each day?",
+      "expect": [
+        "task/arknode-backfill-services-audit"
+      ],
+      "key_facts": [
+        [
+          "hl-book-snapshots"
+        ],
+        [
+          "0.76 TB",
+          "373.4",
+          "8.84"
+        ],
+        [
+          "29,858",
+          "29858"
+        ]
+      ]
+    },
+    {
+      "id": "q27",
+      "question": "Reading the live research-loop box, which of the earlier prompt-currency findings had since been fixed in the repo and which are still open?",
+      "expect": [
+        "task/arknode-routing-contract-live-read"
+      ],
+      "key_facts": [
+        [
+          "#514",
+          "514"
+        ],
+        [
+          "#515",
+          "515"
+        ],
+        [
+          "evaluation_mode"
+        ],
+        [
+          "R2_overlay_gates"
+        ]
+      ]
+    },
+    {
+      "id": "q28",
+      "question": "What stops a fresh ArkNode-AI clone from working on CT110 straight away?",
+      "expect": [
+        "task/arknode-migration-audit"
+      ],
+      "key_facts": [
+        [
+          ".codegraph"
+        ],
+        [
+          "/Users/sunginkim"
+        ],
+        [
+          "ruff"
+        ],
+        [
+          "submodule"
+        ]
+      ]
+    },
+    {
+      "id": "q29",
+      "question": "What state was the ark-robinhood research-graph epic's checklist in, and which child issue should be built first?",
+      "expect": [
+        "task/arkrh-epic10-slice"
+      ],
+      "key_facts": [
+        [
+          "23"
+        ],
+        [
+          "fetch core",
+          "#13"
+        ],
+        [
+          "15"
+        ]
+      ]
+    },
+    {
+      "id": "q30",
+      "question": "In the agent-architectures paper's taxonomy, what does the research-graph epic externalize, and what is the risk in E8's sealed P2 gate?",
+      "expect": [
+        "task/arkrh-graph-epic-paper-review"
+      ],
+      "key_facts": [
+        [
+          "ratchet loop"
+        ],
+        [
+          "rank-1",
+          "rank 1"
+        ],
+        [
+          "FAIL"
+        ],
+        [
+          "knowledge graph",
+          "knowledge-graph"
+        ]
+      ]
+    },
+    {
+      "id": "q31",
+      "question": "Why did the ratchet fix pass in simulation and still fail on the hardware bench?",
+      "expect": [
+        "task/bzsim-ratchet-bench-divergence"
+      ],
+      "key_facts": [
+        [
+          "slot 2",
+          "ratchet count 2"
+        ],
+        [
+          "RatchetTime"
+        ],
+        [
+          "RatchetValue"
+        ],
+        [
+          "50 %",
+          "50%"
+        ]
+      ]
+    },
+    {
+      "id": "q32",
+      "question": "How solid are the headline Sharpe-inflation and drawdown numbers in the Monte Carlo adoption plan?",
+      "expect": [
+        "task/mc-plan-second-opinion"
+      ],
+      "key_facts": [
+        [
+          "mtm_probe"
+        ],
+        [
+          "22",
+          "30"
+        ],
+        [
+          "proceed-with-changes"
+        ],
+        [
+          "not committed",
+          "does not exist",
+          "unverifiable"
+        ]
+      ]
+    },
+    {
+      "id": "q33",
+      "question": "What is the recommended way to make the DFD frequency estimator work on a CW input, and what does the existing averaging hardware actually average?",
+      "expect": [
+        "task/ffc-cw-measure-review"
+      ],
+      "key_facts": [
+        [
+          "MIXED_MODE"
+        ],
+        [
+          "amplitude"
+        ],
+        [
+          "100 us",
+          "100us"
+        ],
+        [
+          "uBlaze_data_ready",
+          "transaction-gated"
+        ]
+      ]
+    },
+    {
+      "id": "q34",
+      "question": "Which extra GHDL flag was needed to run the MIXED_MODE testbenches, and what is the mixed-mode pull request waiting on?",
+      "expect": [
+        "task/teach-dfd-mixmode"
+      ],
+      "key_facts": [
+        [
+          "-fexplicit"
+        ],
+        [
+          "bench",
+          "hardware"
+        ],
+        [
+          "bd72b52"
+        ]
+      ]
+    },
+    {
+      "id": "q35",
+      "question": "Is the mark-to-market NAV design document for the sandbox ready to build from as written?",
+      "expect": [
+        "task/tsa-434-scope"
+      ],
+      "key_facts": [
+        [
+          "grammar",
+          "seal"
+        ],
+        [
+          "additive"
+        ],
+        [
+          "#434",
+          "434"
+        ]
+      ]
+    },
+    {
+      "id": "q36",
+      "question": "How was the ArkNode CI merge gate verified on a pull request its path filters do not cover?",
+      "expect": [
+        "task/arknode-verify-merge-gate-nonfiltered"
+      ],
+      "key_facts": [
+        [
+          "#524",
+          "524"
+        ],
+        [
+          "README"
+        ],
+        [
+          "closed without merging",
+          "throwaway"
+        ]
+      ]
+    },
+    {
+      "id": "q37",
+      "question": "Which GitHub issues were created for the Monte Carlo adoption epic, and how are they sequenced?",
+      "expect": [
+        "task/tsa-mc-epic"
+      ],
+      "key_facts": [
+        [
+          "#444",
+          "444"
+        ],
+        [
+          "#445",
+          "445"
+        ],
+        [
+          "#451",
+          "451"
+        ]
+      ]
+    },
+    {
+      "id": "q38",
+      "question": "Which parts of the ArkNode research machinery are worth converting to gnhf, and which must be left alone?",
+      "expect": [
+        "task/tsa-gnhf-plan-sol",
+        "task/tsa-gnhf-plan"
+      ],
+      "note": "Two documents cover one gnhf conversion plan - a plan and its solution revision - so either is a correct first result.",
+      "key_facts": [
+        [
+          "sandbox family",
+          "family executor"
+        ],
+        [
+          "MiniMax"
+        ],
+        [
+          "no-mistakes",
+          "graders"
+        ],
+        [
+          "worktree"
+        ]
+      ]
+    },
+    {
+      "id": "q39",
+      "question": "How was the teaching material on ArkNode's research machinery actually produced, and where does its workspace live?",
+      "expect": [
+        "task/teach-arknode-loops"
+      ],
+      "key_facts": [
+        [
+          "teaching"
+        ],
+        [
+          "CLIMB_RATIO_MAX",
+          "grade_rung"
+        ],
+        [
+          "slash",
+          "self-invocation"
+        ]
+      ]
+    },
+    {
+      "id": "q40",
+      "question": "How many commits landed in the ten days after the ArkSignal loop prompts were last edited, and what were the prompts blind to?",
+      "expect": [
+        "task/arknode-loop-prompt-currency-audit"
+      ],
+      "key_facts": [
+        [
+          "104"
+        ],
+        [
+          "sandbox"
+        ],
+        [
+          "structurally intact"
+        ],
+        [
+          "semantically stale"
+        ]
       ]
     }
   ]

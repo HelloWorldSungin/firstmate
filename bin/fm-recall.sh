@@ -55,6 +55,11 @@
 #
 # --json prints one "fm-recall.v1" document: the resolved home, a per-source
 # state, and capped results. Human output renders the same content as lines.
+# Each corpus's results keep the order that corpus returned them in, which is
+# its own ranking rather than its raw score column, and two corpora are merged
+# by rank: first result of each, then second of each, cycling in the order the
+# corpora were read. Scores from different brains are not comparable, so a
+# printed score explains one corpus's row and never orders across corpora.
 # A source's state is one of:
 #   ok             it was read, and its results are the rows labelled with it.
 #   degraded       the main brain is configured but this read did not reach it,
@@ -405,6 +410,34 @@ $2
 EOF
 }
 
+# Two corpora are merged by RANK, never by score, and each corpus's own order is
+# left exactly as it arrived. A brain's returned order is its verdict, not its
+# raw score: reranking runs inside the brain, so its ordering carries a
+# contribution no score column exposes, and re-sorting on that column throws it
+# away. Two brains' scores are not the same quantity either - different
+# embedding models, different rerankers, different corpora - so comparing them
+# ranks on a number that only looks shared.
+#
+# What IS comparable is each brain's own opinion of its own results, so the
+# merge takes the first result of every corpus, then the second of every corpus,
+# and so on. A corpus that runs out drops out and the rest keep their order.
+# Corpora are cycled in the order they were read, which puts this home's own
+# index first on an equal rank, because a home is accountable for what it wrote.
+#
+# The single-corpus case needs no special rule: interleaving one list returns it
+# unchanged, so a lone corpus is never reordered at all.
+# shellcheck disable=SC2016  # jq program text; $rows/$order/$r/$s are jq variables
+JQ_MERGE_BY_RANK='
+  def merge_by_rank:
+    . as $rows
+    | (reduce $rows[] as $r ([]; if (index($r.source) == null) then . + [$r.source] else . end)) as $order
+    | [ ($order | to_entries[]) as $s
+        | ($rows | map(select(.source == $s.value)) | to_entries[])
+        | {rank: .key, corpus: $s.key, row: .value} ]
+    | sort_by(.rank, .corpus)
+    | map(.row);
+'
+
 # A row's count is the number of entries in `.results` that carry its source, so
 # summing the rows can never disagree with the list they describe.
 source_row() {  # <source> <state> <brain> <count> [detail]
@@ -504,9 +537,9 @@ cmd_search() {
   local sources doc
   sources=$(printf '%s\n' ${rows[@]+"${rows[@]}"} | jq -c -s 'map(select(. != null))')
   doc=$(jq -c -n --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$query" \
-    --argjson src "$sources" --argjson res "$results" '
+    --argjson src "$sources" --argjson res "$results" "$JQ_MERGE_BY_RANK"'
     {schema: $s, command: "search", home: $h, query: $q, sources: $src,
-     results: ($res | sort_by(-(.score // 0)))}')
+     results: ($res | merge_by_rank)}')
 
   if [ "$JSON_MODE" -eq 1 ]; then
     printf '%s\n' "$doc" | jq '.'

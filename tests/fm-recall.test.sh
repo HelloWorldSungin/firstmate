@@ -262,6 +262,19 @@ expect_code 0 "$RECALL_RC" "a row with unexpected field types should still be re
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].score')" = null ] \
   || fail "a non-numeric score must not be ranked on: $RECALL_OUT"
 
+# A single corpus is returned in exactly the order that brain returned it. Its
+# order is its own verdict - reranking runs inside the brain and its score
+# column does not expose that contribution - so these rows arrive in ascending
+# score deliberately: a wrapper that re-sorted on score would reverse them.
+stub_reply '[{"slug":"reranked-first","title":"First","chunk_text":"a","score":0.11,"stale":false},
+             {"slug":"reranked-second","title":"Second","chunk_text":"b","score":0.42,"stale":false},
+             {"slug":"reranked-third","title":"Third","chunk_text":"c","score":0.87,"stale":false}]'
+run_recall "$MAIN_HOME" search --json teardown
+expect_code 0 "$RECALL_RC" "a single-corpus read should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].slug] | join(",")')" \
+  = "reranked-first,reranked-second,reranked-third" ] \
+  || fail "a single corpus must keep the order the brain returned: $RECALL_OUT"
+
 stub_reply "$SEARCH_HIT"
 export FM_STUB_SLEEP=5
 run_recall "$MAIN_HOME" search --json --timeout 1 teardown
@@ -524,12 +537,48 @@ expect_code 0 "$RECALL_RC" "an SSE answer from the main brain should be read: $R
   || fail "a main-brain result should be merged into the result list: $RECALL_OUT"
 assert_contains "$RECALL_OUT" '"citation": "main:fleet-policy"' \
   "a main-brain result must be citable as main:<slug>"
-# Both corpora land in one list ranked by score, rather than one appended after
-# the other, so a crewmate reads the best evidence first whichever brain holds it.
+# Both corpora land in one list rather than one appended after the other, so a
+# crewmate reads each brain's best evidence early whichever brain holds it.
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].source] | sort | unique | join(",")')" = local,main ] \
   || fail "both corpora should appear in one result list: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].score] == ([.results[].score] | sort | reverse)')" = true ] \
-  || fail "the merged result list should be ranked by score: $RECALL_OUT"
+
+# The merge interleaves by RANK and never re-sorts on the score column, because
+# two brains' scores are different quantities. This corpus pair is built so the
+# two rules disagree: every main row outscores every local row, so a score sort
+# would put both main rows first, while the rank merge alternates and leads with
+# this home's own index.
+LOCAL_PAIR='[{"slug":"local-first","title":"Local First","chunk_text":"first","score":0.30,"stale":false},
+             {"slug":"local-second","title":"Local Second","chunk_text":"second","score":0.20,"stale":false}]'
+MAIN_PAIR='[{"slug":"main-first","title":"Main First","chunk_text":"first","score":0.99,"stale":false},
+            {"slug":"main-second","title":"Main Second","chunk_text":"second","score":0.98,"stale":false}]'
+{
+  printf 'event: message\n'
+  printf 'data: %s\n' "$(jq -cn --arg t "$MAIN_PAIR" '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+} > "$FM_FAKE_MCP_REPLY"
+stub_reply "$LOCAL_PAIR"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a two-corpus read should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].citation] | join(",")')" \
+  = "local:local-first,main:main-first,local:local-second,main:main-second" ] \
+  || fail "two corpora should be merged by rank, own index first on an equal rank: $RECALL_OUT"
+# Guard the divergence itself, so this case cannot go quietly vacuous if the
+# fixture scores are ever edited into agreement with the rank order.
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].score] == ([.results[].score] | sort | reverse)')" = false ] \
+  || fail "the fixture must make score order and rank order disagree: $RECALL_OUT"
+# The merge is a permutation of what the two corpora returned, so every row each
+# source counts is still in the list and none was dropped or duplicated.
+assert_rows_match_results "$RECALL_OUT" "the two-corpus rank merge"
+
+# A corpus that runs out drops out of the cycle and the other keeps its order.
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" bash "$CLI" search --json policy 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "an uneven two-corpus read should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].citation] | join(",")')" \
+  = "local:teardown-notes,main:main-first,main:main-second" ] \
+  || fail "a corpus with fewer results should drop out of the cycle: $RECALL_OUT"
+assert_rows_match_results "$RECALL_OUT" "the uneven two-corpus merge"
 
 # GBrain refuses an out-of-scope operation in band, with isError and HTTP 200.
 {

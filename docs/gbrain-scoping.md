@@ -22,7 +22,7 @@ That version also resolves its mount registry from the UNIX user's home director
 
 GBrain's OAuth 2.1 server is shipped and does enforce read-only access: `gbrain serve --http` checks the required scope of each operation against the token's granted scopes and refuses the call with `insufficient_scope`.
 So the read-only share uses that native mechanism, and Firstmate adds no access model of its own: no Firstmate-side scope check and no precedence engine deciding what a home may read.
-[Reading a brain](#reading-a-brain) does query both corpora in one command and rank their results together, but only over what each brain already agreed to return.
+[Reading a brain](#reading-a-brain) does query both corpora in one command and merge their results into one list, but only over what each brain already agreed to return.
 When GBrain ships mounts over HTTP MCP with OAuth, a mount entry consumes the same read-scoped client registered here, so this is the forward-compatible shape rather than a parallel one.
 
 ## The three configuration planes
@@ -89,8 +89,13 @@ A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh`
 ## Source precedence and name collisions
 
 A home's own brain is the only thing it writes, and a GBrain call against that home reads that brain alone.
-The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list ordered by the score each brain returned, which is why every result carries its `local:` or `main:` label.
-A rank therefore compares two brains' own scores rather than a Firstmate-computed relevance.
+The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list, which is why every result carries its `local:` or `main:` label.
+The merge preserves each brain's own ordering and interleaves the two by rank: the first result of each corpus, then the second of each, cycling in the order the corpora were read, so this home's own index leads on an equal rank and a corpus that runs out simply drops out.
+It does not sort on the score column, for two independent reasons.
+A brain's returned order is its own verdict rather than that column: reranking runs inside the brain, so its ordering carries a contribution the score does not expose, and re-sorting discards it.
+And two brains' scores are not the same quantity, because each has its own embedding model, reranker, and corpus, so comparing them ranks on a number that only looks shared.
+A rank therefore compares two brains' own opinions of their own results rather than a Firstmate-computed relevance, and a printed score explains one row within its corpus rather than ordering across corpora.
+A single-corpus search is the same rule with nothing to interleave, so it returns exactly what that brain returned.
 Within a single brain, GBrain's own sources decide breadth: a federated source appears in cross-source default search, and an isolated source is searched only when named with `--source`.
 
 Because the two brains are separate databases, a slug that exists in both is two distinct pages rather than a collision.
