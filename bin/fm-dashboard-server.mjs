@@ -166,6 +166,39 @@ const TASK_ID_PATTERN = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const USAGE_FIELDS = ["events", "sessions", "input_tokens", "output_tokens",
   "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens"];
 
+// --- GBrain panel: read-only health + search -------------------------------
+//
+// The GBrain panel is presence-gated: a home without a brain reports
+// configured: false and renders as "no brain configured", which is the
+// normal state of a fleet that has not adopted GBrain. Stopped, slow, or
+// unconfigured brains degrade the panel, never the dashboard. Auth is the
+// same authorize() gate every other browser route uses; the ingestion
+// endpoint is the one route that does not pass through it.
+const GBRAIN_HEALTH_SCHEMA = "fm-gbrain-health.v1";
+const GBRAIN_SEARCH_SCHEMA = "fm-gbrain-search.v1";
+const GBRAIN_RECALL_COMMAND = path.join(SCRIPT_DIR, "fm-recall.sh");
+// A search query longer than this is refused before it touches the wrapper.
+// GBrain's own embedder was sized for short questions, and a 4 KB body is a
+// pathological operator error or a probing attack.
+const GBRAIN_QUERY_MAX_BYTES = 1024;
+// The search wrapper returns up to fm-recall's per-corpus limit; cap here so
+// one question cannot pull a corpus's worth of bodies into the page.
+const GBRAIN_SEARCH_MAX_LIMIT = 16;
+// One in-flight semantic search at a time. A second search the operator fires
+// before the first returns is queued at the input boundary by Node's own
+// server backpressure; the gate is what protects the GBrain child from
+// being asked to do unbounded work for one browser.
+const GBRAIN_SEARCH_MAX_INFLIGHT = 1;
+// Each search gets this many seconds. The dashboard's own polling deadline
+// is longer; a search that needs the full window is itself a sign the brain
+// is slow, and the operator will see degraded in the next health read.
+const GBRAIN_SEARCH_TIMEOUT_SECONDS = 12;
+// A search query whose trim is empty after collapse is refused; the brain
+// ranks no real document against nothing.
+const GBRAIN_QUERY_MIN_LENGTH = 2;
+// One source row's state, narrowed to the values the panel renders.
+const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "unknown"]);
+
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -977,6 +1010,215 @@ function sameOriginRequest(request) {
 // With no config there is no token, so the endpoint accepts nothing and every
 // harness degrades to "no event source" - which is also exactly what removing
 // the instrumentation leaves behind.
+
+// --- GBrain state ------------------------------------------------------------
+//
+// The GBrain panel reads two things: a fresh health snapshot every time the
+// panel renders, and one search result when the operator fires a query.
+// Health is delegated to bin/fm-gbrain-health.sh, which is the single owner
+// of the shape and the bounded probe behaviour. Search delegates to
+// bin/fm-recall.sh with the read-only scopes the per-home scoping config
+// already enforces; this process never reads a credential and never opens
+// a token endpoint.
+//
+// Both reads are bounded, both fail closed, and both leave the dashboard's
+// other panels untouched on any failure. The refresh cadence matches the
+// snapshot poll so the operator never sees health that is older than the
+// fleet snapshot beside it.
+class GBrainState {
+  constructor(config, clients) {
+    this.config = config;
+    this.clients = clients;
+    this.lastGood = null;
+    this.lastSuccessAtMs = null;
+    this.lastSuccessAt = null;
+    this.lastAttemptAt = null;
+    this.lastError = null;
+    this.refreshing = false;
+    this.pending = false;
+    this.timer = null;
+    this.activeChild = null;
+    this.searchesInFlight = 0;
+    this.searchTimer = null;
+    this.stopped = false;
+  }
+
+  envelope() {
+    const ageMs = this.lastSuccessAtMs === null ? null : Math.max(0, Date.now() - this.lastSuccessAtMs);
+    const stale = this.lastGood !== null && this.lastError !== null;
+    let phase = "first_run";
+    if (this.lastGood && stale) phase = "last_good";
+    else if (this.lastGood) phase = "ready";
+    else if (this.lastError) phase = "unavailable";
+    return {
+      schema: GBRAIN_HEALTH_SCHEMA,
+      status: {
+        phase,
+        refreshing: this.refreshing,
+        stale,
+        last_attempt_at: this.lastAttemptAt,
+        last_success_at: this.lastSuccessAt,
+        last_success_age_seconds: ageMs === null ? null : Math.floor(ageMs / 1000),
+        error: this.lastError,
+      },
+      config: {
+        // The panel never sets its own deadline; the snapshot path sets the
+        // cap and the operator can lower it, but it cannot be longer than the
+        // polling deadline without breaking the snapshot's contract.
+        health_timeout_seconds: Math.floor(this.config.timeoutMs / 1000),
+        search_timeout_seconds: GBRAIN_SEARCH_TIMEOUT_SECONDS,
+        query_max_bytes: GBRAIN_QUERY_MAX_BYTES,
+        result_limit_max: GBRAIN_SEARCH_MAX_LIMIT,
+      },
+      health: this.lastGood,
+    };
+  }
+
+  broadcast() {
+    this.clients.send("gbrain_health");
+  }
+
+  trigger() {
+    if (this.refreshing) {
+      this.pending = true;
+      return;
+    }
+    void this.refresh();
+  }
+
+  async refresh() {
+    if (this.refreshing || this.stopped) return;
+    this.refreshing = true;
+    this.lastAttemptAt = nowIso();
+    this.broadcast();
+    try {
+      const document = await this.runHealth();
+      if (!document || document.schema !== GBRAIN_HEALTH_SCHEMA) {
+        const actual = document && typeof document.schema === "string" ? document.schema : "missing";
+        throw Object.assign(new Error(`expected ${GBRAIN_HEALTH_SCHEMA}, received ${actual}`), { kind: "unsupported_schema" });
+      }
+      this.lastGood = document;
+      this.lastSuccessAtMs = Date.now();
+      this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+      this.lastError = null;
+    } catch (error) {
+      this.lastError = errorRecord(error, "gbrain_health_unavailable");
+    } finally {
+      this.refreshing = false;
+      this.broadcast();
+      if (this.pending && !this.stopped) {
+        this.pending = false;
+        queueMicrotask(() => this.trigger());
+      }
+    }
+  }
+
+  runHealth() {
+    return runJsonCommand(path.join(SCRIPT_DIR, "fm-gbrain-health.sh"), ["--json"], {
+      timeoutMs: this.config.timeoutMs,
+      env: { ...process.env, FM_HOME: this.config.fmHome },
+      register: (child, previous) => {
+        if (child) this.activeChild = child;
+        else if (this.activeChild === previous) this.activeChild = null;
+      },
+    });
+  }
+
+  async search(query, limit) {
+    if (this.searchesInFlight >= GBRAIN_SEARCH_MAX_INFLIGHT) {
+      throw Object.assign(new Error("a semantic search is already in progress; wait for it to return"), { kind: "search_busy" });
+    }
+    const trimmed = String(query || "").trim();
+    if (trimmed.length < GBRAIN_QUERY_MIN_LENGTH) {
+      throw Object.assign(new Error(`a search query must be at least ${GBRAIN_QUERY_MIN_LENGTH} characters`), { kind: "query_too_short" });
+    }
+    if (Buffer.byteLength(trimmed, "utf8") > GBRAIN_QUERY_MAX_BYTES) {
+      throw Object.assign(new Error(`a search query must not exceed ${GBRAIN_QUERY_MAX_BYTES} bytes`), { kind: "query_too_large" });
+    }
+    const n = Math.max(1, Math.min(GBRAIN_SEARCH_MAX_LIMIT, Number(limit) || 8));
+    this.searchesInFlight += 1;
+    const env = { ...process.env, FM_HOME: this.config.fmHome };
+    try {
+      // The query is passed as one argv element, never as part of a command
+      // string or shell substitution. A hostile query is a string of bytes to
+      // search for; nothing more. --scope all lets a fleet with a shared main
+      // brain read both corpora, and is refused by the wrapper when the main
+      // brain is unconfigured.
+      const args = ["search", "--json", "--scope", "all", "--limit", String(n), "--timeout", String(GBRAIN_SEARCH_TIMEOUT_SECONDS), "--"];
+      for (const word of trimmed.split(/\s+/)) args.push(word);
+      const document = await runJsonCommand(GBRAIN_RECALL_COMMAND, args, {
+        timeoutMs: (GBRAIN_SEARCH_TIMEOUT_SECONDS + 1) * 1000,
+        env,
+        register: (child, previous) => {
+          if (child) this.searchTimer = child;
+          else if (this.searchTimer === previous) this.searchTimer = null;
+        },
+      });
+      if (!document || document.schema !== "fm-recall.v1") {
+        const actual = document && typeof document.schema === "string" ? document.schema : "missing";
+        throw Object.assign(new Error(`expected fm-recall.v1, received ${actual}`), { kind: "unsupported_schema" });
+      }
+      // The wrapper's results are trusted text from the brain's archive.
+      // Anything that arrived beyond the closed vocabulary here is dropped
+      // before it reaches the page; this is the second of two independent
+      // reasons a stored document cannot become markup.
+      const results = Array.isArray(document.results) ? document.results : [];
+      const sources = Array.isArray(document.sources) ? document.sources : [];
+      const cleanedResults = results.slice(0, n).map((row) => ({
+        source: typeof row?.source === "string" ? row.source : null,
+        slug: typeof row?.slug === "string" ? row.slug : null,
+        title: typeof row?.title === "string" ? safeText(row.title, 400) : "",
+        score: typeof row?.score === "number" && Number.isFinite(row.score) ? row.score : null,
+        excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
+        stale: row?.stale === true,
+      }));
+      const cleanedSources = sources.map((row) => ({
+        source: typeof row?.source === "string" ? row.source : null,
+        state: GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown",
+        brain: typeof row?.brain === "string" ? safeText(row.brain, 240) : null,
+        results: typeof row?.results === "number" && Number.isFinite(row.results) ? row.results : 0,
+        detail: typeof row?.detail === "string" ? safeText(row.detail, 240) : null,
+      }));
+      return {
+        schema: GBRAIN_SEARCH_SCHEMA,
+        generated: nowIso(),
+        query: trimmed,
+        limit: n,
+        home: typeof document.home === "string" ? document.home : this.config.fmHome,
+        sources: cleanedSources,
+        results: cleanedResults,
+      };
+    } catch (error) {
+      const kind = error.kind || "search_failed";
+      // fm-recall exits non-zero when no corpus answered, which is a real
+      // signal rather than a transport failure; surface it verbatim with its
+      // per-source verdict, which is the operator's only way to see WHICH
+      // corpus was unreachable.
+      if (kind === "exit_nonzero") {
+        throw Object.assign(new Error(safeText(error.message) || "search failed"), { kind: "no_corpus_answered" });
+      }
+      if (kind === "timed_out") {
+        throw Object.assign(new Error("the brain did not answer within the search timeout"), { kind: "timed_out" });
+      }
+      throw Object.assign(new Error(safeText(error.message) || "search failed"), { kind });
+    } finally {
+      this.searchesInFlight -= 1;
+    }
+  }
+
+  start() {
+    this.timer = setInterval(() => this.trigger(), this.config.historyPollMs);
+    this.trigger();
+  }
+
+  stop() {
+    this.stopped = true;
+    killProcessTree(this.activeChild);
+    killProcessTree(this.searchTimer);
+    clearInterval(this.timer);
+  }
+}
+
 class EventsState {
   constructor(config, clients) {
     this.config = config;
@@ -1606,6 +1848,101 @@ async function serveIngest(request, response, events) {
   sendJson(response, 202, { schema: INGEST_SCHEMA, accepted: stored.stored, duplicate: stored.duplicate, rejected });
 }
 
+// Read a bounded JSON body for the search endpoint. The body is small: one
+// query string and one limit. The byte cap is well above the largest valid
+// input, so a real request never trips it; a giant body is a probing attempt
+// and is refused before the brain sees it. Same shape as the ingest reader
+// but with a separate cap and a much tighter deadline: a search has to come
+// back inside the dashboard's polling window or it never renders at all.
+const SEARCH_BODY_MAX_BYTES = 4096;
+const SEARCH_BODY_DEADLINE_MS = 4_000;
+
+function readSearchBody(request, response) {
+  return new Promise((resolve) => {
+    let bytes = 0;
+    const chunks = [];
+    let settled = false;
+    const refuse = (status, body) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.removeAllListeners("data");
+      request.removeAllListeners("end");
+      request.removeAllListeners("error");
+      sendJson(response, status, body);
+      request.destroy();
+      resolve({ failed: true });
+    };
+    const timer = setTimeout(
+      () => refuse(408, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "body_deadline" }),
+      SEARCH_BODY_DEADLINE_MS,
+    );
+    request.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > SEARCH_BODY_MAX_BYTES) {
+        refuse(413, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "body_too_large", max_bytes: SEARCH_BODY_MAX_BYTES });
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ body: Buffer.concat(chunks).toString("utf8") });
+    });
+    request.on("error", () => refuse(400, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "read_failed" }));
+  });
+}
+
+// POST /api/gbrain/search - the read-only GBrain search endpoint.
+//
+// The dashboard fires this when the operator types a question and presses
+// return. Every value above the wrapper boundary is a structured JSON
+// document; nothing on this path can pick a command, pick an argument, or
+// pick a fleet path, and the wrapper itself never interpolates the query
+// into a shell. A body that cannot be parsed as JSON or that fails the
+// shape below is refused before the wrapper runs.
+async function serveGBrainSearch(request, response, gbraintron) {
+  const read = await readSearchBody(request, response);
+  if (read.failed) return;
+  let document;
+  try {
+    document = JSON.parse(read.body || "{}");
+  } catch {
+    sendJson(response, 400, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "malformed_json" });
+    return;
+  }
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    sendJson(response, 400, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "malformed_json" });
+    return;
+  }
+  if (typeof document.query !== "string") {
+    sendJson(response, 400, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "missing_query" });
+    return;
+  }
+  if (document.limit !== undefined && (!Number.isFinite(document.limit) || !Number.isInteger(document.limit) || document.limit < 1)) {
+    sendJson(response, 400, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "invalid_limit" });
+    return;
+  }
+  try {
+    const payload = await gbraintron.search(document.query, document.limit);
+    sendJson(response, 200, payload);
+  } catch (error) {
+    const status = error.kind === "timed_out" ? 504
+      : error.kind === "search_busy" ? 429
+        : error.kind === "query_too_short" || error.kind === "query_too_large" ? 400
+          : error.kind === "no_corpus_answered" ? 503
+            : 502;
+    sendJson(response, status, {
+      schema: GBRAIN_SEARCH_SCHEMA,
+      results: [],
+      reason: error.kind || "search_failed",
+      detail: safeText(error.message),
+    });
+  }
+}
+
 function serveTimeline(request, response, events) {
   const requested = new URL(request.url, "http://loopback.invalid").searchParams.get("task") || "";
   if (requested && (!TASK_ID_PATTERN.test(requested) || requested.includes(".."))) {
@@ -1641,10 +1978,12 @@ async function main() {
   const clients = new SseClients();
   const history = new HistoryState(config, clients);
   const events = new EventsState(config, clients);
+  const gbraintron = new GBrainState(config, clients);
   const state = new DashboardState(config, clients, history);
   clients.register("snapshot", () => state.envelope());
   clients.register("history", () => history.envelope());
   clients.register("agent_events", () => events.envelope());
+  clients.register("gbrain_health", () => gbraintron.envelope());
   const handler = async (request, response) => {
     securityHeaders(response);
     const pathname = new URL(request.url, "http://loopback.invalid").pathname;
@@ -1655,6 +1994,19 @@ async function main() {
         return;
       }
       await serveIngest(request, response, events);
+      return;
+    }
+    // The GBrain search endpoint is POST-only and is gated by the same
+    // authorize() handler the GET routes use, so it stays behind the same
+    // authentication boundary as the rest of the browser-facing surface.
+    if (pathname === "/api/gbrain/search") {
+      if (request.method !== "POST") {
+        response.writeHead(405, { Allow: "POST", "Content-Type": "text/plain; charset=utf-8" });
+        response.end("method not allowed\n");
+        return;
+      }
+      if (!(await authorize(request, response, auth))) return;
+      await serveGBrainSearch(request, response, gbraintron);
       return;
     }
     if (!(await authorize(request, response, auth))) return;
@@ -1679,6 +2031,11 @@ async function main() {
     }
     if (pathname === "/api/timeline") {
       serveTimeline(request, response, events);
+      return;
+    }
+    if (pathname === "/api/gbrain/health") {
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`${JSON.stringify(gbraintron.envelope())}\n`);
       return;
     }
     if (pathname === "/api/events") {
@@ -1722,6 +2079,7 @@ async function main() {
   }
   await state.start();
   history.start();
+  gbraintron.start();
   const access = auth.enforced ? "authenticated" : "no authentication configured (loopback only)";
   const shown = addresses.map((address) => (address.includes(":") ? `[${address}]` : address));
   const trusted = config.trustedProxies.entries.length
@@ -1733,6 +2091,7 @@ async function main() {
     state.stop();
     history.stop();
     events.stop();
+    gbraintron.stop();
     clients.stop();
     let remaining = servers.length;
     for (const server of servers) {

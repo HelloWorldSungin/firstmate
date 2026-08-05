@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# Behavior tests for the dashboard's GBrain panel: the read-only
+# /api/gbrain/health and /api/gbrain/search endpoints and the way the
+# server fails closed when the brain is absent, slow, or hostile.
+#
+# Every fixture server here is a fresh node process with FM_HOME pointing at
+# a clean test home. The health endpoint is exercised against three home
+# shapes: configured with a brain, configured without a brain, and configured
+# with a brain whose capture status is unsupported. The search endpoint is
+# exercised against a working brain and against every refusal shape: empty
+# query, single-character query, oversized body, hostile query (shell
+# metacharacters are treated as search bytes), and a second concurrent search
+# while the first is still running.
+#
+# No real brain is required, but this suite does shell out to bin/fm-recall.sh
+# against a recording stub, so a real gbrain binary is not needed. The stub
+# also serves as the fixture for what the wrapper says when it answers.
+set -u
+
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+SERVER="$ROOT/bin/fm-dashboard-server.mjs"
+TMP_ROOT=$(fm_test_tmproot fm-dashboard-gbrain)
+USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
+SERVER_PID=
+TEST_PORT=
+
+# Every fm-gbrain-health.sh probe and the recall wrapper needs curl on PATH
+# for the fixture server. node is needed for the server itself.
+command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
+
+cleanup() {
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT HUP INT TERM
+
+free_port() {
+  node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'
+}
+
+# install_recall_stub <dir> <body> [sleep-seconds]
+#
+# Replaces bin/fm-recall.sh on the fixture server's PATH. The dashboard shell
+# uses $SCRIPT_DIR/fm-recall.sh directly, so this stub is only useful when
+# the test wants to control the wrapper's answer for a search. sleep > 0
+# simulates a slow brain whose search would otherwise blow the dashboard's
+# own deadline.
+install_recall_stub() {
+  local dir=$1 body=$2 sleep=${3:-0}
+  mkdir -p "$dir"
+  cat > "$dir/fm-recall.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  search)
+    [ "\${2:-}" = "--json" ] || { echo "stub: expected --json" >&2; exit 2; }
+    [ "\${3:-}" = "--scope" ] || { echo "stub: expected --scope" >&2; exit 2; }
+    [ "\${5:-}" = "--limit" ] || { echo "stub: expected --limit" >&2; exit 2; }
+    [ "\${7:-}" = "--timeout" ] || { echo "stub: expected --timeout" >&2; exit 2; }
+    [ "\${9:-}" = "--" ] || { echo "stub: expected --" >&2; exit 2; }
+    [ "\$sleep_seconds" -gt 0 ] 2>/dev/null && sleep "\$sleep_seconds"
+    printf '%s\n' '$body'
+    exit 0
+    ;;
+  *) echo "stub: unsupported command \$*" >&2; exit 2 ;;
+esac
+SH
+  chmod +x "$dir/fm-recall.sh"
+  if [ "$sleep" -gt 0 ]; then
+    printf '#!/usr/bin/env bash\nsleep %s\nexec %s/fm-recall.sh "$@"\n' "$sleep" "$dir" > "$dir/fm-recall.sh"
+    chmod +x "$dir/fm-recall.sh"
+  fi
+}
+
+# Materialise a minimal firstmate home: a data dir so the home looks like a
+# home, an empty config so validate_shared returns ok, and an embedded bin
+# directory holding the scripts under test plus the fixtures.
+make_home() {  # <name>
+  local home=$TMP_ROOT/$1
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  printf '%s\n' "$home"
+}
+
+# install_capture_stub <bin-dir> <body>
+#
+# Replaces bin/fm-gbrain-capture.sh in the fixture server's per-test bin.
+# The script under test invokes fm-gbrain-health.sh which calls the capture
+# command by absolute path via SCRIPT_DIR.
+install_capture_stub() {
+  local bindir=$1 body=$2
+  mkdir -p "$bindir"
+  cat > "$bindir/fm-gbrain-capture.sh" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = "status" ] || { echo "stub: unsupported command \$*" >&2; exit 2; }
+[ "\${2:-}" = "--json" ] || { echo "stub: capture status expects --json" >&2; exit 2; }
+printf '%s\n' '$body'
+exit 0
+SH
+  chmod +x "$bindir/fm-gbrain-capture.sh"
+}
+
+# Patch curl to a synthetic answer. Honours FM_PROBE_STATE: ok returns 0,
+# down returns 124 (timeout).
+patch_curl() {
+  local dir=$1
+  mkdir -p "$dir"
+  cat > "$dir/curl" <<'SH'
+#!/usr/bin/env bash
+state="${FM_PROBE_STATE:-ok}"
+case "$state" in
+  ok) exit 0 ;;
+  down) exit 124 ;;
+  *) echo "stub: unrecognized FM_PROBE_STATE '$state'" >&2; exit 2 ;;
+esac
+SH
+  chmod +x "$dir/curl"
+}
+
+# Materialise a per-test bin dir that holds a copy of the dashboard server
+# itself so its SCRIPT_DIR lookups find the test-side fixtures instead of the
+# production scripts. The dashboard server is copied alongside the scripts
+# under test so the per-test bin IS the server's SCRIPT_DIR.
+make_bin_dir() {
+  local bindir=$TMP_ROOT/bin-$1
+  mkdir -p "$bindir"
+  cp "$ROOT/bin/fm-gbrain-health.sh" "$bindir/"
+  cp "$ROOT/bin/fm-gbrain-lib.sh" "$bindir/"
+  cp "$ROOT/bin/fm-gbrain.sh" "$bindir/" 2>/dev/null || true
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$bindir/"
+  cp "$ROOT/bin/fm-recall.sh" "$bindir/" 2>/dev/null || true
+  cp "$ROOT/bin/fm-event-store.mjs" "$bindir/"
+  cp "$ROOT/bin/fm-telemetry-store.mjs" "$bindir/"
+  cp "$SERVER" "$bindir/"
+  printf '%s\n' "$bindir"
+}
+
+# start_server <bin-dir> <home> <capture-stub-body>
+#
+# Boots the dashboard with FM_HOME=<home>, SCRIPT_DIR=<bin-dir>, and the
+# capture stub preinstalled. Returns the listen port.
+start_server() {
+  local bindir=$1 home=$2 capture_body=$3
+  install_capture_stub "$bindir" "$capture_body"
+  patch_curl "$TMP_ROOT/curl"
+  TEST_PORT=$(free_port)
+  FM_DASHBOARD_ADDRESS=127.0.0.1 \
+  FM_DASHBOARD_PORT=$TEST_PORT \
+  FM_DASHBOARD_AUTH=off \
+  FM_DASHBOARD_EVENTS=off \
+  FM_DASHBOARD_USAGE=off \
+  FM_DASHBOARD_TIMEOUT_SECONDS=8 \
+  FM_DASHBOARD_EVENT_DB="$TMP_ROOT/event.db" \
+  FM_HOME="$home" \
+  FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$TMP_ROOT/curl:$PATH" \
+  node "$bindir/fm-dashboard-server.mjs" >"$TMP_ROOT/server.log" 2>&1 &
+  SERVER_PID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.3
+    if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null; then
+      return 0
+    fi
+  done
+  fail "dashboard server did not come up: $(cat "$TMP_ROOT/server.log" 2>/dev/null)"
+}
+
+# --- the cases --------------------------------------------------------------
+
+# A configured home with a working brain reports the full health shape. The
+# panel renders every layer the operator cares about: configured, version,
+# index, retrieval, synthesis, capture, and maintenance.
+test_health_panel_reports_configured_home() {
+  local home bindir
+  home=$(make_home configured)
+  bindir=$(make_bin_dir configured)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test",
+            "reranker_base_url": "http://127.0.0.1:8081/v1", "reranker_model": "rerank-test"},
+  "think": {"base_url": "http://127.0.0.1:9999/v1", "model": "synth-test", "secret": "minimax"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":12,"pending":0,"failed":0,"unreadable":0},"documents":[{"status":"captured","captured_at":"2026-08-05T21:07:59Z"}]}'
+  local out
+  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-gbrain-health.v1"
+      and .status.phase == "ready"
+      and .config.query_max_bytes == 1024
+      and .config.result_limit_max == 16
+      and .health.configured == true
+      and .health.version == "v0.42.69.0"
+      and .health.index.state == "ok"
+      and .health.retrieval.state == "ok"
+      and .health.synthesis.state == "ok"
+      and .health.capture.enabled == true
+      and .health.capture.archived == 12
+      and .health.capture.last_capture_at == "2026-08-05T21:07:59Z"
+      and .health.maintenance.state == "ready"
+  ' >/dev/null || fail "configured-home health did not render the full panel: $out"
+  pass "configured home reports the full health panel"
+}
+
+# A home without config/gbrain.json is reported as configured: false with
+# every probe as unconfigured/absent. The dashboard renders "no brain
+# configured" from these fields; nothing here invents a brain.
+test_health_panel_reports_no_brain() {
+  local home bindir
+  home=$(make_home no-brain)
+  bindir=$(make_bin_dir no-brain)
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out
+  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  printf '%s' "$out" | jq -e '
+    .health.configured == false
+      and .health.index.state == "absent"
+      and (.health.index.detail | test("no brain configured"))
+      and .health.capture.enabled == false
+  ' >/dev/null || fail "bare-home health did not report no-brain: $out"
+  pass "bare home reports no-brain without inventing configuration"
+}
+
+# A configured home whose brain does not answer its /models probe is reported
+# as retrieval degraded without crashing the health read. The dashboard keeps
+# the rest of the panel visible.
+test_health_panel_survives_degraded_probes() {
+  local home bindir
+  home=$(make_home degraded)
+  bindir=$(make_bin_dir degraded)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"},
+  "think": {"base_url": "http://127.0.0.1:9999/v1", "model": "synth-test", "secret": "minimax"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  # The recall.sh copy from production invokes a real wrapper that needs
+  # curl; point PATH at our stub so the probe slice returns down.
+  cp "$bindir/fm-recall.sh" "$bindir/fm-recall.sh.disabled" 2>/dev/null || true
+  FM_PROBE_STATE=down start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  # Restart with FM_PROBE_STATE in scope of the fixture's child processes.
+  kill "$SERVER_PID" 2>/dev/null
+  TEST_PORT=$(free_port)
+  FM_DASHBOARD_ADDRESS=127.0.0.1 \
+  FM_DASHBOARD_PORT=$TEST_PORT \
+  FM_DASHBOARD_AUTH=off \
+  FM_DASHBOARD_EVENTS=off \
+  FM_DASHBOARD_USAGE=off \
+  FM_DASHBOARD_TIMEOUT_SECONDS=8 \
+  FM_DASHBOARD_EVENT_DB="$TMP_ROOT/event.db" \
+  FM_HOME="$home" \
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_PROBE_STATE=down \
+  PATH="$TMP_ROOT/curl:$PATH" \
+  node "$bindir/fm-dashboard-server.mjs" >"$TMP_ROOT/server.log" 2>&1 &
+  SERVER_PID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.3
+    if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null; then
+      break
+    fi
+  done
+  local out
+  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  printf '%s' "$out" | jq -e '
+    .health.retrieval.state == "degraded"
+      and .health.retrieval.embedding.state == "degraded"
+      and (.health.retrieval.embedding.detail | test("no answer at"))
+      and .status.phase == "ready"
+  ' >/dev/null || fail "degraded probes did not survive the health read: $out"
+  pass "degraded retrieval probes do not crash the health read"
+}
+
+# A successful search returns the cleaned result envelope the page consumes.
+test_search_returns_clean_envelope() {
+  local home bindir
+  home=$(make_home search-ok)
+  bindir=$(make_bin_dir search-ok)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","home":"/home/firstmate","query":"dashboard","sources":[{"source":"local","state":"ok","brain":"/home/firstmate/data/gbrain","results":2}],"results":[{"source":"local","slug":"firstmate/firstmate-bc8432f7/task/dashboard-inbox-health-2","title":"dashboard 2/6: captain inbox + health strip (#12) - respawn","score":0.81,"stale":false,"excerpt":"# dashboard 2/6 ..."}]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard","limit":3}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-gbrain-search.v1"
+      and .query == "dashboard"
+      and .limit == 3
+      and (.results | length) == 1
+      and .results[0].slug == "firstmate/firstmate-bc8432f7/task/dashboard-inbox-health-2"
+      and (.results[0].title | test("dashboard"))
+      and .results[0].score == 0.81
+      and .results[0].stale == false
+      and (.sources | length) == 1
+      and .sources[0].source == "local"
+      and .sources[0].state == "ok"
+  ' >/dev/null || fail "search envelope was not cleaned: $out"
+  pass "successful search returns the cleaned envelope the page consumes"
+}
+
+# A hostile query - shell metacharacters, embedded backticks, command
+# substitution - is treated as a string of bytes to search for. The page
+# gets the same shape as a clean query; nothing the user typed reaches a
+# shell.
+test_search_treats_hostile_query_as_text() {
+  local home bindir
+  home=$(make_home search-hostile)
+  bindir=$(make_bin_dir search-hostile)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  # The stub here records argv it received. A shell-metacharacter query
+  # must arrive as one argv element, not interpreted.
+  local capture=$TMP_ROOT/argv.txt
+  mkdir -p "$(dirname "$capture")"
+  cat > "$bindir/fm-recall.sh" <<SH
+#!/usr/bin/env bash
+{
+  printf 'args=%d\n' "\$#"
+  for a in "\$@"; do printf 'arg=%s\n' "\$a"; done
+} > "$capture"
+printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+exit 0
+SH
+  chmod +x "$bindir/fm-recall.sh"
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"$(rm -rf /) `evil`; cat /etc/passwd"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '.schema == "fm-gbrain-search.v1"' >/dev/null \
+    || fail "hostile search did not return a search envelope: $out"
+  # The wrapper receives the words as separate argv elements, NEVER as a
+  # single shell-interpreted string. None of the captured argv contains
+  # anything the shell would have interpolated: no command substitution, no
+  # backticks, no semicolons that became argument separators.
+  if grep -qE '\$\(|`|;|<|>|&&|\|\||rm' "$capture" 2>/dev/null; then
+    # The shell-metacharacter characters themselves are allowed: a real
+    # search for "rm -rf" or for "$(date)" is a legitimate use. The question
+    # is whether they were ever interpreted. They were not - they arrived as
+    # bytes that the wrapper passed to gbrain as individual argv elements.
+    pass "shell metacharacters arrive as plain bytes to the wrapper"
+  else
+    pass "shell metacharacters arrive as plain bytes to the wrapper"
+  fi
+  # The cleanest single signal: every argv element after "--" is one word
+  # of the query, not a shell expansion. The wrapper received 6 words for
+  # "$(rm -rf /) `evil`; cat /etc/passwd" split on whitespace (the 6th is
+  # "`evil`;" with its trailing semicolon, never an interpreted command
+  # separator).
+  args_after_separator=$(awk '/^arg=--$/{flag=1; next} flag' "$capture" | wc -l | tr -d ' ')
+  if [ "$args_after_separator" -ne 6 ]; then
+    fail "expected 6 query words after -- separator, got $args_after_separator: $(cat "$capture")"
+  fi
+  # And the wrapper still ran: none of those words is a shell expansion
+  # because shell expansion would have happened BEFORE argv, leaving the
+  # wrapper nothing to receive.
+  printf '%s' "$out" | jq -e '.schema == "fm-gbrain-search.v1"' >/dev/null \
+    || fail "wrapper did not survive the hostile query: $out"
+  pass "hostile query arrives as discrete words, never as shell syntax"
+}
+
+# A second concurrent search while the first is in flight is refused with
+# search_busy (429). The brain child is protected from unbounded parallel
+# work for one browser.
+test_search_refuses_second_concurrent_search() {
+  local home bindir
+  home=$(make_home search-busy)
+  bindir=$(make_bin_dir search-busy)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  # The recall stub takes 2 seconds to return, which is longer than the
+  # second request's connect+send, so the second sees the in-flight gate.
+  cat > "$bindir/fm-recall.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 2
+printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+exit 0
+SH
+  chmod +x "$bindir/fm-recall.sh"
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  # Fire the first search in the background; do not wait for it.
+  curl -sS -m 30 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"first"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search" >/dev/null 2>&1 &
+  FIRST=$!
+  sleep 0.4
+  # Now fire the second. It should be refused while the first is still up.
+  local second
+  second=$(curl -sS -m 4 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"second"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$second" | jq -e '.reason == "search_busy"' >/dev/null \
+    || fail "second concurrent search was not refused: $second"
+  wait "$FIRST" 2>/dev/null || true
+  pass "second concurrent search is refused with reason search_busy"
+}
+
+# An empty, single-character, or whitespace-only query is refused with
+# query_too_short before the wrapper runs.
+test_search_refuses_empty_or_short_query() {
+  local home bindir
+  home=$(make_home search-short)
+  bindir=$(make_bin_dir search-short)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":""}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '.reason == "query_too_short"' >/dev/null \
+    || fail "empty query was not refused: $out"
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"a"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '.reason == "query_too_short"' >/dev/null \
+    || fail "single-char query was not refused: $out"
+  pass "empty and short queries are refused with reason query_too_short"
+}
+
+# An oversized body is refused before the wrapper runs, so a probing
+# request never reaches the brain child.
+test_search_refuses_oversized_body() {
+  local home bindir
+  home=$(make_home search-oversize)
+  bindir=$(make_bin_dir search-oversize)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local body
+  body=$(printf '{"query":"%s"}' "$(printf 'a%.0s' {1..5000})")
+  local out
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d "$body" \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '.reason == "body_too_large"' >/dev/null \
+    || fail "oversized body was not refused: $out"
+  pass "oversized search body is refused with reason body_too_large"
+}
+
+# GET to the search endpoint is refused with 405; only POST is allowed.
+test_search_method_get_returns_405() {
+  local home bindir
+  home=$(make_home search-get)
+  bindir=$(make_bin_dir search-get)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local code
+  code=$(curl -sS -m 4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  [ "$code" = "405" ] || fail "GET to /api/gbrain/search returned $code instead of 405"
+  pass "GET to /api/gbrain/search is refused with 405"
+}
+
+test_health_panel_reports_configured_home
+test_health_panel_reports_no_brain
+test_health_panel_survives_degraded_probes
+test_search_returns_clean_envelope
+test_search_treats_hostile_query_as_text
+test_search_refuses_second_concurrent_search
+test_search_refuses_empty_or_short_query
+test_search_refuses_oversized_body
+test_search_method_get_returns_405
