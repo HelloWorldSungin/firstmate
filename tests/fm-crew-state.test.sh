@@ -29,9 +29,9 @@
 #   (l) failed lookup reuses only a recent observed run step       -> run-step-degraded
 #   (m) an executing run keeps its pipeline-authored tip advance  -> run-step
 #   (n) branch-scoped live status accepts a pipeline-owned head   -> run-step
-#   (o) a terminal pass whose pr/ci steps SKIPPED never observed the forge, so it
-#       reports a local pass rather than a merge, and a declared wait standing
-#       over it reports that wait instead of done
+#   (o) a terminal pass whose ci step SKIPPED never observed the forge, whether
+#       or not it opened the PR, so it reports a local pass rather than a merge,
+#       and a declared wait standing over it reports that wait instead of done
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -362,6 +362,33 @@ run:
     lint,completed,0,17
     push,completed,0,659
     pr,skipped,0,13
+    ci,skipped,0,12
+outcome: passed
+EOF
+}
+
+# The independently-skippable shape: `no-mistakes --skip ci` opened the PR but
+# never watched it, so the run still reached outcome=passed without any forge
+# verdict - ci is the step that observes merged or closed, so a completed pr step
+# is not evidence of one.
+run_passed_ci_skipped() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://gitea.example.invalid/o/r/pulls/33"
+  findings: none
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    rebase,completed,0,478
+    review,completed,1,2355424
+    test,completed,0,949793
+    document,completed,1,864687
+    lint,completed,0,17
+    push,completed,0,659
+    pr,completed,0,1300
     ci,skipped,0,12
 outcome: passed
 EOF
@@ -811,6 +838,25 @@ test_terminal_passed_forge_skipped_claims_no_merge() {
   assert_contains "$out" "local pipeline passed" "the local pass must be stated as local"
   assert_contains "$out" "forge state not observed" "the unobserved forge must be visible in the verdict"
   pass "a terminal pass whose pr/ci steps skipped reports a local pass, never a merge"
+}
+
+# The merge observation lives in the ci step alone, so a run that opened the PR
+# and then skipped ci is in exactly the same position as one that skipped both:
+# it pushed a branch and walked away, and nothing in it ever read the forge.
+test_terminal_passed_ci_skipped_claims_no_merge() {
+  reset_fakes
+  local d; d=$(new_case passed-ci-skipped)
+  make_repo_on_branch "$d/wt" fm/feat-ciskip
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ciskip.meta" "window=fm:fm-feat-ciskip" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_ci_skipped fm/feat-ciskip)"
+  local out; out=$(run_crew_state "$d" feat-ciskip)
+  assert_contains "$out" "state: done" "a locally passing run is still a finished run"
+  assert_not_contains "$out" "merged" "a run whose ci step skipped must not claim a merge"
+  assert_not_contains "$out" "closed" "a run whose ci step skipped must not claim the PR closed"
+  assert_contains "$out" "local pipeline passed" "the local pass must be stated as local"
+  assert_contains "$out" "forge state not observed" "the unobserved forge must be visible in the verdict"
+  pass "a terminal pass that opened a PR but skipped ci reports a local pass, never a merge"
 }
 
 # The control that keeps the correction narrow: where pr and ci actually ran, the
@@ -1888,6 +1934,7 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_passed_forge_skipped_claims_no_merge
+test_terminal_passed_ci_skipped_claims_no_merge
 test_terminal_passed_forge_observed_keeps_merge_claim
 test_forge_skipped_pass_under_declared_pause_reports_the_wait
 test_forge_skipped_pass_without_declared_pause_stays_done

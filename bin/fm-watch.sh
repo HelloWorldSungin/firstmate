@@ -384,9 +384,12 @@ busy_turn_over_age() {  # <task>
 # decision, an upstream release - otherwise costs a supervisor the identical
 # recheck at the identical rate for as long as it lasts. The recheck still
 # happens, so a forgotten hold cannot rot invisibly; it just stops nagging. The
-# streak dies with the rest of the pause tracking the moment the wait changes.
+# widening is earned by one wait and dies with it: the streak record carries the
+# status line that declared the wait, so replacing that line with a DIFFERENT
+# declared wait resets the streak and drops the re-surface throttle, and the new
+# wait is rechecked at the base window off its own status write.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason streak resurface_window
+  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason wait_line streak_file resurface_window
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -396,15 +399,18 @@ handle_paused_stale() {  # <window> <task> <hash>
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
+  wait_line=$(last_status_line "$statusf")
+  streak_file="$STATE/.paused-streak-$key"
+  if pause_streak_sync "$streak_file" "$wait_line"; then
+    rm -f "$rf"
+  fi
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  streak=$(cat "$STATE/.paused-streak-$key" 2>/dev/null || echo 0)
-  resurface_window=$(pause_resurface_window "$streak")
+  resurface_window=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
   if [ "$age" -ge "$resurface_window" ] && [ "$rf_age" -ge "$resurface_window" ]; then
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
-    case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
-    echo $(( streak + 1 )) > "$STATE/.paused-streak-$key"
+    pause_streak_bump "$streak_file" "$wait_line"
     wake "$reason"
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
@@ -500,7 +506,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    clear_pause_state "$win"
   fi
   wake "stale: $win"
 }

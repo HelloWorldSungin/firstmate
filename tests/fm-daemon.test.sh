@@ -390,6 +390,32 @@ test_housekeeping_paused_unpaused_cleared() {
   pass "housekeeping clears a paused marker once the crew is no longer declaring the pause"
 }
 
+# The away-mode half of the boundary the watcher pins end to end: the widened
+# recheck cadence is earned by ONE wait, so a crew that swaps its paused line for
+# a DIFFERENT one starts a fresh window at the base cadence instead of inheriting
+# the previous wait's. The two supervisors share pause_resurface_window, so they
+# must also share when the streak feeding it dies.
+test_housekeeping_replaced_wait_restarts_its_window() {
+  local dir state fakebin win pane key age
+  dir=$(make_supercase paused-wait-replaced)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-held-w16"; pane="$dir/pane.txt"
+  printf 'paused: awaiting the captain merge call\n' > "$state/held-w16.status"
+  printf 'idle prompt $\n' > "$pane"
+  fm_write_meta "$state/held-w16.meta" "window=$win" "worktree=$dir/wt" "kind=ship"
+  key=$(printf '%s' "held-w16" | tr ':/.' '___')
+  echo $(( $(date +%s) - 300 )) > "$state/.subsuper-paused-$key"
+  printf '2\npaused: awaiting the upstream tool release\n' > "$state/.subsuper-pausestreak-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
+  [ "$(pause_streak_count "$state/.subsuper-pausestreak-$key")" = 0 ] \
+    || fail "the replaced wait inherited the previous wait's re-surface streak"
+  age=$(( $(date +%s) - $(cat "$state/.subsuper-paused-$key" 2>/dev/null || echo 0) ))
+  [ "$age" -lt 60 ] || fail "the replaced wait did not restart its own re-surface window (age ${age}s)"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a wait that just changed was re-surfaced before its own first window"
+  pass "housekeeping restarts the re-surface window when one declared wait replaces another"
+}
+
 test_housekeeping_stale_marker_transitions_to_pause() {
   local dir state fakebin win pane key
   dir=$(make_supercase stale-to-paused)
@@ -1849,6 +1875,7 @@ test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
+test_housekeeping_replaced_wait_restarts_its_window
 test_housekeeping_stale_marker_transitions_to_pause
 test_housekeeping_pause_marker_transitions_to_clear
 test_housekeeping_herdr_persistent_stale_resolves_meta
