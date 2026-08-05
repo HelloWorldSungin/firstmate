@@ -1086,6 +1086,30 @@ test_model_verification_surfaces_in_snapshot_and_view() {
   out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$VIEW")
   assert_not_contains "$out" "## Model Routing" "a correctly routed fleet renders no model-routing section"
   pass "a correctly routed fleet renders no model-routing section"
+
+  # A dispatch that recorded no evidence store is no longer blocked from
+  # cleanup, but it still has no verifiable model provenance, so it stays
+  # visible here until the task is actually cleaned up.
+  home=$(make_home model-verify-unarmed)
+  fakebin=$(make_fakebin "$home")
+  cfg="$home/claude-config"
+  mkdir -p "$cfg/projects"
+  write_model_task "$home" "$cfg" pre-guard opus claude-sonnet-5
+  sed -i.bak '/^model_evidence_store=/d' "$home/state/pre-guard.meta"
+  rm -f "$home/state/pre-guard.meta.bak"
+
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "pre-guard")
+    | .model_verification.verdict == "unarmed"
+      and (.model_verification.actual | length) == 0
+  ' >/dev/null || fail "a dispatch with no recorded evidence store must report unarmed with no attributed model: $out"
+
+  out=$(PATH="$fakebin:$PATH" CLAUDE_CONFIG_DIR="$cfg" FM_HOME="$home" "$VIEW")
+  assert_contains "$out" "## Model Routing" \
+    "a dispatch with no verifiable provenance disappeared from the fleet view"
+  assert_contains "$out" "pre-guard" "the never-armed dispatch is named"
+  pass "a dispatch that was never armed for verification stays visible in the fleet view"
 }
 
 test_secondmate_home_summary_skips_model_enrichment() {

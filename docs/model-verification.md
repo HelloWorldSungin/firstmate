@@ -63,17 +63,25 @@ A verdict is never `match` unless a model was actually read and actually compare
 | `mismatch` | at least one attributed model does not | 3 |
 | `unverifiable` | the record cannot be checked at all | 4 |
 | `unstarted` | beneath an inspectable recorded evidence store, the runtime wrote no transcript parent at all or no session path entry for this worker, so it has no evidence of its own | 4 |
+| `unarmed` | the dispatch record names no `model_evidence_store=` at all, so verification was never armed for it and no verdict can ever exist | 4 |
 | `pending` | a session exists and the worker has not produced a model-attributed turn yet | 0 |
 | `unpinned` | `model=default`: no tier was pinned, so there is no record for the runtime to contradict | 0 |
 
-`unstarted`, `pending`, and `unpinned` are explicitly no-verdict outcomes, not passes.
+`unstarted`, `unarmed`, `pending`, and `unpinned` are explicitly no-verdict outcomes, not passes.
 Nothing may render them as verified.
 Only the exact record `model=default` is unpinned.
 A missing or empty `model=` is malformed dispatch metadata and therefore `unverifiable`.
 
-`unverifiable` covers a harness with no evidence adapter, a durable record with no persisted evidence-store identity, a recorded evidence store that is missing or inaccessible, a transcript parent or session path entry that exists as a non-directory or broken symbolic link or is inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
+`unverifiable` covers a harness with no evidence adapter, a recorded evidence store that is malformed, missing, or inaccessible, a transcript parent or session path entry that exists as a non-directory or broken symbolic link or is inaccessible, evidence that cannot be read, `jq` absent, a durable record that names no working directory, and evidence that cannot be attributed to this dispatch.
 `unstarted` is separated from it because the two ask different questions of a caller: evidence that exists or may exist behind an uninspectable path may belong to a worker that ran, while a genuinely absent transcript parent or per-worktree session path entry beneath an inspectable store has no turn of its own to read at all.
-Neither is a pass, and both exit 4.
+`unarmed` is separated from both, and is the one no-verdict outcome that is decided by the shape of the dispatch record rather than by anything on disk.
+`bin/fm-spawn.sh` writes `model_evidence_store=` for every Claude dispatch it launches and aborts the spawn outright when that capture fails, so the only records carrying this shape are dispatches that predate the guard and spawns that aborted before rendering a launch command.
+Neither can have produced evidence attributable to the task, so there is no verdict to fail, no evidence location to protect, and nothing any later event could ever supply.
+That is a gap in the record, not a safety signal, and the separation is drawn from what the record itself establishes rather than from a dispatch timestamp a future record could also carry.
+The distinction it draws is exact: **a record that names an evidence store keeps every one of its failure modes blocking, and a record that names none was never armed for any of them.**
+A store line that is present and unusable - malformed, missing on disk, or unreadable - is a damaged armed record, stays `unverifiable`, and keeps blocking.
+`unarmed` never authorizes reading an ambient store: an unknown evidence location is never resolved against whatever the environment happens to point at, because that would attribute another dispatch's transcripts to this task.
+None of these is a pass, and all exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
 Every unreadable path therefore ends in `unverifiable`, never in silence and never in `match`.
 
@@ -99,8 +107,12 @@ The verifier excludes exactly those identities, so a prior transcript and the ne
 `spawned_at=` remains as a compatibility anchor for records that have a persisted evidence-store identity but no identity watermark.
 A transcript whose modification time equals that legacy anchor is ambiguous and therefore `unverifiable`, never a match.
 A present but empty or nonnumeric `spawned_at=` is malformed and therefore `unverifiable`; only a genuinely absent field enters weaker legacy attribution, and only when the persisted store still binds the evidence location.
-A record with no persisted evidence-store identity has an unknown evidence location, so the verifier reads no ambient Claude store, reports `unverifiable`, and non-forced teardown refuses while preserving both the worktree and the task metadata that links the task to its evidence.
-This deliberately leaves a legacy record with no bound store untearable without `--force`: the record has not proved that the worker never started, and deleting its metadata would discard the only durable linkage from the task to any model evidence that may exist.
+A record with no persisted evidence-store identity has an unknown evidence location, so the verifier reads no ambient Claude store and reports `unarmed`.
+That record was never armed for this check, so the check itself does not block its cleanup: it names the gap plainly and hands the task to the ordinary teardown path, where the landed-work, uncommitted-change, completion-manifest, and endpoint-identity refusals all still apply unchanged.
+Nothing is discarded by that hand-off which the check was ever protecting: teardown removes the task's own volatile records and, once the landed-work proof passes, its worktree, and it never touches a transcript store.
+The metadata it removes carries no binding to any evidence, which is exactly why no verdict could ever be produced from it.
+This replaces an earlier rule under which such a record was untearable without `--force`.
+That rule made a historical gap permanent: nothing that happens after dispatch can retroactively record which model ran, so every affected task kept a live endpoint and a recurring staleness escalation forever, and the set only grew.
 
 A record with a persisted evidence-store identity but written before either time binding existed cannot be time-bound.
 In that case unanimous evidence from the recorded store is still attributed, with the weaker binding disclosed in the detail text, and disagreeing evidence is reported `unverifiable` rather than guessed at.
@@ -112,7 +124,9 @@ An unreadable or absent verifier answer becomes an explicit `unverifiable` verdi
 
 `bin/fm-teardown.sh` always runs terminal verification before cleanup, and always surfaces the verdict, so no worker's model provenance is discarded unseen.
 Only the refusal is conditional.
-Terminal verification returns a blocking status on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter and a pinned model.
+Terminal verification returns a blocking status on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter, a pinned model, and a recorded evidence store.
+A dispatch missing any of those three was never armed for the check and is never blocked by it; a dispatch that has all three keeps blocking on every one of its failure modes.
+Teardown states the never-armed case explicitly in its output, so an operator can tell it apart from a verification that ran and failed without reading source: the `unarmed` verdict line appears and no refusal follows it, while an armed dispatch whose verdict did not pass still prints its refusal.
 Non-forced teardown ordinarily turns that status into a refusal that preserves the worktree, transcript evidence, and task metadata for inspection, subject only to the narrow proven-no-turn path and its unknown-liveness retention rule below.
 Refusing whenever a verdict was absent would make non-forced cleanup impossible for every harness that can never produce one, which is a fleet-wide regression rather than the boundary this refusal exists to draw.
 
@@ -126,31 +140,39 @@ A recovery-grade `dead` or `missing` result permits the best-effort close and on
 A turn or worktree change observed by the recomputation refuses under the ordinary terminal-verdict and work-preservation rules.
 When liveness is unknown after the no-turn condition is proven, task cleanup publishes the durable outcome and removes the volatile task records, but retains the worktree and task temp root rather than resetting, returning, removing, or recycling them.
 The teardown output names that retained worktree and the unknown liveness reason, leaving any later committed or uncommitted write recoverable.
-An unknown evidence location is different: it cannot prove the no-turn condition at all, so non-forced teardown refuses outright and preserves both the worktree and task metadata for inspection.
+A recorded-but-unusable evidence location is different: it cannot prove the no-turn condition at all, so non-forced teardown refuses outright and preserves both the worktree and task metadata for inspection.
+An `unarmed` record never reaches this allowance at all, because the terminal check does not report it as blocking; it takes the ordinary cleanup path instead, which keeps every other refusal intact rather than substituting this narrower proof for them.
 The residual gap pending separately tracked confirmed-termination support is one possible unverified model attribution: a worker can begin its first turn after the final recomputation, and neither a best-effort endpoint close nor an authoritative `dead` or `missing` liveness verdict claims that writes have stopped or termination was confirmed.
 The absent verdict is stated plainly in the teardown output either way.
 Both halves are required for recycling and both are read from evidence rather than a flag: a worker whose recorded evidence shows that it ran without a usable verdict keeps refusing even on a spotless worktree, and any change visible to the worktree proof or unlanded commit keeps refusing even when no turn was ever taken.
 Forced teardown surfaces the verdict but retains its existing authority to discard, including for every recursively cleaned secondmate child.
 
-`bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch`, `unverifiable`, or `unstarted`.
+`bin/fm-fleet-view.sh` renders a `## Model Routing` section listing every task whose verdict is `mismatch`, `unverifiable`, `unstarted`, or `unarmed`.
 It deliberately omits `pending` because every healthy worker is briefly pending before its first model-attributed turn, and a routine false alarm would make the section less useful.
 The residual gap is explicit: a worker whose runtime opened a session it never took a turn in remains `pending` and is not raised in the human fleet view, while its no-verdict state remains visible in the structured snapshot's per-task model object and enters the non-forced teardown refusal path when that dispatch was verifiable in principle, subject to the no-turn boundary above.
 `unstarted` is listed rather than omitted, because a dispatched worker whose runtime wrote no session at all is not the routine transient state `pending` is.
+`unarmed` is listed for the same reason: its cleanup is no longer blocked, but the dispatch still has no verifiable model provenance, and it stays visible until the task is cleaned up.
 Deliberate `unpinned` dispatches are also omitted, and correctly routed work therefore looks exactly as it did before.
 
 ## Automated validation
 
 `tests/fm-model-verify.test.sh` owns the acceptance matrix and is registered in the `pure-contract-unit` family in `bin/fm-test-run.sh`.
 It covers family-alias and pinned-id comparison, the context-window suffix, a downgrade below the dispatched family, a mid-dispatch model change where one value still matches, enumeration and modification-time failures, the `pending`, `unstarted`, and exact-`default` `unpinned` outcomes, missing model metadata, malformed timestamps, canonical evidence-store binding across ambient configuration changes, symlink-plus-parent paths, and newline-bearing physical paths, the synthetic placeholder in both directions, exact transcript-identity binding including the equal-second boundary, legacy timestamp binding, secondmate evidence resolved from its own home, `--all` exiting on the worst verdict, and the structured output.
+It also owns the `unarmed` boundary at verifier level: a record naming no evidence store reports `unarmed` at the same exit severity as every other no-verdict outcome while not blocking terminal cleanup, never resolves against an ambient store or attributes its transcripts, and a recorded store that is unreadable or malformed stays `unverifiable` and keeps blocking.
 
-`tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section.
+`tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section and that an `unarmed` dispatch stays listed with no attributed model.
 It also proves that bounded secondmate-home summaries do not scan model transcripts.
 
 `tests/fm-spawn-dispatch-profile.test.sh` covers durable metadata publication before watermark capture, preservation when capture fails, explicit config forwarding over a backend daemon's ambient configuration, default config discovery without conflating it with the transcript store, and refusal before launch for a newline-bearing physical store.
 
 `tests/fm-teardown.test.sh` covers terminal refusal before cleanup on a mismatch, unchanged teardown on a match, forced surfacing without loss of discard authority, and recursive child surfacing.
-It also owns the never-started boundary: both no-turn shapes and a fresh inspectable store with no transcript parent tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, a missing persisted evidence-store identity, uncommitted changes including ignored files and any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced during the best-effort close before the final recomputation.
-The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, unknown liveness completes record cleanup with explicit disclosure while retaining the worktree and task temp root, and a missing persisted evidence-store identity refuses while preserving both worktree and task metadata.
+It also owns the never-started boundary: both no-turn shapes and a fresh inspectable store with no transcript parent tearing down on a worktree with nothing to lose while still reporting the absent verdict, and continued refusal for an uninspectable evidence store or transcript path, uncommitted changes including ignored files and any non-allowlisted file under `.claude/`, a surviving task branch even with detached clean HEAD, commits on a task branch, a worker that ran on unattributable evidence with a clean worktree, and a first mismatched turn produced during the best-effort close before the final recomputation.
+The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, and unknown liveness completes record cleanup with explicit disclosure while retaining the worktree and task temp root.
+
+It owns the never-armed boundary in the same file, because narrowing a safety refusal is only as good as the proof of what still refuses.
+A record naming no evidence store tears down when its work has landed and its worktree is spotless, without attributing or deleting a mismatching ambient transcript for that same worktree, and states the never-armed case in its output.
+On that exact record shape, teardown still refuses for uncommitted changes, for unlanded commits, for a completion manifest that cannot be published, and for an endpoint that does not validate.
+The paired case pins the boundary that must not move: the same landed, spotless fixture with a recorded evidence store and a failing verdict keeps refusing, as does a recorded store with a damaged dispatch anchor.
 
 Run:
 

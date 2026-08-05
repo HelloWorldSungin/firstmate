@@ -38,6 +38,10 @@
 #   unstarted    the runtime never wrote a session for this worker's working
 #                directory at all, so no turn of its own exists to read.
 #                NOT a pass - no verdict yet.                            exit 4
+#   unarmed      the dispatch record itself names no model-evidence store, so
+#                verification was never armed for it and no verdict can ever
+#                exist. NOT a pass, and distinct from `unverifiable`: there is
+#                no evidence location to fail to read.                   exit 4
 #   pending      an adapter exists, a session exists, and the worker has simply
 #                not produced a model-attributed turn yet. NOT a pass.
 #   unpinned     meta records `model=default`: firstmate pinned no tier, so
@@ -73,11 +77,12 @@ usage: fm-model-verify.sh <task-id> [--json]
 Verify the model a dispatched worker actually ran on against the model recorded
 for it in state/<id>.meta.
 
-Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted · 2 usage error.
+Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted/unarmed · 2 usage error.
 With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
-dispatch was verifiable in principle (a claude-harness task with a pinned model);
-otherwise it exits 0 so cleanup is not blocked for a harness that can never
-produce a verdict. The verdict line is printed either way.
+dispatch was verifiable in principle (a claude-harness task with a pinned model
+and a recorded model-evidence store); otherwise it exits 0 so cleanup is not
+blocked for a dispatch that can never produce a verdict. The verdict line is
+printed either way.
 With --all, the worst verdict across all tasks sets the exit code.
 EOF
 }
@@ -501,7 +506,8 @@ verify_one() {  # <id>
   # Past this point the dispatch was verifiable IN PRINCIPLE: a harness with an
   # evidence adapter, and a pinned model for the runtime to contradict. Only
   # such a task can be blocked from cleanup for failing to produce a verdict -
-  # see terminal_is_blocking below.
+  # see terminal_is_blocking below. The remaining requirement, a recorded
+  # evidence store, is checked below and withdraws this when it is absent.
   VERIFIABLE_IN_PRINCIPLE=1
 
   if [ "$anchor_present" -eq 1 ]; then
@@ -518,14 +524,33 @@ verify_one() {  # <id>
     case "$store" in
       /*) ;;
       *)
+        # A store line that IS present and unusable is a corrupted record, not
+        # an unarmed one: the dispatch was armed and its anchor was damaged, so
+        # it keeps the blocking `unverifiable` verdict.
         VERDICT=unverifiable
         DETAIL="dispatch model-evidence store is malformed"
         return
         ;;
     esac
   else
-    VERDICT=unverifiable
-    DETAIL="durable record names no model-evidence store for this dispatch"
+    # No store line at all means the dispatch was never armed for verification.
+    # bin/fm-spawn.sh writes this line for every claude dispatch it launches and
+    # aborts the spawn outright if the capture fails, so the only records with
+    # this shape are dispatches that predate the guard and spawns that aborted
+    # before rendering a launch command. Neither can have produced evidence
+    # attributable to this task, so there is no verdict to fail, no evidence to
+    # protect, and nothing any later event could ever supply. That is a gap in
+    # the record rather than a safety signal, and it is kept strictly separate
+    # from every recorded-store failure above and below, each of which still
+    # reports `unverifiable` and still blocks cleanup.
+    #
+    # The verifier still reads no ambient store here: an unknown evidence
+    # location is never resolved against whatever the current environment
+    # happens to point at, because that would attribute another dispatch's
+    # transcripts to this task.
+    VERDICT=unarmed
+    VERIFIABLE_IN_PRINCIPLE=0
+    DETAIL="dispatch names no model-evidence store, so verification was never armed for it and no verdict can ever exist"
     return
   fi
 
@@ -630,7 +655,11 @@ EOF
 exit_for_verdict() {  # <verdict>
   case "$1" in
     mismatch) printf '3' ;;
-    unverifiable|unstarted) printf '4' ;;
+    # `unarmed` reports at the same severity as the other no-verdict outcomes so
+    # reporting callers keep surfacing it. Only TERMINAL mode treats it
+    # differently, and it does so through VERIFIABLE_IN_PRINCIPLE rather than
+    # this reporting code.
+    unverifiable|unstarted|unarmed) printf '4' ;;
     *) printf '0' ;;
   esac
 }
@@ -705,10 +734,12 @@ if [ "$TERMINAL" -eq 1 ]; then
   # Terminal mode answers one question for cleanup: may this task's evidence be
   # discarded? A MISMATCH always blocks - that is the worker this whole helper
   # exists to catch. An absent verdict blocks only when the dispatch was
-  # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter and a
-  # pinned model. Blocking otherwise would make non-forced cleanup impossible
-  # for every harness that can never produce a verdict at all, which is a fleet
-  # -wide regression rather than the boundary this refusal was meant to draw.
+  # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter, a
+  # pinned model, and a recorded model-evidence store. Blocking otherwise would
+  # make non-forced cleanup impossible for every dispatch that can never produce
+  # a verdict at all, which is a fleet-wide regression rather than the boundary
+  # this refusal was meant to draw. That is the ONLY concession: a dispatch with
+  # a recorded store keeps blocking on every one of its failure modes.
   # The verdict is surfaced by the caller either way, so nothing goes unseen.
   case "$VERDICT" in
     match|unpinned) exit 0 ;;
