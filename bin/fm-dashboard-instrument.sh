@@ -119,9 +119,10 @@ esac
   || { echo "fm-dashboard-instrument: --port must be between 1 and 65535" >&2; exit 2; }
 
 [ -n "$URL" ] || URL="http://127.0.0.1:$PORT/events"
-# The dashboard is loopback-only in this slice, and an instrumentation target
-# that is not loopback would send fleet activity off this machine. Refuse it
-# here rather than discover it in a packet capture.
+# An instrumentation target that is not loopback would send fleet activity off
+# this machine. Refuse it here rather than discover it in a packet capture. A
+# dashboard exposed beyond loopback keeps a loopback listener for exactly this
+# reason, so producers never need a target that leaves the host.
 case "$URL" in
   http://127.0.0.1:*/*|http://127.0.0.1/*|http://\[::1\]:*/*|http://localhost:*/*|http://localhost/*) ;;
   *) echo "fm-dashboard-instrument: --url must address the loopback dashboard" >&2; exit 2 ;;

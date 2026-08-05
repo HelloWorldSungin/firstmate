@@ -108,8 +108,12 @@ The residual is accepted and stated rather than left implicit: an unprefixed hig
 
 `POST /events` is the one write the dashboard performs.
 
-The cheap refusals come first and cost no body read: ingestion switched off, no configured token, a missing or wrong bearer token, a malformed `X-Firstmate-Source: <task>/<harness>` header, and a throttled source are each answered before a single body byte is accepted.
+The cheap refusals come first and cost no body read: a cross-origin post, ingestion switched off, no configured token, a missing or wrong bearer token, a malformed `X-Firstmate-Source: <task>/<harness>` header, and a throttled source are each answered before a single body byte is accepted.
+
 Only then is a bounded body read - at most 16 KiB, at most 32 events, under a 2 second deadline - and only allowlisted fields of it are looked at.
+
+That bearer token is this endpoint's whole boundary, and it stays that way when the dashboard is [reachable from off the machine](dashboard-remote-access.md): the browser-facing routes go behind a password there, while `POST /events` keeps the token the local reporting hooks hold and no password they have never been given.
+A page cannot borrow a reader's session to post either, since a cross-origin request is refused outright and this server issues no CORS grant that would let a browser attach credentials to one in the first place.
 
 Rate limiting is a refilling token bucket per declared source plus a global one, which is why the source is declared in a header rather than discovered by parsing.
 An event whose `task_id` or `harness` disagrees with that header is refused, so it cannot spend another agent's budget.

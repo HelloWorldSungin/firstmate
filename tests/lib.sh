@@ -49,6 +49,11 @@ export FM_GATE_REFUSE_BYPASS=1
 #     ambient it resolves under the operator's real state root, keyed by a
 #     digest of the fixture home's path - so every run would leave another
 #     never-cleaned store directory behind there.
+#   FM_DASHBOARD_AUTH_FILE  the dashboard credentials. Left ambient, a developer
+#     who has set a dashboard password on this machine would have every fixture
+#     server in every suite start authenticated, and each one would fail on the
+#     401 its unauthenticated fixture requests get back - a failure with nothing
+#     to do with the case under test.
 #
 # The directory is deliberately never created, so instrumentation is off and no
 # store exists; a suite that wants either points the variable at its own
@@ -57,6 +62,7 @@ export FM_GATE_REFUSE_BYPASS=1
 FM_TEST_ISOLATION_ROOT="${TMPDIR:-/tmp}/fm-test-dashboard-isolation.$$"
 export FM_DASHBOARD_EVENTS_CONFIG="$FM_TEST_ISOLATION_ROOT/dashboard-events.json"
 export FM_DASHBOARD_EVENT_DB="$FM_TEST_ISOLATION_ROOT/events.db"
+export FM_DASHBOARD_AUTH_FILE="$FM_TEST_ISOLATION_ROOT/dashboard-auth.json"
 
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
