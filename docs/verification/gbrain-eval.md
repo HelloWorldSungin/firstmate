@@ -1,6 +1,6 @@
 # GBrain retrieval quality and the embedding-migration playbook
 
-Active empirical evidence for the evaluation and migration procedure in [`../gbrain.md`](../gbrain.md): the measured retrieval and synthesis quality of a real Firstmate home brain, and the recorded behaviour of the embedding migration, its rollback, its interruption, and the rebuild from durable source.
+Active empirical evidence for the evaluation and migration procedure in [`../gbrain.md`](../gbrain.md): the measured retrieval and synthesis quality of a real Firstmate home brain, the measured effect of the retrieval wrapper's own result ordering, and the recorded behaviour of the embedding migration, its rollback, its interruption, and the rebuild from durable source.
 
 Measured 2026-08-05 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
 Every migration, reinitialization, and rollback below ran on a disposable copy of the index under `/tmp`, never on the live one.
@@ -41,7 +41,8 @@ Run `2026-08-05T00:13:57Z` to `2026-08-05T00:20:24Z`, all 20 questions, one synt
 The thresholds were registered in the evaluation set before the first measurement and have not been moved since.
 
 Retrieval clears its thresholds with a wide margin: every question retrieved an expected source within the first five results, and only `q01` placed it below rank one, at rank two.
-Hosted synthesis misses its threshold, and the section below establishes why and by how much.
+That single demotion is not the brain's: it is produced by the retrieval wrapper's own re-sort, measured below.
+Hosted synthesis misses its threshold, and the next section establishes why and by how much.
 
 ## The missed threshold: hosted synthesis, not retrieval
 
@@ -78,6 +79,49 @@ The one that failed twice, `q01`, produced 8003 characters on its retry, at the 
 **The remaining gap is explicit**: at the shipped one-call setting the home answers 85 to 90 percent of synthesis questions against a 95 percent threshold, and the shortfall is entirely the hosted provider's output format on long answers.
 No embedding or reranker change addresses it, because retrieval already succeeds on every one of those questions - `q03` and `q17` both retrieved their expected source at rank one in the same run.
 A different embedding artifact was nevertheless measured, below, because the migration playbook had to be exercised end to end.
+
+## The retrieval wrapper re-sorts away GBrain's own ranking
+
+This is a measured result of the baseline run, not an aside: it is where the missing top-1 above went.
+
+`bin/fm-recall.sh` merges results with `sort_by(-(.score // 0))`, which discards the order GBrain returned even when only one corpus was read.
+GBrain does not rank by the score it prints: for `q01` it returns the correct document at position one with score 0.655 while a less relevant document carries 0.811.
+
+Measured over all twenty questions on the same index, comparing GBrain's own order against the same rows re-sorted by score:
+
+```sh
+jq -r '.questions[] | [.id, .question, (.expect | tojson)] | @tsv' docs/gbrain-eval-set.v1.json \
+| while IFS=$'\t' read -r id q expect; do
+    GBRAIN_HOME=$scratch/runtime OLLAMA_BASE_URL=$endpoint \
+      gbrain call search "$(jq -cn --arg q "$q" '{query: $q, limit: 8}')" \
+    | jq -r --argjson expect "$expect" '
+        def hit($s): any($expect[]; . as $e | ($s == $e) or ($s | endswith("/" + $e)));
+        def rank($rows): [$rows[] | .slug] as $s
+          | ([range(0; ($s | length)) | select(hit($s[.]))] | first);
+        "native=\(rank(.))  sorted=\(rank(sort_by(-(.score // 0))))"'
+  done | sort | uniq -c
+```
+
+```console
+     19 native=0  sorted=0
+      1 native=0  sorted=1
+```
+
+| Ordering | top-1 |
+| --- | --- |
+| GBrain's own order | 20 / 20 |
+| `bin/fm-recall.sh` score re-sort | 19 / 20 |
+
+The one question the re-sort loses is `q01`, "Why did the ArkNode NVMe controller wedge a third time, and what was actually writing to the drive?", whose correct source `task/arknode-nvme-wedge-third-occurrence` is demoted from rank one to rank two.
+That demotion is the entire difference between the 0.95 top-1 recorded above and 1.00, and it is not attributable to the embedding model, the reranker, or the corpus: the same index, read in GBrain's own order, answers every question at rank one.
+
+**The mechanism is established; the magnitude is not.**
+One question on one 64-document corpus at one point in time is enough to show that the wrapper overrides an ordering that was better here, and it sizes nothing.
+A single case cannot say whether the re-sort costs one question in twenty generally, more, or almost nothing on a different corpus, and this record should not be read as if it had measured that.
+
+The merge order is a deliberate cross-brain contract owned by [`../gbrain-scoping.md`](../gbrain-scoping.md), where a rank is meant to compare two brains' own scores rather than a Firstmate-computed relevance, and what it should become when two brains answer is a genuine design fork with several defensible answers.
+It was therefore not changed here, deliberately: an evaluation that alters the thing it measures leaves no baseline for a later run to be compared against, and repeatability across corpus, model, and reranker changes is what this harness exists for.
+The fix is tracked as [issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49), whose acceptance criteria require before-and-after numbers from this harness on a question set at least as large as the one that found it, so widening the set is part of that work rather than a precondition for it.
 
 ## An alternative embedding artifact changes nothing measurable here
 
@@ -229,37 +273,6 @@ The concurrently captured page was retrievable immediately afterwards and was em
 This was one observation of one interleaving, not a concurrency guarantee: the page was not part of the migration's own plan, and nothing serializes a capture that arrives during the schema rebuild itself.
 Quiesce capture for the migration window, as [`../gbrain.md`](../gbrain.md) requires.
 
-## Open finding: the retrieval wrapper re-sorts away GBrain's own ranking
-
-`bin/fm-recall.sh` merges results with `sort_by(-(.score // 0))`, which discards the order GBrain returned even when only one corpus was read.
-GBrain does not rank by the score it prints: for `q01` it returns the correct document at position one with score 0.655 while a less relevant document carries 0.811.
-
-Measured over all twenty questions on the same index, comparing GBrain's own order against the same rows re-sorted by score:
-
-```sh
-jq -r '.questions[] | [.id, .question, (.expect | tojson)] | @tsv' docs/gbrain-eval-set.v1.json \
-| while IFS=$'\t' read -r id q expect; do
-    GBRAIN_HOME=$scratch/runtime OLLAMA_BASE_URL=$endpoint \
-      gbrain call search "$(jq -cn --arg q "$q" '{query: $q, limit: 8}')" \
-    | jq -r --argjson expect "$expect" '
-        def hit($s): any($expect[]; . as $e | ($s == $e) or ($s | endswith("/" + $e)));
-        def rank($rows): [$rows[] | .slug] as $s
-          | ([range(0; ($s | length)) | select(hit($s[.]))] | first);
-        "native=\(rank(.))  sorted=\(rank(sort_by(-(.score // 0))))"'
-  done | sort | uniq -c
-```
-
-```console
-     19 native=0  sorted=0
-      1 native=0  sorted=1
-```
-
-GBrain's own order answers every question at rank one; the wrapper's re-sort demotes `q01` to rank two.
-That single re-sort is the entire difference between the 0.95 top-1 recorded above and 1.00, and it is not attributable to the embedding model, the reranker, or the corpus.
-
-The merge order is a deliberate cross-brain contract owned by [`../gbrain-scoping.md`](../gbrain-scoping.md) - a rank there is meant to compare two brains' own scores rather than a Firstmate-computed relevance - so changing it is a change to that contract and was not made here.
-The finding is recorded so the decision is taken with the measurement in hand: preserving each source's own order and interleaving only across sources would keep that contract's intent and recover the missing top-1.
-
 ## Refreshing this record
 
 ```sh
@@ -273,4 +286,5 @@ bin/fm-test-run.sh tests/fm-gbrain-eval.test.sh                   # the scoring 
 This record is the other half: it is the real corpus, and it has to be re-measured rather than re-reasoned.
 
 Re-run the evaluation after any corpus, GBrain, embedding, or reranker change, and re-take the migration timings whenever the corpus grows enough that the recorded durations stop being useful for planning.
-The two most perishable claims here are the reranker's null effect and the hosted synthesis failure rate: both are properties of a 64-document corpus and one provider's current output behaviour, and either could change without anything in this repository changing.
+Three claims here are the most perishable, and all three are properties of a 64-document corpus and one provider's current behaviour rather than of this repository: the reranker's null effect, the hosted synthesis failure rate, and the size of what the wrapper's re-sort costs.
+Any of them can change without anything here changing, and the third is expected to be re-measured on a wider question set under [issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49).
