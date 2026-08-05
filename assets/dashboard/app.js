@@ -1,6 +1,6 @@
 import { buildHealth, buildInbox, formatAge } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
-import { buildTimeline, clockLabel, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
 import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 
 const ui = {
@@ -94,6 +94,9 @@ const state = {
   activity: {
     envelope: null,
     filters: { task: "", harness: "", type: "" },
+    // The selected task's rows fetched from the store, kept out of the stream
+    // envelope so a broadcast cannot discard them. See mergeTaskBackfill.
+    backfill: { task: "", events: [] },
   },
 };
 
@@ -628,14 +631,17 @@ function syncActivitySelect(key, values) {
 
 function renderActivity() {
   const envelope = state.activity.envelope;
-  const view = buildTimeline(envelope, state.activity.filters);
+  // The stream and the selected task's backfill are two separate slots and are
+  // merged here rather than in either one, so a broadcast can replace the whole
+  // stream without discarding rows that were fetched from the store.
+  const merged = mergeTaskBackfill(envelope?.events, state.activity.backfill, state.activity.filters.task);
+  const view = buildTimeline({ events: merged }, state.activity.filters);
   for (const key of Object.keys(state.activity.filters)) syncActivitySelect(key, view.choices[key]);
   const active = Object.values(state.activity.filters).filter(Boolean).length;
   ui.activityFilterCount.textContent = active ? `(${active} active)` : "";
 
   const notices = [];
-  const streamCount = Array.isArray(envelope?.events) ? envelope.events.length : 0;
-  const notice = timelineNotice(envelope, streamCount, view.total);
+  const notice = timelineNotice(envelope, merged.length, view.total);
   if (notice.text) notices.push(historyWarning(notice.tone, "", notice.text));
   if (view.truncated) {
     notices.push(historyWarning("amber", "Showing the most recent events only",
@@ -1059,9 +1065,13 @@ async function fetchActivity() {
 
 // One agent's own timeline. The live stream carries a bounded fleet-wide tail,
 // so a task whose events have already scrolled out of it is fetched from the
-// store rather than shown as empty.
+// store rather than shown as empty. The fetched rows go into their own slot,
+// not into the stream: the stream is replaced whole by every broadcast, and one
+// fetch per selection is the point - a busy fleet must not turn each broadcast
+// into an HTTP request.
 async function showTaskTimeline(taskId) {
   state.activity.filters = { task: taskId, harness: "", type: "" };
+  state.activity.backfill = { task: taskId, events: [] };
   renderActivity();
   window.location.hash = "#activity";
   try {
@@ -1069,10 +1079,8 @@ async function showTaskTimeline(taskId) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (payload.schema !== "fm-dashboard-timeline.v1" || state.activity.filters.task !== taskId) return;
-    const known = new Set((state.activity.envelope?.events || []).map((event) => event?.event_id));
-    const merged = [...(state.activity.envelope?.events || [])];
-    for (const event of payload.events || []) if (!known.has(event?.event_id)) merged.push(event);
-    renderActivityEnvelope({ ...state.activity.envelope, events: merged });
+    state.activity.backfill = { task: taskId, events: payload.events || [] };
+    renderActivity();
   } catch {
     // The live stream is still authoritative for what has arrived since; a
     // failed backfill narrows the view rather than breaking it.

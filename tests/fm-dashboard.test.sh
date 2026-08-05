@@ -699,10 +699,17 @@ test_real_snapshot_makes_zero_fleet_writes() {
 }
 
 test_installer_writes_hardened_user_service() {
-  local case_root unit env_file out
+  local case_root unit env_file out pinned_db granted
   case_root="$TMP_ROOT/install"
   mkdir -p "$case_root/config" "$case_root/home"
-  out=$(HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+  # The store is overridden and the instrumentation config is left to be derived,
+  # so both halves of the pinning are exercised: the one the installer was told
+  # and the one it had to work out for itself. tests/lib.sh exports a neutral
+  # FM_DASHBOARD_EVENTS_CONFIG for every suite, which is dropped here for exactly
+  # that reason.
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
     --fm-home "$case_root/fleet" --port 18878 --poll 3 --timeout 4 --stale 9 --no-start)
   unit="$case_root/config/systemd/user/firstmate-dashboard.service"
   env_file="$case_root/config/firstmate/dashboard.env"
@@ -712,6 +719,22 @@ test_installer_writes_hardened_user_service() {
   assert_contains "$(cat "$unit")" 'ProtectHome=read-only' "service does not enforce a read-only home mount"
   assert_contains "$(cat "$unit")" 'WantedBy=default.target' "service is not boot-persistent"
   assert_contains "$out" "Service not started (--no-start)." "installer did not honor its no-start boundary"
+
+  # The unit's one writable path and the store the service will actually open
+  # must be the same directory. The service does not inherit this shell's
+  # environment - systemd's user manager imports neither FM_DASHBOARD_EVENT_DB
+  # nor XDG_STATE_HOME - so a path left to be re-derived at runtime lands
+  # outside the grant, under ProtectHome=read-only, and every event is refused
+  # for the life of the process.
+  pinned_db=$(sed -n 's/^FM_DASHBOARD_EVENT_DB="\(.*\)"$/\1/p' "$env_file")
+  granted=$(sed -n 's/^ReadWritePaths=-"\(.*\)"$/\1/p' "$unit")
+  [ "$pinned_db" = "$case_root/store/events.db" ] \
+    || fail "the installer did not pin the resolved event store into the environment: [$pinned_db]"
+  [ "$granted" = "${pinned_db%/*}" ] \
+    || fail "the unit grants [$granted] while the service would open a store in [${pinned_db%/*}]"
+  assert_contains "$(cat "$env_file")" \
+    "FM_DASHBOARD_EVENTS_CONFIG=\"$case_root/config/firstmate/dashboard-events.json\"" \
+    "the installer did not pin the shared instrumentation configuration"
   pass "installer configures a hardened boot-persistent user service without sudo"
 }
 

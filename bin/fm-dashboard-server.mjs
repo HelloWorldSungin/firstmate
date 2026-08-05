@@ -539,7 +539,13 @@ class EventsState {
     this.tokenMtimeMs = null;
     this.tail = [];
     this.lastEventAt = null;
-    this.counters = { accepted: 0, duplicate: 0, rejected: 0, throttled: 0, unauthorized: 0, oversized: 0 };
+    // Each counter names one outcome and only that outcome. An operator reads
+    // `oversized` to decide whether to raise the body cap, so a producer that
+    // is timing out or resetting its connection must not be reported there.
+    this.counters = {
+      accepted: 0, duplicate: 0, rejected: 0, throttled: 0, unauthorized: 0,
+      oversized: 0, timed_out: 0, read_failed: 0,
+    };
     this.rejections = {};
     this.sourceLimiter = new RateLimiter(EVENT_RATE.sourceCapacity, EVENT_RATE.sourceRefillPerSecond);
     this.globalLimiter = new RateLimiter(EVENT_RATE.globalCapacity, EVENT_RATE.globalRefillPerSecond, 1);
@@ -604,6 +610,13 @@ class EventsState {
   }
 
   envelope() {
+    // The tail is only populated by opening the store, so an envelope built
+    // before the first POST or timeline read would report an empty stream on a
+    // freshly started server whose store is full. The browser connects to the
+    // stream and fetches the timeline together, and the frame the stream pushes
+    // on connect wins, so an unopened store here shows the reader "no events
+    // have arrived yet" until the next accepted event.
+    this.openStore();
     return {
       schema: EVENTS_ENVELOPE_SCHEMA,
       status: {
@@ -959,42 +972,52 @@ function tokenMatches(presented, expected) {
 }
 
 // Read a bounded body under a deadline, refusing as soon as either bound is
-// crossed rather than after the fact. Returns null once the response has been
-// answered, so the caller stops.
+// crossed rather than after the fact. Resolves { body } when the whole body
+// arrived, or { failed } naming which bound was crossed once the response has
+// been answered - three different operational facts, so the caller can count
+// them as three rather than calling a timing-out producer an oversized one.
+const BODY_FAILURE_COUNTER = {
+  body_too_large: "oversized",
+  body_deadline: "timed_out",
+  read_failed: "read_failed",
+};
+
 function readBoundedBody(request, response) {
   return new Promise((resolve) => {
     let bytes = 0;
     const chunks = [];
     let settled = false;
-    const finish = (value, status, body) => {
+    const refuse = (status, failed, body) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       request.removeAllListeners("data");
       request.removeAllListeners("end");
       request.removeAllListeners("error");
-      if (status) {
-        sendJson(response, status, body);
-        request.destroy();
-        resolve(null);
-        return;
-      }
-      resolve(value);
+      sendJson(response, status, body);
+      request.destroy();
+      resolve({ failed });
+    };
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ body: value });
     };
     const timer = setTimeout(
-      () => finish(null, 408, { schema: INGEST_SCHEMA, accepted: 0, reason: "body_deadline" }),
+      () => refuse(408, "body_deadline", { schema: INGEST_SCHEMA, accepted: 0, reason: "body_deadline" }),
       EVENT_BODY_DEADLINE_MS,
     );
     request.on("data", (chunk) => {
       bytes += chunk.length;
       if (bytes > EVENT_BODY_MAX_BYTES) {
-        finish(null, 413, { schema: INGEST_SCHEMA, accepted: 0, reason: "body_too_large", max_bytes: EVENT_BODY_MAX_BYTES });
+        refuse(413, "body_too_large", { schema: INGEST_SCHEMA, accepted: 0, reason: "body_too_large", max_bytes: EVENT_BODY_MAX_BYTES });
         return;
       }
       chunks.push(chunk);
     });
-    request.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
-    request.on("error", () => finish(null, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "read_failed" }));
+    request.on("end", () => done(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", () => refuse(400, "read_failed", { schema: INGEST_SCHEMA, accepted: 0, reason: "read_failed" }));
   });
 }
 
@@ -1051,14 +1074,14 @@ async function serveIngest(request, response, events) {
     return;
   }
 
-  const raw = await readBoundedBody(request, response);
-  if (raw === null) {
-    events.counters.oversized += 1;
+  const read = await readBoundedBody(request, response);
+  if (read.failed) {
+    events.counters[BODY_FAILURE_COUNTER[read.failed]] += 1;
     return;
   }
   let document;
   try {
-    document = JSON.parse(raw);
+    document = JSON.parse(read.body);
   } catch {
     events.countRejection("malformed_json");
     sendJson(response, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "malformed_json" });

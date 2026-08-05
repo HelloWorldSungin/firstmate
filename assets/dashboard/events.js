@@ -100,6 +100,28 @@ export function sourceNotice(task, envelope) {
   return `${harness} has no event source, so this task reports no activity. Harnesses with an adapter: ${instrumented.join(", ") || "none"}.`;
 }
 
+// A selected task's backfilled rows, merged into the live stream at render
+// time.
+//
+// The stream is a bounded fleet-wide tail that every broadcast replaces
+// wholesale, so backfilled rows cannot be merged INTO it: the next accepted
+// event anywhere in the fleet would discard them, and a task whose events have
+// already scrolled out of the tail would flash onto the page and vanish. They
+// live in their own slot keyed by the task they were fetched for, and are
+// merged here instead - which also means a broadcast costs no HTTP request,
+// however busy the fleet is.
+export function mergeTaskBackfill(events, backfill, taskId) {
+  const rows = Array.isArray(events) ? [...events] : [];
+  if (!taskId || backfill?.task !== taskId || !Array.isArray(backfill.events)) return rows;
+  const known = new Set(rows.map((event) => event?.event_id));
+  for (const event of backfill.events) {
+    if (!event || known.has(event.event_id)) continue;
+    known.add(event.event_id);
+    rows.push(event);
+  }
+  return rows;
+}
+
 export function buildTimeline(envelope, filters = {}) {
   const events = Array.isArray(envelope?.events) ? envelope.events : [];
   const rows = [];

@@ -237,12 +237,56 @@ test_ingest_refuses_cheaply_before_reading_a_body() {
   code=$(post_status 'task-a/claude' "$(one_event other-task claude turn_ended mism1)")
   expect_code 422 "$code" "an event whose task disagrees with its declared source must be refused"
 
-  local blocked=0 attempt
-  for attempt in $(seq 1 200); do
-    code=$(post_status 'flood/claude' "$(one_event flood claude notification "flood$attempt")")
-    if [ "$code" = 429 ]; then blocked=1; break; fi
-  done
-  [ "$blocked" -eq 1 ] || fail "per-source rate limiting never engaged over 200 posts"
+  # The burst is driven from one process over keep-alive connections rather than
+  # from a loop of curl invocations. A bucket that refills at 20/s only drains
+  # if the drain sustains more than 20 requests a second, which a loop paying a
+  # process spawn per request does on an idle host and does not on a loaded CI
+  # box - so a serial loop tests the host's fork latency, not the limiter.
+  local flood
+  flood=$(TOKEN="$TOKEN" PORT="$TEST_PORT" node - <<'NODE'
+const http = require("node:http");
+const agent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+const port = Number(process.env.PORT);
+const token = process.env.TOKEN;
+const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+let sent = 0;
+let throttled = false;
+const post = (index) => new Promise((resolve) => {
+  const body = JSON.stringify({
+    schema: "fm-agent-event.v1",
+    events: [{
+      event_id: `flood${index}`, task_id: "flood", harness: "claude",
+      type: "notification", occurred_at: stamp,
+    }],
+  });
+  const request = http.request({
+    host: "127.0.0.1", port, path: "/events", method: "POST", agent,
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      Authorization: `Bearer ${token}`,
+      "X-Firstmate-Source": "flood/claude",
+    },
+  }, (response) => {
+    response.resume();
+    response.on("end", () => resolve(response.statusCode));
+  });
+  request.on("error", () => resolve(0));
+  request.end(body);
+});
+(async () => {
+  const worker = async () => {
+    while (!throttled && sent < 400) {
+      const status = await post(sent++);
+      if (status === 429) throttled = true;
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  process.stdout.write(throttled ? "throttled" : `never-throttled-over-${sent}-posts`);
+})();
+NODE
+  )
+  [ "$flood" = throttled ] || fail "per-source rate limiting never engaged: $flood"
 
   stop_server
   pass "unauthenticated, malformed, oversized, mismatched, and flooding posts are all refused"
@@ -272,6 +316,32 @@ test_replayed_and_duplicated_events_are_stored_once() {
   [ "$stored" = 1 ] || fail "the store should hold exactly one event after a duplicate and a replay, got $stored"
   stop_server
   pass "a duplicate is stored once and a replay from outside the window is refused by its own timestamp"
+}
+
+# A task id may legally begin with - or _ (bin/fm-pr-lib.sh's
+# fm_task_id_creation_valid), while an event id may not. Composing the one from
+# the other therefore used to fail the producer's own check for exactly those
+# tasks, and the emitter's fail-open exit meant every event they ever reported
+# was discarded silently and permanently while the timeline showed them quiet.
+test_every_legal_task_id_can_report() {
+  local root task attempt ids
+  root=$(make_case taskids)
+  start_server "$root"
+
+  for task in -fix-thing _scratch ordinary-task; do
+    FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+      "$EMIT" --task "$task" --harness claude --type turn_ended </dev/null
+  done
+  for attempt in $(seq 1 40); do
+    ids=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline" | jq -r '[.events[].task_id] | sort | join(",")')
+    [ "$ids" = "-fix-thing,_scratch,ordinary-task" ] && break
+    sleep 0.1
+  done
+  [ "$ids" = "-fix-thing,_scratch,ordinary-task" ] \
+    || fail "a legal task id was silently discarded at the producer: got [$ids]"
+
+  stop_server
+  pass "a task id that starts with a dash or an underscore reports like any other"
 }
 
 # --- redaction at both boundaries -------------------------------------------
@@ -362,6 +432,100 @@ NODE
 
   stop_server
   pass "seeded credentials and private paths reach neither the wire, the store, nor the page"
+}
+
+# A tool name is an identifier, not free-form content. The entropy rule that
+# `summary` needs would classify any MCP tool name of 24 or more characters
+# containing a digit as a credential and silently blank the one field a
+# tool_started row exists to show, so `tool` carries the named-prefix check
+# alone. All three halves of that split are pinned here: what must survive, what
+# must still be refused wherever it appears, and the entropy rule itself.
+test_a_tool_name_is_an_identifier_not_a_secret() {
+  local root bodies timeline rendered tools
+  local mcp_tool='mcp__github_v2__create_issue'
+  local camel_tool='SlackSendMessageToChannel'
+  root=$(make_case toolnames)
+
+  node - "$ROOT/bin/fm-event-store.mjs" <<'NODE' \
+    || fail "the two credential predicates are not split the way their fields need"
+const { pathToFileURL } = require("node:url");
+(async () => {
+  const store = await import(pathToFileURL(process.argv[2]).href);
+  // 24 characters mixing letters and digits, with no vendor prefix: exactly
+  // what only the entropy branch can catch.
+  const entropy = "Ab3xQ9zL2mNp7RtVu4Wy8Kd6";
+  const vendor = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  const checks = [
+    [store.hasCredentialPrefix(vendor) === true, "a named credential prefix must be recognized"],
+    [store.hasCredentialPrefix(entropy) === false, "the prefix predicate must not guess at unprefixed values"],
+    [store.looksLikeCredential(entropy) === true, "the entropy branch must still refuse an unprefixed token"],
+    [store.looksLikeCredential(vendor) === true, "the free-form predicate must still include the prefixes"],
+    [store.safeTool("mcp__github_v2__create_issue") === "mcp__github_v2__create_issue", "a long MCP tool name must survive"],
+    [store.safeTool("SlackSendMessageToChannel") === "SlackSendMessageToChannel", "a long camelCase tool name must survive"],
+    [store.safeTool(vendor) === null, "a credential-shaped tool value must be dropped"],
+    [store.safeSummary(`key ${vendor}`) === null, "a credential-shaped summary must be dropped"],
+    [store.safeSummary("listed the branch") === "listed the branch", "an ordinary summary must survive"],
+  ];
+  const failed = checks.filter(([ok]) => !ok).map(([, why]) => why);
+  if (failed.length) {
+    process.stderr.write(`${failed.join("; ")}\n`);
+    process.exit(1);
+  }
+})();
+NODE
+
+  # Producer boundary.
+  start_capture "$root"
+  FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+    "$INSTRUMENT" enable --port "$HELPER_PORT" >/dev/null
+  local tool
+  for tool in "$mcp_tool" "$camel_tool" "$SEED_TOKEN"; do
+    FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+      "$EMIT" --task task-t --harness claude --type tool_started --tool "$tool" </dev/null
+  done
+  wait_for_capture "$root/captured.jsonl" 3 || fail "the producer never reached the recorder"
+  bodies=$(jq -r '.body' "$root/captured.jsonl")
+  tools=$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0].tool] | map(select(. != null)) | sort | join(",")')
+  [ "$tools" = "$camel_tool,$mcp_tool" ] \
+    || fail "the producer did not report exactly the tool names it is allowed to: $tools"
+  stop_helpers
+
+  # Server boundary.
+  start_server "$root"
+  post_status 'task-t/claude' "$(one_event task-t claude tool_started mcp1 ",\"tool\":\"$mcp_tool\"")" >/dev/null
+  post_status 'task-t/claude' "$(one_event task-t claude tool_started camel1 ",\"tool\":\"$camel_tool\"")" >/dev/null
+  post_status 'task-t/claude' "$(one_event task-t claude tool_started vendor1 ",\"tool\":\"$SEED_TOKEN\"")" >/dev/null
+  post_status 'task-t/claude' "$(one_event task-t claude notification vendorsum1 ",\"summary\":\"key $SEED_KEY\"")" >/dev/null
+  timeline=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline?task=task-t")
+  [ "$(printf '%s' "$timeline" | jq '.events | length')" = 4 ] \
+    || fail "the tool-name events were not stored, so the boundary was not exercised: $timeline"
+  tools=$(printf '%s' "$timeline" | jq -r '[.events[].tool] | map(select(. != null)) | sort | join(",")')
+  [ "$tools" = "$camel_tool,$mcp_tool" ] \
+    || fail "the server did not keep exactly the tool names it is allowed to: $tools"
+  for seed in "$SEED_KEY" "$SEED_TOKEN"; do
+    case "$timeline" in
+      *"$seed"*) fail "a credential-shaped value survived the server boundary: $seed" ;;
+    esac
+  done
+
+  # Page boundary: the tool identity an acceptance criterion names has to reach
+  # the rendered row, not just the stored one.
+  rendered=$(TIMELINE="$timeline" node - "$ROOT/assets/dashboard/events.js" <<'NODE'
+const { pathToFileURL } = require("node:url");
+(async () => {
+  const events = await import(pathToFileURL(process.argv[2]).href);
+  const view = events.buildTimeline({ events: JSON.parse(process.env.TIMELINE).events });
+  process.stdout.write(view.rows.map((row) => row.tool).filter(Boolean).join(" | "));
+})();
+NODE
+  ) || fail "the timeline module could not render the stored rows"
+  case "$rendered" in
+    *"$mcp_tool"*) ;;
+    *) fail "the MCP tool name never reached the rendered row: $rendered" ;;
+  esac
+
+  stop_server
+  pass "a long MCP tool name survives both boundaries while credential shapes are still refused"
 }
 
 # --- the producer's fail-open guarantees ------------------------------------
@@ -522,6 +686,126 @@ test_instrumentation_cannot_change_what_a_guard_decides() {
 
   stop_helpers
   pass "the turn-end guard's exit status, output, and inputs are identical with and without instrumentation"
+}
+
+# The other guard the constraint names by file. It fires on the same Stop event
+# as the event hook - on a crew worktree of firstmate's own repo the tracked
+# .claude/settings.json auto-arm entry and the generated settings.local.json
+# event entry are merged into one Stop array - so "an entry that always exits 0
+# cannot change the aggregate" is proven here rather than argued, the same way
+# the turn-end guard's half is.
+FAKE_CLAUDE=
+
+# A primary the auto-arm will actually act in: plain checkout, AGENTS.md, bin/,
+# state/, in-flight work, not AFK, and its session lock claimed by the fake
+# harness that runs the hook. The arm wrapper is a fixture, so no real watcher
+# is ever launched.
+make_autoarm_primary() {  # <dir> <close-kind>
+  local dir=$1 kind=$2
+  mkdir -p "$dir/state" "$dir/bin"
+  git init -q "$dir"
+  git -C "$dir" commit -q --allow-empty -m init
+  : > "$dir/AGENTS.md"
+  cp "$ROOT/bin/fm-claude-stop-autoarm.sh" "$ROOT/bin/fm-primary-scope-lib.sh" \
+    "$ROOT/bin/fm-supervision-lib.sh" "$ROOT/bin/fm-wake-lib.sh" \
+    "$ROOT/bin/fm-session-lock-lib.sh" "$ROOT/bin/fm-lock.sh" "$dir/bin/"
+  chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
+  : > "$dir/state/task1.meta"
+  case "$kind" in
+    actionable)
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'stale: fixture-win actionable\n'
+exit 0
+SH
+      ;;
+    clean)
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+rm -f "$FM_HOME"/state/*.meta
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'signal: task.status done: fixture\n'
+exit 0
+SH
+      ;;
+    *) fail "unknown auto-arm close fixture: $kind" ;;
+  esac
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+  printf '%s\n' "$dir"
+}
+
+run_autoarm() {  # <dir> <stderr-file>
+  local dir=$1 err=$2
+  printf '%s\n' '{"session_id":"sess-autoarm","stop_hook_active":false}' \
+    | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+        printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' 2>"$err"
+}
+
+# The ledger the synchronous guard reads, plus the two markers that bound a
+# failure episode. The owner pid and the stamp are the only fields two separate
+# runs cannot share, so those two are normalized and everything else - the epoch
+# sequence, the recorded outcome, and the presence of each marker - has to match.
+autoarm_ledger() {  # <dir>
+  local marker
+  sed -e 's/owner_pid=[0-9]*/owner_pid=PID/' -e 's/updated_at=[0-9]*/updated_at=AT/' \
+    "$1/state/.claude-autoarm-epoch" 2>/dev/null || printf 'epoch absent\n'
+  for marker in .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed; do
+    if [ -e "$1/state/$marker" ]; then printf '%s present\n' "$marker"
+    else printf '%s absent\n' "$marker"; fi
+  done
+}
+
+test_instrumentation_cannot_change_what_the_stop_autoarm_decides() {
+  local root fakebin bare with bare_err with_err bare_code with_code emit_code kind
+  root=$(make_case autoarm)
+  fakebin=$(fm_fakebin "$root/fake")
+  ln -sf /bin/bash "$fakebin/claude"
+  FAKE_CLAUDE="$fakebin/claude"
+
+  # The same deliberately hung dashboard the turn-end case stands up: if the
+  # emitter could ever hold up or colour a Stop hook, this is what would show it.
+  start_black_hole "$root"
+  FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+    "$INSTRUMENT" enable --port "$HELPER_PORT" >/dev/null
+
+  # Both closes, so the comparison is not made on a single trivially-equal
+  # outcome: an actionable close exits 2 with a rewake banner, and a close whose
+  # need vanished mid-cycle exits 0 in silence.
+  for kind in actionable clean; do
+    bare=$(make_autoarm_primary "$root/autoarm-$kind-bare" "$kind")
+    with=$(make_autoarm_primary "$root/autoarm-$kind-with" "$kind")
+    bare_err="$root/autoarm-$kind-bare.err"
+    with_err="$root/autoarm-$kind-with.err"
+
+    run_autoarm "$bare" "$bare_err" >/dev/null; bare_code=$?
+
+    printf '{"session_id":"s1","hook_event_name":"Stop"}' \
+      | FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+        "$EMIT" --task autoarm-task --harness claude --type turn_ended --from-stdin
+    emit_code=$?
+    run_autoarm "$with" "$with_err" >/dev/null; with_code=$?
+
+    expect_code 0 "$emit_code" "the $kind-close emitter must exit 0 beside the auto-arm"
+    [ "$bare_code" = "$with_code" ] \
+      || fail "the $kind-close auto-arm exited $bare_code alone and $with_code beside the emitter"
+    diff <(sed "s|$bare|PRIMARY|g" "$bare_err") <(sed "s|$with|PRIMARY|g" "$with_err") >/dev/null \
+      || fail "the $kind-close auto-arm's stderr changed when the emitter ran beside it"
+    [ "$(autoarm_ledger "$bare")" = "$(autoarm_ledger "$with")" ] \
+      || fail "the $kind-close auto-arm's ledger changed when the emitter ran beside it"
+  done
+
+  # Both closes have to be the ones this test believes it exercised, or the
+  # comparison above is two identical no-ops.
+  grep -q 'outcome=rewake' "$root/autoarm-actionable-bare/state/.claude-autoarm-epoch" \
+    || fail "the actionable case did not reach the rewake close it exists to compare"
+  grep -q 'outcome=clean' "$root/autoarm-clean-bare/state/.claude-autoarm-epoch" \
+    || fail "the clean case did not reach the clean close it exists to compare"
+
+  stop_helpers
+  pass "the Claude Stop auto-arm's exit status, stderr, and epoch ledger are identical with and without instrumentation"
 }
 
 # --- the per-task wiring fm-spawn installs ----------------------------------
@@ -757,6 +1041,65 @@ test_live_events_reach_the_browser_over_sse() {
   pass "an accepted event is pushed to connected browsers on the existing stream"
 }
 
+# The live stream is a bounded fleet-wide tail that every broadcast replaces
+# whole. A task whose events have already scrolled out of it is backfilled from
+# the store, and those rows have to survive the next broadcast - otherwise the
+# per-task timeline appears and vanishes the moment any agent in the fleet
+# reports anything.
+test_a_selected_task_survives_a_broadcast_that_replaces_the_tail() {
+  local root batch index events counted rows
+  root=$(make_case backfill)
+  start_server "$root"
+
+  post_status 'task-old/claude' \
+    "$(one_event task-old claude turn_ended old1 ',"summary":"the first turn"')" >/dev/null
+
+  # Past the server's 200-row tail, in batches, so task-old is genuinely no
+  # longer in what a broadcast carries.
+  for batch in $(seq 1 7); do
+    events=''
+    for index in $(seq 1 32); do
+      [ -n "$events" ] && events="$events,"
+      events="$events{\"event_id\":\"noise$batch-$index\",\"task_id\":\"task-noise\",\"harness\":\"claude\",\"type\":\"notification\",\"occurred_at\":\"$(now_iso)\"}"
+    done
+    post_status 'task-noise/claude' "{\"schema\":\"fm-agent-event.v1\",\"events\":[$events]}" >/dev/null
+  done
+
+  counted=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline" | jq -r '[.events[].task_id] | unique | join(",")')
+  [ "$counted" = task-noise ] \
+    || fail "the fleet-wide tail did not scroll task-old out, so the case under test never happened: $counted"
+
+  rows=$(TAIL="$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline")" \
+    BACKFILL="$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline?task=task-old")" \
+    node - "$ROOT/assets/dashboard/events.js" <<'NODE'
+const { pathToFileURL } = require("node:url");
+(async () => {
+  const events = await import(pathToFileURL(process.argv[2]).href);
+  const filters = { task: "task-old", harness: "", type: "" };
+  const tail = JSON.parse(process.env.TAIL).events;
+  const backfill = { task: "task-old", events: JSON.parse(process.env.BACKFILL).events };
+  const render = (stream, slot) =>
+    events.buildTimeline({ events: events.mergeTaskBackfill(stream, slot, filters.task) }, filters).rows.length;
+  // What the stream alone can show, what selecting the task shows, and what is
+  // still shown after a broadcast hands over a whole new fleet-wide tail.
+  const streamOnly = render(tail, null);
+  const selected = render(tail, backfill);
+  const broadcast = [
+    { event_id: "broadcast1", task_id: "task-noise", harness: "claude", type: "notification", occurred_at: tail[0].occurred_at, occurred_epoch: tail[0].occurred_epoch },
+    ...tail.slice(0, 199),
+  ];
+  const afterBroadcast = render(broadcast, backfill);
+  process.stdout.write(`${streamOnly},${selected},${afterBroadcast}`);
+})();
+NODE
+  ) || fail "the timeline module could not merge a task backfill"
+  [ "$rows" = "0,1,1" ] \
+    || fail "the selected task's backfilled rows did not survive a broadcast (stream,selected,after): $rows"
+
+  stop_server
+  pass "a task backfilled from the store keeps its rows when a broadcast replaces the fleet-wide tail"
+}
+
 test_instrument_refuses_a_target_off_this_machine() {
   local out code
   out=$(FM_DASHBOARD_EVENTS_CONFIG="$TMP_ROOT/refuse/dashboard-events.json" \
@@ -771,12 +1114,16 @@ test_instrument_refuses_a_target_off_this_machine() {
 
 test_ingest_refuses_cheaply_before_reading_a_body
 test_replayed_and_duplicated_events_are_stored_once
+test_every_legal_task_id_can_report
 test_redaction_holds_at_producer_server_and_page
+test_a_tool_name_is_an_identifier_not_a_secret
 test_a_down_or_slow_dashboard_never_delays_or_fails_an_agent
 test_instrumentation_cannot_change_what_a_guard_decides
+test_instrumentation_cannot_change_what_the_stop_autoarm_decides
 test_harness_wiring_is_additive_and_reversible
 test_the_opencode_adapter_translates_its_own_events
 test_an_uninstrumented_harness_degrades_to_no_event_source
 test_retention_caps_bound_the_store
 test_live_events_reach_the_browser_over_sse
+test_a_selected_task_survives_a_broadcast_that_replaces_the_tail
 test_instrument_refuses_a_target_off_this_machine

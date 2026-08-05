@@ -43,6 +43,33 @@
 // credential shapes outright. docs/dashboard-events.md owns this contract and
 // tests/fm-dashboard-events.test.sh seeds credential- and path-shaped values at
 // both boundaries to keep it honest.
+//
+// WHICH PREDICATE GUARDS WHICH FIELD
+//
+// Redaction here is allowlist-based per FIELD: a field is admitted by its own
+// pattern, and that pattern is the redaction. Two credential predicates exist
+// because a field's own pattern can only constrain shape, not semantics:
+//
+//   hasCredentialPrefix  the named vendor shapes only. Cheap, exact, no false
+//                        positives, and therefore safe on every field.
+//   looksLikeCredential  hasCredentialPrefix OR a long mixed letter-and-digit
+//                        run. A content-scanning denylist, and it belongs only
+//                        on a value whose semantics an allowlist cannot pin
+//                        down. In this schema that is exactly one field.
+//
+// `summary` is the only free-form value, so it carries both. `tool` is an
+// identifier with known-safe semantics whose allowlist (TOOL_PATTERN) already
+// is its redaction, and it carries the prefix check alone: a tool name is one
+// unbroken run by construction, so the entropy rule would classify any MCP tool
+// name of 24 or more characters containing a digit as a credential and silently
+// blank the very field the timeline exists to show. There is deliberately no
+// run-length or entropy rule for tool names at all - a long camelCase name such
+// as SlackSendMessageToChannel must survive.
+//
+// Accepted residual: an unprefixed high-entropy token placed in `tool` by a
+// hostile authenticated POST would be stored. Reaching that needs the ingest
+// token, the value still has to satisfy TOOL_PATTERN, and closing it would take
+// exactly the run-length rule that breaks real tool names.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -104,9 +131,19 @@ const CREDENTIAL_PREFIXES = [
 ];
 const HIGH_ENTROPY_RUN = /[A-Za-z0-9+/=_-]{24,}/;
 
-export function looksLikeCredential(value) {
+// The named vendor shapes only. Safe on any field, because a value that carries
+// one of these prefixes is a credential whatever field it arrived in.
+export function hasCredentialPrefix(value) {
   if (typeof value !== "string" || !value) return false;
   for (const pattern of CREDENTIAL_PREFIXES) if (pattern.test(value)) return true;
+  return false;
+}
+
+// The prefixes plus the entropy rule. For free-form values only - see the
+// header on why an identifier field must not carry this.
+export function looksLikeCredential(value) {
+  if (hasCredentialPrefix(value)) return true;
+  if (typeof value !== "string" || !value) return false;
   const run = value.match(HIGH_ENTROPY_RUN);
   // Length alone is not evidence: a long identifier of only letters and
   // underscores is a tool name, while a long run mixing letters and digits is
@@ -136,7 +173,7 @@ export function safeSummary(value) {
 export function safeTool(value) {
   const token = matched(value, TOOL_PATTERN, 64);
   if (token === null) return null;
-  return looksLikeCredential(token) ? null : token;
+  return hasCredentialPrefix(token) ? null : token;
 }
 
 // One posted event becomes one stored row, or a named rejection. Nothing is
@@ -285,6 +322,13 @@ export class EventStore {
         "SELECT task_id FROM agent_event GROUP BY task_id HAVING COUNT(*) > ?",
       ),
     };
+    // A cached row count, so prune() can decide whether a cap can even be
+    // crossed without asking the table. It is exact while this process is the
+    // only writer, and a deletion by another process (the prune subcommand) can
+    // only leave it high - which costs an unnecessary scan and never a missed
+    // one. See prune() for what it buys.
+    this.rows = this.statements.total.get().rows;
+    this.storedSinceTaskScan = 0;
   }
 
   // One transaction per accepted batch: either every event in it is stored or
@@ -309,26 +353,51 @@ export class EventStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+    this.rows += stored;
+    this.storedSinceTaskScan += stored;
     return { stored, duplicate };
   }
 
   // Retention is enforced by the writer rather than by a separate sweeper, so a
   // store cannot grow without bound just because nobody ran a cleanup command.
-  prune(nowEpoch) {
+  //
+  // The age sweep is index-bounded and runs every time. The other two
+  // statements are not: the total-row cap and the per-task cap each scan the
+  // whole table, which at the default caps is on the order of 100k index
+  // entries per accepted batch, synchronously, in the process that also serves
+  // snapshots and SSE. They therefore run only when the cached row count says a
+  // cap can actually be crossed, and the per-task scan runs at most once per
+  // maxRowsPerTask/8 stored rows rather than once per accepted batch.
+  //
+  // What that costs is a bounded overshoot, and it is deliberately zero for the
+  // small caps a test pins: the store may hold up to maxRows/64 rows over the
+  // total cap, and a task up to maxRowsPerTask/8 rows over its own, both
+  // rounded down. `full` forces both scans for the prune subcommand, whose
+  // whole job is to apply the caps exactly, now.
+  prune(nowEpoch, { full = false } = {}) {
     let removed = 0;
     const cutoff = nowEpoch - this.limits.retentionHours * 3600;
+    const rowSlack = Math.floor(this.limits.maxRows / 64);
+    const taskScanEvery = Math.floor(this.limits.maxRowsPerTask / 8);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       removed += this.statements.pruneAge.run(cutoff).changes;
-      removed += this.statements.pruneRows.run(this.limits.maxRows).changes;
-      for (const row of this.statements.tasksOverCap.all(this.limits.maxRowsPerTask)) {
-        removed += this.statements.pruneTask.run(row.task_id, this.limits.maxRowsPerTask).changes;
+      if (full || this.rows - removed > this.limits.maxRows + rowSlack) {
+        removed += this.statements.pruneRows.run(this.limits.maxRows).changes;
+      }
+      if (full || (this.rows - removed > this.limits.maxRowsPerTask
+        && this.storedSinceTaskScan >= taskScanEvery)) {
+        this.storedSinceTaskScan = 0;
+        for (const row of this.statements.tasksOverCap.all(this.limits.maxRowsPerTask)) {
+          removed += this.statements.pruneTask.run(row.task_id, this.limits.maxRowsPerTask).changes;
+        }
       }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+    this.rows = Math.max(0, this.rows - removed);
     return removed;
   }
 
@@ -445,7 +514,7 @@ function runCli(argv) {
       return 0;
     }
     if (command === "prune") {
-      const removed = store.prune(Math.floor(Date.now() / 1000));
+      const removed = store.prune(Math.floor(Date.now() / 1000), { full: true });
       process.stdout.write(`${JSON.stringify({
         schema: `${STORE_KIND}-prune.v1`, store: storePath, removed, rows: store.stats().rows,
       })}\n`);

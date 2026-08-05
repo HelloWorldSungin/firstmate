@@ -117,12 +117,23 @@ esac
 # the point of it. The agent-event store is the one directory it may write, so
 # the unit names exactly that directory and nothing else. The server itself owns
 # the rule that derives the path, so this asks it rather than re-deriving it.
-EVENT_DIR=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$SERVER" --event-store-path 2>/dev/null || true)
-EVENT_DIR=${EVENT_DIR%/*}
-[ -n "$EVENT_DIR" ] || { echo "fm-dashboard-install: could not resolve the agent-event store path" >&2; exit 1; }
-case "$EVENT_DIR" in
+#
+# The answer is then PINNED into the environment file below, because the grant
+# and the resolution must not be able to disagree. This shell's environment is
+# not the systemd user manager's: it does not import FM_DASHBOARD_EVENT_DB or
+# XDG_STATE_HOME, so a service left to re-derive the path at runtime would
+# resolve a different directory than the one the unit granted, fail to open its
+# store under ProtectHome=read-only, and answer 503 for the life of the process.
+# The same reasoning pins the shared configuration file that carries the ingest
+# token, which is resolved from XDG_CONFIG_HOME here and would not be there.
+EVENT_DB=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$SERVER" --event-store-path 2>/dev/null || true)
+[ -n "$EVENT_DB" ] || { echo "fm-dashboard-install: could not resolve the agent-event store path" >&2; exit 1; }
+EVENT_DIR=${EVENT_DB%/*}
+EVENTS_CONFIG=${FM_DASHBOARD_EVENTS_CONFIG:-"$XDG_CONFIG_ROOT/firstmate/dashboard-events.json"}
+case "$EVENT_DB$EVENTS_CONFIG" in
   *$'\n'*|*%*) echo "fm-dashboard-install: event store paths containing newlines or % are unsupported" >&2; exit 2 ;;
 esac
+[ -n "$EVENT_DIR" ] || { echo "fm-dashboard-install: the agent-event store path has no directory" >&2; exit 1; }
 install -d -m 700 "$EVENT_DIR"
 
 systemd_quote() {
@@ -144,6 +155,8 @@ trap 'rm -f "$ENV_TMP" "$UNIT_TMP"' EXIT HUP INT TERM
   printf 'FM_DASHBOARD_HISTORY_LIMIT="%s"\n' "$(systemd_quote "$FM_DASHBOARD_HISTORY_LIMIT")"
   printf 'FM_DASHBOARD_HISTORY_POLL_SECONDS="%s"\n' "$(systemd_quote "$FM_DASHBOARD_HISTORY_POLL_SECONDS")"
   printf 'FM_DASHBOARD_REPORT_MAX_BYTES="%s"\n' "$(systemd_quote "$FM_DASHBOARD_REPORT_MAX_BYTES")"
+  printf 'FM_DASHBOARD_EVENT_DB="%s"\n' "$(systemd_quote "$EVENT_DB")"
+  printf 'FM_DASHBOARD_EVENTS_CONFIG="%s"\n' "$(systemd_quote "$EVENTS_CONFIG")"
 } > "$ENV_TMP"
 chmod 600 "$ENV_TMP"
 

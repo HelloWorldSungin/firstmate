@@ -47,6 +47,8 @@ ${XDG_STATE_HOME:-~/.local/state}/firstmate/dashboard-events/<home-slug>/events.
 
 The slug carries the home's basename for a human plus a digest of its absolute path for uniqueness, so a main home and a secondmate home never share a store.
 [`bin/fm-event-store.mjs`](../bin/fm-event-store.mjs) owns that rule; the installer asks it for the path rather than deriving its own, and grants the service write access to exactly that one directory.
+It then pins the answer into the generated `dashboard.env`, because the systemd user manager does not inherit the installing shell's environment: a service left to re-derive the path would resolve a directory the unit never granted, fail to open its store under `ProtectHome=read-only`, and refuse every event for the life of the process.
+The shared instrumentation configuration is pinned for the same reason.
 
 ```sh
 bin/fm-event-store.mjs path
@@ -56,6 +58,8 @@ bin/fm-event-store.mjs prune
 ```
 
 Retention is enforced by the writer after every accepted batch rather than by a separate sweep, so the store cannot grow unbounded because nobody ran a cleanup command: an age cap (7 days), a total row cap (50000), and a per-task row cap (2000), each overridable through the environment names in the server's header.
+The age cap is index-bounded and applied every time; the two row caps each need a full table scan, so they are applied only when a cached row count says a cap can be crossed and then only far enough apart to amortize the scan, which leaves the store at most 1/64 of the row cap and a task at most 1/8 of the per-task cap above their limits between scans.
+`bin/fm-event-store.mjs prune` always applies all three exactly.
 
 ## What may be in an event
 
@@ -80,6 +84,11 @@ The server then rebuilds the stored row from scratch under the same rules, so a 
 That leaves nothing for a prompt, a response, a tool argument, a file body, or an environment value to travel in.
 `summary` is the only field with any freedom, and it is bounded three ways: it may use only `A-Z a-z 0-9 space . , _ : # ( ) -`, so an absolute path, a URL, an assignment, an address, and base64 all fail on their own characters; no unbroken run may exceed 15 characters, because human summaries have spaces and tokens do not; and known credential shapes plus long mixed-case-and-digit runs are refused outright.
 A session id is an opaque identifier by nature and is stored as one, exactly as the usage store already stores session ids.
+
+The long-mixed-run rule belongs to `summary` alone, and that is a decision rather than an oversight.
+It is a content-scanning rule, which is what a free-form value needs and what a known field does not: a tool name is one unbroken run by construction, so applying it to `tool` would classify every MCP tool name of 24 or more characters containing a digit - `mcp__github_v2__create_issue` and its kind - as a credential and silently blank the field a `tool_started` row exists to show.
+`tool` is guarded by its own pattern plus the named credential prefixes, which have no false positives.
+The residual is accepted and stated rather than left implicit: an unprefixed high-entropy token placed in `tool` by a hostile *authenticated* post would be stored, and closing that would take exactly the run-length rule that breaks real tool names.
 
 `tests/fm-dashboard-events.test.sh` seeds a private path, a vendor key, and an opaque token at both boundaries and asserts none of them reaches the wire, the store file on disk, or the rendered page.
 
@@ -115,7 +124,7 @@ Both adapters go through `bin/fm-event-emit.sh` rather than posting for themselv
 **Wiring is additive, and it has to stay that way.**
 The event entries join the hook files firstmate already owns without altering, reordering, or displacing anything in them, and they are absent entirely when instrumentation is off.
 The emitter exits 0 on every path, writes nothing to either stream, and does its work in a detached child, so an entry that fires on the same event as the [turn-end guard](turnend-guard.md) or the Claude Stop auto-arm cannot change that guard's exit status, its output, its timing, or its ordering.
-The test suite runs the real guard in two identical homes - one with the emitter firing beside it against a deliberately hung dashboard - and requires an identical exit status, identical output, and an untouched state directory.
+The test suite runs each real guard in two identical homes - one with the emitter firing beside it against a deliberately hung dashboard - and requires an identical decision from both: for the turn-end guard an identical exit status, identical output, and an untouched state directory, and for the Claude Stop auto-arm an identical exit status, identical stderr, and an identical epoch ledger across both an actionable rewake close and a clean one.
 
 ## Why nothing is retried or spooled
 

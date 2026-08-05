@@ -109,10 +109,24 @@ matches() {  # <value> <extended-regex>
   printf '%s' "$1" | grep -Eq "$2"
 }
 
-# Known credential shapes plus one length-and-mixture rule for the ones with no
-# recognizable prefix, mirroring the server's own last line of defence.
+# The same two predicates the server keeps, split the same way and applied to
+# the same fields, so producer and server never disagree about what a value is.
+#
+#   has_credential_prefix  the named vendor shapes only. No false positives, so
+#                          it is safe on any field, and it is what guards `tool`.
+#   looks_like_credential  those prefixes plus a long mixed letter-and-digit
+#                          run. A content-scanning rule for a free-form value,
+#                          and `summary` is the only one this schema has.
+#
+# bin/fm-event-store.mjs's header owns why an identifier field must not carry
+# the entropy rule: a tool name is one unbroken run by construction, so it would
+# blank every MCP tool name of 24 or more characters containing a digit.
+has_credential_prefix() {  # <value>
+  printf '%s' "$1" | grep -Eq 'sk-[A-Za-z0-9]|gh[pousr]_[A-Za-z0-9]|github_pat_|glpat-|xox[abprs]-|A[KS]IA[A-Z0-9]|AIza[A-Za-z0-9]|-----BEGIN'
+}
+
 looks_like_credential() {  # <value>
-  printf '%s' "$1" | grep -Eq 'sk-[A-Za-z0-9]|gh[pousr]_[A-Za-z0-9]|github_pat_|glpat-|xox[abprs]-|A[KS]IA[A-Z0-9]|AIza[A-Za-z0-9]|-----BEGIN' && return 0
+  has_credential_prefix "$1" && return 0
   printf '%s' "$1" | grep -Eq '[A-Za-z0-9+/=_-]{24,}' || return 1
   printf '%s' "$1" | grep -oE '[A-Za-z0-9+/=_-]{24,}' | grep -q '[A-Za-z]' || return 1
   printf '%s' "$1" | grep -oE '[A-Za-z0-9+/=_-]{24,}' | grep -q '[0-9]'
@@ -191,7 +205,7 @@ exec 3<&0 || true
   fi
 
   matches "$TOOL" '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$' || TOOL=
-  { [ -n "$TOOL" ] && looks_like_credential "$TOOL"; } && TOOL=
+  { [ -n "$TOOL" ] && has_credential_prefix "$TOOL"; } && TOOL=
   matches "$SESSION" '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' || SESSION=
   if [ -n "$SUMMARY" ]; then
     SUMMARY=$(safe_summary "$SUMMARY") || SUMMARY=
@@ -200,7 +214,15 @@ exec 3<&0 || true
   OCCURRED=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || exit 0
   # Identity is the producer's, so a resend of the same event collapses in the
   # store instead of drawing a second entry on the timeline.
-  EVENT_ID="$TASK.$(date -u +%s 2>/dev/null).$$.${RANDOM:-0}${RANDOM:-0}"
+  #
+  # The constant prefix and the bounded task slice are what make this id valid
+  # for EVERY task id firstmate accepts. A task id may legally begin with - or _
+  # and may run to 128 characters (bin/fm-pr-lib.sh's fm_task_id_creation_valid),
+  # neither of which an event id may do - so composing one straight from the task
+  # id used to fail the check below and discard every event that task ever
+  # reported, silently and permanently. Identity is still per-event: the instant,
+  # the pid, and two random values follow the task slice.
+  EVENT_ID="e.${TASK:0:80}.$(date -u +%s 2>/dev/null).$$.${RANDOM:-0}${RANDOM:-0}"
   matches "$EVENT_ID" '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' || exit 0
 
   BODY="{\"schema\":\"fm-agent-event.v1\",\"events\":[{"

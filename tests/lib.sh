@@ -34,6 +34,17 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Isolate dashboard event instrumentation from the developer's own host.
+# bin/fm-spawn.sh and bin/fm-event-emit.sh gate that instrumentation on a
+# user-level configuration file, which is the one piece of user config a spawn
+# reads outside the FM_HOME overrides. Left ambient, a host that has run
+# bin/fm-dashboard-instrument.sh enable would make every spawn-driving suite
+# generate different per-task hook files than a clean host, and driving a
+# generated OpenCode plugin would post test task ids into the operator's live
+# store. This path is deliberately never created, so instrumentation is off; a
+# suite that wants it on points the variable at its own fixture.
+export FM_DASHBOARD_EVENTS_CONFIG="${TMPDIR:-/tmp}/fm-test-no-instrumentation.$$/dashboard-events.json"
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
