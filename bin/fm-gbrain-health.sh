@@ -14,9 +14,11 @@
 # Options:
 #   --json        emit one fm-gbrain-health.v1 object (default; kept for
 #                 symmetry with other fleet commands that accept it).
-#   --timeout     seconds allowed for the whole probe (default: 15, max: 60).
-#                 Every probe inside this command shares that budget, so a
-#                 single hang cannot burn the dashboard poll deadline.
+#   --timeout     seconds allowed for the whole read (default: 15, max: 60).
+#                 Every bounded step inside this command - each reachability
+#                 probe and the capture-status read - draws from that one
+#                 budget and never takes more than what is left of it, so no
+#                 combination of hangs can burn the dashboard poll deadline.
 #
 # Output schema fm-gbrain-health.v1:
 #   generated               observation time this command ran
@@ -29,10 +31,14 @@
 #                           absent means this home has not initialized a brain
 #                           and is a normal state.
 #   capture                 {enabled, archived, pending, failed, unreadable,
-#                           last_capture_at, last_error} from the durable outbox
-#                           and receipts, not from anything GBrain keeps. The
-#                           last_capture_at is the captured_at of the most
-#                           recent captured document, or null.
+#                           last_capture_at, last_error, detail} from the
+#                           durable outbox and receipts, not from anything
+#                           GBrain keeps. The last_capture_at is the captured_at
+#                           of the most recent captured document, or null.
+#                           enabled is false when no brain is configured OR when
+#                           this home's index has not been bootstrapped yet;
+#                           detail names which of the two it is, and the counts
+#                           are reported either way.
 #   retrieval               {state, brain_root, embedding, reranker, main_brain}
 #                           embedding/reranker/main_brain are each {state,
 #                           model, endpoint, detail} where state is one of
@@ -152,13 +158,35 @@ elif [ "$CONFIGURED" = false ]; then
   INDEX_DETAIL="no brain configured"
 fi
 
+# --- the shared probe budget ------------------------------------------------
+#
+# Every bounded step in this command draws from one budget: the four
+# reachability probes and the capture-status read. Each step takes the smaller
+# of its nominal slice and whatever is left before the deadline, so no
+# combination of hangs can push the command past --timeout and out of the
+# dashboard's poll window. Steps run sequentially; parallel curls with their
+# own forks would burn more of the budget than the probes themselves need.
+
+BUDGET_STEPS=5
+BUDGET_STARTED=$(date +%s)
+BUDGET_SLICE=$(( TIMEOUT / BUDGET_STEPS ))
+[ "$BUDGET_SLICE" -lt 1 ] && BUDGET_SLICE=1
+
+budget_slice() {  # -> echoes the seconds the next bounded step may spend
+  local remaining
+  remaining=$(( TIMEOUT - ( $(date +%s) - BUDGET_STARTED ) ))
+  [ "$remaining" -lt 1 ] && remaining=1
+  if [ "$BUDGET_SLICE" -le "$remaining" ]; then
+    printf '%s\n' "$BUDGET_SLICE"
+  else
+    printf '%s\n' "$remaining"
+  fi
+}
+
 # --- reachability probes ----------------------------------------------------
 #
-# Every probe is bounded by the same overall budget. A probe that hangs past
-# its slice is treated as degraded, with the slice it was given named in the
-# detail. Probes run sequentially because there is only one of them, and
-# parallel curls with their own forks would burn more of the budget than the
-# probes themselves need.
+# A probe that hangs past its slice is treated as degraded, with the endpoint
+# it could not reach named in the detail.
 
 probe_url() {  # <url> <slice-seconds> -> 0 reachable
   local url=$1 slice=$2
@@ -177,8 +205,7 @@ embedding_state() {  # <json> -> echoes row
     jq -cn --arg model "$model" --arg url "" '{state: "unconfigured", model: $model, endpoint: $url, detail: "no embedding endpoint configured"}'
     return 0
   fi
-  slice=$(( TIMEOUT / 4 ))
-  [ "$slice" -lt 1 ] && slice=1
+  slice=$(budget_slice)
   if probe_url "$url" "$slice"; then
     jq -cn --arg model "$model" --arg url "$url" '{state: "ok", model: $model, endpoint: $url, detail: $url}'
   else
@@ -198,8 +225,7 @@ reranker_state() {  # <json> -> echoes row
     jq -cn --arg model "$model" --arg url "" '{state: "unconfigured", model: $model, endpoint: $url, detail: "no reranker endpoint configured"}'
     return 0
   fi
-  slice=$(( TIMEOUT / 4 ))
-  [ "$slice" -lt 1 ] && slice=1
+  slice=$(budget_slice)
   if probe_url "$url" "$slice"; then
     jq -cn --arg model "$model" --arg url "$url" '{state: "ok", model: $model, endpoint: $url, detail: $url}'
   else
@@ -230,8 +256,7 @@ main_brain_state() {  # -> echoes row
   # Probe the main brain's MCP endpoint: a main brain that grants tokens but
   # does not answer search right now reports degraded, which is what search
   # would see.
-  slice=$(( TIMEOUT / 4 ))
-  [ "$slice" -lt 1 ] && slice=1
+  slice=$(budget_slice)
   if probe_url "$mcp" "$slice"; then
     state=ok
     detail="read-only token issued for $mcp"
@@ -261,8 +286,7 @@ synthesis_state() {  # -> echoes row
       '{state: "unconfigured", model: $model, endpoint: $url, detail: "no hosted synthesis provider configured"}'
     return 0
   fi
-  slice=$(( TIMEOUT / 4 ))
-  [ "$slice" -lt 1 ] && slice=1
+  slice=$(budget_slice)
   if probe_url "$url" "$slice"; then
     state=ok
     detail=$url
@@ -294,18 +318,24 @@ retrieval_overall() {  # <embedding> <reranker> <main_brain> -> echoes row
 # of the count semantics.
 
 capture_state() {  # -> echoes row
-  local out captured_at last_error pending failed archived unreadable enabled
+  local out captured_at last_error pending failed archived unreadable enabled detail
   if [ "$CONFIGURED" != true ]; then
     jq -cn '{enabled: false, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null, detail: "no brain configured"}'
     return 0
   fi
+  # Capture is off on a configured home whose index has not been bootstrapped.
+  # That is a normal state rather than a fault, and it is a different one from
+  # "no brain configured", so it says so itself instead of leaving a reader to
+  # guess from enabled: false alone.
   enabled=$([ "$INDEX_STATE" = "ok" ] && echo true || echo false)
-  if ! out=$(fm_run_timed "$TIMEOUT" "$SCRIPT_DIR/fm-gbrain-capture.sh" status --json 2>/dev/null); then
-    jq -cn --argjson e "$enabled" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status could not be read"}'
+  detail=
+  [ "$enabled" = true ] || detail="the local index at $FM_HOME is not bootstrapped, so captured documents wait in the durable outbox"
+  if ! out=$(fm_run_timed "$(budget_slice)" "$SCRIPT_DIR/fm-gbrain-capture.sh" status --json 2>/dev/null); then
+    jq -cn --argjson e "$enabled" --arg d "$detail" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status could not be read", detail: (if $d == "" then null else $d end)}'
     return 0
   fi
   if ! printf '%s' "$out" | jq -e '.schema == "fm-gbrain-capture-status.v1"' >/dev/null 2>&1; then
-    jq -cn --argjson e "$enabled" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status schema is unsupported"}'
+    jq -cn --argjson e "$enabled" --arg d "$detail" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status schema is unsupported", detail: (if $d == "" then null else $d end)}'
     return 0
   fi
   archived=$(printf '%s' "$out" | jq '.totals.archived // 0')
@@ -325,10 +355,11 @@ capture_state() {  # -> echoes row
     ] | first // null
   ')
   jq -cn --argjson e "$enabled" --argjson a "$archived" --argjson p "$pending" --argjson f "$failed" \
-    --argjson u "$unreadable" --arg at "$captured_at" --arg er "$last_error" \
+    --argjson u "$unreadable" --arg at "$captured_at" --arg er "$last_error" --arg d "$detail" \
     '{enabled: $e, archived: $a, pending: $p, failed: $f, unreadable: $u,
       last_capture_at: (if $at == "" or $at == "null" then null else $at end),
-      last_error: (if $er == "" or $er == "null" then null else $er end)}'
+      last_error: (if $er == "" or $er == "null" then null else $er end),
+      detail: (if $d == "" then null else $d end)}'
 }
 
 # --- maintenance state ------------------------------------------------------

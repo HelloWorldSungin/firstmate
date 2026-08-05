@@ -1197,6 +1197,11 @@ const gbraintronElements = {
   searchButton: ui.gbraintronSearchButton,
   results: ui.gbraintronResults,
   refreshNote: ui.gbraintronNote,
+  // The panel's cards are .health-card and .history-card nodes, both of which
+  // ANCHOR_SELECTOR names, and a health poll replaces every one of them twice.
+  // Hand the panel this module's anchor-aware replacer so a reader parked on a
+  // GBrain card is not silently dropped on the next push.
+  replaceChildren,
 };
 
 function paintGBraintronRefreshNote(envelope) {

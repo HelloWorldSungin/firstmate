@@ -189,15 +189,32 @@ const GBRAIN_SEARCH_MAX_LIMIT = 16;
 // server backpressure; the gate is what protects the GBrain child from
 // being asked to do unbounded work for one browser.
 const GBRAIN_SEARCH_MAX_INFLIGHT = 1;
-// Each search gets this many seconds. The dashboard's own polling deadline
-// is longer; a search that needs the full window is itself a sign the brain
-// is slow, and the operator will see degraded in the next health read.
+// Each search gets this many seconds in total. The dashboard's own polling
+// deadline is longer; a search that needs the full window is itself a sign the
+// brain is slow, and the operator will see degraded in the next health read.
 const GBRAIN_SEARCH_TIMEOUT_SECONDS = 12;
+// --scope all makes fm-recall read two corpora, and its --timeout bounds EACH
+// retrieval call rather than the run. Divide the total across the legs so the
+// wrapper always gets to print its per-source verdict - the only surface that
+// says WHICH corpus was unreachable, and the one that carries the local
+// results that did come back - instead of being killed mid-read.
+const GBRAIN_SEARCH_LEGS = 2;
+const GBRAIN_SEARCH_CALL_TIMEOUT_SECONDS = Math.max(1, Math.floor(GBRAIN_SEARCH_TIMEOUT_SECONDS / GBRAIN_SEARCH_LEGS));
+// bin/fm-gbrain-health.sh refuses a budget above this.
+const GBRAIN_HEALTH_MAX_TIMEOUT_SECONDS = 60;
+// Seconds held back between the health child's own probe budget and the
+// deadline this process kills it at. Without the margin a brain that
+// black-holes every probe is killed before it can print, and the panel reports
+// "unavailable" instead of the structured degraded snapshot.
+const GBRAIN_HEALTH_TIMEOUT_MARGIN_SECONDS = 2;
 // A search query whose trim is empty after collapse is refused; the brain
 // ranks no real document against nothing.
 const GBRAIN_QUERY_MIN_LENGTH = 2;
-// One source row's state, narrowed to the values the panel renders.
-const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "unknown"]);
+// One source row's state, narrowed to the values the panel renders. This is
+// bin/fm-recall.sh's closed vocabulary; same-as-local is the alias row a home
+// that owns the main brain emits for the main corpus, and dropping it here
+// would rewrite a healthy read into "unknown" and paint a false failure.
+const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "same-as-local", "unknown"]);
 
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -1114,8 +1131,16 @@ class GBrainState {
     }
   }
 
+  // The child's own probe budget has to land strictly inside the deadline this
+  // process kills it at, or the exact case the panel exists to render - a brain
+  // whose endpoints do not answer - produces no document at all.
+  healthBudgetSeconds() {
+    const outer = Math.floor(this.config.timeoutMs / 1000);
+    return Math.max(1, Math.min(GBRAIN_HEALTH_MAX_TIMEOUT_SECONDS, outer - GBRAIN_HEALTH_TIMEOUT_MARGIN_SECONDS));
+  }
+
   runHealth() {
-    return runJsonCommand(path.join(SCRIPT_DIR, "fm-gbrain-health.sh"), ["--json"], {
+    return runJsonCommand(path.join(SCRIPT_DIR, "fm-gbrain-health.sh"), ["--json", "--timeout", String(this.healthBudgetSeconds())], {
       timeoutMs: this.config.timeoutMs,
       env: { ...process.env, FM_HOME: this.config.fmHome },
       register: (child, previous) => {
@@ -1145,7 +1170,7 @@ class GBrainState {
       // search for; nothing more. --scope all lets a fleet with a shared main
       // brain read both corpora, and is refused by the wrapper when the main
       // brain is unconfigured.
-      const args = ["search", "--json", "--scope", "all", "--limit", String(n), "--timeout", String(GBRAIN_SEARCH_TIMEOUT_SECONDS), "--"];
+      const args = ["search", "--json", "--scope", "all", "--limit", String(n), "--timeout", String(GBRAIN_SEARCH_CALL_TIMEOUT_SECONDS), "--"];
       for (const word of trimmed.split(/\s+/)) args.push(word);
       const document = await runJsonCommand(GBRAIN_RECALL_COMMAND, args, {
         timeoutMs: (GBRAIN_SEARCH_TIMEOUT_SECONDS + 1) * 1000,
@@ -1999,11 +2024,19 @@ async function main() {
     }
     // The GBrain search endpoint is POST-only and is gated by the same
     // authorize() handler the GET routes use, so it stays behind the same
-    // authentication boundary as the rest of the browser-facing surface.
+    // authentication boundary as the rest of the browser-facing surface. On a
+    // loopback bind with no credentials file authorize() passes everything, so
+    // the same-origin refusal the ingest route uses is what keeps another page
+    // in the operator's browser from spending the brain's one search slot.
     if (pathname === "/api/gbrain/search") {
       if (request.method !== "POST") {
         response.writeHead(405, { Allow: "POST", "Content-Type": "text/plain; charset=utf-8" });
         response.end("method not allowed\n");
+        return;
+      }
+      if (!sameOriginRequest(request)) {
+        sendJson(response, 403, { schema: GBRAIN_SEARCH_SCHEMA, results: [], reason: "cross_origin" });
+        request.destroy();
         return;
       }
       if (!(await authorize(request, response, auth))) return;

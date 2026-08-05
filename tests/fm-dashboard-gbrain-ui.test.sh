@@ -24,7 +24,7 @@ node - "$MODULE" <<'NODE' || fail "dashboard gbraintron panel data behavior fail
 const { pathToFileURL } = require("node:url");
 
 (async () => {
-const { buildGBrainHealth, searchFailure, searchReasonLabel } = await import(pathToFileURL(process.argv[2]).href);
+const { buildGBrainHealth, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES } = await import(pathToFileURL(process.argv[2]).href);
 
 const failures = [];
 function check(label, condition, detail = "") {
@@ -237,6 +237,83 @@ const capturePendingEnvelope = {
   equal("capture value when pending > 0", captureCard.value, "pending");
 }
 
+// --- the last successful capture is readable as an age ---------------------
+//
+// The panel exists to surface the last successful capture, so the age has to
+// read as an age. The timestamp is computed from now rather than pinned, so
+// the assertion measures the arithmetic instead of the calendar.
+
+{
+  const capturedAt = new Date(Date.now() - 90_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const view = buildGBrainHealth({
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      configured: true,
+      version: "v0.42.69.0",
+      index: { state: "ok", detail: "ok" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: { enabled: true, archived: 81, pending: 0, failed: 0, unreadable: 0, last_capture_at: capturedAt, last_error: null },
+      maintenance: { state: "ready", detail: null },
+    },
+  });
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  check("last capture reads as an elapsed age", captureCard.detail.includes("last captured 1m ago"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("last capture is never rendered as unknown", !captureCard.detail.includes("last captured unknown"));
+}
+
+// --- capture on a configured home whose index is not bootstrapped ----------
+//
+// enabled: false on a CONFIGURED home means the local index has not been
+// bootstrapped, which docs/dashboard.md calls a normal state. It must not read
+// as "no brain configured" - the Brain card beside it says the opposite - and
+// the counts the health object carries must still be visible.
+
+{
+  const view = buildGBrainHealth({
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      configured: true,
+      version: "v0.42.69.0",
+      index: { state: "absent", detail: "this home has no initialized brain at /home/firstmate/data/gbrain/pglite" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: {
+        enabled: false, archived: 0, pending: 7, failed: 0, unreadable: 0, last_capture_at: null, last_error: null,
+        detail: "the local index at /home/firstmate is not bootstrapped, so captured documents wait in the durable outbox",
+      },
+      maintenance: { state: "ready", detail: null },
+    },
+  });
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("un-bootstrapped capture value is off", captureCard.value, "off");
+  check("un-bootstrapped capture keeps its counts", captureCard.detail.includes("7 pending"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("un-bootstrapped capture does not claim no brain", !captureCard.detail.includes("no brain configured"));
+  check("un-bootstrapped capture names the reason", captureCard.detail.includes("not bootstrapped"));
+}
+
+// --- source states that are not failures ------------------------------------
+//
+// same-as-local is what bin/fm-recall.sh emits for the main corpus on the home
+// that OWNS the main brain: the local row already carried that read. Treating
+// it as a corpus that did not answer paints a false failure banner on every
+// search that home runs.
+
+{
+  check("same-as-local is not a failed corpus", GBRAIN_HEALTHY_SOURCE_STATES.has("same-as-local"));
+  check("ok is not a failed corpus", GBRAIN_HEALTHY_SOURCE_STATES.has("ok"));
+  check("degraded is a failed corpus", !GBRAIN_HEALTHY_SOURCE_STATES.has("degraded"));
+  check("failed is a failed corpus", !GBRAIN_HEALTHY_SOURCE_STATES.has("failed"));
+}
+
 // --- the operator's upgrade announcement ------------------------------------
 
 const upgradingEnvelope = {
@@ -282,6 +359,7 @@ const reasonExpectations = [
   ["no_corpus_answered", "amber"],
   ["search_failed", "red"],
   ["unsupported_schema", "red"],
+  ["cross_origin", "red"],
 ];
 for (const [reason, expectedTone] of reasonExpectations) {
   const label = searchReasonLabel(reason);

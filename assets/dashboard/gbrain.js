@@ -23,6 +23,11 @@ export const GBRAIN_SEARCH_SCHEMA = "fm-gbrain-search.v1";
 
 const TONE_RANK = { green: 0, blue: 1, unknown: 2, amber: 3, red: 4 };
 
+// The source states that mean "this corpus answered, or had nothing to
+// answer with". Everything else is a corpus that did not answer and is worth
+// telling the operator about.
+export const GBRAIN_HEALTHY_SOURCE_STATES = new Set(["ok", "absent", "unconfigured", "same-as-local"]);
+
 function text(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -118,16 +123,23 @@ export function buildGBrainHealth(envelope) {
     tooltip: "The hosted synthesis provider. Degraded means search keeps working but 'think' is unavailable.",
   });
 
+  // This card is only reached on a configured home, so capture.enabled: false
+  // never means "no brain" here - it means the local index has not been
+  // bootstrapped yet and captured documents are still sitting in the durable
+  // outbox. The counts are what the operator needs in either case, so they are
+  // always rendered and the reason is appended rather than replacing them.
   const capture = h.capture || {};
   const captureState = capture.enabled === false ? "off" : capture.failed > 0 ? "degraded" : capture.pending > 0 ? "pending" : "ready";
-  const captureDetail = capture.enabled === false
-    ? text(capture.detail) || "no brain configured for capture"
-    : [
-        `${capture.archived ?? 0} archived`,
-        `${capture.pending ?? 0} pending`,
-        `${capture.failed ?? 0} failed`,
-        capture.last_capture_at ? `last captured ${ageLabel((Date.parse(capture.last_capture_at) - Date.now()) / 1000)}` : "no successful capture",
-      ].join(" / ") + (capture.last_error ? ` · last error: ${text(capture.last_error)}` : "");
+  const captureDetail = [
+    `${capture.archived ?? 0} archived`,
+    `${capture.pending ?? 0} pending`,
+    `${capture.failed ?? 0} failed`,
+    capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
+  ].join(" / ")
+    + (capture.enabled === false
+      ? ` · ${text(capture.detail) || "the local index is not bootstrapped, so captured documents wait in the outbox"}`
+      : "")
+    + (capture.last_error ? ` · last error: ${text(capture.last_error)}` : "");
   cards.push({
     label: "Capture",
     tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
@@ -165,9 +177,22 @@ function element(tag, className, textContent) {
   return node;
 }
 
+// Every card this panel paints matches app.js's ANCHOR_SELECTOR, so wholesale
+// replacement disconnects whatever the reader was anchored to. The host passes
+// its own anchor-aware replaceChildren in through elements; the fallback below
+// is what a DOM-only fixture with no host gets.
 function replaceChildren(parent, children) {
   if (!parent) return;
   parent.replaceChildren(...(children || []).filter(Boolean));
+}
+
+function replacerFor(elements) {
+  const host = elements?.replaceChildren;
+  if (typeof host !== "function") return replaceChildren;
+  return (parent, children) => {
+    if (!parent) return;
+    host(parent, (children || []).filter(Boolean));
+  };
 }
 
 function healthCardNode({ label, tone, value, detail, tooltip }) {
@@ -185,8 +210,9 @@ function healthCardNode({ label, tone, value, detail, tooltip }) {
 
 export function paintGBrainPanel(elements, envelope) {
   const { panel, strip, notice, searchForm, searchInput, searchButton, results, config } = elements;
+  const put = replacerFor(elements);
   const view = buildGBrainHealth(envelope);
-  replaceChildren(strip, view.cards.map(healthCardNode));
+  put(strip, view.cards.map(healthCardNode));
 
   const status = view.status || {};
   let noticeText = "";
@@ -211,9 +237,9 @@ export function paintGBrainPanel(elements, envelope) {
     const node = element("div", `notice ${noticeTone === "red" ? "error" : noticeTone === "amber" ? "" : "info"}`.trim());
     node.append(element("span", "dot", noticeTone === "red" ? "red" : noticeTone === "amber" ? "amber" : "blue"));
     node.append(element("div", "", noticeText));
-    replaceChildren(notice, [node]);
+    put(notice, [node]);
   } else {
-    replaceChildren(notice, []);
+    put(notice, []);
   }
 
   // Search affordances are gated on a configured home. The cap on input length
@@ -243,17 +269,18 @@ export function paintGBrainPanel(elements, envelope) {
     const prior = searchForm.parentNode?.querySelector(".gbraintron-hint");
     if (prior) prior.remove();
   }
-  if (results) replaceChildren(results, []);
+  if (results) put(results, []);
   return view;
 }
 
 export function paintGBrainSearchResults(elements, payload, error) {
   const { results } = elements;
+  const put = replacerFor(elements);
   if (error) {
     const node = element("div", `notice ${error.tone === "red" ? "error" : "amber"}`.trim());
     node.append(element("span", "dot", error.tone === "red" ? "red" : "amber"));
     node.append(element("div", "", error.text));
-    replaceChildren(results, [node]);
+    put(results, [node]);
     return;
   }
   if (!payload || !Array.isArray(payload.results) || payload.results.length === 0) {
@@ -262,11 +289,14 @@ export function paintGBrainSearchResults(elements, payload, error) {
     copy.append(element("strong", "", "No matches"));
     copy.append(element("p", "", `The brain answered the question "${text(payload?.query) || ""}" with nothing in the captured reports. Widen the search or capture more.`));
     empty.append(element("span", "dot", "green"), copy);
-    replaceChildren(results, [empty]);
+    put(results, [empty]);
     return;
   }
+  // same-as-local is not a failure: it is the alias row a home that owns the
+  // main brain emits for the main corpus, whose read the local row already
+  // carried.
   const sources = Array.isArray(payload.sources) ? payload.sources : [];
-  const failedSources = sources.filter((row) => row.state !== "ok" && row.state !== "absent" && row.state !== "unconfigured");
+  const failedSources = sources.filter((row) => !GBRAIN_HEALTHY_SOURCE_STATES.has(row.state));
   const cards = [];
   if (failedSources.length) {
     const header = element("div", `notice ${failedSources.some((s) => s.state === "failed") ? "error" : "amber"}`.trim());
@@ -292,7 +322,7 @@ export function paintGBrainSearchResults(elements, payload, error) {
     if (row.excerpt) card.append(element("div", "detail", row.excerpt));
     cards.push(card);
   }
-  replaceChildren(results, cards);
+  put(results, cards);
 }
 
 export function searchFailure(reason, detail) {
@@ -313,6 +343,7 @@ export function searchReasonLabel(reason) {
     case "missing_query": return "The search body did not include a query field.";
     case "invalid_limit": return "The search limit must be a positive integer.";
     case "search_busy": return "Another search is already running.";
+    case "cross_origin": return "The search was refused as a cross-origin request.";
     case "timed_out": return "The brain did not answer within the search timeout.";
     case "no_corpus_answered": return "No corpus answered the search.";
     case "search_failed":

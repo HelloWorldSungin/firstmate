@@ -500,12 +500,77 @@ EOF
   pass "GET to /api/gbrain/search is refused with 405"
 }
 
+# same-as-local is the row bin/fm-recall.sh emits for the main corpus on the
+# home that OWNS the main brain: the local leg already carried that read. It is
+# part of the wrapper's closed vocabulary, so it must survive the server's
+# narrowing rather than being rewritten to "unknown", which the page renders as
+# a corpus that did not answer.
+test_search_preserves_same_as_local_source_state() {
+  local home bindir
+  home=$(make_home search-owner)
+  bindir=$(make_bin_dir search-owner)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","home":"/home/firstmate","query":"dashboard","sources":[{"source":"local","state":"ok","brain":"/home/firstmate/data/gbrain","results":1},{"source":"main","state":"same-as-local","brain":"/home/firstmate/data/gbrain","results":0,"detail":"this home owns the main brain"}],"results":[{"source":"local","slug":"firstmate/task/one","title":"one","score":0.5,"stale":false,"excerpt":"body"}]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard","limit":3}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '
+    (.sources[] | select(.source == "main") | .state) == "same-as-local"
+  ' >/dev/null || fail "same-as-local was not preserved: $out"
+  pass "the main-brain owner's same-as-local source state survives the server"
+}
+
+# On a loopback bind with no credentials file authorize() passes everything, so
+# the same-origin refusal is what stops another page in the operator's browser
+# from spending the brain's one search slot.
+test_search_refuses_cross_origin_post() {
+  local home bindir
+  home=$(make_home search-cross-origin)
+  bindir=$(make_bin_dir search-cross-origin)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out code
+  out=$(curl -sS -m 4 -w '\n%{http_code}' -X POST \
+    -H 'Content-Type: text/plain' -H 'Origin: http://evil.example' \
+    -d '{"query":"dashboard"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search" || true)
+  code=$(printf '%s' "$out" | tail -1)
+  [ "$code" = "403" ] || fail "cross-origin search returned $code instead of 403: $out"
+  printf '%s' "$out" | head -1 | jq -e '.reason == "cross_origin"' >/dev/null \
+    || fail "cross-origin search did not report reason cross_origin: $out"
+  # A same-origin POST still goes through, so the guard did not close the door
+  # on the dashboard's own page.
+  code=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -H "Origin: http://127.0.0.1:$TEST_PORT" \
+    -d '{"query":"dashboard"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  [ "$code" = "200" ] || fail "same-origin search returned $code instead of 200"
+  pass "cross-origin search is refused while the dashboard's own origin is served"
+}
+
 test_health_panel_reports_configured_home
 test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
+test_search_preserves_same_as_local_source_state
 test_search_treats_hostile_query_as_text
 test_search_refuses_second_concurrent_search
 test_search_refuses_empty_or_short_query
 test_search_refuses_oversized_body
+test_search_refuses_cross_origin_post
 test_search_method_get_returns_405
