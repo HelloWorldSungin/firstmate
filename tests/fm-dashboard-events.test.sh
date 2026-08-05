@@ -1080,6 +1080,63 @@ test_the_first_stream_frame_reports_a_store_that_was_already_full() {
   pass "the first stream frame a browser receives is authoritative about a store that already has history"
 }
 
+# What `disable` promises, in both directions at once: stored events stay
+# browsable until they age out, and nothing new is collected. Both halves live
+# in one case on purpose - serving history without a token is one narrowing
+# away from also accepting writes without one, so the two assertions must not be
+# able to drift apart into separate tests.
+test_disabled_instrumentation_serves_history_and_still_refuses_writes() {
+  local root port log before after code timeline kept_token attempt
+  root=$(make_case disabled)
+  start_server "$root"
+  kept_token=$TOKEN
+  post_status 'task-kept/claude' \
+    "$(one_event task-kept claude turn_ended kept1 ',"summary":"stored before disable"')" >/dev/null
+  post_status 'task-kept/claude' \
+    "$(one_event task-kept claude session_end kept2 ',"summary":"also stored"')" >/dev/null
+  stop_server
+
+  # Exactly what bin/fm-dashboard-instrument.sh disable leaves behind.
+  rm -f "$root/config/dashboard-events.json" "$root/config/dashboard-events.curlrc"
+  before=$(FM_DASHBOARD_EVENT_DB="$root/events.db" node "$STORE" stats | jq '.rows')
+  [ "$before" = 2 ] || fail "the store does not hold the history this case is about: $before rows"
+
+  port=$(free_port)
+  FM_HOME="$root/home" FM_DASHBOARD_PORT="$port" FM_DASHBOARD_POLL_SECONDS=30 \
+    FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+    FM_DASHBOARD_EVENT_DB="$root/events.db" \
+    node "$root/bin/fm-dashboard-server.mjs" > "$root/disabled.log" 2>&1 &
+  SERVER_PID=$!
+  TEST_PORT=$port
+  for attempt in $(seq 1 40); do
+    curl -fsS -o /dev/null "http://127.0.0.1:$port/api/snapshot" 2>/dev/null && break
+    sleep 0.1
+  done
+
+  # (a) the history is still served, over BOTH surfaces the browser reads:
+  # the timeline it fetches and the frame the stream pushes on connect.
+  timeline=$(curl -fsS "http://127.0.0.1:$port/api/timeline?task=task-kept")
+  [ "$(printf '%s' "$timeline" | jq '.events | length')" = 2 ] \
+    || fail "disabling instrumentation hid the stored history from the timeline: $timeline"
+  [ "$(printf '%s' "$timeline" | jq -r '.status.ingestion')" = disabled \
+    ] || fail "a home with no configuration did not report collection as off: $timeline"
+  log="$root/disabled-sse.log"
+  curl --max-time 3 -Ns "http://127.0.0.1:$port/api/events" > "$log" 2>/dev/null
+  grep -q 'stored before disable' "$log" \
+    || fail "the stream's connect frame dropped the stored history: $(cat "$log")"
+
+  # (b) and nothing new can be collected, even by a producer still holding the
+  # token the home was configured with before it was disabled.
+  TOKEN=$kept_token
+  code=$(post_status 'task-kept/claude' "$(one_event task-kept claude notification afterdisable1)")
+  expect_code 503 "$code" "a disabled dashboard must refuse a post"
+  stop_server
+  after=$(FM_DASHBOARD_EVENT_DB="$root/events.db" node "$STORE" stats | jq '.rows')
+  [ "$after" = "$before" ] || fail "a disabled dashboard stored an event anyway: $before -> $after rows"
+
+  pass "disabling instrumentation keeps stored history browsable and still refuses every new event"
+}
+
 # The store is the dashboard's own file outside every operational home, so
 # opening it on a dashboard that can never write to it leaves a directory behind
 # in the operator's state root for nothing. Presence-gating is the whole design
@@ -1208,6 +1265,7 @@ test_an_uninstrumented_harness_degrades_to_no_event_source
 test_retention_caps_bound_the_store
 test_live_events_reach_the_browser_over_sse
 test_the_first_stream_frame_reports_a_store_that_was_already_full
+test_disabled_instrumentation_serves_history_and_still_refuses_writes
 test_an_unconfigured_dashboard_creates_no_store
 test_a_selected_task_survives_a_broadcast_that_replaces_the_tail
 test_instrument_refuses_a_target_off_this_machine

@@ -282,10 +282,20 @@ export function resolveStorePath(fmHome, env = process.env) {
 }
 
 export class EventStore {
-  constructor(dbPath, limits = {}) {
+  // Creating a store and opening one that already exists are two different
+  // acts, and only the first one implies that anything is being collected.
+  // fm-telemetry-store.mjs owns that distinction through its `create` option;
+  // openExisting below is how a read-only consumer asks for it, so a caller
+  // never has to re-derive "does this file exist" for itself.
+  static openExisting(dbPath, limits = {}) {
+    const db = openStore(dbPath, MIGRATIONS, { create: false });
+    return db ? new EventStore(dbPath, limits, db) : null;
+  }
+
+  constructor(dbPath, limits = {}, db = null) {
     this.path = dbPath;
     this.limits = { ...DEFAULT_LIMITS, ...limits };
-    this.db = openStore(dbPath, MIGRATIONS);
+    this.db = db ?? openStore(dbPath, MIGRATIONS);
     this.statements = {
       insert: this.db.prepare(
         `INSERT OR IGNORE INTO agent_event

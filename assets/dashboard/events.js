@@ -72,10 +72,27 @@ export function timelineNotice(envelope, streamCount, shownCount = streamCount) 
   if (status.ingestion === "unavailable") {
     return { tone: "red", text: `Activity cannot be recorded: ${status.reason || "the event store could not be opened"}.` };
   }
+  // Reporting can be off while stored history is still on the page: turning
+  // instrumentation off stops collection and leaves what was already collected
+  // readable until it ages out. The notice has to say which of those the reader
+  // is looking at, because "nothing reports here" above a list of events reads
+  // as a fault rather than as retained history.
   if (status.ingestion === "disabled") {
+    if (streamCount === 0) {
+      return {
+        tone: "grey",
+        text: "No agent reports activity in this home. Run bin/fm-dashboard-instrument.sh enable, then dispatch work; agents already running keep their current wiring.",
+      };
+    }
+    if (shownCount === 0) {
+      return {
+        tone: "grey",
+        text: "Reporting is off in this home, so nothing new is being collected. No events match these filters in the history that is still stored.",
+      };
+    }
     return {
       tone: "grey",
-      text: "No agent reports activity in this home. Run bin/fm-dashboard-instrument.sh enable, then dispatch work; agents already running keep their current wiring.",
+      text: "Reporting is off in this home, so nothing new is being collected. These are the events already stored, kept until they age out. Run bin/fm-dashboard-instrument.sh enable to resume reporting.",
     };
   }
   if (streamCount === 0) {

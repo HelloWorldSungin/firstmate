@@ -584,23 +584,32 @@ class EventsState {
     return this.token;
   }
 
-  // Presence-gated exactly like the rest of this feature: the store is the
-  // dashboard's own file OUTSIDE the operational home, so a dashboard with no
-  // configured ingest token must not materialize one. It could never write to
-  // it - every path into accept() goes through the same token check - and
-  // creating a store nothing can write means an uninstrumented dashboard
-  // leaves a directory behind in the operator's state root just for having
-  // been connected to.
+  // Presence-gated exactly like the rest of this feature, on CREATION. The
+  // store is the dashboard's own file OUTSIDE the operational home, so a
+  // dashboard with no configured ingest token must not materialize one: a
+  // store nothing can write would leave a directory in the operator's state
+  // root just for having been connected to, and a file that exists reads as
+  // collection whether or not anything was collected.
+  //
+  // Opening a store that is already there is the other act, and it is a read.
+  // Turning instrumentation off stops collection; it does not withdraw access
+  // to what was already collected, which is what bin/fm-dashboard-instrument.sh
+  // disable promises and what docs/dashboard-events.md records. Storing stays
+  // impossible without a token regardless: serveIngest refuses before it reads
+  // a body byte, and that is the only route into accept().
   openStore() {
     if (this.store || this.storeError || !this.enabled) return this.store;
-    if (!this.readToken()) return null;
     try {
-      this.store = new EventStore(this.config.eventStorePath, this.config.eventLimits);
-      this.tail = this.store.tail();
-      this.lastEventAt = this.tail[0]?.occurred_at ?? null;
+      this.store = this.readToken()
+        ? new EventStore(this.config.eventStorePath, this.config.eventLimits)
+        : EventStore.openExisting(this.config.eventStorePath, this.config.eventLimits);
     } catch (error) {
       this.storeError = errorRecord(error, "event_store_unavailable");
+      return this.store;
     }
+    if (!this.store) return null;
+    this.tail = this.store.tail();
+    this.lastEventAt = this.tail[0]?.occurred_at ?? null;
     return this.store;
   }
 
@@ -612,7 +621,10 @@ class EventsState {
       return { ingestion: "unavailable", reason: this.storeError.message, error: this.storeError };
     }
     if (!this.readToken()) {
-      return { ingestion: "disabled", reason: "no instrumentation is configured in this home, so no agent reports events" };
+      return {
+        ingestion: "disabled",
+        reason: "no instrumentation is configured in this home, so nothing new is collected; events already stored stay readable until they age out",
+      };
     }
     return { ingestion: "ready", reason: null };
   }
