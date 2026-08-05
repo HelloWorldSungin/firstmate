@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// fm-dashboard-server.mjs - read-only loopback dashboard over fm-fleet-snapshot.sh.
+// fm-dashboard-server.mjs - read-only dashboard over fm-fleet-snapshot.sh.
 //
 // Configuration is environment-only:
 //   FM_HOME                            operational home passed to every command
-//   FM_DASHBOARD_ADDRESS               127.0.0.1 or ::1 (default 127.0.0.1)
+//   FM_DASHBOARD_ADDRESS               numeric bind address (default 127.0.0.1).
+//                                      Anything other than 127.0.0.1 or ::1
+//                                      refuses to start without credentials.
+//   FM_DASHBOARD_AUTH                  auto|off - off is loopback-only (default auto)
+//   FM_DASHBOARD_AUTH_FILE             credentials file with the salted password
+//                                      digest (default
+//                                      $XDG_CONFIG_HOME/firstmate/dashboard-auth.json)
 //   FM_DASHBOARD_PORT                  listen port (default 8787)
 //   FM_DASHBOARD_POLL_SECONDS          periodic refresh interval (default 5)
 //   FM_DASHBOARD_TIMEOUT_SECONDS       hard snapshot deadline (default 15)
@@ -33,6 +39,11 @@
 // the semantic-search affordance are both presence-gated: history is fully
 // usable with neither present.
 //
+// Exposure is opt-in and it is never a bind-address change alone. Loopback stays
+// the default, and a bind beyond loopback refuses to start unless credentials
+// are configured, so the reachable-from-the-network case and the authenticated
+// case cannot come apart. docs/dashboard-remote-access.md owns the posture.
+//
 // POST /events is the ONE write this process performs, and it writes only to the
 // dashboard's own agent-event store outside the operational home
 // (bin/fm-event-store.mjs owns that path and why). Nothing under data/, state/,
@@ -45,8 +56,9 @@ import { spawn } from "node:child_process";
 import { readFileSync as fsReadFileSync, statSync as fsStatSync, watch } from "node:fs";
 import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -75,6 +87,29 @@ const REPORT_SCHEMA = "fm-dashboard-report.v1";
 const EVENTS_ENVELOPE_SCHEMA = "fm-dashboard-events.v1";
 const TIMELINE_SCHEMA = "fm-dashboard-timeline.v1";
 const INGEST_SCHEMA = "fm-dashboard-ingest.v1";
+const AUTH_SCHEMA = "fm-dashboard-auth.v1";
+const AUTH_DENIAL_SCHEMA = "fm-dashboard-access.v1";
+const AUTH_REALM = "Firstmate fleet dashboard";
+// The two addresses that reach nothing off this host. Every other bind is an
+// exposure, and exposure is gated on configured credentials.
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
+// Deriving a key is deliberately expensive, so a wrong password must cost the
+// client a budget before it costs this process a derivation. Absent credentials
+// spend nothing: an unauthenticated first request is how every browser starts.
+const AUTH_RATE = { clientCapacity: 8, clientRefillPerSecond: 0.1, globalCapacity: 60, globalRefillPerSecond: 1 };
+// A verified Authorization header is remembered by digest for this long, so one
+// page load does not pay for one key derivation per asset. Only successes are
+// remembered; a wrong password is re-derived and re-charged every time.
+const AUTH_SESSION_MS = 5 * 60 * 1000;
+const AUTH_SESSION_MAX = 64;
+// scrypt's memory cost is 128 * N * r bytes. These bounds keep a hand-edited
+// credentials file from turning every request into a memory exhaustion, and the
+// explicit ceiling keeps the default parameters clear of Node's own default.
+const AUTH_SCRYPT_MAXMEM = 256 * 1024 * 1024;
+const AUTH_SCRYPT_LIMITS = { maxN: 1 << 17, maxR: 16, maxP: 4, minKeylen: 16, maxKeylen: 64 };
+const AUTH_SCRYPT_COST = { N: 16_384, r: 8, p: 1, keylen: 32 };
+const AUTH_USERNAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const AUTH_PASSWORD_MIN = 12;
 // One posted document may carry a small batch, and nothing larger is read off
 // the socket. A producer that has more to say sends another request.
 const EVENT_BODY_MAX_BYTES = 16 * 1024;
@@ -126,8 +161,15 @@ function positiveNumber(name, fallback, { integer = false, maximum = Infinity } 
 
 function resolveConfig() {
   const address = process.env.FM_DASHBOARD_ADDRESS || "127.0.0.1";
-  if (!new Set(["127.0.0.1", "::1"]).has(address)) {
-    throw new Error("FM_DASHBOARD_ADDRESS must name a loopback address");
+  // Only numeric addresses. A hostname would make what this process is
+  // reachable on depend on name resolution, which is not a thing an operator
+  // can read off the configuration they wrote.
+  if (net.isIP(address) === 0) {
+    throw new Error("FM_DASHBOARD_ADDRESS must be a numeric IPv4 or IPv6 address");
+  }
+  const auth = process.env.FM_DASHBOARD_AUTH || "auto";
+  if (!new Set(["auto", "off"]).has(auth)) {
+    throw new Error("FM_DASHBOARD_AUTH must be auto or off");
   }
   const usage = process.env.FM_DASHBOARD_USAGE || "auto";
   if (!new Set(["auto", "off"]).has(usage)) {
@@ -143,6 +185,10 @@ function resolveConfig() {
     fmHome,
     dataDir: path.join(fmHome, "data"),
     address,
+    loopback: LOOPBACK_ADDRESSES.has(address),
+    auth,
+    authFile: process.env.FM_DASHBOARD_AUTH_FILE
+      || path.join(configRoot, "firstmate", "dashboard-auth.json"),
     usage,
     events,
     eventsConfigFile: process.env.FM_DASHBOARD_EVENTS_CONFIG
@@ -518,6 +564,216 @@ class RateLimiter {
     if (bucket.tokens < 1) return false;
     bucket.tokens -= 1;
     return true;
+  }
+}
+
+function scryptAsync(password, salt, keylen, cost) {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, keylen, { ...cost, maxmem: AUTH_SCRYPT_MAXMEM }, (error, derived) => {
+      if (error) reject(error);
+      else resolve(derived);
+    });
+  });
+}
+
+// Compare two strings without letting their length or contents steer the
+// timing. Hashing first is what makes unequal lengths comparable at all.
+function digestEquals(a, b) {
+  return timingSafeEqual(
+    createHash("sha256").update(String(a), "utf8").digest(),
+    createHash("sha256").update(String(b), "utf8").digest(),
+  );
+}
+
+// The credentials file holds a salted scrypt digest and never the password.
+// Every field is validated here, including the work factors, because a file
+// this process reads on every restart must not be able to turn a login into a
+// memory or CPU exhaustion.
+function parseCredential(parsed) {
+  if (!parsed || parsed.schema !== AUTH_SCHEMA) {
+    throw new Error(`expected ${AUTH_SCHEMA}`);
+  }
+  if (parsed.kdf !== "scrypt") throw new Error("the only supported key derivation is scrypt");
+  const username = typeof parsed.username === "string" ? parsed.username : "";
+  if (!AUTH_USERNAME_PATTERN.test(username)) throw new Error("the stored username is not a supported value");
+  const salt = Buffer.from(typeof parsed.salt === "string" ? parsed.salt : "", "base64");
+  const hash = Buffer.from(typeof parsed.hash === "string" ? parsed.hash : "", "base64");
+  if (salt.length < 16) throw new Error("the stored salt is too short");
+  const cost = parsed.cost || {};
+  const N = Number(cost.N);
+  const r = Number(cost.r);
+  const p = Number(cost.p);
+  const keylen = Number(cost.keylen);
+  if (!Number.isInteger(N) || N < 2 || N > AUTH_SCRYPT_LIMITS.maxN || (N & (N - 1)) !== 0) {
+    throw new Error("the stored scrypt N is not a supported power of two");
+  }
+  if (!Number.isInteger(r) || r < 1 || r > AUTH_SCRYPT_LIMITS.maxR) throw new Error("the stored scrypt r is out of range");
+  if (!Number.isInteger(p) || p < 1 || p > AUTH_SCRYPT_LIMITS.maxP) throw new Error("the stored scrypt p is out of range");
+  if (!Number.isInteger(keylen) || keylen < AUTH_SCRYPT_LIMITS.minKeylen || keylen > AUTH_SCRYPT_LIMITS.maxKeylen) {
+    throw new Error("the stored key length is out of range");
+  }
+  if (hash.length !== keylen) throw new Error("the stored digest does not match the stored key length");
+  return { username, salt, hash, cost: { N, r, p }, keylen };
+}
+
+function parseBasicCredentials(header) {
+  if (typeof header !== "string" || !/^Basic\s/i.test(header)) return null;
+  const encoded = header.slice(header.indexOf(" ") + 1).trim();
+  if (!encoded) return null;
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const separator = decoded.indexOf(":");
+  if (separator < 0) return null;
+  return { username: decoded.slice(0, separator), password: decoded.slice(separator + 1), header };
+}
+
+// Dashboard authentication, presence-gated on a private credentials file the
+// operator creates with bin/fm-dashboard-install.sh --set-password.
+//
+// Two rules make exposure safe to reason about. A bind beyond loopback refuses
+// to start without a usable credential, so reachability and authentication
+// cannot be configured apart. And once a credential has been required or read,
+// enforcement is sticky: a credentials file that later disappears, is corrupted,
+// or loses its private mode answers 503 rather than reverting to an open
+// dashboard, because the operator's last expressed intent was authentication.
+class AuthState {
+  constructor(config) {
+    this.config = config;
+    this.credential = null;
+    this.error = null;
+    this.enforced = false;
+    this.checkedAtMs = 0;
+    this.signature = null;
+    this.sessions = new Map();
+    this.clientLimiter = new RateLimiter(AUTH_RATE.clientCapacity, AUTH_RATE.clientRefillPerSecond, 1024);
+    this.globalLimiter = new RateLimiter(AUTH_RATE.globalCapacity, AUTH_RATE.globalRefillPerSecond, 1);
+  }
+
+  // Re-read when the file changes, so rotating a password does not need a
+  // restart, at the cost of one stat per second at most.
+  read({ force = false } = {}) {
+    if (this.config.auth === "off") return null;
+    const now = Date.now();
+    if (!force && now - this.checkedAtMs < 1000) return this.credential;
+    this.checkedAtMs = now;
+    let info;
+    try {
+      info = fsStatSync(this.config.authFile);
+    } catch {
+      this.signature = null;
+      this.credential = null;
+      this.error = null;
+      this.sessions.clear();
+      return null;
+    }
+    // The signature carries the mode and the inode as well as the modification
+    // time, because chmod and a replacing rename both change what this file
+    // means without necessarily changing when it was last written.
+    const signature = `${info.mtimeMs}:${info.ctimeMs}:${info.size}:${info.mode}:${info.ino}`;
+    if (this.signature === signature && (this.credential || this.error)) return this.credential;
+    this.signature = signature;
+    this.credential = null;
+    this.error = null;
+    this.sessions.clear();
+    // A credentials file other users can read is not a credential. Refusing is
+    // the only answer that does not quietly accept a weaker secret than the
+    // operator was told they had.
+    if ((info.mode & 0o077) !== 0) {
+      this.error = `the dashboard credentials file must not be readable by other users: ${this.config.authFile}`;
+      return null;
+    }
+    try {
+      this.credential = parseCredential(JSON.parse(fsReadFileSync(this.config.authFile, "utf8")));
+      this.enforced = true;
+    } catch (error) {
+      this.error = `the dashboard credentials file could not be used (${safeText(error.message)})`;
+    }
+    return this.credential;
+  }
+
+  sessionKey(header) {
+    return createHash("sha256").update(header, "utf8").digest("base64");
+  }
+
+  remember(header) {
+    if (this.sessions.size >= AUTH_SESSION_MAX) {
+      this.sessions.delete(this.sessions.keys().next().value);
+    }
+    this.sessions.set(this.sessionKey(header), Date.now() + AUTH_SESSION_MS);
+  }
+
+  recalls(header) {
+    const key = this.sessionKey(header);
+    const expiry = this.sessions.get(key);
+    if (expiry === undefined) return false;
+    if (expiry <= Date.now()) {
+      this.sessions.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  async verify(presented) {
+    const credential = this.credential;
+    if (!credential) return false;
+    const derived = await scryptAsync(presented.password, credential.salt, credential.keylen, credential.cost);
+    // Both comparisons always run, so a wrong username and a wrong password are
+    // not distinguishable by how long the answer took.
+    const sameUser = digestEquals(presented.username, credential.username);
+    const sameSecret = derived.length === credential.hash.length && timingSafeEqual(derived, credential.hash);
+    return sameUser && sameSecret;
+  }
+}
+
+// The one authentication gate, in front of every browser-facing route.
+//
+// POST /events is deliberately not behind it: that endpoint carries its own
+// bearer token, and the local reporting hooks that post to it know that token
+// and nothing else.
+async function authorize(request, response, auth) {
+  const credential = auth.read();
+  if (!credential) {
+    if (!auth.enforced) return true;
+    sendJson(response, 503, {
+      schema: AUTH_DENIAL_SCHEMA,
+      reason: "credentials_unavailable",
+      detail: safeText(auth.error) || "the dashboard credentials file is no longer usable",
+    });
+    return false;
+  }
+  const presented = parseBasicCredentials(request.headers.authorization);
+  if (!presented) {
+    response.setHeader("WWW-Authenticate", `Basic realm="${AUTH_REALM}", charset="UTF-8"`);
+    sendJson(response, 401, { schema: AUTH_DENIAL_SCHEMA, reason: "authentication_required" });
+    return false;
+  }
+  if (auth.recalls(presented.header)) return true;
+  const client = request.socket?.remoteAddress || "unknown";
+  if (!auth.globalLimiter.allow("global") || !auth.clientLimiter.allow(client)) {
+    response.setHeader("Retry-After", "30");
+    sendJson(response, 429, { schema: AUTH_DENIAL_SCHEMA, reason: "too_many_attempts" });
+    return false;
+  }
+  if (await auth.verify(presented)) {
+    auth.remember(presented.header);
+    return true;
+  }
+  response.setHeader("WWW-Authenticate", `Basic realm="${AUTH_REALM}", charset="UTF-8"`);
+  sendJson(response, 401, { schema: AUTH_DENIAL_SCHEMA, reason: "invalid_credentials" });
+  return false;
+}
+
+// A browser will not attach an Authorization header to a cross-site request
+// without a CORS grant this server never issues, so the ingest endpoint has no
+// ambient-credential path to abuse. This refuses the cross-origin attempt
+// anyway, before any body is read, so the boundary does not rest on that
+// reasoning staying true. A producer that is not a browser sends no Origin.
+function sameOriginRequest(request) {
+  const origin = request.headers.origin;
+  if (typeof origin !== "string" || origin === "" || origin === "null") return true;
+  try {
+    return new URL(origin).host === String(request.headers.host || "");
+  } catch {
+    return false;
   }
 }
 
@@ -1174,6 +1430,21 @@ function serveTimeline(request, response, events) {
 
 async function main() {
   const config = resolveConfig();
+  const auth = new AuthState(config);
+  auth.read({ force: true });
+  // The exposure gate. A bind beyond loopback is refused here, before the
+  // socket exists, so there is no window in which the dashboard is reachable
+  // off this host without a credential behind it.
+  if (!config.loopback) {
+    if (config.auth === "off") {
+      throw new Error(`FM_DASHBOARD_AUTH=off is only supported on a loopback bind, not ${config.address}`);
+    }
+    if (auth.error) throw new Error(auth.error);
+    if (!auth.credential) {
+      throw new Error(`binding ${config.address} beyond loopback requires dashboard credentials in ${config.authFile} - run bin/fm-dashboard-install.sh --set-password`);
+    }
+    auth.enforced = true;
+  }
   const clients = new SseClients();
   const history = new HistoryState(config, clients);
   const events = new EventsState(config, clients);
@@ -1181,13 +1452,19 @@ async function main() {
   clients.register("snapshot", () => state.envelope());
   clients.register("history", () => history.envelope());
   clients.register("agent_events", () => events.envelope());
-  const server = http.createServer(async (request, response) => {
+  const handler = async (request, response) => {
     securityHeaders(response);
     const pathname = new URL(request.url, "http://loopback.invalid").pathname;
     if (request.method === "POST" && pathname === "/events") {
+      if (!sameOriginRequest(request)) {
+        sendJson(response, 403, { schema: INGEST_SCHEMA, accepted: 0, reason: "cross_origin" });
+        request.destroy();
+        return;
+      }
       await serveIngest(request, response, events);
       return;
     }
+    if (!(await authorize(request, response, auth))) return;
     if (request.method !== "GET") {
       response.writeHead(405, { Allow: "GET, POST", "Content-Type": "text/plain; charset=utf-8" });
       response.end("method not allowed\n");
@@ -1224,28 +1501,44 @@ async function main() {
     if (await serveStatic(request, response)) return;
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("not found\n");
-  });
+  };
 
-  server.on("error", (error) => {
-    console.error(`fm-dashboard: ${safeText(error.message)}`);
-    process.exitCode = 1;
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.port, config.address, resolve);
-  });
-  server.removeAllListeners("error");
-  server.on("error", (error) => console.error(`fm-dashboard: ${safeText(error.message)}`));
+  // An exposed bind still keeps loopback. The reporting hooks post their events
+  // to the loopback dashboard and nowhere else, and a browser on this host
+  // reaches it the same way, so binding only the outward address would take
+  // both away in exchange for the one that was added. Loopback is not an
+  // exposure, and every listener answers through the same handler, so the same
+  // authentication applies to all of them.
+  const addresses = config.loopback ? [config.address] : [config.address, "127.0.0.1"];
+  const servers = [];
+  for (const address of addresses) {
+    const server = http.createServer(handler);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(config.port, address, resolve);
+    });
+    server.removeAllListeners("error");
+    server.on("error", (error) => console.error(`fm-dashboard: ${safeText(error.message)}`));
+    servers.push(server);
+  }
   await state.start();
   history.start();
-  console.log(`fm-dashboard: listening on http://${config.address.includes(":") ? `[${config.address}]` : config.address}:${config.port}`);
+  const access = auth.enforced ? "authenticated" : "no authentication configured (loopback only)";
+  const shown = addresses.map((address) => (address.includes(":") ? `[${address}]` : address));
+  console.log(`fm-dashboard: listening on ${shown.map((a) => `http://${a}:${config.port}`).join(" and ")} - ${access}`);
 
   const shutdown = () => {
     state.stop();
     history.stop();
     events.stop();
     clients.stop();
-    server.close(() => process.exit(0));
+    let remaining = servers.length;
+    for (const server of servers) {
+      server.close(() => {
+        remaining -= 1;
+        if (remaining === 0) process.exit(0);
+      });
+    }
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
@@ -1259,13 +1552,50 @@ process.on("unhandledRejection", (error) => {
   console.error(`fm-dashboard: unhandled rejection: ${safeText(error instanceof Error ? error.message : String(error))}`);
 });
 
-// One non-serving mode: print where this configuration would keep its
-// agent-event store. The installer needs that path to grant the hardened user
-// service write access to exactly that directory and nothing else, and a single
-// owner of the rule beats two programs deriving it.
+// Turn one password into the credentials document the server verifies against.
+//
+// The password arrives on standard input and never in an argument vector, so it
+// is not in the process table, a shell history, or a systemd log while it is
+// being set. Only the derived digest is ever printed, and the caller is what
+// gives the result its restrictive mode.
+async function hashPasswordMode(argv) {
+  const flag = argv.indexOf("--username");
+  const username = flag >= 0 ? argv[flag + 1] : "captain";
+  if (!AUTH_USERNAME_PATTERN.test(String(username || ""))) {
+    throw new Error("--username must be 1-64 characters of letters, digits, dot, dash, or underscore");
+  }
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const password = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  if (password.length < AUTH_PASSWORD_MIN) {
+    throw new Error(`the dashboard password must be at least ${AUTH_PASSWORD_MIN} characters`);
+  }
+  const salt = randomBytes(16);
+  const { keylen, ...cost } = AUTH_SCRYPT_COST;
+  const hash = await scryptAsync(password, salt, keylen, cost);
+  console.log(JSON.stringify({
+    schema: AUTH_SCHEMA,
+    username,
+    kdf: "scrypt",
+    salt: salt.toString("base64"),
+    hash: hash.toString("base64"),
+    cost: { ...cost, keylen },
+  }, null, 2));
+}
+
+// Two non-serving modes. The first prints where this configuration would keep
+// its agent-event store: the installer needs that path to grant the hardened
+// user service write access to exactly that directory and nothing else, and a
+// single owner of the rule beats two programs deriving it. The second derives a
+// password digest for the installer to store.
 if (process.argv.includes("--event-store-path")) {
   const fmHome = path.resolve(process.env.FM_HOME || ROOT);
   console.log(resolveEventStorePath(fmHome));
+} else if (process.argv.includes("--hash-password")) {
+  hashPasswordMode(process.argv).catch((error) => {
+    console.error(`fm-dashboard: ${safeText(error.message)}`);
+    process.exit(1);
+  });
 } else {
   main().catch((error) => {
     console.error(`fm-dashboard: ${safeText(error.message)}`);

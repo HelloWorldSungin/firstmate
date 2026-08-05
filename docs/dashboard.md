@@ -4,8 +4,8 @@ The fleet dashboard is a mobile-first, read-only captain inbox, kanban view, com
 It never dispatches, steers, merges, tears down, or writes fleet state: its one write is the agent-event store it owns outside the operational home ([dashboard events](dashboard-events.md)).
 Stopping the dashboard has no effect on Firstmate supervision.
 
-This first dashboard slice listens only on loopback.
-Remote phone access, authentication, TLS, and Twingate exposure are intentionally outside its current boundary.
+It listens only on loopback unless you ask for something else, and asking for something else requires credentials first.
+[Remote access](dashboard-remote-access.md) owns that whole posture: what authentication protects, what belongs to your own network rather than to Firstmate, and how to confirm the boundary from off the machine.
 
 ## Install the user service
 
@@ -21,7 +21,7 @@ It writes a private environment file and `firstmate-dashboard.service` under the
 Run `bin/fm-dashboard-install.sh --help` for the exact configuration flags and environment names.
 
 Open `http://127.0.0.1:8787` on the same machine after the service starts.
-The server accepts only the numeric loopback addresses `127.0.0.1` and `::1`.
+The server accepts only a numeric bind address, and only `127.0.0.1` or `::1` without configured credentials.
 
 ## Runtime behavior
 

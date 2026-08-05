@@ -186,15 +186,19 @@ stop_server() {
   fi
 }
 
-test_loopback_is_mandatory() {
+# The bind address decides what this process is reachable on, so it may not be
+# anything whose meaning is resolved elsewhere. tests/fm-dashboard-access.test.sh
+# owns the rest of that contract: exposure beyond loopback and the credentials
+# it requires.
+test_the_bind_address_is_a_numeric_address() {
   local out rc
   set +e
-  out=$(FM_DASHBOARD_ADDRESS=0.0.0.0 node "$SERVER" 2>&1)
+  out=$(FM_DASHBOARD_ADDRESS=dashboard.invalid node "$SERVER" 2>&1)
   rc=$?
   set -e
-  [ "$rc" -ne 0 ] || fail "dashboard accepted a non-loopback bind"
-  assert_contains "$out" "must name a loopback address" "non-loopback refusal was not explicit"
-  pass "dashboard refuses every configured non-loopback bind"
+  [ "$rc" -ne 0 ] || fail "dashboard accepted a name as its bind address"
+  assert_contains "$out" "must be a numeric IPv4 or IPv6 address" "the refusal was not explicit"
+  pass "dashboard refuses a bind address that name resolution would decide"
 }
 
 test_sse_poll_and_last_good() {
@@ -731,7 +735,7 @@ test_installer_writes_hardened_user_service() {
   # outside the grant, under ProtectHome=read-only, and every event is refused
   # for the life of the process.
   pinned_db=$(sed -n 's/^FM_DASHBOARD_EVENT_DB="\(.*\)"$/\1/p' "$env_file")
-  granted=$(sed -n 's/^ReadWritePaths=-"\(.*\)"$/\1/p' "$unit")
+  granted=$(sed -n 's/^ReadWritePaths=-//p' "$unit")
   [ "$pinned_db" = "$case_root/store/events.db" ] \
     || fail "the installer did not pin the resolved event store into the environment: [$pinned_db]"
   [ "$granted" = "${pinned_db%/*}" ] \
@@ -1053,7 +1057,7 @@ SH
   pass "completed work streams to the browser and unreadable records stay disclosed"
 }
 
-test_loopback_is_mandatory
+test_the_bind_address_is_a_numeric_address
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
 test_browser_renders_contract_actions_and_liveness

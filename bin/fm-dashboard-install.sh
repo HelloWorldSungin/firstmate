@@ -1,8 +1,25 @@
 #!/usr/bin/env bash
-# fm-dashboard-install.sh - install the loopback fleet dashboard as a user service.
+# fm-dashboard-install.sh - install the fleet dashboard as a user service.
 #
 # Writes one private environment file and one user-level systemd unit, then
 # enables the service unless --no-start is passed. No sudo is used.
+#
+# The unit is emitted with unquoted absolute paths. systemd reads the argument
+# of EnvironmentFile= and the members of ReadWritePaths= as paths, and a quoted
+# path there is not accepted - it is logged once and the whole directive is
+# ignored, which silently drops the environment file and the one write grant the
+# service has. Anything that would need quoting is refused at generation time
+# instead, so a unit this script writes is either literal and correct or not
+# written at all.
+#
+# The unit also pins a PATH. systemd's user manager hands a service a minimal
+# one, and the fleet snapshot this service runs shells out to tools that live in
+# the operator's own bin directories; without a PATH every snapshot runs to its
+# deadline and the dashboard serves a permanently empty view.
+#
+# Loopback is the default and remote exposure is opt-in: --address only accepts
+# a non-loopback bind once credentials exist, and the server independently
+# refuses to start beyond loopback without them.
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -16,7 +33,16 @@ Install or update the read-only Firstmate fleet dashboard user service.
 
 Options:
   --fm-home PATH       operational home (default: FM_HOME or repository root)
-  --address ADDRESS    loopback bind address (default: 127.0.0.1)
+  --address ADDRESS    numeric bind address (default: 127.0.0.1). Any address
+                       other than 127.0.0.1 or ::1 exposes the dashboard beyond
+                       this host and is accepted only once --set-password has
+                       stored credentials.
+  --set-password       read a dashboard password from the terminal, or from
+                       standard input when there is no terminal, and store only
+                       its salted digest in the private credentials file
+  --username NAME      username stored with --set-password (default: captain)
+  --auth-file PATH     credentials file
+                       (default: $XDG_CONFIG_HOME/firstmate/dashboard-auth.json)
   --port PORT          listen port (default: 8787)
   --poll SECONDS       snapshot poll interval (default: 5)
   --timeout SECONDS    hard snapshot deadline (default: 15)
@@ -30,9 +56,14 @@ Options:
 The environment variables FM_DASHBOARD_ADDRESS, FM_DASHBOARD_PORT,
 FM_DASHBOARD_POLL_SECONDS, FM_DASHBOARD_TIMEOUT_SECONDS,
 FM_DASHBOARD_STALE_SECONDS, FM_DASHBOARD_HISTORY_LIMIT,
-FM_DASHBOARD_HISTORY_POLL_SECONDS, and FM_DASHBOARD_REPORT_MAX_BYTES provide
-the same defaults as their options. Raise --history-limit when retained history
-has grown past the default read bound; the dashboard says so when it has.
+FM_DASHBOARD_HISTORY_POLL_SECONDS, FM_DASHBOARD_REPORT_MAX_BYTES, and
+FM_DASHBOARD_AUTH_FILE provide the same defaults as their options. Raise
+--history-limit when retained history has grown past the default read bound;
+the dashboard says so when it has.
+
+docs/dashboard-remote-access.md owns the remote-access posture: what
+authentication does and does not protect, and the Twingate, firewall, and
+transport steps that belong to the operator rather than to this script.
 EOF
 }
 
@@ -46,11 +77,14 @@ FM_DASHBOARD_HISTORY_LIMIT=${FM_DASHBOARD_HISTORY_LIMIT:-500}
 FM_DASHBOARD_HISTORY_POLL_SECONDS=${FM_DASHBOARD_HISTORY_POLL_SECONDS:-60}
 FM_DASHBOARD_REPORT_MAX_BYTES=${FM_DASHBOARD_REPORT_MAX_BYTES:-262144}
 START_SERVICE=1
+SET_PASSWORD=0
+AUTH_USERNAME=captain
+AUTH_FILE=${FM_DASHBOARD_AUTH_FILE:-}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fm-home|--address|--port|--poll|--timeout|--stale|\
-    --history-limit|--history-poll|--report-bytes)
+    --history-limit|--history-poll|--report-bytes|--username|--auth-file)
       [ "$#" -ge 2 ] || { printf 'fm-dashboard-install: %s requires a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --fm-home) FM_DASHBOARD_HOME=$2 ;;
@@ -62,19 +96,17 @@ while [ "$#" -gt 0 ]; do
         --history-limit) FM_DASHBOARD_HISTORY_LIMIT=$2 ;;
         --history-poll) FM_DASHBOARD_HISTORY_POLL_SECONDS=$2 ;;
         --report-bytes) FM_DASHBOARD_REPORT_MAX_BYTES=$2 ;;
+        --username) AUTH_USERNAME=$2 ;;
+        --auth-file) AUTH_FILE=$2 ;;
       esac
       shift 2
       ;;
+    --set-password) SET_PASSWORD=1; shift ;;
     --no-start) START_SERVICE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'fm-dashboard-install: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
-
-case "$FM_DASHBOARD_ADDRESS" in
-  127.0.0.1|::1) ;;
-  *) echo "fm-dashboard-install: address must be loopback (127.0.0.1 or ::1)" >&2; exit 2 ;;
-esac
 
 validate_positive_number() {
   case "$2" in
@@ -99,18 +131,99 @@ case "$FM_DASHBOARD_REPORT_MAX_BYTES" in *.*) echo "fm-dashboard-install: report
 command -v node >/dev/null 2>&1 || { echo "fm-dashboard-install: node not found" >&2; exit 1; }
 [ -f "$SERVER" ] || { echo "fm-dashboard-install: dashboard server not found at $SERVER" >&2; exit 1; }
 
-case "$FM_DASHBOARD_HOME$SERVER" in
-  *$'\n'*|*%*) echo "fm-dashboard-install: paths containing newlines or % are unsupported" >&2; exit 2 ;;
-esac
-
 XDG_CONFIG_ROOT=${XDG_CONFIG_HOME:-"$HOME/.config"}
 ENV_DIR="$XDG_CONFIG_ROOT/firstmate"
 UNIT_DIR="$XDG_CONFIG_ROOT/systemd/user"
 ENV_FILE="$ENV_DIR/dashboard.env"
 UNIT_FILE="$UNIT_DIR/firstmate-dashboard.service"
 NODE_BIN=$(command -v node)
-case "$XDG_CONFIG_ROOT$NODE_BIN" in
-  *$'\n'*|*%*) echo "fm-dashboard-install: tool and configuration paths containing newlines or % are unsupported" >&2; exit 2 ;;
+[ -n "$AUTH_FILE" ] || AUTH_FILE="$ENV_DIR/dashboard-auth.json"
+
+# Every path this script writes into the unit is emitted literally, so a path
+# that would need quoting to survive is refused here rather than encoded in a
+# form systemd would drop. % is refused because systemd expands specifiers.
+assert_unit_path_safe() {  # <label> <path>
+  case "$2" in
+    /*) ;;
+    *) printf 'fm-dashboard-install: %s must be an absolute path: %s\n' "$1" "$2" >&2; exit 2 ;;
+  esac
+  case "$2" in
+    *[[:space:]]*|*'"'*|*"'"*|*\\*|*%*)
+      printf 'fm-dashboard-install: %s contains whitespace, a quote, a backslash, or %% and cannot be written into a systemd unit: %s\n' \
+        "$1" "$2" >&2
+      exit 2
+      ;;
+  esac
+}
+
+assert_unit_path_safe "the operational home" "$FM_DASHBOARD_HOME"
+assert_unit_path_safe "the dashboard server" "$SERVER"
+assert_unit_path_safe "the node binary" "$NODE_BIN"
+assert_unit_path_safe "the configuration root" "$XDG_CONFIG_ROOT"
+assert_unit_path_safe "the credentials file" "$AUTH_FILE"
+
+# The address is the exposure decision, so it is checked before anything is
+# written. Only a numeric address is accepted: a name would make what this
+# service is reachable on depend on resolution rather than on configuration.
+"$NODE_BIN" -e 'process.exit(require("net").isIP(process.argv[1]) ? 0 : 1)' "$FM_DASHBOARD_ADDRESS" \
+  || { printf 'fm-dashboard-install: address must be a numeric IPv4 or IPv6 address: %s\n' "$FM_DASHBOARD_ADDRESS" >&2; exit 2; }
+
+# Setting the password comes first, so a single command can both establish
+# credentials and open the bind that requires them. The password is read from
+# the terminal when there is one and from standard input otherwise, and it
+# reaches the digest helper only through a pipe: it is never an argument, so it
+# is never in the process table, the shell history, or a service log.
+install -d -m 700 "$ENV_DIR"
+if [ "$SET_PASSWORD" -eq 1 ]; then
+  DASHBOARD_PASSWORD=
+  DASHBOARD_PASSWORD_CONFIRM=
+  if [ -t 0 ]; then
+    printf 'Dashboard password: ' >&2
+    stty -echo 2>/dev/null || true
+    IFS= read -r DASHBOARD_PASSWORD || true
+    stty echo 2>/dev/null || true
+    printf '\nConfirm dashboard password: ' >&2
+    stty -echo 2>/dev/null || true
+    IFS= read -r DASHBOARD_PASSWORD_CONFIRM || true
+    stty echo 2>/dev/null || true
+    printf '\n' >&2
+    [ "$DASHBOARD_PASSWORD" = "$DASHBOARD_PASSWORD_CONFIRM" ] \
+      || { echo "fm-dashboard-install: the two passwords did not match" >&2; exit 2; }
+  else
+    IFS= read -r DASHBOARD_PASSWORD || true
+  fi
+  AUTH_TMP=$(mktemp "$ENV_DIR/.dashboard-auth.json.XXXXXX")
+  chmod 600 "$AUTH_TMP"
+  trap 'rm -f "$AUTH_TMP"' EXIT HUP INT TERM
+  printf '%s' "$DASHBOARD_PASSWORD" \
+    | "$NODE_BIN" "$SERVER" --hash-password --username "$AUTH_USERNAME" > "$AUTH_TMP" \
+    || { echo "fm-dashboard-install: the dashboard password was not stored" >&2; exit 2; }
+  DASHBOARD_PASSWORD=
+  DASHBOARD_PASSWORD_CONFIRM=
+  install -d -m 700 "$(dirname -- "$AUTH_FILE")"
+  mv -f "$AUTH_TMP" "$AUTH_FILE"
+  trap - EXIT HUP INT TERM
+  printf 'Stored dashboard credentials for %s in %s\n' "$AUTH_USERNAME" "$AUTH_FILE"
+fi
+
+# Exposure is opt-in and it is never a bind-address change alone. The server
+# enforces the same rule at startup; refusing here means the operator finds out
+# before a unit is written rather than from a service that will not come up.
+case "$FM_DASHBOARD_ADDRESS" in
+  127.0.0.1|::1) ;;
+  *)
+    [ -f "$AUTH_FILE" ] || {
+      printf 'fm-dashboard-install: binding %s reaches beyond this host and needs credentials first.\n' "$FM_DASHBOARD_ADDRESS" >&2
+      printf 'fm-dashboard-install: run %s --set-password (optionally with --username NAME) and try again.\n' "$0" >&2
+      exit 2
+    }
+    case "$FM_DASHBOARD_ADDRESS" in
+      0.0.0.0|::)
+        printf 'warning: %s binds every interface on this host, not only the one you reach it on.\n' "$FM_DASHBOARD_ADDRESS" >&2
+        printf 'warning: prefer the specific interface address the Twingate connector reaches.\n' >&2
+        ;;
+    esac
+    ;;
 esac
 
 # The service is otherwise read-only towards the whole filesystem, and that is
@@ -130,15 +243,45 @@ EVENT_DB=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$SERVER" --event-store-path
 [ -n "$EVENT_DB" ] || { echo "fm-dashboard-install: could not resolve the agent-event store path" >&2; exit 1; }
 EVENT_DIR=${EVENT_DB%/*}
 EVENTS_CONFIG=${FM_DASHBOARD_EVENTS_CONFIG:-"$XDG_CONFIG_ROOT/firstmate/dashboard-events.json"}
-case "$EVENT_DB$EVENTS_CONFIG" in
-  *$'\n'*|*%*) echo "fm-dashboard-install: event store paths containing newlines or % are unsupported" >&2; exit 2 ;;
-esac
 [ -n "$EVENT_DIR" ] || { echo "fm-dashboard-install: the agent-event store path has no directory" >&2; exit 1; }
+assert_unit_path_safe "the agent-event store" "$EVENT_DB"
+assert_unit_path_safe "the shared instrumentation configuration" "$EVENTS_CONFIG"
 install -d -m 700 "$EVENT_DIR"
 
+# EnvironmentFile values are parsed with shell-like quoting, so a value there is
+# quoted and escaped. Unit directives are not: those are emitted literally, and
+# assert_unit_path_safe has already refused anything that would not survive it.
 systemd_quote() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
+
+# The PATH the fleet tools were found on at install time is the PATH the service
+# gets, minus any entry a unit file cannot carry literally. The directory the
+# resolved node came from leads, because the service must be able to run the
+# interpreter it was installed against.
+SERVICE_PATH_ENTRIES=
+SERVICE_PATH_DROPPED=0
+add_service_path_entry() {  # <directory>
+  case "$1" in /*) ;; *) return 0 ;; esac
+  case "$1" in
+    *[[:space:]]*|*'"'*|*"'"*|*\\*|*%*) SERVICE_PATH_DROPPED=$((SERVICE_PATH_DROPPED + 1)); return 0 ;;
+  esac
+  printf '%s\n' "$SERVICE_PATH_ENTRIES" | grep -Fxq -- "$1" && return 0
+  SERVICE_PATH_ENTRIES=${SERVICE_PATH_ENTRIES:+$SERVICE_PATH_ENTRIES$'\n'}$1
+}
+
+add_service_path_entry "${NODE_BIN%/*}"
+while IFS= read -r service_path_entry; do
+  [ -n "$service_path_entry" ] || continue
+  add_service_path_entry "$service_path_entry"
+done <<EOF
+$(printf '%s' "$PATH" | tr ':' '\n')
+EOF
+SERVICE_PATH=$(printf '%s' "$SERVICE_PATH_ENTRIES" | tr '\n' ':')
+[ -n "$SERVICE_PATH" ] || { echo "fm-dashboard-install: no usable PATH entry could be pinned into the unit" >&2; exit 1; }
+[ "$SERVICE_PATH_DROPPED" -eq 0 ] \
+  || printf 'warning: %s PATH entries were left out of the unit because a systemd unit cannot carry them literally.\n' \
+    "$SERVICE_PATH_DROPPED" >&2
 
 install -d -m 700 "$ENV_DIR" "$UNIT_DIR"
 ENV_TMP=$(mktemp "$ENV_DIR/.dashboard.env.XXXXXX")
@@ -157,6 +300,7 @@ trap 'rm -f "$ENV_TMP" "$UNIT_TMP"' EXIT HUP INT TERM
   printf 'FM_DASHBOARD_REPORT_MAX_BYTES="%s"\n' "$(systemd_quote "$FM_DASHBOARD_REPORT_MAX_BYTES")"
   printf 'FM_DASHBOARD_EVENT_DB="%s"\n' "$(systemd_quote "$EVENT_DB")"
   printf 'FM_DASHBOARD_EVENTS_CONFIG="%s"\n' "$(systemd_quote "$EVENTS_CONFIG")"
+  printf 'FM_DASHBOARD_AUTH_FILE="%s"\n' "$(systemd_quote "$AUTH_FILE")"
 } > "$ENV_TMP"
 chmod 600 "$ENV_TMP"
 
@@ -169,9 +313,10 @@ After=default.target
 [Service]
 Type=simple
 EOF
-  printf 'EnvironmentFile="%s"\n' "$(systemd_quote "$ENV_FILE")"
-  printf 'ExecStart="%s" "%s"\n' "$(systemd_quote "$NODE_BIN")" "$(systemd_quote "$SERVER")"
-  printf 'ReadWritePaths=-"%s"\n' "$(systemd_quote "$EVENT_DIR")"
+  printf 'Environment=PATH=%s\n' "$SERVICE_PATH"
+  printf 'EnvironmentFile=%s\n' "$ENV_FILE"
+  printf 'ExecStart=%s %s\n' "$NODE_BIN" "$SERVER"
+  printf 'ReadWritePaths=-%s\n' "$EVENT_DIR"
   cat <<'EOF'
 Restart=on-failure
 RestartSec=3
@@ -203,7 +348,45 @@ if [ "$START_SERVICE" -eq 1 ]; then
   systemctl --user daemon-reload
   systemctl --user enable firstmate-dashboard.service
   systemctl --user restart firstmate-dashboard.service
+
+  # A directive systemd read past is the exact failure this installer exists to
+  # prevent, and it is invisible in `status`: the service comes up green while
+  # running on defaults it was never configured with. Reinstalling over such a
+  # unit is only a repair if the repair is confirmed, so the install is not
+  # reported as finished until systemd reads its own configuration back.
+  loaded_env=$(systemctl --user show -p EnvironmentFiles --value firstmate-dashboard.service 2>/dev/null || true)
+  case "$loaded_env" in
+    *"$ENV_FILE"*) ;;
+    *)
+      printf 'fm-dashboard-install: systemd did not accept the environment file %s (read back: %s)\n' \
+        "$ENV_FILE" "${loaded_env:-none}" >&2
+      exit 1
+      ;;
+  esac
+  loaded_environment=$(systemctl --user show -p Environment --value firstmate-dashboard.service 2>/dev/null || true)
+  case "$loaded_environment" in
+    *PATH=*) ;;
+    *) echo "fm-dashboard-install: systemd did not accept the pinned PATH for the service" >&2; exit 1 ;;
+  esac
+  loaded_writable=$(systemctl --user show -p ReadWritePaths --value firstmate-dashboard.service 2>/dev/null || true)
+  case "$loaded_writable" in
+    *"$EVENT_DIR"*) ;;
+    *)
+      printf 'fm-dashboard-install: systemd did not accept the agent-event write grant for %s (read back: %s)\n' \
+        "$EVENT_DIR" "${loaded_writable:-none}" >&2
+      exit 1
+      ;;
+  esac
+
+  # A drop-in left behind by a hand repair keeps overriding this unit after it
+  # has been corrected, so the operator is told about one rather than left to
+  # wonder why their reinstall did not take.
+  drop_ins=$(systemctl --user show -p DropInPaths --value firstmate-dashboard.service 2>/dev/null || true)
+  [ -z "$drop_ins" ] \
+    || printf 'warning: this service still has drop-in overrides that outrank the unit: %s\n' "$drop_ins" >&2
+
   systemctl --user --no-pager --full status firstmate-dashboard.service
+  printf 'systemd accepted the environment file, the pinned PATH, and the agent-event write grant.\n'
 else
   echo "Service not started (--no-start)."
 fi

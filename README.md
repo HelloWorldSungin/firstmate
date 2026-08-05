@@ -200,6 +200,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
 - [docs/dashboard.md](docs/dashboard.md) - install and operate the loopback-only, read-only captain inbox, fleet kanban, and completed-work history service.
+- [docs/dashboard-remote-access.md](docs/dashboard-remote-access.md) - reach the dashboard from off the machine: what authentication protects, what stays yours in your own network, and how to confirm the boundary.
 - [docs/dashboard-inbox-policy.md](docs/dashboard-inbox-policy.md) - the single documented statement of what reaches the captain inbox, what makes a pull request green, and what turns each health signal amber or red.
 - [docs/dashboard-events.md](docs/dashboard-events.md) - turn the live per-agent activity timeline on or off, what an event may contain, and why a dashboard that is down costs a working agent nothing.
 - [docs/usage-accounting.md](docs/usage-accounting.md) - collect token usage from Claude Code and Codex, keep it attributed to its task after cleanup, and opt into cost estimates.

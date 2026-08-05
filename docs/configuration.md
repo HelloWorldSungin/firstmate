@@ -97,6 +97,12 @@ The dashboard's live per-agent activity timeline is configured outside the opera
 `bin/fm-dashboard-instrument.sh enable` writes `dashboard-events.json` and `dashboard-events.curlrc` under the user configuration root (`$XDG_CONFIG_HOME/firstmate`, or `~/.config/firstmate`), both mode 0600, and their presence is the entire switch.
 [`docs/dashboard-events.md`](dashboard-events.md) owns that contract, the store location, the retention environment names, and what an event may contain.
 
+## Dashboard credentials (dashboard-auth.json)
+
+The dashboard's credentials live beside its event configuration under the same user configuration root, and for the same reason: they belong to the dashboard rather than to the fleet, so a secondmate home never inherits them.
+`bin/fm-dashboard-install.sh --set-password` writes `dashboard-auth.json` mode 0600 holding a salted digest and never the password itself.
+Their presence is what makes a bind beyond loopback possible at all; [`docs/dashboard-remote-access.md`](dashboard-remote-access.md) owns that posture.
+
 ## Usage cost rates (config/usage-rates.json)
 
 Token accounting is always on once [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) runs, while a cost estimate is opt-in and absent by default.

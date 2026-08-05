@@ -208,7 +208,7 @@ family_for_basename() {
       printf '%s\n' afk
       ;;
     fm-bearings-snapshot.test.sh|fm-dashboard.test.sh|fm-dashboard-inbox.test.sh|\
-    fm-dashboard-history.test.sh|fm-fleet-snapshot-view.test.sh)
+    fm-dashboard-history.test.sh|fm-dashboard-access.test.sh|fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -399,6 +399,7 @@ tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
 tests/fm-documentation-audiences.test.sh 572
+tests/fm-dashboard-access.test.sh 12000
 tests/fm-dashboard-history.test.sh 900
 tests/fm-dashboard-inbox.test.sh 300
 tests/fm-dashboard.test.sh 5000
