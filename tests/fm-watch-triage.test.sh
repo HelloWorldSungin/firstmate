@@ -906,6 +906,26 @@ test_pause_resurface_window_backs_off_and_caps() {
   pass "pause_resurface_window doubles per unchanged recheck, caps, and clamps a misconfigured cap"
 }
 
+# The streak record is written by two supervisors through three helpers, so the
+# reset-on-a-changed-wait cannot live in only one of them: a bump handed a wait
+# that is not the one on record must start that new wait's streak, whether or not
+# any caller reconciled the record first.
+test_pause_streak_bump_reconciles_a_changed_wait() {
+  local f
+  f="$TMP_ROOT/streak-record"
+  printf '3\npaused: awaiting the upstream release\n' > "$f"
+  pause_streak_bump "$f" "paused: awaiting the upstream release"
+  [ "$(pause_streak_count "$f")" = 4 ] \
+    || fail "a recheck of the same wait must continue its streak, got $(pause_streak_count "$f")"
+  pause_streak_bump "$f" "paused: awaiting the captain merge call"
+  [ "$(pause_streak_count "$f")" = 1 ] \
+    || fail "a recheck of a changed wait must start over, got $(pause_streak_count "$f")"
+  pause_streak_sync "$f" "paused: awaiting the captain merge call" \
+    && fail "the bump did not leave the changed wait on record"
+  rm -f "$f"
+  pass "pause_streak_bump reconciles the wait on record before counting a recheck"
+}
+
 # The live 2026-08-04 case behind issue 47: three tasks correctly parked on one
 # captain-owned merge decision re-surfaced on a fixed cadence, each recheck
 # costing a supervision turn to confirm a wait that had not changed. The recheck
@@ -2201,6 +2221,7 @@ test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_pause_resurface_window_backs_off_and_caps
+test_pause_streak_bump_reconciles_a_changed_wait
 test_paused_resurface_backs_off_while_wedge_still_escalates
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
 test_secondmate_paused_resurfaces_in_normal_mode

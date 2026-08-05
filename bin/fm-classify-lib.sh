@@ -124,12 +124,20 @@ pause_resurface_window() {  # <streak> -> seconds
 # Both supervisors keep this record beside their own pause marker (the watcher's
 # .paused-streak-<key>, the daemon's .subsuper-pausestreak-<key>) and both read
 # and write it through these helpers, so the two cannot drift.
+#
+# This record governs the WIDTH of the recheck window and nothing else. Neither
+# supervisor's sense of when the next recheck is DUE lives here: the watcher ages
+# a declared wait from its status file mtime, and the away-mode daemon ages it
+# from the epoch its own pause marker took when the hold began. Keeping those
+# apart is deliberate, because the discriminator here is the whole status line
+# and prose can churn - a crew that rewrites an elapsed-time counter into its
+# paused reason reads as a new wait every time. The cost of that is a window that
+# stays at its base width, which is extra rechecks and never a missed one.
 
-# 0 when <wait-line> is a DIFFERENT wait from the one on record: the record is
-# reset to the new wait at streak 0 before returning, so the caller can restart
-# its own window anchor too. 1 when the record already describes this wait, and 1
-# on a first sighting - nothing has been widened yet, so there is nothing to
-# restart, and the record is simply created at streak 0.
+# 0 when <wait-line> is a DIFFERENT wait from the one on record, having reset the
+# record to that new wait at streak 0. 1 when the record already describes this
+# wait, and 1 on a first sighting - nothing has been widened yet, so there is
+# nothing to reset, and the record is simply created at streak 0.
 pause_streak_sync() {  # <streak-file> <wait-line>
   local f=$1 line=$2 count='' recorded='' changed=1
   if [ -e "$f" ]; then
@@ -151,9 +159,14 @@ pause_streak_count() {  # <streak-file>
   printf '%s' "$count"
 }
 
-# Record one more recheck that found <wait-line> still unchanged.
+# Record one more recheck of <wait-line>. Reconciles the record first, so a
+# recheck of a wait that CHANGED since the last observation starts that new wait
+# at one instead of silently continuing the previous wait's streak - the three
+# helpers then agree whatever order their callers run in, rather than the daemon's
+# recheck loop depending on an earlier reconcile pass having already synced.
 pause_streak_bump() {  # <streak-file> <wait-line>
   local f=$1 line=$2 count
+  pause_streak_sync "$f" "$line" || true
   count=$(pause_streak_count "$f")
   printf '%s\n%s\n' "$(( count + 1 ))" "$line" > "$f"
 }

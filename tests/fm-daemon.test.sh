@@ -392,11 +392,13 @@ test_housekeeping_paused_unpaused_cleared() {
 
 # The away-mode half of the boundary the watcher pins end to end: the widened
 # recheck cadence is earned by ONE wait, so a crew that swaps its paused line for
-# a DIFFERENT one starts a fresh window at the base cadence instead of inheriting
-# the previous wait's. The two supervisors share pause_resurface_window, so they
-# must also share when the streak feeding it dies.
-test_housekeeping_replaced_wait_restarts_its_window() {
-  local dir state fakebin win pane key age
+# a DIFFERENT one is rechecked at the base width instead of at the width the
+# previous wait earned. The two supervisors share pause_resurface_window, so they
+# must also share when the streak feeding it dies. The hold here is 300s old with
+# a streak of 2 standing, so it is due at the base 240s window and NOT due at the
+# 960s window the old wait had widened to.
+test_housekeeping_replaced_wait_recheck_uses_the_base_width() {
+  local dir state fakebin win pane key
   dir=$(make_supercase paused-wait-replaced)
   state="$dir/state"; fakebin="$dir/fakebin"
   win="sess:fm-held-w16"; pane="$dir/pane.txt"
@@ -408,12 +410,47 @@ test_housekeeping_replaced_wait_restarts_its_window() {
   printf '2\npaused: awaiting the upstream tool release\n' > "$state/.subsuper-pausestreak-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
     FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
-  [ "$(pause_streak_count "$state/.subsuper-pausestreak-$key")" = 0 ] \
-    || fail "the replaced wait inherited the previous wait's re-surface streak"
-  age=$(( $(date +%s) - $(cat "$state/.subsuper-paused-$key" 2>/dev/null || echo 0) ))
-  [ "$age" -lt 60 ] || fail "the replaced wait did not restart its own re-surface window (age ${age}s)"
-  [ ! -s "$state/.subsuper-escalations" ] || fail "a wait that just changed was re-surfaced before its own first window"
-  pass "housekeeping restarts the re-surface window when one declared wait replaces another"
+  grep -F "awaiting external" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "the replaced wait inherited the previous wait's widened window instead of the base one"
+  [ "$(pause_streak_count "$state/.subsuper-pausestreak-$key")" = 1 ] \
+    || fail "the replaced wait did not restart the streak at its own first recheck"
+  pass "housekeeping rechecks a wait that replaced another at the base window width"
+}
+
+# The safety property the streak must never be allowed to cost. A crew can rewrite
+# its own paused reason as it waits (an elapsed-time counter, a refreshed link),
+# and in away mode that rewrite is self-handled as a routine signal - this recheck
+# is the only thing that surfaces the hold at all. So the recheck clock is
+# anchored on when the HOLD began, and no amount of prose churn may restart it:
+# a crew rewriting its line every poll would otherwise never be rechecked.
+test_housekeeping_paused_recheck_survives_status_churn() {
+  local dir state fakebin win pane key started
+  dir=$(make_supercase paused-status-churn)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-held-w17"; pane="$dir/pane.txt"
+  printf 'idle prompt $\n' > "$pane"
+  fm_write_meta "$state/held-w17.meta" "window=$win" "worktree=$dir/wt" "kind=ship"
+  key=$(printf '%s' "held-w17" | tr ':/.' '___')
+  printf 'paused: awaiting the upstream release (0s elapsed)\n' > "$state/held-w17.status"
+  started=$(( $(date +%s) - 200 ))
+  echo "$started" > "$state/.subsuper-paused-$key"
+
+  # A rewrite while the hold is still inside its window must leave the clock alone.
+  printf 'paused: awaiting the upstream release (60s elapsed)\n' > "$state/held-w17.status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a hold inside its window was re-surfaced early"
+  [ "$(cat "$state/.subsuper-paused-$key" 2>/dev/null || true)" = "$started" ] \
+    || fail "rewriting the paused reason restarted the away-mode recheck clock"
+
+  # And once the hold itself is past the window it IS rechecked, still churning.
+  echo $(( $(date +%s) - 300 )) > "$state/.subsuper-paused-$key"
+  printf 'paused: awaiting the upstream release (160s elapsed)\n' > "$state/held-w17.status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
+  grep -F "awaiting external" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "a crew rewriting its paused reason was never rechecked while the captain was away"
+  pass "the away-mode pause recheck is anchored on the hold, not on the wait's prose"
 }
 
 test_housekeeping_stale_marker_transitions_to_pause() {
@@ -1875,7 +1912,8 @@ test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
-test_housekeeping_replaced_wait_restarts_its_window
+test_housekeeping_replaced_wait_recheck_uses_the_base_width
+test_housekeeping_paused_recheck_survives_status_churn
 test_housekeeping_stale_marker_transitions_to_pause
 test_housekeeping_pause_marker_transitions_to_clear
 test_housekeeping_herdr_persistent_stale_resolves_meta

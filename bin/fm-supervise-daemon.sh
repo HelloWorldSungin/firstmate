@@ -457,20 +457,22 @@ pause_streak_path() {  # <task-key> <state>
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
 # first observed idle. Housekeeping ages it against pause_resurface_window (much
 # longer than a wedge) and re-surfaces the pause once per window. Recording is
-# create-if-absent so the timestamp is stable across a churny idle pane (many
-# distinct stale hashes map to one marker), keeping the cadence hash-immune - but
-# a DIFFERENT declared wait is not the same wait, so replacing one paused line
-# with another resets both the streak and this epoch, and the new wait waits out
-# a full base window before its own first recheck.
-pause_marker_record() {  # <window> <state> - create if absent, restart on a changed wait
+# create-if-absent so the epoch measures from when the HOLD began, immune to
+# everything that churns while the hold stands: a churny idle pane (many distinct
+# stale hashes map to one marker) and, just as deliberately, a churny paused
+# REASON. In away mode a rewritten paused line is self-handled as a routine
+# signal, so this recheck is the only thing that surfaces the hold at all, and a
+# crew that rewrote its reason each poll would never be rechecked if that restarted
+# the clock. A changed wait may reset the streak, and with it the WIDTH of the
+# next window (pause_streak_sync below), but never this epoch. The marker still
+# dies with the hold on the transitions that own it: the crew resuming, the pause
+# clearing, pause_marker_remove, clear_pause_tracking.
+pause_marker_record() {  # <window> <state> - create if absent
   local win=$1 state=$2 task key marker
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
-  if pause_streak_sync "$(pause_streak_path "$key" "$state")" "$(last_status_line "$state/$task.status")"; then
-    _now > "$marker"
-    return 0
-  fi
+  pause_streak_sync "$(pause_streak_path "$key" "$state")" "$(last_status_line "$state/$task.status")" || true
   [ -e "$marker" ] || _now > "$marker"
 }
 
@@ -1046,7 +1048,11 @@ housekeeping() {  # <state>
   # still declaring the pause -> escalate a recheck digest and reset the marker so
   # the window repeats. Each recheck that finds the same wait unchanged widens the
   # next window through the shared pause_resurface_window owner, so a long healthy
-  # wait costs progressively less here exactly as it does in the watcher.
+  # wait costs progressively less here exactly as it does in the watcher. The
+  # streak is reconciled against the wait actually standing now before it is
+  # spent, so a wait that changed is measured at the base width rather than at a
+  # width some earlier wait earned; the marker epoch above is untouched by that,
+  # so the schedule stays anchored to when the hold began.
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
     key="${marker##*.subsuper-paused-}"
@@ -1062,6 +1068,7 @@ housekeeping() {  # <state>
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     streak_file=$(pause_streak_path "$key" "$state")
+    pause_streak_sync "$streak_file" "$last" || true
     pause_secs=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
     [ "$age" -ge "$pause_secs" ] || continue
     stale_window_is_busy "$win" "$state"
