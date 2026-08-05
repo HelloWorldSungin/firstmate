@@ -83,12 +83,12 @@
 #
 # Exit status:
 #   0  the run completed and every threshold the set declares was met.
-#   1  the run completed and at least one threshold was missed. That is a
-#      reportable outcome, not an error: record it rather than moving the
-#      threshold. A threshold the set declares for a phase that RAN and read
-#      nothing counts here too, reported as unmeasured rather than as a miss: a
-#      phase that produced no evidence cannot have met the threshold it was
-#      asked to clear.
+#   1  the run completed but did not pass, for either of two independent
+#      reasons. A threshold the set declares was missed, which is a reportable
+#      outcome rather than an error: record it rather than moving the
+#      threshold. Or a phase RAN and read nothing, which fails on its own and
+#      whether or not the set declares any threshold for that phase, because a
+#      phase that measured nothing has shown nothing.
 #   2  usage, or a configuration this command refuses to guess at.
 #   3  the run could not be measured at all, because the brain could not be
 #      read: no question was read by any phase that ran.
@@ -549,23 +549,41 @@ cmd_run() {
         ungrounded: [$tok[] | select(.think.grounded | not) | .id]
       } end)
     }
-    # A threshold the set declares for a phase that RAN is part of the verdict
-    # even when the phase measured nothing, because dropping it would report a
-    # run that produced no evidence as one that met every threshold. It carries
-    # its own state rather than counting as a miss: no measurement fell short,
-    # the measurement never happened at all.
+    # A verdict entry is one measured value against one declared bar, and it
+    # says nothing about a bar the set never declared. Whether a phase produced
+    # evidence at all is a separate question with a separate answer, which is
+    # why the phase blocks carry `measured` rather than this list carrying a
+    # special case: a phase that read nothing has shown nothing, whatever the
+    # set happens to declare for it.
+    #
+    # A declared bar whose value is null is still carried here rather than
+    # dropped, with the number of questions the value would have averaged over
+    # and why there was none, because a threshold that could not be evaluated
+    # must never be reported as one that was met.
     | . as $run
     | . + {verdict: ([
-        {metric: "search_top1", phase: "search", value: $run.search.top1, threshold: $run.thresholds.search_top1},
-        {metric: "search_topk", phase: "search", value: $run.search.topk, threshold: $run.thresholds.search_topk},
-        {metric: "think_answered", phase: "think", value: $run.think.answered, threshold: $run.thresholds.think_answered},
-        {metric: "think_grounded", phase: "think", value: $run.think.grounded, threshold: $run.thresholds.think_grounded},
-        {metric: "think_key_facts", phase: "think", value: $run.think.key_facts, threshold: $run.thresholds.think_key_facts}
-      ] | map(select(.threshold != null
-                     and (if .phase == "search" then $run.search else $run.think end) != null))
-        | map(. + (if .value == null then {met: false, state: "unmeasured"}
-                   else {met: (.value >= .threshold),
-                         state: (if .value >= .threshold then "met" else "missed" end)} end)))}
+        {metric: "search_top1", phase: "search", value: $run.search.top1,
+         threshold: $run.thresholds.search_top1, scored: ($sok | length)},
+        {metric: "search_topk", phase: "search", value: $run.search.topk,
+         threshold: $run.thresholds.search_topk, scored: ($sok | length)},
+        {metric: "think_answered", phase: "think", value: $run.think.answered,
+         threshold: $run.thresholds.think_answered, scored: ($tread | length)},
+        {metric: "think_grounded", phase: "think", value: $run.think.grounded,
+         threshold: $run.thresholds.think_grounded, scored: ($tok | length)},
+        {metric: "think_key_facts", phase: "think", value: $run.think.key_facts,
+         threshold: $run.thresholds.think_key_facts,
+         scored: ([$tok[] | .think.key_fact_rate | select(. != null)] | length)}
+      ] | map(. as $v
+              | (if $v.phase == "search" then $run.search else $run.think end) as $block
+              | select($v.threshold != null and $block != null)
+              | if $v.value != null
+                then $v + {met: ($v.value >= $v.threshold),
+                           state: (if $v.value >= $v.threshold then "met" else "missed" end)}
+                else $v + {met: false, state: "unmeasured",
+                           reason: (if $block.measured
+                                    then "the \($v.phase) phase produced no value for this metric"
+                                    else "the \($v.phase) phase read nothing" end)}
+                end))}
     | . + {questions: $qs}' "$per_question")
 
   [ -z "$out" ] || printf '%s\n' "$document" > "$out"
@@ -583,9 +601,18 @@ cmd_run() {
     printf 'fm-gbrain-eval.sh: no corpus answered; the run measured nothing\n' >&2
     return 3
   fi
-  local missed
+  # Two independent contributions decide the outcome: a phase that ran and
+  # produced no evidence, and a declared threshold that was not met. Either one
+  # alone fails the run, and the first does not depend on the set declaring any
+  # threshold for that phase.
+  local unevidenced missed
+  unevidenced=$(printf '%s' "$document" | jq -r '
+    [{phase: "search", block: .search}, {phase: "think", block: .think}]
+    | [.[] | select(.block != null and (.block.measured | not)) | .phase] | join(" and ")')
   missed=$(printf '%s' "$document" | jq '[.verdict[] | select(.met | not)] | length')
-  [ "$missed" -eq 0 ]
+  [ -z "$unevidenced" ] || printf 'fm-gbrain-eval.sh: the %s phase ran and measured nothing, so this run has no result to report\n' \
+    "$unevidenced" >&2
+  [ -z "$unevidenced" ] && [ "$missed" -eq 0 ]
 }
 
 render_run() {  # <document>
@@ -604,7 +631,7 @@ render_run() {  # <document>
     (if .search then
       "SEARCH (local retrieval, \(.search.read)/\(.search.questions) questions read)",
       (if .search.measured then empty
-       else "  MEASURED NOTHING     no question was read, so every rate below is absent rather than zero" end),
+       else "  MEASURED NOTHING     no question was read, so every rate below is absent rather than zero and this run does not pass" end),
       "  top-1                \(pct(.search.top1))",
       "  top-\(.search.top_k)                \(pct(.search.topk))",
       "  MRR                  \(if .search.mrr == null then "n/a" else ((.search.mrr * 1000 | round) / 1000 | tostring) end)",
@@ -614,7 +641,7 @@ render_run() {  # <document>
     (if .think then
       "THINK (hosted synthesis, \(.think.read)/\(.think.questions) questions read, \(.think.attempts_allowed) attempt(s) allowed)",
       (if .think.measured then empty
-       else "  MEASURED NOTHING     no question reached hosted synthesis, so every rate below is absent rather than zero" end),
+       else "  MEASURED NOTHING     no question reached hosted synthesis, so every rate below is absent rather than zero and this run does not pass" end),
       "  answered             \(pct(.think.answered))",
       "  answered 1st call    \(pct(.think.first_attempt_answered))",
       "  grounded             \(pct(.think.grounded))",
@@ -629,9 +656,9 @@ render_run() {  # <document>
     "",
     "THRESHOLDS",
     (.verdict[]
-      | "  \(if .state == "met" then "met       " elif .state == "missed" then "MISSED    " else "UNMEASURED" end)  \(.metric)  \(pct(.value)) vs \(pct(.threshold))"),
+      | "  \(if .state == "met" then "met       " elif .state == "missed" then "MISSED    " else "UNMEASURED" end)  \(.metric)  \(pct(.value)) vs \(pct(.threshold))\(if .state == "unmeasured" then "  (\(.reason))" else "" end)"),
     (if any(.verdict[]; .state == "unmeasured") then
-      "  UNMEASURED means that phase ran and read nothing, so its thresholds could not be evaluated and the run does not pass"
+      "  UNMEASURED means the metric had no measurement to compare against its threshold, so it cannot be reported as met"
      else empty end),
     (if ((.verdict | length) == 0) then "  none applicable to this run" else empty end)'
 }

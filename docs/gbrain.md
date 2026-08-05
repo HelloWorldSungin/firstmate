@@ -153,7 +153,8 @@ A field whose recorded values differ is still reported as `CHANGED` even when an
 
 Re-run the evaluation after a corpus, GBrain, model, or reranker change, and after any migration below.
 The exit status is usable as a gate: 0 when every threshold the set declares was met, 1 when one was missed, 2 for a refused configuration, and 3 when the brain could not be read at all.
-A phase that ran and read nothing fails the gate rather than passing it: its declared thresholds are reported as unmeasured and the run exits 1, because a run that produced no evidence has not met the thresholds it was asked to clear.
+A phase that ran and read nothing fails the gate on its own, whether or not the set declares any threshold for that phase, because a phase that measured nothing has shown nothing.
+Its declared thresholds are additionally reported as unmeasured rather than dropped, so a threshold that could not be evaluated is never rendered as one that was met.
 A missed threshold is a result to record with its cause, never a reason to edit the threshold.
 
 ## MiniMax credential contract and privacy boundary

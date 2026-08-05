@@ -440,7 +440,48 @@ assert_contains "$EVAL_OUT" "MEASURED NOTHING" "the render must show the phase t
 assert_contains "$EVAL_OUT" "UNMEASURED  think_answered" \
   "an unmeasured threshold must read differently from a missed one"
 assert_contains "$EVAL_OUT" "hosted_key_missing" "the render must name why each question was unread"
+
+# Whether a phase produced evidence cannot depend on what the set happens to
+# declare. With no think threshold at all there is no threshold to miss, and the
+# run must still fail because the phase measured nothing.
+write_set 'del(.thresholds.think_answered, .thresholds.think_grounded, .thresholds.think_key_facts)'
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase both --json
+expect_code 1 "$EVAL_RC" "a phase that measured nothing must fail with no threshold declared for it"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.phase == "think")]')" = "[]" ] \
+  || fail "a threshold the set never declared must not appear in the verdict, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.met | not)]')" = "[]" ] \
+  || fail "no threshold was missed, so the failure must come from the missing evidence, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.measured')" = "false" ] \
+  || fail "the think phase measured nothing, got $EVAL_OUT"
+assert_contains "$(cat "$TMP_ROOT/err.txt")" "measured nothing" \
+  "a run that produced no evidence for a phase must say so even with --json"
+write_set
 for k in qa qb qc qd; do rm -f "$REPLY_DIR/$k.think.json.rc"; done
+
+# --- 7c. an unmeasured metric names the cause it actually reached -----------
+#
+# A metric averaged over the ANSWERED questions goes unmeasured when the
+# provider answers nothing, which is not the same state as a phase that read
+# nothing - and after reinit-pglite wipes the hosted model, that is exactly what
+# a real brain does. Reporting "read nothing" here would send an operator to the
+# index while every question was read.
+: > "$FM_STUB_CALLS"
+for k in qa qb qc qd; do think_doc failed "" > "$REPLY_DIR/$k.think.json"; done
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase think --json
+expect_code 1 "$EVAL_RC" "a provider that answered nothing misses its answered threshold"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.measured')" = "true" ] \
+  || fail "every question was read, so the phase did measure, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.state == "unmeasured") | {metric, scored, reason}]')" \
+    = '[{"metric":"think_grounded","scored":0,"reason":"the think phase produced no value for this metric"},{"metric":"think_key_facts","scored":0,"reason":"the think phase produced no value for this metric"}]' ] \
+  || fail "an unmeasured metric must name the cause it actually reached, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.metric == "think_answered") | {state, scored}]')" \
+    = '[{"state":"missed","scored":4}]' ] \
+  || fail "answered was measured over the four read questions and missed, got $EVAL_OUT"
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase think
+assert_not_contains "$EVAL_OUT" "read nothing" \
+  "a phase that read every question must never be reported as having read nothing"
+assert_not_contains "$EVAL_OUT" "MEASURED NOTHING" \
+  "a phase that read every question did measure"
 
 # --- 8. compare reports what is not like-for-like ---------------------------
 
