@@ -584,8 +584,16 @@ class EventsState {
     return this.token;
   }
 
+  // Presence-gated exactly like the rest of this feature: the store is the
+  // dashboard's own file OUTSIDE the operational home, so a dashboard with no
+  // configured ingest token must not materialize one. It could never write to
+  // it - every path into accept() goes through the same token check - and
+  // creating a store nothing can write means an uninstrumented dashboard
+  // leaves a directory behind in the operator's state root just for having
+  // been connected to.
   openStore() {
     if (this.store || this.storeError || !this.enabled) return this.store;
+    if (!this.readToken()) return null;
     try {
       this.store = new EventStore(this.config.eventStorePath, this.config.eventLimits);
       this.tail = this.store.tail();
@@ -615,7 +623,8 @@ class EventsState {
     // freshly started server whose store is full. The browser connects to the
     // stream and fetches the timeline together, and the frame the stream pushes
     // on connect wins, so an unopened store here shows the reader "no events
-    // have arrived yet" until the next accepted event.
+    // have arrived yet" until the next accepted event. An unconfigured
+    // dashboard opens nothing here; it has no events to be authoritative about.
     this.openStore();
     return {
       schema: EVENTS_ENVELOPE_SCHEMA,

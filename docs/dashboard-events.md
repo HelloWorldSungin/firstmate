@@ -50,6 +50,9 @@ The slug carries the home's basename for a human plus a digest of its absolute p
 It then pins the answer into the generated `dashboard.env`, because the systemd user manager does not inherit the installing shell's environment: a service left to re-derive the path would resolve a directory the unit never granted, fail to open its store under `ProtectHome=read-only`, and refuse every event for the life of the process.
 The shared instrumentation configuration is pinned for the same reason.
 
+The store is presence-gated like everything else here: a dashboard with no configured ingest token never opens one, so it never creates one either.
+That matters because the store is the single fleet artifact that lives outside every operational home - an uninstrumented dashboard that opened it on the first browser connection would leave a directory behind in the operator's state root, keyed to a home it can never write events for.
+
 ```sh
 bin/fm-event-store.mjs path
 bin/fm-event-store.mjs stats

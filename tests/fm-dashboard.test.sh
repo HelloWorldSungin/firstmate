@@ -9,6 +9,10 @@ set -u
 SERVER="$ROOT/bin/fm-dashboard-server.mjs"
 INSTALLER="$ROOT/bin/fm-dashboard-install.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard)
+# Most servers below are fixture servers that configure no instrumentation, so
+# this is where a dashboard that opened its store unconditionally would show up:
+# outside every FM_HOME, in the operator's own state root.
+USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 SSE_PID=
 EVENT_TOKEN=
@@ -1063,3 +1067,5 @@ test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
+pass "no agent-event store was created outside this suite's own temp space"

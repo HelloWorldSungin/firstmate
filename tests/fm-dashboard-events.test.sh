@@ -31,6 +31,10 @@ node -e 'import("node:sqlite").then(()=>process.exit(0),()=>process.exit(1))' 2>
   || { echo "skip: node:sqlite not available (Node 22+ required)"; exit 0; }
 
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-events)
+# What the operator's own state root held before this suite ran. The store lives
+# outside every FM_HOME by design, so this is what proves none of the servers
+# below put one there.
+USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 SSE_PID=
 TEST_PORT=
@@ -110,8 +114,11 @@ start_server() {  # <case-root> [extra env assignments...]
     node "$root/bin/fm-dashboard-server.mjs" > "$root/server.log" 2>&1 &
   SERVER_PID=$!
   local attempt
+  # Readiness is probed on the snapshot rather than the timeline deliberately:
+  # reading the timeline opens the event store, which would mask whether the
+  # stream's own first frame is authoritative about a store nothing has touched.
   for attempt in $(seq 1 40); do
-    curl -fsS -o /dev/null "http://127.0.0.1:$TEST_PORT/api/timeline" 2>/dev/null && return 0
+    curl -fsS -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null && return 0
     sleep 0.1
   done
   fail "event dashboard did not listen: $(cat "$root/server.log")"
@@ -1041,6 +1048,81 @@ test_live_events_reach_the_browser_over_sse() {
   pass "an accepted event is pushed to connected browsers on the existing stream"
 }
 
+# The browser connects to the stream and fetches the timeline together, and the
+# frame the stream pushes on connect is what wins. On a server that has just
+# started over a store full of history, that frame has to carry the history -
+# otherwise the reader is told no events have ever arrived until the next one
+# does.
+test_the_first_stream_frame_reports_a_store_that_was_already_full() {
+  local root log attempt
+  root=$(make_case firstframe)
+  start_server "$root"
+  post_status 'task-boot/claude' \
+    "$(one_event task-boot claude turn_ended boot1 ',"summary":"before the restart"')" >/dev/null
+  stop_server
+
+  # A fresh process over the same store. Nothing posts and nothing reads the
+  # timeline, so the connect frame is the only thing the reader has.
+  start_server "$root"
+  log="$root/firstframe.log"
+  curl --max-time 4 -Ns "http://127.0.0.1:$TEST_PORT/api/events" > "$log" 2>/dev/null &
+  SSE_PID=$!
+  for attempt in $(seq 1 40); do
+    grep -q '^event: agent_events' "$log" 2>/dev/null && break
+    sleep 0.1
+  done
+  kill "$SSE_PID" 2>/dev/null; SSE_PID=
+  grep -q '^event: agent_events' "$log" || fail "no agent event frame was pushed on connect: $(cat "$log")"
+  grep -q 'before the restart' "$log" \
+    || fail "the first stream frame reported an empty store that is not empty: $(cat "$log")"
+
+  stop_server
+  pass "the first stream frame a browser receives is authoritative about a store that already has history"
+}
+
+# The store is the dashboard's own file outside every operational home, so
+# opening it on a dashboard that can never write to it leaves a directory behind
+# in the operator's state root for nothing. Presence-gating is the whole design
+# of this feature, and the store has to obey it too.
+test_an_unconfigured_dashboard_creates_no_store() {
+  local root state port log
+  root=$(make_case nostore)
+  state="$root/state-root"
+  port=$(free_port)
+
+  # No instrumentation config, and no explicit store path: exactly the shape a
+  # dashboard has before anyone runs bin/fm-dashboard-instrument.sh enable.
+  env -u FM_DASHBOARD_EVENT_DB \
+    FM_HOME="$root/home" \
+    FM_DASHBOARD_PORT="$port" \
+    FM_DASHBOARD_POLL_SECONDS=30 \
+    FM_DASHBOARD_EVENTS_CONFIG="$root/absent/dashboard-events.json" \
+    XDG_STATE_HOME="$state" \
+    node "$root/bin/fm-dashboard-server.mjs" > "$root/nostore.log" 2>&1 &
+  SERVER_PID=$!
+  local attempt
+  for attempt in $(seq 1 40); do
+    curl -fsS -o /dev/null "http://127.0.0.1:$port/api/snapshot" 2>/dev/null && break
+    sleep 0.1
+  done
+
+  # Everything a browser does on load, in the order it does it.
+  log="$root/nostore-sse.log"
+  curl --max-time 2 -Ns "http://127.0.0.1:$port/api/events" > "$log" 2>/dev/null
+  curl -fsS -o "$root/nostore-timeline.json" "http://127.0.0.1:$port/api/timeline" \
+    || fail "the timeline endpoint failed on an unconfigured dashboard"
+  stop_server
+
+  if [ -d "$state" ]; then
+    fail "an unconfigured dashboard created a store it can never write to: $(find "$state" | tr '\n' ' ')"
+  fi
+  [ "$(jq -r '.status.ingestion' "$root/nostore-timeline.json")" = disabled ] \
+    || fail "an unconfigured dashboard did not report itself as uninstrumented: $(cat "$root/nostore-timeline.json")"
+  grep -q '^event: agent_events' "$log" \
+    || fail "an unconfigured dashboard pushed no activity frame at all: $(cat "$log")"
+  pass "a dashboard with no configured ingest token opens no event store anywhere"
+}
+
 # The live stream is a bounded fleet-wide tail that every broadcast replaces
 # whole. A task whose events have already scrolled out of it is backfilled from
 # the store, and those rows have to survive the next broadcast - otherwise the
@@ -1125,5 +1207,9 @@ test_the_opencode_adapter_translates_its_own_events
 test_an_uninstrumented_harness_degrades_to_no_event_source
 test_retention_caps_bound_the_store
 test_live_events_reach_the_browser_over_sse
+test_the_first_stream_frame_reports_a_store_that_was_already_full
+test_an_unconfigured_dashboard_creates_no_store
 test_a_selected_task_survives_a_broadcast_that_replaces_the_tail
 test_instrument_refuses_a_target_off_this_machine
+fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
+pass "no agent-event store was created outside this suite's own temp space"
