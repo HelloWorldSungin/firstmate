@@ -12,6 +12,11 @@
 // excerpt are read through the closed vocabulary below; anything the server
 // marked unknown or absent is rendered as the literal word "unknown" rather
 // than dropped, so a hostile wrapper cannot make a result invisible.
+//
+// The data layer below returns plain objects; the rendering layer turns
+// them into DOM nodes. Tests exercise the data layer without needing a
+// DOM, and the rendering layer is the only thing that touches
+// createElement.
 
 export const GBRAIN_HEALTH_SCHEMA = "fm-gbrain-health.v1";
 export const GBRAIN_SEARCH_SCHEMA = "fm-gbrain-search.v1";
@@ -20,13 +25,6 @@ const TONE_RANK = { green: 0, blue: 1, unknown: 2, amber: 3, red: 4 };
 
 function text(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function element(tag, className, textContent) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (textContent !== undefined && textContent !== null) node.textContent = textContent;
-  return node;
 }
 
 function worstTone(tones) {
@@ -45,7 +43,134 @@ function ageLabel(ageSeconds) {
   return `${Math.floor(ageSeconds / 86_400)}d ago`;
 }
 
-function healthCard({ label, tone, value, detail, tooltip }) {
+// --- the data layer ---------------------------------------------------------
+//
+// The data layer never touches the DOM. Every value below is one observation
+// of the health envelope; nothing is inferred between observations, so a
+// degraded embedding degrades retrieval but leaves synthesis and capture
+// alone, which is what the operator needs to tell which path is broken.
+
+export function buildGBrainHealth(envelope) {
+  if (!envelope || typeof envelope !== "object" || !envelope.health || typeof envelope.health !== "object") {
+    return { cards: [], overall: { tone: "unknown", label: "GBrain" }, reason: "no health envelope received" };
+  }
+  const status = envelope.status || {};
+  const cfg = envelope.config || {};
+  const h = envelope.health;
+
+  if (!h.configured) {
+    return {
+      cards: [{
+        label: "Brain",
+        tone: "unknown",
+        value: "not configured",
+        detail: text(h.index?.detail) || "This home has no GBrain configured; the brain is optional and absence is a normal state.",
+        tooltip: "",
+      }],
+      overall: { tone: "unknown", label: "GBrain" },
+      reason: "no brain configured",
+      noBrain: true,
+    };
+  }
+
+  const cards = [];
+  cards.push({
+    label: "Brain",
+    tone: "green",
+    value: text(h.version) || "configured",
+    detail: `index at ${text(h.index?.detail) || "an unknown path"}`,
+    tooltip: "GBrain is configured for this home. The version is the pinned release recorded in docs.",
+  });
+
+  const indexState = text(h.index?.state) || "unknown";
+  cards.push({
+    label: "Index",
+    tone: indexState === "ok" ? "green" : indexState === "absent" ? "amber" : "unknown",
+    value: indexState,
+    detail: indexState === "ok" ? text(h.index?.detail) : (text(h.index?.detail) || "the brain has not been bootstrapped yet"),
+    tooltip: "Whether the local PGLite index exists. absent means this home has not run the initial bootstrap.",
+  });
+
+  const retrieval = h.retrieval || {};
+  const retrievalState = text(retrieval.state) || "unknown";
+  const embedding = retrieval.embedding || {};
+  const reranker = retrieval.reranker || {};
+  const mainBrain = retrieval.main_brain || {};
+  cards.push({
+    label: "Retrieval",
+    tone: retrievalState === "ok" ? "green" : retrievalState === "degraded" ? "amber" : retrievalState === "absent" ? "unknown" : "unknown",
+    value: retrievalState,
+    detail: [
+      `${text(embedding.model) || "no embedding model"} @ ${text(embedding.endpoint) || "no endpoint"}`,
+      `${text(reranker.model) || "no reranker model"} @ ${text(reranker.endpoint) || "no endpoint"}`,
+      `${text(mainBrain.state) || "no main brain"}: ${text(mainBrain.detail) || ""}`,
+    ].filter(Boolean).join(" / "),
+    tooltip: "Local search uses embedding + reranker; the main-brain read is the optional cross-home share.",
+  });
+
+  const synthesis = h.synthesis || {};
+  const synthState = text(synthesis.state) || "unknown";
+  cards.push({
+    label: "Synthesis",
+    tone: synthState === "ok" ? "green" : synthState === "degraded" ? "amber" : "unknown",
+    value: synthState,
+    detail: `${text(synthesis.model) || "no model"} @ ${text(synthesis.endpoint) || "no endpoint"}: ${text(synthesis.detail) || ""}`,
+    tooltip: "The hosted synthesis provider. Degraded means search keeps working but 'think' is unavailable.",
+  });
+
+  const capture = h.capture || {};
+  const captureState = capture.enabled === false ? "off" : capture.failed > 0 ? "degraded" : capture.pending > 0 ? "pending" : "ready";
+  const captureDetail = capture.enabled === false
+    ? text(capture.detail) || "no brain configured for capture"
+    : [
+        `${capture.archived ?? 0} archived`,
+        `${capture.pending ?? 0} pending`,
+        `${capture.failed ?? 0} failed`,
+        capture.last_capture_at ? `last captured ${ageLabel((Date.parse(capture.last_capture_at) - Date.now()) / 1000)}` : "no successful capture",
+      ].join(" / ") + (capture.last_error ? ` · last error: ${text(capture.last_error)}` : "");
+  cards.push({
+    label: "Capture",
+    tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
+    value: captureState,
+    detail: captureDetail,
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry.",
+  });
+
+  const maintenance = h.maintenance || {};
+  const maintenanceState = text(maintenance.state) || "ready";
+  cards.push({
+    label: "Maintenance",
+    tone: maintenanceState === "ready" ? "green" : "amber",
+    value: maintenanceState,
+    detail: text(maintenance.detail) || (maintenanceState === "ready" ? "operator has not announced an upgrade or reindex" : "operator has set FM_GBRAIN_MAINTENANCE_STATE"),
+    tooltip: "Set FM_GBRAIN_MAINTENANCE_STATE to upgrading or reindexing while the brain is paused for care.",
+  });
+
+  const tones = cards.map((card) => card.tone);
+  const overall = { tone: worstTone(tones) || "unknown", label: "GBrain" };
+  return { cards, overall, status, config: cfg, noBrain: false };
+}
+
+// --- the rendering layer ----------------------------------------------------
+//
+// The rendering layer is the only code in this file that creates DOM nodes.
+// It reads from the data layer above, so the data layer can be exercised in
+// node without a DOM, and the rendering layer only touches the parts it has
+// to. Both element() and replaceChildren() are deliberately small.
+
+function element(tag, className, textContent) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (textContent !== undefined && textContent !== null) node.textContent = textContent;
+  return node;
+}
+
+function replaceChildren(parent, children) {
+  if (!parent) return;
+  parent.replaceChildren(...(children || []).filter(Boolean));
+}
+
+function healthCardNode({ label, tone, value, detail, tooltip }) {
   const card = element("article", `health-card ${tone || "unknown"}`);
   card.setAttribute("aria-label", `${label}: ${value}`);
   if (tooltip) card.title = tooltip;
@@ -58,127 +183,10 @@ function healthCard({ label, tone, value, detail, tooltip }) {
   return card;
 }
 
-// --- the panel itself -------------------------------------------------------
-
-// The panel renders six readings, each its own card so the panel keeps
-// working when the wrapper hands back partial data:
-//   - configured: presence of the brain
-//   - index: initialized vs not yet bootstrapped
-//   - retrieval: ok / degraded / absent, with the embedding / reranker /
-//     main-brain subcards each rated independently
-//   - synthesis: hosted provider, distinct from local retrieval
-//   - capture: archived / pending / failed from the durable outbox
-//   - maintenance: ready / upgrading / reindexing
-// Every value below is one observation, with no inference between them: a
-// degraded embedding degrades retrieval but leaves synthesis and capture
-// alone, which is what the operator needs to tell which path is broken.
-export function buildGBrainHealth(envelope) {
-  if (!envelope || typeof envelope !== "object") {
-    return { cards: [], overall: { tone: "unknown", label: "GBrain" }, reason: "no health envelope received" };
-  }
-  const status = envelope.status || {};
-  const cfg = envelope.config || {};
-  const h = envelope.health || {};
-
-  if (!h.configured) {
-    return {
-      cards: [healthCard({
-        label: "Brain",
-        tone: "unknown",
-        value: "not configured",
-        detail: text(h.index?.detail) || "This home has no GBrain configured; the brain is optional and absence is a normal state.",
-      })],
-      overall: { tone: "unknown", label: "GBrain" },
-      reason: "no brain configured",
-      noBrain: true,
-    };
-  }
-
-  const cards = [];
-  cards.push(healthCard({
-    label: "Brain",
-    tone: "green",
-    value: text(h.version) || "configured",
-    detail: `index at ${text(h.index?.detail) || "an unknown path"}`,
-    tooltip: "GBrain is configured for this home. The version is the pinned release recorded in docs.",
-  }));
-
-  const indexState = text(h.index?.state) || "unknown";
-  cards.push(healthCard({
-    label: "Index",
-    tone: indexState === "ok" ? "green" : indexState === "absent" ? "amber" : "unknown",
-    value: indexState,
-    detail: indexState === "ok" ? text(h.index?.detail) : (text(h.index?.detail) || "the brain has not been bootstrapped yet"),
-    tooltip: "Whether the local PGLite index exists. absent means this home has not run the initial bootstrap.",
-  }));
-
-  const retrieval = h.retrieval || {};
-  const retrievalState = text(retrieval.state) || "unknown";
-  const embedding = retrieval.embedding || {};
-  const reranker = retrieval.reranker || {};
-  const mainBrain = retrieval.main_brain || {};
-  cards.push(healthCard({
-    label: "Retrieval",
-    tone: retrievalState === "ok" ? "green" : retrievalState === "degraded" ? "amber" : retrievalState === "absent" ? "unknown" : "unknown",
-    value: retrievalState,
-    detail: [
-      `${text(embedding.model) || "no embedding model"} @ ${text(embedding.endpoint) || "no endpoint"}`,
-      `${text(reranker.model) || "no reranker model"} @ ${text(reranker.endpoint) || "no endpoint"}`,
-      `${text(mainBrain.state) || "no main brain"}: ${text(mainBrain.detail) || ""}`,
-    ].filter(Boolean).join(" / "),
-    tooltip: "Local search uses embedding + reranker; the main-brain read is the optional cross-home share.",
-  }));
-
-  const synthesis = h.synthesis || {};
-  const synthState = text(synthesis.state) || "unknown";
-  cards.push(healthCard({
-    label: "Synthesis",
-    tone: synthState === "ok" ? "green" : synthState === "degraded" ? "amber" : "unknown",
-    value: synthState,
-    detail: `${text(synthesis.model) || "no model"} @ ${text(synthesis.endpoint) || "no endpoint"}: ${text(synthesis.detail) || ""}`,
-    tooltip: "The hosted synthesis provider. Degraded means search keeps working but 'think' is unavailable.",
-  }));
-
-  const capture = h.capture || {};
-  const captureState = capture.enabled === false ? "off" : capture.failed > 0 ? "degraded" : capture.pending > 0 ? "pending" : "ready";
-  const captureDetail = capture.enabled === false
-    ? text(capture.detail) || "no brain configured for capture"
-    : [
-        `${capture.archived ?? 0} archived`,
-        `${capture.pending ?? 0} pending`,
-        `${capture.failed ?? 0} failed`,
-        capture.last_capture_at ? `last captured ${ageLabel((Date.parse(capture.last_capture_at) - Date.now()) / 1000)}` : "no successful capture",
-      ].join(" / ") + (capture.last_error ? ` · last error: ${text(capture.last_error)}` : "");
-  cards.push(healthCard({
-    label: "Capture",
-    tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
-    value: captureState,
-    detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry.",
-  }));
-
-  const maintenance = h.maintenance || {};
-  const maintenanceState = text(maintenance.state) || "ready";
-  cards.push(healthCard({
-    label: "Maintenance",
-    tone: maintenanceState === "ready" ? "green" : "amber",
-    value: maintenanceState,
-    detail: text(maintenance.detail) || (maintenanceState === "ready" ? "operator has not announced an upgrade or reindex" : "operator has set FM_GBRAIN_MAINTENANCE_STATE"),
-    tooltip: "Set FM_GBRAIN_MAINTENANCE_STATE to upgrading or reindexing while the brain is paused for care.",
-  }));
-
-  const tones = cards.map((card) => {
-    const m = (card.className.match(/health-card (\w+)/) || [])[1];
-    return m;
-  });
-  const overall = { tone: worstTone(tones) || "unknown", label: "GBrain" };
-  return { cards, overall, status, config: cfg, noBrain: false };
-}
-
 export function paintGBrainPanel(elements, envelope) {
   const { panel, strip, notice, searchForm, searchInput, searchButton, results, config } = elements;
   const view = buildGBrainHealth(envelope);
-  replaceChildren(strip, view.cards);
+  replaceChildren(strip, view.cards.map(healthCardNode));
 
   const status = view.status || {};
   let noticeText = "";
@@ -222,11 +230,11 @@ export function paintGBrainPanel(elements, envelope) {
       : "search captured reports and notes";
   }
   if (searchButton) searchButton.disabled = searchDisabled;
+
   // The hint lives next to the search affordance, not above it, so the
   // affordance is the first thing a reader reaches.
   const hint = searchDisabled ? null : element("p", "empty-inline", `up to ${config?.result_limit_max || 16} results; the brain may take a few seconds on a cold index`);
   if (searchForm && hint) {
-    // Replace any prior hint so the panel never accumulates them.
     const prior = searchForm.parentNode?.querySelector(".gbraintron-hint");
     if (prior) prior.remove();
     hint.classList.add("gbraintron-hint");
@@ -288,7 +296,10 @@ export function paintGBrainSearchResults(elements, payload, error) {
 }
 
 export function searchFailure(reason, detail) {
-  const tone = reason === "timed_out" || reason === "no_corpus_answered" || reason === "search_busy" ? "amber" : "red";
+  // Amber is reserved for "wait and try again" - a transient fault the
+  // operator can recover from. Red is reserved for a permanent or hostile
+  // failure, including anything that looks like a malformed request.
+  const tone = (reason === "timed_out" || reason === "no_corpus_answered" || reason === "search_busy" || reason === "query_too_short") ? "amber" : "red";
   return { tone, text: `${searchReasonLabel(reason)}${detail ? `: ${detail}` : ""}` };
 }
 
@@ -308,9 +319,4 @@ export function searchReasonLabel(reason) {
     case "unsupported_schema":
     default: return "The search could not be answered.";
   }
-}
-
-function replaceChildren(parent, children) {
-  if (!parent) return;
-  parent.replaceChildren(...(children || []).filter(Boolean));
 }

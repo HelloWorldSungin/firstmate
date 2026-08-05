@@ -108,6 +108,18 @@ Each board card carries a Timeline button that narrows the view to that one agen
 It is off until you turn it on, and [`docs/dashboard-events.md`](dashboard-events.md) owns the whole contract: how to enable and disable it, which harnesses have an adapter and what the others degrade to, what an event may and may not contain, where the events are stored and why that is not the fleet's own data directory, and why a dashboard that is down or slow costs a working agent nothing.
 The short version worth knowing before reading it: instrumentation is one command on and one command off, redaction is an allowlist at both the producing and the receiving end, and the reporting hooks are additive to the ones firstmate already installs and cannot change what any of them decide.
 
+## GBrain
+
+The GBrain panel reads the optional GBrain archive every fleet-health poll and exposes its presence, version, index status, retrieval, synthesis, capture outbox, and maintenance state. None of those are fleet signals: the brain is presence-gated, and a stopped, slow, or unconfigured brain degrades the panel, never the dashboard.
+
+A home without a brain reports configured: false and renders a single card that says so, which is the normal state of a fleet that has not adopted GBrain. A configured home whose brain is not yet bootstrapped shows index.state: absent, not a fault. A configured home whose embedding or reranker endpoint is unreachable reports retrieval.state: degraded, while synthesis.state stays ok because local search keeps working. A configured home whose hosted synthesis provider is down reports synthesis.state: degraded, while retrieval stays ok. A brain the operator has paused for an upgrade reports maintenance.state: upgrading and the operator's own detail text.
+
+The search affordance below the strip is a POST to /api/gbrain/search that invokes bin/fm-recall.sh with the query passed as one argv element. Shell metacharacters in a query arrive at the wrapper as discrete argv elements and never as shell syntax. Results are returned with a closed vocabulary: source, slug, title, score, excerpt, stale; the server rewrites unknown fields rather than passing them through, and the page renders every result with createElement and textContent, so a stored brain document cannot become markup.
+
+The whole panel is presence-gated, so removing config/gbrain.json is a complete removal: no polling cost, no UI element, no failing probes.
+
+The panel lives between Board and Activity. Its filter panel shares the same 940px-edge bound the history filter uses, because both panels gate a list of bounded width; that bound is expressed against the page gutter rather than a breakpoint so it tracks the viewport continuously.
+
 ## Rendered reports
 
 A retained report is arbitrary content written by a worker, so the dashboard renders it under an explicit policy that [`assets/dashboard/markdown.js`](../assets/dashboard/markdown.js) implements and `tests/fm-dashboard-history.test.sh` pins with hostile fixtures.
