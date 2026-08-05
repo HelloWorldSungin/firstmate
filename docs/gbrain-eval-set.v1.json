@@ -3,7 +3,8 @@
   "id": "fleet-history",
   "version": 2,
   "created": "2026-08-04",
-  "corpus_shape": "Firstmate task knowledge captured from durable outcome manifests and scout reports (docs/gbrain-capture.md). Roughly a quarter of the documents are manifest-only ship records whose whole content is a title, an outcome line, and a pull-request URL; the rest are long investigation reports.",
+  "updated": "2026-08-05",
+  "corpus_shape": "Firstmate task knowledge captured from durable outcome manifests and scout reports (docs/gbrain-capture.md). At v1 authoring 16 of 64 documents were manifest-only ship records whose whole content is a title, an outcome line, and a pull-request URL. At v2 authoring the corpus had grown to 78 documents, of which 30 were manifest-only; the rest are long investigation reports.",
   "query": {
     "scope": "local",
     "limit": 8,

@@ -17,8 +17,9 @@ Every migration, reinitialization, and rollback below ran on a disposable copy o
 | Query | `scope=local limit=8 top_k=5 excerpt=400 think_max_answer=8000` |
 | Evaluation set | `fleet-history` v1, `sha256:51238ce03cbe265ce6d797575a60b4502dba03efe1661122c733d4c7d4f3985f`, the twenty-question version those runs were taken against |
 
-The corpus is the home's own captured task knowledge: 63 completed tasks composed from their durable outcome manifests and scout reports, plus one note.
-Sixteen of those documents are manifest-only ship records whose entire body is a title, an outcome line, and a pull-request URL, so the set measures retrieval over both long reports and near-empty records.
+That 64-document corpus was the home's own captured task knowledge: 63 completed tasks composed from their durable outcome manifests and scout reports, plus one note.
+Sixteen of those documents were manifest-only ship records whose entire body was a title, an outcome line, and a pull-request URL, so the runs below measured retrieval over both long reports and near-empty records.
+That is the composition those runs were taken against rather than a description of the live corpus, which has since grown; what it holds now is recorded with the post-fix runs below.
 
 ## Baseline
 
@@ -161,7 +162,8 @@ The section below is the fix for that defect and its measurement, so the numbers
 The merge contract is owned by [`../gbrain-scoping.md`](../gbrain-scoping.md), which describes the rank merge rather than the superseded score sort.
 
 The evaluation set was widened from twenty questions to forty for this measurement, so the one-question effect above could be sized against a wider set rather than only re-detected.
-The two runs below - `score re-sort (pre-fix), set v2` and `rank merge (post-fix), set v2` - were both measured against `fleet-history` **v2**, `sha256:aae6e65e0baf556c6ef0d783500ea4cee9cbdcdc70bbe2ef6c65ca800d2ed13e`, on a live corpus that had grown to 78 documents, 547 chunks, revision `sha256:66a3805ea001e62fc3d658f3e97a47fd01827f0b23a6f0f5ba9c034d98043e6f`, with the GBrain version, embedding model, reranker, and query settings unchanged from the configuration table above.
+The two runs below - `score re-sort (pre-fix), set v2` and `rank merge (post-fix), set v2` - were both measured against `fleet-history` **v2**, `sha256:8246d22fefc1d1abc3ea1430357758db7655de3fb2b44eb970017d41e11f3e38`, on a live corpus that had grown to 78 documents, 547 chunks, revision `sha256:66a3805ea001e62fc3d658f3e97a47fd01827f0b23a6f0f5ba9c034d98043e6f`, with the GBrain version, embedding model, reranker, and query settings unchanged from the configuration table above.
+That corpus is 73 completed tasks and 5 notes, 30 of them manifest-only ship records, so the widened set still measures retrieval over both long reports and near-empty records.
 The baseline run drives the pre-fix wrapper through the harness's own `FM_RECALL_BIN`, so both runs are the same harness reading the same index and differ only in the wrapper's merge:
 
 ```console
