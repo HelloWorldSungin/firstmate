@@ -63,6 +63,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-gbrain-capture-lib.sh` | Derive a captured document's identity, redact a body before it reaches disk, and own the capture outbox's wire shape |
 | `fm-gbrain-capture.sh`   | Capture a finished task's knowledge into this home's own brain, with a durable outbox, bounded delivery, retry, and backfill |
 | `fm-recall.sh`           | The retrieval surface firstmate and crewmates use to search a home's brain and the shared main brain, and to run hosted `think` |
+| `fm-gbrain-eval.sh`      | Score a home brain's retrieval and hosted synthesis separately against a versioned evaluation set, recording the configuration and corpus revision the numbers belong to |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |

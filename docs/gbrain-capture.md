@@ -80,7 +80,7 @@ The receipt always names the page address, even while the item is pending, becau
 ```sh
 bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, redacted
 bin/fm-gbrain-capture.sh process                # retry every pending item
-bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted
+bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted, and re-deliver one already captured
 bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report
 bin/fm-gbrain-capture.sh backfill --dry-run     # report what a sweep would capture
 ```
@@ -91,6 +91,8 @@ A refused document is counted and receipted without stopping the sweep, and `bac
 Backfill writes each task's `state/<id>.gbrain` receipt but never republishes a manifest that is already on disk, so a task captured after its own teardown is found through `status` and `show` rather than through its manifest, while a task captured during teardown carries the reference in the manifest itself.
 
 Run a backfill once after adopting a brain, and after a long outage.
+
+The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
 
 ## Recovering from a damaged record
 
