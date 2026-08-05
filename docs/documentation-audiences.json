@@ -251,6 +251,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/dashboard-events.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/documentation-audiences.md",
       "audience": "maintainer-architecture"
     },

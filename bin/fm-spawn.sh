@@ -1801,6 +1801,24 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
+
+# Optional dashboard event instrumentation, wired into the same per-task hook
+# files the busy-state contract already owns. It is additive in the strict
+# sense: with instrumentation off every wiring below is byte-for-byte the file
+# it was before this existed, which is what makes removing the instrumentation
+# restore stock harness behaviour rather than merely quiet it.
+#
+# The emitter can never change a hook's decision - it exits 0 on every path,
+# writes nothing to either stream, and does its work in a detached child - so an
+# entry added here cannot alter the exit status, the timing, or the ordering of
+# the turn-end guard or of the watcher auto-arm that fire on the same events.
+# bin/fm-event-emit.sh's header owns those guarantees and
+# tests/fm-dashboard-events.test.sh proves them against the real guards.
+FM_EVENTS_CONFIG=${FM_DASHBOARD_EVENTS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/firstmate/dashboard-events.json}
+fm_events_enabled() {
+  [ -f "$FM_EVENTS_CONFIG" ] && [ -f "${FM_EVENTS_CONFIG%.json}.curlrc" ] \
+    && [ -x "$FM_ROOT/bin/fm-event-emit.sh" ]
+}
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
@@ -1854,13 +1872,61 @@ if [ "$KIND" != secondmate ]; then
       j_stop=$(json_escape "touch $(fm_launch_shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      # Every event entry below is a separate hook whose command always exits 0
+      # and prints nothing, so it joins these arrays without touching what the
+      # existing entries decide. Each stays empty unless instrumentation is on.
+      ev_submit='' ev_stop='' ev_sessionend='' ev_pretool='' ev_posttool='' ev_sessionstart=''
+      if fm_events_enabled; then
+        emit_prefix="$(fm_launch_shell_quote "$FM_ROOT/bin/fm-event-emit.sh") --task $(fm_launch_shell_quote "$ID") --harness claude --from-stdin --type"
+        emit_entry() { printf '{"hooks":[{"type":"command","command":"%s"}]}' "$(json_escape "$emit_prefix $1")"; }
+        ev_submit=",$(emit_entry prompt_submitted)"
+        ev_stop=",$(emit_entry turn_ended)"
+        ev_sessionend=",$(emit_entry session_end)"
+        ev_sessionstart=",\"SessionStart\":[$(emit_entry session_start)]"
+        ev_pretool=",\"PreToolUse\":[{\"matcher\":\".*\",\"hooks\":[{\"type\":\"command\",\"command\":\"$(json_escape "$emit_prefix tool_started")\"}]}]"
+        ev_posttool=",\"PostToolUse\":[{\"matcher\":\".*\",\"hooks\":[{\"type\":\"command\",\"command\":\"$(json_escape "$emit_prefix tool_finished")\"}]}]"
+      fi
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}$ev_submit],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}$ev_stop],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}$ev_sessionend]$ev_sessionstart$ev_pretool$ev_posttool}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
+      # OpenCode's second event adapter, wired into the plugin that already
+      # observes this task's session lifecycle. It reports through the same
+      # emitter Claude uses, so the wire stays harness-agnostic: this adapter
+      # only translates OpenCode's own event names into the shared vocabulary.
+      # Empty unless instrumentation is on, so the generated plugin is otherwise
+      # byte-for-byte what it was.
+      oc_event_fn='' oc_event_idle='' oc_event_hooks=''
+      if fm_events_enabled; then
+        oc_event_fn="
+const agentEvent = (type, extra = []) =>
+  new Promise((resolve) => {
+    execFile(\"$FM_ROOT/bin/fm-event-emit.sh\", [
+      \"--task\", \"$ID\", \"--harness\", \"opencode\", \"--type\", type, ...extra,
+    ], () => resolve());
+  });"
+        # These are OpenCode's own semantic hooks, so the timeline reads one
+        # prompt per prompt and one tool entry per tool call. The busy-state
+        # branch below is deliberately left alone: session.status flips busy and
+        # idle at every step inside a single turn, which is exactly right for an
+        # idempotent state writer and would draw the same turn over and over on
+        # a timeline. Verified live on OpenCode 1.18.4.
+        oc_event_hooks="
+    \"chat.message\": async (input) => {
+      await agentEvent(\"prompt_submitted\", [\"--session\", String(input.sessionID)]);
+    },
+    \"tool.execute.before\": async (input) => {
+      await agentEvent(\"tool_started\", [\"--tool\", String(input.tool), \"--session\", String(input.sessionID)]);
+    },
+    \"tool.execute.after\": async (input) => {
+      await agentEvent(\"tool_finished\", [\"--tool\", String(input.tool), \"--session\", String(input.sessionID), \"--outcome\", \"ok\"]);
+    },"
+        oc_event_idle="
+        await agentEvent(\"turn_ended\", [\"--session\", String(event.properties.sessionID)]);"
+      fi
       cat > "$WT/.opencode/plugins/fm-busy-state.js" <<EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
@@ -1878,10 +1944,10 @@ const busyEvent = (state, event) =>
       "apply", "$STATE_REAL", "$ID", state,
       "--gen", "$BUSY_GEN", "--source", "opencode-plugin", "--event", event,
     ], () => resolve());
-  });
+  });$oc_event_fn
 export const FmBusyState = async () => {
   let activeSession = null;
-  return {
+  return {$oc_event_hooks
     event: async ({ event }) => {
       if (event.type === "session.status") {
         const sessionID = event.properties.sessionID;
@@ -1904,7 +1970,7 @@ export const FmBusyState = async () => {
         }
         await new Promise((resolve) => {
           execFile("touch", ["$TURNEND"], () => resolve());
-        });
+        });$oc_event_idle
       }
     },
   };

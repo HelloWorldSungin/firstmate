@@ -65,6 +65,10 @@ The exact hook files, commands, scoping rules, and fail-open tradeoffs are owned
 `docs/verification/supervision.md` "Turn-end guard" owns active validation evidence.
 When changing any primary turn-end hook, validate the real harness behavior in a scratch project or throwaway home before trusting it, then update that doc and the relevant concise fact below.
 
+The same per-task hook files optionally carry the dashboard's agent-event reporting for `claude` and `opencode` when a home has instrumentation enabled.
+Those entries are additive and always exit 0 silently off the critical path, so they cannot change any guard's decision, and they are absent entirely otherwise; [`docs/dashboard-events.md`](../../../docs/dashboard-events.md) owns that contract.
+Preserve that property when editing the per-task wiring in `bin/fm-spawn.sh`.
+
 ## Primary pre-arm (PreToolUse) seatbelt
 
 The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.

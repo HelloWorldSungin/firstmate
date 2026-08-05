@@ -109,7 +109,7 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
 .filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 12px 12px; }
 .filter-grid label { min-width: 0; color: var(--faint); font: 600 9.5px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
 .filter-grid select { width: 100%; min-height: 44px; margin-top: 6px; padding: 0 31px 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--fg); font-size: 13px; letter-spacing: normal; text-transform: none; }
-#clear-filters { min-height: 44px; align-self: end; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--dim); font-size: 12px; font-weight: 650; cursor: pointer; }
+#clear-filters, #history-clear, #activity-clear { min-height: 44px; align-self: end; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--dim); font-size: 12px; font-weight: 650; cursor: pointer; }
 .secondmate-lane { margin: 0 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .lane-title { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: var(--faint); font: 650 9.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
 .count { color: var(--dim); letter-spacing: 0; }
@@ -205,6 +205,29 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
 .inbox-empty { display: flex; align-items: flex-start; gap: 11px; padding: 22px 18px; border: 1px dashed var(--border-strong); border-radius: 13px; }
 .inbox-empty strong { display: block; margin-bottom: 5px; font-size: 15px; }
 .inbox-empty p { max-width: 60ch; margin: 0; color: var(--dim); font-size: 12.5px; line-height: 1.55; }
+
+/* Live agent activity */
+.activity-section { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.activity-notices:empty { display: none; }
+.activity-notices .notice { border: 1px solid var(--border-strong); border-radius: 12px; margin: 0 14px; }
+.activity-list { display: flex; min-width: 0; flex-direction: column; gap: 2px; margin: 0; padding: 0 14px; list-style: none; }
+.activity-list:empty { display: none; }
+.activity-row { display: flex; min-width: 0; align-items: baseline; gap: 10px; padding: 7px 10px; border-radius: 9px; }
+.activity-row:nth-child(odd) { background: var(--surface); }
+/* The clock column is fixed-width and tabular so the times form a straight
+   edge instead of jittering as the digits change. */
+.activity-time { flex: none; width: 8ch; color: var(--faint); font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.activity-body { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.activity-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; font-size: 13px; }
+.activity-tool { padding: 1px 6px; border-radius: 6px; background: var(--raised); color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+.activity-meta { color: var(--faint); font-size: 11.5px; overflow-wrap: anywhere; }
+.activity-summary { color: var(--dim); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.card-timeline { align-self: flex-start; min-height: 32px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 8px; background: transparent; color: var(--dim); font-family: inherit; font-size: 12px; cursor: pointer; }
+.card-timeline:hover { color: var(--fg); border-color: var(--fg); }
+.chip { padding: 1px 7px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--dim); font: 600 10.5px/1.6 var(--mono); }
+.chip.green { border-color: var(--green); background: var(--green-bg); color: var(--green); }
+.chip.red { border-color: var(--red); background: var(--red-bg); color: var(--red); }
+.chip.amber { border-color: var(--amber); background: var(--amber-bg); color: var(--amber); }
 
 /* Completed-work history */
 .filter-grid input { width: 100%; min-height: 44px; margin-top: 6px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--fg); font-family: var(--sys); font-size: 13px; letter-spacing: normal; text-transform: none; }

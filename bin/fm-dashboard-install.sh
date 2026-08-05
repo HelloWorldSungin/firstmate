@@ -113,6 +113,18 @@ case "$XDG_CONFIG_ROOT$NODE_BIN" in
   *$'\n'*|*%*) echo "fm-dashboard-install: tool and configuration paths containing newlines or % are unsupported" >&2; exit 2 ;;
 esac
 
+# The service is otherwise read-only towards the whole filesystem, and that is
+# the point of it. The agent-event store is the one directory it may write, so
+# the unit names exactly that directory and nothing else. The server itself owns
+# the rule that derives the path, so this asks it rather than re-deriving it.
+EVENT_DIR=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$SERVER" --event-store-path 2>/dev/null || true)
+EVENT_DIR=${EVENT_DIR%/*}
+[ -n "$EVENT_DIR" ] || { echo "fm-dashboard-install: could not resolve the agent-event store path" >&2; exit 1; }
+case "$EVENT_DIR" in
+  *$'\n'*|*%*) echo "fm-dashboard-install: event store paths containing newlines or % are unsupported" >&2; exit 2 ;;
+esac
+install -d -m 700 "$EVENT_DIR"
+
 systemd_quote() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -146,6 +158,7 @@ Type=simple
 EOF
   printf 'EnvironmentFile="%s"\n' "$(systemd_quote "$ENV_FILE")"
   printf 'ExecStart="%s" "%s"\n' "$(systemd_quote "$NODE_BIN")" "$(systemd_quote "$SERVER")"
+  printf 'ReadWritePaths=-"%s"\n' "$(systemd_quote "$EVENT_DIR")"
   cat <<'EOF'
 Restart=on-failure
 RestartSec=3
