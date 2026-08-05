@@ -32,7 +32,15 @@
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
-#                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
+#                          count in the reason - UNLESS its validation run is
+#                          demonstrably progressing, which holds the escalation
+#                          and restarts the timer, since a crew parked on a
+#                          moving run is quiet by design. That hold needs
+#                          positive evidence: no run, a run parked at a gate, a
+#                          stranded step, an unreadable status, or a confidently
+#                          dead agent all escalate exactly as before, and a
+#                          stranded run names the step that stopped. At
+#                          FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
@@ -320,6 +328,23 @@ recorded_windows() {
 # below).
 FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
+# This pane's validation-run progress class, through the shared wedge policy in
+# fm-classify-lib.sh (crew_wedge_progress); this resolves the two inputs it
+# needs from the watcher's own plumbing.
+#
+# The read costs a bounded no-mistakes call, which is exactly why it lives HERE
+# and not in the poll loop above: it runs once per would-be alarm (at most once
+# per STALE_ESCALATE_SECS per pane), while the poll path runs every FM_POLL
+# seconds and must stay cheap - the same reason the wedge timer never re-reads
+# crew state.
+wedge_run_progress() {  # <window>
+  local win=$1 task agent
+  task=$(window_to_task "$win" "$STATE")
+  [ -n "$task" ] || { printf 'none'; return; }
+  agent=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent=unknown
+  crew_wedge_progress "$task" "$agent"
+}
+
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
@@ -328,8 +353,23 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
+#
+# One gate stands between the elapsed timer and the alarm: a crew whose
+# validation run is demonstrably PROGRESSING is quiet by design (review and
+# test steps routinely emit one opening line and then work silently for ten to
+# eighteen minutes), so it holds instead of escalating and restarts the timer,
+# putting the next look one full window away rather than one poll away. It is
+# a suppressor that needs positive evidence: an absent, parked, stranded, or
+# unreadable run leaves this path byte-identical to what it was, so a crew
+# wedged with no run at all still escalates exactly as before, and a crew whose
+# own run has stranded still escalates - now naming the step that stopped.
+#
+# The cost of a hold is bounded and paid once: a crew that wedges immediately
+# after a hold waits at most one more STALE_ESCALATE_SECS window before its
+# escalation, because the restarted timer re-asks. That is a delay, never a
+# loss, and it buys back every escalation a healthy parked crew used to spend.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason progress detail
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -339,11 +379,28 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        progress=$(wedge_run_progress "$win")
+        detail=""
+        case "$progress" in
+          progressing*)
+            # Restart the timer rather than clearing it: the next look is then a
+            # full window away instead of one poll away, so a healthy parked
+            # crew costs one bounded read per window, not one per poll.
+            date +%s > "$since_file"
+            triage_log "held $label wedge escalation ($progress, idle ${age}s): $win"
+            return 0
+            ;;
+          stranded*)
+            detail=", validation run stranded"
+            [ -n "$(run_progress_detail "$progress")" ] \
+              && detail="$detail: $(run_progress_detail "$progress")"
+            ;;
+        esac
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
-        reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
+        reason="stale: $win (idle ${age}s, possible wedge, escalation $n$detail)"
         if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
-          reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
+          reason="stale: $win (idle ${age}s, possible wedge, escalation $n$detail, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"

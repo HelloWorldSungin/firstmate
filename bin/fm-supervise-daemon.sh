@@ -45,7 +45,13 @@
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
 #     gets its own longer, self-widening pause re-surface recheck (housekeeping
-#     step 2b below), never a wedge escalation.
+#     step 2b below), never a wedge escalation. One further hold applies at the
+#     escalation point itself: a crew whose validation run is demonstrably
+#     PROGRESSING (bin/fm-run-progress.sh, via the shared crew_wedge_progress
+#     policy) restarts its clock rather than alarming, because such a crew is
+#     quiet by design. That hold needs positive evidence of progress - a run
+#     that is absent, parked, stranded, or unreadable, or an endpoint whose
+#     agent is confidently dead, escalates exactly as before.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -657,6 +663,21 @@ stale_window_is_busy() {  # <window> <state>
   [ "${verdict%% *}" = busy ]
 }
 
+# daemon_wedge_progress: the validation-run progress class for <window>, through
+# the shared wedge policy in bin/fm-classify-lib.sh (crew_wedge_progress), with
+# this daemon's own backend plumbing supplying the endpoint liveness verdict.
+#
+# Called only where an escalation would otherwise be raised, never on the poll
+# path: the read behind it costs a bounded no-mistakes call, so it is paid once
+# per would-be alarm.
+daemon_wedge_progress() {  # <window> <state>
+  local win=$1 state=$2 task agent
+  task=$(window_to_task "$win" "$state")
+  [ -n "$task" ] || { printf 'none'; return; }
+  agent=$(fm_backend_agent_alive "$(task_window_backend "$win" "$state")" "$win" 2>/dev/null) || agent=unknown
+  crew_wedge_progress "$task" "$agent"
+}
+
 escalate_add() {  # <state> <distilled-item>
   local state=$1 item=$2 buf
   buf="$state/.subsuper-escalations"
@@ -985,7 +1006,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file progress
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1042,7 +1063,22 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+      *) progress=$(daemon_wedge_progress "$win" "$state")
+         case "$progress" in
+           progressing*)
+             # A crew parked on a validation run that is demonstrably MOVING is
+             # quiet by design, not wedged. Restart the marker's clock instead
+             # of escalating, so the next look is a full window away; every
+             # other progress answer falls through to the unchanged escalation
+             # below. The always-on watcher applies the identical policy
+             # through the same owner (crew_wedge_progress).
+             _now > "$marker"
+             log "held wedge escalation for $win ($progress, stale ${age}s)"
+             continue
+             ;;
+           stranded*) escalate_add "$state" "stale persisted ${age}s (possible wedge, validation run stranded: $(run_progress_detail "$progress")): $win" ;;
+           *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win" ;;
+         esac
          stale_marker_remove "$win" "$state" ;;
     esac
   done
