@@ -66,6 +66,36 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 
+# How many times an UNCHANGED declared wait may be re-surfaced before its recheck
+# cadence stops widening. A fixed window re-surfaces a wait that has not changed
+# at the same rate forever: three tasks correctly parked on one external decision
+# cost a supervisor a recheck each per window, every window, for as long as the
+# decision takes - and every one of those rechecks confirms the identical thing.
+# Widening the window per unchanged recheck keeps the property the recheck exists
+# for (a forgotten hold still cannot rot invisibly) while making a long, healthy
+# wait progressively cheap. Capped rather than unbounded so the cadence has a
+# floor no wait can outrun: 3 doublings is 8x the base window (8 hours at the
+# default), which still re-surfaces every parked wait several times a day.
+FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT=3
+
+# Effective re-surface window for a declared wait already re-surfaced <streak>
+# times without changing. The ONE owner of the backoff both consumers apply, for
+# the same reason FM_PAUSE_RESURFACE_SECS itself has one: the watcher and the
+# away-mode daemon must not drift into two different cadences for the same wait.
+# Any interruption to the wait - the crew resuming, the status line changing, the
+# pause being cleared - drops the streak with the rest of the pause tracking, so
+# the next distinct wait starts at the base window again.
+pause_resurface_window() {  # <streak> -> seconds
+  local streak=${1:-0} base cap
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  cap=${FM_PAUSE_RESURFACE_MAX_STREAK:-$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT}
+  case "$cap" in ''|*[!0-9]*) cap=$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT ;; esac
+  [ "$streak" -gt "$cap" ] && streak=$cap
+  base=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  case "$base" in ''|*[!0-9]*) base=$FM_PAUSE_RESURFACE_SECS_DEFAULT ;; esac
+  printf '%s' "$(( base * (1 << streak) ))"
+}
+
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
 # below for the status-fold contract. The transfer verb is written only after

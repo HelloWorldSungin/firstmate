@@ -164,9 +164,10 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
 # bounded cadence, while a live or ambiguously read agent still surfaces once.
-# These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
-# longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
-PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+# These cases re-surface once for a recheck every pause_resurface_window (the
+# shared owner in fm-classify-lib.sh, which resolves FM_PAUSE_RESURFACE_SECS and
+# widens the window per unchanged recheck) - far longer than the wedge threshold,
+# but finite so a forgotten hold cannot rot invisibly.
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -376,8 +377,16 @@ busy_turn_over_age() {  # <task>
 # timer would. A .paused-resurfaced-<key> throttle marker records the last
 # re-surface epoch so, once past the window, it fires once per window rather than
 # every poll. Advances the stale suppressor to <hash> and flags the key paused.
+#
+# Each re-surface that finds the SAME wait still declared widens the next window
+# (pause_resurface_window, the shared owner of the backoff, counting the streak
+# in .paused-streak-<key>): a wait nobody can act on yet - a captain-owned merge
+# decision, an upstream release - otherwise costs a supervisor the identical
+# recheck at the identical rate for as long as it lasts. The recheck still
+# happens, so a forgotten hold cannot rot invisibly; it just stops nagging. The
+# streak dies with the rest of the pause tracking the moment the wait changes.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason streak resurface_window
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -388,10 +397,14 @@ handle_paused_stale() {  # <window> <task> <hash>
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+  streak=$(cat "$STATE/.paused-streak-$key" 2>/dev/null || echo 0)
+  resurface_window=$(pause_resurface_window "$streak")
+  if [ "$age" -ge "$resurface_window" ] && [ "$rf_age" -ge "$resurface_window" ]; then
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
+    case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+    echo $(( streak + 1 )) > "$STATE/.paused-streak-$key"
     wake "$reason"
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
@@ -402,7 +415,8 @@ clear_pause_state() {  # <window>
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" \
+    "$STATE/.paused-streak-$key"
 }
 
 clear_pause_tracking() {  # <window>

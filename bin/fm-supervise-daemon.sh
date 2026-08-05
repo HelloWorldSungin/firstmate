@@ -469,8 +469,9 @@ clear_pause_tracking() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
-  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-stale-$key" \
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-paused-streak-$key" "$state/.subsuper-stale-$key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
+    "$state/.paused-streak-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
 }
 
@@ -957,7 +958,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak streak_file
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1024,10 +1025,12 @@ housekeeping() {  # <state>
   # and never escalated as one - but it MUST re-surface, so a forgotten pause cannot
   # rot invisibly. Past the window: busy (resumed) or gone -> drop; still idle and
   # still declaring the pause -> escalate a recheck digest and reset the marker so
-  # the window repeats.
-  pause_secs=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  # the window repeats. Each recheck that finds the same wait unchanged widens the
+  # next window through the shared pause_resurface_window owner, so a long healthy
+  # wait costs progressively less here exactly as it does in the watcher.
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
+    case "$marker" in *.subsuper-paused-streak-*) continue ;; esac
     key="${marker##*.subsuper-paused-}"
     win=$(window_for_task "$key" "$state" 2>/dev/null || true)
     if [ -z "$win" ]; then
@@ -1040,18 +1043,23 @@ housekeeping() {  # <state>
       continue
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
+    streak_file="$state/.subsuper-paused-streak-$key"
+    pause_secs=$(pause_resurface_window "$(cat "$streak_file" 2>/dev/null || echo 0)")
     [ "$age" -ge "$pause_secs" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      0) rm -f "$marker" ;;
-      2) rm -f "$marker" ;;
+      0) rm -f "$marker" "$streak_file" ;;
+      2) rm -f "$marker" "$streak_file" ;;
       *)
         last=$(last_status_line "$state/$task.status")
         if [ -n "$last" ] && status_is_paused "$last"; then
           escalate_add "$state" "paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
           _now > "$marker"
+          streak=$(cat "$streak_file" 2>/dev/null || echo 0)
+          case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+          echo $(( streak + 1 )) > "$streak_file"
         else
-          rm -f "$marker"
+          rm -f "$marker" "$streak_file"
         fi
         ;;
     esac

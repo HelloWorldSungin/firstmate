@@ -871,6 +871,122 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   pass "a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated"
 }
 
+# --- pause re-surface backoff ------------------------------------------------
+# The window widens per unchanged recheck and then stops widening, so a long
+# healthy wait gets progressively cheap without ever becoming invisible.
+test_pause_resurface_window_backs_off_and_caps() {
+  local w0 w1 w3 w9 wjunk
+  # shellcheck disable=SC2034 # Read by pause_resurface_window in the sourced fm-classify-lib.sh.
+  FM_PAUSE_RESURFACE_SECS=100
+  w0=$(pause_resurface_window 0)
+  w1=$(pause_resurface_window 1)
+  w3=$(pause_resurface_window 3)
+  w9=$(pause_resurface_window 9)
+  wjunk=$(pause_resurface_window "")
+  unset FM_PAUSE_RESURFACE_SECS
+  [ "$w0" = 100 ] || fail "a first recheck must use the base window, got $w0"
+  [ "$w1" = 200 ] || fail "the second recheck must double the window, got $w1"
+  [ "$w3" = 800 ] || fail "the fourth recheck must be 8x the base window, got $w3"
+  [ "$w9" = 800 ] || fail "the window must stop widening at the cap, got $w9"
+  [ "$wjunk" = 100 ] || fail "a missing streak must fall back to the base window, got $wjunk"
+  pass "pause_resurface_window doubles per unchanged recheck and caps"
+}
+
+# The live 2026-08-04 case behind issue 47: three tasks correctly parked on one
+# captain-owned merge decision re-surfaced on a fixed cadence, each recheck
+# costing a supervision turn to confirm a wait that had not changed. The recheck
+# must survive - a forgotten hold cannot rot invisibly - but an UNCHANGED wait
+# must cost less each time. Phase C is the disconfirming half: nothing about the
+# backoff may reach a crew that never declared a wait, which still absorbs on the
+# wedge timer and still escalates as a possible wedge.
+test_paused_resurface_backs_off_while_wedge_still_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid back statusf wakes
+  dir=$(make_case paused-resurface-backoff); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-parked"
+  printf 'idle awaiting the merge decision' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parked.meta"
+  statusf="$state/parked.status"
+  printf 'paused: awaiting the merge decision on the open PR\n' > "$statusf"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle awaiting the merge decision")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting the merge decision on the open PR'
+
+  # Phase A: the wait is well past the base window, so the FIRST recheck fires.
+  back=$(( $(date +%s) - 500 ))
+  set_mtime "$back" "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-parked_status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "the first recheck of a long declared wait did not re-surface"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the first recheck was not a paused recheck"
+  [ "$(cat "$state/.paused-streak-$key" 2>/dev/null || true)" = 1 ] \
+    || fail "the first recheck did not record a re-surface streak"
+
+  # Phase B: the wait has not changed. One base window later is now too soon -
+  # the second recheck must wait for the DOUBLED window before firing again.
+  : > "$out"
+  set_mtime "$(( $(date +%s) - 300 ))" "$state/.paused-resurfaced-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "an unchanged wait re-surfaced again inside the widened window: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$out" ] || fail "an unchanged wait printed a wake inside the widened window: $(cat "$out")"
+
+  # Past the widened window it DOES fire again, so the wait still cannot rot.
+  set_mtime "$(( $(date +%s) - 600 ))" "$state/.paused-resurfaced-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a declared wait past its widened window did not re-surface"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the widened-window recheck was not a paused recheck"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a declared wait was mislabeled a possible wedge"
+  [ "$(cat "$state/.paused-streak-$key" 2>/dev/null || true)" = 2 ] \
+    || fail "the second recheck did not widen the streak further"
+  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$wakes" -eq 2 ] || fail "expected exactly 2 rechecks across the three phases, got $wakes"
+
+  # Phase C: a crew that declared NO wait is untouched by any of this. It is
+  # absorbed only while provably working, and once its idle time crosses the
+  # wedge threshold it still escalates as a possible wedge.
+  dir=$(make_case paused-backoff-wedge-control); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-quiet"
+  printf 'idle, no declared wait' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/quiet.meta"
+  printf 'working: pushed the branch\n' > "$state/quiet.status"
+  sig=$(seen_sig "$state/quiet.status"); printf '%s' "$sig" > "$state/.seen-quiet_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, no declared wait")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an undeclared idle crew past the wedge threshold did not escalate"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the undeclared idle crew was not flagged a possible wedge"
+  [ ! -e "$state/.paused-streak-$key" ] || fail "the pause backoff leaked onto a crew that declared no wait"
+  pass "an unchanged declared wait rechecks on a widening cadence while a genuine wedge still escalates"
+}
+
 # A captain-held crew can leave a stable backend endpoint after its agent exits.
 # fm-crew-state then authoritatively reports stopped rather than paused, but the
 # confirmed-dead agent plus the declared wait or captain-held transfer must retain
@@ -2023,6 +2139,8 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
 test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
+test_pause_resurface_window_backs_off_and_caps
+test_paused_resurface_backs_off_while_wedge_still_escalates
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
