@@ -177,6 +177,14 @@ function element(tag, className, textContent) {
   return node;
 }
 
+// A tone is a class, never text. .dot.green / .dot.amber / .dot.red /
+// .dot.blue / .dot.unknown are what colour the 8px circle, so a tone passed as
+// textContent would both lose the colour and print the word inside the dot,
+// on top of the label beside it. Same shape as app.js's dot().
+function dot(tone) {
+  return element("span", `dot ${tone || "unknown"}`);
+}
+
 // Every card this panel paints matches app.js's ANCHOR_SELECTOR, so wholesale
 // replacement disconnects whatever the reader was anchored to. The host passes
 // its own anchor-aware replaceChildren in through elements; the fallback below
@@ -200,7 +208,7 @@ function healthCardNode({ label, tone, value, detail, tooltip }) {
   card.setAttribute("aria-label", `${label}: ${value}`);
   if (tooltip) card.title = tooltip;
   const head = element("div", "health-head");
-  head.append(element("span", "dot", tone || "unknown"));
+  head.append(dot(tone));
   head.append(element("span", "label", label.toUpperCase()));
   card.append(head);
   card.append(element("strong", "health-value", value));
@@ -230,12 +238,12 @@ export function paintGBrainPanel(elements, envelope) {
     noticeText = "No GBrain is configured for this home. The brain is optional; absence is a normal state and does not affect fleet supervision.";
     noticeTone = "info";
   } else if (status.last_success_at) {
-    noticeText = `Read ${ageLabel(status.last_success_age_seconds)} ago`;
+    noticeText = `Read ${ageLabel(status.last_success_age_seconds)}`;
     noticeTone = "info";
   }
   if (noticeText) {
     const node = element("div", `notice ${noticeTone === "red" ? "error" : noticeTone === "amber" ? "" : "info"}`.trim());
-    node.append(element("span", "dot", noticeTone === "red" ? "red" : noticeTone === "amber" ? "amber" : "blue"));
+    node.append(dot(noticeTone === "red" ? "red" : noticeTone === "amber" ? "amber" : "blue"));
     node.append(element("div", "", noticeText));
     put(notice, [node]);
   } else {
@@ -278,7 +286,7 @@ export function paintGBrainSearchResults(elements, payload, error) {
   const put = replacerFor(elements);
   if (error) {
     const node = element("div", `notice ${error.tone === "red" ? "error" : "amber"}`.trim());
-    node.append(element("span", "dot", error.tone === "red" ? "red" : "amber"));
+    node.append(dot(error.tone === "red" ? "red" : "amber"));
     node.append(element("div", "", error.text));
     put(results, [node]);
     return;
@@ -288,7 +296,7 @@ export function paintGBrainSearchResults(elements, payload, error) {
     const copy = element("div");
     copy.append(element("strong", "", "No matches"));
     copy.append(element("p", "", `The brain answered the question "${text(payload?.query) || ""}" with nothing in the captured reports. Widen the search or capture more.`));
-    empty.append(element("span", "dot", "green"), copy);
+    empty.append(dot("green"), copy);
     put(results, [empty]);
     return;
   }
@@ -300,7 +308,7 @@ export function paintGBrainSearchResults(elements, payload, error) {
   const cards = [];
   if (failedSources.length) {
     const header = element("div", `notice ${failedSources.some((s) => s.state === "failed") ? "error" : "amber"}`.trim());
-    header.append(element("span", "dot", failedSources.some((s) => s.state === "failed") ? "red" : "amber"));
+    header.append(dot(failedSources.some((s) => s.state === "failed") ? "red" : "amber"));
     const inner = element("div", "");
     inner.append(element("strong", "", "Some corpora did not answer"));
     inner.append(document.createTextNode(` ${failedSources.map((s) => `${s.source}: ${text(s.detail) || s.state}`).join("; ")}`));
@@ -330,7 +338,18 @@ export function searchFailure(reason, detail) {
   // operator can recover from. Red is reserved for a permanent or hostile
   // failure, including anything that looks like a malformed request.
   const tone = (reason === "timed_out" || reason === "no_corpus_answered" || reason === "search_busy" || reason === "query_too_short") ? "amber" : "red";
-  return { tone, text: `${searchReasonLabel(reason)}${detail ? `: ${detail}` : ""}` };
+  const label = searchReasonLabel(reason);
+  // The detail is free text from the server and does not always add anything:
+  // the timeout reason restates this very sentence in lowercase, and the page
+  // falls back to the label itself when the server sent no detail at all.
+  // Appending either prints the same sentence twice, so a detail that carries
+  // no new information is dropped rather than stuttered.
+  const restatesLabel = normalizeSentence(detail) === normalizeSentence(label);
+  return { tone, text: `${label}${detail && !restatesLabel ? `: ${detail}` : ""}` };
+}
+
+function normalizeSentence(value) {
+  return text(value).toLowerCase().replace(/[.\s]+$/, "");
 }
 
 export function searchReasonLabel(reason) {

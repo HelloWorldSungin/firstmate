@@ -24,7 +24,7 @@ node - "$MODULE" <<'NODE' || fail "dashboard gbraintron panel data behavior fail
 const { pathToFileURL } = require("node:url");
 
 (async () => {
-const { buildGBrainHealth, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES } = await import(pathToFileURL(process.argv[2]).href);
+const { buildGBrainHealth, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES, paintGBrainPanel, paintGBrainSearchResults } = await import(pathToFileURL(process.argv[2]).href);
 
 const failures = [];
 function check(label, condition, detail = "") {
@@ -377,6 +377,18 @@ for (const [reason, expectedTone] of reasonExpectations) {
   equal("unknown reason tone is red", failure.tone, "red");
 }
 
+// A detail that only restates the label is not printed twice. The server
+// answers a timeout with the same sentence in lowercase, and the page falls
+// back to the label itself when the server sent no detail, so both paths would
+// otherwise render the sentence, a colon, and the sentence again.
+{
+  const label = searchReasonLabel("timed_out");
+  const failure = searchFailure("timed_out", "the brain did not answer within the search timeout");
+  equal("a detail that restates the label is dropped", failure.text, label);
+  const echoed = searchFailure("search_busy", searchReasonLabel("search_busy"));
+  equal("the label echoed back as a detail is dropped", echoed.text, searchReasonLabel("search_busy"));
+}
+
 // --- the panel never invents a brain when the envelope is malformed --------
 
 {
@@ -409,6 +421,92 @@ for (const [reason, expectedTone] of reasonExpectations) {
   });
   const captureCard = view.cards.find((c) => c.label === "Capture");
   check("capture detail renders with missing fields", captureCard.detail.includes("0 archived") && captureCard.detail.includes("no successful capture"));
+}
+
+// --- the rendering layer paints tones as classes, not as text ---------------
+//
+// The tone is what colours the 8px circle through .dot.green / .dot.amber /
+// .dot.red / .dot.blue / .dot.unknown. Passing it as textContent instead loses
+// every colour AND prints the word inside the dot, over the label beside it.
+// A browser is the only place that shows it, so the shim below pins it here.
+
+{
+  class FakeNode {
+    constructor(tagName, text = "") {
+      this.tagName = tagName.toUpperCase();
+      this.children = [];
+      this.attributes = {};
+      this.className = "";
+      this._text = String(text);
+    }
+
+    get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
+    set textContent(value) { this._text = String(value ?? ""); this.children = []; }
+
+    append(...children) {
+      for (const child of children) {
+        if (child === null || child === undefined) continue;
+        this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      }
+    }
+
+    replaceChildren(...children) { this.children = []; this._text = ""; this.append(...children); }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+  }
+  globalThis.document = {
+    createElement: (tagName) => new FakeNode(tagName),
+    createTextNode: (value) => new FakeNode("#text", value),
+  };
+
+  // Every dot the panel can paint, reachable from one render each: the six
+  // health cards, the health notice, the search-failure notice, the empty
+  // result, and the partial-corpus header.
+  const dots = (root) => {
+    const found = [];
+    const walk = (node) => {
+      if (typeof node.className === "string" && node.className.split(" ").includes("dot")) found.push(node);
+      for (const child of node.children) walk(child);
+    };
+    walk(root);
+    return found;
+  };
+
+  const strip = new FakeNode("div");
+  const notice = new FakeNode("div");
+  const results = new FakeNode("div");
+  const elements = { strip, notice, results, config: { query_max_bytes: 1024, result_limit_max: 16 } };
+
+  paintGBrainPanel(elements, {
+    ...configuredEnvelope,
+    status: { phase: "ready", last_success_at: "2026-08-05T21:07:59Z", last_success_age_seconds: 0 },
+  });
+  const cardDots = dots(strip);
+  equal("every health card paints one dot", cardDots.length, 6);
+  deepEqual("health card dots carry their tone as a class", cardDots.map((d) => d.className),
+    ["dot green", "dot green", "dot green", "dot green", "dot green", "dot green"]);
+  check("no health card dot carries text", cardDots.every((d) => d.textContent === ""),
+    `received ${JSON.stringify(cardDots.map((d) => d.textContent))}`);
+  deepEqual("card labels are not overprinted by a tone", strip.children.map((card) => card.children[0].textContent),
+    ["BRAIN", "INDEX", "RETRIEVAL", "SYNTHESIS", "CAPTURE", "MAINTENANCE"]);
+
+  // ageLabel already says "ago"; the notice must not say it twice.
+  equal("a fresh read is announced once", notice.textContent.replace(/^\s+/, ""), "Read 0s ago");
+  deepEqual("the health notice dot carries its tone as a class", dots(notice).map((d) => d.className), ["dot blue"]);
+
+  paintGBrainSearchResults(elements, null, searchFailure("timed_out", "the brain did not answer within the search timeout"));
+  deepEqual("the search failure dot carries its tone as a class", dots(results).map((d) => d.className), ["dot amber"]);
+  equal("the search failure sentence is printed once", results.textContent, searchReasonLabel("timed_out"));
+
+  paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [] }, null);
+  deepEqual("the empty-result dot carries its tone as a class", dots(results).map((d) => d.className), ["dot green"]);
+
+  paintGBrainSearchResults(elements, {
+    schema: "fm-gbrain-search.v1",
+    query: "anything",
+    results: [{ source: "local", slug: "task/one", title: "One", score: 0.5, excerpt: "body" }],
+    sources: [{ source: "main", state: "failed", detail: "the main brain refused the read" }],
+  }, null);
+  deepEqual("the partial-corpus dot carries its tone as a class", dots(results).map((d) => d.className), ["dot red"]);
 }
 
 if (failures.length) {

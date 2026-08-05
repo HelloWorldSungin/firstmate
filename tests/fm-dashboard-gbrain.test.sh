@@ -31,6 +31,12 @@ TMP_ROOT=$(fm_test_tmproot fm-dashboard-gbrain)
 USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 TEST_PORT=
+# Every fixture server this file boots, not just the newest one. Each case
+# starts its own server against its own home, so tracking only the latest PID
+# would leave every earlier one running after the suite exits - a dashboard
+# server polls on a timer forever, so those survivors outlive the run and pile
+# up across runs.
+SERVER_PIDS=()
 
 # Every fm-gbrain-health.sh probe and the recall wrapper needs curl on PATH
 # for the fixture server. node is needed for the server itself.
@@ -38,8 +44,17 @@ command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
+# track_server <pid> - remember a fixture server so cleanup can reap it.
+track_server() {
+  SERVER_PID=$1
+  SERVER_PIDS+=("$1")
+}
+
 cleanup() {
-  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
+  local pid
+  for pid in ${SERVER_PIDS+"${SERVER_PIDS[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+  done
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT HUP INT TERM
@@ -149,6 +164,10 @@ make_bin_dir() {
 # capture stub preinstalled. Returns the listen port.
 start_server() {
   local bindir=$1 home=$2 capture_body=$3
+  # Cases run one at a time, so the previous fixture server has no reader left
+  # and only holds a port and a poll timer. Reap it here as well as at exit so
+  # a run never has more than one server alive.
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
   install_capture_stub "$bindir" "$capture_body"
   patch_curl "$TMP_ROOT/curl"
   TEST_PORT=$(free_port)
@@ -163,7 +182,7 @@ start_server() {
   FM_ROOT_OVERRIDE="$ROOT" \
   PATH="$TMP_ROOT/curl:$PATH" \
   node "$bindir/fm-dashboard-server.mjs" >"$TMP_ROOT/server.log" 2>&1 &
-  SERVER_PID=$!
+  track_server $!
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.3
     if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null; then
@@ -265,7 +284,7 @@ EOF
   FM_PROBE_STATE=down \
   PATH="$TMP_ROOT/curl:$PATH" \
   node "$bindir/fm-dashboard-server.mjs" >"$TMP_ROOT/server.log" 2>&1 &
-  SERVER_PID=$!
+  track_server $!
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.3
     if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null; then
