@@ -168,7 +168,7 @@ Classify each wake this way:
   A crew whose validation run is demonstrably progressing is the one exception: housekeeping holds that escalation and restarts the clock, because such a crew is quiet by design.
   It holds only on positive evidence of progress, so a stranded run, an absent run, and a confidently dead agent all still escalate, and a stranded run names the step that stopped.
   Consecutive holds are capped (`FM_RUN_PROGRESS_HOLD_MAX`, one hour at the default escalate window): a moving run delays the alarm, it never silences it, so past the cap the crew escalates anyway with the progress detail in the digest.
-  This bounds wedge-detection latency to the threshold plus a tick: a delay, never a loss.
+  Wedge detection stays bounded either way - the threshold plus a tick with no hold, the capped hold window with one: a delay, never a loss.
   Healthy crewmates are autonomous and do not wait on firstmate mid-task.
 - `heartbeat` -> self-handle. The daemon runs its own cheap bash fleet scan
   every `FM_HEARTBEAT_SCAN_SECS` (default 300s) as the catch-all for a

@@ -39,7 +39,10 @@
 #                          positive evidence: no run, a run parked at a gate, a
 #                          stranded step, an unreadable status, or a confidently
 #                          dead agent all escalate exactly as before, and a
-#                          stranded run names the step that stopped. At
+#                          stranded run names the step that stopped.
+#                          Consecutive holds are capped
+#                          (FM_RUN_PROGRESS_HOLD_MAX, below), past which the
+#                          pane escalates however healthy its run looks. At
 #                          FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
