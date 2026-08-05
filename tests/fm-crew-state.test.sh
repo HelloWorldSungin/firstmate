@@ -29,6 +29,9 @@
 #   (l) failed lookup reuses only a recent observed run step       -> run-step-degraded
 #   (m) an executing run keeps its pipeline-authored tip advance  -> run-step
 #   (n) branch-scoped live status accepts a pipeline-owned head   -> run-step
+#   (o) a terminal pass whose ci step SKIPPED never observed the forge, whether
+#       or not it opened the PR, so it reports a local pass rather than a merge,
+#       and a declared wait standing over it reports that wait instead of done
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -334,6 +337,84 @@ run:
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
   pr: "https://github.com/o/r/pull/1"
   findings: none
+outcome: passed
+EOF
+}
+
+# The live 2026-08-04 shape, verbatim from a real Gitea-backed run: no-mistakes
+# does not recognize the forge provider, so it SKIPS the pr and ci steps and the
+# pipeline reaches outcome=passed having never opened a PR through the forge,
+# read a check, or observed a merge. Every other step really did complete.
+run_passed_forge_skipped() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  findings: "1 auto-fix, 1 info"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    rebase,completed,0,478
+    review,completed,1,2355424
+    test,completed,0,949793
+    document,completed,1,864687
+    lint,completed,0,17
+    push,completed,0,659
+    pr,skipped,0,13
+    ci,skipped,0,12
+outcome: passed
+EOF
+}
+
+# The independently-skippable shape: `no-mistakes --skip ci` opened the PR but
+# never watched it, so the run still reached outcome=passed without any forge
+# verdict - ci is the step that observes merged or closed, so a completed pr step
+# is not evidence of one.
+run_passed_ci_skipped() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://gitea.example.invalid/o/r/pulls/33"
+  findings: none
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    rebase,completed,0,478
+    review,completed,1,2355424
+    test,completed,0,949793
+    document,completed,1,864687
+    lint,completed,0,17
+    push,completed,0,659
+    pr,completed,0,1300
+    ci,skipped,0,12
+outcome: passed
+EOF
+}
+
+# The same terminal pass on a forge the pipeline DOES drive end to end: pr and ci
+# ran, so outcome=passed genuinely means the PR merged or closed.
+run_passed_forge_observed() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    rebase,completed,0,478
+    review,completed,1,2355424
+    test,completed,0,949793
+    document,completed,1,864687
+    lint,completed,0,17
+    push,completed,0,659
+    pr,completed,0,1300
+    ci,completed,0,420000
 outcome: passed
 EOF
 }
@@ -737,6 +818,105 @@ test_terminal_passed() {
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   pass "terminal passed run is authoritative"
+}
+
+# The skipped-steps case, pinned specifically because it is the exact shape that
+# produced the false label: a terminal pass with pr,skipped and ci,skipped must
+# never name a merge, because nothing in that run ever looked at the forge.
+test_terminal_passed_forge_skipped_claims_no_merge() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-skipped)
+  make_repo_on_branch "$d/wt" fm/feat-gitea
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-gitea.meta" "window=fm:fm-feat-gitea" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-gitea)"
+  local out; out=$(run_crew_state "$d" feat-gitea)
+  assert_contains "$out" "state: done" "a locally passing run is still a finished run"
+  assert_contains "$out" "source: run-step" "the verdict is still run-step sourced"
+  assert_not_contains "$out" "merged" "a run that skipped pr/ci must not claim a merge"
+  assert_not_contains "$out" "closed" "a run that skipped pr/ci must not claim the PR closed"
+  assert_contains "$out" "local pipeline passed" "the local pass must be stated as local"
+  assert_contains "$out" "forge state not observed" "the unobserved forge must be visible in the verdict"
+  pass "a terminal pass whose pr/ci steps skipped reports a local pass, never a merge"
+}
+
+# The merge observation lives in the ci step alone, so a run that opened the PR
+# and then skipped ci is in exactly the same position as one that skipped both:
+# it pushed a branch and walked away, and nothing in it ever read the forge.
+test_terminal_passed_ci_skipped_claims_no_merge() {
+  reset_fakes
+  local d; d=$(new_case passed-ci-skipped)
+  make_repo_on_branch "$d/wt" fm/feat-ciskip
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ciskip.meta" "window=fm:fm-feat-ciskip" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_ci_skipped fm/feat-ciskip)"
+  local out; out=$(run_crew_state "$d" feat-ciskip)
+  assert_contains "$out" "state: done" "a locally passing run is still a finished run"
+  assert_not_contains "$out" "merged" "a run whose ci step skipped must not claim a merge"
+  assert_not_contains "$out" "closed" "a run whose ci step skipped must not claim the PR closed"
+  assert_contains "$out" "local pipeline passed" "the local pass must be stated as local"
+  assert_contains "$out" "forge state not observed" "the unobserved forge must be visible in the verdict"
+  pass "a terminal pass that opened a PR but skipped ci reports a local pass, never a merge"
+}
+
+# The control that keeps the correction narrow: where pr and ci actually ran, the
+# pipeline did observe the forge, so outcome=passed still means merged/closed.
+test_terminal_passed_forge_observed_keeps_merge_claim() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-observed)
+  make_repo_on_branch "$d/wt" fm/feat-gh
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-gh.meta" "window=fm:fm-feat-gh" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_observed fm/feat-gh)"
+  local out; out=$(run_crew_state "$d" feat-gh)
+  assert_contains "$out" "state: done" "an observed passing run is done"
+  assert_contains "$out" "PR merged/closed" "an observed pr/ci pass keeps its earned merge label"
+  pass "a terminal pass that actually drove pr and ci keeps reporting the merge"
+}
+
+# The escalation half of the same defect. A crew whose pipeline finished locally
+# and which then declared it is waiting on a human is NOT a finished task: the
+# wait it declared is its current state, and reporting done instead made the
+# watcher read it as neither working nor paused and re-surface it as a possible
+# wedge indefinitely.
+test_forge_skipped_pass_under_declared_pause_reports_the_wait() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-skipped-paused)
+  make_repo_on_branch "$d/wt" fm/feat-gitea-paused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-gitea-paused.meta" "window=fm:fm-feat-gitea-paused" "worktree=$d/wt" "kind=ship"
+  printf 'done: PR https://gitea.example.invalid/o/r/pulls/33\n' > "$d/state/feat-gitea-paused.status"
+  printf 'paused: awaiting the merge decision on PR 33\n' >> "$d/state/feat-gitea-paused.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-gitea-paused)"
+  local out; out=$(run_crew_state "$d" feat-gitea-paused)
+  assert_contains "$out" "state: paused" "a declared wait over an unobserved-forge pass is the current state"
+  assert_contains "$out" "awaiting the merge decision" "the declared wait's own reason is carried"
+  assert_contains "$out" "local pipeline passed" "the finished local pipeline stays visible in the verdict"
+  assert_not_contains "$out" "merged/closed" "the paused verdict must not claim a merge either"
+  crew_absorb_class_out=$(FM_CREW_STATE_BIN="$CREW_STATE" FM_STATE_OVERRIDE="$d/state" \
+    PATH="$d/fakebin:$PATH" bash -c '. "$1/bin/fm-classify-lib.sh"; crew_absorb_class feat-gitea-paused' _ "$ROOT")
+  [ "$crew_absorb_class_out" = paused ] \
+    || fail "the watcher's absorb classifier read '$crew_absorb_class_out', not the declared pause"
+  [ ! -e "$d/state/feat-gitea-paused.run-step" ] \
+    || fail "a paused verdict must not leave a done run-step record to replay later"
+  pass "a declared wait over a locally-passed, forge-unobserved run reports the wait, not done"
+}
+
+# Disconfirming pair for the case above: the same finished run with NO declared
+# wait stays done, so a crew that simply went quiet is still a wedge suspect and
+# nothing about wedge detection is weakened by honoring a declared wait.
+test_forge_skipped_pass_without_declared_pause_stays_done() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-skipped-quiet)
+  make_repo_on_branch "$d/wt" fm/feat-gitea-quiet
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-gitea-quiet.meta" "window=fm:fm-feat-gitea-quiet" "worktree=$d/wt" "kind=ship"
+  printf 'working: pushed the branch\n' > "$d/state/feat-gitea-quiet.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-gitea-quiet)"
+  local out; out=$(run_crew_state "$d" feat-gitea-quiet)
+  assert_contains "$out" "state: done" "an undeclared quiet crew must not inherit a pause"
+  assert_not_contains "$out" "state: paused" "only a declared wait may report paused"
+  pass "a locally-passed run with no declared wait still reports done"
 }
 
 test_terminal_failed() {
@@ -1753,6 +1933,11 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_forge_skipped_claims_no_merge
+test_terminal_passed_ci_skipped_claims_no_merge
+test_terminal_passed_forge_observed_keeps_merge_claim
+test_forge_skipped_pass_under_declared_pause_reports_the_wait
+test_forge_skipped_pass_without_declared_pause_stays_done
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row

@@ -66,6 +66,111 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 
+# How many times an UNCHANGED declared wait may be re-surfaced before its recheck
+# cadence stops widening. A fixed window re-surfaces a wait that has not changed
+# at the same rate forever: three tasks correctly parked on one external decision
+# cost a supervisor a recheck each per window, every window, for as long as the
+# decision takes - and every one of those rechecks confirms the identical thing.
+# Widening the window per unchanged recheck keeps the property the recheck exists
+# for (a forgotten hold still cannot rot invisibly) while making a long, healthy
+# wait progressively cheap. Capped rather than unbounded so the cadence has a
+# floor no wait can outrun: 3 doublings is 8x the base window (8 hours at the
+# default), which still re-surfaces every parked wait several times a day.
+FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT=3
+
+# Absolute bounds on the widening, independent of what an operator configures.
+# The backoff exists to make a long healthy wait cheap, so a misconfigured cap
+# must fail toward the base cadence rather than into the opposite: an unbounded
+# shift overflows `base * (1 << streak)` (in bash, 3600 * (1 << 52) is negative
+# and 1 << 64 is 1), and a negative window reads as due on EVERY poll - a wake
+# storm strictly worse than the fixed cadence this backoff replaced. The sibling
+# heartbeat backoff in bin/fm-watch.sh clamps its own shift and result the same
+# way. The window ceiling keeps a huge but non-overflowing product from parking a
+# wait past the point of ever being rechecked again: once a day is still finite.
+FM_PAUSE_RESURFACE_STREAK_LIMIT=12
+FM_PAUSE_RESURFACE_WINDOW_MAX=86400
+
+# Effective re-surface window for a declared wait already re-surfaced <streak>
+# times without changing. The ONE owner of the backoff both consumers apply, for
+# the same reason FM_PAUSE_RESURFACE_SECS itself has one: the watcher and the
+# away-mode daemon must not drift into two different cadences for the same wait.
+# The streak counts rechecks of ONE wait and dies with it: the crew resuming, the
+# pause being cleared, or the wait itself being replaced by a different one all
+# reset it (see pause_streak_sync), so the next wait starts at the base window
+# and never inherits a cadence widened by something else.
+pause_resurface_window() {  # <streak> -> seconds
+  local streak=${1:-0} base cap window max
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  cap=${FM_PAUSE_RESURFACE_MAX_STREAK:-$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT}
+  case "$cap" in ''|*[!0-9]*) cap=$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT ;; esac
+  [ "$cap" -gt "$FM_PAUSE_RESURFACE_STREAK_LIMIT" ] && cap=$FM_PAUSE_RESURFACE_STREAK_LIMIT
+  [ "$streak" -gt "$cap" ] && streak=$cap
+  base=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  case "$base" in ''|*[!0-9]*) base=$FM_PAUSE_RESURFACE_SECS_DEFAULT ;; esac
+  max=$FM_PAUSE_RESURFACE_WINDOW_MAX
+  [ "$max" -lt "$base" ] && max=$base
+  window=$(( base * (1 << streak) ))
+  { [ "$window" -gt "$max" ] || [ "$window" -lt "$base" ]; } && window=$max
+  printf '%s' "$window"
+}
+
+# The re-surface streak record for ONE declared wait: the number of rechecks that
+# found that wait unchanged on line 1, and the status line that declared it on
+# line 2. Recording the wait itself is what makes the streak die with it - "a
+# paused line is present" is not the same fact as "the same wait is still
+# standing", so a crew that replaces `paused: awaiting the 4.2 release` with
+# `paused: awaiting the captain's merge call` must start over at the base window
+# instead of inheriting a cadence widened by a wait nobody is holding anymore.
+# Both supervisors keep this record beside their own pause marker (the watcher's
+# .paused-streak-<key>, the daemon's .subsuper-pausestreak-<key>) and both read
+# and write it through these helpers, so the two cannot drift.
+#
+# This record governs the WIDTH of the recheck window and nothing else. Neither
+# supervisor's sense of when the next recheck is DUE lives here: the watcher ages
+# a declared wait from its status file mtime, and the away-mode daemon ages it
+# from the epoch its own pause marker took when the hold began. Keeping those
+# apart is deliberate, because the discriminator here is the whole status line
+# and prose can churn - a crew that rewrites an elapsed-time counter into its
+# paused reason reads as a new wait every time. The cost of that is a window that
+# stays at its base width, which is extra rechecks and never a missed one.
+
+# 0 when <wait-line> is a DIFFERENT wait from the one on record, having reset the
+# record to that new wait at streak 0. 1 when the record already describes this
+# wait, and 1 on a first sighting - nothing has been widened yet, so there is
+# nothing to reset, and the record is simply created at streak 0.
+pause_streak_sync() {  # <streak-file> <wait-line>
+  local f=$1 line=$2 count='' recorded='' changed=1
+  if [ -e "$f" ]; then
+    { IFS= read -r count; IFS= read -r recorded; } < "$f" 2>/dev/null || true
+    [ "$recorded" = "$line" ] && return 1
+    changed=0
+  fi
+  printf '%s\n%s\n' 0 "$line" > "$f"
+  return "$changed"
+}
+
+# The streak on record: 0 when there is none, or when the record is unreadable.
+pause_streak_count() {  # <streak-file>
+  local f=$1 count=''
+  if [ -e "$f" ]; then
+    { IFS= read -r count; } < "$f" 2>/dev/null || true
+  fi
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  printf '%s' "$count"
+}
+
+# Record one more recheck of <wait-line>. Reconciles the record first, so a
+# recheck of a wait that CHANGED since the last observation starts that new wait
+# at one instead of silently continuing the previous wait's streak - the three
+# helpers then agree whatever order their callers run in, rather than the daemon's
+# recheck loop depending on an earlier reconcile pass having already synced.
+pause_streak_bump() {  # <streak-file> <wait-line>
+  local f=$1 line=$2 count
+  pause_streak_sync "$f" "$line" || true
+  count=$(pause_streak_count "$f")
+  printf '%s\n%s\n' "$(( count + 1 ))" "$line" > "$f"
+}
+
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
 # below for the status-fold contract. The transfer verb is written only after

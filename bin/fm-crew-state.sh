@@ -42,6 +42,14 @@
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating.
+#      A terminal pass whose own `ci` step SKIPPED never observed the forge at
+#      all (ci is the step that watches a PR to merged or closed, and no-mistakes
+#      skips it on a provider it does not recognize), so it reports the local
+#      pipeline passing rather than naming a merge, and a declared external wait
+#      standing over such a run is reported as that wait - the run finished
+#      locally, the PR is open, and nobody has acted on it yet.
+#      See nm_forge_outcome_unobserved for why the verdict refuses to claim a
+#      forge outcome rather than going and reading one.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -351,13 +359,59 @@ log_reports_ci_ready() {
   esac
 }
 
-nm_ci_step_status() {
+# Status column of a steps[] row, or empty when the run output has no such row.
+# The table is TOON, one row per step: "    <step>,<status>,<findings>,<ms>".
+nm_step_status() {  # <step-name>
   local row rest
-  row=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*ci,[[:space:]]*"?(running|fixing)"?[[:space:]]*,' | head -1)
+  row=$(printf '%s\n' "$RUN_OUT" | grep -E "^[[:space:]]*$1,[^,]+,[^,]*," | head -1)
   [ -n "$row" ] || return 0
-  row=$(trim "$row")
   rest=${row#*,}
   strip_quotes "$(trim "${rest%%,*}")"
+}
+
+# 0 when this run reached its terminal result WITHOUT ever observing the forge.
+# no-mistakes SKIPS the `pr` and `ci` steps on a project whose forge provider it
+# does not recognize - any non-GitHub forge, a self-hosted Gitea for example - so
+# the pipeline legitimately reaches outcome=passed on purely LOCAL evidence:
+# review, tests, lint, docs and a push, with no pull request opened, no checks
+# read, and no merge observed. The terminal `passed` detail is otherwise a fixed
+# string that names a merge, so for such a run it asserts a forge outcome nothing
+# ever checked - the same class of wrong claim as reporting checks green without
+# reading them, and observed live on 2026-08-04 reporting three Gitea PRs merged
+# while all three sat open awaiting a human.
+#
+# Keyed on the `ci` step ALONE, which is the step that observes the terminal
+# forge state. Verified against the pipeline's own logs: the pr step CREATES the
+# pull request ("creating pull request..." then "created pull request: <url>"),
+# while it is ci that watches it to a terminal state ("all CI checks passed -
+# still monitoring until merged or closed", ending in "PR has been merged!").
+# An unrecognized provider skips both together, which is why the live case had
+# both skipped, but `no-mistakes --skip <steps>` can skip them independently - and
+# a pr-ran/ci-skipped run observed no more of the forge's verdict than one where
+# neither ran. So ci,skipped is by itself sufficient proof that outcome=passed
+# never saw a forge outcome, and requiring pr to be skipped too would be narrower
+# than the invariant this guards. The converse stays untouched: where ci ran, the
+# merge really was observed, whether or not this pipeline opened the PR.
+#
+# Deliberately a PURE READ of the run output already captured. Teaching this
+# verdict to observe the forge itself was the richer option and was rejected:
+# fm-crew-state.sh runs on ordinary supervision polls, so it would put a network
+# call and a credential read on a hot path, and every forge answer it cached
+# would be one more thing that can be stale in a way the caller cannot see. Not
+# claiming what was never checked is the whole correction; where the forge HAS
+# been observed - the GitHub path, where the ci step actually runs - the
+# merged/closed label is unchanged and still earned.
+nm_forge_outcome_unobserved() {
+  [ "$(nm_step_status ci)" = skipped ]
+}
+
+# The ci step's own status, but only while it is mid-flight: an earlier terminal
+# row says nothing about what the run is doing now. One owner of the steps[] row
+# parse (nm_step_status) rather than a second regex over the same table.
+nm_ci_step_status() {
+  local s
+  s=$(nm_step_status ci)
+  case "$s" in running|fixing) printf '%s' "$s" ;; esac
 }
 
 nm_effective_ci_step_status() {
@@ -652,6 +706,10 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
+  # 1 only for a terminal pass whose own steps prove the forge was never looked
+  # at. Set inside the full-status path alone: on the coarse path $RUN_OUT holds
+  # ANOTHER branch's run, so its steps say nothing about this crew's.
+  FORGE_UNOBSERVED=0
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -678,7 +736,15 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+        passed)
+          RUN_STATE="done"
+          if nm_forge_outcome_unobserved; then
+            FORGE_UNOBSERVED=1
+            RUN_DETAIL="local pipeline passed (ci step skipped - forge state not observed)"
+          else
+            RUN_DETAIL="run passed: PR merged/closed"
+          fi
+          ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
         cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
@@ -742,6 +808,24 @@ if [ "$HAVE_RUN" = 1 ]; then
     if [ "$CI_LOG_STATE" != not-ready ]; then
       runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
+  fi
+
+  # A terminal LOCAL pass reports that the crew's pipeline finished. It is not
+  # evidence about what the crew is waiting for now, because the run never looked
+  # at the forge: the PR it pushed is open, and whoever must act on it has not.
+  # So a declared external wait standing over such a run does NOT contradict it -
+  # the two agree, and the wait is the crew's actual current state. Reporting
+  # `done` here instead is what let a correctly declared, still-true wait keep
+  # reading as a finished task, so the watcher classified it as neither working
+  # nor paused and surfaced it as a possible wedge over and over.
+  #
+  # Narrow on purpose. A run that DID observe the forge and passed means the PR
+  # merged, so any wait over it is genuinely over and stale - that case keeps
+  # reporting done. And a wait is honored only where the crew declared one; a
+  # crew that simply went quiet still reports done and stays a wedge suspect.
+  if [ "$RUN_STATE" = "done" ] && [ "$FORGE_UNOBSERVED" = 1 ] && status_is_paused "$LOG_LINE"; then
+    runstep_record_clear
+    emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}$RUN_DETAIL"
   fi
 
   # Reconcile the status log. A needs-decision/blocked log line that the run-step
