@@ -49,12 +49,11 @@
 # quarantine entries with the rest of the volatile state.
 # Before cleanup, teardown also enforces the terminal dispatched-model check
 # owned by docs/model-verification.md; --force surfaces that verdict while
-# retaining its explicitly authorized discard behavior. A dispatch whose record
-# names no model-evidence store and carries no marker proving it was ever armed
-# was never armed for that check and can never produce a verdict, so it is named
-# plainly and passed to the ORDINARY cleanup path - where the landed-work,
-# uncommitted-change, completion-manifest, and endpoint checks all still apply
-# unchanged.
+# retaining its explicitly authorized discard behavior. A dispatch that was
+# never armed for that check, as docs/model-verification.md defines it, can
+# never produce a verdict, so it is named plainly and passed to the ORDINARY
+# cleanup path - where the landed-work, uncommitted-change,
+# completion-manifest, and endpoint checks all still apply unchanged.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -590,9 +589,8 @@ refresh_terminal_model_verdict
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
 # verifiable in principle - a harness with an evidence adapter, a pinned model,
-# and a record that was armed for the check, whether it names its evidence store
-# or only carries proof that arming ran. --force retains its existing discard
-# authority.
+# and a record that was armed for the check, as docs/model-verification.md
+# defines it. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
 # Name the never-armed case explicitly, so an operator reading this output can
 # tell it apart from a verification that ran and failed without reading source.

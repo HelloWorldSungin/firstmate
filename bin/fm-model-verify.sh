@@ -38,11 +38,10 @@
 #   unstarted    the runtime never wrote a session for this worker's working
 #                directory at all, so no turn of its own exists to read.
 #                NOT a pass - no verdict yet.                            exit 4
-#   unarmed      the dispatch record itself names no model-evidence store AND
-#                carries no marker proving it was ever armed, so verification
-#                was never armed for it and no verdict can ever exist. NOT a
-#                pass, and distinct from `unverifiable`: there is no evidence
-#                location to fail to read.                               exit 4
+#   unarmed      verification was never armed for this dispatch, so no verdict
+#                can ever exist for it. NOT a pass, and distinct from
+#                `unverifiable`: there is no evidence location to fail to read.
+#                docs/model-verification.md owns the predicate.          exit 4
 #   pending      an adapter exists, a session exists, and the worker has simply
 #                not produced a model-attributed turn yet. NOT a pass.
 #   unpinned     meta records `model=default`: firstmate pinned no tier, so
@@ -81,10 +80,9 @@ for it in state/<id>.meta.
 Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted/unarmed · 2 usage error.
 With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
 dispatch was verifiable in principle (a claude-harness task with a pinned model
-whose record was armed for the check - it names a model-evidence store, or it
-proves arming ran without naming one); otherwise it exits 0 so cleanup is not
-blocked for a dispatch that can never produce a verdict. The verdict line is
-printed either way.
+whose record was armed for the check, per docs/model-verification.md); otherwise
+it exits 0 so cleanup is not blocked for a dispatch that can never produce a
+verdict. The verdict line is printed either way.
 With --all, the worst verdict across all tasks sets the exit code.
 EOF
 }
@@ -510,9 +508,9 @@ verify_one() {  # <id>
   # evidence adapter, and a pinned model for the runtime to contradict. Only
   # such a task can be blocked from cleanup for failing to produce a verdict -
   # see the terminal-mode block at the end of this file. The remaining
-  # requirement is that the record was armed for the check at all, and the
-  # store-absent branch below withdraws this only for a record that names no
-  # store AND carries no marker proving that arming ran.
+  # requirement is that the record was armed for the check at all, decided by
+  # the store-absent branch below, which withdraws this only for a record the
+  # `unarmed` predicate accepts in full (docs/model-verification.md).
   VERIFIABLE_IN_PRINCIPLE=1
 
   if [ "$anchor_present" -eq 1 ]; then
@@ -538,30 +536,14 @@ verify_one() {  # <id>
         ;;
     esac
   else
-    # An absent store line is the SHAPE of a record that was never armed, but
-    # absence alone cannot prove it: a pre-guard record is a strict subset of
-    # today's schema, so there is no positive "never armed" marker to require.
-    # Three record shapes arrive here, and only one of them was never armed:
-    #   1. a dispatch that predates the guard, and a spawn that aborted before
-    #      rendering a launch command - bin/fm-spawn.sh writes this line for
-    #      every claude dispatch it launches and exits 1 when the capture fails
-    #      or omits the store, so neither ever ran;
-    #   2. an armed record damaged afterwards - capture_claude_watermark emits
-    #      model_evidence_store= and model_evidence_watermark= together on both
-    #      of its success paths, plus its model_evidence_before= rows, and
-    #      bin/fm-spawn.sh appends that block whole, so either marker without a
-    #      store positively proves arming ran;
-    #   3. a remote secondmate route record - bin/fm-spawn.sh's
-    #      spawn_remote_secondmate writes kind=secondmate with the remote route
-    #      fields and no store line for a secondmate that DID launch and run,
-    #      whose armed record lives in the remote host's own state. Its evidence
-    #      is not absent, only unreadable from this home.
-    # Shapes 2 and 3 carry positive proof that the record is not never-armed, so
-    # each denies the release and keeps the blocking `unverifiable` verdict; the
-    # release rests on those markers rather than on absence alone. Only shape 1
-    # is a gap in the record rather than a safety signal, and it stays strictly
-    # separate from every recorded-store failure above and below, each of which
-    # still reports `unverifiable` and still blocks cleanup.
+    # This branch decides the `unarmed` release, whose predicate and the record
+    # shapes behind each condition are owned by docs/model-verification.md.
+    # An absent store line is only the SHAPE of a record that was never armed:
+    # a pre-guard record is a strict subset of today's schema, so there is no
+    # positive "never armed" marker to require, and absence alone cannot prove
+    # it. The two denials below are that positive proof, they prove different
+    # things, and each keeps the blocking `unverifiable` verdict - as does every
+    # recorded-store failure above and below, which this stays separate from.
     #
     # The verifier still reads no ambient store on any of these paths: an
     # unknown evidence location is never resolved against whatever the current
@@ -772,13 +754,12 @@ if [ "$TERMINAL" -eq 1 ]; then
   # discarded? A MISMATCH always blocks - that is the worker this whole helper
   # exists to catch. An absent verdict blocks only when the dispatch was
   # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter, a
-  # pinned model, and a record that was armed for the check - one naming a
-  # model-evidence store, or one proving arming ran without naming a store.
-  # Blocking otherwise would make non-forced cleanup impossible for every
-  # dispatch that can never produce a verdict at all, which is a fleet-wide
-  # regression rather than the boundary this refusal was meant to draw. That is
-  # the ONLY concession: an armed dispatch keeps blocking on every one of its
-  # failure modes.
+  # pinned model, and a record that was armed for the check as
+  # docs/model-verification.md defines it. Blocking otherwise would make
+  # non-forced cleanup impossible for every dispatch that can never produce a
+  # verdict at all, which is a fleet-wide regression rather than the boundary
+  # this refusal was meant to draw. That is the ONLY concession: an armed
+  # dispatch keeps blocking on every one of its failure modes.
   # The verdict is surfaced by the caller either way, so nothing goes unseen.
   case "$VERDICT" in
     match|unpinned) exit 0 ;;
