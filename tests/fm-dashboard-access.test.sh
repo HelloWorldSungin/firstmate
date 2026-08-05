@@ -44,11 +44,14 @@ install_into() {  # <case-root> [extra installer args...]
   # tests/lib.sh exports neutral values for both of these so no suite can touch
   # the developer's own instrumentation or credentials. They are dropped here
   # precisely because this case is about where the installer puts them when it
-  # is told nothing.
+  # is told nothing. --allow-worktree is passed because the repo under test may
+  # itself be a linked worktree, and these cases are about the unit's contents
+  # rather than about where a persistent service should live;
+  # test_installing_from_a_worktree_is_refused owns that separately.
   env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
     HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
     FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
-    "$INSTALLER" --fm-home "$case_root/fleet" --no-start "$@"
+    "$INSTALLER" --allow-worktree --fm-home "$case_root/fleet" --no-start "$@"
 }
 
 unit_directive() {  # <unit-file> <directive>
@@ -174,7 +177,7 @@ test_a_path_the_unit_cannot_carry_is_refused() {
   set +e
   out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
     HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
-    "$INSTALLER" --fm-home "$case_root/a fleet home" --no-start 2>&1)
+    "$INSTALLER" --allow-worktree --fm-home "$case_root/a fleet home" --no-start 2>&1)
   rc=$?
   set -e
   expect_code 2 "$rc" "a path a unit cannot carry literally"
@@ -182,6 +185,64 @@ test_a_path_the_unit_cannot_carry_is_refused() {
   [ ! -f "$case_root/config/systemd/user/firstmate-dashboard.service" ] \
     || fail "a unit was written for a path the installer cannot encode"
   pass "a path no systemd unit can carry literally is refused instead of encoded wrong"
+}
+
+# A boot-persistent unit names one dashboard server by absolute path forever.
+# Installed from a linked git worktree it names a directory whoever created that
+# worktree will reclaim, so the service works until the day it silently does
+# not - which is exactly how this dashboard's own remote-access work was nearly
+# handed over.
+test_installing_from_a_worktree_is_refused() {
+  local case_root out rc exec_start unit
+  case_root="$TMP_ROOT/worktree"
+  mkdir -p "$case_root/config" "$case_root/home"
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return 0; }
+
+  fm_git_worktree "$case_root/checkout" "$case_root/scratch" dashboard-scratch
+  local copy
+  for copy in "$case_root/checkout" "$case_root/scratch"; do
+    mkdir -p "$copy/bin"
+    cp "$INSTALLER" "$SERVER" "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$copy/bin/"
+  done
+
+  set +e
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+    "$case_root/scratch/bin/fm-dashboard-install.sh" --fm-home "$case_root/fleet" --no-start 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "installing a persistent service from a linked worktree"
+  assert_contains "$out" "linked git worktree" "the refusal did not name what was wrong"
+  [ ! -f "$case_root/config/systemd/user/firstmate-dashboard.service" ] \
+    || fail "a unit pointing into a disposable worktree was written anyway"
+
+  # Naming a permanent checkout is the way through, and the unit must then run
+  # that checkout's server rather than the one the installer happens to be in.
+  env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+    "$case_root/scratch/bin/fm-dashboard-install.sh" \
+    --checkout "$case_root/checkout" --fm-home "$case_root/fleet" --no-start >/dev/null \
+    || fail "installing for a permanent checkout was refused"
+  unit="$case_root/config/systemd/user/firstmate-dashboard.service"
+  exec_start=$(unit_directive "$unit" ExecStart)
+  assert_contains "$exec_start" "$case_root/checkout/bin/fm-dashboard-server.mjs" \
+    "the unit does not run the checkout it was installed for"
+  assert_not_contains "$exec_start" "$case_root/scratch/" \
+    "the unit still points into the disposable worktree"
+
+  # Trying a change from a worktree stays possible when that is what was meant.
+  rm -f "$unit"
+  env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
+    "$case_root/scratch/bin/fm-dashboard-install.sh" \
+    --allow-worktree --fm-home "$case_root/fleet" --no-start >/dev/null \
+    || fail "an explicitly allowed worktree install was still refused"
+  assert_contains "$(unit_directive "$unit" ExecStart)" "$case_root/scratch/bin/fm-dashboard-server.mjs" \
+    "the allowed worktree install did not run the worktree's server"
+  pass "a persistent service is never installed from a disposable worktree by accident"
 }
 
 test_exposure_requires_credentials() {
@@ -431,6 +492,7 @@ test_an_exposed_bind_keeps_loopback() {
 test_generated_unit_carries_literal_paths
 test_a_path_the_unit_cannot_carry_is_refused
 test_an_exposed_bind_keeps_loopback
+test_installing_from_a_worktree_is_refused
 test_exposure_requires_credentials
 test_loopback_stays_the_open_default
 test_set_password_stores_only_a_digest

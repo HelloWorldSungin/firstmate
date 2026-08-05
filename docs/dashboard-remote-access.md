@@ -48,6 +48,17 @@ Give the specific interface address the thing in front of the dashboard reaches,
 
 The installer refuses a name, so what the service is reachable on is a thing you can read off your own configuration rather than a thing name resolution decides.
 
+## Install it from a checkout that will still be there
+
+The unit names one dashboard server by absolute path and keeps naming it across reboots, so the installer refuses to write a persistent service that runs from a linked git worktree: whoever made that worktree will reclaim it, and the service would work until the day it silently did not.
+
+Trying a change from a worktree is legitimate, so `--allow-worktree` says that is what you meant.
+To install the persistent service for a permanent checkout while running a newer installer from somewhere else, name it:
+
+```sh
+bin/fm-dashboard-install.sh --checkout /path/to/firstmate --fm-home /path/to/firstmate
+```
+
 ## The reverse proxy
 
 Terminate TLS at a proxy you already run and forward to the dashboard's address and port.

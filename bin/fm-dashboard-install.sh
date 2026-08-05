@@ -33,6 +33,13 @@ Install or update the read-only Firstmate fleet dashboard user service.
 
 Options:
   --fm-home PATH       operational home (default: FM_HOME or repository root)
+  --checkout PATH      tracked Firstmate checkout whose dashboard server the
+                       service runs (default: the checkout this script is in).
+                       Use it to install the persistent service for a permanent
+                       checkout while running a newer installer from elsewhere.
+  --allow-worktree     install a persistent service that runs from a linked git
+                       worktree anyway. Refused by default: a worktree is
+                       disposable, and the service breaks when it is reclaimed.
   --address ADDRESS    numeric bind address (default: 127.0.0.1). Any address
                        other than 127.0.0.1 or ::1 exposes the dashboard beyond
                        this host and is accepted only once --set-password has
@@ -80,11 +87,13 @@ START_SERVICE=1
 SET_PASSWORD=0
 AUTH_USERNAME=captain
 AUTH_FILE=${FM_DASHBOARD_AUTH_FILE:-}
+CHECKOUT=
+ALLOW_WORKTREE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fm-home|--address|--port|--poll|--timeout|--stale|\
-    --history-limit|--history-poll|--report-bytes|--username|--auth-file)
+    --history-limit|--history-poll|--report-bytes|--username|--auth-file|--checkout)
       [ "$#" -ge 2 ] || { printf 'fm-dashboard-install: %s requires a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --fm-home) FM_DASHBOARD_HOME=$2 ;;
@@ -98,9 +107,11 @@ while [ "$#" -gt 0 ]; do
         --report-bytes) FM_DASHBOARD_REPORT_MAX_BYTES=$2 ;;
         --username) AUTH_USERNAME=$2 ;;
         --auth-file) AUTH_FILE=$2 ;;
+        --checkout) CHECKOUT=$2 ;;
       esac
       shift 2
       ;;
+    --allow-worktree) ALLOW_WORKTREE=1; shift ;;
     --set-password) SET_PASSWORD=1; shift ;;
     --no-start) START_SERVICE=0; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -129,7 +140,34 @@ case "$FM_DASHBOARD_HISTORY_LIMIT" in *.*) echo "fm-dashboard-install: history-l
 case "$FM_DASHBOARD_REPORT_MAX_BYTES" in *.*) echo "fm-dashboard-install: report-bytes must be an integer" >&2; exit 2 ;; esac
 
 command -v node >/dev/null 2>&1 || { echo "fm-dashboard-install: node not found" >&2; exit 1; }
+
+# The unit names one dashboard server by absolute path and keeps naming it
+# across reboots, so which checkout that is decides whether the service still
+# exists next week.
+if [ -n "$CHECKOUT" ]; then
+  CHECKOUT=$(CDPATH='' cd -- "$CHECKOUT" 2>/dev/null && pwd) \
+    || { echo "fm-dashboard-install: --checkout is not a directory" >&2; exit 2; }
+  SERVER="$CHECKOUT/bin/fm-dashboard-server.mjs"
+else
+  CHECKOUT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
+fi
 [ -f "$SERVER" ] || { echo "fm-dashboard-install: dashboard server not found at $SERVER" >&2; exit 1; }
+
+# A linked git worktree is disposable by construction: whoever created it will
+# reclaim it, and a boot-persistent unit pointing into one is a service that
+# works until the day it silently does not. Installing from a worktree to try a
+# change is legitimate, so this refuses with the way to say that is what you
+# meant rather than deciding for you.
+if command -v git >/dev/null 2>&1 && [ "$ALLOW_WORKTREE" -eq 0 ]; then
+  checkout_git_dir=$(git -C "$CHECKOUT" rev-parse --absolute-git-dir 2>/dev/null || true)
+  checkout_common_dir=$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  if [ -n "$checkout_git_dir" ] && [ -n "$checkout_common_dir" ] && [ "$checkout_git_dir" != "$checkout_common_dir" ]; then
+    printf 'fm-dashboard-install: %s is a linked git worktree, which will be reclaimed.\n' "$CHECKOUT" >&2
+    printf 'fm-dashboard-install: install the persistent service for a permanent checkout with --checkout PATH,\n' >&2
+    printf 'fm-dashboard-install: or pass --allow-worktree if a disposable service is what you meant.\n' >&2
+    exit 2
+  fi
+fi
 
 XDG_CONFIG_ROOT=${XDG_CONFIG_HOME:-"$HOME/.config"}
 ENV_DIR="$XDG_CONFIG_ROOT/firstmate"

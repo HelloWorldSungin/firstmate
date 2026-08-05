@@ -718,6 +718,7 @@ test_installer_writes_hardened_user_service() {
   out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
     HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
     FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
+    --allow-worktree \
     --fm-home "$case_root/fleet" --port 18878 --poll 3 --timeout 4 --stale 9 --no-start)
   unit="$case_root/config/systemd/user/firstmate-dashboard.service"
   env_file="$case_root/config/firstmate/dashboard.env"
