@@ -71,7 +71,13 @@ case "${1:-}" in
       "${FM_STUB_PAGES:-3}" "${FM_STUB_CHUNKS:-9}" "${FM_STUB_EMBEDDED:-9}" ;;
   config)
     case "${3:-}" in
-      search.reranker.enabled) echo "${FM_STUB_RERANK:-true}" ;;
+      search.reranker.enabled)
+        # An unreadable key is how the real brain answers once reinit-pglite has
+        # wiped its database plane: the complaint goes to stderr and the read
+        # fails, so the harness gets nothing rather than a value.
+        [ "${FM_STUB_RERANK:-true}" = "unreadable" ] && {
+          echo "Config key not found: ${3:-}" >&2; exit 1; }
+        echo "${FM_STUB_RERANK:-true}" ;;
       search.reranker.model) echo "test-reranker:v1" ;;
       models.think) echo "test-think:v1" ;;
       *) echo "Config key not found: ${3:-}" ;;
@@ -277,6 +283,19 @@ rm -f "$HOME_DIR/data/gbrain-outbox/broken.json"
 FM_STUB_RERANK=false run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search --json
 [ "$(printf '%s' "$EVAL_OUT" | jq -r '.configuration.reranker.enabled')" = "false" ] \
   || fail "a disabled reranker must be recorded as disabled"
+
+# The summary a reader actually sees has to keep the same distinction: a brain
+# with reranking OFF is a measured fact, and only a state the harness could not
+# read is unknown.
+FM_STUB_RERANK=false run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search
+assert_contains "$EVAL_OUT" "(enabled: false)" \
+  "a disabled reranker must render as disabled rather than as unknown"
+FM_STUB_RERANK=unreadable run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search
+assert_contains "$EVAL_OUT" "(enabled: unknown)" \
+  "a reranker state that could not be read must render as unknown"
+FM_STUB_RERANK=unreadable run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search --json
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.configuration.reranker.enabled')" = "null" ] \
+  || fail "an unreadable reranker state must be recorded as unknown, not as disabled"
 
 # A changed corpus produces a changed revision, which is what stops a later run
 # from being compared to this one as if nothing moved.

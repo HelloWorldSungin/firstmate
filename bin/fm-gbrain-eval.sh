@@ -621,7 +621,10 @@ render_run() {  # <document>
     "eval-set   \(.eval_set.id) v\(.eval_set.version)  (\(.run.questions) of \(.eval_set.questions) questions, \(.eval_set.checksum[0:14])...)",
     "gbrain     \(.configuration.gbrain_version // "unknown")   home \(.configuration.home)",
     "embedding  \(.configuration.embedding.model // "unknown") @ \(.configuration.embedding.dimensions // "?") dims",
-    "reranker   \(.configuration.reranker.model // "unknown") (enabled: \(.configuration.reranker.enabled // "unknown"))",
+    # A reranker the brain has turned OFF is a measured fact and must not read
+    # like one that could not be read at all, so `enabled` is tested for null
+    # explicitly: `//` would treat false as absent and print both as unknown.
+    "reranker   \(.configuration.reranker.model // "unknown") (enabled: \(if .configuration.reranker.enabled == null then "unknown" else .configuration.reranker.enabled end))",
     "think      \(.configuration.think.model // "unknown")",
     "corpus     \(.corpus.documents // "?") documents, \(.corpus.chunks // "?") chunks, \(.corpus.embedded // "?") embedded",
     "           revision \(.corpus.revision // "unknown") (\(.corpus.revision_source))",
