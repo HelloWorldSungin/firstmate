@@ -283,6 +283,39 @@ sha256_file() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
 }
 
+# Wait for a deliberately blocked inheritance write, without assuming how many
+# inherited files precede it in FM_INHERITABLE_CONFIG order.
+#
+# Progress is the liveness signal, not elapsed time. Every remote call bumps the
+# fake transport's invocation counter, and each new call resets the patience
+# window, so declaring another inheritable file can lengthen this wait without
+# ever failing it. The window expires only when the transfer stops making calls
+# at all, which is a genuine wedge rather than a slow runner.
+#
+# A fixed budget here is what made this fixture list-length dependent: config/
+# items propagate before the one shared data file (bin/fm-config-inherit-lib.sh),
+# so every added config/ entry ate into a constant allowance and eventually
+# failed on a loaded runner while passing on a fast one.
+await_blocked_inherit_write() { # <pid> <what>
+  local pid=$1 what=$2 seen now stalled
+  seen=$(cat "$SSH_COUNT" 2>/dev/null || echo 0)
+  stalled=0
+  while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
+    kill -0 "$pid" 2>/dev/null \
+      || fail "$what exited before its blocked inheritance write"
+    now=$(cat "$SSH_COUNT" 2>/dev/null || echo 0)
+    if [ "$now" != "$seen" ]; then
+      seen=$now
+      stalled=0
+    else
+      stalled=$((stalled + 1))
+    fi
+    [ "$stalled" -le 1500 ] \
+      || fail "$what stopped making remote calls for 30s while waiting for its blocked inheritance write"
+    sleep 0.02
+  done
+}
+
 seed_env() {
   FM_HOME="$TMP_ROOT/seed-parent" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
@@ -644,15 +677,7 @@ EOF
 FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate \
   > "$TMP_ROOT/spawn-concurrent.out" 2>&1 &
 spawn_concurrent=$!
-spawn_inherit_wait=0
-# Earlier inherited files traverse the worker before captain-shared.md, so give
-# a loaded portable runner 30 seconds to reach this deliberately blocked write.
-while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
-  kill -0 "$spawn_concurrent" 2>/dev/null || fail "remote spawn exited before its blocked inheritance write"
-  spawn_inherit_wait=$((spawn_inherit_wait + 1))
-  [ "$spawn_inherit_wait" -le 1500 ] || fail "remote spawn never reached its blocked inheritance write"
-  sleep 0.02
-done
+await_blocked_inherit_write "$spawn_concurrent" "remote spawn"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
 # Shared captain preferences
 This file is main-authoritative and maintained by the main firstmate.
@@ -741,13 +766,7 @@ EOF
 FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-config-push.sh" \
   > "$TMP_ROOT/config-concurrent-first.out" 2>&1 &
 config_first=$!
-inherit_wait=0
-while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
-  kill -0 "$config_first" 2>/dev/null || fail "first inheritance transaction exited before its blocked write"
-  inherit_wait=$((inherit_wait + 1))
-  [ "$inherit_wait" -le 250 ] || fail "first inheritance transaction never reached its blocked write"
-  sleep 0.02
-done
+await_blocked_inherit_write "$config_first" "first inheritance transaction"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
 # Shared captain preferences
 This file is main-authoritative and maintained by the main firstmate.
