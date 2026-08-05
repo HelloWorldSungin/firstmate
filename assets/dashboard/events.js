@@ -40,6 +40,15 @@ const TYPE_TONES = {
 
 const OUTCOME_TONES = { ok: "green", error: "red", blocked: "amber", unknown: "unknown" };
 
+// The types whose row is a claim about how something turned out. For these an
+// absent outcome is itself a fact and is drawn as `unknown`: a row with no chip
+// beside a row with a green chip reads as fine at a glance, and an outcome
+// nobody observed must never read as a good one. Not every adapter can tell
+// success from failure for every tool, so this is a routine state rather than
+// an error. For every other type an outcome was never meaningful and nothing is
+// drawn.
+const OUTCOME_BEARING_TYPES = new Set(["tool_finished"]);
+
 export function typeLabel(type) {
   return TYPE_LABELS[type] || String(type || "event");
 }
@@ -147,13 +156,16 @@ export function buildTimeline(envelope, filters = {}) {
     if (filters.task && event.task_id !== filters.task) continue;
     if (filters.harness && event.harness !== filters.harness) continue;
     if (filters.type && event.type !== filters.type) continue;
+    const type = String(event.type ?? "");
     rows.push({
       id: String(event.event_id ?? ""),
       task: String(event.task_id ?? ""),
       harness: String(event.harness ?? ""),
-      type: String(event.type ?? ""),
+      type,
       tool: typeof event.tool === "string" ? event.tool : null,
-      outcome: typeof event.outcome === "string" ? event.outcome : null,
+      outcome: typeof event.outcome === "string" && event.outcome
+        ? event.outcome
+        : (OUTCOME_BEARING_TYPES.has(type) ? "unknown" : null),
       summary: typeof event.summary === "string" ? event.summary : null,
       session: typeof event.session_id === "string" ? event.session_id : null,
       at: String(event.occurred_at ?? ""),

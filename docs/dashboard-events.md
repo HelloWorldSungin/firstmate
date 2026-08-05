@@ -66,6 +66,7 @@ bin/fm-event-store.mjs prune
 Retention is enforced by the writer after every accepted batch rather than by a separate sweep, so the store cannot grow unbounded because nobody ran a cleanup command: an age cap (7 days), a total row cap (50000), and a per-task row cap (2000), each overridable through the environment names in the server's header.
 The age cap is index-bounded and applied every time; the two row caps each need a full table scan, so they are applied only when a cached row count says a cap can be crossed and then only far enough apart to amortize the scan, which leaves the store at most 1/64 of the row cap and a task at most 1/8 of the per-task cap above their limits between scans.
 `bin/fm-event-store.mjs prune` always applies all three exactly.
+No subcommand ever creates a store, `prune` included: a home that has never collected anything has nothing to prune, and every subcommand answers `"present": false` on a home whose store does not exist rather than bringing one into being to say so.
 
 ## What may be in an event
 
@@ -82,6 +83,11 @@ The wire schema is `fm-agent-event.v1` and it is harness-agnostic on purpose: an
 | `tool` | a tool name, or absent |
 | `outcome` | `ok`, `error`, `blocked`, `unknown`, or absent |
 | `summary` | a short human summary, or absent |
+
+**An outcome is reported only where it was observed.**
+An adapter sends `outcome` when its harness actually tells it how the call turned out, and omits the field entirely when it does not - it never falls back to `ok`, and it never infers `error` from the absence of a signal.
+On the page a finished tool call with no reported outcome is drawn as an explicit `unknown` chip, hollow and unfilled like the unknown dot, so an outcome nobody observed can never pass for a good one at a glance or in grayscale.
+`blocked` is in the vocabulary and reachable by the schema although neither shipped adapter can determine it today; it is kept rather than removed because a harness that reports a denied tool call is exactly what it is for, and removing it would make that adapter a wire change.
 
 **Redaction is an allowlist at both ends, not a filter.**
 The producer never forwards free text: every field it sends is rebuilt from a value that matched its own pattern, and a value that does not match is dropped rather than sent.
@@ -121,7 +127,12 @@ And an event whose own instant falls outside the accepted window is refused by t
 
 The OpenCode adapter deliberately uses those semantic hooks rather than the `session.status` transitions the plugin's busy-state contract already watches.
 OpenCode flips that status between busy and idle at every step inside one turn, which is exactly right for an idempotent state writer and would draw the same turn over and over on a timeline.
-Claude's tool name arrives in the hook payload rather than in the command, so the producer pulls exactly that one field and the session id out of it by pattern and ignores everything else the payload carries.
+Claude's tool name arrives in the hook payload rather than in the command, so the producer pulls exactly that one field and the session id out of it and ignores everything else the payload carries.
+It reads the harness's own top-level fields specifically: a key of the same name nested inside a tool's arguments or a tool's result is a level deeper and is never selected, so a tool argument has no field it can travel in even when it is named like one the producer wants.
+
+OpenCode's `tool.execute.after` carries the tool's exit status in its own tool-specific metadata, so that adapter maps a numeric `metadata.exit` to `ok` or `error` and sends no outcome at all for a tool whose metadata carries no exit.
+Claude's `PostToolUse` payload exposes no comparable signal inside the two fields the producer is allowed to read, so its finished-tool rows report no outcome and the page draws them as `unknown`.
+Widening the producer's payload extraction to hunt for one is deliberately not done: that allowlist is the redaction boundary, and an outcome is not worth reading a third field for.
 
 Every other harness degrades to **no event source**: nothing is wired, nothing is reported, and the timeline says so for that task rather than showing an empty panel that reads as a fault.
 

@@ -96,6 +96,11 @@ main { min-width: 0; flex: 1; }
 .nav-item { display: flex; align-items: center; gap: 8px; }
 .notice { display: flex; align-items: flex-start; gap: 11px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--amber-bg); font-size: 12.5px; line-height: 1.5; }
 .notice.error { background: var(--red-bg); }
+/* Amber is reserved for something that is actually wrong. An expected state -
+   nothing collected yet, nothing matching a filter, reporting deliberately off
+   - says so on a neutral surface, because a routine message on the warning
+   strip teaches a reader to stop trusting the strip. */
+.notice.info { background: var(--surface-2); }
 .notice strong { display: block; margin-bottom: 2px; }
 .notice code { font: 500 11px/1.5 var(--mono); color: var(--dim); word-break: break-word; }
 .board-content { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding: 16px 0 28px; }
@@ -228,6 +233,10 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
 .chip.green { border-color: var(--green); background: var(--green-bg); color: var(--green); }
 .chip.red { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 .chip.amber { border-color: var(--amber); background: var(--amber-bg); color: var(--amber); }
+/* The same hollow treatment .dot.unknown gets, and for the same reason: an
+   outcome nobody observed must be unfilled and dashed rather than quietly
+   passing for a good one, in grayscale as much as in colour. */
+.chip.unknown { border-style: dashed; border-color: var(--grey); background: transparent; color: var(--faint); }
 
 /* Completed-work history */
 .filter-grid input { width: 100%; min-height: 44px; margin-top: 6px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--fg); font-family: var(--sys); font-size: 13px; letter-spacing: normal; text-transform: none; }

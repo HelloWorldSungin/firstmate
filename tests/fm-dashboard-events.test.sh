@@ -113,11 +113,10 @@ start_server() {  # <case-root> [extra env assignments...]
     FM_DASHBOARD_EVENT_DB="$root/events.db" \
     node "$root/bin/fm-dashboard-server.mjs" > "$root/server.log" 2>&1 &
   SERVER_PID=$!
-  local attempt
   # Readiness is probed on the snapshot rather than the timeline deliberately:
   # reading the timeline opens the event store, which would mask whether the
   # stream's own first frame is authoritative about a store nothing has touched.
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     curl -fsS -o /dev/null "http://127.0.0.1:$TEST_PORT/api/snapshot" 2>/dev/null && return 0
     sleep 0.1
   done
@@ -190,8 +189,8 @@ start_capture() {  # <case-root> - sets HELPER_PORT
 }
 
 wait_for_capture() {  # <file> <count>
-  local file=$1 want=$2 attempt
-  for attempt in $(seq 1 40); do
+  local file=$1 want=$2
+  for _ in $(seq 1 40); do
     [ -f "$file" ] && [ "$(wc -l < "$file")" -ge "$want" ] && return 0
     sleep 0.1
   done
@@ -331,7 +330,7 @@ test_replayed_and_duplicated_events_are_stored_once() {
 # tasks, and the emitter's fail-open exit meant every event they ever reported
 # was discarded silently and permanently while the timeline showed them quiet.
 test_every_legal_task_id_can_report() {
-  local root task attempt ids
+  local root task ids
   root=$(make_case taskids)
   start_server "$root"
 
@@ -339,7 +338,7 @@ test_every_legal_task_id_can_report() {
     FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
       "$EMIT" --task "$task" --harness claude --type turn_ended </dev/null
   done
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     ids=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/timeline" | jq -r '[.events[].task_id] | sort | join(",")')
     [ "$ids" = "-fix-thing,_scratch,ordinary-task" ] && break
     sleep 0.1
@@ -439,6 +438,50 @@ NODE
 
   stop_server
   pass "seeded credentials and private paths reach neither the wire, the store, nor the page"
+}
+
+# --from-stdin reads the harness's OWN fields, which is a claim about depth
+# rather than about spelling. A tool that takes a `session_id` argument, or one
+# whose structured result carries a `tool_name` key, puts a second key of the
+# same name in the payload - and a nested one must never displace the real one,
+# because that is a tool argument and a tool result arriving in fields the
+# producer promises they cannot reach.
+test_the_producer_reads_only_the_harnesss_own_top_level_fields() {
+  local root bodies
+  root=$(make_case toplevel)
+  start_capture "$root"
+  FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+    "$INSTRUMENT" enable --port "$HELPER_PORT" >/dev/null
+
+  # Nested keys of both names, one of them credential-shaped, in the order a
+  # real PostToolUse payload puts them in.
+  printf '{"session_id":"real-session","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"session_id":"arg-value-from-tool-input"},"tool_response":{"tool_name":"AKIAIOSFODNN7EXAMPLE"}}' \
+    | FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+      "$EMIT" --task task-depth --harness claude --type tool_finished --from-stdin
+  # The same payload with the nested objects FIRST, so passing is not an
+  # accident of the harness's field order.
+  printf '{"tool_input":{"session_id":"arg-value-from-tool-input"},"tool_response":{"tool_name":"AKIAIOSFODNN7EXAMPLE"},"session_id":"real-session","tool_name":"Write"}' \
+    | FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+      "$EMIT" --task task-depth --harness claude --type tool_finished --from-stdin
+  # A brace and a quote inside a value must not move the boundary either.
+  printf '%s' '{"session_id":"real-session","tool_name":"Write","tool_input":{"command":"echo \"}{\" ; true","session_id":"arg-value-from-tool-input"}}' \
+    | FM_DASHBOARD_EVENTS_CONFIG="$root/config/dashboard-events.json" \
+      "$EMIT" --task task-depth --harness claude --type tool_finished --from-stdin
+  wait_for_capture "$root/captured.jsonl" 3 \
+    || fail "the producer never reached the recorder: $(cat "$root/captured.jsonl" 2>/dev/null)"
+
+  bodies=$(cat "$root/captured.jsonl")
+  for nested in AKIAIOSFODNN7EXAMPLE arg-value-from-tool-input; do
+    case "$bodies" in
+      *"$nested"*) fail "a nested payload key reached the wire: $nested in $bodies" ;;
+    esac
+  done
+  [ "$(jq -r '.body' "$root/captured.jsonl" | jq -sr '[.[].events[0].tool] | unique | join(",")')" = Write ] \
+    || fail "the producer did not report the harness's own tool name: $bodies"
+  [ "$(jq -r '.body' "$root/captured.jsonl" | jq -sr '[.[].events[0].session_id] | unique | join(",")')" = real-session ] \
+    || fail "the producer did not report the harness's own session id: $bodies"
+  stop_helpers
+  pass "the producer takes the harness's own top-level fields and never a nested key of the same name"
 }
 
 # A tool name is an identifier, not free-form content. The entropy rule that
@@ -744,6 +787,8 @@ SH
 
 run_autoarm() {  # <dir> <stderr-file>
   local dir=$1 err=$2
+  # The -c body is expanded by the fake harness's own shell, not by this one.
+  # shellcheck disable=SC2016
   printf '%s\n' '{"session_id":"sess-autoarm","stop_hook_active":false}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
@@ -954,23 +999,74 @@ test_the_opencode_adapter_translates_its_own_events() {
       const hooks = await plugin.FmBusyState({});
       await hooks['chat.message']({ sessionID: 'ses_abc' }, { message: {}, parts: [] });
       await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c1' }, { args: {} });
+      // The three shapes tool.execute.after actually arrives in: an observed
+      // success, an observed failure (OpenCode 1.18.4 reports a bash tool's
+      // exit status in metadata.exit), and a tool whose metadata says nothing
+      // about how it went. Plus two malformed shapes that must not throw.
       await hooks['tool.execute.after']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c1', args: {} },
+        { title: 't', output: 'o', metadata: { output: 'ok', exit: 0, truncated: false } });
+      await hooks['tool.execute.after']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c2', args: {} },
+        { title: 't', output: 'o', metadata: { output: '(no output)', exit: 3, truncated: false } });
+      await hooks['tool.execute.after']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c3', args: {} },
         { title: 't', output: 'o', metadata: {} });
+      await hooks['tool.execute.after']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c4', args: {} },
+        { title: 't', output: 'o', metadata: null });
+      await hooks['tool.execute.after']({ tool: 'bash', sessionID: 'ses_abc', callID: 'c5', args: {} }, undefined);
       await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_abc' } } });
     " || fail "the generated OpenCode plugin could not be driven"
 
-  wait_for_capture "$root/captured.jsonl" 4 \
-    || fail "the OpenCode adapter reported fewer than its four events: $(cat "$root/captured.jsonl" 2>/dev/null)"
+  wait_for_capture "$root/captured.jsonl" 8 \
+    || fail "the OpenCode adapter reported fewer than its eight events: $(cat "$root/captured.jsonl" 2>/dev/null)"
   bodies=$(jq -r '.body' "$root/captured.jsonl")
-  [ "$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0].type] | sort | join(",")')" \
+  [ "$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0].type] | unique | sort | join(",")')" \
     = "prompt_submitted,tool_finished,tool_started,turn_ended" ] \
     || fail "the OpenCode adapter reported the wrong lifecycle events: $bodies"
   [ "$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0] | select(.tool != null) | .tool] | unique | join(",")')" = bash ] \
     || fail "the OpenCode adapter lost or mangled the tool name: $bodies"
   [ "$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0].harness] | unique | join(",")')" = opencode ] \
     || fail "the OpenCode adapter reported the wrong harness: $bodies"
+  # An outcome is claimed only where the harness reported one. Three of the five
+  # finished-tool calls carried no exit status, and those must report no outcome
+  # at all rather than an ok nobody observed.
+  [ "$(printf '%s\n' "$bodies" | jq -sr '[.[].events[0] | select(.type == "tool_finished") | .outcome // "absent"] | sort | join(",")')" \
+    = "absent,absent,absent,error,ok" ] \
+    || fail "the OpenCode adapter did not map exit status to outcome honestly: $bodies"
   stop_helpers
-  pass "the OpenCode adapter turns its own hooks into the shared lifecycle vocabulary"
+  pass "the OpenCode adapter speaks the shared vocabulary and claims an outcome only where it observed one"
+}
+
+# The other half of reporting an outcome only where one was observed: the page
+# has to say so. A finished tool call with no outcome must draw an explicit
+# unknown indicator rather than nothing at all, because a row with no chip
+# beside a row with a green chip reads as fine at a glance.
+test_an_unobserved_outcome_renders_as_unknown_rather_than_as_nothing() {
+  local shown
+  shown=$(node - "$ROOT/assets/dashboard/events.js" <<'NODE'
+const { pathToFileURL } = require("node:url");
+(async () => {
+  const events = await import(pathToFileURL(process.argv[2]).href);
+  const view = events.buildTimeline({ events: [
+    { event_id: "a", task_id: "t", harness: "opencode", type: "tool_finished", outcome: "ok", occurred_at: "2026-08-05T00:00:03Z", occurred_epoch: 3 },
+    { event_id: "b", task_id: "t", harness: "opencode", type: "tool_finished", outcome: "error", occurred_at: "2026-08-05T00:00:02Z", occurred_epoch: 2 },
+    { event_id: "c", task_id: "t", harness: "claude", type: "tool_finished", occurred_at: "2026-08-05T00:00:01Z", occurred_epoch: 1 },
+    { event_id: "d", task_id: "t", harness: "claude", type: "prompt_submitted", occurred_at: "2026-08-05T00:00:00Z", occurred_epoch: 0 },
+  ] });
+  process.stdout.write(JSON.stringify({
+    outcomes: view.rows.map((row) => row.outcome),
+    tones: view.rows.map((row) => events.outcomeTone(row.outcome)),
+  }));
+})();
+NODE
+  ) || fail "the timeline module could not render an outcome-free row"
+  [ "$(printf '%s' "$shown" | jq -c '.outcomes')" = '["ok","error","unknown",null]' ] \
+    || fail "an unobserved outcome was not drawn as unknown: $shown"
+  # Distinct from both the good and the bad chip, and distinct in grayscale:
+  # the unknown chip is unfilled and dashed the way the unknown dot is hollow.
+  [ "$(printf '%s' "$shown" | jq -r '.tones[2]')" = unknown ] \
+    || fail "the unknown outcome shares a tone with an observed one: $shown"
+  grep -q '^\.chip\.unknown {' "$ROOT/assets/dashboard/styles.css" \
+    || fail "the unknown outcome chip has no style of its own, so it renders as a plain chip"
+  pass "a finished tool call whose outcome nobody observed renders as unknown, not as success"
 }
 
 test_an_uninstrumented_harness_degrades_to_no_event_source() {
@@ -1028,7 +1124,7 @@ test_retention_caps_bound_the_store() {
 }
 
 test_live_events_reach_the_browser_over_sse() {
-  local root log attempt
+  local root log
   root=$(make_case sse)
   start_server "$root"
   log="$root/sse.log"
@@ -1037,7 +1133,7 @@ test_live_events_reach_the_browser_over_sse() {
   sleep 0.4
   post_status 'task-live/claude' \
     "$(one_event task-live claude tool_started live1 ',"tool":"Bash","summary":"listed the branch"')" >/dev/null
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     grep -q 'listed the branch' "$log" && break
     sleep 0.1
   done
@@ -1054,7 +1150,7 @@ test_live_events_reach_the_browser_over_sse() {
 # otherwise the reader is told no events have ever arrived until the next one
 # does.
 test_the_first_stream_frame_reports_a_store_that_was_already_full() {
-  local root log attempt
+  local root log
   root=$(make_case firstframe)
   start_server "$root"
   post_status 'task-boot/claude' \
@@ -1067,7 +1163,7 @@ test_the_first_stream_frame_reports_a_store_that_was_already_full() {
   log="$root/firstframe.log"
   curl --max-time 4 -Ns "http://127.0.0.1:$TEST_PORT/api/events" > "$log" 2>/dev/null &
   SSE_PID=$!
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     grep -q '^event: agent_events' "$log" 2>/dev/null && break
     sleep 0.1
   done
@@ -1086,7 +1182,7 @@ test_the_first_stream_frame_reports_a_store_that_was_already_full() {
 # away from also accepting writes without one, so the two assertions must not be
 # able to drift apart into separate tests.
 test_disabled_instrumentation_serves_history_and_still_refuses_writes() {
-  local root port log before after code timeline kept_token attempt
+  local root port log before after code timeline kept_token
   root=$(make_case disabled)
   start_server "$root"
   kept_token=$TOKEN
@@ -1108,7 +1204,7 @@ test_disabled_instrumentation_serves_history_and_still_refuses_writes() {
     node "$root/bin/fm-dashboard-server.mjs" > "$root/disabled.log" 2>&1 &
   SERVER_PID=$!
   TEST_PORT=$port
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     curl -fsS -o /dev/null "http://127.0.0.1:$port/api/snapshot" 2>/dev/null && break
     sleep 0.1
   done
@@ -1157,8 +1253,7 @@ test_an_unconfigured_dashboard_creates_no_store() {
     XDG_STATE_HOME="$state" \
     node "$root/bin/fm-dashboard-server.mjs" > "$root/nostore.log" 2>&1 &
   SERVER_PID=$!
-  local attempt
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     curl -fsS -o /dev/null "http://127.0.0.1:$port/api/snapshot" 2>/dev/null && break
     sleep 0.1
   done
@@ -1177,7 +1272,24 @@ test_an_unconfigured_dashboard_creates_no_store() {
     || fail "an unconfigured dashboard did not report itself as uninstrumented: $(cat "$root/nostore-timeline.json")"
   grep -q '^event: agent_events' "$log" \
     || fail "an unconfigured dashboard pushed no activity frame at all: $(cat "$log")"
-  pass "a dashboard with no configured ingest token opens no event store anywhere"
+
+  # The CLI is the store's other consumer and is held to the same rule. prune is
+  # the one that used to be exempt: it writes, so it took the create path and
+  # brought a store into being on a home that had never collected anything.
+  local command out
+  for command in path stats list prune; do
+    out=$(env -u FM_DASHBOARD_EVENT_DB FM_HOME="$root/home" XDG_STATE_HOME="$state" \
+      node "$root/bin/fm-event-store.mjs" "$command" 2>&1) \
+      || fail "fm-event-store.mjs $command failed on a home with no store: $out"
+    [ -d "$state" ] \
+      && fail "fm-event-store.mjs $command created a store on a home that has never collected: $(find "$state" | tr '\n' ' ')"
+    [ "$command" = path ] || [ "$(printf '%s' "$out" | jq -r '.present')" = false ] \
+      || fail "fm-event-store.mjs $command did not report an absent store as absent: $out"
+  done
+  [ "$(env -u FM_DASHBOARD_EVENT_DB FM_HOME="$root/home" XDG_STATE_HOME="$state" \
+    node "$root/bin/fm-event-store.mjs" prune | jq -r '.removed')" = 0 ] \
+    || fail "prune claimed to have removed something from a store that does not exist"
+  pass "no configured ingest token means no event store, from the server and from the CLI alike"
 }
 
 # The live stream is a bounded fleet-wide tail that every broadcast replaces
@@ -1255,12 +1367,14 @@ test_ingest_refuses_cheaply_before_reading_a_body
 test_replayed_and_duplicated_events_are_stored_once
 test_every_legal_task_id_can_report
 test_redaction_holds_at_producer_server_and_page
+test_the_producer_reads_only_the_harnesss_own_top_level_fields
 test_a_tool_name_is_an_identifier_not_a_secret
 test_a_down_or_slow_dashboard_never_delays_or_fails_an_agent
 test_instrumentation_cannot_change_what_a_guard_decides
 test_instrumentation_cannot_change_what_the_stop_autoarm_decides
 test_harness_wiring_is_additive_and_reversible
 test_the_opencode_adapter_translates_its_own_events
+test_an_unobserved_outcome_renders_as_unknown_rather_than_as_nothing
 test_an_uninstrumented_harness_degrades_to_no_event_source
 test_retention_caps_bound_the_store
 test_live_events_reach_the_browser_over_sse

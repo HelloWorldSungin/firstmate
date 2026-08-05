@@ -609,24 +609,31 @@ function activityRow(row) {
   return item;
 }
 
+// The activity filters are rebuilt from a stream that a broadcast replaces up
+// to four times a second, so replacing their options unconditionally would
+// close an open dropdown under the reader every quarter second - on a busy
+// fleet, which is exactly when the filter is wanted. Options are therefore
+// replaced only when the list has actually changed, and never while the reader
+// is in the control; the next render picks it up once focus leaves.
 function syncActivitySelect(key, values) {
   const select = ui.activityForm.elements[key];
   const selected = state.activity.filters[key];
-  const first = select.options[0];
-  replaceChildren(select, [first, ...values.map((value) => {
-    const option = element("option", "", key === "type" ? typeLabel(value) : value);
-    option.value = value;
-    return option;
-  })]);
   // A filter whose value is no longer in the stream is kept in the list rather
   // than silently cleared, so a reader watching one agent does not get pulled
   // back to the whole fleet the moment that agent goes quiet.
-  if (selected && !values.includes(selected)) {
-    const option = element("option", "", key === "type" ? typeLabel(selected) : selected);
-    option.value = selected;
-    select.append(option);
+  const wanted = selected && !values.includes(selected) ? [...values, selected] : values;
+  const current = [...select.options].slice(1).map((option) => option.value);
+  const unchanged = current.length === wanted.length
+    && current.every((value, index) => value === wanted[index]);
+  if (!unchanged && document.activeElement !== select) {
+    const first = select.options[0];
+    replaceChildren(select, [first, ...wanted.map((value) => {
+      const option = element("option", "", key === "type" ? typeLabel(value) : value);
+      option.value = value;
+      return option;
+    })]);
   }
-  select.value = selected;
+  if (select.value !== selected) select.value = selected;
 }
 
 function renderActivity() {
@@ -690,10 +697,20 @@ function ageSince(millis) {
   return Math.max(0, Math.floor((Date.now() - millis) / 1000));
 }
 
+// Red is a fault, amber is a warning, and everything else is information on a
+// neutral surface rather than on the warning strip. A heading is optional: an
+// empty one is left out entirely rather than drawn as an empty block, which
+// would give the notice a line of leading no other notice on the page has.
+function noticeVariant(tone) {
+  if (tone === "red") return "error";
+  if (tone === "amber") return "";
+  return "info";
+}
+
 function historyWarning(tone, heading, detail) {
-  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
+  const notice = element("div", `notice ${noticeVariant(tone)}`.trim());
   const copy = element("div");
-  copy.append(element("strong", "", heading));
+  if (heading) copy.append(element("strong", "", heading));
   copy.append(document.createTextNode(detail));
   notice.append(dot(tone), copy);
   return notice;

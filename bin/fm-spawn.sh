@@ -1907,7 +1907,21 @@ const agentEvent = (type, extra = []) =>
     execFile(\"$FM_ROOT/bin/fm-event-emit.sh\", [
       \"--task\", \"$ID\", \"--harness\", \"opencode\", \"--type\", type, ...extra,
     ], () => resolve());
-  });"
+  });
+// OpenCode reports a tool's exit status in its own tool-specific metadata, so
+// the outcome is read where it is actually observable and omitted everywhere
+// else. A tool that reports no numeric exit is unknown, and unknown is said by
+// saying nothing here rather than by guessing either way. The read is wrapped
+// because a plugin that throws inside a hook is worse than a missing outcome.
+const toolOutcome = (output) => {
+  try {
+    const exit = output && output.metadata ? output.metadata.exit : undefined;
+    if (typeof exit !== \"number\" || !Number.isFinite(exit)) return [];
+    return [\"--outcome\", exit === 0 ? \"ok\" : \"error\"];
+  } catch (error) {
+    return [];
+  }
+};"
         # These are OpenCode's own semantic hooks, so the timeline reads one
         # prompt per prompt and one tool entry per tool call. The busy-state
         # branch below is deliberately left alone: session.status flips busy and
@@ -1921,8 +1935,8 @@ const agentEvent = (type, extra = []) =>
     \"tool.execute.before\": async (input) => {
       await agentEvent(\"tool_started\", [\"--tool\", String(input.tool), \"--session\", String(input.sessionID)]);
     },
-    \"tool.execute.after\": async (input) => {
-      await agentEvent(\"tool_finished\", [\"--tool\", String(input.tool), \"--session\", String(input.sessionID), \"--outcome\", \"ok\"]);
+    \"tool.execute.after\": async (input, output) => {
+      await agentEvent(\"tool_finished\", [\"--tool\", String(input.tool), \"--session\", String(input.sessionID), ...toolOutcome(output)]);
     },"
         oc_event_idle="
         await agentEvent(\"turn_ended\", [\"--session\", String(event.properties.sessionID)]);"

@@ -463,6 +463,18 @@ Environment:
   FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK    per-task row cap (default 2000)
 `;
 
+// What every subcommand answers when there is no store. No CLI subcommand may
+// bring one into being - prune included: a home that has never collected
+// anything has nothing to prune, and creating the file to say so would leave
+// exactly the directory the presence gate exists to keep off an uninstrumented
+// operator's state root.
+function absentStore(command, storePath) {
+  const body = { schema: `${STORE_KIND}-${command}.v1`, store: storePath, present: false, rows: 0 };
+  if (command === "prune") body.removed = 0;
+  else body.events = [];
+  return body;
+}
+
 export function limitsFromEnv(env = process.env) {
   const read = (name, fallback, maximum) => {
     const raw = env[name];
@@ -497,10 +509,8 @@ function runCli(argv) {
     process.stderr.write(`fm-event-store: unknown command: ${command}\n${USAGE}`);
     return 2;
   }
-  if (command !== "prune" && !fs.existsSync(storePath)) {
-    process.stdout.write(`${JSON.stringify({
-      schema: `${STORE_KIND}-${command}.v1`, store: storePath, present: false, rows: 0, events: [],
-    })}\n`);
+  if (!fs.existsSync(storePath)) {
+    process.stdout.write(`${JSON.stringify(absentStore(command, storePath))}\n`);
     return 0;
   }
 
@@ -517,7 +527,11 @@ function runCli(argv) {
     return 2;
   }
 
-  const store = new EventStore(storePath, limitsFromEnv());
+  const store = EventStore.openExisting(storePath, limitsFromEnv());
+  if (!store) {
+    process.stdout.write(`${JSON.stringify(absentStore(command, storePath))}\n`);
+    return 0;
+  }
   try {
     if (command === "stats") {
       process.stdout.write(`${JSON.stringify({ schema: `${STORE_KIND}-stats.v1`, present: true, ...store.stats() })}\n`);

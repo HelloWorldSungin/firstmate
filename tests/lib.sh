@@ -117,7 +117,9 @@ fm_user_event_store_root() {
 }
 
 fm_user_event_store_snapshot() {
-  ls -1 "$(fm_user_event_store_root)" 2>/dev/null | sort
+  find "$(fm_user_event_store_root)" -mindepth 1 -maxdepth 1 2>/dev/null \
+    | sed 's|.*/||' \
+    | sort
 }
 
 fm_assert_no_user_event_store_leak() {  # <snapshot-taken-before-the-suite>

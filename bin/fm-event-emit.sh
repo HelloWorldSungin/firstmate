@@ -132,6 +132,45 @@ looks_like_credential() {  # <value>
   printf '%s' "$1" | grep -oE '[A-Za-z0-9+/=_-]{24,}' | grep -q '[0-9]'
 }
 
+# One of the harness's OWN top-level fields, read out of a hook payload on
+# standard input. Depth is what makes this a boundary rather than a search: a
+# key of the same name nested inside a tool's arguments or a tool's result sits
+# a level deeper and is never selected, so a tool argument still has no field it
+# can travel in. The scan is string-aware, so a brace or a quote inside a value
+# cannot move it, and it stops at the first top-level match. Anything else the
+# payload carries is skipped without ever being held.
+top_level_string() {  # <key>, payload on stdin
+  awk -v want="$1" '
+    { buf = buf $0 "\n" }
+    END {
+      n = length(buf); depth = 0; key = ""; i = 1
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "\"") {
+          start = i + 1; j = start
+          while (j <= n) {
+            d = substr(buf, j, 1)
+            if (d == "\\") { j = j + 2; continue }
+            if (d == "\"") break
+            j = j + 1
+          }
+          text = substr(buf, start, j - start)
+          i = j + 1; k = i
+          while (k <= n && substr(buf, k, 1) ~ /^[ \t\r\n]$/) k = k + 1
+          if (depth == 1 && substr(buf, k, 1) == ":") { key = text; i = k + 1; continue }
+          if (depth == 1 && key == want) { if (length(text) <= 128) print text; exit }
+          key = ""
+          continue
+        }
+        if (c == "{" || c == "[") depth = depth + 1
+        else if (c == "}" || c == "]") { depth = depth - 1; key = "" }
+        else if (c == ",") key = ""
+        i = i + 1
+      }
+    }
+  '
+}
+
 # A summary may use only these characters - no slash, so an absolute path
 # cannot survive; no equals or at-sign, so an assignment or an address cannot
 # either - and no unbroken run long enough to be a token. Human summaries have
@@ -189,18 +228,16 @@ exec 3<&0 || true
     *) OUTCOME= ;;
   esac
 
-  # Two pattern-matched values out of a hook payload, and nothing else. The
-  # payload is never stored, never logged, and never forwarded.
+  # Two of the harness's own top-level values, and nothing else. Both still have
+  # to pass their field pattern below, so what the payload offers is a candidate
+  # rather than a value. The payload itself is never stored, never logged, and
+  # never forwarded.
   if [ "$FROM_STDIN" -eq 1 ] && [ -n "$PAYLOAD" ]; then
     if [ -z "$TOOL" ]; then
-      TOOL=$(printf '%s' "$PAYLOAD" \
-        | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_.:-]\{1,64\}\)".*/\1/p' \
-        | head -n 1)
+      TOOL=$(printf '%s' "$PAYLOAD" | top_level_string tool_name)
     fi
     if [ -z "$SESSION" ]; then
-      SESSION=$(printf '%s' "$PAYLOAD" \
-        | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._:-]\{1,128\}\)".*/\1/p' \
-        | head -n 1)
+      SESSION=$(printf '%s' "$PAYLOAD" | top_level_string session_id)
     fi
   fi
 
