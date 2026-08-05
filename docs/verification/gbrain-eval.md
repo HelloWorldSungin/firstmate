@@ -85,6 +85,29 @@ The one that failed twice, `q01`, produced 8003 characters on its retry, at the 
 No embedding or reranker change addresses it, because retrieval already succeeds on every one of those questions - `q03` and `q17` both retrieved their expected source at rank one in the same run.
 A different embedding artifact was nevertheless measured, below, because the migration playbook had to be exercised end to end.
 
+## The hosted-synthesis numbers have not been independently reproduced
+
+The two halves of this record do not carry the same weight of evidence, and the gap is wide enough that a reader should not average over it.
+
+**The replication asymmetry.**
+The retrieval half was independently reproduced by a separate verification pass at top-1 0.95 / top-5 1.00 / MRR 0.975, using the unchanged shipped evaluation set, on a live corpus that had since grown to 65 documents under a new revision hash, not the 64-document revision the baseline above was recorded against.
+The hosted-synthesis half was measured only by the worker that implemented this harness, from its own runs, and nobody has re-run it since.
+That is the weak case, and it should be read as one: an implementer confirming its own work is weaker evidence than an independent reproduction, so the four hosted numbers deserve less confidence than the retrieval numbers printed beside them.
+
+**The run-to-run spread is the reason it matters.**
+Across three separate runs of the same twenty questions against the same home, first-call synthesis answered 15, 17, and 18 of 20.
+The baseline above is the 18-of-20 run, which is what makes answered 0.90, and allowing one retry reached 0.95 answered with 0.85 on the first call.
+So 0.90 is one draw from a spread of roughly 0.75 to 0.90, not a stable figure that a re-run would be expected to land on again.
+
+**What closing the gap costs.**
+An independent reproduction is roughly 20 paid outbound calls to the hosted provider, each carrying excerpts of this home's captured cross-project knowledge off the host.
+That export is a named privacy boundary of this repository, which is why authorizing it is the repository owner's decision rather than an agent's, and why the gap is recorded here instead of quietly measured away.
+The command is `bin/fm-gbrain-eval.sh run --home <home> --phase think --out think.json`, which scores the synthesis half alone and leaves the retrieval metrics above untouched.
+
+**What this limitation does not reach.**
+It is scoped to the hosted-synthesis metrics alone: think answered, think grounded, think key facts, and think citation precision.
+The retrieval numbers, the migration and rebuild timings, the wrapper re-sort result, the reranker finding, and every other measurement in this document were taken locally and are unaffected by it.
+
 ## The retrieval wrapper re-sorts away GBrain's own ranking
 
 This is a measured result of the baseline run, not an aside: it is where the missing top-1 above went.
