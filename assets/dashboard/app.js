@@ -115,8 +115,63 @@ function projectPill(name) {
   return pill;
 }
 
+// Folding and unfolding a device reflows this page between a single stacked
+// column and a multi-column grid, which changes the document height by
+// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
+// offset no longer points at the same content, so the reader is dropped
+// somewhere else in the page. Anchor to whatever they were actually reading
+// instead, and put that back at the same place on the screen.
+//
+// Only a width change counts. Mobile browser chrome sliding in and out changes
+// the height alone, constantly, and moving the page under the reader for that
+// would be far worse than the problem being fixed.
+const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
+let scrollAnchor = null;
+let anchorQueued = false;
+let lastViewportWidth = window.innerWidth;
+
+// The sticky bar covers the top of the viewport, so the first line the reader
+// can actually see is its lower edge.
+function anchorLine() {
+  const bar = document.querySelector(".topbar");
+  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
+}
+
+function captureAnchor() {
+  anchorQueued = false;
+  const line = anchorLine();
+  let best = null;
+  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
+    const top = candidate.getBoundingClientRect().top;
+    if (top > window.innerHeight) break;
+    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
+  }
+  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
+}
+
+function queueAnchorCapture() {
+  if (anchorQueued) return;
+  anchorQueued = true;
+  requestAnimationFrame(captureAnchor);
+}
+
+function restoreAnchor() {
+  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
+  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
+  if (Math.abs(drift) < 1) return;
+  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
+  // is not a navigation the reader should have to watch animate.
+  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
+}
+
+// Every render rebuilds the nodes of the section it renders, so a card the
+// reader is anchored to stops existing the moment a server push arrives - and
+// pushes arrive constantly. Re-derive the anchor here, where every render path
+// meets, so it always names something still on the page. The frame throttle
+// collapses the burst of section rebuilds in one render into a single capture.
 function replaceChildren(parent, children) {
   parent.replaceChildren(...children.filter(Boolean));
+  queueAnchorCapture();
 }
 
 function dot(tone) {
@@ -1210,55 +1265,6 @@ ui.activityClear.addEventListener("click", () => {
   }
   renderActivity();
 });
-
-// Folding and unfolding a device reflows this page between a single stacked
-// column and a multi-column grid, which changes the document height by
-// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
-// offset no longer points at the same content, so the reader is dropped
-// somewhere else in the page. Anchor to whatever they were actually reading
-// instead, and put that back at the same place on the screen.
-//
-// Only a width change counts. Mobile browser chrome sliding in and out changes
-// the height alone, constantly, and moving the page under the reader for that
-// would be far worse than the problem being fixed.
-const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
-let scrollAnchor = null;
-let anchorQueued = false;
-let lastViewportWidth = window.innerWidth;
-
-// The sticky bar covers the top of the viewport, so the first line the reader
-// can actually see is its lower edge.
-function anchorLine() {
-  const bar = document.querySelector(".topbar");
-  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
-}
-
-function captureAnchor() {
-  anchorQueued = false;
-  const line = anchorLine();
-  let best = null;
-  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
-    const top = candidate.getBoundingClientRect().top;
-    if (top > window.innerHeight) break;
-    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
-  }
-  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
-}
-
-function queueAnchorCapture() {
-  if (anchorQueued) return;
-  anchorQueued = true;
-  requestAnimationFrame(captureAnchor);
-}
-
-function restoreAnchor() {
-  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
-  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
-  if (Math.abs(drift) < 1) return;
-  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
-  // is not a navigation the reader should have to watch animate.
-  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
-}
 
 window.addEventListener("scroll", queueAnchorCapture, { passive: true });
 window.addEventListener("resize", () => {

@@ -271,11 +271,14 @@ class FakeNode {
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
-      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      const node = typeof child === "string" ? new FakeNode("#text", child) : child;
+      node.attached = true;
+      this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
+    for (const child of this.children) child.detach();
     this._text = "";
     this.children = [];
     this.append(...children);
@@ -291,8 +294,17 @@ class FakeNode {
 
   // The fold anchor reads real layout. These nodes carry whatever rectangle a
   // case assigns them, which is what lets a reflow be simulated.
-  get isConnected() { return true; }
   getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
+
+  // The anchor refuses to move the page for a node a render has thrown away, so
+  // a replaced subtree has to really stop reporting itself connected. Standing
+  // nodes are never appended anywhere and stay connected by default.
+  detach() {
+    this.attached = false;
+    for (const child of this.children) child.detach();
+  }
+
+  get isConnected() { return this.attached !== false; }
 }
 
 const selectors = new Map();
@@ -331,7 +343,12 @@ selectors.set("#activity-form", activityForm);
 const document = {
   documentElement: new FakeNode("html"),
   querySelector: (selector) => selectors.get(selector),
-  querySelectorAll: (selector) => (selector.includes("#inbox") ? anchorNodes : []),
+  // The anchor selector matches the standing sections and the cards inside
+  // them alike. The cards are read live out of the rendered list rather than
+  // listed up front, so a render genuinely swaps the node under the anchor.
+  querySelectorAll: (selector) => (selector.includes("#inbox")
+    ? [...anchorSections, ...selectors.get("#inbox-list").children]
+    : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -385,8 +402,16 @@ const envelope = {
   },
 };
 
+// The stream is how a live fleet redraws this page. A case that needs a render
+// to happen the way one really does pushes through the recorded listener.
+const eventSources = [];
 class FakeEventSource {
-  addEventListener() {}
+  constructor() {
+    this.listeners = {};
+    eventSources.push(this);
+  }
+
+  addEventListener(name, listener) { this.listeners[name] = listener; }
   close() {}
 }
 
@@ -407,7 +432,7 @@ const offscreenSection = new FakeNode("section");
 offscreenSection.rect = { top: -500, bottom: -200 };
 const readingSection = new FakeNode("section");
 readingSection.rect = { top: 300, bottom: 900 };
-const anchorNodes = [offscreenSection, readingSection];
+const anchorSections = [offscreenSection, readingSection];
 
 const frames = [];
 const scrollCalls = [];
@@ -483,6 +508,7 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   // and the whole document height. Keeping the scroll offset is not the same as
   // keeping the reader's place, so the section they were reading has to be put
   // back where it was on screen.
+  inboxCard.rect = { top: 800, bottom: 1400 };
   flushFrames();
   const anchorLine = topbar.rect.bottom + 1;
   const wasAt = readingSection.rect.top - anchorLine;
@@ -505,9 +531,42 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   fakeWindow.innerHeight = 700;
   fakeWindow.listeners.resize();
   if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
+
+  // What a reader is actually holding is usually a card, not a whole section,
+  // and cards do not survive a render: every push from the fleet rebuilds the
+  // list they live in. So the anchor has to be re-derived on render as well as
+  // on scroll, or a fold after any push drops the reader exactly as far as it
+  // did before the anchor existed.
+  offscreenSection.rect = { top: -4000, bottom: -3700 };
+  readingSection.rect = { top: -2000, bottom: -1400 };
+  inboxCard.rect = { top: 200, bottom: 800 };
+  fakeWindow.listeners.scroll();
+  flushFrames();
+  const cardWasAt = inboxCard.rect.top - anchorLine;
+
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  const rebuiltCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "rebuilt inbox card");
+  if (rebuiltCard === inboxCard) throw new Error("a snapshot push left the same card node, so nothing was replaced to test");
+  if (inboxCard.isConnected) throw new Error("a card a render replaced still reported itself connected");
+  const capturesPerRender = frames.length;
+
+  // The push rebuilt the card in place: the reader has not scrolled and the
+  // width has not changed, so it sits exactly where the old one did.
+  rebuiltCard.rect = { top: 200, bottom: 800 };
+  flushFrames();
+
+  rebuiltCard.rect = { top: 6000, bottom: 6600 };
+  const scrollBefore = fakeWindow.scrollY;
+  fakeWindow.innerWidth = 950;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 2) throw new Error("the reading position was lost once a render had replaced the anchored card");
+  const cardLanded = 6000 - (scrollCalls[1].top - scrollBefore) - anchorLine;
+  if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
+  if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+  if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
