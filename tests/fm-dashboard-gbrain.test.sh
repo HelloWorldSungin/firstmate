@@ -23,6 +23,11 @@ set -u
 
 SERVER="$ROOT/bin/fm-dashboard-server.mjs"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-gbrain)
+# USER_EVENT_STORE_BEFORE is set so the lib's no-leak check has a snapshot
+# to compare against; this suite never causes a leak because the server
+# is started with FM_DASHBOARD_EVENTS=off, but the assertion runs as a
+# safety net against a future change.
+# shellcheck disable=SC2034 # Snapshot is asserted by fm_user_event_store_snapshot's lib caller.
 USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 TEST_PORT=
@@ -343,6 +348,7 @@ SH
   chmod +x "$bindir/fm-recall.sh"
   start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
   local out
+  # shellcheck disable=SC2016 # The metacharacters are the test fixture: every byte below must reach the wrapper as one of these argv elements, never as a shell expansion.
   out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
     -d '{"query":"$(rm -rf /) `evil`; cat /etc/passwd"}' \
     "http://127.0.0.1:$TEST_PORT/api/gbrain/search")

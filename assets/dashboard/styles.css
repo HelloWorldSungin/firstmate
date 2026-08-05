@@ -135,6 +135,13 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
    Expressed against the page gutter rather than a breakpoint, so the bound
    tracks the viewport continuously. A fourth panel follows its own content. */
 .history-section .filters { max-width: calc(940px - 2 * var(--edge)); }
+/* The GBrain panel follows its own content: a six-card health strip plus a
+   compact search affordance. History's bound is too wide for the search
+   affordance to share, because a search form here is bounded by the results
+   list it produces, which renders below the form rather than beside it.
+   The bound mirrors the health strip's own wrap point so the search and the
+   cards that justify it share an edge. */
+.gbraintron-section .filters { max-width: calc(940px - 2 * var(--edge)); }
 .filters summary { min-height: 44px; padding: 14px; color: var(--dim); font-size: 12px; font-weight: 680; cursor: pointer; }
 .filters summary span { color: var(--amber); font: 600 10.5px/1 var(--mono); }
 .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 146px), 1fr)); gap: 10px; padding: 0 12px 12px; }
@@ -276,6 +283,27 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
 .filter-grid input { width: 100%; min-height: 44px; margin-top: 6px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--fg); font-family: var(--sys); font-size: 13px; letter-spacing: normal; text-transform: none; }
 .filter-grid label.wide { grid-column: 1 / -1; }
 .history-section { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+/* GBrain panel: a section-shaped health strip plus a search affordance.
+   The strip shares the existing .health-card / .health-strip shapes so the
+   page reads as one continuous surface; the search form is the same filter
+   pattern the history view uses, so the operator gets one search affordance
+   per section, not a bespoke widget. */
+.gbraintron-section { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.gbraintron-strip { margin-top: 0; }
+.gbraintron-notices:empty { display: none; }
+.gbraintron-notices .notice { border: 1px solid var(--border-strong); border-radius: 12px; margin: 0 var(--edge); }
+.gbraintron-form .filter-grid { grid-template-columns: minmax(min(100%, 220px), 2fr) minmax(min(100%, 110px), 1fr) auto; }
+.gbraintron-form input { width: 100%; min-height: 44px; margin-top: 6px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--fg); font-family: var(--sys); font-size: 13px; letter-spacing: normal; text-transform: none; }
+#gbraintron-search-button { min-height: 44px; align-self: end; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--dim); font-size: 12px; font-weight: 650; cursor: pointer; }
+.gbraintron-results:empty { display: none; }
+.gbraintron-results { display: flex; min-width: 0; flex-direction: column; gap: 10px; padding: 0 var(--edge); }
+.gbraintron-hint { padding: 0 var(--edge); color: var(--faint); font-size: 11.5px; }
+.gbraintron-results .inbox-empty { margin: 0; }
+.gbraintron-results .history-card { background: var(--surface); }
+.gbraintron-results .detail { color: var(--dim); }
+@media (min-aspect-ratio: 3 / 4) and (max-width: 899px) {
+  .gbraintron-section { padding-top: 7px; }
+}
 .history-warnings:empty { display: none; }
 .history-warnings .notice { border: 1px solid var(--border-strong); border-radius: 12px; margin: 0 var(--edge); }
 .malformed-list { margin: 7px 0 0; padding-left: 18px; color: var(--dim); }

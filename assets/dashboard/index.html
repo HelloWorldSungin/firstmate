@@ -17,6 +17,7 @@
         <div class="brand"><strong>Firstmate</strong><span>Fleet</span></div>
         <a class="nav-item active" href="#inbox" aria-current="page">Needs you <span class="nav-badge" id="nav-badge" hidden>0</span></a>
         <a class="nav-item" href="#board">Board</a>
+        <a class="nav-item" href="#gbraintron">GBrain</a>
         <a class="nav-item" href="#activity">Activity</a>
         <a class="nav-item" href="#history">History</a>
         <div class="sidebar-spacer"></div>
@@ -76,6 +77,35 @@
             </section>
 
             <section class="kanban" id="kanban" aria-label="Fleet kanban columns"></section>
+          </section>
+
+          <section class="gbraintron-section" id="gbraintron" tabindex="-1" aria-labelledby="gbraintron-title">
+            <div class="board-heading">
+              <div>
+                <p class="eyebrow">GBrain health and search</p>
+                <h2 class="page-title" id="gbraintron-title">GBrain</h2>
+              </div>
+              <p class="refresh-note" id="gbraintron-note">Waiting for the first health read</p>
+            </div>
+
+            <div class="gbraintron-notices" id="gbraintron-notices" aria-live="polite"></div>
+
+            <div class="health-strip gbraintron-strip" id="gbraintron-strip" aria-label="GBrain health"></div>
+
+            <details class="filters gbraintron-filters" open>
+              <summary>Search captured knowledge</summary>
+              <form id="gbraintron-search-form" class="filter-grid gbraintron-form">
+                <label class="wide">Query<input type="search" id="gbraintron-search-input" name="query" maxlength="1024" placeholder="search captured reports and notes" autocomplete="off"></label>
+                <label>Limit<select id="gbraintron-search-limit" name="limit">
+                  <option value="4">4</option>
+                  <option value="8" selected>8</option>
+                  <option value="16">16</option>
+                </select></label>
+                <button id="gbraintron-search-button" type="submit">Search</button>
+              </form>
+            </details>
+
+            <div class="gbraintron-results" id="gbraintron-results" aria-live="polite"></div>
           </section>
 
           <section class="activity-section" id="activity" tabindex="-1" aria-labelledby="activity-title">

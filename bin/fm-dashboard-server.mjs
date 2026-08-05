@@ -207,6 +207,7 @@ const STATIC_FILES = new Map([
   ["/history.js", ["history.js", "text/javascript; charset=utf-8"]],
   ["/events.js", ["events.js", "text/javascript; charset=utf-8"]],
   ["/markdown.js", ["markdown.js", "text/javascript; charset=utf-8"]],
+  ["/gbrain.js", ["gbrain.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
