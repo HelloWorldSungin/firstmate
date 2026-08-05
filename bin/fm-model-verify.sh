@@ -450,6 +450,7 @@ VERIFIABLE_IN_PRINCIPLE=0
 
 verify_one() {  # <id>
   local id=$1 meta cwd harness kind anchor anchor_present watermark baseline models n before store store_present
+  local armed_marker_present remote_route_present
   VERDICT=; RECORDED=; ACTUAL=; SOURCE=none; DETAIL=; VERIFIABLE_IN_PRINCIPLE=0
 
   meta="$STATE/$id.meta"
@@ -533,21 +534,55 @@ verify_one() {  # <id>
         ;;
     esac
   else
-    # No store line at all means the dispatch was never armed for verification.
-    # bin/fm-spawn.sh writes this line for every claude dispatch it launches and
-    # aborts the spawn outright if the capture fails, so the only records with
-    # this shape are dispatches that predate the guard and spawns that aborted
-    # before rendering a launch command. Neither can have produced evidence
-    # attributable to this task, so there is no verdict to fail, no evidence to
-    # protect, and nothing any later event could ever supply. That is a gap in
-    # the record rather than a safety signal, and it is kept strictly separate
-    # from every recorded-store failure above and below, each of which still
-    # reports `unverifiable` and still blocks cleanup.
+    # An absent store line is the SHAPE of a record that was never armed, but
+    # absence alone cannot prove it: a pre-guard record is a strict subset of
+    # today's schema, so there is no positive "never armed" marker to require.
+    # Three record shapes arrive here, and only one of them was never armed:
+    #   1. a dispatch that predates the guard, and a spawn that aborted before
+    #      rendering a launch command - bin/fm-spawn.sh writes this line for
+    #      every claude dispatch it launches and exits 1 when the capture fails
+    #      or omits the store, so neither ever ran;
+    #   2. an armed record damaged afterwards - capture_claude_watermark emits
+    #      model_evidence_store= and model_evidence_watermark= together on both
+    #      of its success paths, plus its model_evidence_before= rows, and
+    #      bin/fm-spawn.sh appends that block whole, so either marker without a
+    #      store positively proves arming ran;
+    #   3. a remote secondmate route record - bin/fm-spawn.sh's
+    #      spawn_remote_secondmate writes kind=secondmate with the remote route
+    #      fields and no store line for a secondmate that DID launch and run,
+    #      whose armed record lives in the remote host's own state. Its evidence
+    #      is not absent, only unreadable from this home.
+    # Shapes 2 and 3 carry positive proof that the record is not never-armed, so
+    # each denies the release and keeps the blocking `unverifiable` verdict; the
+    # release rests on those markers rather than on absence alone. Only shape 1
+    # is a gap in the record rather than a safety signal, and it stays strictly
+    # separate from every recorded-store failure above and below, each of which
+    # still reports `unverifiable` and still blocks cleanup.
     #
-    # The verifier still reads no ambient store here: an unknown evidence
-    # location is never resolved against whatever the current environment
-    # happens to point at, because that would attribute another dispatch's
-    # transcripts to this task.
+    # The verifier still reads no ambient store on any of these paths: an
+    # unknown evidence location is never resolved against whatever the current
+    # environment happens to point at, because that would attribute another
+    # dispatch's transcripts to this task.
+    armed_marker_present=0
+    grep -q '^model_evidence_watermark=' "$meta" 2>/dev/null && armed_marker_present=1
+    grep -q '^model_evidence_before=' "$meta" 2>/dev/null && armed_marker_present=1
+    if [ "$armed_marker_present" -eq 1 ]; then
+      VERDICT=unverifiable
+      DETAIL="dispatch carries model-evidence arming markers but names no model-evidence store, so it was armed and its record is damaged"
+      return
+    fi
+    remote_route_present=0
+    if [ "$kind" = secondmate ]; then
+      grep -q '^remote_host=' "$meta" 2>/dev/null && remote_route_present=1
+      grep -q '^remote_root=' "$meta" 2>/dev/null && remote_route_present=1
+      grep -q '^remote_backend=' "$meta" 2>/dev/null && remote_route_present=1
+      grep -q '^remote_target=' "$meta" 2>/dev/null && remote_route_present=1
+    fi
+    if [ "$remote_route_present" -eq 1 ]; then
+      VERDICT=unverifiable
+      DETAIL="dispatch ran on a remote host, so its model evidence is not readable from this home"
+      return
+    fi
     VERDICT=unarmed
     VERIFIABLE_IN_PRINCIPLE=0
     DETAIL="dispatch names no model-evidence store, so verification was never armed for it and no verdict can ever exist"

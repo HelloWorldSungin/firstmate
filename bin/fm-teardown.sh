@@ -593,8 +593,9 @@ refresh_terminal_model_verdict
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
 # Name the never-armed case explicitly, so an operator reading this output can
 # tell it apart from a verification that ran and failed without reading source.
-# The two look nothing alike here: this line appears and no REFUSED line follows,
-# whereas an armed dispatch whose verdict did not pass still refuses below.
+# This line IS the discriminator: an unarmed task takes the ordinary cleanup
+# path, where any other check may still refuse in the same output, so absence of
+# a REFUSED line says nothing about which case the operator is in.
 if [ "$MODEL_VERDICT" = unarmed ]; then
   echo "teardown: task $ID was dispatched without a model-evidence store, so no model-routing verdict can ever exist for it. That is a gap in its record, not a failed verification, and it is not a reason to keep the task forever; every other cleanup check still applies to it unchanged." >&2
 fi

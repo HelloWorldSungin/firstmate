@@ -1122,6 +1122,46 @@ test_recorded_store_with_failed_verdict_still_refuses() {
   pass "a recorded evidence store whose verdict did not pass still refuses on landed, spotless work"
 }
 
+# The release rests on positive markers, not on the bare absence of a store
+# line. This is the SAME landed, spotless fixture the allowance above tears down
+# on, with one line added: a model-evidence arming marker, which bin/fm-spawn.sh
+# only ever writes together with the store it captured. That proves the record
+# was armed and damaged afterwards, so it keeps refusing.
+#
+# The third shape in that enumeration, a remote secondmate route record, is
+# pinned at verifier level in tests/fm-model-verify.test.sh only:
+# bin/fm-teardown.sh routes a genuine remote secondmate to
+# remote_secondmate_teardown and returns before the model check, so a teardown
+# fixture for it would have to be faked and would assert something misleading.
+test_arming_marker_without_store_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case armed-marker-no-store)
+  pre_guard_dispatch_meta "$case_dir"
+  printf '%s\n' 'model_evidence_watermark=claude-transcript-v1' >> "$case_dir/state/task-x1.meta"
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "armed-marker-no-store: a damaged armed record stopped refusing"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "armed-marker-no-store: the damaged armed record was not unverifiable"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "armed-marker-no-store: no refusal was printed"
+  grep -q "verdict: unarmed" "$case_dir/stderr" \
+    && fail "armed-marker-no-store: a record proven to have been armed was released"
+  assert_absent "$case_dir/treehouse-returned" \
+    "armed-marker-no-store: the preserved worktree reached treehouse return"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "armed-marker-no-store: the task metadata was erased"
+  assert_absent "$case_dir/data/task-x1/outcome.json" \
+    "armed-marker-no-store: a refused teardown published a completion outcome"
+  pass "a record carrying an arming marker but no evidence store still refuses"
+}
+
 # An armed dispatch that produced no verdict for a DIFFERENT reason keeps
 # refusing too: a damaged anchor is not the same record shape as an absent one.
 test_recorded_store_with_malformed_timestamp_still_refuses() {
@@ -2944,6 +2984,7 @@ test_cleanup_refreshes_usage_sessions_when_a_store_exists
 test_completed_task_still_reports_its_tokens_after_cleanup
 test_pre_guard_dispatch_tears_down_without_attributing_ambient_evidence
 test_recorded_store_with_failed_verdict_still_refuses
+test_arming_marker_without_store_still_refuses
 test_recorded_store_with_malformed_timestamp_still_refuses
 test_pre_guard_with_uncommitted_changes_still_refuses
 test_pre_guard_with_unlanded_work_still_refuses
