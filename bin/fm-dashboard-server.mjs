@@ -10,6 +10,12 @@
 //   FM_DASHBOARD_AUTH_FILE             credentials file with the salted password
 //                                      digest (default
 //                                      $XDG_CONFIG_HOME/firstmate/dashboard-auth.json)
+//   FM_DASHBOARD_TRUSTED_PROXIES       comma-separated numeric addresses or CIDR
+//                                      ranges whose X-Forwarded-For this server
+//                                      believes when deciding which client an
+//                                      authentication attempt is throttled as
+//                                      (default empty: no forwarded header is
+//                                      read and the peer address is the client)
 //   FM_DASHBOARD_PORT                  listen port (default 8787)
 //   FM_DASHBOARD_POLL_SECONDS          periodic refresh interval (default 5)
 //   FM_DASHBOARD_TIMEOUT_SECONDS       hard snapshot deadline (default 15)
@@ -103,7 +109,19 @@ LOOPBACK_COVERING_BINDS.addAddress("::", "ipv6");
 // Deriving a key is deliberately expensive, so a wrong password must cost the
 // client a budget before it costs this process a derivation. Absent credentials
 // spend nothing: an unauthenticated first request is how every browser starts.
-const AUTH_RATE = { clientCapacity: 8, clientRefillPerSecond: 0.1, globalCapacity: 60, globalRefillPerSecond: 1 };
+const AUTH_RATE = { clientCapacity: 8, clientRefillPerSecond: 0.1 };
+// The work this process will do at once, rather than the rate at which it may
+// be asked. A rate budget shared by every client is a budget any one of them
+// can hold empty, which turns "throttle the guesser" into "lock the operator
+// out"; a bound on concurrent derivations protects the same CPU and still
+// admits a correct credential as soon as the machine has a moment for it. Four
+// matches Node's default worker pool, which is what scrypt runs on.
+const AUTH_DERIVATION_MAX = 4;
+// The one header a forwarded client address is read from, and only from a peer
+// the operator has named as a proxy. RFC 7239 Forwarded is deliberately not
+// read: supporting one header exactly beats supporting two approximately, and
+// the reverse proxies this dashboard is deployed behind send this one.
+const FORWARDED_FOR_HEADER = "x-forwarded-for";
 // A verified Authorization header is remembered by digest for this long, so one
 // page load does not pay for one key derivation per asset. Only successes are
 // remembered; a wrong password is re-derived and re-charged every time.
@@ -177,6 +195,37 @@ function resolveAuthFile() {
   return process.env.FM_DASHBOARD_AUTH_FILE || path.join(configRoot, "firstmate", "dashboard-auth.json");
 }
 
+// The proxies whose forwarded client address this server will believe.
+//
+// Empty by default, and empty means no forwarded header is read at all: a
+// request's identity is then the address it arrived from, which is what this
+// server has always done. Trust is never acquired by upgrading, only by an
+// operator naming an address or a range.
+function resolveTrustedProxies() {
+  const entries = (process.env.FM_DASHBOARD_TRUSTED_PROXIES || "").split(/[,\s]+/).filter(Boolean);
+  const list = new net.BlockList();
+  for (const entry of entries) {
+    const range = /^(.+)\/(\d{1,3})$/.exec(entry);
+    const address = range ? range[1] : entry;
+    const family = net.isIPv4(address) ? "ipv4" : (net.isIPv6(address) ? "ipv6" : null);
+    if (!family) {
+      throw new Error(`FM_DASHBOARD_TRUSTED_PROXIES must be numeric addresses or CIDR ranges: ${entry}`);
+    }
+    if (!range) {
+      list.addAddress(address, family);
+      continue;
+    }
+    const prefix = Number(range[2]);
+    // A zero prefix trusts every address there is, which is not a narrower
+    // allowlist but the absence of one, so it is refused rather than honoured.
+    if (!Number.isInteger(prefix) || prefix < 1 || prefix > (family === "ipv4" ? 32 : 128)) {
+      throw new Error(`FM_DASHBOARD_TRUSTED_PROXIES has an unusable prefix length: ${entry}`);
+    }
+    list.addSubnet(address, prefix, family);
+  }
+  return { entries, list };
+}
+
 function resolveConfig() {
   const address = process.env.FM_DASHBOARD_ADDRESS || "127.0.0.1";
   // Only numeric addresses. A hostname would make what this process is
@@ -206,6 +255,7 @@ function resolveConfig() {
     loopback: LOOPBACK_ADDRESSES.has(address),
     auth,
     authFile: resolveAuthFile(),
+    trustedProxies: resolveTrustedProxies(),
     usage,
     events,
     eventsConfigFile: process.env.FM_DASHBOARD_EVENTS_CONFIG
@@ -224,6 +274,66 @@ function resolveConfig() {
 
 function coversLoopback(address) {
   return LOOPBACK_COVERING_BINDS.check(address, net.isIPv4(address) ? "ipv4" : "ipv6");
+}
+
+// One address, in the one spelling this server keys buckets by, or null when
+// the text is not an address at all. A port, brackets, an interface zone, and
+// the IPv4-mapped IPv6 form all name the same client, and a client that could
+// hold two buckets by spelling itself two ways is a client that is not
+// throttled.
+function normalizeAddress(value) {
+  if (typeof value !== "string") return null;
+  let text = value.trim();
+  if (!text) return null;
+  const bracketed = /^\[(.+)\](?::\d{1,5})?$/.exec(text);
+  if (bracketed) text = bracketed[1];
+  const zone = text.indexOf("%");
+  if (zone > 0) text = text.slice(0, zone);
+  if (net.isIP(text) === 0) {
+    const withPort = /^([^:]+):\d{1,5}$/.exec(text);
+    if (withPort) text = withPort[1];
+  }
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(text);
+  if (mapped) text = mapped[1];
+  if (net.isIP(text) === 0) return null;
+  return net.isIPv4(text) ? text : text.toLowerCase();
+}
+
+function isTrustedProxy(config, address) {
+  if (!address || config.trustedProxies.entries.length === 0) return false;
+  return config.trustedProxies.list.check(address, net.isIPv4(address) ? "ipv4" : "ipv6");
+}
+
+// Which client a request is throttled as.
+//
+// With no trusted proxy configured no forwarded header is read at all and the
+// peer address is the identity. A forwarded chain is read only when the peer
+// itself is an allowlisted proxy, because a header from anyone else is text the
+// client wrote about itself. It is then walked from the peer end, discarding
+// the entries allowlisted proxies contributed, and the first untrusted entry is
+// the client: every entry to the left of that one is whatever the client chose
+// to claim, so reading the leftmost is how per-client throttling becomes no
+// throttling at all.
+//
+// A request whose client cannot be established is refused rather than being
+// given a shared identity. One shared bucket is a bucket anyone can hold empty,
+// which is the same failure-as-a-benign-value shape as an open dashboard.
+function resolveClientIdentity(request, config) {
+  const peer = normalizeAddress(request.socket?.remoteAddress);
+  if (!peer) return null;
+  if (!isTrustedProxy(config, peer)) return peer;
+  const header = request.headers[FORWARDED_FOR_HEADER];
+  const raw = Array.isArray(header) ? header.join(",") : (header ?? "");
+  if (String(raw).trim() === "") return peer;
+  const entries = String(raw).split(",");
+  let leftmost = null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const address = normalizeAddress(entries[index]);
+    if (!address) return null;
+    leftmost = address;
+    if (!isTrustedProxy(config, address)) return address;
+  }
+  return leftmost;
 }
 
 function safeText(value, limit = 4_000) {
@@ -596,6 +706,27 @@ class RateLimiter {
   }
 }
 
+// How many key derivations this process will have in flight at once. Full is a
+// momentary state that clears in milliseconds rather than a budget a client can
+// hold at zero, so every caller gets in as soon as there is capacity for them,
+// however hard someone else is guessing.
+class DerivationGate {
+  constructor(limit) {
+    this.limit = limit;
+    this.active = 0;
+  }
+
+  enter() {
+    if (this.active >= this.limit) return false;
+    this.active += 1;
+    return true;
+  }
+
+  leave() {
+    this.active = Math.max(0, this.active - 1);
+  }
+}
+
 function scryptAsync(password, salt, keylen, cost) {
   return new Promise((resolve, reject) => {
     scrypt(password, salt, keylen, { ...cost, maxmem: AUTH_SCRYPT_MAXMEM }, (error, derived) => {
@@ -675,7 +806,7 @@ class AuthState {
     this.signature = null;
     this.sessions = new Map();
     this.clientLimiter = new RateLimiter(AUTH_RATE.clientCapacity, AUTH_RATE.clientRefillPerSecond, 1024);
-    this.globalLimiter = new RateLimiter(AUTH_RATE.globalCapacity, AUTH_RATE.globalRefillPerSecond, 1);
+    this.derivations = new DerivationGate(AUTH_DERIVATION_MAX);
   }
 
   // Re-read when the file changes, so rotating a password does not need a
@@ -784,18 +915,37 @@ async function authorize(request, response, auth) {
     return false;
   }
   if (auth.recalls(presented.header)) return true;
-  const client = request.socket?.remoteAddress || "unknown";
-  if (!auth.globalLimiter.allow("global") || !auth.clientLimiter.allow(client)) {
+  const client = resolveClientIdentity(request, auth.config);
+  if (!client) {
+    sendJson(response, 403, {
+      schema: AUTH_DENIAL_SCHEMA,
+      reason: "client_unidentified",
+      detail: "this request carries no client address this server can throttle by, so it cannot be authenticated",
+    });
+    return false;
+  }
+  // The charge is the guessing client's own, spent before the derivation it
+  // buys and returned when the credential turns out to have been the right one.
+  // Only failed attempts keep what they spent, and they only ever spend their
+  // own budget, so no client can guess another one out of the dashboard.
+  if (!auth.clientLimiter.allow(client)) {
     response.setHeader("Retry-After", "30");
     sendJson(response, 429, { schema: AUTH_DENIAL_SCHEMA, reason: "too_many_attempts" });
     return false;
   }
-  // The charge above buys the key derivation below, so it is spent before the
-  // derivation and returned when the credential turns out to be the right one.
-  // Only failed attempts keep what they spent; otherwise anyone who can reach
-  // this server holds the shared budget empty and locks every real login out.
-  if (await auth.verify(presented)) {
-    auth.globalLimiter.refund("global");
+  if (!auth.derivations.enter()) {
+    auth.clientLimiter.refund(client);
+    response.setHeader("Retry-After", "1");
+    sendJson(response, 503, { schema: AUTH_DENIAL_SCHEMA, reason: "verification_capacity" });
+    return false;
+  }
+  let verified;
+  try {
+    verified = await auth.verify(presented);
+  } finally {
+    auth.derivations.leave();
+  }
+  if (verified) {
     auth.clientLimiter.refund(client);
     auth.remember(presented.header);
     return true;
@@ -1574,7 +1724,10 @@ async function main() {
   history.start();
   const access = auth.enforced ? "authenticated" : "no authentication configured (loopback only)";
   const shown = addresses.map((address) => (address.includes(":") ? `[${address}]` : address));
-  console.log(`fm-dashboard: listening on ${shown.map((a) => `http://${a}:${config.port}`).join(" and ")} - ${access}`);
+  const trusted = config.trustedProxies.entries.length
+    ? `, forwarded client addresses trusted from ${config.trustedProxies.entries.join(" ")}`
+    : ", no trusted proxy (clients are throttled by the address they arrive from)";
+  console.log(`fm-dashboard: listening on ${shown.map((a) => `http://${a}:${config.port}`).join(" and ")} - ${access}${trusted}`);
 
   const shutdown = () => {
     state.stop();
@@ -1652,23 +1805,69 @@ function checkCredentialsMode(argv) {
   console.log(auth.credential.username);
 }
 
-// Three non-serving modes. The first prints where this configuration would keep
-// its agent-event store: the installer needs that path to grant the hardened
-// user service write access to exactly that directory and nothing else, and a
-// single owner of the rule beats two programs deriving it. The second reports
-// whether the stored credentials are usable, and the third derives a password
-// digest for the installer to store.
-if (process.argv.includes("--event-store-path")) {
+// The non-serving modes, and the rule that an argument this version does not
+// know is refused rather than ignored.
+//
+// Ignoring one means serving, so a caller probing for a mode a checkout does
+// not have would get an HTTP listener where it expected one line of output, and
+// wait for a stdout that never closes. Nothing but a mode flag and its value is
+// accepted, and no argument at all still serves.
+const SERVER_MODES = new Set(["--event-store-path", "--check-credentials", "--check-trusted-proxies", "--hash-password"]);
+const SERVER_MODE_VALUES = new Set(["--auth-file", "--username"]);
+
+function parseServerMode(argv) {
+  const modes = [];
+  let values = 0;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (SERVER_MODES.has(argument)) {
+      modes.push(argument);
+      continue;
+    }
+    if (SERVER_MODE_VALUES.has(argument)) {
+      if (index + 1 >= argv.length) throw new Error(`${argument} requires a value`);
+      values += 1;
+      index += 1;
+      continue;
+    }
+    throw new Error(`unrecognised argument: ${argument}`);
+  }
+  if (modes.length > 1) throw new Error(`only one of ${[...SERVER_MODES].join(", ")} may be given at a time`);
+  if (modes.length === 0 && values > 0) throw new Error("a value option was given with no mode to use it");
+  return modes[0] || null;
+}
+
+// The first mode prints where this configuration would keep its agent-event
+// store: the installer needs that path to grant the hardened user service write
+// access to exactly that directory and nothing else, and a single owner of the
+// rule beats two programs deriving it. The second reports whether the stored
+// credentials are usable, the third echoes the trusted-proxy allowlist this
+// server would honour, and the fourth derives a password digest to store.
+let serverMode = null;
+try {
+  serverMode = parseServerMode(process.argv.slice(2));
+} catch (error) {
+  console.error(`fm-dashboard: ${safeText(error.message)}`);
+  process.exit(2);
+}
+if (serverMode === "--event-store-path") {
   const fmHome = path.resolve(process.env.FM_HOME || ROOT);
   console.log(resolveEventStorePath(fmHome));
-} else if (process.argv.includes("--check-credentials")) {
+} else if (serverMode === "--check-credentials") {
   try {
     checkCredentialsMode(process.argv);
   } catch (error) {
     console.error(`fm-dashboard: ${safeText(error.message)}`);
     process.exit(1);
   }
-} else if (process.argv.includes("--hash-password")) {
+} else if (serverMode === "--check-trusted-proxies") {
+  try {
+    console.log(resolveTrustedProxies().entries.join(","));
+  } catch (error) {
+    console.error(`fm-dashboard: ${safeText(error.message)}`);
+    process.exit(1);
+  }
+} else if (serverMode === "--hash-password") {
   hashPasswordMode(process.argv).catch((error) => {
     console.error(`fm-dashboard: ${safeText(error.message)}`);
     process.exit(1);

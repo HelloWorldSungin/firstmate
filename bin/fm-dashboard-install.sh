@@ -23,11 +23,16 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# The server beside THIS script, kept apart from the one the service will run,
-# because --checkout deliberately points that one at a possibly older tree. The
-# credentials document is defined by the code that writes it, so the digest and
-# the usability check are always asked of this installer's own sibling: an older
-# server does not recognise those flags and would fall through to serving.
+# Two dashboard servers, and one rule about which is asked what.
+#
+# INSTALLER_SERVER is the one beside this script. SERVER is the one the service
+# will run, which --checkout deliberately points at a possibly older tree.
+#
+# THE RULE: every non-serving probe goes to INSTALLER_SERVER, never to SERVER.
+# A server that does not recognise a probe flag does not fail - older ones fall
+# through to serving, so the probe binds a port and the command substitution
+# waiting for its output never returns. SERVER is named in the unit and nowhere
+# else, so no future probe has to rediscover this.
 INSTALLER_SERVER="$SCRIPT_DIR/fm-dashboard-server.mjs"
 SERVER="$INSTALLER_SERVER"
 
@@ -54,6 +59,11 @@ Options:
                        other than 127.0.0.1 or ::1 exposes the dashboard beyond
                        this host and is accepted only once --set-password has
                        stored credentials.
+  --trusted-proxy ADDR numeric address or CIDR range of a reverse proxy whose
+                       X-Forwarded-For this dashboard may believe when deciding
+                       which client an authentication attempt is throttled as.
+                       Repeatable. Nothing is trusted by default, and behind a
+                       proxy that is what collapses every client into one.
   --set-password       read a dashboard password from the terminal, or from
                        standard input when there is no terminal, and store only
                        its salted digest in the private credentials file
@@ -73,10 +83,10 @@ Options:
 The environment variables FM_DASHBOARD_ADDRESS, FM_DASHBOARD_PORT,
 FM_DASHBOARD_POLL_SECONDS, FM_DASHBOARD_TIMEOUT_SECONDS,
 FM_DASHBOARD_STALE_SECONDS, FM_DASHBOARD_HISTORY_LIMIT,
-FM_DASHBOARD_HISTORY_POLL_SECONDS, FM_DASHBOARD_REPORT_MAX_BYTES, and
-FM_DASHBOARD_AUTH_FILE provide the same defaults as their options. Raise
---history-limit when retained history has grown past the default read bound;
-the dashboard says so when it has.
+FM_DASHBOARD_HISTORY_POLL_SECONDS, FM_DASHBOARD_REPORT_MAX_BYTES,
+FM_DASHBOARD_AUTH_FILE, and FM_DASHBOARD_TRUSTED_PROXIES provide the same
+defaults as their options. Raise --history-limit when retained history has
+grown past the default read bound; the dashboard says so when it has.
 
 docs/dashboard-remote-access.md owns the remote-access posture: what
 authentication does and does not protect, and the Twingate, firewall, and
@@ -93,6 +103,7 @@ FM_DASHBOARD_STALE_SECONDS=${FM_DASHBOARD_STALE_SECONDS:-30}
 FM_DASHBOARD_HISTORY_LIMIT=${FM_DASHBOARD_HISTORY_LIMIT:-500}
 FM_DASHBOARD_HISTORY_POLL_SECONDS=${FM_DASHBOARD_HISTORY_POLL_SECONDS:-60}
 FM_DASHBOARD_REPORT_MAX_BYTES=${FM_DASHBOARD_REPORT_MAX_BYTES:-262144}
+FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:-}
 START_SERVICE=1
 SET_PASSWORD=0
 AUTH_USERNAME=captain
@@ -103,10 +114,11 @@ ALLOW_WORKTREE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fm-home|--address|--port|--poll|--timeout|--stale|\
-    --history-limit|--history-poll|--report-bytes|--username|--auth-file|--checkout)
+    --history-limit|--history-poll|--report-bytes|--username|--auth-file|--checkout|--trusted-proxy)
       [ "$#" -ge 2 ] || { printf 'fm-dashboard-install: %s requires a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --fm-home) FM_DASHBOARD_HOME=$2 ;;
+        --trusted-proxy) FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:+$FM_DASHBOARD_TRUSTED_PROXIES,}$2 ;;
         --address) FM_DASHBOARD_ADDRESS=$2 ;;
         --port) FM_DASHBOARD_PORT=$2 ;;
         --poll) FM_DASHBOARD_POLL_SECONDS=$2 ;;
@@ -233,6 +245,18 @@ assert_unit_path_safe "the credentials file" "$AUTH_FILE"
 "$NODE_BIN" -e 'process.exit(require("net").isIP(process.argv[1]) ? 0 : 1)' "$FM_DASHBOARD_ADDRESS" \
   || { printf 'fm-dashboard-install: address must be a numeric IPv4 or IPv6 address: %s\n' "$FM_DASHBOARD_ADDRESS" >&2; exit 2; }
 
+# Which proxy the dashboard may believe about who a client is. The server owns
+# what a usable allowlist is and answers with the entries it would honour, so a
+# value this installer pins is one that server already accepted.
+if [ -n "$FM_DASHBOARD_TRUSTED_PROXIES" ]; then
+  FM_DASHBOARD_TRUSTED_PROXIES=$(FM_DASHBOARD_TRUSTED_PROXIES="$FM_DASHBOARD_TRUSTED_PROXIES" \
+    "$NODE_BIN" "$INSTALLER_SERVER" --check-trusted-proxies 2>&1) || {
+    printf 'fm-dashboard-install: %s\n' "$FM_DASHBOARD_TRUSTED_PROXIES" >&2
+    printf 'fm-dashboard-install: --trusted-proxy takes a numeric address or CIDR range, and nothing is trusted by default.\n' >&2
+    exit 2
+  }
+fi
+
 # Setting the password comes first, so a single command can both establish
 # credentials and open the bind that requires them. The password is read from
 # the terminal when there is one and from standard input otherwise, and it
@@ -318,7 +342,7 @@ esac
 # store under ProtectHome=read-only, and answer 503 for the life of the process.
 # The same reasoning pins the shared configuration file that carries the ingest
 # token, which is resolved from XDG_CONFIG_HOME here and would not be there.
-EVENT_DB=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$SERVER" --event-store-path 2>/dev/null || true)
+EVENT_DB=$(FM_HOME="$FM_DASHBOARD_HOME" "$NODE_BIN" "$INSTALLER_SERVER" --event-store-path 2>/dev/null || true)
 [ -n "$EVENT_DB" ] || { echo "fm-dashboard-install: could not resolve the agent-event store path" >&2; exit 1; }
 EVENT_DIR=${EVENT_DB%/*}
 EVENTS_CONFIG=${FM_DASHBOARD_EVENTS_CONFIG:-"$XDG_CONFIG_ROOT/firstmate/dashboard-events.json"}
@@ -380,6 +404,7 @@ trap 'rm -f "$ENV_TMP" "$UNIT_TMP"' EXIT HUP INT TERM
   printf 'FM_DASHBOARD_EVENT_DB="%s"\n' "$(systemd_quote "$EVENT_DB")"
   printf 'FM_DASHBOARD_EVENTS_CONFIG="%s"\n' "$(systemd_quote "$EVENTS_CONFIG")"
   printf 'FM_DASHBOARD_AUTH_FILE="%s"\n' "$(systemd_quote "$AUTH_FILE")"
+  printf 'FM_DASHBOARD_TRUSTED_PROXIES="%s"\n' "$(systemd_quote "$FM_DASHBOARD_TRUSTED_PROXIES")"
 } > "$ENV_TMP"
 chmod 600 "$ENV_TMP"
 

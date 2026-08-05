@@ -22,6 +22,9 @@ USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 TEST_PORT=
 PASSWORD='harbour-lantern-42'
+# The trusted-proxy allowlist the next fixture server starts with. Empty is the
+# shipped default and means no forwarded header is read at all.
+TRUSTED_PROXIES=
 
 command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
@@ -83,6 +86,7 @@ start_authenticated_server() {  # <case-root>
     FM_DASHBOARD_TIMEOUT_SECONDS=4 \
     FM_DASHBOARD_POLL_SECONDS=5 \
     FM_DASHBOARD_AUTH_FILE="$case_root/dashboard-auth.json" \
+    FM_DASHBOARD_TRUSTED_PROXIES="$TRUSTED_PROXIES" \
     node "$SERVER" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   local attempt
@@ -113,6 +117,7 @@ start_server_on() {  # <case-root> <address>
     FM_DASHBOARD_TIMEOUT_SECONDS=4 \
     FM_DASHBOARD_POLL_SECONDS=5 \
     FM_DASHBOARD_AUTH_FILE="$case_root/dashboard-auth.json" \
+    FM_DASHBOARD_TRUSTED_PROXIES="$TRUSTED_PROXIES" \
     node "$SERVER" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -444,9 +449,42 @@ test_loopback_stays_the_open_default() {
   env_file="$case_root/config/firstmate/dashboard.env"
   assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_ADDRESS="127.0.0.1"' \
     "installing without asking for exposure did not stay on loopback"
+  assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_TRUSTED_PROXIES=""' \
+    "installing without naming a proxy did not leave the allowlist empty"
   [ ! -f "$case_root/config/firstmate/dashboard-auth.json" ] \
     || fail "installing without --set-password invented credentials"
   pass "an install that did not ask for exposure stays loopback-only"
+}
+
+# The allowlist decides who a request is throttled as, so a value that reaches
+# the unit has to be one the server would accept, and a name has to be refused
+# for the same reason the bind address refuses one.
+test_a_trusted_proxy_is_pinned_only_when_the_server_accepts_it() {
+  local case_root out rc
+  case_root="$TMP_ROOT/trusted-proxy"
+  mkdir -p "$case_root/config" "$case_root/home"
+
+  install_into "$case_root" --trusted-proxy 192.0.2.10 --trusted-proxy 198.51.100.0/24 >/dev/null \
+    || fail "naming trusted proxies was refused"
+  assert_contains "$(cat "$case_root/config/firstmate/dashboard.env")" \
+    'FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10,198.51.100.0/24"' \
+    "the named proxies were not pinned into the environment file"
+
+  set +e
+  out=$(install_into "$case_root" --trusted-proxy proxy.invalid 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a trusted proxy given as a name"
+  assert_contains "$out" "proxy.invalid" "the refusal did not name the unusable entry"
+
+  # Trusting every address there is, is not a narrower allowlist but the absence
+  # of one, and it would hand identity to whoever sends the header.
+  set +e
+  out=$(install_into "$case_root" --trusted-proxy 0.0.0.0/0 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a trusted-proxy range covering every address"
+  pass "a trusted proxy is validated by the server that will honour it before any unit names it"
 }
 
 test_set_password_stores_only_a_digest() {
@@ -739,6 +777,136 @@ test_correct_credentials_do_not_spend_the_failure_budget() {
   pass "correct credentials are not charged the budget that throttles wrong ones"
 }
 
+# How many wrong passwords in a row it takes before this client is throttled,
+# or "never" when the whole run stayed refused-but-not-throttled. One number
+# says whether two requests shared a bucket, which is the entire question every
+# client-identity case below asks.
+guesses_until_throttled() {  # [curl args...]
+  local attempt code
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    code=$(status_for /api/snapshot -u "captain:wrong-$attempt-password" "$@")
+    if [ "$code" = "429" ]; then printf '%s\n' "$attempt"; return 0; fi
+    [ "$code" = "401" ] || { printf 'unexpected-%s\n' "$code"; return 0; }
+  done
+  printf 'never\n'
+}
+
+# Who a request is throttled as, which behind a reverse proxy is the difference
+# between per-client throttling and none.
+#
+# Every case here is a bucket-sharing question, and the answer is read off
+# whether a run of wrong passwords from nominally different clients exhausts one
+# budget. Both directions are pinned deliberately: an implementation that
+# believed every X-Forwarded-For would pass the honoured case and fail the two
+# ignored ones, and an implementation that read the leftmost entry would pass
+# both of those and fail the forging case.
+test_forwarded_client_identity_is_only_read_from_a_trusted_proxy() {
+  local case_root code before after
+  case_root="$TMP_ROOT/forwarded"
+  mkdir -p "$case_root"
+  write_credentials "$case_root/dashboard-auth.json" captain "$PASSWORD"
+
+  # Nothing configured: the shipped default reads no forwarded header at all, so
+  # a client that sends a different one every time is still one client.
+  TRUSTED_PROXIES=
+  start_authenticated_server "$case_root"
+  before=$(guesses_until_throttled -H 'X-Forwarded-For: 203.0.113.1')
+  [ "$before" != "never" ] \
+    || fail "with no trusted proxy configured, forwarded headers minted identities"
+  case $before in unexpected-*) fail "guessing answered $before with no trusted proxy configured" ;; esac
+  stop_server
+
+  # A trusted proxy that is not the peer this request came from changes nothing:
+  # a header from an untrusted peer is a claim the client made about itself.
+  TRUSTED_PROXIES=192.0.2.10
+  start_authenticated_server "$case_root"
+  after=$(guesses_until_throttled -H 'X-Forwarded-For: 198.51.100.7')
+  [ "$after" != "never" ] || fail "a forwarded header from an untrusted peer was believed"
+  case $after in unexpected-*) fail "guessing answered $after behind an untrusted peer" ;; esac
+  stop_server
+
+  # The peer itself named as a proxy: now the forwarded client is the client.
+  TRUSTED_PROXIES=127.0.0.1
+  start_authenticated_server "$case_root"
+
+  # An absent header is not a refusal - the proxy itself may be the client.
+  code=$(status_for /api/snapshot -u "captain:$PASSWORD-wrong")
+  expect_code 401 "$code" "a request from the trusted proxy with no forwarded header"
+
+  # One guesser must not spend anybody else's budget.
+  after=$(guesses_until_throttled -H 'X-Forwarded-For: 203.0.113.21')
+  [ "$after" != "never" ] || fail "a forwarded client was never throttled at all"
+  case $after in unexpected-*) fail "guessing answered $after through the trusted proxy" ;; esac
+  code=$(status_for /api/snapshot -u "captain:wrong-again-password" -H 'X-Forwarded-For: 203.0.113.22')
+  expect_code 401 "$code" "a second forwarded client while the first is throttled"
+  code=$(status_for /api/snapshot -u "captain:$PASSWORD" -H 'X-Forwarded-For: 203.0.113.23')
+  expect_code 200 "$code" "the right password from a client that was not the one guessing"
+
+  # Everything left of the entry the trusted proxy appended is whatever the
+  # client chose to claim, so forging a fresh one per request must not buy a
+  # fresh budget per request.
+  after=$(guesses_until_throttled -H 'X-Forwarded-For: 198.51.100.1, 203.0.113.30')
+  [ "$after" != "never" ] || fail "forged leftmost entries minted one identity per request"
+  code=$(status_for /api/snapshot -u "captain:wrong-forged-password" -H 'X-Forwarded-For: 198.51.100.2, 203.0.113.30')
+  expect_code 429 "$code" "a forged leftmost entry against an already-throttled client"
+
+  # More than one proxy in front is walked past, not just the last hop, so the
+  # same client is the same client however many trusted hops it came through.
+  after=$(guesses_until_throttled -H 'X-Forwarded-For: 203.0.113.40, 127.0.0.1')
+  [ "$after" != "never" ] || fail "a client behind two trusted hops was never throttled"
+  case $after in unexpected-*) fail "guessing answered $after behind two trusted hops" ;; esac
+  code=$(status_for /api/snapshot -u "captain:wrong-hop-password" -H 'X-Forwarded-For: 203.0.113.40')
+  expect_code 429 "$code" "the same client reached through one trusted hop fewer"
+
+  # A chain the server cannot read is refused rather than counted as some
+  # shared client that anyone could then hold empty. The credential is one this
+  # server has not seen, so the answer comes from the identity rule rather than
+  # from a remembered session.
+  code=$(status_for /api/snapshot -u "captain:wrong-malformed-password" -H 'X-Forwarded-For: 203.0.113.5, not-an-address')
+  expect_code 403 "$code" "a malformed forwarded chain from the trusted proxy"
+  stop_server
+  TRUSTED_PROXIES=
+  pass "a forwarded client address is read only from a trusted proxy, from the proxy end, or not at all"
+}
+
+# A probe is a question, and a server that does not know the question must say
+# so. Answering by serving leaves the caller waiting on output that never comes,
+# which is how an installer probing an older checkout hangs with a stray
+# dashboard listening behind it.
+test_an_unrecognised_argument_is_refused_instead_of_served() {
+  local case_root out rc port
+  case_root="$TMP_ROOT/argv"
+  mkdir -p "$case_root/home/data" "$case_root/home/state"
+  port=$(free_port)
+
+  set +e
+  out=$(FM_HOME="$case_root/home" FM_DASHBOARD_PORT="$port" \
+    timeout 10 node "$SERVER" --a-mode-this-version-does-not-have 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "an unrecognised argument was accepted"
+  [ "$rc" -ne 124 ] || fail "an unrecognised argument started a listener instead of refusing"
+  assert_contains "$out" "--a-mode-this-version-does-not-have" "the refusal did not name the argument"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/snapshot")" = "000" ] \
+    || fail "a refused probe left something listening on its port"
+
+  # The recognised probes still answer, and still answer promptly.
+  out=$(FM_HOME="$case_root/home" timeout 10 node "$SERVER" --event-store-path) \
+    || fail "the agent-event store probe stopped working"
+  case "$out" in /*) ;; *) fail "the agent-event store probe printed [$out]" ;; esac
+  set +e
+  out=$(FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10,not-an-address" \
+    timeout 10 node "$SERVER" --check-trusted-proxies 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "an unusable trusted-proxy allowlist was accepted"
+  assert_contains "$out" "not-an-address" "the refusal did not name the unusable entry"
+  out=$(FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10, 198.51.100.0/24" \
+    timeout 10 node "$SERVER" --check-trusted-proxies) || fail "a usable trusted-proxy allowlist was refused"
+  [ "$out" = "192.0.2.10,198.51.100.0/24" ] || fail "the allowlist read back as [$out]"
+  pass "an unrecognised argument is refused promptly and never becomes a listener"
+}
+
 test_generated_unit_carries_literal_paths
 test_a_path_the_unit_cannot_carry_is_refused
 test_an_exposed_bind_keeps_loopback
@@ -747,12 +915,15 @@ test_installing_from_a_worktree_is_refused
 test_exposure_requires_credentials
 test_exposure_requires_usable_credentials
 test_a_service_that_did_not_stay_up_is_not_reported_as_installed
+test_an_unrecognised_argument_is_refused_instead_of_served
 test_loopback_stays_the_open_default
+test_a_trusted_proxy_is_pinned_only_when_the_server_accepts_it
 test_set_password_stores_only_a_digest
 test_a_short_password_is_refused
 test_authentication_accepts_and_rejects
 test_repeated_wrong_passwords_are_rate_limited
 test_correct_credentials_do_not_spend_the_failure_budget
+test_forwarded_client_identity_is_only_read_from_a_trusted_proxy
 test_credentials_losing_their_private_mode_close_the_dashboard
 test_credentials_already_unusable_at_startup_close_the_dashboard
 test_ingest_keeps_its_own_boundary

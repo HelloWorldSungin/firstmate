@@ -74,15 +74,41 @@ Two properties matter more than the choice of proxy.
 
 Being behind a proxy is not access control.
 A proxy is usually reachable from your whole network, so the dashboard's own authentication has to hold for a request that arrives from the proxy exactly as it does for any other.
-It does; there is no trusted-source exemption to configure, and there is no header this server treats as proof of anything.
+It does; there is no trusted-source exemption to configure, and no header is ever treated as proof of who you are.
+The trusted-proxy setting below decides who a request is throttled as and nothing else: it can never admit a request, only tell two clients apart.
 
 The dashboard pushes its live view over a server-sent event stream.
 A proxy that buffers a proxied response will hold that stream and make a working dashboard look frozen, so turn response buffering off for this host and give it a read timeout long enough for an idle stream to survive.
 
-One consequence worth knowing before you debug it: failed-authentication throttling keys on the address the request arrives from, which behind a proxy is the proxy for everyone.
-Repeated wrong passwords therefore slow down every client behind that proxy, not only the one guessing.
-That is the safe direction to fail, and only failures pay for it: the budget is charged before the key derivation a guess would cost and returned as soon as the credentials turn out to be correct, so a stream of wrong passwords cannot hold a real login out indefinitely.
+## Tell the dashboard which proxy to believe
+
+Failed-authentication throttling keys on who the client is, and by default the client is the address the request arrived from.
+Behind a proxy every request arrives from the proxy, so with nothing configured every client behind it shares one budget and one of them guessing wrong passwords is one of them slowing all the others down.
+
+Naming the proxy is what separates them again:
+
+```sh
+bin/fm-dashboard-install.sh --trusted-proxy 192.168.68.10 --address 192.168.68.110
+```
+
+`--trusted-proxy` is repeatable and takes a numeric address or a CIDR range, never a name.
+It pins `FM_DASHBOARD_TRUSTED_PROXIES` into the environment file the way every other setting is pinned.
+
+Nothing is trusted until you do this, and that is deliberate:
+
+- With no trusted proxy configured the dashboard reads no forwarded header at all.
+  Upgrading does not change that; only naming an address does.
+- `X-Forwarded-For` is read only when the request arrived from an address on that list.
+  From anyone else it is ignored entirely, because a header from an untrusted peer is a claim a client made about itself.
+- The chain is then walked from the proxy end, discarding the entries your own proxies contributed, and the first entry that is not one of them is the client.
+  The leftmost entry is whatever the client chose to send, so reading it would let one guesser mint unlimited identities and turn per-client throttling into none.
+- A request whose client cannot be established at all is refused rather than being counted as some shared client.
+
+RFC 7239 `Forwarded` is deliberately not read; `X-Forwarded-For` is what the proxies this is deployed behind send, and one header handled exactly is worth more than two handled approximately.
+
+What throttling then guarantees: a wrong password spends its own client's budget before the key derivation it would cost, and a correct one is refunded as soon as it verifies, so a client guessing at any rate cannot hold a different client out of the dashboard.
 Correct passwords are also remembered briefly, so one page load does not spend the budget once per asset.
+What bounds the work rather than the rate is a cap on key derivations in flight at once; when that cap is reached a request is told to retry in a second rather than being locked out for minutes.
 
 ## Twingate and anything else that is yours
 
