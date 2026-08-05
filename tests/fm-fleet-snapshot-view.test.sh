@@ -1143,6 +1143,66 @@ SH
   pass "bounded secondmate home summary skips model enrichment"
 }
 
+# Multi-line free-form notes are a supported backlog shape; their continuation
+# lines are a continuation of the parent record, not separate unstructured
+# rows. A signal that is always red for any real backlog carries no information
+# and trains the reader to ignore the strip, which is worse than not having it.
+test_multiline_unstructured_note_attributed_to_parent() {
+  local home fakebin out
+  home=$(make_home multiline-note)
+  mkdir -p "$home/projects/alpha"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] structured-task - Structured task (repo: alpha) (kind: ship) (since 2026-08-05)
+FIX: set the router's DHCP-advertised DNS to 192.168.68.10.
+  1. Existing devices keep their current resolver until DHCP lease renewal, which can take days.
+  2. It makes 192.168.68.10 a single point of failure for all LAN name resolution.
+
+## Queued
+handoff note without canonical syntax
+
+## Done
+EOF
+  fm_write_meta "$home/state/structured-task.meta" \
+    "window=firstmate:fm-structured-task" \
+    "worktree=$home/projects/alpha" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship"
+  printf 'working: structured\n' > "$home/state/structured-task.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  # A multi-line note (lines 2..N begin with whitespace) is one parent row
+  # with body_lines attached. The single-line "handoff note" has no leading
+  # whitespace on its only line, so it stays its own row. The earlier rule
+  # attached continuation lines only to structured parents, which made a
+  # three-line free-form note count as three unstructured rows; here the
+  # counterfactual would be three rows, not the single one this rule gives.
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[]
+       | select(.state == "in_flight" and (.structured | not))
+       | .raw]) == ["FIX: set the router'\''s DHCP-advertised DNS to 192.168.68.10."]
+      and ([.backlog.records[]
+            | select(.state == "in_flight" and (.structured | not))
+            | .body_lines]) == [["1. Existing devices keep their current resolver until DHCP lease renewal, which can take days.",
+                                  "2. It makes 192.168.68.10 a single point of failure for all LAN name resolution."]]
+      and ([.backlog.records[]
+            | select(.state == "in_flight" and (.structured | not))
+            | .body_excerpt]) == ["1. Existing devices keep their current resolver until DHCP lease renewal, which can take days. 2. It makes 192.168.68.10 a single point of failure for all LAN name resolution."]
+      and ([.backlog.records[]
+            | select(.state == "queued" and (.structured | not))
+            | .raw]) == ["handoff note without canonical syntax"]
+      and ([.backlog.records[]
+            | select(.state == "queued" and (.structured | not))
+            | .body_lines | length] | add // 0) == 0
+      and ([.backlog.records[]
+            | select(.state == "in_flight" and (.structured | not))
+            | .body_lines | length] | add // 0) == 2
+  ' >/dev/null || fail "multi-line unstructured note was not attributed to its parent: $out"
+  pass "multi-line free-form backlog notes stay attributed to their parent"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
@@ -1164,3 +1224,4 @@ test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
+test_multiline_unstructured_note_attributed_to_parent

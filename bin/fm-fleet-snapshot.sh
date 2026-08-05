@@ -461,7 +461,16 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
        elif structured_row($line) then
          .order += 1
          | .records += [parse_row($line; .section; .order)]
-       elif ((.records | length) > 0 and (.records[-1].structured == true) and ($line | test("^[[:space:]]+"))) then
+       # A non-empty line that begins with whitespace is a continuation of the
+       # previous record, structured OR unstructured. Multi-line free-form
+       # notes in In flight or Queued are a supported shape, and the previous
+       # rule attached continuation lines only to structured parents, which
+       # meant a 3-line free-form note became one parent plus two spurious
+       # "unstructured current backlog row" records. A signal that is always
+       # red for any real backlog carries no information, so the rule now
+       # matches the same indentation heuristic Markdown renderers do: indent
+       # means continuation, not a new record.
+       elif ((.records | length) > 0 and ($line | test("^[[:space:]]+"))) then
          ($line | trim) as $body
          | if $body == "" then .
            else .records[-1].body_lines += [$body] end
