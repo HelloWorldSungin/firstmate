@@ -898,7 +898,9 @@ test_pause_resurface_window_backs_off_and_caps() {
 # must survive - a forgotten hold cannot rot invisibly - but an UNCHANGED wait
 # must cost less each time. Phase C is the disconfirming half: nothing about the
 # backoff may reach a crew that never declared a wait, which still absorbs on the
-# wedge timer and still escalates as a possible wedge.
+# wedge timer and still escalates as a possible wedge at the unchanged threshold;
+# and phase C is the boundary between them - the widened cadence is earned by one
+# unchanged wait and dies the moment that wait changes.
 test_paused_resurface_backs_off_while_wedge_still_escalates() {
   local dir state fakebin out capture_file window key pane_hash sig pid back statusf wakes
   dir=$(make_case paused-resurface-backoff); state="$dir/state"; fakebin="$dir/fakebin"
@@ -958,9 +960,30 @@ test_paused_resurface_backs_off_while_wedge_still_escalates() {
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
   [ "$wakes" -eq 2 ] || fail "expected exactly 2 rechecks across the three phases, got $wakes"
 
-  # Phase C: a crew that declared NO wait is untouched by any of this. It is
+  # Phase C: the widened cadence is earned by ONE unchanged wait and dies with
+  # it. The moment the crew stops declaring that wait, the streak goes with the
+  # rest of the pause tracking, so the next wait - a different wait, or this crew
+  # going quiet again later - starts back at the base window and never inherits a
+  # cadence widened by something else.
+  printf 'working: resumed, the merge decision landed\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-parked_status"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || true
+  reap "$pid"
+  [ ! -e "$state/.paused-streak-$key" ] \
+    || fail "the widened cadence outlived the wait that earned it (streak $(cat "$state/.paused-streak-$key"))"
+  [ ! -e "$state/.paused-$key" ] || fail "pause tracking survived the crew resuming"
+
+  # Phase D: a crew that declared NO wait is untouched by any of this. It is
   # absorbed only while provably working, and once its idle time crosses the
-  # wedge threshold it still escalates as a possible wedge.
+  # wedge threshold it still escalates as a possible wedge - at the unchanged
+  # FM_STALE_ESCALATE_SECS threshold, which no backoff may widen.
   dir=$(make_case paused-backoff-wedge-control); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-quiet"
