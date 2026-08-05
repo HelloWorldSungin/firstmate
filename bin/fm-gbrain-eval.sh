@@ -40,7 +40,9 @@
 #   compare   Print the metric-by-metric delta between two run documents, and
 #             the configuration fields that differ. A comparison across
 #             different corpus revisions or eval sets is reported as such rather
-#             than silently treated as like-for-like.
+#             than silently treated as like-for-like, and a field neither run
+#             could record is reported as unknown rather than as unchanged: two
+#             absent values are not evidence of sameness.
 #
 # Scoring:
 #   An expected source is a slug SUFFIX, so the set is portable across homes:
@@ -57,6 +59,13 @@
 #                    (default 1, so the default number is per call). A run also
 #                    records first_attempt_answered, which is what distinguishes
 #                    a flaky provider from an unusable one.
+#                    Every think rate is over the questions whose LOCAL read
+#                    succeeded, which the run records as think.read. A question
+#                    the brain itself could not answer is reported as unread
+#                    rather than as an unanswered synthesis, because a corpus
+#                    that could not be read says nothing about the hosted
+#                    provider - and folding it in would be exactly the combined
+#                    score this separation exists to prevent.
 #           grounded the answer cites at least one expected source.
 #           key_facts the fraction of the question's required facts that appear
 #                    in the answer. Each fact is a list of accepted spellings
@@ -74,7 +83,8 @@
 #      reportable outcome, not an error: record it rather than moving the
 #      threshold.
 #   2  usage, or a configuration this command refuses to guess at.
-#   3  the run could not be measured at all, because the brain could not be read.
+#   3  the run could not be measured at all, because the brain could not be
+#      read: no question was read by any phase that ran.
 #
 # Environment:
 #   FM_HOME            active firstmate home; --home overrides it
@@ -167,13 +177,24 @@ gbrain_config_get() {  # <key> -> value, or empty when unavailable
 # markdown archive has that archive's git revision instead. Neither is guessed
 # at: when neither exists the revision is reported as unknown rather than as a
 # number that cannot be reproduced.
+#
+# A record that cannot be read is an anticipated state rather than a reason to
+# abandon the run: the questions are still measurable, and only the revision is
+# not. It is reported as its own source instead of being hashed over whatever
+# happened to parse, because a digest that covers less than the corpus does
+# would look exactly as reproducible as one that covers all of it.
 corpus_revision() {  # <home> -> "<source>\t<revision>"
-  local home=$1 outbox=$2 rev
+  local home=$1 outbox=$2 rev listing rc=0
   if [ -d "$outbox" ] && [ -n "$(find "$outbox" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)" ]; then
-    rev=$(find "$outbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null \
-      | xargs -0 -r jq -r '"\(.document_id)\t\(.content_version)"' 2>/dev/null \
-      | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
-    [ -n "$rev" ] && { printf 'capture-outbox\tsha256:%s\n' "$rev"; return 0; }
+    listing=$(find "$outbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null \
+      | xargs -0 -r jq -r '"\(.document_id)\t\(.content_version)"' 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$listing" ]; then
+      rev=$(printf '%s\n' "$listing" | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
+      printf 'capture-outbox\tsha256:%s\n' "$rev"
+      return 0
+    fi
+    printf 'capture-outbox-unreadable\t\n'
+    return 0
   fi
   if [ -d "$FM_GBRAIN_ARCHIVE/.git" ] && command -v git >/dev/null 2>&1; then
     rev=$(git -C "$FM_GBRAIN_ARCHIVE" rev-parse HEAD 2>/dev/null) || rev=""
@@ -290,7 +311,11 @@ run_search() {  # <question-json> -> per-question search JSON on stdout
   expect=$(printf '%s' "$q" | jq -c '.expect')
   doc=$(fm_run_timed "$SEARCH_TIMEOUT" "$RECALL_BIN" search --home "$HOME_PATH" \
     --scope "$SCOPE" --limit "$LIMIT" --excerpt "$EXCERPT" --json -- "$text" 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ] || [ -z "$doc" ]; then
+  # A refusal document and a document a kill truncated are both "not read", and
+  # neither may abort the run: one unreadable answer is a question that was not
+  # measured, not a reason to abandon the nineteen that were.
+  if [ "$rc" -ne 0 ] || [ -z "$doc" ] \
+    || ! printf '%s' "$doc" | jq -e 'has("results")' >/dev/null 2>&1; then
     jq -n --arg rc "$rc" '{state: "failed", exit: ($rc | tonumber), hit_rank: null,
       top1: false, topk: false, rr: 0, retrieved: 0, results: []}'
     return 0
@@ -318,6 +343,12 @@ run_search() {  # <question-json> -> per-question search JSON on stdout
 # needs to know whether a retry clears the failure or the provider is simply
 # unusable. attempts stays 1 by default, which keeps a set's declared
 # think_answered threshold a per-call number rather than a per-question one.
+#
+# A think call reaches a verdict on the hosted provider only when it produced a
+# synthesis block at all. Without one - the local read failed, gbrain is absent,
+# no hosted credential is installed, or the call was killed - the hosted side
+# was never measured, so the question is recorded as unread rather than as an
+# answer the provider failed to give.
 run_think() {  # <question-json> -> per-question think JSON on stdout
   local q=$1 text expect facts doc rc=0 attempt=0 first_ok=false
   text=$(printf '%s' "$q" | jq -r '.question')
@@ -336,8 +367,9 @@ run_think() {  # <question-json> -> per-question think JSON on stdout
   done
   # The LAST attempt's document is the one scored, so a question that never
   # succeeded is reported with its final failure rather than an earlier one.
-  if [ -z "$doc" ]; then
-    jq -n --arg rc "$rc" --arg a "$attempt" '{state: "failed", exit: ($rc | tonumber),
+  if [ -z "$doc" ] || ! printf '%s' "$doc" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    jq -n --arg rc "$rc" --arg a "$attempt" '{state: "unread", exit: ($rc | tonumber),
+      read: false, error: null,
       answered: false, first_attempt_answered: false, attempts: ($a | tonumber),
       grounded: false, key_fact_rate: null, key_facts_matched: 0, key_facts_total: 0,
       citations: [], citations_expected: 0, truncated: null}'
@@ -351,9 +383,12 @@ run_think() {  # <question-json> -> per-question think JSON on stdout
     | [.citations[]? | sub("^[a-z]+:"; "")] as $cited
     | ((.synthesis.state // "") == "ok" and ($answer | length) > 0) as $answered
     | [$facts[] | any(.[]; . as $alt | ($lower | contains($alt | ascii_downcase)))] as $matched
+    | (.synthesis != null) as $read
     | {
-        state: (.synthesis.state // "failed"),
+        state: (if $read then (.synthesis.state // "failed") else "unread" end),
         exit: ($rc | tonumber),
+        read: $read,
+        error: (.error.code // null),
         answered: $answered,
         attempts: ($attempts | tonumber),
         first_attempt_answered: ($first and $answered),
@@ -466,7 +501,8 @@ cmd_run() {
     | [$qs[] | select(.search != null)] as $sq
     | [$qs[] | select(.think != null)] as $tq
     | [$sq[] | select(.search.state == "ok")] as $sok
-    | [$tq[] | select(.think.answered)] as $tok
+    | [$tq[] | select(.think.read)] as $tread
+    | [$tread[] | select(.think.answered)] as $tok
     | [$tok[] | select((.think.citations | length) > 0)] as $tcited
     | def avg($xs): if ($xs | length) == 0 then null else (($xs | add) / ($xs | length)) end;
     {
@@ -491,14 +527,16 @@ cmd_run() {
       } end),
       think: (if ($tq | length) == 0 then null else {
         questions: ($tq | length),
+        read: ($tread | length),
         attempts_allowed: $attempts,
-        answered: avg([$tq[] | (if .think.answered then 1 else 0 end)]),
-        first_attempt_answered: avg([$tq[] | (if .think.first_attempt_answered then 1 else 0 end)]),
+        answered: avg([$tread[] | (if .think.answered then 1 else 0 end)]),
+        first_attempt_answered: avg([$tread[] | (if .think.first_attempt_answered then 1 else 0 end)]),
         grounded: avg([$tok[] | (if .think.grounded then 1 else 0 end)]),
         key_facts: avg([$tok[] | .think.key_fact_rate | select(. != null)]),
         citation_precision: avg([$tcited[] | (.think.citations_expected / (.think.citations | length))]),
         truncated: [$tok[] | select(.think.truncated == true) | .id],
-        unanswered: [$tq[] | select(.think.answered | not) | .id],
+        unread: [$tq[] | select(.think.read | not) | .id],
+        unanswered: [$tread[] | select(.think.answered | not) | .id],
         ungrounded: [$tok[] | select(.think.grounded | not) | .id]
       } end)
     }
@@ -518,9 +556,12 @@ cmd_run() {
   else
     render_run "$document"
   fi
-  # A search phase that read no corpus at all measured nothing, so it must not
-  # report a passing verdict just because every averaged metric came out null.
-  if [ "$(printf '%s' "$document" | jq -r 'if .search == null then "n/a" else (.search.read | tostring) end')" = "0" ]; then
+  # A phase that read no corpus at all measured nothing, so a run in which no
+  # phase read anything must not report a passing verdict just because every
+  # averaged metric came out null and dropped out of the verdict.
+  if [ "$(printf '%s' "$document" | jq -r '
+        [(.search, .think) | select(. != null) | .read] as $read
+        | if ($read | length) > 0 and ($read | all(. == 0)) then "none" else "some" end')" = "none" ]; then
     printf 'fm-gbrain-eval.sh: no corpus answered; the run measured nothing\n' >&2
     return 3
   fi
@@ -551,12 +592,14 @@ render_run() {  # <document>
      else "SEARCH  not run" end),
     "",
     (if .think then
-      "THINK (hosted synthesis, \(.think.questions) questions, \(.think.attempts_allowed) attempt(s) allowed)",
+      "THINK (hosted synthesis, \(.think.read)/\(.think.questions) questions read, \(.think.attempts_allowed) attempt(s) allowed)",
       "  answered             \(pct(.think.answered))",
       "  answered 1st call    \(pct(.think.first_attempt_answered))",
       "  grounded             \(pct(.think.grounded))",
       "  key facts            \(pct(.think.key_facts))",
       "  citation precision   \(pct(.think.citation_precision))",
+      "  not read             \(if (.think.unread | length) == 0 then "none" else (.think.unread | join(", ")) + "  (local read failed; excluded from every rate above)" end)",
+      "  not answered         \(if (.think.unanswered | length) == 0 then "none" else (.think.unanswered | join(", ")) end)",
       "  not grounded         \(if (.think.ungrounded | length) == 0 then "none" else (.think.ungrounded | join(", ")) end)"
      else "THINK   not run" end),
     "",
@@ -587,17 +630,28 @@ cmd_compare() {
   doc=$(jq -n --slurpfile base "$a" --slurpfile cand "$b" '
     ($base[0]) as $a | ($cand[0]) as $b
     | def d($x; $y): if ($x == null or $y == null) then null else ($y - $x) end;
+    # A field neither run could record is not evidence that it did not move:
+    # two nulls compare equal, and reporting that as "same" would be the exact
+    # silent like-for-like claim this command exists to prevent. A value that is
+    # null on either side - or, for a composite field, holds a null anywhere
+    # inside it - is therefore reported as unknown rather than as unchanged.
+    def known($v): ([$v | ..] | map(select(. == null)) | length) == 0;
+    def cmp($x; $y):
+      if ((known($x) and known($y)) | not) then "unknown"
+      elif $x == $y then "same"
+      else "changed" end;
     {
       baseline: {path: $a.eval_set.path, label: $a.run.label, started: $a.run.started},
       candidate: {path: $b.eval_set.path, label: $b.run.label, started: $b.run.started},
       comparable: {
-        eval_set: ($a.eval_set.id == $b.eval_set.id and $a.eval_set.checksum == $b.eval_set.checksum),
-        corpus: ($a.corpus.revision == $b.corpus.revision),
-        gbrain: ($a.configuration.gbrain_version == $b.configuration.gbrain_version),
-        embedding: ($a.configuration.embedding == $b.configuration.embedding),
-        reranker: ($a.configuration.reranker == $b.configuration.reranker),
-        think_model: ($a.configuration.think.model == $b.configuration.think.model),
-        query: ($a.configuration.query == $b.configuration.query)
+        eval_set: cmp({id: $a.eval_set.id, checksum: $a.eval_set.checksum};
+                      {id: $b.eval_set.id, checksum: $b.eval_set.checksum}),
+        corpus: cmp($a.corpus.revision; $b.corpus.revision),
+        gbrain: cmp($a.configuration.gbrain_version; $b.configuration.gbrain_version),
+        embedding: cmp($a.configuration.embedding; $b.configuration.embedding),
+        reranker: cmp($a.configuration.reranker; $b.configuration.reranker),
+        think_model: cmp($a.configuration.think.model; $b.configuration.think.model),
+        query: cmp($a.configuration.query; $b.configuration.query)
       },
       metrics: [
         {metric: "search_top1", baseline: $a.search.top1, candidate: $b.search.top1, delta: d($a.search.top1; $b.search.top1)},
@@ -619,7 +673,11 @@ cmd_compare() {
     "candidate  \(.candidate.label // .candidate.started)",
     "",
     "LIKE-FOR-LIKE",
-    (.comparable | to_entries[] | "  \(if .value then "same     " else "CHANGED  " end)\(.key)"),
+    (.comparable | to_entries[]
+      | "  \(if .value == "same" then "same     " elif .value == "changed" then "CHANGED  " else "UNKNOWN  " end)\(.key)"),
+    (if ([.comparable[] | select(. == "unknown")] | length) > 0 then
+      "  UNKNOWN means one of the two runs did not record the field, so this comparison could not be made"
+     else empty end),
     "",
     "METRICS",
     (.metrics[] | select(.baseline != null or .candidate != null)

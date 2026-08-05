@@ -132,6 +132,11 @@ think_doc() {  # <state> <answer> <citation-slug...>
      citations: [.[] | select(. != "") | "local:" + .]}'
 }
 
+local_read_failure() {  # -> the document fm-recall.sh emits when the brain fails
+  jq -n '{schema: "fm-recall.v1", command: "think",
+          error: {code: "local_retrieval_failed", message: "the brain could not be read"}}'
+}
+
 EVAL_SET="$TMP_ROOT/set.json"
 write_set() {  # <jq-filter-applied-to-the-base-set>
   jq "${1:-.}" > "$EVAL_SET" <<'SETEOF'
@@ -253,6 +258,20 @@ SUM=$(printf '%s' "$EVAL_OUT" | jq -r '.eval_set.checksum')
 case $REV_ONE in sha256:*) ;; *) fail "the corpus revision should be a digest, got $REV_ONE" ;; esac
 printf '%s' "$EVAL_OUT" > "$TMP_ROOT/run-one.json"
 
+# One unreadable outbox record leaves the revision underivable, which is a
+# provenance field this run does not have - never a reason to abandon the
+# questions, and never a digest over whatever happened to parse.
+printf 'not json\n' > "$HOME_DIR/data/gbrain-outbox/broken.json"
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search --json
+expect_code 0 "$EVAL_RC" "an unreadable outbox record must not abort the run"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.corpus.revision_source')" = "capture-outbox-unreadable" ] \
+  || fail "an underivable revision must say so, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.corpus.revision')" = "null" ] \
+  || fail "a partial corpus must not be reported as a reproducible revision, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.search.read')" = "4" ] \
+  || fail "the questions must still be measured, got $EVAL_OUT"
+rm -f "$HOME_DIR/data/gbrain-outbox/broken.json"
+
 # The reranker is read from the brain rather than from firstmate's intent for
 # it, so a brain that has it off is recorded as off.
 FM_STUB_RERANK=false run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase search --json
@@ -340,18 +359,81 @@ T=$(printf '%s' "$EVAL_OUT" | jq -c '.think')
 [ "$(printf '%s' "$T" | jq -r '.first_attempt_answered')" = "0.75" ] \
   || fail "the first-call rate must stay visible next to it, got $T"
 
-# --- 7. compare reports what is not like-for-like ---------------------------
+# --- 7. a failed LOCAL read is not a failed synthesis -----------------------
+#
+# think measures the HOSTED provider. When the local read fails, fm-recall.sh
+# exits 3 with a document that carries an error and no synthesis at all, so the
+# hosted side was never reached: counting that question as an unanswered
+# synthesis would fold a corpus failure into the number that exists to measure
+# the provider.
+
+: > "$FM_STUB_CALLS"
+rm -f "$REPLY_DIR/qa.think.1.json" "$REPLY_DIR/qa.think.2.json"
+think_doc ok "The alpha wedge report explains it." "home/tag/task/alpha" > "$REPLY_DIR/qa.think.json"
+think_doc failed "" > "$REPLY_DIR/qb.think.json"
+think_doc ok "Delta." "home/tag/task/delta" > "$REPLY_DIR/qd.think.json"
+local_read_failure > "$REPLY_DIR/qc.think.json"
+printf '3\n' > "$REPLY_DIR/qc.think.json.rc"
+
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase think --json
+T=$(printf '%s' "$EVAL_OUT" | jq -c '.think')
+[ "$(printf '%s' "$T" | jq -r '.questions')" = "4" ] \
+  || fail "an unread question must still be counted as a question, got $T"
+[ "$(printf '%s' "$T" | jq -r '.read')" = "3" ] \
+  || fail "the questions actually read must be reported next to the rates, got $T"
+[ "$(printf '%s' "$T" | jq -c '.unread')" = '["qc"]' ] \
+  || fail "the excluded question must be named as unread, got $T"
+[ "$(printf '%s' "$T" | jq -c '.unanswered')" = '["qb"]' ] \
+  || fail "an unread question must not be reported as an unanswered synthesis, got $T"
+[ "$(printf '%s' "$T" | jq -r '(.answered * 1000 | round)')" = "667" ] \
+  || fail "answered must denominate over the questions read, not all of them, got $T"
+[ "$(printf '%s' "$T" | jq -r '(.first_attempt_answered * 1000 | round)')" = "667" ] \
+  || fail "the first-call rate must denominate the same way, got $T"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '[.questions[] | select(.id == "qc") | .think.state] | first')" = "unread" ] \
+  || fail "the per-question record must say the local read failed, got $EVAL_OUT"
+
+# A think run where the brain answered nothing measured nothing, and must not
+# report a missed hosted threshold for a failure that was never the provider's.
+: > "$FM_STUB_CALLS"
+for k in qa qb qc qd; do
+  local_read_failure > "$REPLY_DIR/$k.think.json"
+  printf '3\n' > "$REPLY_DIR/$k.think.json.rc"
+done
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase think --json
+expect_code 3 "$EVAL_RC" "a think run that could read nothing must not exit 1 as a missed threshold"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.read')" = "0" ] \
+  || fail "no question was read, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.answered')" = "null" ] \
+  || fail "a rate over no questions is not zero, it is absent, got $EVAL_OUT"
+for k in qa qb qc qd; do rm -f "$REPLY_DIR/$k.think.json.rc"; done
+
+# --- 8. compare reports what is not like-for-like ---------------------------
 
 run_eval compare "$TMP_ROOT/run-one.json" "$TMP_ROOT/run-two.json" --json
 expect_code 0 "$EVAL_RC" "compare should read two run documents"
-[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.corpus')" = "false" ] \
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.corpus')" = "changed" ] \
   || fail "a changed corpus revision must be reported as not like-for-like"
-[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.eval_set')" = "true" ] \
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.eval_set')" = "same" ] \
   || fail "the same evaluation set must be reported as comparable"
-[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.embedding')" = "true" ] \
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.embedding')" = "same" ] \
   || fail "an unchanged embedding must be reported as comparable"
 [ "$(printf '%s' "$EVAL_OUT" | jq -r '[.metrics[] | select(.metric == "search_top1")][0].delta')" = "0" ] \
   || fail "an unchanged metric must compare as no delta"
+
+# A field neither run could record is not evidence of sameness: two nulls
+# compare equal, and reporting that as "same" is the silent like-for-like claim
+# this command exists to prevent.
+jq '.corpus.revision = null | .configuration.gbrain_version = null' \
+  "$TMP_ROOT/run-one.json" > "$TMP_ROOT/run-blind.json"
+run_eval compare "$TMP_ROOT/run-blind.json" "$TMP_ROOT/run-blind.json" --json
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.corpus')" = "unknown" ] \
+  || fail "an underivable corpus revision must not compare as same, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.gbrain')" = "unknown" ] \
+  || fail "an unrecorded GBrain version must not compare as same, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.embedding')" = "same" ] \
+  || fail "a field both runs did record must still compare, got $EVAL_OUT"
+run_eval compare "$TMP_ROOT/run-blind.json" "$TMP_ROOT/run-blind.json"
+assert_contains "$EVAL_OUT" "UNKNOWN  corpus" "the rendered comparison must show what could not be compared"
 
 run_eval compare "$TMP_ROOT/run-one.json" "$EVAL_SET"
 expect_code 2 "$EVAL_RC" "compare must refuse a document that is not a run"
