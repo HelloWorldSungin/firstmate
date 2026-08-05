@@ -92,6 +92,8 @@ Backfill writes each task's `state/<id>.gbrain` receipt but never republishes a 
 
 Run a backfill once after adopting a brain, and after a long outage.
 
+The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
+
 ## Recovering from a damaged record
 
 An outbox record is written atomically, so a crash leaves the previous complete record or none.

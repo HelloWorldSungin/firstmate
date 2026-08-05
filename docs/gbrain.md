@@ -1,8 +1,9 @@
 # Local GBrain archive
 
-This operator reference owns the Firstmate GBrain installation, archive setup, retrieval configuration, privacy boundary, and recovery procedure for one brain.
+This operator reference owns the Firstmate GBrain installation, archive setup, retrieval configuration, privacy boundary, quality evaluation, embedding-migration playbook, and recovery procedure for one brain.
 How a Firstmate home scopes its OWN brain, and how the main brain is shared read-only with secondmate homes, is owned by [gbrain-scoping.md](gbrain-scoping.md).
 The local embedding endpoint contract is in [gbrain-endpoints.md](gbrain-endpoints.md), the local reranker evidence is in [verification/gbrain-reranker.md](verification/gbrain-reranker.md), and the empirical installation evidence is in [verification/gbrain-init-retrieval.md](verification/gbrain-init-retrieval.md).
+The measured retrieval and synthesis numbers, and the recorded migration timings, are in [verification/gbrain-eval.md](verification/gbrain-eval.md).
 
 ## Operating paths
 
@@ -43,6 +44,27 @@ GBRAIN_LAUNCHER
 
 The installed `/home/sungin/.local/gbrain/bin/gbrain` launcher executes `/home/sungin/.local/gbrain/src/src/cli.ts` with the pinned Bun binary, so runtime selection does not depend on a user-global `bun` command.
 Set `PATH=/home/sungin/.local/gbrain/bin:$PATH` for operations that cause GBrain to spawn `gbrain` as a child process, including migrations.
+
+### Upgrade policy
+
+An upgrade changes the code that reads and writes the fleet's memory, so it is a deliberate, gated operation rather than a routine refresh.
+GBrain's own `gbrain upgrade` and its `self_upgrade` notification are not the fleet's path, because they bypass the pin, the backup, and the gate below.
+Every upgrade runs these seven steps in order, and any one of them failing is a rollback rather than a reason to continue:
+
+1. **Pin.** The version in force is the one recorded above, and it moves only by editing this file in the same change that performs the upgrade.
+   Select the new tag explicitly; `latest` is not a pin.
+2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
+3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
+4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.
+5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
+6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
+   Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
+7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
+   A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
+
+Rolling back is checking out the pinned commit again, reinstalling from the same lockfile, and restoring the step-4 backup.
+Restore its archive, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
+
 To upgrade deliberately, select a newer verified GBrain tag, then run:
 
 ```sh
@@ -102,6 +124,33 @@ The current reranker service uses a 4096-token context with physical and micro-b
 An input beyond that service and context bound makes llama-server return HTTP 500, after which GBrain records a rerank failure and returns the non-reranked fallback ranking.
 Operators must treat that visible failure as a failed rerank rather than successful reranking, even though retrieval still returns fallback results.
 
+## Measuring retrieval quality
+
+`bin/fm-gbrain-eval.sh` runs a versioned evaluation set against a home's brain and prints one run document.
+Its `--help` owns the flags, the metric definitions, and the exit statuses; what follows is only what an operator has to decide.
+
+The shipped set is [`gbrain-eval-set.v1.json`](gbrain-eval-set.v1.json): twenty fleet-history questions, each with the source documents that answer it and the key facts a good answer contains.
+A question's expected source is a slug SUFFIX, so the same set measures any home rather than only the one it was written against.
+Two of the twenty deliberately accept a family of near-duplicate documents, because a review thread that produced five revisions has no single correct member and scoring one of them as the answer would measure the set's arbitrariness rather than the brain's.
+
+Local retrieval and hosted synthesis are scored and reported separately, and neither number is ever folded into the other.
+They fail for unrelated reasons: a weak embedding model and an unreachable hosted provider are different problems with different fixes, and a combined score would hide which one is in force.
+
+```sh
+bin/fm-gbrain-eval.sh run --home <home> --label "<what changed>" --out <run.json>
+bin/fm-gbrain-eval.sh compare <baseline.json> <candidate.json>
+```
+
+Every run records the GBrain version, the embedding model and its dimension, the reranker and whether it is enabled, the hosted synthesis model, the corpus revision, and the query settings.
+Those travel with the numbers because a score without them cannot be compared to the next one.
+The reranker and hosted model are read from the brain's own database plane rather than from Firstmate's configured intent for it, so a run can never be recorded as reranked while the brain has reranking off.
+The corpus revision is a digest of the durable source a home actually holds: the per-document content versions in its capture outbox, or the archive's git revision when it is fed from an archive.
+`compare` reports which of those fields moved between two runs, so a comparison across a changed corpus or a changed model is labelled rather than silently treated as like-for-like.
+
+Re-run the evaluation after a corpus, GBrain, model, or reranker change, and after any migration below.
+The exit status is usable as a gate: 0 when every threshold the set declares was met, 1 when one was missed, 2 for a refused configuration, and 3 when the brain could not be read at all.
+A missed threshold is a result to record with its cause, never a reason to edit the threshold.
+
 ## MiniMax credential contract and privacy boundary
 
 The MiniMax credential is read only at runtime from `/home/sungin/.pi/agent/auth.json`, field `minimax.key`.
@@ -151,14 +200,69 @@ cp -a /home/sungin/.local/share/gbrain/archive \
   "$backup_dir"/
 ```
 
-To rebuild a damaged index, retain the automatic `.bak` created by `reinit-pglite`, rerun the local initialization, restore the configuration above, then re-import the archive and embed stale chunks:
+### What a home can actually rebuild from
+
+An index is disposable only to the extent that something else still holds the documents, and that something differs per home.
+A home fed from the markdown archive rebuilds with `gbrain import`, as above.
+A Firstmate home fed by task-knowledge capture has no archive at all: its durable source is `data/gbrain-outbox/`, where every captured document is stored whole and redacted before delivery is ever attempted ([gbrain-capture.md](gbrain-capture.md)).
+That home rebuilds by re-delivering the outbox rather than by importing a directory:
+
+```sh
+bin/fm-gbrain-capture.sh process --force    # re-deliver every stored record, including already-captured ones
+bin/fm-gbrain-capture.sh backfill           # additionally re-compose from any manifest or report not yet in the outbox
+```
+
+Check which one a home has before planning any destructive step, because a home with neither has no source to rebuild from and its index is the only copy.
+
+### Rebuilding a damaged index
+
+`reinit-pglite` wipes the index and re-creates it at a chosen model and dimension, preserving the old one as `<path>.bak`; rolling back is moving that directory back.
+It also clears the brain's own database-plane configuration.
+The reranker, the hosted synthesis model, and the provider base URLs are stored there, so a reinitialized brain silently retrieves without reranking until [Initialize and configure retrieval](#initialize-and-configure-retrieval) is applied again.
+Re-apply that configuration before measuring or trusting the rebuilt brain, then restore the documents from whichever source the previous section identified.
 
 ```sh
 GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain reinit-pglite \
   --path /home/sungin/.local/share/gbrain/pglite \
   --embedding-model ollama:snowflake-arctic-embed2:568m \
   --embedding-dimensions 1024 \
   --yes --no-sync
 ```
+
+### Migrating to another embedding model
+
+`gbrain migrate embeddings` is the forward path for a model or dimension change, and `reinit-pglite` is not: the migration keeps every page and re-embeds in place, handles the dimension change as a schema transition, and resumes after a kill.
+Both are destructive to the stored vectors, because pgvector under PGLite cannot alter a vector column's width in place.
+Neither is reversible from inside GBrain: `migrate embeddings` writes no `.bak` of its own, so the pre-migration copy is the only rollback, and rolling back means re-embedding the whole corpus again.
+
+Run every step of a first migration on a disposable copy of the index before touching the live one.
+Copy the index and the runtime directory to scratch, point a scratch home's `brain_root` at the copy, and rewrite the copy's `database_path`; a scratch home with the same outbox reports the same corpus revision, so the copy's evaluation is directly comparable to the live baseline.
+
+1. Record a baseline evaluation run, and plan the change with `--dry-run`, which reports the source and target models, both dimensions, the chunk count, and that the stored vectors will be deleted.
+2. Take the backup above, with no `gbrain serve` and no capture able to start.
+3. Migrate with `gbrain migrate embeddings --to <provider:model> --dim <N> --yes`, under this home's `GBRAIN_HOME` and `OLLAMA_BASE_URL`.
+4. Verify with `gbrain doctor --json`, whose `embedding_provider` check reports the live model, its measured dimension, and whether the database agrees, and whose `embedding_width_consistency` check compares the schema width with the configured one.
+5. Re-run the evaluation and `compare` it with the step-1 baseline.
+
+Verify a migration with the evaluation, never with `gbrain stats`.
+A half-finished migration still reports every chunk as embedded there, while retrieval quality has already fallen; `gbrain doctor` catches it only as an `embed_staleness` warning.
+An interrupted migration is completed by re-running the identical command, which re-embeds only what is left, or by `gbrain embed --stale --include-null-signature`.
+
+The target artifact has to be verified before it is named, because a model that exists as a name does not necessarily exist as a tag.
+Confirm the tag resolves and record its digest and native width before migrating:
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://registry.ollama.ai/v2/library/<model>/manifests/<tag>
+ollama pull <model>:<tag>
+curl -sS <embedding endpoint>/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"<model>:<tag>","input":"probe"}' | jq '{model, dimensions: (.data[0].embedding | length)}'
+```
+
+Pass the probed width as `--dim`, rather than a width from a model card, so the schema is rebuilt at the width the endpoint actually returns.
+
+Capture and migration are not serialized against each other, and a capture that lands mid-migration is embedded at the new width and stays retrievable, but it is not part of the migration's own plan.
+Quiesce capture for the migration window anyway, and if one did land, finish with `gbrain embed --stale` before the verification run.

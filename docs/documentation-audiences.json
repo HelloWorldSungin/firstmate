@@ -391,6 +391,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/gbrain-eval.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/issue-write-back.md",
       "audience": "maintainer-verification"
     },
