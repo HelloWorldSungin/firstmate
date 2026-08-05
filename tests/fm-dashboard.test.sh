@@ -271,11 +271,14 @@ class FakeNode {
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
-      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      const node = typeof child === "string" ? new FakeNode("#text", child) : child;
+      node.attached = true;
+      this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
+    for (const child of this.children) child.detach();
     this._text = "";
     this.children = [];
     this.append(...children);
@@ -288,6 +291,20 @@ class FakeNode {
   addEventListener(name, listener) {
     this.listeners[name] = listener;
   }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
+
+  // The anchor refuses to move the page for a node a render has thrown away, so
+  // a replaced subtree has to really stop reporting itself connected. Standing
+  // nodes are never appended anywhere and stay connected by default.
+  detach() {
+    this.attached = false;
+    for (const child of this.children) child.detach();
+  }
+
+  get isConnected() { return this.attached !== false; }
 }
 
 const selectors = new Map();
@@ -326,6 +343,12 @@ selectors.set("#activity-form", activityForm);
 const document = {
   documentElement: new FakeNode("html"),
   querySelector: (selector) => selectors.get(selector),
+  // The anchor selector matches the standing sections and the cards inside
+  // them alike. The cards are read live out of the rendered list rather than
+  // listed up front, so a render genuinely swaps the node under the anchor.
+  querySelectorAll: (selector) => (selector.includes("#inbox")
+    ? [...anchorSections, ...selectors.get("#inbox-list").children]
+    : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -379,17 +402,55 @@ const envelope = {
   },
 };
 
+// The stream is how a live fleet redraws this page. A case that needs a render
+// to happen the way one really does pushes through the recorded listener.
+const eventSources = [];
 class FakeEventSource {
-  addEventListener() {}
+  constructor() {
+    this.listeners = {};
+    eventSources.push(this);
+  }
+
+  addEventListener(name, listener) { this.listeners[name] = listener; }
   close() {}
 }
 
 // The browser app is an ES module that imports the inbox policy module beside
 // it, so it is loaded through a real module graph rather than a flat script
 // evaluation. Its DOM and platform dependencies are resolved from globals.
+
+// A fold or unfold reflows this page while it stays loaded. The dashboard
+// anchors the reader to what they were reading and puts it back at the same
+// place on screen; these fakes supply the viewport, the layout rectangles, and
+// the frame callback that behavior is expressed in terms of.
+const topbar = new FakeNode("header");
+topbar.className = "topbar";
+topbar.rect = { top: 0, bottom: 40 };
+selectors.set(".topbar", topbar);
+
+const offscreenSection = new FakeNode("section");
+offscreenSection.rect = { top: -500, bottom: -200 };
+const readingSection = new FakeNode("section");
+readingSection.rect = { top: 300, bottom: 900 };
+const anchorSections = [offscreenSection, readingSection];
+
+const frames = [];
+const scrollCalls = [];
+const fakeWindow = {
+  innerWidth: 320,
+  innerHeight: 850,
+  scrollY: 0,
+  listeners: {},
+  addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
+  scrollTo(options) { scrollCalls.push(options); fakeWindow.scrollY = options.top; },
+};
+const flushFrames = () => { const queued = frames.splice(0); for (const frame of queued) frame(); };
+
 const storage = new Map();
 Object.assign(globalThis, {
   document,
+  window: fakeWindow,
+  requestAnimationFrame: (frame) => frames.push(frame),
   EventSource: FakeEventSource,
   fetch: async () => ({ ok: true, json: async () => envelope }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -442,9 +503,70 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
   if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
   if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
+
+  // Folding and unfolding changes the width, and with it the number of columns
+  // and the whole document height. Keeping the scroll offset is not the same as
+  // keeping the reader's place, so the section they were reading has to be put
+  // back where it was on screen.
+  inboxCard.rect = { top: 800, bottom: 1400 };
+  flushFrames();
+  const anchorLine = topbar.rect.bottom + 1;
+  const wasAt = readingSection.rect.top - anchorLine;
+  readingSection.rect = { top: 5000, bottom: 5600 };
+  fakeWindow.innerWidth = 690;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error(`a width change did not restore the reading position: ${scrollCalls.length} scrolls`);
+  const landed = 5000 - anchorLine - scrollCalls[0].top;
+  if (landed !== wasAt) throw new Error(`the anchor came back at ${landed}px instead of ${wasAt}px from the top`);
+  if (scrollCalls[0].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+
+  // Mobile browser chrome sliding in and out changes only the height, and does
+  // so constantly. Moving the page under the reader for that would be worse
+  // than the problem being fixed.
+  // Both candidates move, so whichever one the re-capture anchored to has
+  // genuinely shifted and a missing width gate would have to scroll.
+  flushFrames();
+  offscreenSection.rect = { top: -3000, bottom: -2700 };
+  readingSection.rect = { top: 9000, bottom: 9600 };
+  fakeWindow.innerHeight = 700;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
+
+  // What a reader is actually holding is usually a card, not a whole section,
+  // and cards do not survive a render: every push from the fleet rebuilds the
+  // list they live in. So the anchor has to be re-derived on render as well as
+  // on scroll, or a fold after any push drops the reader exactly as far as it
+  // did before the anchor existed.
+  offscreenSection.rect = { top: -4000, bottom: -3700 };
+  readingSection.rect = { top: -2000, bottom: -1400 };
+  inboxCard.rect = { top: 200, bottom: 800 };
+  fakeWindow.listeners.scroll();
+  flushFrames();
+  const cardWasAt = inboxCard.rect.top - anchorLine;
+
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  const rebuiltCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "rebuilt inbox card");
+  if (rebuiltCard === inboxCard) throw new Error("a snapshot push left the same card node, so nothing was replaced to test");
+  if (inboxCard.isConnected) throw new Error("a card a render replaced still reported itself connected");
+  const capturesPerRender = frames.length;
+
+  // The push rebuilt the card in place: the reader has not scrolled and the
+  // width has not changed, so it sits exactly where the old one did.
+  rebuiltCard.rect = { top: 200, bottom: 800 };
+  flushFrames();
+
+  rebuiltCard.rect = { top: 6000, bottom: 6600 };
+  const scrollBefore = fakeWindow.scrollY;
+  fakeWindow.innerWidth = 950;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 2) throw new Error("the reading position was lost once a render had replaced the anchored card");
+  const cardLanded = 6000 - (scrollCalls[1].top - scrollBefore) - anchorLine;
+  if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
+  if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+  if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, and explicit unknown pull-request fields"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
@@ -489,6 +611,11 @@ class FakeNode {
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  get isConnected() { return true; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
 }
 
 const selectors = new Map();
@@ -583,6 +710,8 @@ class FakeEventSource {
 const storage = new Map([["fm-dashboard-alerts", "on"]]);
 Object.assign(globalThis, {
   document,
+  window: { innerWidth: 320, innerHeight: 850, scrollY: 0, addEventListener() {}, scrollTo() {} },
+  requestAnimationFrame: () => 0,
   EventSource: FakeEventSource,
   Notification: FakeNotification,
   fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),

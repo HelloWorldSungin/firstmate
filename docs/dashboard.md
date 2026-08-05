@@ -34,6 +34,22 @@ The server also pushes a stale transition as soon as the last successful snapsho
 The empty, first-run, missing-command, timeout, malformed-JSON, unsupported-schema, and stale-last-good cases remain explicit in the same board surface.
 The browser reconnects its event stream with bounded exponential backoff, while periodic polling guarantees eventual updates even when a filesystem notification is unavailable.
 
+## Reading it on a phone or a foldable
+
+The layout is fluid across the whole width range rather than correct at a few chosen sizes, and 320 CSS px is a supported width.
+Nothing is placed behind a horizontal swipe: no region of the page scrolls sideways, so every fleet health signal, board column, and secondmate row is reachable by scrolling down.
+The one exception is inside a rendered report, whose content is worker-written: a code block or table too wide for the screen scrolls inside its own box rather than stretching the page around it.
+The fleet health signals appear in full as cards in the "Needs you" view at every width, and the compact chip row in the sticky bar is an additional summary carried only by the wide sidebar layout, where the header has room for it.
+Full-height regions use dynamic viewport units, so a mobile browser's address bar sliding in and out does not clip content, and page edges respect safe-area insets.
+
+Folding or unfolding a device reflows the page while it stays loaded.
+The page is never reloaded for that, so the selected view, open filter panels, filter and search choices, the history page being read, an open report, and in-flight data all survive it.
+Because the number of columns changes, keeping the raw scroll offset would not keep the reader's place, so whatever was being read is put back at the same position on screen instead, including a card that a fleet update rebuilt in the meantime.
+A height-only change, which is what the browser's own chrome produces, never moves the page.
+
+Where a platform exposes a genuine hinge seam through the standard viewport-segment media features, grid gutters widen to it.
+That is progressive enhancement only: a book-style foldable's inner display reports a single continuous panel in the normal case, and the layout does not depend on the seam being reported at all.
+
 ## Needs you
 
 The first view is the captain inbox: open decisions, blockers, failures, credential requests, and pull requests whose normalized status is genuinely review or merge ready, sorted oldest first, above a fleet health strip.
