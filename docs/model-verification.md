@@ -78,7 +78,7 @@ A missing or empty `model=` is malformed dispatch metadata and therefore `unveri
 It is also the only narrowing this guard makes, so its predicate is stated in full here and nowhere else; every other mention of it in this repository cross-references this section rather than restating any part of it.
 
 **Whether the record names a `model_evidence_store=` selects the branch, and only within the branch that names none do the two denials below decide.**
-A record that names a store was armed, and its verdict comes from reading that evidence: `match`, `mismatch`, `pending`, `unstarted`, or `unverifiable`, exactly as before this change.
+A record that names a store was armed, and its verdict comes from reading that evidence: `match`, `mismatch`, `pending`, `unstarted`, or `unverifiable`.
 A record that names none is `unarmed`, unless it carries one of these two denials, in which case it stays `unverifiable` and keeps blocking.
 
 1. An arming marker, meaning a `model_evidence_watermark=` line or a `model_evidence_before=` line, which proves the capture ran and the record was damaged afterwards.
@@ -124,8 +124,7 @@ A record with no persisted evidence-store identity has an unknown evidence locat
 That record was never armed for this check, so the check itself does not block its cleanup: it names the gap plainly and hands the task to the ordinary teardown path, where the landed-work, uncommitted-change, completion-manifest, and endpoint-identity refusals all still apply unchanged.
 Nothing is discarded by that hand-off which the check was ever protecting: teardown removes the task's own volatile records and, once the landed-work proof passes, its worktree, and it never touches a transcript store.
 The metadata it removes carries no binding to any evidence, which is exactly why no verdict could ever be produced from it.
-This replaces an earlier rule under which such a record was untearable without `--force`.
-That rule made a historical gap permanent: nothing that happens after dispatch can retroactively record which model ran, so every affected task kept a live endpoint and a recurring staleness escalation forever, and the set only grew.
+Refusing such a record instead would make a historical gap permanent: nothing that happens after dispatch can retroactively record which model ran, so every affected task would hold a live endpoint and raise a recurring staleness escalation forever, and the set would only grow.
 
 A record with a persisted evidence-store identity but written before either time binding existed cannot be time-bound.
 In that case unanimous evidence from the recorded store is still attributed, with the weaker binding disclosed in the detail text, and disagreeing evidence is reported `unverifiable` rather than guessed at.

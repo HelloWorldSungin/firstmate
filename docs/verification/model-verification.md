@@ -108,12 +108,12 @@ It is also the shape of the intended behavior: the verifier reports what it cann
 
 The focused regression matrix uses temporary Firstmate homes and temporary Claude stores only.
 It binds a mismatched worker to store A, invokes verification under store B containing an older matching transcript, and requires the mismatch from store A.
-It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record with a persisted evidence-store identity but no time binding retains its disclosed weaker attribution and a record without that store identity remains `unverifiable`.
+It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record with a persisted evidence-store identity but no time binding retains its disclosed weaker attribution and a record without that store identity reports `unarmed` without ever falling back to an ambient store.
 
 The lifecycle cases require base endpoint metadata to exist when watermark capture fails, require forced teardown to print a mismatch without losing discard authority, and require recursive secondmate cleanup to print each child's verdict before removing its record.
 The store-binding cases require an explicitly configured Claude launch to override a different backend-daemon ambient store, and require `link/../cfg` to resolve the link before applying the parent component.
 The default-store case requires the launch to leave `CLAUDE_CONFIG_DIR` unset, resolve an onboarded `~/.claude.json`, and still record `~/.claude` as the separate transcript evidence store.
-They also require a newline introduced only by physical symlink resolution to remain detectable, produce an `unverifiable` legacy verdict, and prevent a Claude launch.
+They also require a newline introduced only by physical symlink resolution to remain detectable, leave a record that names no store at its `unarmed` no-verdict outcome rather than resolving it against that ambient store, and prevent a Claude launch.
 
 Focused command:
 
