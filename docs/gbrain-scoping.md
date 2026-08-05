@@ -89,8 +89,13 @@ A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh`
 ## Source precedence and name collisions
 
 A home's own brain is the only thing it writes, and a GBrain call against that home reads that brain alone.
-The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list ordered by the score each brain returned, which is why every result carries its `local:` or `main:` label.
-A rank therefore compares two brains' own scores rather than a Firstmate-computed relevance.
+The main brain is a separate database reached only over the shared read-only client, so the two are never one index: `bin/fm-recall.sh search` reads each on its own terms and merges the results into one list, which is why every result carries its `local:` or `main:` label.
+The merge preserves each brain's own ordering and interleaves the two by rank: the first result of each corpus, then the second of each, cycling in the order the corpora were read, so this home's own index leads on an equal rank and a corpus that runs out simply drops out.
+It does not sort on the score column, for two independent reasons.
+A brain's returned order is its own verdict rather than that column: reranking runs inside the brain, so its ordering carries a contribution the score does not expose, and re-sorting discards it.
+And two brains' scores are not the same quantity, because each has its own embedding model, reranker, and corpus, so comparing them ranks on a number that only looks shared.
+A rank therefore compares two brains' own opinions of their own results rather than a Firstmate-computed relevance, and a printed score explains one row within its corpus rather than ordering across corpora.
+A single-corpus search is the same rule with nothing to interleave, so it returns exactly what that brain returned.
 Within a single brain, GBrain's own sources decide breadth: a federated source appears in cross-source default search, and an isolated source is searched only when named with `--source`.
 
 Because the two brains are separate databases, a slug that exists in both is two distinct pages rather than a collision.
