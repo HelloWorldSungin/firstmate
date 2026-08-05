@@ -12,6 +12,15 @@
 //   FM_DASHBOARD_HISTORY_POLL_SECONDS  history refresh interval (default 60)
 //   FM_DASHBOARD_REPORT_MAX_BYTES      report bytes returned per request (default 262144)
 //   FM_DASHBOARD_USAGE                 auto|off - presence-gated usage read (default auto)
+//   FM_DASHBOARD_EVENTS                auto|off - agent-event ingestion (default auto)
+//   FM_DASHBOARD_EVENTS_CONFIG         producer/server shared config file with the
+//                                      ingest token (default
+//                                      $XDG_CONFIG_HOME/firstmate/dashboard-events.json)
+//   FM_DASHBOARD_EVENT_DB              agent-event store path override
+//   FM_DASHBOARD_EVENT_RETENTION_HOURS,
+//   FM_DASHBOARD_EVENT_MAX_ROWS,
+//   FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK,
+//   FM_DASHBOARD_EVENT_SKEW_SECONDS    agent-event retention and replay caps
 //
 // Every executable and argument list is fixed. This process never accepts a
 // command, argument, fleet path, or shell fragment over HTTP. /api/report takes
@@ -23,13 +32,33 @@
 // history survives cleanup and Done-backlog pruning. The token-usage read and
 // the semantic-search affordance are both presence-gated: history is fully
 // usable with neither present.
+//
+// POST /events is the ONE write this process performs, and it writes only to the
+// dashboard's own agent-event store outside the operational home
+// (bin/fm-event-store.mjs owns that path and why). Nothing under data/, state/,
+// or projects/ is ever written, which tests/fm-dashboard.test.sh proves by
+// fingerprinting those directories around a live server that is accepting
+// events. The endpoint is authenticated, byte-capped, deadline-bounded, and
+// rate-limited per source before a request body is read at all.
 
 import { spawn } from "node:child_process";
-import { watch } from "node:fs";
+import { readFileSync as fsReadFileSync, statSync as fsStatSync, watch } from "node:fs";
 import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { timingSafeEqual } from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
+
+import {
+  DEFAULT_LIMITS as EVENT_DEFAULTS,
+  EventStore,
+  INSTRUMENTED_HARNESSES,
+  limitsFromEnv as eventLimitsFromEnv,
+  resolveStorePath as resolveEventStorePath,
+  sanitizeEvent,
+  WIRE_SCHEMA as EVENT_WIRE_SCHEMA,
+} from "./fm-event-store.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -43,6 +72,23 @@ const HISTORY_ENVELOPE_SCHEMA = "fm-dashboard-history.v1";
 const HISTORY_SCHEMA = "fm-outcome-history.v1";
 const USAGE_SCHEMA = "fm-usage-report.v1";
 const REPORT_SCHEMA = "fm-dashboard-report.v1";
+const EVENTS_ENVELOPE_SCHEMA = "fm-dashboard-events.v1";
+const TIMELINE_SCHEMA = "fm-dashboard-timeline.v1";
+const INGEST_SCHEMA = "fm-dashboard-ingest.v1";
+// One posted document may carry a small batch, and nothing larger is read off
+// the socket. A producer that has more to say sends another request.
+const EVENT_BODY_MAX_BYTES = 16 * 1024;
+const EVENT_BATCH_MAX = 32;
+// A body that has not finished arriving by this deadline is abandoned, so a
+// stalled or trickling writer cannot hold a request handler open.
+const EVENT_BODY_DEADLINE_MS = 2_000;
+// The declared source header, read before any body byte, so rate limiting and
+// refusal both happen without parsing anything.
+const EVENT_SOURCE_PATTERN = /^([A-Za-z0-9_-][A-Za-z0-9._-]{0,127})\/([a-z][a-z0-9-]{0,31})$/;
+const EVENT_RATE = { sourceCapacity: 60, sourceRefillPerSecond: 20, globalCapacity: 600, globalRefillPerSecond: 200 };
+// Live events are pushed on a short coalescing timer instead of once per accepted
+// batch, so a busy fleet cannot turn one browser into a firehose.
+const EVENT_BROADCAST_MS = 250;
 const STDOUT_LIMIT = 16 * 1024 * 1024;
 const STDERR_LIMIT = 64 * 1024;
 const SSE_HEARTBEAT_MS = 15_000;
@@ -62,6 +108,7 @@ const STATIC_FILES = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/inbox.js", ["inbox.js", "text/javascript; charset=utf-8"]],
   ["/history.js", ["history.js", "text/javascript; charset=utf-8"]],
+  ["/events.js", ["events.js", "text/javascript; charset=utf-8"]],
   ["/markdown.js", ["markdown.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
@@ -86,12 +133,22 @@ function resolveConfig() {
   if (!new Set(["auto", "off"]).has(usage)) {
     throw new Error("FM_DASHBOARD_USAGE must be auto or off");
   }
+  const events = process.env.FM_DASHBOARD_EVENTS || "auto";
+  if (!new Set(["auto", "off"]).has(events)) {
+    throw new Error("FM_DASHBOARD_EVENTS must be auto or off");
+  }
   const fmHome = path.resolve(process.env.FM_HOME || ROOT);
+  const configRoot = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || os.homedir(), ".config");
   return {
     fmHome,
     dataDir: path.join(fmHome, "data"),
     address,
     usage,
+    events,
+    eventsConfigFile: process.env.FM_DASHBOARD_EVENTS_CONFIG
+      || path.join(configRoot, "firstmate", "dashboard-events.json"),
+    eventStorePath: resolveEventStorePath(fmHome),
+    eventLimits: eventLimitsFromEnv(),
     port: positiveNumber("FM_DASHBOARD_PORT", 8787, { integer: true, maximum: 65_535 }),
     pollMs: positiveNumber("FM_DASHBOARD_POLL_SECONDS", 5) * 1000,
     timeoutMs: positiveNumber("FM_DASHBOARD_TIMEOUT_SECONDS", 15) * 1000,
@@ -432,6 +489,217 @@ class HistoryState {
   }
 }
 
+// A refilling token bucket. Rate limiting has to be decided before a body is
+// read, so it must cost no more than arithmetic on one small map entry.
+class RateLimiter {
+  constructor(capacity, refillPerSecond, maxKeys = 512) {
+    this.capacity = capacity;
+    this.refillPerSecond = refillPerSecond;
+    this.maxKeys = maxKeys;
+    this.buckets = new Map();
+  }
+
+  allow(key, now = Date.now()) {
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      // An unbounded key space would let a hostile source grow this map instead
+      // of hitting the limit. The oldest entry is dropped once the map is full,
+      // which at worst gives a long-idle source a fresh bucket.
+      if (this.buckets.size >= this.maxKeys) {
+        const oldest = this.buckets.keys().next().value;
+        this.buckets.delete(oldest);
+      }
+      bucket = { tokens: this.capacity, at: now };
+      this.buckets.set(key, bucket);
+    }
+    const elapsed = Math.max(0, now - bucket.at) / 1000;
+    bucket.tokens = Math.min(this.capacity, bucket.tokens + elapsed * this.refillPerSecond);
+    bucket.at = now;
+    if (bucket.tokens < 1) return false;
+    bucket.tokens -= 1;
+    return true;
+  }
+}
+
+// The agent-event timeline: the authenticated ingest boundary, the dashboard's
+// own store, and the live tail the browser renders.
+//
+// Ingestion is presence-gated on the shared config file that carries the token.
+// With no config there is no token, so the endpoint accepts nothing and every
+// harness degrades to "no event source" - which is also exactly what removing
+// the instrumentation leaves behind.
+class EventsState {
+  constructor(config, clients) {
+    this.config = config;
+    this.clients = clients;
+    this.store = null;
+    this.storeError = null;
+    this.token = null;
+    this.tokenCheckedAtMs = 0;
+    this.tokenMtimeMs = null;
+    this.tail = [];
+    this.lastEventAt = null;
+    // Each counter names one outcome and only that outcome. An operator reads
+    // `oversized` to decide whether to raise the body cap, so a producer that
+    // is timing out or resetting its connection must not be reported there.
+    this.counters = {
+      accepted: 0, duplicate: 0, rejected: 0, throttled: 0, unauthorized: 0,
+      oversized: 0, timed_out: 0, read_failed: 0,
+    };
+    this.rejections = {};
+    this.sourceLimiter = new RateLimiter(EVENT_RATE.sourceCapacity, EVENT_RATE.sourceRefillPerSecond);
+    this.globalLimiter = new RateLimiter(EVENT_RATE.globalCapacity, EVENT_RATE.globalRefillPerSecond, 1);
+    this.broadcastTimer = null;
+    this.stopped = false;
+  }
+
+  get enabled() {
+    return this.config.events !== "off";
+  }
+
+  // The token is re-read when its file changes, so rotating it does not need a
+  // restart, and a check costs one stat at most once a second.
+  readToken() {
+    if (!this.enabled) return null;
+    const now = Date.now();
+    if (now - this.tokenCheckedAtMs < 1000) return this.token;
+    this.tokenCheckedAtMs = now;
+    let info;
+    try {
+      info = fsStatSync(this.config.eventsConfigFile);
+    } catch {
+      this.token = null;
+      this.tokenMtimeMs = null;
+      return null;
+    }
+    if (this.tokenMtimeMs === info.mtimeMs && this.token) return this.token;
+    this.tokenMtimeMs = info.mtimeMs;
+    try {
+      const parsed = JSON.parse(fsReadFileSync(this.config.eventsConfigFile, "utf8"));
+      const token = typeof parsed?.token === "string" ? parsed.token.trim() : "";
+      this.token = token.length >= 16 ? token : null;
+    } catch {
+      this.token = null;
+    }
+    return this.token;
+  }
+
+  // Presence-gated exactly like the rest of this feature, on CREATION. The
+  // store is the dashboard's own file OUTSIDE the operational home, so a
+  // dashboard with no configured ingest token must not materialize one: a
+  // store nothing can write would leave a directory in the operator's state
+  // root just for having been connected to, and a file that exists reads as
+  // collection whether or not anything was collected.
+  //
+  // Opening a store that is already there is the other act, and it is a read.
+  // Turning instrumentation off stops collection; it does not withdraw access
+  // to what was already collected, which is what bin/fm-dashboard-instrument.sh
+  // disable promises and what docs/dashboard-events.md records. Storing stays
+  // impossible without a token regardless: serveIngest refuses before it reads
+  // a body byte, and that is the only route into accept().
+  openStore() {
+    if (this.store || this.storeError || !this.enabled) return this.store;
+    try {
+      this.store = this.readToken()
+        ? new EventStore(this.config.eventStorePath, this.config.eventLimits)
+        : EventStore.openExisting(this.config.eventStorePath, this.config.eventLimits);
+    } catch (error) {
+      this.storeError = errorRecord(error, "event_store_unavailable");
+      return this.store;
+    }
+    if (!this.store) return null;
+    this.tail = this.store.tail();
+    this.lastEventAt = this.tail[0]?.occurred_at ?? null;
+    return this.store;
+  }
+
+  status() {
+    if (!this.enabled) {
+      return { ingestion: "off", reason: "agent-event ingestion is disabled for this dashboard" };
+    }
+    if (this.storeError) {
+      return { ingestion: "unavailable", reason: this.storeError.message, error: this.storeError };
+    }
+    if (!this.readToken()) {
+      return {
+        ingestion: "disabled",
+        reason: "no instrumentation is configured in this home, so nothing new is collected; events already stored stay readable until they age out",
+      };
+    }
+    return { ingestion: "ready", reason: null };
+  }
+
+  envelope() {
+    // The tail is only populated by opening the store, so an envelope built
+    // before the first POST or timeline read would report an empty stream on a
+    // freshly started server whose store is full. The browser connects to the
+    // stream and fetches the timeline together, and the frame the stream pushes
+    // on connect wins, so an unopened store here shows the reader "no events
+    // have arrived yet" until the next accepted event. An unconfigured
+    // dashboard opens nothing here; it has no events to be authoritative about.
+    this.openStore();
+    return {
+      schema: EVENTS_ENVELOPE_SCHEMA,
+      status: {
+        ...this.status(),
+        last_event_at: this.lastEventAt,
+        counters: { ...this.counters },
+        rejections: { ...this.rejections },
+      },
+      config: {
+        retention_hours: this.config.eventLimits.retentionHours,
+        max_rows: this.config.eventLimits.maxRows,
+        max_rows_per_task: this.config.eventLimits.maxRowsPerTask,
+        tail_limit: EVENT_DEFAULTS.tailLimit,
+        batch_max: EVENT_BATCH_MAX,
+        body_max_bytes: EVENT_BODY_MAX_BYTES,
+      },
+      instrumented_harnesses: INSTRUMENTED_HARNESSES,
+      events: this.tail,
+    };
+  }
+
+  countRejection(reason) {
+    this.counters.rejected += 1;
+    this.rejections[reason] = (this.rejections[reason] || 0) + 1;
+  }
+
+  scheduleBroadcast() {
+    if (this.stopped || this.broadcastTimer) return;
+    this.broadcastTimer = setTimeout(() => {
+      this.broadcastTimer = null;
+      this.clients.send("agent_events");
+    }, EVENT_BROADCAST_MS);
+  }
+
+  accept(events, receivedAt) {
+    const store = this.openStore();
+    if (!store) return null;
+    const result = store.insert(events, receivedAt);
+    if (result.stored > 0) {
+      store.prune(Math.floor(Date.now() / 1000));
+      this.tail = store.tail();
+      this.lastEventAt = this.tail[0]?.occurred_at ?? null;
+      this.scheduleBroadcast();
+    }
+    this.counters.accepted += result.stored;
+    this.counters.duplicate += result.duplicate;
+    return result;
+  }
+
+  timeline(taskId) {
+    const store = this.openStore();
+    if (!store) return [];
+    return taskId ? store.forTask(taskId) : store.tail();
+  }
+
+  stop() {
+    this.stopped = true;
+    clearTimeout(this.broadcastTimer);
+    this.store?.close();
+  }
+}
+
 class DashboardState {
   constructor(config, clients, history) {
     this.config = config;
@@ -714,21 +982,217 @@ async function serveReport(request, response, history, config) {
   });
 }
 
+// Constant-time comparison over equal-length buffers, so a wrong token never
+// leaks how much of it was right.
+function tokenMatches(presented, expected) {
+  if (typeof presented !== "string" || typeof expected !== "string") return false;
+  const a = Buffer.from(presented, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// Read a bounded body under a deadline, refusing as soon as either bound is
+// crossed rather than after the fact. Resolves { body } when the whole body
+// arrived, or { failed } naming which bound was crossed once the response has
+// been answered - three different operational facts, so the caller can count
+// them as three rather than calling a timing-out producer an oversized one.
+const BODY_FAILURE_COUNTER = {
+  body_too_large: "oversized",
+  body_deadline: "timed_out",
+  read_failed: "read_failed",
+};
+
+function readBoundedBody(request, response) {
+  return new Promise((resolve) => {
+    let bytes = 0;
+    const chunks = [];
+    let settled = false;
+    const refuse = (status, failed, body) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.removeAllListeners("data");
+      request.removeAllListeners("end");
+      request.removeAllListeners("error");
+      sendJson(response, status, body);
+      request.destroy();
+      resolve({ failed });
+    };
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ body: value });
+    };
+    const timer = setTimeout(
+      () => refuse(408, "body_deadline", { schema: INGEST_SCHEMA, accepted: 0, reason: "body_deadline" }),
+      EVENT_BODY_DEADLINE_MS,
+    );
+    request.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > EVENT_BODY_MAX_BYTES) {
+        refuse(413, "body_too_large", { schema: INGEST_SCHEMA, accepted: 0, reason: "body_too_large", max_bytes: EVENT_BODY_MAX_BYTES });
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => done(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", () => refuse(400, "read_failed", { schema: INGEST_SCHEMA, accepted: 0, reason: "read_failed" }));
+  });
+}
+
+// POST /events - the authenticated agent-event ingest boundary.
+//
+// The cheap refusals come first and cost no body read: ingestion off, no
+// configured token, a wrong or missing bearer token, a malformed source header,
+// and a throttled source are all answered before a single body byte is
+// accepted. Only then is a bounded, deadline-limited body read, and only
+// allowlisted fields of it are ever looked at.
+async function serveIngest(request, response, events) {
+  if (!events.enabled) {
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "ingestion_off" });
+    request.destroy();
+    return;
+  }
+  const expected = events.readToken();
+  if (!expected) {
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "ingestion_not_configured" });
+    request.destroy();
+    return;
+  }
+  const authorization = request.headers.authorization;
+  const presented = typeof authorization === "string" && authorization.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+  if (!tokenMatches(presented, expected)) {
+    events.counters.unauthorized += 1;
+    response.setHeader("WWW-Authenticate", "Bearer");
+    sendJson(response, 401, { schema: INGEST_SCHEMA, accepted: 0, reason: "unauthorized" });
+    request.destroy();
+    return;
+  }
+  const declared = String(request.headers["x-firstmate-source"] || "");
+  const source = EVENT_SOURCE_PATTERN.exec(declared);
+  if (!source) {
+    sendJson(response, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "invalid_source_header" });
+    request.destroy();
+    return;
+  }
+  const [, sourceTask, sourceHarness] = source;
+  if (!events.globalLimiter.allow("global") || !events.sourceLimiter.allow(declared)) {
+    events.counters.throttled += 1;
+    response.setHeader("Retry-After", "1");
+    sendJson(response, 429, { schema: INGEST_SCHEMA, accepted: 0, reason: "rate_limited" });
+    request.destroy();
+    return;
+  }
+  const declaredLength = Number(request.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > EVENT_BODY_MAX_BYTES) {
+    events.counters.oversized += 1;
+    sendJson(response, 413, { schema: INGEST_SCHEMA, accepted: 0, reason: "body_too_large", max_bytes: EVENT_BODY_MAX_BYTES });
+    request.destroy();
+    return;
+  }
+
+  const read = await readBoundedBody(request, response);
+  if (read.failed) {
+    events.counters[BODY_FAILURE_COUNTER[read.failed]] += 1;
+    return;
+  }
+  let document;
+  try {
+    document = JSON.parse(read.body);
+  } catch {
+    events.countRejection("malformed_json");
+    sendJson(response, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "malformed_json" });
+    return;
+  }
+  if (!document || document.schema !== EVENT_WIRE_SCHEMA || !Array.isArray(document.events)) {
+    events.countRejection("unsupported_schema");
+    sendJson(response, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "unsupported_schema", expected: EVENT_WIRE_SCHEMA });
+    return;
+  }
+  if (document.events.length === 0 || document.events.length > EVENT_BATCH_MAX) {
+    events.countRejection("invalid_batch_size");
+    sendJson(response, 400, { schema: INGEST_SCHEMA, accepted: 0, reason: "invalid_batch_size", batch_max: EVENT_BATCH_MAX });
+    return;
+  }
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const accepted = [];
+  const rejected = [];
+  for (const candidate of document.events) {
+    const result = sanitizeEvent(candidate, { nowEpoch, skewSeconds: events.config.eventLimits.skewSeconds });
+    if (result.rejected) {
+      events.countRejection(result.rejected);
+      rejected.push(result.rejected);
+      continue;
+    }
+    // The declared source is what was rate-limited, so an event that claims a
+    // different task or harness would spend someone else's budget.
+    if (result.event.task_id !== sourceTask || result.event.harness !== sourceHarness) {
+      events.countRejection("source_mismatch");
+      rejected.push("source_mismatch");
+      continue;
+    }
+    accepted.push(result.event);
+  }
+
+  if (accepted.length === 0) {
+    sendJson(response, 422, { schema: INGEST_SCHEMA, accepted: 0, duplicate: 0, rejected });
+    return;
+  }
+  let stored;
+  try {
+    stored = events.accept(accepted, nowIso());
+  } catch (error) {
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "store_write_failed", detail: safeText(error.message) });
+    return;
+  }
+  if (!stored) {
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "store_unavailable" });
+    return;
+  }
+  sendJson(response, 202, { schema: INGEST_SCHEMA, accepted: stored.stored, duplicate: stored.duplicate, rejected });
+}
+
+function serveTimeline(request, response, events) {
+  const requested = new URL(request.url, "http://loopback.invalid").searchParams.get("task") || "";
+  if (requested && (!TASK_ID_PATTERN.test(requested) || requested.includes(".."))) {
+    sendJson(response, 400, { schema: TIMELINE_SCHEMA, task_id: null, events: [], reason: "invalid_task_id" });
+    return;
+  }
+  sendJson(response, 200, {
+    schema: TIMELINE_SCHEMA,
+    task_id: requested || null,
+    status: events.status(),
+    instrumented_harnesses: INSTRUMENTED_HARNESSES,
+    events: events.timeline(requested || null),
+  });
+}
+
 async function main() {
   const config = resolveConfig();
   const clients = new SseClients();
   const history = new HistoryState(config, clients);
+  const events = new EventsState(config, clients);
   const state = new DashboardState(config, clients, history);
   clients.register("snapshot", () => state.envelope());
   clients.register("history", () => history.envelope());
+  clients.register("agent_events", () => events.envelope());
   const server = http.createServer(async (request, response) => {
     securityHeaders(response);
+    const pathname = new URL(request.url, "http://loopback.invalid").pathname;
+    if (request.method === "POST" && pathname === "/events") {
+      await serveIngest(request, response, events);
+      return;
+    }
     if (request.method !== "GET") {
-      response.writeHead(405, { Allow: "GET", "Content-Type": "text/plain; charset=utf-8" });
+      response.writeHead(405, { Allow: "GET, POST", "Content-Type": "text/plain; charset=utf-8" });
       response.end("method not allowed\n");
       return;
     }
-    const pathname = new URL(request.url, "http://loopback.invalid").pathname;
     if (pathname === "/api/snapshot") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       response.end(`${JSON.stringify(state.envelope())}\n`);
@@ -741,6 +1205,10 @@ async function main() {
     }
     if (pathname === "/api/report") {
       await serveReport(request, response, history, config);
+      return;
+    }
+    if (pathname === "/api/timeline") {
+      serveTimeline(request, response, events);
       return;
     }
     if (pathname === "/api/events") {
@@ -775,6 +1243,7 @@ async function main() {
   const shutdown = () => {
     state.stop();
     history.stop();
+    events.stop();
     clients.stop();
     server.close(() => process.exit(0));
   };
@@ -790,7 +1259,16 @@ process.on("unhandledRejection", (error) => {
   console.error(`fm-dashboard: unhandled rejection: ${safeText(error instanceof Error ? error.message : String(error))}`);
 });
 
-main().catch((error) => {
-  console.error(`fm-dashboard: ${safeText(error.message)}`);
-  process.exit(1);
-});
+// One non-serving mode: print where this configuration would keep its
+// agent-event store. The installer needs that path to grant the hardened user
+// service write access to exactly that directory and nothing else, and a single
+// owner of the rule beats two programs deriving it.
+if (process.argv.includes("--event-store-path")) {
+  const fmHome = path.resolve(process.env.FM_HOME || ROOT);
+  console.log(resolveEventStorePath(fmHome));
+} else {
+  main().catch((error) => {
+    console.error(`fm-dashboard: ${safeText(error.message)}`);
+    process.exit(1);
+  });
+}

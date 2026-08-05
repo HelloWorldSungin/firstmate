@@ -1,5 +1,6 @@
 import { buildHealth, buildInbox, formatAge } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
 import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 
 const ui = {
@@ -24,6 +25,12 @@ const ui = {
   historySummary: document.querySelector("#history-summary"),
   historyList: document.querySelector("#history-list"),
   historyPager: document.querySelector("#history-pager"),
+  activityForm: document.querySelector("#activity-form"),
+  activityFilterCount: document.querySelector("#activity-filter-count"),
+  activityClear: document.querySelector("#activity-clear"),
+  activityNote: document.querySelector("#activity-note"),
+  activityNotices: document.querySelector("#activity-notices"),
+  activityList: document.querySelector("#activity-list"),
   reportDialog: document.querySelector("#report-dialog"),
   reportTask: document.querySelector("#report-task"),
   reportTitle: document.querySelector("#report-title"),
@@ -83,6 +90,13 @@ const state = {
     filters: { query: "", project: "", harness: "", model: "", kind: "", outcome: "", from: "", to: "" },
     page: 0,
     pageSize: HISTORY_LIMITS.defaultPageSize,
+  },
+  activity: {
+    envelope: null,
+    filters: { task: "", harness: "", type: "" },
+    // The selected task's rows fetched from the store, kept out of the stream
+    // envelope so a broadcast cannot discard them. See mergeTaskBackfill.
+    backfill: { task: "", events: [] },
   },
 };
 
@@ -483,6 +497,14 @@ function taskCard(task) {
     const link = workItemLink(reference);
     if (link) card.append(link);
   }
+
+  // The per-agent timeline is one click from the card it belongs to, because a
+  // fleet-wide stream is where you look afterwards and a single agent's own
+  // sequence is what you want while it is working.
+  const timeline = element("button", "card-timeline", "Timeline");
+  timeline.type = "button";
+  timeline.addEventListener("click", () => showTaskTimeline(task.id));
+  card.append(timeline);
   return card;
 }
 
@@ -558,6 +580,97 @@ function renderBoard(snapshot, envelope) {
 // here even though the parser already applied the same policy. No other
 // attribute is ever set, so an `onerror` or `style` carried by a crafted node
 // cannot reach the DOM. There is no innerHTML on this path by construction.
+// --- activity -------------------------------------------------------------
+//
+// Every value below reaches the page through textContent. The server already
+// refuses anything that is not an allowlisted token, so this is the second of
+// two independent reasons a stored event can never become markup.
+
+function activityRow(row) {
+  const item = element("li", "activity-row");
+  item.title = row.at;
+  item.append(element("span", "activity-time", clockLabel(row.at)));
+
+  const body = element("div", "activity-body");
+  const head = element("div", "activity-head");
+  head.append(dot(typeTone(row.type)));
+  head.append(element("strong", "", typeLabel(row.type)));
+  if (row.tool) head.append(element("span", "activity-tool", row.tool));
+  if (row.outcome) {
+    const outcome = element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome);
+    head.append(outcome);
+  }
+  body.append(head);
+
+  const meta = [row.task, row.harness].filter(Boolean).join(" · ");
+  if (meta) body.append(element("div", "activity-meta", meta));
+  if (row.summary) body.append(element("div", "activity-summary", row.summary));
+  item.append(body);
+  return item;
+}
+
+// The activity filters are rebuilt from a stream that a broadcast replaces up
+// to four times a second, so replacing their options unconditionally would
+// close an open dropdown under the reader every quarter second - on a busy
+// fleet, which is exactly when the filter is wanted. Options are therefore
+// replaced only when the list has actually changed, and never while the reader
+// is in the control; the next render picks it up once focus leaves.
+function syncActivitySelect(key, values) {
+  const select = ui.activityForm.elements[key];
+  const selected = state.activity.filters[key];
+  // A filter whose value is no longer in the stream is kept in the list rather
+  // than silently cleared, so a reader watching one agent does not get pulled
+  // back to the whole fleet the moment that agent goes quiet.
+  const wanted = selected && !values.includes(selected) ? [...values, selected] : values;
+  const current = [...select.options].slice(1).map((option) => option.value);
+  const unchanged = current.length === wanted.length
+    && current.every((value, index) => value === wanted[index]);
+  if (!unchanged && document.activeElement !== select) {
+    const first = select.options[0];
+    replaceChildren(select, [first, ...wanted.map((value) => {
+      const option = element("option", "", key === "type" ? typeLabel(value) : value);
+      option.value = value;
+      return option;
+    })]);
+  }
+  if (select.value !== selected) select.value = selected;
+}
+
+function renderActivity() {
+  const envelope = state.activity.envelope;
+  // The stream and the selected task's backfill are two separate slots and are
+  // merged here rather than in either one, so a broadcast can replace the whole
+  // stream without discarding rows that were fetched from the store.
+  const merged = mergeTaskBackfill(envelope?.events, state.activity.backfill, state.activity.filters.task);
+  const view = buildTimeline({ events: merged }, state.activity.filters);
+  for (const key of Object.keys(state.activity.filters)) syncActivitySelect(key, view.choices[key]);
+  const active = Object.values(state.activity.filters).filter(Boolean).length;
+  ui.activityFilterCount.textContent = active ? `(${active} active)` : "";
+
+  const notices = [];
+  const notice = timelineNotice(envelope, merged.length, view.total);
+  if (notice.text) notices.push(historyWarning(notice.tone, "", notice.text));
+  if (view.truncated) {
+    notices.push(historyWarning("amber", "Showing the most recent events only",
+      ` ${view.total} events match and the newest ${view.rows.length} are drawn.`));
+  }
+  const selected = state.activity.filters.task;
+  if (selected) {
+    const task = (state.envelope?.snapshot?.tasks || []).find((entry) => entry?.id === selected);
+    const gap = sourceNotice(task, envelope);
+    if (gap) notices.push(historyWarning("amber", "", gap));
+  }
+  replaceChildren(ui.activityNotices, notices);
+  replaceChildren(ui.activityList, view.rows.map(activityRow));
+
+  // Same shape as every other refresh note on the page: a relative age, not a
+  // raw stamp. The exact instant stays on each row's own title.
+  const newest = view.rows[0]?.epoch;
+  ui.activityNote.textContent = newest
+    ? `${view.total} event${view.total === 1 ? "" : "s"} · newest ${formatAge(Math.max(0, Math.floor(Date.now() / 1000) - newest))} ago`
+    : "No events to show";
+}
+
 function markdownDom(node) {
   if (typeof node?.text === "string") return document.createTextNode(node.text);
   if (!node || !MARKDOWN_TAGS.has(node.tag)) return document.createTextNode("");
@@ -584,10 +697,20 @@ function ageSince(millis) {
   return Math.max(0, Math.floor((Date.now() - millis) / 1000));
 }
 
+// Red is a fault, amber is a warning, and everything else is information on a
+// neutral surface rather than on the warning strip. A heading is optional: an
+// empty one is left out entirely rather than drawn as an empty block, which
+// would give the notice a line of leading no other notice on the page has.
+function noticeVariant(tone) {
+  if (tone === "red") return "error";
+  if (tone === "amber") return "";
+  return "info";
+}
+
 function historyWarning(tone, heading, detail) {
-  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
+  const notice = element("div", `notice ${noticeVariant(tone)}`.trim());
   const copy = element("div");
-  copy.append(element("strong", "", heading));
+  if (heading) copy.append(element("strong", "", heading));
   copy.append(document.createTextNode(detail));
   notice.append(dot(tone), copy);
   return notice;
@@ -930,6 +1053,57 @@ async function fetchHistory() {
   }
 }
 
+function renderActivityEnvelope(envelope) {
+  state.activity.envelope = envelope;
+  renderActivity();
+}
+
+async function fetchActivity() {
+  try {
+    const response = await fetch("/api/timeline", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.schema !== "fm-dashboard-timeline.v1") throw new Error("unsupported timeline envelope");
+    renderActivityEnvelope({
+      schema: "fm-dashboard-events.v1",
+      status: { ...payload.status, last_event_at: payload.events?.[0]?.occurred_at ?? null },
+      instrumented_harnesses: payload.instrumented_harnesses,
+      events: payload.events,
+    });
+  } catch (error) {
+    renderActivityEnvelope({
+      schema: "fm-dashboard-events.v1",
+      status: { ingestion: "unavailable", reason: error.message },
+      instrumented_harnesses: [],
+      events: [],
+    });
+  }
+}
+
+// One agent's own timeline. The live stream carries a bounded fleet-wide tail,
+// so a task whose events have already scrolled out of it is fetched from the
+// store rather than shown as empty. The fetched rows go into their own slot,
+// not into the stream: the stream is replaced whole by every broadcast, and one
+// fetch per selection is the point - a busy fleet must not turn each broadcast
+// into an HTTP request.
+async function showTaskTimeline(taskId) {
+  state.activity.filters = { task: taskId, harness: "", type: "" };
+  state.activity.backfill = { task: taskId, events: [] };
+  renderActivity();
+  window.location.hash = "#activity";
+  try {
+    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.schema !== "fm-dashboard-timeline.v1" || state.activity.filters.task !== taskId) return;
+    state.activity.backfill = { task: taskId, events: payload.events || [] };
+    renderActivity();
+  } catch {
+    // The live stream is still authoritative for what has arrived since; a
+    // failed backfill narrows the view rather than breaking it.
+  }
+}
+
 function connectEvents() {
   clearTimeout(state.reconnectTimer);
   state.eventSource?.close();
@@ -948,6 +1122,14 @@ function connectEvents() {
     try {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-history.v1") renderHistoryEnvelope(envelope);
+    } catch {
+      source.close();
+    }
+  });
+  source.addEventListener("agent_events", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-dashboard-events.v1") renderActivityEnvelope(envelope);
     } catch {
       source.close();
     }
@@ -1005,9 +1187,27 @@ ui.reportDialog.addEventListener("close", () => {
   replaceChildren(ui.reportNotices, []);
 });
 
+ui.activityForm.addEventListener("change", () => {
+  for (const key of Object.keys(state.activity.filters)) {
+    state.activity.filters[key] = ui.activityForm.elements[key].value;
+  }
+  renderActivity();
+});
+ui.activityForm.addEventListener("submit", (event) => event.preventDefault());
+
+ui.activityClear.addEventListener("click", () => {
+  for (const key of Object.keys(state.activity.filters)) {
+    state.activity.filters[key] = "";
+    ui.activityForm.elements[key].value = "";
+  }
+  renderActivity();
+});
+
 initializeTheme();
 initializeNotifications();
 void fetchSnapshot();
 void fetchHistory();
+void fetchActivity();
 renderHistory();
+renderActivity();
 connectEvents();

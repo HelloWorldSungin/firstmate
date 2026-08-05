@@ -44,19 +44,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import crypto from "node:crypto";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-// node:sqlite emits an ExperimentalWarning on import under Node 22. Replace the
-// default printer with one that drops exactly that warning, so a routine
-// collector run keeps a clean stderr while every other warning still prints.
-process.removeAllListeners("warning");
-process.on("warning", (warning) => {
-  if (warning.name === "ExperimentalWarning" && /SQLite/i.test(warning.message)) return;
-  console.error(`${warning.name}: ${warning.message}`);
-});
-const { DatabaseSync } = await import("node:sqlite");
+// The store discipline - opening, migrating, sanitizing, and normalizing - is
+// shared with the fleet's other telemetry store rather than re-decided here.
+// fm-telemetry-store.mjs's header owns why the two stores are separate files and
+// what they hold in common.
+import {
+  cleanToken,
+  count,
+  digest,
+  isoToEpoch,
+  ISO_RE,
+  normalizeIso,
+  openStore as openTelemetryStore,
+  readJsonFile,
+  writeJsonFile,
+} from "./fm-telemetry-store.mjs";
 
 const COLLECTOR_VERSION = "fm-usage.1";
 const SESSIONS_SCHEMA = "fm-usage-sessions.v1";
@@ -99,82 +104,15 @@ Environment:
 // Small helpers
 // ---------------------------------------------------------------------------
 
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-
 function nowIso() {
   const pinned = process.env.FM_USAGE_NOW;
   if (pinned && ISO_RE.test(pinned)) return normalizeIso(pinned);
   return normalizeIso(new Date().toISOString());
 }
 
-// One canonical second-resolution UTC form, so identity and ordering never
-// depend on whether a source wrote milliseconds.
-function normalizeIso(value) {
-  if (typeof value !== "string" || !ISO_RE.test(value)) return null;
-  const epoch = Date.parse(value);
-  if (!Number.isFinite(epoch)) return null;
-  return new Date(Math.floor(epoch / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function isoToEpoch(value) {
-  const epoch = Date.parse(value);
-  return Number.isFinite(epoch) ? Math.floor(epoch / 1000) : null;
-}
-
-// Non-negative integer or 0. Source counters are copied verbatim when they are
-// well-formed and dropped to 0 when they are not, so one malformed field never
-// poisons a total.
-function count(value) {
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-}
-
-// One control-character-free, length-capped line, or null. Every string a
-// collector stores passes through here, so no source line can carry a control
-// character or an unbounded value into the store.
-function cleanToken(value, max = 128) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
-  if (!trimmed || trimmed.length > max) return null;
-  return trimmed;
-}
-
-function digest(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
-}
-
 function die(message, code = 1) {
   console.error(`fm-usage: ${message}`);
   process.exit(code);
-}
-
-function readJsonFile(file) {
-  try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile()) return null;
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-// Atomic, private publication: same-directory temp file, mode 0600, rename. A
-// reader sees the previous complete document or the new one, never a torn one.
-function writeJsonFile(file, value) {
-  const dir = path.dirname(file);
-  const tmp = path.join(dir, `.fm-usage.${process.pid}.${crypto.randomBytes(4).toString("hex")}`);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(tmp, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-    fs.renameSync(tmp, file);
-    return true;
-  } catch {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {
-      /* the temp file is already gone */
-    }
-    return false;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,87 +223,13 @@ const MIGRATIONS = [
 ];
 
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
-// How long a collector waits for another collector to get out of the way.
-// Collector windows overlap by design - a run on a cadence, teardown's
-// best-effort call for the task it is about to archive - so losing a race has to
-// mean waiting, never "database is locked" with nothing collected at all.
-const BUSY_TIMEOUT_MS = 10000;
 
-// A synchronous pause. Every collector stage is synchronous, and the store has
-// to be open and migrated before any of them can start.
-function sleepMs(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-// PRAGMA journal_mode does NOT honor the busy timeout: SQLite takes the brief
-// exclusive lock that switching a store to WAL needs without ever calling the
-// busy handler, so a second collector creating the same store gets SQLITE_BUSY
-// back in well under a millisecond however long the timeout is. The switch is
-// therefore retried explicitly on the same budget. Only the first open of a
-// store can contend at all - a store that is already in WAL needs no lock to be
-// told it is in WAL, which is why steady-state overlapping runs never wait here.
-function enableWalMode(db) {
-  const deadline = Date.now() + BUSY_TIMEOUT_MS;
-  for (;;) {
-    try {
-      db.exec("PRAGMA journal_mode = WAL");
-      return;
-    } catch (error) {
-      const busy = /\b(locked|busy)\b/i.test(String(error?.message ?? error));
-      if (!busy || Date.now() >= deadline) throw error;
-      sleepMs(20);
-    }
-  }
-}
-
-function openStore(dbPath, { create = true } = {}) {
-  const dir = path.dirname(dbPath);
-  if (create) fs.mkdirSync(dir, { recursive: true });
-  if (!create && !fs.existsSync(dbPath)) return null;
-  const db = new DatabaseSync(dbPath);
-  // The busy timeout is installed FIRST, before anything that can contend, so
-  // every later statement waits for a competing collector instead of failing.
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  enableWalMode(db);
-  db.exec("PRAGMA foreign_keys = ON");
-  migrate(db);
-  try {
-    fs.chmodSync(dbPath, 0o600);
-  } catch {
-    /* a store on a filesystem without modes stays usable */
-  }
-  return db;
-}
-
-function migrate(db) {
-  const version = () => db.prepare("PRAGMA user_version").get().user_version ?? 0;
-  const opening = version();
-  if (opening > SCHEMA_VERSION) {
-    throw new Error(
-      `store schema version ${opening} is newer than this collector understands (${SCHEMA_VERSION})`,
-    );
-  }
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= opening) continue;
-    // BEGIN IMMEDIATE, and the version is re-read inside that write transaction:
-    // two collectors opening the same new store both read version 0 outside any
-    // transaction, so the one that arrives second must observe the winner's
-    // committed version and skip a migration already applied rather than re-run
-    // its CREATE TABLEs and die on "table usage_event already exists".
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      if (version() >= migration.version) {
-        db.exec("COMMIT");
-        continue;
-      }
-      for (const statement of migration.statements) db.exec(statement);
-      db.exec(`PRAGMA user_version = ${migration.version}`);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
+// One opener for both fleet telemetry stores. fm-telemetry-store.mjs owns the
+// busy timeout, the WAL switch, the transactional PRAGMA user_version
+// migration, and the private file mode; this collector only names the schema
+// its own store carries.
+function openStore(dbPath, options) {
+  return openTelemetryStore(dbPath, MIGRATIONS, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,7 +894,7 @@ function attributeEvents(db) {
     WHERE event_id = ?`);
   const bindings = new Map();
   for (const row of db.prepare("SELECT * FROM usage_binding").all()) {
-    bindings.set(`${row.harness}${row.session_id}`, row);
+    bindings.set(`${row.harness}\u001f${row.session_id}`, row);
   }
   const events = db
     .prepare("SELECT event_id, harness, session_id, cwd, occurred_at FROM usage_event")
@@ -1045,7 +909,7 @@ function attributeEvents(db) {
       "UPDATE usage_event SET task_id = NULL, project = NULL, attribution_method = 'unknown', attribution_confidence = 'none'",
     );
     for (const event of events) {
-      const binding = bindings.get(`${event.harness}${event.session_id}`);
+      const binding = bindings.get(`${event.harness}\u001f${event.session_id}`);
       if (binding) {
         update.run(binding.task_id, binding.project, "session_binding", "high", event.event_id);
         continue;

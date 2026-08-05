@@ -17,6 +17,7 @@
         <div class="brand"><strong>Firstmate</strong><span>Fleet</span></div>
         <a class="nav-item active" href="#inbox" aria-current="page">Needs you <span class="nav-badge" id="nav-badge" hidden>0</span></a>
         <a class="nav-item" href="#board">Board</a>
+        <a class="nav-item" href="#activity">Activity</a>
         <a class="nav-item" href="#history">History</a>
         <div class="sidebar-spacer"></div>
         <button class="theme-button" id="notify-button" type="button" aria-pressed="false">Alerts off</button>
@@ -75,6 +76,30 @@
             </section>
 
             <section class="kanban" id="kanban" aria-label="Fleet kanban columns"></section>
+          </section>
+
+          <section class="activity-section" id="activity" tabindex="-1" aria-labelledby="activity-title">
+            <div class="board-heading">
+              <div>
+                <p class="eyebrow">Live agent events</p>
+                <h2 class="page-title" id="activity-title">Activity</h2>
+              </div>
+              <p class="refresh-note" id="activity-note">Waiting for the first activity read</p>
+            </div>
+
+            <div class="activity-notices" id="activity-notices" aria-live="polite"></div>
+
+            <details class="filters">
+              <summary>Filters <span id="activity-filter-count"></span></summary>
+              <form id="activity-form" class="filter-grid">
+                <label>Agent<select name="task"><option value="">All agents</option></select></label>
+                <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
+                <label>Event<select name="type"><option value="">All events</option></select></label>
+                <button id="activity-clear" type="button">Clear</button>
+              </form>
+            </details>
+
+            <ol class="activity-list" id="activity-list"></ol>
           </section>
 
           <section class="history-section" id="history" tabindex="-1" aria-labelledby="history-title">

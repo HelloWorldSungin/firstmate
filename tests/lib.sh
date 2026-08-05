@@ -34,6 +34,30 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Isolate the dashboard's event instrumentation and its store from the
+# developer's own host. Both live OUTSIDE any FM_HOME by design, so neither is
+# covered by the FM_*_OVERRIDE isolation every other suite relies on.
+#
+#   FM_DASHBOARD_EVENTS_CONFIG  bin/fm-spawn.sh and bin/fm-event-emit.sh gate
+#     instrumentation on this user-level file, which is the one piece of user
+#     config a spawn reads outside the FM_HOME overrides. Left ambient, a host
+#     that has run bin/fm-dashboard-instrument.sh enable would make every
+#     spawn-driving suite generate different per-task hook files than a clean
+#     host, and driving a generated OpenCode plugin would post test task ids
+#     into the operator's live store.
+#   FM_DASHBOARD_EVENT_DB  the store bin/fm-dashboard-server.mjs opens. Left
+#     ambient it resolves under the operator's real state root, keyed by a
+#     digest of the fixture home's path - so every run would leave another
+#     never-cleaned store directory behind there.
+#
+# The directory is deliberately never created, so instrumentation is off and no
+# store exists; a suite that wants either points the variable at its own
+# fixture. This is the second barrier, not the only one: the server is itself
+# presence-gated and opens no store without a configured token.
+FM_TEST_ISOLATION_ROOT="${TMPDIR:-/tmp}/fm-test-dashboard-isolation.$$"
+export FM_DASHBOARD_EVENTS_CONFIG="$FM_TEST_ISOLATION_ROOT/dashboard-events.json"
+export FM_DASHBOARD_EVENT_DB="$FM_TEST_ISOLATION_ROOT/events.db"
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
@@ -64,6 +88,8 @@ fm_test_cleanup() {
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  [ -n "${FM_TEST_ISOLATION_ROOT:-}" ] && rm -rf "$FM_TEST_ISOLATION_ROOT"
+  return 0
 }
 
 fm_test_tmproot() {
@@ -74,6 +100,34 @@ fm_test_tmproot() {
   fi
   FM_TEST_CLEANUP_DIRS+=("$root")
   printf '%s\n' "$root"
+}
+
+# --- the operator's own state root ------------------------------------------
+#
+# The dashboard's agent-event store is the one fleet artifact that lives outside
+# every FM_HOME, so a code path that opens it without an explicit path writes
+# into the operator's real state root instead of a suite's temp space - and
+# leaves it there, keyed by a digest of a temp directory that no longer exists.
+# FM_DASHBOARD_EVENT_DB above is the barrier; this is how a suite proves it
+# held. Entries already present are recorded rather than required to be absent,
+# so the check reports what THIS run created and nothing else.
+
+fm_user_event_store_root() {
+  printf '%s/firstmate/dashboard-events\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+fm_user_event_store_snapshot() {
+  find "$(fm_user_event_store_root)" -mindepth 1 -maxdepth 1 2>/dev/null \
+    | sed 's|.*/||' \
+    | sort
+}
+
+fm_assert_no_user_event_store_leak() {  # <snapshot-taken-before-the-suite>
+  local added
+  added=$(comm -13 \
+    <(printf '%s\n' "$1" | grep -v '^$' | sort) \
+    <(fm_user_event_store_snapshot | grep -v '^$'))
+  [ -z "$added" ] || fail "an agent-event store was created outside the suite's temp space, under $(fm_user_event_store_root): $(printf '%s' "$added" | tr '\n' ' ')"
 }
 
 # --- fakebin / PATH shims ---------------------------------------------------

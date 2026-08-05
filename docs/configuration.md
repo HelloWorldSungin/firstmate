@@ -91,6 +91,12 @@ Gitea uses its host entry when present and otherwise attempts an unauthenticated
 `config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
 The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
 
+## Dashboard agent events (dashboard-events.json)
+
+The dashboard's live per-agent activity timeline is configured outside the operational home, because its store and its credential belong to the dashboard rather than to the fleet.
+`bin/fm-dashboard-instrument.sh enable` writes `dashboard-events.json` and `dashboard-events.curlrc` under the user configuration root (`$XDG_CONFIG_HOME/firstmate`, or `~/.config/firstmate`), both mode 0600, and their presence is the entire switch.
+[`docs/dashboard-events.md`](dashboard-events.md) owns that contract, the store location, the retention environment names, and what an event may contain.
+
 ## Usage cost rates (config/usage-rates.json)
 
 Token accounting is always on once [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) runs, while a cost estimate is opt-in and absent by default.

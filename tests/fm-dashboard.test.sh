@@ -9,8 +9,13 @@ set -u
 SERVER="$ROOT/bin/fm-dashboard-server.mjs"
 INSTALLER="$ROOT/bin/fm-dashboard-install.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard)
+# Most servers below are fixture servers that configure no instrumentation, so
+# this is where a dashboard that opened its store unconditionally would show up:
+# outside every FM_HOME, in the operator's own state root.
+USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 SSE_PID=
+EVENT_TOKEN=
 
 command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
@@ -89,6 +94,10 @@ make_runtime() {  # <name> [with-command]
   runtime="$TMP_ROOT/$name/runtime"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$TMP_ROOT/$name/home/data" "$TMP_ROOT/$name/home/state" "$TMP_ROOT/$name/home/projects" "$TMP_ROOT/$name/control"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   write_payload "$TMP_ROOT/$name/control/payload.json" "Initial dashboard card"
   printf 'good\n' > "$TMP_ROOT/$name/control/mode"
@@ -136,10 +145,15 @@ start_fixture_server() {  # <case-root> <timeout> <poll> [stale]
 start_real_server() {  # <case-root>
   local case_root=$1
   TEST_PORT=$(free_port)
+  EVENT_TOKEN=0123456789abcdef0123456789abcdef
+  printf '{"schema":"fm-dashboard-events-config.v1","url":"http://127.0.0.1:%s/events","token":"%s"}\n' \
+    "$TEST_PORT" "$EVENT_TOKEN" > "$case_root/dashboard-events.json"
   FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS=4 \
     FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_EVENTS_CONFIG="$case_root/dashboard-events.json" \
+    FM_DASHBOARD_EVENT_DB="$case_root/events.db" \
     node "$SERVER" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   wait_for_http "$case_root"
@@ -280,7 +294,8 @@ const selectors = new Map();
 for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
   "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
   "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close"]) {
+  "report-body", "report-close",
+  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -299,6 +314,14 @@ for (const key of ["query", "project", "harness", "model", "kind", "outcome", "f
   historyForm.elements[key] = field;
 }
 selectors.set("#history-form", historyForm);
+const activityForm = new FakeNode("form");
+activityForm.elements = {};
+for (const key of ["task", "harness", "type"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  activityForm.elements[key] = select;
+}
+selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
@@ -472,7 +495,8 @@ const selectors = new Map();
 for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
   "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
   "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close"]) {
+  "report-body", "report-close",
+  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -491,6 +515,14 @@ for (const key of ["query", "project", "harness", "model", "kind", "outcome", "f
   historyForm.elements[key] = field;
 }
 selectors.set("#history-form", historyForm);
+const activityForm = new FakeNode("form");
+activityForm.elements = {};
+for (const key of ["task", "harness", "type"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  activityForm.elements[key] = select;
+}
+selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
@@ -649,18 +681,39 @@ test_real_snapshot_makes_zero_fleet_writes() {
   before=$(fleet_fingerprint "$case_root/home")
   start_real_server "$case_root"
   wait_for_expression "$case_root" '.status.phase == "ready" and .snapshot.schema == "fm-fleet-snapshot.v1"'
-  sleep 0.2
+  # Ingesting agent events is the one write this process performs, and it must
+  # land in the dashboard's own store outside the home rather than anywhere the
+  # fleet owns. Accepting a real event inside the fingerprinted window is what
+  # makes that a proof rather than a claim about an idle server.
+  curl -fsS -o /dev/null -X POST "http://127.0.0.1:$TEST_PORT/events" \
+    -H "Authorization: Bearer $EVENT_TOKEN" \
+    -H "X-Firstmate-Source: fingerprint-task/claude" \
+    -H "Content-Type: application/json" \
+    -d "{\"schema\":\"fm-agent-event.v1\",\"events\":[{\"event_id\":\"fp1\",\"task_id\":\"fingerprint-task\",\"harness\":\"claude\",\"type\":\"turn_ended\",\"occurred_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}" \
+    || fail "dashboard refused an authenticated event during the read-only proof"
+  sleep 0.3
   after=$(fleet_fingerprint "$case_root/home")
   stop_server
   [ "$after" = "$before" ] || fail "dashboard changed data, state, or projects while reading the real snapshot contract"
-  pass "filesystem fingerprinting proves zero dashboard writes across fleet-owned directories"
+  [ -s "$case_root/events.db" ] || fail "the accepted event did not reach the dashboard's own store"
+  case "$case_root/events.db" in
+    "$case_root/home"/*) fail "the agent-event store was placed inside the operational home" ;;
+  esac
+  pass "filesystem fingerprinting proves zero dashboard writes across fleet-owned directories while events are accepted"
 }
 
 test_installer_writes_hardened_user_service() {
-  local case_root unit env_file out
+  local case_root unit env_file out pinned_db granted
   case_root="$TMP_ROOT/install"
   mkdir -p "$case_root/config" "$case_root/home"
-  out=$(HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+  # The store is overridden and the instrumentation config is left to be derived,
+  # so both halves of the pinning are exercised: the one the installer was told
+  # and the one it had to work out for itself. tests/lib.sh exports a neutral
+  # FM_DASHBOARD_EVENTS_CONFIG for every suite, which is dropped here for exactly
+  # that reason.
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
     --fm-home "$case_root/fleet" --port 18878 --poll 3 --timeout 4 --stale 9 --no-start)
   unit="$case_root/config/systemd/user/firstmate-dashboard.service"
   env_file="$case_root/config/firstmate/dashboard.env"
@@ -670,6 +723,22 @@ test_installer_writes_hardened_user_service() {
   assert_contains "$(cat "$unit")" 'ProtectHome=read-only' "service does not enforce a read-only home mount"
   assert_contains "$(cat "$unit")" 'WantedBy=default.target' "service is not boot-persistent"
   assert_contains "$out" "Service not started (--no-start)." "installer did not honor its no-start boundary"
+
+  # The unit's one writable path and the store the service will actually open
+  # must be the same directory. The service does not inherit this shell's
+  # environment - systemd's user manager imports neither FM_DASHBOARD_EVENT_DB
+  # nor XDG_STATE_HOME - so a path left to be re-derived at runtime lands
+  # outside the grant, under ProtectHome=read-only, and every event is refused
+  # for the life of the process.
+  pinned_db=$(sed -n 's/^FM_DASHBOARD_EVENT_DB="\(.*\)"$/\1/p' "$env_file")
+  granted=$(sed -n 's/^ReadWritePaths=-"\(.*\)"$/\1/p' "$unit")
+  [ "$pinned_db" = "$case_root/store/events.db" ] \
+    || fail "the installer did not pin the resolved event store into the environment: [$pinned_db]"
+  [ "$granted" = "${pinned_db%/*}" ] \
+    || fail "the unit grants [$granted] while the service would open a store in [${pinned_db%/*}]"
+  assert_contains "$(cat "$env_file")" \
+    "FM_DASHBOARD_EVENTS_CONFIG=\"$case_root/config/firstmate/dashboard-events.json\"" \
+    "the installer did not pin the shared instrumentation configuration"
   pass "installer configures a hardened boot-persistent user service without sudo"
 }
 
@@ -861,6 +930,10 @@ test_usage_totals_are_presence_gated() {
   home="$case_root/home"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
@@ -933,6 +1006,10 @@ test_history_streams_and_isolates_bad_records() {
   home="$case_root/home"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$case_root/control"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
@@ -990,3 +1067,5 @@ test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
+pass "no agent-event store was created outside this suite's own temp space"

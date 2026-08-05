@@ -1,7 +1,7 @@
 # Fleet dashboard
 
-The fleet dashboard is a mobile-first, read-only captain inbox, kanban view, and completed-work history over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
-It never dispatches, steers, merges, tears down, or writes fleet state.
+The fleet dashboard is a mobile-first, read-only captain inbox, kanban view, completed-work history, and live agent-activity timeline over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract.
+It never dispatches, steers, merges, tears down, or writes fleet state: its one write is the agent-event store it owns outside the operational home ([dashboard events](dashboard-events.md)).
 Stopping the dashboard has no effect on Firstmate supervision.
 
 This first dashboard slice listens only on loopback.
@@ -68,6 +68,14 @@ A manifest that is missing, corrupt, or written against a schema version this da
 Token usage is presence-gated on the fleet's token-usage collector: totals appear when that collector is installed in this home and has attributed usage to a task, and anything else - no collector, no attributed row, an output this dashboard does not recognize, an unreadable total - renders as `unavailable` with its reason rather than as a zero.
 A blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
 Semantic search over report content is a separate integration; history is fully usable without it.
+
+## Activity
+
+The Activity view is a live per-agent event timeline: session started, prompt submitted, tool started, tool finished, turn ended, session ended, newest first and filterable by agent, harness, and event.
+Each board card carries a Timeline button that narrows the view to that one agent.
+
+It is off until you turn it on, and [`docs/dashboard-events.md`](dashboard-events.md) owns the whole contract: how to enable and disable it, which harnesses have an adapter and what the others degrade to, what an event may and may not contain, where the events are stored and why that is not the fleet's own data directory, and why a dashboard that is down or slow costs a working agent nothing.
+The short version worth knowing before reading it: instrumentation is one command on and one command off, redaction is an allowlist at both the producing and the receiving end, and the reporting hooks are additive to the ones firstmate already installs and cannot change what any of them decide.
 
 ## Rendered reports
 
