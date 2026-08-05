@@ -29,7 +29,7 @@ A wildcard bind is already answering on loopback and gets no second listener.
 bin/fm-dashboard-install.sh --set-password --username captain
 ```
 
-The password is read from your terminal, or from standard input when there is no terminal.
+The password is read from your terminal, or from standard input when there is no terminal, and one shorter than 12 characters is refused.
 It reaches the digest helper through a pipe and is never an argument, so it does not appear in the process table, your shell history, or a service log.
 
 Only a salted scrypt digest is stored, in a file the installer creates mode `0600` under your user configuration root.
@@ -49,22 +49,6 @@ Give the specific interface address the thing in front of the dashboard reaches,
 `0.0.0.0` and `::` bind every interface the machine has, including ones you were not thinking about; the installer warns about that rather than refusing it, because a container sometimes leaves no alternative.
 
 The installer refuses a name, so what the service is reachable on is a thing you can read off your own configuration rather than a thing name resolution decides.
-
-## Install it from a checkout that will still be there
-
-The unit names one dashboard server by absolute path and keeps naming it across reboots, so the installer refuses to write a persistent service that runs from a linked git worktree: whoever made that worktree will reclaim it, and the service would work until the day it silently did not.
-
-The same refusal covers the operational home the unit pins, because a service whose fleet home and event store are reclaimed is as broken as one whose server is.
-
-Trying a change from a worktree is legitimate, so `--allow-worktree` says that is what you meant.
-To install the persistent service for a permanent checkout while running a newer installer from somewhere else, name it:
-
-```sh
-bin/fm-dashboard-install.sh --checkout /path/to/firstmate
-```
-
-With neither `FM_HOME` nor `--fm-home` set, the operational home follows `--checkout` rather than staying where the installer you ran happens to live.
-Pass `--fm-home` when the fleet home is somewhere else.
 
 ## The reverse proxy
 

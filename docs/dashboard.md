@@ -23,6 +23,21 @@ Run `bin/fm-dashboard-install.sh --help` for the exact configuration flags and e
 Open `http://127.0.0.1:8787` on the same machine after the service starts.
 The server accepts only a numeric bind address, and only `127.0.0.1` or `::1` without configured credentials.
 
+### Install it from a checkout that will still be there
+
+The unit names one dashboard server by absolute path and keeps naming it across reboots, so the installer refuses to write a persistent service that runs from a linked git worktree: whoever made that worktree will reclaim it, and the service would work until the day it silently did not.
+The same refusal covers the operational home the unit pins, because a service whose fleet home and event store are reclaimed is as broken as one whose server is.
+
+Trying a change from a worktree is legitimate, so `--allow-worktree` says that is what you meant.
+To install the persistent service for a permanent checkout while running a newer installer from somewhere else, name it:
+
+```sh
+bin/fm-dashboard-install.sh --checkout /path/to/firstmate
+```
+
+With neither `FM_HOME` nor `--fm-home` set, the operational home follows `--checkout` rather than staying where the installer you ran happens to live.
+Pass `--fm-home` when the fleet home is somewhere else.
+
 ## Runtime behavior
 
 [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header owns the environment configuration names and defaults.
