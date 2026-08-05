@@ -40,8 +40,9 @@ Run `2026-08-05T00:13:57Z` to `2026-08-05T00:20:24Z`, all 20 questions, one synt
 
 The thresholds were registered in the evaluation set before the first measurement and have not been moved since.
 
-Every think rate above is over the questions whose LOCAL read succeeded, which in this run was all twenty of them.
-All 20 synthesis calls exited 0 or 4 from `bin/fm-recall.sh` - the hosted side - and none exited 3, the local side, so the harness's later correction to exclude a failed local read from the synthesis rates leaves every number in this record unchanged.
+Every think rate above is over the questions that reached hosted synthesis, which in this run was all twenty of them.
+All 20 calls returned a synthesis block: eighteen exited 0, and the two that exited 4 did so because GBrain set `synthesisOk: false` on an answer it had already produced, not because `bin/fm-recall.sh` refused before reaching the provider.
+None exited 3, the local side, so the harness's later correction to exclude a question that never reached hosted synthesis from the synthesis rates leaves every number in this record unchanged.
 That correction is why a run document now reports `think.read` alongside `think.questions`, and it changes nothing about the missed threshold discussed below: the two failures were hosted refusals of a successful local read, not corpora that could not be read.
 
 Retrieval clears its thresholds with a wide margin: every question retrieved an expected source within the first five results, and only `q01` placed it below rank one, at rank two.

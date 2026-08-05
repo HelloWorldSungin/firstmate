@@ -135,7 +135,8 @@ Two of the twenty deliberately accept a family of near-duplicate documents, beca
 
 Local retrieval and hosted synthesis are scored and reported separately, and neither number is ever folded into the other.
 They fail for unrelated reasons: a weak embedding model and an unreachable hosted provider are different problems with different fixes, and a combined score would hide which one is in force.
-Both phases therefore report how many questions were actually read alongside how many were asked, and a question whose LOCAL read failed is excluded from the synthesis rates and named as unread rather than counted as an answer the hosted provider failed to give.
+Both phases therefore report how many questions were actually read alongside how many were asked.
+A question that never reached hosted synthesis at all - the local read failed, GBrain is absent, no hosted credential is installed, or the call was killed - is excluded from the synthesis rates and named as unread with the reason it was excluded, rather than counted as an answer the hosted provider failed to give.
 
 ```sh
 bin/fm-gbrain-eval.sh run --home <home> --label "<what changed>" --out <run.json>
@@ -147,10 +148,12 @@ Those travel with the numbers because a score without them cannot be compared to
 The reranker and hosted model are read from the brain's own database plane rather than from Firstmate's configured intent for it, so a run can never be recorded as reranked while the brain has reranking off.
 The corpus revision is a digest of the durable source a home actually holds: the per-document content versions in its capture outbox, or the archive's git revision when it is fed from an archive.
 `compare` reports which of those fields moved between two runs, so a comparison across a changed corpus or a changed model is labelled rather than silently treated as like-for-like.
-A field that neither run could record is reported as `UNKNOWN` rather than as unchanged, because two absent values are not evidence that nothing moved.
+A value that neither run could record is reported as `UNKNOWN` rather than as unchanged, because two absent values are not evidence that nothing moved, and the render names which value was missing.
+A field whose recorded values differ is still reported as `CHANGED` even when an optional sibling value such as a base URL is absent, so a migration from 1024 to 768 dimensions is never hidden behind an unrecorded endpoint.
 
 Re-run the evaluation after a corpus, GBrain, model, or reranker change, and after any migration below.
 The exit status is usable as a gate: 0 when every threshold the set declares was met, 1 when one was missed, 2 for a refused configuration, and 3 when the brain could not be read at all.
+A phase that ran and read nothing fails the gate rather than passing it: its declared thresholds are reported as unmeasured and the run exits 1, because a run that produced no evidence has not met the thresholds it was asked to clear.
 A missed threshold is a result to record with its cause, never a reason to edit the threshold.
 
 ## MiniMax credential contract and privacy boundary

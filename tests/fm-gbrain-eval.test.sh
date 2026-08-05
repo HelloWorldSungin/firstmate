@@ -381,8 +381,8 @@ T=$(printf '%s' "$EVAL_OUT" | jq -c '.think')
   || fail "an unread question must still be counted as a question, got $T"
 [ "$(printf '%s' "$T" | jq -r '.read')" = "3" ] \
   || fail "the questions actually read must be reported next to the rates, got $T"
-[ "$(printf '%s' "$T" | jq -c '.unread')" = '["qc"]' ] \
-  || fail "the excluded question must be named as unread, got $T"
+[ "$(printf '%s' "$T" | jq -c '.unread')" = '[{"id":"qc","reason":"local_retrieval_failed"}]' ] \
+  || fail "the excluded question must be named as unread, with why it was excluded, got $T"
 [ "$(printf '%s' "$T" | jq -c '.unanswered')" = '["qb"]' ] \
   || fail "an unread question must not be reported as an unanswered synthesis, got $T"
 [ "$(printf '%s' "$T" | jq -r '(.answered * 1000 | round)')" = "667" ] \
@@ -405,6 +405,41 @@ expect_code 3 "$EVAL_RC" "a think run that could read nothing must not exit 1 as
   || fail "no question was read, got $EVAL_OUT"
 [ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.answered')" = "null" ] \
   || fail "a rate over no questions is not zero, it is absent, got $EVAL_OUT"
+
+# --- 7b. a phase that ran and measured nothing fails the gate ---------------
+#
+# The worst thing this harness can do is report success for a run that produced
+# no evidence. A hosted credential that was rotated away makes fm-recall.sh
+# refuse every think call before the provider is reached, and search still reads
+# the index perfectly - so the run must not pass on the strength of the half
+# that worked, and it must say the hosted half measured nothing rather than
+# leaving its thresholds silently absent.
+: > "$FM_STUB_CALLS"
+for k in qa qb qc qd; do
+  jq -n '{schema: "fm-recall.v1", command: "think",
+          error: {code: "hosted_key_missing", message: "the credential is not installed"}}' \
+    > "$REPLY_DIR/$k.think.json"
+  printf '4\n' > "$REPLY_DIR/$k.think.json.rc"
+done
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase both --json
+expect_code 1 "$EVAL_RC" "a phase that ran and measured nothing must not let the run pass"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.search.measured')" = "true" ] \
+  || fail "the search phase did measure, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.think.measured')" = "false" ] \
+  || fail "a phase that read nothing must record that it measured nothing, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.state == "unmeasured") | .metric]')" \
+    = '["think_answered","think_grounded","think_key_facts"]' ] \
+  || fail "a declared threshold for an unmeasured phase must stay in the verdict, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.verdict[] | select(.state == "met") | .metric]')" \
+    = '["search_top1","search_topk"]' ] \
+  || fail "the phase that did measure must still report its own verdict, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '[.think.unread[].reason] | unique')" = '["hosted_key_missing"]' ] \
+  || fail "an operator must be pointed at the credential, not the index, got $EVAL_OUT"
+run_eval run --set "$EVAL_SET" --home "$HOME_DIR" --phase both
+assert_contains "$EVAL_OUT" "MEASURED NOTHING" "the render must show the phase that measured nothing"
+assert_contains "$EVAL_OUT" "UNMEASURED  think_answered" \
+  "an unmeasured threshold must read differently from a missed one"
+assert_contains "$EVAL_OUT" "hosted_key_missing" "the render must name why each question was unread"
 for k in qa qb qc qd; do rm -f "$REPLY_DIR/$k.think.json.rc"; done
 
 # --- 8. compare reports what is not like-for-like ---------------------------
@@ -434,6 +469,26 @@ run_eval compare "$TMP_ROOT/run-blind.json" "$TMP_ROOT/run-blind.json" --json
   || fail "a field both runs did record must still compare, got $EVAL_OUT"
 run_eval compare "$TMP_ROOT/run-blind.json" "$TMP_ROOT/run-blind.json"
 assert_contains "$EVAL_OUT" "UNKNOWN  corpus" "the rendered comparison must show what could not be compared"
+
+# An absent optional value must not swallow a definite difference. A migration
+# is exactly this shape: the endpoint moves to the command line, so no run
+# records it, while the dimension change is the whole point of the comparison.
+jq '.configuration.embedding = {model: "nomic-embed-text:v1.5", dimensions: 768, base_url: null}
+    | .configuration.reranker.base_url = null' \
+  "$TMP_ROOT/run-one.json" > "$TMP_ROOT/run-migrated.json"
+jq '.configuration.embedding.base_url = null | .configuration.reranker.base_url = null' \
+  "$TMP_ROOT/run-one.json" > "$TMP_ROOT/run-premigration.json"
+run_eval compare "$TMP_ROOT/run-premigration.json" "$TMP_ROOT/run-migrated.json" --json
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.embedding')" = "changed" ] \
+  || fail "a 1024-to-768 style migration must read as changed with no endpoint recorded, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -r '.comparable.reranker')" = "unknown" ] \
+  || fail "a value neither run recorded must still read as unknown, got $EVAL_OUT"
+[ "$(printf '%s' "$EVAL_OUT" | jq -c '.unrecorded.reranker')" = '["base_url"]' ] \
+  || fail "the value that could not be compared must be named, got $EVAL_OUT"
+run_eval compare "$TMP_ROOT/run-premigration.json" "$TMP_ROOT/run-migrated.json"
+assert_contains "$EVAL_OUT" "CHANGED  embedding" "a real difference must not be rendered as unknown"
+assert_contains "$EVAL_OUT" "not recorded: base_url" \
+  "the render must name which value was missing rather than an opaque unknown"
 
 run_eval compare "$TMP_ROOT/run-one.json" "$EVAL_SET"
 expect_code 2 "$EVAL_RC" "compare must refuse a document that is not a run"

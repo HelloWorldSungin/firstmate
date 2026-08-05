@@ -40,9 +40,11 @@
 #   compare   Print the metric-by-metric delta between two run documents, and
 #             the configuration fields that differ. A comparison across
 #             different corpus revisions or eval sets is reported as such rather
-#             than silently treated as like-for-like, and a field neither run
+#             than silently treated as like-for-like, and a value neither run
 #             could record is reported as unknown rather than as unchanged: two
-#             absent values are not evidence of sameness.
+#             absent values are not evidence of sameness. A field whose recorded
+#             values differ is still reported as changed even when an optional
+#             sibling value is missing.
 #
 # Scoring:
 #   An expected source is a slug SUFFIX, so the set is portable across homes:
@@ -59,13 +61,15 @@
 #                    (default 1, so the default number is per call). A run also
 #                    records first_attempt_answered, which is what distinguishes
 #                    a flaky provider from an unusable one.
-#                    Every think rate is over the questions whose LOCAL read
-#                    succeeded, which the run records as think.read. A question
-#                    the brain itself could not answer is reported as unread
-#                    rather than as an unanswered synthesis, because a corpus
-#                    that could not be read says nothing about the hosted
-#                    provider - and folding it in would be exactly the combined
-#                    score this separation exists to prevent.
+#                    Every think rate is over the questions that reached hosted
+#                    synthesis, which the run records as think.read. A question
+#                    that never reached it - the local read failed, gbrain is
+#                    absent, no hosted credential is installed, or the call was
+#                    killed - is reported as unread WITH ITS REASON rather than
+#                    as an unanswered synthesis, because none of those says
+#                    anything about the hosted provider, and folding them in
+#                    would be exactly the combined score this separation exists
+#                    to prevent.
 #           grounded the answer cites at least one expected source.
 #           key_facts the fraction of the question's required facts that appear
 #                    in the answer. Each fact is a list of accepted spellings
@@ -81,7 +85,10 @@
 #   0  the run completed and every threshold the set declares was met.
 #   1  the run completed and at least one threshold was missed. That is a
 #      reportable outcome, not an error: record it rather than moving the
-#      threshold.
+#      threshold. A threshold the set declares for a phase that RAN and read
+#      nothing counts here too, reported as unmeasured rather than as a miss: a
+#      phase that produced no evidence cannot have met the threshold it was
+#      asked to clear.
 #   2  usage, or a configuration this command refuses to guess at.
 #   3  the run could not be measured at all, because the brain could not be
 #      read: no question was read by any phase that ran.
@@ -369,7 +376,7 @@ run_think() {  # <question-json> -> per-question think JSON on stdout
   # succeeded is reported with its final failure rather than an earlier one.
   if [ -z "$doc" ] || ! printf '%s' "$doc" | jq -e 'type == "object"' >/dev/null 2>&1; then
     jq -n --arg rc "$rc" --arg a "$attempt" '{state: "unread", exit: ($rc | tonumber),
-      read: false, error: null,
+      read: false, error: "no_document",
       answered: false, first_attempt_answered: false, attempts: ($a | tonumber),
       grounded: false, key_fact_rate: null, key_facts_matched: 0, key_facts_total: 0,
       citations: [], citations_expected: 0, truncated: null}'
@@ -388,7 +395,7 @@ run_think() {  # <question-json> -> per-question think JSON on stdout
         state: (if $read then (.synthesis.state // "failed") else "unread" end),
         exit: ($rc | tonumber),
         read: $read,
-        error: (.error.code // null),
+        error: (if $read then null else (.error.code // "no_synthesis") end),
         answered: $answered,
         attempts: ($attempts | tonumber),
         first_attempt_answered: ($first and $answered),
@@ -517,6 +524,7 @@ cmd_run() {
       search: (if ($sq | length) == 0 then null else {
         questions: ($sq | length),
         read: ($sok | length),
+        measured: (($sok | length) > 0),
         top_k: $configuration.query.top_k,
         top1: avg([$sok[] | (if .search.top1 then 1 else 0 end)]),
         topk: avg([$sok[] | (if .search.topk then 1 else 0 end)]),
@@ -528,6 +536,7 @@ cmd_run() {
       think: (if ($tq | length) == 0 then null else {
         questions: ($tq | length),
         read: ($tread | length),
+        measured: (($tread | length) > 0),
         attempts_allowed: $attempts,
         answered: avg([$tread[] | (if .think.answered then 1 else 0 end)]),
         first_attempt_answered: avg([$tread[] | (if .think.first_attempt_answered then 1 else 0 end)]),
@@ -535,19 +544,28 @@ cmd_run() {
         key_facts: avg([$tok[] | .think.key_fact_rate | select(. != null)]),
         citation_precision: avg([$tcited[] | (.think.citations_expected / (.think.citations | length))]),
         truncated: [$tok[] | select(.think.truncated == true) | .id],
-        unread: [$tq[] | select(.think.read | not) | .id],
+        unread: [$tq[] | select(.think.read | not) | {id: .id, reason: .think.error}],
         unanswered: [$tread[] | select(.think.answered | not) | .id],
         ungrounded: [$tok[] | select(.think.grounded | not) | .id]
       } end)
     }
+    # A threshold the set declares for a phase that RAN is part of the verdict
+    # even when the phase measured nothing, because dropping it would report a
+    # run that produced no evidence as one that met every threshold. It carries
+    # its own state rather than counting as a miss: no measurement fell short,
+    # the measurement never happened at all.
+    | . as $run
     | . + {verdict: ([
-        {metric: "search_top1", value: .search.top1, threshold: .thresholds.search_top1},
-        {metric: "search_topk", value: .search.topk, threshold: .thresholds.search_topk},
-        {metric: "think_answered", value: .think.answered, threshold: .thresholds.think_answered},
-        {metric: "think_grounded", value: .think.grounded, threshold: .thresholds.think_grounded},
-        {metric: "think_key_facts", value: .think.key_facts, threshold: .thresholds.think_key_facts}
-      ] | map(select(.threshold != null and .value != null))
-        | map(. + {met: (.value >= .threshold)}))}
+        {metric: "search_top1", phase: "search", value: $run.search.top1, threshold: $run.thresholds.search_top1},
+        {metric: "search_topk", phase: "search", value: $run.search.topk, threshold: $run.thresholds.search_topk},
+        {metric: "think_answered", phase: "think", value: $run.think.answered, threshold: $run.thresholds.think_answered},
+        {metric: "think_grounded", phase: "think", value: $run.think.grounded, threshold: $run.thresholds.think_grounded},
+        {metric: "think_key_facts", phase: "think", value: $run.think.key_facts, threshold: $run.thresholds.think_key_facts}
+      ] | map(select(.threshold != null
+                     and (if .phase == "search" then $run.search else $run.think end) != null))
+        | map(. + (if .value == null then {met: false, state: "unmeasured"}
+                   else {met: (.value >= .threshold),
+                         state: (if .value >= .threshold then "met" else "missed" end)} end)))}
     | . + {questions: $qs}' "$per_question")
 
   [ -z "$out" ] || printf '%s\n' "$document" > "$out"
@@ -572,7 +590,7 @@ cmd_run() {
 
 render_run() {  # <document>
   printf '%s' "$1" | jq -r '
-    def pct($v): if $v == null then "  n/a" else ((($v * 1000 | round) / 10) | tostring) + "%" end;
+    def pct($v): if $v == null then "n/a" else ((($v * 1000 | round) / 10) | tostring) + "%" end;
     "eval-set   \(.eval_set.id) v\(.eval_set.version)  (\(.run.questions) of \(.eval_set.questions) questions, \(.eval_set.checksum[0:14])...)",
     "gbrain     \(.configuration.gbrain_version // "unknown")   home \(.configuration.home)",
     "embedding  \(.configuration.embedding.model // "unknown") @ \(.configuration.embedding.dimensions // "?") dims",
@@ -585,6 +603,8 @@ render_run() {  # <document>
     "",
     (if .search then
       "SEARCH (local retrieval, \(.search.read)/\(.search.questions) questions read)",
+      (if .search.measured then empty
+       else "  MEASURED NOTHING     no question was read, so every rate below is absent rather than zero" end),
       "  top-1                \(pct(.search.top1))",
       "  top-\(.search.top_k)                \(pct(.search.topk))",
       "  MRR                  \(if .search.mrr == null then "n/a" else ((.search.mrr * 1000 | round) / 1000 | tostring) end)",
@@ -593,18 +613,26 @@ render_run() {  # <document>
     "",
     (if .think then
       "THINK (hosted synthesis, \(.think.read)/\(.think.questions) questions read, \(.think.attempts_allowed) attempt(s) allowed)",
+      (if .think.measured then empty
+       else "  MEASURED NOTHING     no question reached hosted synthesis, so every rate below is absent rather than zero" end),
       "  answered             \(pct(.think.answered))",
       "  answered 1st call    \(pct(.think.first_attempt_answered))",
       "  grounded             \(pct(.think.grounded))",
       "  key facts            \(pct(.think.key_facts))",
       "  citation precision   \(pct(.think.citation_precision))",
-      "  not read             \(if (.think.unread | length) == 0 then "none" else (.think.unread | join(", ")) + "  (local read failed; excluded from every rate above)" end)",
+      "  not read             \(if (.think.unread | length) == 0 then "none"
+                                 else (.think.unread | map("\(.id) (\(.reason // "unknown"))") | join(", "))
+                                      + " - never reached hosted synthesis, so excluded from every rate above" end)",
       "  not answered         \(if (.think.unanswered | length) == 0 then "none" else (.think.unanswered | join(", ")) end)",
       "  not grounded         \(if (.think.ungrounded | length) == 0 then "none" else (.think.ungrounded | join(", ")) end)"
      else "THINK   not run" end),
     "",
     "THRESHOLDS",
-    (.verdict[] | "  \(if .met then "met   " else "MISSED" end)  \(.metric)  \(pct(.value)) vs \(pct(.threshold))"),
+    (.verdict[]
+      | "  \(if .state == "met" then "met       " elif .state == "missed" then "MISSED    " else "UNMEASURED" end)  \(.metric)  \(pct(.value)) vs \(pct(.threshold))"),
+    (if any(.verdict[]; .state == "unmeasured") then
+      "  UNMEASURED means that phase ran and read nothing, so its thresholds could not be evaluated and the run does not pass"
+     else empty end),
     (if ((.verdict | length) == 0) then "  none applicable to this run" else empty end)'
 }
 
@@ -632,27 +660,53 @@ cmd_compare() {
     | def d($x; $y): if ($x == null or $y == null) then null else ($y - $x) end;
     # A field neither run could record is not evidence that it did not move:
     # two nulls compare equal, and reporting that as "same" would be the exact
-    # silent like-for-like claim this command exists to prevent. A value that is
-    # null on either side - or, for a composite field, holds a null anywhere
-    # inside it - is therefore reported as unknown rather than as unchanged.
-    def known($v): ([$v | ..] | map(select(. == null)) | length) == 0;
-    def cmp($x; $y):
-      if ((known($x) and known($y)) | not) then "unknown"
+    # silent like-for-like claim this command exists to prevent.
+    #
+    # The decision is per LEAF rather than per field, because a composite field
+    # mixes values that were recorded with values that were not. A leaf both
+    # runs recorded and that differs makes the whole field changed, even when an
+    # optional sibling like a base URL is absent: an embedding that moved from
+    # 1024 to 768 dimensions is the change a migration comparison exists to
+    # detect, and it must not disappear behind an unrecorded endpoint. Only a
+    # leaf that one of the runs could not record leaves the field unknown, and
+    # the leaves responsible are named so the operator can tell which value is
+    # missing rather than being handed an opaque verdict.
+    def leafcmp($x; $y):
+      if $x == null or $y == null then "unknown"
       elif $x == $y then "same"
       else "changed" end;
-    {
+    def leafpaths($v):
+      [$v | paths] | map(. as $p | select(($v | getpath($p) | type) | . != "object" and . != "array"));
+    def leaves($x; $y):
+      ((leafpaths($x) + leafpaths($y)) | unique) as $ps
+      | if ($ps | length) == 0 then [{path: [], state: leafcmp($x; $y)}]
+        else [$ps[] | . as $p
+              | {path: $p, state: (try leafcmp($x | getpath($p); $y | getpath($p)) catch "unknown")}]
+        end;
+    def state($ls):
+      if any($ls[]; .state == "changed") then "changed"
+      elif any($ls[]; .state == "unknown") then "unknown"
+      else "same" end;
+    def unrecorded($ls):
+      [$ls[] | select(.state == "unknown") | (.path | join(".")) | select(. != "")];
+    [
+      {key: "eval_set", x: {id: $a.eval_set.id, checksum: $a.eval_set.checksum},
+                        y: {id: $b.eval_set.id, checksum: $b.eval_set.checksum}},
+      {key: "corpus", x: $a.corpus.revision, y: $b.corpus.revision},
+      {key: "gbrain", x: $a.configuration.gbrain_version, y: $b.configuration.gbrain_version},
+      {key: "embedding", x: $a.configuration.embedding, y: $b.configuration.embedding},
+      {key: "reranker", x: $a.configuration.reranker, y: $b.configuration.reranker},
+      {key: "think_model", x: $a.configuration.think.model, y: $b.configuration.think.model},
+      {key: "query", x: $a.configuration.query, y: $b.configuration.query}
+    ]
+    | map(leaves(.x; .y) as $ls | {key: .key, state: state($ls), unrecorded: unrecorded($ls)})
+    | . as $fields
+    | {
       baseline: {path: $a.eval_set.path, label: $a.run.label, started: $a.run.started},
       candidate: {path: $b.eval_set.path, label: $b.run.label, started: $b.run.started},
-      comparable: {
-        eval_set: cmp({id: $a.eval_set.id, checksum: $a.eval_set.checksum};
-                      {id: $b.eval_set.id, checksum: $b.eval_set.checksum}),
-        corpus: cmp($a.corpus.revision; $b.corpus.revision),
-        gbrain: cmp($a.configuration.gbrain_version; $b.configuration.gbrain_version),
-        embedding: cmp($a.configuration.embedding; $b.configuration.embedding),
-        reranker: cmp($a.configuration.reranker; $b.configuration.reranker),
-        think_model: cmp($a.configuration.think.model; $b.configuration.think.model),
-        query: cmp($a.configuration.query; $b.configuration.query)
-      },
+      comparable: ($fields | map({key: .key, value: .state}) | from_entries),
+      unrecorded: ($fields | map(select((.unrecorded | length) > 0)
+                                 | {key: .key, value: .unrecorded}) | from_entries),
       metrics: [
         {metric: "search_top1", baseline: $a.search.top1, candidate: $b.search.top1, delta: d($a.search.top1; $b.search.top1)},
         {metric: "search_topk", baseline: $a.search.topk, candidate: $b.search.topk, delta: d($a.search.topk; $b.search.topk)},
@@ -673,10 +727,10 @@ cmd_compare() {
     "candidate  \(.candidate.label // .candidate.started)",
     "",
     "LIKE-FOR-LIKE",
-    (.comparable | to_entries[]
-      | "  \(if .value == "same" then "same     " elif .value == "changed" then "CHANGED  " else "UNKNOWN  " end)\(.key)"),
+    (. as $doc | .comparable | to_entries[]
+      | "  \(if .value == "same" then "same     " elif .value == "changed" then "CHANGED  " else "UNKNOWN  " end)\(.key)\(if .value == "unknown" and ($doc.unrecorded[.key] // []) != [] then "  (not recorded: " + ($doc.unrecorded[.key] | join(", ")) + ")" else "" end)"),
     (if ([.comparable[] | select(. == "unknown")] | length) > 0 then
-      "  UNKNOWN means one of the two runs did not record the field, so this comparison could not be made"
+      "  UNKNOWN means one of the two runs did not record the value, so this comparison could not be made"
      else empty end),
     "",
     "METRICS",
