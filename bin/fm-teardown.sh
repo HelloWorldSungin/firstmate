@@ -49,7 +49,11 @@
 # quarantine entries with the rest of the volatile state.
 # Before cleanup, teardown also enforces the terminal dispatched-model check
 # owned by docs/model-verification.md; --force surfaces that verdict while
-# retaining its explicitly authorized discard behavior.
+# retaining its explicitly authorized discard behavior. A dispatch that was
+# never armed for that check, as docs/model-verification.md defines it, can
+# never produce a verdict, so it is named plainly and passed to the ORDINARY
+# cleanup path - where the landed-work, uncommitted-change,
+# completion-manifest, and endpoint checks all still apply unchanged.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -456,16 +460,21 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
-# The helpers below distinguish a proven no-turn worker from evidence whose
-# location was never persisted. Only the clean proven no-turn worker can enter
-# the allowance. An unknown evidence location cannot prove that boundary and
-# must refuse while preserving both worktree and task metadata, exactly like a
-# worker that ran without a usable verdict.
+# The helpers below govern the narrow proven-no-turn allowance, which applies
+# only to a dispatch that WAS armed for verification and then produced no turn.
+# Only the clean proven no-turn worker can enter it; every other blocking
+# verdict refuses while preserving both worktree and task metadata.
+#
+# A dispatch that was never armed at all (verdict `unarmed`) does not reach
+# these helpers, because fm-model-verify.sh's terminal mode does not report it
+# as blocking. Such a task takes the ordinary cleanup path instead, which keeps
+# every other teardown refusal intact rather than substituting this narrower
+# proof for them.
 
 # 0 iff this verdict means the worker never produced a model-attributed turn.
 # Every other no-verdict cause is handled separately: unreadable evidence, an
-# absent adapter, jq missing, evidence that cannot be attributed, and a missing
-# persisted evidence-store identity all keep refusing.
+# absent adapter, jq missing, evidence that cannot be attributed, and a
+# malformed persisted evidence-store identity all keep refusing.
 model_verdict_precedes_any_turn() {  # <verdict>
   case "$1" in
     unstarted|pending) return 0 ;;
@@ -579,13 +588,24 @@ refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
-# verifiable in principle. --force retains its existing discard authority.
+# verifiable in principle - a harness with an evidence adapter, a pinned model,
+# and a record that was armed for the check, as docs/model-verification.md
+# defines it. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+# Name the never-armed case explicitly, so an operator reading this output can
+# tell it apart from a verification that ran and failed without reading source.
+# This line IS the discriminator: an unarmed task takes the ordinary cleanup
+# path, where any other check may still refuse in the same output, so absence of
+# a REFUSED line says nothing about which case the operator is in.
+if [ "$MODEL_VERDICT" = unarmed ]; then
+  echo "teardown: task $ID was dispatched without a model-evidence store, so no model-routing verdict can ever exist for it. That is a gap in its record, not a failed verification, and it is not a reason to keep the task forever; every other cleanup check still applies to it unchanged." >&2
+fi
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
-  # An unknown evidence location cannot prove the absent turn at all, so it is
-  # deliberately NOT a cleanup candidate: the task has not been shown to be
-  # never-started, only not shown to have run, and the metadata linking it to
-  # its evidence is the one record that could ever prove a wrong-model run.
+  # A recorded-but-unusable evidence location cannot prove the absent turn at
+  # all, so it is deliberately NOT a cleanup candidate: the task has not been
+  # shown to be never-started, only not shown to have run, and the metadata
+  # linking it to its evidence is the one record that could ever prove a
+  # wrong-model run.
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
     NO_VERDICT_CLEANUP_CANDIDATE=1
   else

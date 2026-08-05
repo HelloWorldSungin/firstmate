@@ -49,6 +49,18 @@
 #   (z4) no turn + commits on a task branch                     -> REFUSE (work to lose)
 #   (z5) worker RAN, evidence unattributable, worktree clean    -> REFUSE (evidence to protect)
 #
+# Also covers the never-armed boundary: a dispatch whose record names no
+# model-evidence store was never armed for that check and can never produce a
+# verdict, so the gap stops being treated as a safety signal - without lending
+# any other teardown refusal the same allowance.
+#   (n1) no recorded store + landed + clean worktree            -> ALLOW  (gap, not a signal)
+#   (n2) recorded store + failed verdict, same clean fixture    -> REFUSE (verdict is real)
+#   (n3) recorded store + damaged dispatch anchor               -> REFUSE (armed, undecidable)
+#   (n4) no recorded store + uncommitted changes                -> REFUSE (work to lose)
+#   (n5) no recorded store + unlanded commits                   -> REFUSE (work to lose)
+#   (n6) no recorded store + unpublishable completion manifest  -> REFUSE (no durable record)
+#   (n7) no recorded store + endpoint that does not validate    -> REFUSE (endpoint identity)
+#
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
 #   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
@@ -559,6 +571,22 @@ claude_dispatch_meta() {
   printf '%s/projects/%s\n' "$cfg" "$(printf '%s' "$case_dir/wt" | sed 's/[^A-Za-z0-9]/-/g')"
 }
 
+# The record shape this change is about: a claude dispatch with a pinned model
+# and NO `model_evidence_store=` line, exactly as every dispatch that predates
+# the model-routing guard was recorded. Deliberately built by writing the fields
+# rather than deleting a line, so the fixture cannot drift into asserting on a
+# store line that a future scaffold stops writing. Args: case_dir
+pre_guard_dispatch_meta() {
+  local case_dir=$1
+  write_meta "$case_dir" no-mistakes ship
+  sed -i.bak 's/^model=default$/model=opus/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' 'harness=claude' >> "$case_dir/state/task-x1.meta"
+  grep -q '^model_evidence_store=' "$case_dir/state/task-x1.meta" \
+    && fail "pre_guard_dispatch_meta: the fixture recorded an evidence store"
+  mkdir -p "$case_dir/ambient-claude/projects"
+}
+
 use_unverified_zellij_backend() {
   local case_dir=$1
   sed -i.bak 's|^window=.*$|window=firstmate:7|' "$case_dir/state/task-x1.meta"
@@ -1020,40 +1048,239 @@ test_completed_task_still_reports_its_tokens_after_cleanup() {
   pass "a completed task still reports both harnesses' tokens after the real cleanup"
 }
 
-# An unknown evidence location cannot prove the absent turn at all, so the
-# never-started allowance does not apply: the task has not been shown to be
-# never-started, only not shown to have run. Retention is not enough here,
-# because releasing the records would discard the metadata linking the task to
-# its evidence - the one record that could ever prove a wrong-model run.
-test_missing_recorded_store_refuses_and_preserves_metadata() {
-  local case_dir rc
-  case_dir=$(make_case missing-recorded-store)
-  write_meta "$case_dir" no-mistakes ship
-  sed -i.bak 's/^model=default$/model=opus/' "$case_dir/state/task-x1.meta"
-  rm -f "$case_dir/state/task-x1.meta.bak"
-  printf '%s\n' 'harness=claude' >> "$case_dir/state/task-x1.meta"
+# A dispatch whose record names no evidence store was never armed for the
+# model-routing check, so it can never produce a verdict no matter what happens
+# later. That gap must not read as a safety signal - but it also must not turn
+# into a licence to read whatever store the environment happens to point at.
+# The ambient store here holds a MISMATCHING transcript for this exact worktree:
+# it must stay unattributed, unreported, and undeleted.
+test_pre_guard_dispatch_tears_down_without_attributing_ambient_evidence() {
+  local case_dir rc ambient_dir
+  case_dir=$(make_case pre-guard-clean)
+  pre_guard_dispatch_meta "$case_dir"
   never_started_worktree "$case_dir"
   install_authoritative_dead_tmux "$case_dir"
   install_destructive_treehouse_probe "$case_dir"
-  mkdir -p "$case_dir/ambient-claude/projects"
+  ambient_dir="$case_dir/ambient-claude/projects/$(printf '%s' "$case_dir/wt" | sed 's/[^A-Za-z0-9]/-/g')"
+  mkdir -p "$ambient_dir"
+  printf '{"type":"assistant","message":{"model":"claude-sonnet-5"}}\n' > "$ambient_dir/current.jsonl"
 
   rc=0
   FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
     FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-  [ "$rc" -ne 0 ] || fail "missing-recorded-store: an unknown evidence location did not refuse"
-  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
-    "missing-recorded-store: the missing store identity was not unverifiable"
+  expect_code 0 "$rc" "pre-guard-clean: a dispatch that can never produce a verdict stayed blocked"
+  assert_grep "verdict: unarmed" "$case_dir/stderr" \
+    "pre-guard-clean: the never-armed dispatch was not surfaced"
+  assert_grep "actual: -" "$case_dir/stderr" \
+    "pre-guard-clean: ambient evidence was attributed to a dispatch that recorded no store"
+  assert_grep "not a failed verification" "$case_dir/stderr" \
+    "pre-guard-clean: teardown did not tell the operator which case this is"
+  grep -q "REFUSED" "$case_dir/stderr" \
+    && fail "pre-guard-clean: teardown still refused: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" "pre-guard-clean: the task metadata was left behind"
+  assert_present "$case_dir/data/task-x1/outcome.json" \
+    "pre-guard-clean: the task left the fleet without a durable completion record"
+  assert_present "$ambient_dir/current.jsonl" \
+    "pre-guard-clean: teardown deleted transcript evidence it never owned"
+  pass "a dispatch that was never armed for verification tears down without reading ambient evidence"
+}
+
+# The case that must NOT move. Same landed, spotless fixture as the allowance
+# above; the single difference is that this record DOES name its evidence store,
+# so its verdict is real and its failure keeps refusing.
+test_recorded_store_with_failed_verdict_still_refuses() {
+  local case_dir dir rc
+  case_dir=$(make_case recorded-store-failed-verdict)
+  write_meta "$case_dir" local-only ship
+  sed -i.bak 's/^model=default$/model=opus/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  dir=$(claude_dispatch_meta "$case_dir")
+  mkdir -p "$dir"
+  printf '{"type":"assistant","message":{"model":"claude-sonnet-5"}}\n' > "$dir/current.jsonl"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "recorded-store-failed-verdict: a recorded failed verdict stopped refusing"
+  assert_grep "verdict: mismatch" "$case_dir/stderr" \
+    "recorded-store-failed-verdict: the mismatch was not surfaced"
   assert_grep "REFUSED" "$case_dir/stderr" \
-    "missing-recorded-store: no refusal was printed"
+    "recorded-store-failed-verdict: no refusal was printed"
+  grep -q "verdict: unarmed" "$case_dir/stderr" \
+    && fail "recorded-store-failed-verdict: an armed dispatch was reported as never armed"
   assert_absent "$case_dir/treehouse-returned" \
-    "missing-recorded-store: the preserved worktree reached treehouse return"
-  assert_present "$case_dir/wt" "missing-recorded-store: the worktree was removed"
+    "recorded-store-failed-verdict: the preserved worktree reached treehouse return"
   assert_present "$case_dir/state/task-x1.meta" \
-    "missing-recorded-store: the task metadata linking task to evidence was erased"
+    "recorded-store-failed-verdict: the task metadata was erased"
   assert_absent "$case_dir/data/task-x1/outcome.json" \
-    "missing-recorded-store: a refused teardown published a completion outcome"
-  pass "a missing recorded evidence store refuses and preserves worktree and metadata"
+    "recorded-store-failed-verdict: a refused teardown published a completion outcome"
+  pass "a recorded evidence store whose verdict did not pass still refuses on landed, spotless work"
+}
+
+# The release rests on positive markers, not on the bare absence of a store
+# line. This is the SAME landed, spotless fixture the allowance above tears down
+# on, with one line added: a model-evidence arming marker, which bin/fm-spawn.sh
+# only ever writes together with the store it captured. That proves the record
+# was armed and damaged afterwards, so it keeps refusing.
+#
+# The third shape in that enumeration, a remote secondmate route record, is
+# pinned at verifier level in tests/fm-model-verify.test.sh only:
+# bin/fm-teardown.sh routes a genuine remote secondmate to
+# remote_secondmate_teardown and returns before the model check, so a teardown
+# fixture for it would have to be faked and would assert something misleading.
+test_arming_marker_without_store_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case armed-marker-no-store)
+  pre_guard_dispatch_meta "$case_dir"
+  printf '%s\n' 'model_evidence_watermark=claude-transcript-v1' >> "$case_dir/state/task-x1.meta"
+  never_started_worktree "$case_dir"
+  install_authoritative_dead_tmux "$case_dir"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "armed-marker-no-store: a damaged armed record stopped refusing"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "armed-marker-no-store: the damaged armed record was not unverifiable"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "armed-marker-no-store: no refusal was printed"
+  grep -q "verdict: unarmed" "$case_dir/stderr" \
+    && fail "armed-marker-no-store: a record proven to have been armed was released"
+  assert_absent "$case_dir/treehouse-returned" \
+    "armed-marker-no-store: the preserved worktree reached treehouse return"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "armed-marker-no-store: the task metadata was erased"
+  assert_absent "$case_dir/data/task-x1/outcome.json" \
+    "armed-marker-no-store: a refused teardown published a completion outcome"
+  pass "a record carrying an arming marker but no evidence store still refuses"
+}
+
+# An armed dispatch that produced no verdict for a DIFFERENT reason keeps
+# refusing too: a damaged anchor is not the same record shape as an absent one.
+test_recorded_store_with_malformed_timestamp_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case recorded-store-malformed-timestamp)
+  write_meta "$case_dir" no-mistakes ship
+  claude_dispatch_meta "$case_dir" >/dev/null
+  printf '%s\n' 'spawned_at=not-a-timestamp' >> "$case_dir/state/task-x1.meta"
+  never_started_worktree "$case_dir"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/claude-config" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "recorded-store-malformed-timestamp: a damaged anchor stopped refusing"
+  assert_grep "verdict: unverifiable" "$case_dir/stderr" \
+    "recorded-store-malformed-timestamp: the damaged anchor was not unverifiable"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "recorded-store-malformed-timestamp: no refusal was printed"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "recorded-store-malformed-timestamp: the task metadata was erased"
+  pass "a recorded evidence store with a damaged dispatch anchor still refuses"
+}
+
+# The allowance narrows ONE refusal. These four pin the others on exactly the
+# record shape that now gets past the model-routing check, so it can never
+# become a general-purpose escape from teardown safety.
+test_pre_guard_with_uncommitted_changes_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case pre-guard-dirty)
+  pre_guard_dispatch_meta "$case_dir"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  printf 'uncommitted work\n' > "$case_dir/wt/scratch.txt"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-guard-dirty: uncommitted work was discarded"
+  assert_grep "verdict: unarmed" "$case_dir/stderr" \
+    "pre-guard-dirty: the fixture did not exercise the never-armed path"
+  assert_grep "has uncommitted changes" "$case_dir/stderr" \
+    "pre-guard-dirty: the refusal was not the uncommitted-change one"
+  assert_absent "$case_dir/treehouse-returned" \
+    "pre-guard-dirty: the dirty worktree reached treehouse return"
+  assert_present "$case_dir/wt/scratch.txt" "pre-guard-dirty: the uncommitted file was removed"
+  assert_present "$case_dir/state/task-x1.meta" "pre-guard-dirty: the task metadata was erased"
+  pass "a never-armed dispatch with uncommitted changes still refuses"
+}
+
+test_pre_guard_with_unlanded_work_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case pre-guard-unlanded)
+  pre_guard_dispatch_meta "$case_dir"
+  # Committed on the task branch, pushed nowhere, in no default branch.
+  wt_commit_file "$case_dir" unlanded.txt "work that never landed"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-guard-unlanded: unlanded work was discarded"
+  assert_grep "verdict: unarmed" "$case_dir/stderr" \
+    "pre-guard-unlanded: the fixture did not exercise the never-armed path"
+  assert_grep "not on any remote and not landed" "$case_dir/stderr" \
+    "pre-guard-unlanded: the refusal was not the unlanded-work one"
+  assert_absent "$case_dir/treehouse-returned" \
+    "pre-guard-unlanded: the unlanded worktree reached treehouse return"
+  assert_present "$case_dir/wt/unlanded.txt" "pre-guard-unlanded: the unlanded commit was removed"
+  assert_present "$case_dir/state/task-x1.meta" "pre-guard-unlanded: the task metadata was erased"
+  pass "a never-armed dispatch with unlanded work still refuses"
+}
+
+test_pre_guard_with_unpublishable_manifest_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case pre-guard-manifest)
+  pre_guard_dispatch_meta "$case_dir"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  # An unwritable manifest destination, exactly as the armed case uses.
+  mkdir -p "$case_dir/data/task-x1/outcome.json"
+
+  rc=0
+  FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-guard-manifest: an unarchivable task was erased"
+  assert_grep "verdict: unarmed" "$case_dir/stderr" \
+    "pre-guard-manifest: the fixture did not exercise the never-armed path"
+  assert_grep "could not publish the durable outcome manifest" "$case_dir/stderr" \
+    "pre-guard-manifest: teardown did not name the manifest failure"
+  assert_present "$case_dir/state/task-x1.meta" "pre-guard-manifest: the task metadata was erased"
+  pass "a never-armed dispatch whose completion manifest cannot be published still refuses"
+}
+
+test_pre_guard_with_invalid_endpoint_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case pre-guard-endpoint)
+  pre_guard_dispatch_meta "$case_dir"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  # A second window= line makes the recorded endpoint ambiguous.
+  printf '%s\n' 'window=firstmate:fm-someone-else' >> "$case_dir/state/task-x1.meta"
+  install_destructive_treehouse_probe "$case_dir"
+
+  rc=0
+  FM_TEST_TREEHOUSE_RETURNED="$case_dir/treehouse-returned" \
+    FM_TEST_CLAUDE_CONFIG_DIR="$case_dir/ambient-claude" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-guard-endpoint: an ambiguous endpoint was cleaned up anyway"
+  assert_grep "ambiguous window endpoint" "$case_dir/stderr" \
+    "pre-guard-endpoint: the endpoint failure was not named"
+  grep -q "verdict:" "$case_dir/stderr" \
+    && fail "pre-guard-endpoint: endpoint validation no longer runs before the model check"
+  assert_absent "$case_dir/treehouse-returned" \
+    "pre-guard-endpoint: the worktree reached treehouse return"
+  assert_present "$case_dir/state/task-x1.meta" "pre-guard-endpoint: the task metadata was erased"
+  pass "a never-armed dispatch whose endpoint does not validate still refuses"
 }
 
 # Ignored content is work exactly as untracked content is, and `git status
@@ -2755,7 +2982,14 @@ test_unknown_liveness_completes_cleanup_and_retains_worktree
 test_usage_session_map_reaches_the_manifest_before_cleanup_removes_it
 test_cleanup_refreshes_usage_sessions_when_a_store_exists
 test_completed_task_still_reports_its_tokens_after_cleanup
-test_missing_recorded_store_refuses_and_preserves_metadata
+test_pre_guard_dispatch_tears_down_without_attributing_ambient_evidence
+test_recorded_store_with_failed_verdict_still_refuses
+test_arming_marker_without_store_still_refuses
+test_recorded_store_with_malformed_timestamp_still_refuses
+test_pre_guard_with_uncommitted_changes_still_refuses
+test_pre_guard_with_unlanded_work_still_refuses
+test_pre_guard_with_unpublishable_manifest_still_refuses
+test_pre_guard_with_invalid_endpoint_still_refuses
 test_ignored_content_refuses_while_allowlisted_harness_files_do_not
 test_allowlisted_harness_files_still_tear_down
 test_authoritative_dead_endpoint_recycles_worktree

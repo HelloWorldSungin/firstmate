@@ -108,12 +108,12 @@ It is also the shape of the intended behavior: the verifier reports what it cann
 
 The focused regression matrix uses temporary Firstmate homes and temporary Claude stores only.
 It binds a mismatched worker to store A, invokes verification under store B containing an older matching transcript, and requires the mismatch from store A.
-It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record with a persisted evidence-store identity but no time binding retains its disclosed weaker attribution and a record without that store identity remains `unverifiable`.
+It also requires missing `model=`, malformed `spawned_at=`, and watermark enumeration failure to remain loud, while a genuinely old record with a persisted evidence-store identity but no time binding retains its disclosed weaker attribution and a record without that store identity reports `unarmed` without ever falling back to an ambient store.
 
 The lifecycle cases require base endpoint metadata to exist when watermark capture fails, require forced teardown to print a mismatch without losing discard authority, and require recursive secondmate cleanup to print each child's verdict before removing its record.
 The store-binding cases require an explicitly configured Claude launch to override a different backend-daemon ambient store, and require `link/../cfg` to resolve the link before applying the parent component.
 The default-store case requires the launch to leave `CLAUDE_CONFIG_DIR` unset, resolve an onboarded `~/.claude.json`, and still record `~/.claude` as the separate transcript evidence store.
-They also require a newline introduced only by physical symlink resolution to remain detectable, produce an `unverifiable` legacy verdict, and prevent a Claude launch.
+They also require a newline introduced only by physical symlink resolution to remain detectable, leave a record that names no store at its `unarmed` no-verdict outcome rather than resolving it against that ambient store, and prevent a Claude launch.
 
 Focused command:
 
@@ -130,3 +130,79 @@ ok - bounded secondmate home summary skips model enrichment
 ok - forced teardown surfaces a mismatch before retaining its discard authority
 ok - forced secondmate teardown retains Herdr child identity until exact pane disappearance
 ```
+
+## 2026-08-05: the never-armed boundary, and what still refuses
+
+This entry extends the matrix above with the never-armed cases rather than replacing it, and it does not restate the 2026-08-04 observation.
+
+Observed at commit `7718c209771ee74288c89daa8b819f4ef40be099`.
+That is the commit immediately before the documentation commit carrying this entry, which is what was actually exercised.
+
+Commands, run from the branch worktree with each suite's two streams captured separately:
+
+```sh
+tests/fm-model-verify.test.sh
+tests/fm-teardown.test.sh
+```
+
+Both exited 0.
+
+Verifier suite, stdout.
+It printed 53 `ok -` lines and nothing at all on stderr; the ellipses below elide the 45 of them that fall outside this boundary.
+
+```text
+...
+ok - a missing persisted evidence-store identity never falls back to ambient state
+ok - an unarmed dispatch reports at no-verdict severity and does not block cleanup
+ok - an arming watermark with no store is a damaged armed record and keeps blocking
+ok - a captured baseline with no store is a damaged armed record and keeps blocking
+ok - a remote secondmate route record ran elsewhere and keeps blocking
+ok - a recorded evidence store that is gone from disk still blocks terminal cleanup
+ok - a recorded evidence store that cannot be read still blocks terminal cleanup
+ok - a malformed recorded evidence store still blocks terminal cleanup
+...
+
+all fm-model-verify tests passed
+```
+
+Teardown suite, stdout.
+It printed 74 `ok -` lines and no trailing summary line of its own; the ellipses below elide the 66 of them that fall outside this boundary.
+
+```text
+...
+ok - a dispatch that was never armed for verification tears down without reading ambient evidence
+ok - a recorded evidence store whose verdict did not pass still refuses on landed, spotless work
+ok - a record carrying an arming marker but no evidence store still refuses
+ok - a recorded evidence store with a damaged dispatch anchor still refuses
+ok - a never-armed dispatch with uncommitted changes still refuses
+ok - a never-armed dispatch with unlanded work still refuses
+ok - a never-armed dispatch whose completion manifest cannot be published still refuses
+ok - a never-armed dispatch whose endpoint does not validate still refuses
+...
+```
+
+The teardown suite also wrote advisory guard output to stderr, which is pre-existing feature-branch noise rather than anything this boundary produces.
+No `WORKTREE TANGLE` banner appeared on this run; the first eight of its 31 stderr lines were:
+
+```text
+task-x1 · verdict: unpinned · recorded: default · actual: - · source: none · no model pinned at dispatch; nothing recorded for the runtime to contradict
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: 0s ago, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+...
+```
+
+The ellipsis there elides 23 further stderr lines: that same `unpinned` verdict line once more, three more copies of the same seven-line `WATCHER DOWN` block, and one line reading `WARNING: watcher still down (same stale episode; last beat: 0s ago, grace 300s) - full banner already printed this episode.`
+
+The verifier rows are the arming split itself.
+Only a record naming no evidence store and carrying neither denial reports `unarmed` and stops blocking terminal cleanup, while an arming watermark without a store, a captured baseline without a store, a remote secondmate route record, and a recorded store that is malformed, gone from disk, or unreadable all keep blocking.
+
+The teardown rows are the burden this narrowing carries.
+The allowance fires only for a never-armed record whose work has landed on a spotless worktree, and on that exact record shape uncommitted changes, unlanded work, an unpublishable completion manifest, and an endpoint that does not validate each still refuse on their own.
+The paired refusals hold the boundary that must not move: a recorded store whose verdict did not pass, a recorded store with a damaged dispatch anchor, and an arming marker with no store all keep refusing on the same landed, spotless fixture.
+
+The contract these rows pin is owned by [`../model-verification.md`](../model-verification.md); this entry records only that these commands produced this output at that commit.
