@@ -142,7 +142,6 @@ SH
   printf '%s\n' "$fakebin/fm-crew-state.sh"
 }
 
-
 make_supercase() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"

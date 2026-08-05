@@ -323,6 +323,42 @@ EOF
   pass "an active step whose timings cannot be parsed carries no evidence"
 }
 
+# --- the bounded read is bounded by the shared owner, on every platform ------
+
+test_bounded_read_uses_the_shared_timeout_owner() {
+  local dir out
+  command -v perl >/dev/null 2>&1 || {
+    pass "the portable fallback arm is unexercised on a host with no perl (skipped)"
+    return 0
+  }
+  dir=$(make_case timeout-fallback)
+  # bin/fm-timeout-lib.sh is the declared single owner of bounded external
+  # command execution and the only ladder here carrying a perl arm. That arm is
+  # the portability floor, not a curiosity: a stock macOS host ships neither
+  # timeout nor gtimeout, so a reader with a two-rung ladder would answer `none`
+  # on every call there and this whole gate would be inert on a first-class
+  # platform - while bin/fm-crew-state.sh read the same run fine through its own
+  # perl arm. FM_TIMEOUT_FORCE_FALLBACK is the owner's own seam for exercising
+  # that arm on hosts where timeout(1) does exist, which is every host this
+  # suite runs on.
+  out=$(read_progress "$dir" "$(status_toon running 7m9s '7m4s ago: log: reading the change')" \
+    FM_TIMEOUT_FORCE_FALLBACK=1)
+  assert_contains "$out" "progress: progressing" "the portable fallback arm could not read the run"
+  assert_contains "$out" "last activity 7m4s ago" "the fallback arm delivered a different answer than the primary arm"
+
+  # And it is a BOUND on that arm too. A read that outruns it did not complete,
+  # which is no evidence - the failure direction never changes to a hold.
+  cat > "$dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+  chmod +x "$dir/fakebin/no-mistakes"
+  out=$(read_progress "$dir" "$(status_toon running 7m9s '7m4s ago: log: reading the change')" \
+    FM_TIMEOUT_FORCE_FALLBACK=1 FM_RUN_PROGRESS_NM_TIMEOUT=1)
+  assert_contains "$out" "progress: none" "a read that outran its bound on the fallback arm was not no-evidence"
+  pass "the bounded read goes through the shared timeout owner, so its portable fallback arm both reads and bounds"
+}
+
 test_writes_nothing_and_never_fails_a_read() {
   local dir before after status
   dir=$(make_case side-effect-free)
@@ -352,4 +388,5 @@ test_gate_status_row_is_not_executing
 test_other_branch_run_is_none
 test_missing_evidence_shapes_are_none
 test_unparseable_output_is_none
+test_bounded_read_uses_the_shared_timeout_owner
 test_writes_nothing_and_never_fails_a_read

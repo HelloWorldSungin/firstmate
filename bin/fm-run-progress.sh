@@ -46,6 +46,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -116,17 +118,21 @@ KIND=$(meta_value kind)
 command -v no-mistakes >/dev/null 2>&1 || emit none "no-mistakes not installed"
 
 # --- bounded read -----------------------------------------------------------
-# Same bounding ladder as bin/fm-crew-state.sh's nm_run, and for the same
-# reason: with no way to bound the call at all, do not make it.
-HAVE_TIMEOUT=none
-if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
-elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
-fi
-case "$HAVE_TIMEOUT" in
-  timeout)  RUN_OUT=$( ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes axi status ) 2>/dev/null ) ;;
-  gtimeout) RUN_OUT=$( ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes axi status ) 2>/dev/null ) ;;
-  *)        emit none "no way to bound the status read" ;;
-esac
+# Bounded through bin/fm-timeout-lib.sh, the declared single owner of bounded
+# external command execution, rather than a third hand-rolled copy of the
+# ladder. That matters for correctness, not tidiness: the owner carries a perl
+# arm, and a stock macOS host ships neither timeout nor gtimeout, so a
+# two-rung ladder would answer `none` on every call there - leaving this whole
+# gate inert on a first-class platform while bin/fm-crew-state.sh read the same
+# run fine through its own perl arm.
+#
+# fm_run_timed's documented 125 means no bounded runner could start, so nothing
+# was executed: with no way to bound the call at all, do not make it. Every
+# other failure is a read that did not complete. Both are NO EVIDENCE, which is
+# `none` and leaves the alarm exactly as it was - never a hold.
+RUN_OUT=$( ( cd "$WT" && fm_run_timed "$NM_TIMEOUT" no-mistakes axi status ) 2>/dev/null )
+READ_RC=$?
+[ "$READ_RC" != 125 ] || emit none "no way to bound the status read"
 [ -n "$RUN_OUT" ] || emit none "status read did not complete"
 
 # The answer must be about THIS crew's branch. `axi status` answers a branch
