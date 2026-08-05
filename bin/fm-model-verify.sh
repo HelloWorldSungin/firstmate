@@ -38,10 +38,11 @@
 #   unstarted    the runtime never wrote a session for this worker's working
 #                directory at all, so no turn of its own exists to read.
 #                NOT a pass - no verdict yet.                            exit 4
-#   unarmed      the dispatch record itself names no model-evidence store, so
-#                verification was never armed for it and no verdict can ever
-#                exist. NOT a pass, and distinct from `unverifiable`: there is
-#                no evidence location to fail to read.                   exit 4
+#   unarmed      the dispatch record itself names no model-evidence store AND
+#                carries no marker proving it was ever armed, so verification
+#                was never armed for it and no verdict can ever exist. NOT a
+#                pass, and distinct from `unverifiable`: there is no evidence
+#                location to fail to read.                               exit 4
 #   pending      an adapter exists, a session exists, and the worker has simply
 #                not produced a model-attributed turn yet. NOT a pass.
 #   unpinned     meta records `model=default`: firstmate pinned no tier, so
@@ -80,7 +81,8 @@ for it in state/<id>.meta.
 Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted/unarmed · 2 usage error.
 With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
 dispatch was verifiable in principle (a claude-harness task with a pinned model
-and a recorded model-evidence store); otherwise it exits 0 so cleanup is not
+whose record was armed for the check - it names a model-evidence store, or it
+proves arming ran without naming one); otherwise it exits 0 so cleanup is not
 blocked for a dispatch that can never produce a verdict. The verdict line is
 printed either way.
 With --all, the worst verdict across all tasks sets the exit code.
@@ -507,8 +509,10 @@ verify_one() {  # <id>
   # Past this point the dispatch was verifiable IN PRINCIPLE: a harness with an
   # evidence adapter, and a pinned model for the runtime to contradict. Only
   # such a task can be blocked from cleanup for failing to produce a verdict -
-  # see terminal_is_blocking below. The remaining requirement, a recorded
-  # evidence store, is checked below and withdraws this when it is absent.
+  # see the terminal-mode block at the end of this file. The remaining
+  # requirement is that the record was armed for the check at all, and the
+  # store-absent branch below withdraws this only for a record that names no
+  # store AND carries no marker proving that arming ran.
   VERIFIABLE_IN_PRINCIPLE=1
 
   if [ "$anchor_present" -eq 1 ]; then
@@ -564,8 +568,8 @@ verify_one() {  # <id>
     # environment happens to point at, because that would attribute another
     # dispatch's transcripts to this task.
     armed_marker_present=0
-    grep -q '^model_evidence_watermark=' "$meta" 2>/dev/null && armed_marker_present=1
-    grep -q '^model_evidence_before=' "$meta" 2>/dev/null && armed_marker_present=1
+    grep -qE '^(model_evidence_watermark|model_evidence_before)=' "$meta" 2>/dev/null \
+      && armed_marker_present=1
     if [ "$armed_marker_present" -eq 1 ]; then
       VERDICT=unverifiable
       DETAIL="dispatch carries model-evidence arming markers but names no model-evidence store, so it was armed and its record is damaged"
@@ -573,10 +577,8 @@ verify_one() {  # <id>
     fi
     remote_route_present=0
     if [ "$kind" = secondmate ]; then
-      grep -q '^remote_host=' "$meta" 2>/dev/null && remote_route_present=1
-      grep -q '^remote_root=' "$meta" 2>/dev/null && remote_route_present=1
-      grep -q '^remote_backend=' "$meta" 2>/dev/null && remote_route_present=1
-      grep -q '^remote_target=' "$meta" 2>/dev/null && remote_route_present=1
+      grep -qE '^(remote_host|remote_root|remote_backend|remote_target)=' "$meta" 2>/dev/null \
+        && remote_route_present=1
     fi
     if [ "$remote_route_present" -eq 1 ]; then
       VERDICT=unverifiable
@@ -770,11 +772,13 @@ if [ "$TERMINAL" -eq 1 ]; then
   # discarded? A MISMATCH always blocks - that is the worker this whole helper
   # exists to catch. An absent verdict blocks only when the dispatch was
   # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter, a
-  # pinned model, and a recorded model-evidence store. Blocking otherwise would
-  # make non-forced cleanup impossible for every dispatch that can never produce
-  # a verdict at all, which is a fleet-wide regression rather than the boundary
-  # this refusal was meant to draw. That is the ONLY concession: a dispatch with
-  # a recorded store keeps blocking on every one of its failure modes.
+  # pinned model, and a record that was armed for the check - one naming a
+  # model-evidence store, or one proving arming ran without naming a store.
+  # Blocking otherwise would make non-forced cleanup impossible for every
+  # dispatch that can never produce a verdict at all, which is a fleet-wide
+  # regression rather than the boundary this refusal was meant to draw. That is
+  # the ONLY concession: an armed dispatch keeps blocking on every one of its
+  # failure modes.
   # The verdict is surfaced by the caller either way, so nothing goes unseen.
   case "$VERDICT" in
     match|unpinned) exit 0 ;;

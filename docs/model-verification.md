@@ -63,7 +63,7 @@ A verdict is never `match` unless a model was actually read and actually compare
 | `mismatch` | at least one attributed model does not | 3 |
 | `unverifiable` | the record cannot be checked at all | 4 |
 | `unstarted` | beneath an inspectable recorded evidence store, the runtime wrote no transcript parent at all or no session path entry for this worker, so it has no evidence of its own | 4 |
-| `unarmed` | the dispatch record names no `model_evidence_store=` at all, so verification was never armed for it and no verdict can ever exist | 4 |
+| `unarmed` | the dispatch record names no `model_evidence_store=` and carries no marker proving it was ever armed, so verification was never armed for it and no verdict can ever exist | 4 |
 | `pending` | a session exists and the worker has not produced a model-attributed turn yet | 0 |
 | `unpinned` | `model=default`: no tier was pinned, so there is no record for the runtime to contradict | 0 |
 
@@ -83,7 +83,7 @@ The third is a remote secondmate route record: `spawn_remote_secondmate` writes 
 The second and third shapes each carry positive proof that the record is not never-armed, so each one denies the release and keeps the blocking `unverifiable` verdict; the release is decided by those markers rather than by absence alone.
 Only the first shape can have produced no evidence attributable to the task, so only there is there no verdict to fail, no evidence location to protect, and nothing any later event could ever supply.
 That is a gap in the record, not a safety signal, and the separation is drawn from what the record itself establishes rather than from a dispatch timestamp a future record could also carry.
-The distinction it draws is exact: **a record that names an evidence store keeps every one of its failure modes blocking, and a record that names none was never armed for any of them.**
+The distinction it draws is exact: **a record that was armed keeps every one of its failure modes blocking, whether it names its evidence store or only carries proof that arming ran, and only a record with neither was never armed for any of them.**
 A store line that is present and unusable - malformed, missing on disk, or unreadable - is a damaged armed record, stays `unverifiable`, and keeps blocking.
 `unarmed` never authorizes reading an ambient store: an unknown evidence location is never resolved against whatever the environment happens to point at, because that would attribute another dispatch's transcripts to this task.
 None of these is a pass, and all exit 4.
@@ -129,8 +129,8 @@ An unreadable or absent verifier answer becomes an explicit `unverifiable` verdi
 
 `bin/fm-teardown.sh` always runs terminal verification before cleanup, and always surfaces the verdict, so no worker's model provenance is discarded unseen.
 Only the refusal is conditional.
-Terminal verification returns a blocking status on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter, a pinned model, and a recorded evidence store.
-A dispatch missing any of those three was never armed for the check and is never blocked by it; a dispatch that has all three keeps blocking on every one of its failure modes.
+Terminal verification returns a blocking status on `mismatch` always, and on `unverifiable`, `unstarted`, or `pending` only when the dispatch was verifiable in principle: a harness with an evidence adapter, a pinned model, and a record that was armed for the check, whether it names a recorded evidence store or only carries proof that arming ran.
+A dispatch missing an evidence adapter or a pinned model, or whose record names no store and carries no proof of arming, was never armed for the check and is never blocked by it; an armed dispatch keeps blocking on every one of its failure modes.
 Teardown states the never-armed case explicitly in its output, so an operator can tell it apart from a verification that ran and failed without reading source.
 That explicit line is the discriminator, and it says every other cleanup check still applies.
 An unarmed task takes the ordinary cleanup path, so any other check may still refuse in the same output; the absence of a refusal therefore says nothing about which case the operator is in.
@@ -165,7 +165,7 @@ Deliberate `unpinned` dispatches are also omitted, and correctly routed work the
 
 `tests/fm-model-verify.test.sh` owns the acceptance matrix and is registered in the `pure-contract-unit` family in `bin/fm-test-run.sh`.
 It covers family-alias and pinned-id comparison, the context-window suffix, a downgrade below the dispatched family, a mid-dispatch model change where one value still matches, enumeration and modification-time failures, the `pending`, `unstarted`, and exact-`default` `unpinned` outcomes, missing model metadata, malformed timestamps, canonical evidence-store binding across ambient configuration changes, symlink-plus-parent paths, and newline-bearing physical paths, the synthetic placeholder in both directions, exact transcript-identity binding including the equal-second boundary, legacy timestamp binding, secondmate evidence resolved from its own home, `--all` exiting on the worst verdict, and the structured output.
-It also owns the `unarmed` boundary at verifier level: a record naming no evidence store reports `unarmed` at the same exit severity as every other no-verdict outcome while not blocking terminal cleanup, never resolves against an ambient store or attributes its transcripts, and a recorded store that is missing, unreadable, or malformed stays `unverifiable` and keeps blocking in terminal mode.
+It also owns the `unarmed` boundary at verifier level: a record naming no evidence store and carrying no arming marker reports `unarmed` at the same exit severity as every other no-verdict outcome while not blocking terminal cleanup, never resolves against an ambient store or attributes its transcripts, and a recorded store that is missing, unreadable, or malformed stays `unverifiable` and keeps blocking in terminal mode.
 The same file pins the enumeration of record shapes that reach the store-absent branch, so it cannot survive only in prose: with no store line, a record carrying `model_evidence_watermark=`, a record carrying a `model_evidence_before=` row, and a `kind=secondmate` record carrying the remote route fields each report `unverifiable` rather than `unarmed` and each keep blocking terminal cleanup.
 
 `tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section and that an `unarmed` dispatch stays listed with no attributed model.
@@ -178,7 +178,7 @@ It also owns the never-started boundary: both no-turn shapes and a fresh inspect
 The same coverage proves that each on-disk protection refuses independently, all protections together permit cleanup, authoritative live-agent evidence refuses, authoritative dead-agent evidence recycles normally, and unknown liveness completes record cleanup with explicit disclosure while retaining the worktree and task temp root.
 
 It owns the never-armed boundary in the same file, because narrowing a safety refusal is only as good as the proof of what still refuses.
-A record naming no evidence store tears down when its work has landed and its worktree is spotless, without attributing or deleting a mismatching ambient transcript for that same worktree, and states the never-armed case in its output.
+A record naming no evidence store and carrying no arming marker tears down when its work has landed and its worktree is spotless, without attributing or deleting a mismatching ambient transcript for that same worktree, and states the never-armed case in its output.
 On that exact record shape, teardown still refuses for uncommitted changes, for unlanded commits, for a completion manifest that cannot be published, and for an endpoint that does not validate.
 The paired cases pin the boundary that must not move: the same landed, spotless fixture with a recorded evidence store and a failing verdict keeps refusing, as does a recorded store with a damaged dispatch anchor, and so does a record carrying an arming watermark but no store.
 The remote secondmate route shape is pinned at verifier level only, because `bin/fm-teardown.sh` routes a genuine remote secondmate to its own teardown before the model check ever runs, so a teardown fixture for it could only be faked.
