@@ -14,6 +14,11 @@ set -u
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# bin/fm-timeout-lib.sh is the single owner of a bounded call, and it is what
+# makes the probe cases below run on a host that ships no timeout(1).
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 SERVER="$ROOT/bin/fm-dashboard-server.mjs"
 INSTALLER="$ROOT/bin/fm-dashboard-install.sh"
@@ -25,6 +30,9 @@ PASSWORD='harbour-lantern-42'
 # The trusted-proxy allowlist the next fixture server starts with. Empty is the
 # shipped default and means no forwarded header is read at all.
 TRUSTED_PROXIES=
+# Node options the next installer run inherits, for the cases that need the
+# probes the installer shells out to make noise on standard error.
+INSTALLER_NODE_OPTIONS=
 
 command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
@@ -53,6 +61,7 @@ install_into() {  # <case-root> [extra installer args...]
   # test_installing_from_a_worktree_is_refused owns that separately.
   env -u FM_DASHBOARD_EVENTS_CONFIG -u FM_DASHBOARD_AUTH_FILE \
     HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    NODE_OPTIONS="$INSTALLER_NODE_OPTIONS" \
     FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" \
     "$INSTALLER" --allow-worktree --fm-home "$case_root/fleet" --no-start "$@"
 }
@@ -484,6 +493,28 @@ test_a_trusted_proxy_is_pinned_only_when_the_server_accepts_it() {
   rc=$?
   set -e
   expect_code 2 "$rc" "a trusted-proxy range covering every address"
+
+  # What the installer asks the server is captured and then written into the
+  # unit's configuration, so anything the probe writes to standard error while
+  # still succeeding - an operator's NODE_OPTIONS here, a future deprecation
+  # notice in practice - must not become an entry in the allowlist that decides
+  # whose forwarded headers are believed.
+  local noisy_options='--experimental-loader=data:text/javascript,'
+  if [ -z "$(NODE_OPTIONS="$noisy_options" node "$SERVER" --check-trusted-proxies 2>&1 >/dev/null)" ]; then
+    echo "skip: this node emits nothing on standard error for the noise probe"
+  else
+    INSTALLER_NODE_OPTIONS=$noisy_options
+    install_into "$case_root" --trusted-proxy 192.0.2.10 >/dev/null \
+      || fail "a noisy but successful probe made the installer refuse a usable proxy"
+    INSTALLER_NODE_OPTIONS=
+    local env_file pinned
+    env_file="$case_root/config/firstmate/dashboard.env"
+    pinned=$(sed -n 's/^FM_DASHBOARD_TRUSTED_PROXIES="\(.*\)"$/\1/p' "$env_file")
+    [ "$pinned" = "192.0.2.10" ] \
+      || fail "the pinned allowlist is [$pinned] rather than exactly the named proxy"
+    assert_not_contains "$(cat "$env_file")" "Warning" \
+      "process noise from the probe reached the environment file"
+  fi
   pass "a trusted proxy is validated by the server that will honour it before any unit names it"
 }
 
@@ -880,29 +911,36 @@ test_an_unrecognised_argument_is_refused_instead_of_served() {
   port=$(free_port)
 
   set +e
-  out=$(FM_HOME="$case_root/home" FM_DASHBOARD_PORT="$port" \
-    timeout 10 node "$SERVER" --a-mode-this-version-does-not-have 2>&1)
+  out=$(fm_run_timed 10 env FM_HOME="$case_root/home" FM_DASHBOARD_PORT="$port" \
+    node "$SERVER" --a-mode-this-version-does-not-have 2>&1)
   rc=$?
   set -e
+  # 125 is the timeout library's "nothing was executed", which says nothing
+  # about the server under test; 124 and 137 are the bound elapsing, which for a
+  # probe means it started serving instead of answering.
+  [ "$rc" -ne 125 ] || { echo "skip: no bounded runner available for a probe"; return 0; }
   [ "$rc" -ne 0 ] || fail "an unrecognised argument was accepted"
-  [ "$rc" -ne 124 ] || fail "an unrecognised argument started a listener instead of refusing"
+  [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ] \
+    || fail "an unrecognised argument started a listener instead of refusing"
   assert_contains "$out" "--a-mode-this-version-does-not-have" "the refusal did not name the argument"
   [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/snapshot")" = "000" ] \
     || fail "a refused probe left something listening on its port"
 
   # The recognised probes still answer, and still answer promptly.
-  out=$(FM_HOME="$case_root/home" timeout 10 node "$SERVER" --event-store-path) \
+  out=$(fm_run_timed 10 env FM_HOME="$case_root/home" node "$SERVER" --event-store-path) \
     || fail "the agent-event store probe stopped working"
   case "$out" in /*) ;; *) fail "the agent-event store probe printed [$out]" ;; esac
   set +e
-  out=$(FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10,not-an-address" \
-    timeout 10 node "$SERVER" --check-trusted-proxies 2>&1)
+  out=$(fm_run_timed 10 env FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10,not-an-address" \
+    node "$SERVER" --check-trusted-proxies 2>&1)
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "an unusable trusted-proxy allowlist was accepted"
+  [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ] \
+    || fail "an unusable trusted-proxy allowlist started a listener instead of refusing"
   assert_contains "$out" "not-an-address" "the refusal did not name the unusable entry"
-  out=$(FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10, 198.51.100.0/24" \
-    timeout 10 node "$SERVER" --check-trusted-proxies) || fail "a usable trusted-proxy allowlist was refused"
+  out=$(fm_run_timed 10 env FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.10, 198.51.100.0/24" \
+    node "$SERVER" --check-trusted-proxies) || fail "a usable trusted-proxy allowlist was refused"
   [ "$out" = "192.0.2.10,198.51.100.0/24" ] || fail "the allowlist read back as [$out]"
   pass "an unrecognised argument is refused promptly and never becomes a listener"
 }

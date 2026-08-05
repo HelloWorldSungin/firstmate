@@ -248,13 +248,25 @@ assert_unit_path_safe "the credentials file" "$AUTH_FILE"
 # Which proxy the dashboard may believe about who a client is. The server owns
 # what a usable allowlist is and answers with the entries it would honour, so a
 # value this installer pins is one that server already accepted.
+#
+# Only stdout becomes that value. This capture is written into the unit's
+# configuration, so anything else the process printed - a warning from the
+# operator's NODE_OPTIONS, a deprecation notice from a module the server imports
+# - would become an entry in the allowlist that decides whose forwarded headers
+# are believed. The credentials check below folds stderr into its capture
+# because that value is only ever printed back to the operator, and that is the
+# whole difference between the two call sites.
 if [ -n "$FM_DASHBOARD_TRUSTED_PROXIES" ]; then
+  TRUSTED_PROXY_REFUSAL=$(mktemp)
+  trap 'rm -f "$TRUSTED_PROXY_REFUSAL"' EXIT HUP INT TERM
   FM_DASHBOARD_TRUSTED_PROXIES=$(FM_DASHBOARD_TRUSTED_PROXIES="$FM_DASHBOARD_TRUSTED_PROXIES" \
-    "$NODE_BIN" "$INSTALLER_SERVER" --check-trusted-proxies 2>&1) || {
-    printf 'fm-dashboard-install: %s\n' "$FM_DASHBOARD_TRUSTED_PROXIES" >&2
+    "$NODE_BIN" "$INSTALLER_SERVER" --check-trusted-proxies 2>"$TRUSTED_PROXY_REFUSAL") || {
+    cat "$TRUSTED_PROXY_REFUSAL" >&2
     printf 'fm-dashboard-install: --trusted-proxy takes a numeric address or CIDR range, and nothing is trusted by default.\n' >&2
     exit 2
   }
+  rm -f "$TRUSTED_PROXY_REFUSAL"
+  trap - EXIT HUP INT TERM
 fi
 
 # Setting the password comes first, so a single command can both establish

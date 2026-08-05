@@ -88,7 +88,7 @@ Behind a proxy every request arrives from the proxy, so with nothing configured 
 Naming the proxy is what separates them again:
 
 ```sh
-bin/fm-dashboard-install.sh --trusted-proxy 192.168.68.10 --address 192.168.68.110
+bin/fm-dashboard-install.sh --trusted-proxy 192.0.2.10 --address 192.0.2.110
 ```
 
 `--trusted-proxy` is repeatable and takes a numeric address or a CIDR range, never a name.
