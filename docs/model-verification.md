@@ -77,21 +77,22 @@ A missing or empty `model=` is malformed dispatch metadata and therefore `unveri
 `unarmed` is separated from both, and is the one no-verdict outcome that is decided by the shape of the dispatch record rather than by anything on disk.
 It is also the only narrowing this guard makes, so its predicate is stated in full here and nowhere else; every other mention of it in this repository cross-references this section rather than restating any part of it.
 
-**A dispatch is `unarmed` when all three of the following hold, and `unverifiable` when any one of them fails.**
+**Whether the record names a `model_evidence_store=` selects the branch, and only within the branch that names none do the two denials below decide.**
+A record that names a store was armed, and its verdict comes from reading that evidence: `match`, `mismatch`, `pending`, `unstarted`, or `unverifiable`, exactly as before this change.
+A record that names none is `unarmed`, unless it carries one of these two denials, in which case it stays `unverifiable` and keeps blocking.
 
-1. The record names no `model_evidence_store=`.
-2. The record carries no arming marker, meaning no `model_evidence_watermark=` line and no `model_evidence_before=` line.
-3. The record is not a remote secondmate route record, meaning `kind=secondmate` together with any of `remote_host=`, `remote_root=`, `remote_backend=`, or `remote_target=`.
+1. An arming marker, meaning a `model_evidence_watermark=` line or a `model_evidence_before=` line, which proves the capture ran and the record was damaged afterwards.
+2. A remote secondmate route record, meaning `kind=secondmate` together with any of `remote_host=`, `remote_root=`, `remote_backend=`, or `remote_target=`, which proves the dispatch ran on a remote host whose evidence this home cannot read.
 
 A missing store line is the shape of a never-armed record, but absence alone does not prove it, because a pre-guard record is a strict subset of today's schema and so carries no positive "never armed" marker of its own.
-Conditions 2 and 3 supply that proof, and they are kept separate because they prove different things.
-An arming marker fails condition 2: `capture_claude_watermark` emits `model_evidence_store=` and `model_evidence_watermark=claude-transcript-v1` together on both of its success paths, along with its `model_evidence_before=` rows, and `bin/fm-spawn.sh` appends that block whole, so either marker present without a store proves that the capture ran and the record was damaged afterwards.
-A remote route fails condition 3: `spawn_remote_secondmate` writes `kind=secondmate` with those route fields and no store line for a secondmate that DID launch and run, and its armed record lives in that remote host's own state, so its evidence is not absent, only unreadable from this home.
+The two denials supply that proof, and they are kept separate because they prove different things.
+The arming marker is conclusive because `capture_claude_watermark` emits `model_evidence_store=` and `model_evidence_watermark=claude-transcript-v1` together on both of its success paths, along with its `model_evidence_before=` rows, and `bin/fm-spawn.sh` appends that block whole, so either marker present without a store can only mean the record lost its store afterwards.
+The remote route is conclusive because `spawn_remote_secondmate` writes `kind=secondmate` with those route fields and no store line for a secondmate that DID launch and run, and its armed record lives in that remote host's own state, so its evidence is not absent, only unreadable from here.
 Each of those two shapes therefore keeps the blocking `unverifiable` verdict, and the release rests on positive proof rather than on absence alone.
-`bin/fm-spawn.sh` writes `model_evidence_store=` for every Claude dispatch it launches and exits 1 without rendering a launch command when that capture fails or omits the store, so a record satisfying all three conditions can only be a dispatch that predates the guard or a spawn that aborted before launching anything, and neither ever ran.
+`bin/fm-spawn.sh` writes `model_evidence_store=` for every Claude dispatch it launches and exits 1 without rendering a launch command when that capture fails or omits the store, so a record naming no store and carrying neither denial can only be a dispatch that predates the guard or a spawn that aborted before launching anything, and neither ever ran.
 Only such a record can have produced no evidence attributable to the task, so only there is there no verdict to fail, no evidence location to protect, and nothing any later event could ever supply.
 That is a gap in the record, not a safety signal, and the separation is drawn from what the record itself establishes rather than from a dispatch timestamp a future record could also carry.
-A store line that is present and unusable - malformed, missing on disk, or unreadable - fails condition 1, so it is a damaged armed record, stays `unverifiable`, and keeps blocking.
+A store line that is present but malformed, missing on disk, or unreadable names an armed record whose evidence cannot be read, which is why it stays `unverifiable` and keeps blocking rather than being released as never armed.
 `unarmed` never authorizes reading an ambient store: an unknown evidence location is never resolved against whatever the environment happens to point at, because that would attribute another dispatch's transcripts to this task.
 None of these is a pass, and all exit 4.
 This is the load-bearing design rule: **a guard that silently passes when it cannot read the truth is worse than no guard, because it manufactures false confidence.**
@@ -173,7 +174,7 @@ Deliberate `unpinned` dispatches are also omitted, and correctly routed work the
 `tests/fm-model-verify.test.sh` owns the acceptance matrix and is registered in the `pure-contract-unit` family in `bin/fm-test-run.sh`.
 It covers family-alias and pinned-id comparison, the context-window suffix, a downgrade below the dispatched family, a mid-dispatch model change where one value still matches, enumeration and modification-time failures, the `pending`, `unstarted`, and exact-`default` `unpinned` outcomes, missing model metadata, malformed timestamps, canonical evidence-store binding across ambient configuration changes, symlink-plus-parent paths, and newline-bearing physical paths, the synthetic placeholder in both directions, exact transcript-identity binding including the equal-second boundary, legacy timestamp binding, secondmate evidence resolved from its own home, `--all` exiting on the worst verdict, and the structured output.
 It also owns the `unarmed` boundary at verifier level: a record the `unarmed` predicate accepts reports `unarmed` at the same exit severity as every other no-verdict outcome while not blocking terminal cleanup, never resolves against an ambient store or attributes its transcripts, and a recorded store that is missing, unreadable, or malformed stays `unverifiable` and keeps blocking in terminal mode.
-The same file pins each way that predicate can be failed, so it cannot survive only in prose: with no store line, a record carrying `model_evidence_watermark=`, a record carrying a `model_evidence_before=` row, and a `kind=secondmate` record carrying the remote route fields each report `unverifiable` rather than `unarmed` and each keep blocking terminal cleanup.
+The same file pins each denial that predicate makes, so it cannot survive only in prose: with no store line, a record carrying `model_evidence_watermark=`, a record carrying a `model_evidence_before=` row, and a `kind=secondmate` record carrying the remote route fields each report `unverifiable` rather than `unarmed` and each keep blocking terminal cleanup.
 
 `tests/fm-fleet-snapshot-view.test.sh` covers the snapshot field and the view section, including that a correctly routed fleet renders no section and that an `unarmed` dispatch stays listed with no attributed model.
 It also proves that bounded secondmate-home summaries do not scan model transcripts.
