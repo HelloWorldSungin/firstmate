@@ -107,6 +107,14 @@ function element(tag, className, text) {
   return node;
 }
 
+// The project pill is ellipsized to keep a card head on one line, so the full
+// name has to stay recoverable from the element itself.
+function projectPill(name) {
+  const pill = element("span", "pill project-pill", name);
+  pill.title = name;
+  return pill;
+}
+
 function replaceChildren(parent, children) {
   parent.replaceChildren(...children.filter(Boolean));
 }
@@ -299,7 +307,7 @@ function inboxCard(item) {
   const head = element("div", "inbox-head");
   head.append(dot(item.tone));
   head.append(element("span", "pill", item.label));
-  if (item.project) head.append(element("span", "pill project-pill", item.project));
+  if (item.project) head.append(projectPill(item.project));
   const age = element("span", `age ${item.age_known ? "" : "unknown"}`.trim(),
     item.age_known ? `${formatAge(item.age_seconds)} · ${item.age_source}` : "age unknown");
   head.append(age);
@@ -465,7 +473,7 @@ function taskCard(task) {
   card.setAttribute("aria-label", `${task.id}: ${titleFor(task)}`);
   const head = element("div", "card-head");
   head.append(element("span", "pill", `${task.kind || "task"}`));
-  if (task.project) head.append(element("span", "pill project-pill", task.project));
+  if (task.project) head.append(projectPill(task.project));
   head.append(dot(endpointTone(task)));
   head.append(element("span", "age", `${formatAge(task?.paths?.status_log?.last_event_age_seconds)} ago`));
   card.append(head);
@@ -808,7 +816,7 @@ function historyCard(row) {
   head.append(dot(row.outcome.tone));
   head.append(element("span", "pill", row.outcome.label));
   head.append(element("span", "pill", row.kind));
-  if (row.project) head.append(element("span", "pill project-pill", row.project));
+  if (row.project) head.append(projectPill(row.project));
   const age = ageSince(row.completed_millis);
   head.append(element("span", "age", row.timestamps.completed
     ? `${row.timestamps.completed}${age === null ? "" : ` · ${formatAge(age)} ago`}`
@@ -1202,6 +1210,64 @@ ui.activityClear.addEventListener("click", () => {
   }
   renderActivity();
 });
+
+// Folding and unfolding a device reflows this page between a single stacked
+// column and a multi-column grid, which changes the document height by
+// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
+// offset no longer points at the same content, so the reader is dropped
+// somewhere else in the page. Anchor to whatever they were actually reading
+// instead, and put that back at the same place on the screen.
+//
+// Only a width change counts. Mobile browser chrome sliding in and out changes
+// the height alone, constantly, and moving the page under the reader for that
+// would be far worse than the problem being fixed.
+const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
+let scrollAnchor = null;
+let anchorQueued = false;
+let lastViewportWidth = window.innerWidth;
+
+// The sticky bar covers the top of the viewport, so the first line the reader
+// can actually see is its lower edge.
+function anchorLine() {
+  const bar = document.querySelector(".topbar");
+  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
+}
+
+function captureAnchor() {
+  anchorQueued = false;
+  const line = anchorLine();
+  let best = null;
+  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
+    const top = candidate.getBoundingClientRect().top;
+    if (top > window.innerHeight) break;
+    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
+  }
+  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
+}
+
+function queueAnchorCapture() {
+  if (anchorQueued) return;
+  anchorQueued = true;
+  requestAnimationFrame(captureAnchor);
+}
+
+function restoreAnchor() {
+  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
+  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
+  if (Math.abs(drift) < 1) return;
+  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
+  // is not a navigation the reader should have to watch animate.
+  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
+}
+
+window.addEventListener("scroll", queueAnchorCapture, { passive: true });
+window.addEventListener("resize", () => {
+  if (window.innerWidth === lastViewportWidth) return;
+  lastViewportWidth = window.innerWidth;
+  restoreAnchor();
+  queueAnchorCapture();
+});
+queueAnchorCapture();
 
 initializeTheme();
 initializeNotifications();

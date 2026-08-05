@@ -288,6 +288,11 @@ class FakeNode {
   addEventListener(name, listener) {
     this.listeners[name] = listener;
   }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  get isConnected() { return true; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
 }
 
 const selectors = new Map();
@@ -326,6 +331,7 @@ selectors.set("#activity-form", activityForm);
 const document = {
   documentElement: new FakeNode("html"),
   querySelector: (selector) => selectors.get(selector),
+  querySelectorAll: (selector) => (selector.includes("#inbox") ? anchorNodes : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -387,9 +393,39 @@ class FakeEventSource {
 // The browser app is an ES module that imports the inbox policy module beside
 // it, so it is loaded through a real module graph rather than a flat script
 // evaluation. Its DOM and platform dependencies are resolved from globals.
+
+// A fold or unfold reflows this page while it stays loaded. The dashboard
+// anchors the reader to what they were reading and puts it back at the same
+// place on screen; these fakes supply the viewport, the layout rectangles, and
+// the frame callback that behavior is expressed in terms of.
+const topbar = new FakeNode("header");
+topbar.className = "topbar";
+topbar.rect = { top: 0, bottom: 40 };
+selectors.set(".topbar", topbar);
+
+const offscreenSection = new FakeNode("section");
+offscreenSection.rect = { top: -500, bottom: -200 };
+const readingSection = new FakeNode("section");
+readingSection.rect = { top: 300, bottom: 900 };
+const anchorNodes = [offscreenSection, readingSection];
+
+const frames = [];
+const scrollCalls = [];
+const fakeWindow = {
+  innerWidth: 320,
+  innerHeight: 850,
+  scrollY: 0,
+  listeners: {},
+  addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
+  scrollTo(options) { scrollCalls.push(options); fakeWindow.scrollY = options.top; },
+};
+const flushFrames = () => { const queued = frames.splice(0); for (const frame of queued) frame(); };
+
 const storage = new Map();
 Object.assign(globalThis, {
   document,
+  window: fakeWindow,
+  requestAnimationFrame: (frame) => frames.push(frame),
   EventSource: FakeEventSource,
   fetch: async () => ({ ok: true, json: async () => envelope }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -442,9 +478,36 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
   if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
   if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
+
+  // Folding and unfolding changes the width, and with it the number of columns
+  // and the whole document height. Keeping the scroll offset is not the same as
+  // keeping the reader's place, so the section they were reading has to be put
+  // back where it was on screen.
+  flushFrames();
+  const anchorLine = topbar.rect.bottom + 1;
+  const wasAt = readingSection.rect.top - anchorLine;
+  readingSection.rect = { top: 5000, bottom: 5600 };
+  fakeWindow.innerWidth = 690;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error(`a width change did not restore the reading position: ${scrollCalls.length} scrolls`);
+  const landed = 5000 - anchorLine - scrollCalls[0].top;
+  if (landed !== wasAt) throw new Error(`the anchor came back at ${landed}px instead of ${wasAt}px from the top`);
+  if (scrollCalls[0].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+
+  // Mobile browser chrome sliding in and out changes only the height, and does
+  // so constantly. Moving the page under the reader for that would be worse
+  // than the problem being fixed.
+  // Both candidates move, so whichever one the re-capture anchored to has
+  // genuinely shifted and a missing width gate would have to scroll.
+  flushFrames();
+  offscreenSection.rect = { top: -3000, bottom: -2700 };
+  readingSection.rect = { top: 9000, bottom: 9600 };
+  fakeWindow.innerHeight = 700;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, and explicit unknown pull-request fields"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
@@ -489,6 +552,11 @@ class FakeNode {
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  get isConnected() { return true; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
 }
 
 const selectors = new Map();
@@ -583,6 +651,8 @@ class FakeEventSource {
 const storage = new Map([["fm-dashboard-alerts", "on"]]);
 Object.assign(globalThis, {
   document,
+  window: { innerWidth: 320, innerHeight: 850, scrollY: 0, addEventListener() {}, scrollTo() {} },
+  requestAnimationFrame: () => 0,
   EventSource: FakeEventSource,
   Notification: FakeNotification,
   fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),
