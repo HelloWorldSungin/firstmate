@@ -22,7 +22,7 @@ That version also resolves its mount registry from the UNIX user's home director
 
 GBrain's OAuth 2.1 server is shipped and does enforce read-only access: `gbrain serve --http` checks the required scope of each operation against the token's granted scopes and refuses the call with `insufficient_scope`.
 So the read-only share uses that native mechanism, and Firstmate adds no access model of its own: no Firstmate-side scope check and no precedence engine deciding what a home may read.
-[Reading a brain](#reading-a-brain) does query both corpora in one command and rank their results together, but only over what each brain already agreed to return.
+[Reading a brain](#reading-a-brain) does query both corpora in one command and merge their results into one list, but only over what each brain already agreed to return.
 When GBrain ships mounts over HTTP MCP with OAuth, a mount entry consumes the same read-scoped client registered here, so this is the forward-compatible shape rather than a parallel one.
 
 ## The three configuration planes

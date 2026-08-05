@@ -46,7 +46,7 @@ None exited 3, the local side, so the harness's later correction to exclude a qu
 That correction is why a run document now reports `think.read` alongside `think.questions`, and it changes nothing about the missed threshold discussed below: the two failures were hosted refusals of a successful local read, not corpora that could not be read.
 
 Retrieval clears its thresholds with a wide margin: every question retrieved an expected source within the first five results, and only `q01` placed it below rank one, at rank two.
-That single demotion is not the brain's: it is produced by the retrieval wrapper's own re-sort, measured below.
+That single demotion is not the brain's: it was produced by the retrieval wrapper's own score re-sort, measured below and since replaced.
 Hosted synthesis misses its threshold, and the next section establishes why and by how much.
 
 ## The missed threshold: hosted synthesis, not retrieval
@@ -90,7 +90,7 @@ A different embedding artifact was nevertheless measured, below, because the mig
 The two halves of this record do not carry the same weight of evidence, and the gap is wide enough that a reader should not average over it.
 
 **The replication asymmetry.**
-The retrieval half was independently reproduced by a separate verification pass at top-1 0.95 / top-5 1.00 / MRR 0.975, using the unchanged shipped evaluation set, on a live corpus that had since grown to 65 documents under a new revision hash, not the 64-document revision the baseline above was recorded against.
+The retrieval half was independently reproduced by a separate verification pass at top-1 0.95 / top-5 1.00 / MRR 0.975, using the then-shipped evaluation set unchanged, the twenty-question v1, on a live corpus that had since grown to 65 documents under a new revision hash, not the 64-document revision the baseline above was recorded against.
 The hosted-synthesis half was measured only by the worker that implemented this harness, from its own runs, and nobody has re-run it since.
 That is the weak case, and it should be read as one: an implementer confirming its own work is weaker evidence than an independent reproduction, so the four hosted numbers deserve less confidence than the retrieval numbers printed beside them.
 
@@ -138,6 +138,8 @@ jq -r '.questions[] | [.id, .question, (.expect | tojson)] | @tsv' docs/gbrain-e
      19 native=0  sorted=0
       1 native=0  sorted=1
 ```
+
+The set path in that snippet then held the twenty-question v1 set, recoverable from git history as above; against the forty-question set shipped today it reads forty rows instead.
 
 | Ordering | top-1 |
 | --- | --- |
@@ -361,5 +363,6 @@ bin/fm-test-run.sh tests/fm-gbrain-eval.test.sh                   # the scoring 
 This record is the other half: it is the real corpus, and it has to be re-measured rather than re-reasoned.
 
 Re-run the evaluation after any corpus, GBrain, embedding, or reranker change, and re-take the migration timings whenever the corpus grows enough that the recorded durations stop being useful for planning.
-Three claims here are the most perishable, and all three are properties of a 64-document corpus and one provider's current behaviour rather than of this repository: the reranker's null effect, the hosted synthesis failure rate, and the size of what the wrapper's re-sort costs.
-Any of them can change without anything here changing, and the third is expected to be re-measured on a wider question set under [issue 49](https://github.com/HelloWorldSungin/firstmate/issues/49).
+Three claims here are the most perishable, and all three are properties of one corpus at one point in time and one provider's current behaviour rather than of this repository: the reranker's null effect, the hosted synthesis failure rate, and the size of what the wrapper's score re-sort cost before it was replaced.
+Any of them can change without anything here changing.
+The first two still rest on the 64-document corpus and the twenty-question set; the third was re-measured on forty questions and 78 documents when the re-sort was replaced, and stays a statement about that corpus rather than a general one.
