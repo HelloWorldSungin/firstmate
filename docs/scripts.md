@@ -15,8 +15,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
-| `fm-dashboard-server.mjs` | Serve the read-only loopback captain inbox, kanban, completed-work history, and versioned snapshot envelope |
+| `fm-dashboard-server.mjs` | Serve the loopback captain inbox, kanban, completed-work history, versioned snapshot envelope, and the authenticated agent-event ingest and live timeline |
 | `fm-dashboard-install.sh` | Install and configure the dashboard as a boot-persistent user systemd service        |
+| `fm-dashboard-instrument.sh` | Turn the dashboard's per-agent event timeline on or off by writing or removing its private ingest configuration pair |
+| `fm-event-emit.sh`       | The single producer boundary every harness event adapter posts through, redacting by allowlist and never blocking the agent |
+| `fm-event-store.mjs`     | Own the dashboard's agent-event store outside the operational home, its server-side redaction, and its retention caps |
+| `fm-telemetry-store.mjs` | Own the opener, forward-only migrations, and value sanitizers both telemetry stores share |
 | `fm-usage.mjs`           | Collect Claude and Codex token usage into the versioned store, attribute it to tasks, and print rollups |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
