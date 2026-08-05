@@ -48,6 +48,32 @@ REC
 chmod +x "$_fm_wedge_rec_dir/rec"
 export FM_WEDGE_ALARM_EXEC="$_fm_wedge_rec_dir/rec"
 
+# Validation-run progress stub (safety seam, installed for the same reason and in
+# the same place as the wedge-alarm recorder above). Both supervisors consult
+# bin/fm-run-progress.sh at the moment they would raise a wedge alarm, to decide
+# whether a quiet crew's run is actually MOVING; the real reader shells out to
+# `no-mistakes axi status` in the crew's worktree. Pointing FM_RUN_PROGRESS_BIN
+# at a stub here means no suite - present or future - can reach a real pipeline
+# from a fixture, and it cannot be forgotten, because sourcing this harness
+# installs it.
+#
+# The stub answers `none`: the no-evidence class that leaves an escalation
+# exactly as it was before the gate existed, so every pre-existing wedge
+# assertion keeps asserting today's alarm. A test fixes a different verdict with
+# FM_FAKE_RUN_PROGRESS (all ids) or FM_FAKE_RUN_PROGRESS_<sanitized-id> (one).
+cat > "$_fm_wedge_rec_dir/fm-run-progress.sh" <<'PROG'
+#!/usr/bin/env bash
+set -u
+id=${1:-}
+key=$(printf '%s' "$id" | tr -c 'A-Za-z0-9' '_')
+var="FM_FAKE_RUN_PROGRESS_$key"
+val=${!var:-${FM_FAKE_RUN_PROGRESS:-}}
+printf '%s\n' "${val:-progress: none · stub default}"
+exit 0
+PROG
+chmod +x "$_fm_wedge_rec_dir/fm-run-progress.sh"
+export FM_RUN_PROGRESS_BIN="$_fm_wedge_rec_dir/fm-run-progress.sh"
+
 # append_wake <state> <kind> <key> <payload>: append a wake record to the durable
 # queue in a subshell scoped to <state>, using the production wake library.
 append_wake() {

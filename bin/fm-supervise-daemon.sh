@@ -45,7 +45,16 @@
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
 #     gets its own longer, self-widening pause re-surface recheck (housekeeping
-#     step 2b below), never a wedge escalation.
+#     step 2b below), never a wedge escalation. One further hold applies at the
+#     escalation point itself: a crew whose validation run is demonstrably
+#     PROGRESSING (bin/fm-run-progress.sh, via the shared crew_wedge_progress
+#     policy) restarts its clock rather than alarming, because such a crew is
+#     quiet by design. That hold needs positive evidence of progress - a run
+#     that is absent, parked, stranded, or unreadable, or an endpoint whose
+#     agent is confidently dead, escalates exactly as before - and consecutive
+#     holds are capped (RUN_PROGRESS_HOLD_MAX_DEFAULT), because run progress is
+#     evidence about the RUN and not about the WORKER, so a moving pipeline may
+#     delay an alarm but never silence it indefinitely.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -196,6 +205,15 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_SUPERVISOR_SUPPORTED_BACKENDS="tmux herdr"
 INJECT_SKIP_DEFAULT="heartbeat"
 STALE_ESCALATE_SECS_DEFAULT=240
+# Cap on CONSECUTIVE run-progress holds for one crew, matching the always-on
+# watcher's FM_RUN_PROGRESS_HOLD_MAX so away mode cannot drift from it (the
+# reasoning for the value lives beside that constant in bin/fm-watch.sh). The
+# principle it enforces: run progress is evidence about the RUN, not about the
+# WORKER, so a moving pipeline licenses a DELAY in alarming and never permanent
+# silence - past the cap the crew is escalated however healthy its run looks,
+# with the progress detail carried into the digest so it still reads as "the run
+# is moving, this worker is not".
+RUN_PROGRESS_HOLD_MAX_DEFAULT=15
 ESCALATE_BATCH_SECS_DEFAULT=90
 HEARTBEAT_SCAN_SECS_DEFAULT=300
 HOUSEKEEPING_TICK_DEFAULT=15
@@ -448,7 +466,16 @@ stale_marker_record() {  # <window> <state>  — create if absent
 stale_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-stale-$key"
+  rm -f "$state/.subsuper-stale-$key" "$(wedge_holds_path "$key" "$state")"
+}
+
+# Consecutive run-progress holds for one crew's stale marker. Deliberately named
+# OUTSIDE the .subsuper-stale-* glob housekeeping walks, for the same reason
+# pause_streak_path is named outside .subsuper-paused-*: as a prefix sibling it
+# would be read as a stale marker of its own. Dropped wherever the stale marker
+# is, so a crew that goes active starts its next hold streak clean.
+wedge_holds_path() {  # <task-key> <state>
+  printf '%s/.subsuper-wedgeholds-%s' "$2" "$1"
 }
 
 # Re-surface streak record for a declared pause, deliberately named OUTSIDE the
@@ -496,9 +523,11 @@ clear_pause_tracking() {  # <window> <state>
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
   rm -f "$state/.subsuper-paused-$key" "$(pause_streak_path "$key" "$state")" "$state/.subsuper-stale-$key" \
+    "$(wedge_holds_path "$key" "$state")" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
     "$state/.paused-streak-$watcher_key" \
-    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
+    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
+    "$state/.wedge-holds-$watcher_key"
 }
 
 reconcile_pause_tracking() {  # <window> <state> <last-status-line>
@@ -655,6 +684,21 @@ stale_window_is_busy() {  # <window> <state>
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
   verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
   [ "${verdict%% *}" = busy ]
+}
+
+# daemon_wedge_progress: the validation-run progress class for <window>, through
+# the shared wedge policy in bin/fm-classify-lib.sh (crew_wedge_progress), with
+# this daemon's own backend plumbing supplying the endpoint liveness verdict.
+#
+# Called only where an escalation would otherwise be raised, never on the poll
+# path: the read behind it costs a bounded no-mistakes call, so it is paid once
+# per would-be alarm.
+daemon_wedge_progress() {  # <window> <state>
+  local win=$1 state=$2 task agent
+  task=$(window_to_task "$win" "$state")
+  [ -n "$task" ] || { printf 'none'; return; }
+  agent=$(fm_backend_agent_alive "$(task_window_backend "$win" "$state")" "$win" 2>/dev/null) || agent=unknown
+  crew_wedge_progress "$task" "$agent"
 }
 
 escalate_add() {  # <state> <distilled-item>
@@ -985,7 +1029,8 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file progress \
+    holds_file holds hold_max
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1026,9 +1071,10 @@ housekeeping() {  # <state>
     # Reconstruct the backend target from metadata, with the live tmux list as the
     # legacy fallback for old markers that predate meta lookup.
     win=$(window_for_task "$key" "$state" 2>/dev/null || true)
+    holds_file=$(wedge_holds_path "$key" "$state")
     if [ -z "$win" ]; then
       # Window gone (task torn down): drop the marker, nothing to escalate.
-      rm -f "$marker"; continue
+      rm -f "$marker" "$holds_file"; continue
     fi
     task=$(window_to_task "$win" "$state")
     last=$(last_status_line "$state/$task.status")
@@ -1040,9 +1086,42 @@ housekeeping() {  # <state>
     [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      0) rm -f "$marker" ;;
-      2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+      0) rm -f "$marker" "$holds_file" ;;
+      2) rm -f "$marker" "$holds_file" ;;
+      *) progress=$(daemon_wedge_progress "$win" "$state")
+         case "$progress" in
+           progressing*)
+             # A crew parked on a validation run that is demonstrably MOVING is
+             # quiet by design, not wedged. Restart the marker's clock instead
+             # of escalating, so the next look is a full window away; every
+             # other progress answer falls through to the unchanged escalation
+             # below. The always-on watcher applies the identical policy
+             # through the same owner (crew_wedge_progress).
+             #
+             # Bounded the same way it is there: a moving run licenses a DELAY,
+             # never permanent silence, because run progress is evidence about
+             # the RUN and not about the WORKER. Past
+             # RUN_PROGRESS_HOLD_MAX_DEFAULT consecutive holds the crew is
+             # escalated however healthy its run looks, and the streak resets so
+             # the cap reads as a repeating check-in rather than a one-shot.
+             holds=$(cat "$holds_file" 2>/dev/null || echo 0)
+             case "$holds" in ''|*[!0-9]*) holds=0 ;; esac
+             hold_max=${FM_RUN_PROGRESS_HOLD_MAX:-$RUN_PROGRESS_HOLD_MAX_DEFAULT}
+             case "$hold_max" in ''|*[!0-9]*) hold_max=$RUN_PROGRESS_HOLD_MAX_DEFAULT ;; esac
+             if [ "$holds" -lt "$hold_max" ]; then
+               holds=$(( holds + 1 ))
+               printf '%s\n' "$holds" > "$holds_file"
+               _now > "$marker"
+               log "held wedge escalation for $win ($progress, stale ${age}s, hold $holds/$hold_max)"
+               continue
+             fi
+             # Past the cap: alarm anyway, carrying the progress detail so the
+             # digest still reads as "the run is moving, this worker is not".
+             escalate_add "$state" "stale persisted ${age}s (possible wedge, validation run still progressing but this crew has been silent for $holds held windows: $(run_progress_detail "$progress")): $win"
+             ;;
+           stranded*) escalate_add "$state" "stale persisted ${age}s (possible wedge, validation run stranded: $(run_progress_detail "$progress")): $win" ;;
+           *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win" ;;
+         esac
          stale_marker_remove "$win" "$state" ;;
     esac
   done

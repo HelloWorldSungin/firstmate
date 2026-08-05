@@ -1106,6 +1106,125 @@ test_afk_nonterminal_working_merged_keeps_wedge_aging() {
   pass "AFK nonterminal working:+merged keeps wedge aging and re-escalates at bound"
 }
 
+# Away mode makes the same class of wedge call the always-on watcher does, so it
+# reads the same run-progress evidence through the same owner (crew_wedge_progress).
+# Without that, a walk-away digest would keep reporting a possible wedge for a
+# worker parked on a validation run that is demonstrably moving - the away-mode
+# shape of the exact bug fm-watch-triage.test.sh pins on the watcher side.
+#
+# Fixture: a quiet crew whose stale marker is already aged past the escalate
+# bound, so housekeeping reaches the escalation decision on this very pass.
+prime_daemon_wedge_at_bound() {  # <state> <task> <window> <pane-file>
+  local state=$1 task=$2 win=$3 pane=$4 key
+  printf 'working: starting no-mistakes validation\n' > "$state/$task.status"
+  printf 'idle prompt $\n' > "$pane"
+  fm_write_meta "$state/$task.meta" "window=$win" "kind=ship"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+}
+
+test_afk_progressing_run_holds_the_wedge_escalation() {
+  local dir state fakebin win pane key before
+  dir=$(make_supercase afk-wedge-run-progressing)
+  state="$dir/state"; fakebin="$dir/fakebin"; win="sess:fm-validating-w1"; pane="$dir/pane.txt"
+  key=$(printf '%s' "validating-w1" | tr ':/.' '___')
+  prime_daemon_wedge_at_bound "$state" validating-w1 "$win" "$pane"
+  before=$(cat "$state/.subsuper-stale-$key")
+
+  # The window inventory is listed by NAME (what real `tmux list-windows -F
+  # '#{window_name}'` prints), so the agent-liveness probe finds the endpoint
+  # and does not read it as a departed agent - which is separately, correctly,
+  # never absorbed.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="fm-validating-w1" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 \
+    FM_FAKE_RUN_PROGRESS='progress: progressing · test running, last activity 7m4s ago (silent 424s, bound 1800s)' \
+    housekeeping "$state"
+
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a crew parked on a progressing run was escalated as a possible wedge: $(cat "$state/.subsuper-escalations")"
+  [ -e "$state/.subsuper-stale-$key" ] || fail "the held escalation dropped the stale marker instead of restarting its clock"
+  [ "$(cat "$state/.subsuper-stale-$key")" != "$before" ] \
+    || fail "the held escalation did not restart the stale marker's clock"
+  pass "away mode holds a wedge escalation for a crew parked on a progressing validation run"
+}
+
+test_afk_stranded_and_absent_runs_still_wedge_escalate() {
+  local dir state fakebin win pane key
+
+  dir=$(make_supercase afk-wedge-run-stranded)
+  state="$dir/state"; fakebin="$dir/fakebin"; win="sess:fm-stranded-w1"; pane="$dir/pane.txt"
+  key=$(printf '%s' "stranded-w1" | tr ':/.' '___')
+  prime_daemon_wedge_at_bound "$state" stranded-w1 "$win" "$pane"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="fm-stranded-w1" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 \
+    FM_FAKE_RUN_PROGRESS='progress: stranded · test running, last activity 31m0s ago (silent 1860s, past the 1800s bound)' \
+    housekeeping "$state"
+  grep -q 'possible wedge' "$state/.subsuper-escalations" 2>/dev/null \
+    || fail "a stranded validation run did not escalate as a possible wedge"
+  grep -qF 'validation run stranded: test running, last activity 31m0s ago' "$state/.subsuper-escalations" \
+    || fail "the stranded escalation did not name the step that stopped: $(cat "$state/.subsuper-escalations")"
+  assert_absent "$state/.subsuper-stale-$key" "the stranded escalation left its stale marker standing"
+
+  # The original purpose of this alarm: no active run at all, which is what
+  # every no-evidence shape collapses to. It must behave exactly as before.
+  dir=$(make_supercase afk-wedge-run-absent)
+  state="$dir/state"; fakebin="$dir/fakebin"; win="sess:fm-norun-w1"; pane="$dir/pane.txt"
+  key=$(printf '%s' "norun-w1" | tr ':/.' '___')
+  prime_daemon_wedge_at_bound "$state" norun-w1 "$win" "$pane"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="fm-norun-w1" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 \
+    FM_FAKE_RUN_PROGRESS='progress: none · no run attributed to this crew' \
+    housekeeping "$state"
+  grep -q 'possible wedge' "$state/.subsuper-escalations" 2>/dev/null \
+    || fail "a crew wedged with no active run did not escalate"
+  grep -q 'validation run stranded' "$state/.subsuper-escalations" \
+    && fail "a crew with no run was described as having a stranded run"
+  assert_absent "$state/.subsuper-stale-$key" "the no-run escalation left its stale marker standing"
+
+  pass "away mode still wedge-escalates a stranded run and a crew with no run at all"
+}
+
+# The cap the watcher applies must apply here too - bin/fm-classify-lib.sh exists
+# precisely so the two supervisors cannot drift on overlapping triage, and an
+# uncapped away-mode hold would silence a hung worker for its run's whole
+# remaining length while the captain is away. Run progress is evidence about the
+# RUN, not about the WORKER: a moving pipeline may delay a digest, never suppress
+# one indefinitely.
+test_afk_progressing_run_escalates_anyway_past_the_hold_cap() {
+  local dir state fakebin win pane key verdict
+  dir=$(make_supercase afk-wedge-run-hold-cap)
+  state="$dir/state"; fakebin="$dir/fakebin"; win="sess:fm-holdcap-w1"; pane="$dir/pane.txt"
+  key=$(printf '%s' "holdcap-w1" | tr ':/.' '___')
+  prime_daemon_wedge_at_bound "$state" holdcap-w1 "$win" "$pane"
+  verdict='progress: progressing · test running, last activity 7m4s ago (silent 424s, bound 1800s)'
+
+  # Phase A: below the cap, held and counted, exactly as before.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="fm-holdcap-w1" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 FM_RUN_PROGRESS_HOLD_MAX=2 \
+    FM_FAKE_RUN_PROGRESS="$verdict" housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a hold below the cap escalated: $(cat "$state/.subsuper-escalations")"
+  [ "$(cat "$state/.subsuper-wedgeholds-$key" 2>/dev/null || echo 0)" = 1 ] \
+    || fail "the away-mode hold was not counted"
+
+  # Phase B: at the cap, with the run still reporting the same healthy verdict.
+  echo 2 > "$state/.subsuper-wedgeholds-$key"
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="fm-holdcap-w1" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 FM_RUN_PROGRESS_HOLD_MAX=2 \
+    FM_FAKE_RUN_PROGRESS="$verdict" housekeeping "$state"
+  grep -q 'possible wedge' "$state/.subsuper-escalations" 2>/dev/null \
+    || fail "a crew held to the cap never escalated in away mode"
+  grep -qF 'still progressing' "$state/.subsuper-escalations" \
+    || fail "the forced away-mode escalation did not say the run was still moving: $(cat "$state/.subsuper-escalations")"
+  grep -qF 'test running, last activity 7m4s ago' "$state/.subsuper-escalations" \
+    || fail "the forced away-mode escalation dropped the progress detail: $(cat "$state/.subsuper-escalations")"
+  assert_absent "$state/.subsuper-stale-$key" "the forced away-mode escalation left its stale marker standing"
+  assert_absent "$state/.subsuper-wedgeholds-$key" "the forced away-mode escalation did not reset the hold count"
+
+  pass "away mode caps consecutive run-progress holds: past the cap it escalates anyway, naming the still-moving run"
+}
+
 test_afk_genuine_done_still_terminal_stale() {
   local dir state out
   dir=$(make_supercase afk-genuine-done-stale)
@@ -1945,6 +2064,9 @@ test_pane_input_pending_honors_idle_override_after_border_strip
 test_classify_signal_dedup_against_scan
 test_classify_stale_dedup_against_signal
 test_afk_nonterminal_working_merged_keeps_wedge_aging
+test_afk_progressing_run_holds_the_wedge_escalation
+test_afk_stranded_and_absent_runs_still_wedge_escalate
+test_afk_progressing_run_escalates_anyway_past_the_hold_cap
 test_afk_genuine_done_still_terminal_stale
 test_pane_input_pending_bordered_idle_not_pending
 test_pane_input_pending_bordered_with_text_is_pending

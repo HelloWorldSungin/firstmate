@@ -31,6 +31,11 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
+# The validation-run progress reader used for the wedge-escalation decision.
+# Overridable for the same reason FM_CREW_STATE_BIN is: a test fixes the verdict
+# without a real worktree, run, or no-mistakes install.
+FM_RUN_PROGRESS_BIN="${FM_RUN_PROGRESS_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-run-progress.sh}"
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -468,6 +473,76 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# --- validation-run progress (the wedge-escalation gate) --------------------
+#
+# crew_absorb_class above answers "is there an active run", which is why a
+# worker parked on a healthy multi-minute pipeline call and a worker whose run
+# has stranded look identical to it: both report working. bin/fm-run-progress.sh
+# is the separate, narrower question - is that run MOVING - and this is where
+# both supervisors read it, so the two cannot drift into different wedge
+# policies.
+#
+# Like crew_absorb_class, this is NOT a pure status-file read: it makes a
+# bounded no-mistakes call. It is deliberately reached only at the moment an
+# escalation would otherwise be raised, so the cost is once per alarm rather
+# than once per poll - the per-poll triage path stays as cheap as it is today.
+
+# Print "<class>" or "<class> <detail>", where class is progressing, stranded,
+# or none. Anything unrecognized, unreadable, or absent collapses to none.
+crew_run_progress() {  # <id>
+  local id=$1 line rest class
+  [ -n "$id" ] || { printf 'none'; return; }
+  line=$("$FM_RUN_PROGRESS_BIN" "$id" 2>/dev/null) || true
+  case "$line" in progress:*) ;; *) printf 'none'; return ;; esac
+  rest=${line#progress: }
+  class=${rest%% *}
+  case "$class" in
+    progressing|stranded) printf '%s' "$rest" ;;
+    *) printf 'none' ;;
+  esac
+}
+
+# The progress line a wedge-escalation decision must use for crew <id>, given
+# <agent-state> - the backend's liveness verdict for that crew's endpoint
+# (alive|idle|dead|unknown), which each supervisor resolves through its own
+# backend plumbing. Prints the same three classes as crew_run_progress, and is
+# the ONE place the wedge policy is expressed, so the watcher and the away-mode
+# daemon cannot drift:
+#
+#   * Only `progressing` may quiet an alarm. Every other answer - no run, a run
+#     parked at a gate, a stranded step, a lookup that could not complete, an
+#     unparseable status - is `none` or `stranded`, and leaves the escalation
+#     exactly as it was before this gate existed.
+#   * A confidently DEAD agent short-circuits to `none` without paying for the
+#     read, however well its run is moving. The pipeline executes its own steps,
+#     so a run can keep advancing with nobody left to answer its next gate; that
+#     is a wedge, and it is the one shape "the run is fine" would otherwise
+#     hide.
+#
+# Callers read the class once and reuse it for both the hold decision and the
+# escalation's own wording, so an alarm costs at most one bounded call.
+crew_wedge_progress() {  # <id> <agent-state>
+  local id=$1 agent=${2:-unknown}
+  if [ -z "$id" ] || [ "$agent" = dead ]; then printf 'none'; return; fi
+  crew_run_progress "$id"
+}
+
+# The detail half of a progress line, with its class and separator removed;
+# empty when the line carries no detail. Both supervisors quote this into an
+# escalation reason, so the trimming has one owner rather than a hand-rolled
+# prefix strip in each.
+run_progress_detail() {  # <progress-line>
+  local line=${1:-} detail
+  case "$line" in
+    *' '*) detail=${line#* } ;;
+    *) return 0 ;;
+  esac
+  case "$detail" in
+    '· '*) detail=${detail#'· '} ;;
+  esac
+  printf '%s' "$detail"
 }
 
 # 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably

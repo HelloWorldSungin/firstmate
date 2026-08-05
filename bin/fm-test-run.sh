@@ -140,6 +140,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-run-progress.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -420,6 +421,7 @@ tests/fm-pr-check-security.test.sh 199573
 tests/fm-procevent.test.sh 42789
 tests/fm-public-followup.test.sh 23365
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
+tests/fm-run-progress.test.sh 333
 tests/fm-secondmate-harness.test.sh 87895
 tests/fm-secondmate-lifecycle-e2e.test.sh 4929
 tests/fm-secondmate-liveness.test.sh 12553
@@ -896,6 +898,12 @@ families_for_changed_path() {
       ;;
     bin/fm-watch*|bin/fm-wake*|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
+      printf '%s\n' watcher-wake-lock
+      ;;
+    # The wedge-escalation gate's evidence: its own contract suite, plus both
+    # supervisors that consult it.
+    bin/fm-run-progress.sh)
+      printf '%s\n' '__script__:fm-run-progress.test.sh'
       printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-afk*)

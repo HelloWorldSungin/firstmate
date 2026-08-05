@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record supports current session-start, turn-end, watcher-continuity, and wedge-alarm guarantees.
+This record supports current session-start, turn-end, watcher-continuity, wedge-escalation, and wedge-alarm guarantees.
 Operator behavior and active limits remain in the linked current guides.
 Task-specific chronology, temporary paths, run identifiers, and delivery transcripts remain in private reports or PR evidence.
 
@@ -292,6 +292,36 @@ Observed output:
 ```
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
+
+## Validation-run progress evidence
+
+The wedge-escalation hold reads the pipeline's own step activity, so the fields it parses are a `no-mistakes` contract rather than an assumption of firstmate's.
+This pass ran on 2026-08-05 against no-mistakes v1.41.2 (867d64d), reading a live mid-pipeline run of another task read-only.
+
+```sh
+no-mistakes axi status
+```
+
+Observed shape, which is what `bin/fm-run-progress.sh` parses:
+
+```
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    test,running,7m9s,"7m4s ago: log: I'll start by understanding the change and the repository layout.","2698359",starting
+```
+
+`last_activity` is quoted and carries commas of its own, the declared row count bounds the table, and the pipeline prefixes the field with `quiet` once its own `step_quiet_warning` (`10m` in the installed default configuration) elapses.
+Against that same live run:
+
+```sh
+FM_HOME=<home> bin/fm-run-progress.sh <task-id>
+# progress: progressing · test running, last activity 14m23s ago (silent 863s, bound 1800s)
+
+FM_HOME=<home> FM_RUN_STRANDED_SILENCE_SECS=60 bin/fm-run-progress.sh <task-id>
+# progress: stranded · test running, last activity 14m24s ago (silent 864s, past the 60s bound)
+```
+
+The same task's supervision had produced five consecutive `possible wedge` escalations against this run, which is the behavior the hold removes.
+`tests/fm-run-progress.test.sh` pins that parse and every class portably against this recorded shape; refresh this record when the `active_steps` fields or the `quiet` rendering change.
 
 ## Composer emptiness on an idle primary
 
