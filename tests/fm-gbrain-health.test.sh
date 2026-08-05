@@ -351,8 +351,8 @@ test_unsupported_capture_schema_is_reported_not_fatal() {
 
 # A capture-status call that itself times out is reported as such and does
 # not bring the rest of the read down. The whole health read is bounded by
-# --timeout, so a stuck capture producer cannot burn that budget past its
-# slice.
+# --timeout, so a stuck capture producer cannot burn past what is left of that
+# budget however long it hangs for.
 test_capture_status_timeout_is_reported_not_fatal() {
   local home out bindir
   home=$(make_ready_home cap-timeout)
@@ -374,6 +374,59 @@ SH
   pass "capture-status timeout is reported without failing the health read"
 }
 
+# The capture read is the LAST bounded step, so it is entitled to whatever is
+# left of the budget rather than to one step's nominal share. Its cost is the
+# only one that grows with the fleet's history - the outbox never shrinks - so
+# capping it at a share would eventually drop the pending count and the last
+# successful capture the panel exists to surface, and would do it silently.
+test_capture_status_may_spend_the_remaining_budget() {
+  local home out bindir
+  home=$(make_ready_home cap-tail)
+  bindir=$(make_script_dir "$TMP_ROOT/bin-cap-tail")
+  # Slower than one nominal share of a 5-second budget (1s), well inside what
+  # is left after four probes that answer at once.
+  cat > "$bindir/fm-gbrain-capture.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = "status" ] || exit 2
+sleep 3
+printf '%s\n' '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":81,"pending":2,"failed":0,"unreadable":0},"documents":[{"status":"captured","captured_at":"2026-08-05T21:07:59Z"}]}'
+SH
+  chmod +x "$bindir/fm-gbrain-capture.sh"
+  patch_curl "$TMP_ROOT/probe"
+  out=$(PATH="$TMP_ROOT/probe:$PATH" \
+        FM_HOME="$home" FM_ROOT="$ROOT" \
+        bash "$bindir/fm-gbrain-health.sh" --timeout 5 --json 2>&1)
+  printf '%s' "$out" | jq -e '
+    .capture.archived == 81
+      and .capture.pending == 2
+      and .capture.last_capture_at == "2026-08-05T21:07:59Z"
+      and .capture.last_error == null
+  ' >/dev/null || fail "capture read was refused the remaining budget: $out"
+  pass "the capture read may spend what the probes left of the budget"
+}
+
+# Each flag consumes exactly its own tokens. A two-token flag that ate the one
+# behind it would silently drop --json and, worse, silently accept an unknown
+# flag instead of refusing it.
+test_flags_are_order_independent_and_still_validated() {
+  local home out bindir status
+  home=$(make_ready_home flag-order)
+  bindir=$(make_script_dir "$TMP_ROOT/bin-flag-order")
+  install_capture_stub "$bindir" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  patch_curl "$TMP_ROOT/probe"
+  out=$(PATH="$TMP_ROOT/probe:$PATH" FM_HOME="$home" FM_ROOT="$ROOT" \
+        bash "$bindir/fm-gbrain-health.sh" --timeout 5 --json 2>&1)
+  printf '%s' "$out" | jq -e '.schema == "fm-gbrain-health.v1"' >/dev/null \
+    || fail "--timeout before --json did not produce a document: $out"
+  status=0
+  out=$(PATH="$TMP_ROOT/probe:$PATH" FM_HOME="$home" FM_ROOT="$ROOT" \
+        bash "$bindir/fm-gbrain-health.sh" --timeout 5 --bogus 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "an unknown flag after --timeout was accepted: $out"
+  printf '%s' "$out" | grep -q "unknown flag: --bogus" \
+    || fail "an unknown flag after --timeout was not named: $out"
+  pass "flags are order independent and an unknown flag is still refused"
+}
+
 test_unconfigured_home_reports_no_brain
 test_configured_uninitialized_reports_seeded_state
 test_healthy_home_reports_ok
@@ -383,3 +436,5 @@ test_capture_status_reports_pending_failed_and_last_error
 test_maintenance_override_is_surfaced_verbatim
 test_unsupported_capture_schema_is_reported_not_fatal
 test_capture_status_timeout_is_reported_not_fatal
+test_capture_status_may_spend_the_remaining_budget
+test_flags_are_order_independent_and_still_validated

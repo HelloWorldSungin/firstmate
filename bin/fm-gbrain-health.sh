@@ -97,9 +97,12 @@ require_tool jq
 
 # --- argument parsing -------------------------------------------------------
 
+# Each arm consumes exactly the tokens it read, so a two-token flag cannot eat
+# the one behind it and every remaining token is still classified by the arms
+# below - an unknown flag after --timeout dies rather than being skipped.
 while [ $# -gt 0 ]; do
   case $1 in
-    --json) ;;
+    --json) shift ;;
     --timeout)
       [ $# -ge 2 ] || die "--timeout requires a value"
       case $2 in '' | *[!0-9]*) die "--timeout requires a positive integer" ;; esac
@@ -110,7 +113,6 @@ while [ $# -gt 0 ]; do
     -*) die "unknown flag: $1" ;;
     *) die "unexpected argument: $1" ;;
   esac
-  shift
 done
 
 GENERATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -161,21 +163,37 @@ fi
 # --- the shared probe budget ------------------------------------------------
 #
 # Every bounded step in this command draws from one budget: the four
-# reachability probes and the capture-status read. Each step takes the smaller
-# of its nominal slice and whatever is left before the deadline, so no
-# combination of hangs can push the command past --timeout and out of the
-# dashboard's poll window. Steps run sequentially; parallel curls with their
-# own forks would burn more of the budget than the probes themselves need.
+# reachability probes and the capture-status read. Steps run sequentially;
+# parallel curls with their own forks would burn more of the budget than the
+# probes themselves need.
+#
+# A step with peers still to run takes budget_slice(): its nominal share, or
+# whatever is left if that is less, so one hang cannot starve the steps behind
+# it. The LAST step takes budget_remaining() instead - nothing follows it, so
+# capping it at a nominal share would leave the tail of the budget unspent
+# while the step most likely to need it (the capture read is the only one whose
+# cost grows with the size of the outbox) is refused. Either way the sum of
+# every step is bounded by --timeout, so no combination of hangs can push this
+# command out of the dashboard's poll window.
+#
+# BUDGET_STEPS counts all five, not just the probes, so four hanging probes
+# still leave the capture read the share that was reserved for it.
 
 BUDGET_STEPS=5
 BUDGET_STARTED=$(date +%s)
 BUDGET_SLICE=$(( TIMEOUT / BUDGET_STEPS ))
 [ "$BUDGET_SLICE" -lt 1 ] && BUDGET_SLICE=1
 
-budget_slice() {  # -> echoes the seconds the next bounded step may spend
+budget_remaining() {  # -> echoes the seconds left before the deadline
   local remaining
   remaining=$(( TIMEOUT - ( $(date +%s) - BUDGET_STARTED ) ))
   [ "$remaining" -lt 1 ] && remaining=1
+  printf '%s\n' "$remaining"
+}
+
+budget_slice() {  # -> echoes the seconds a step with peers behind it may spend
+  local remaining
+  remaining=$(budget_remaining)
   if [ "$BUDGET_SLICE" -le "$remaining" ]; then
     printf '%s\n' "$BUDGET_SLICE"
   else
@@ -330,7 +348,7 @@ capture_state() {  # -> echoes row
   enabled=$([ "$INDEX_STATE" = "ok" ] && echo true || echo false)
   detail=
   [ "$enabled" = true ] || detail="the local index at $FM_HOME is not bootstrapped, so captured documents wait in the durable outbox"
-  if ! out=$(fm_run_timed "$(budget_slice)" "$SCRIPT_DIR/fm-gbrain-capture.sh" status --json 2>/dev/null); then
+  if ! out=$(fm_run_timed "$(budget_remaining)" "$SCRIPT_DIR/fm-gbrain-capture.sh" status --json 2>/dev/null); then
     jq -cn --argjson e "$enabled" --arg d "$detail" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status could not be read", detail: (if $d == "" then null else $d end)}'
     return 0
   fi
