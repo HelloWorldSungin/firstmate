@@ -145,6 +145,45 @@ const degradedEnvelope = {
   // green because hosted synthesis is up.
   deepEqual("degraded embedding only flips retrieval", tones,
     ["green", "green", "amber", "green", "green", "green"]);
+  // The card's value is the aggregate "degraded", so its detail is the only
+  // place the operator can read WHICH leg went and why - the reason rides on
+  // the leg that failed, and the healthy leg beside it stays a bare
+  // model @ endpoint.
+  const retrieval = view.cards.find((c) => c.label === "Retrieval");
+  check("degraded embedding states its reason",
+    retrieval.detail.includes("embed-test @ http://127.0.0.1:11434/v1: no answer at http://127.0.0.1:11434/v1"),
+    retrieval.detail);
+  check("healthy reranker states no reason",
+    retrieval.detail.includes("rerank-test @ http://127.0.0.1:8081/v1 /"),
+    retrieval.detail);
+}
+
+// --- a degraded reranker with a healthy embedding ---------------------------
+//
+// The two local legs fail differently: a dead embedding takes hybrid search
+// out, a dead reranker only drops the reranked ordering. The panel keeps that
+// distinction by attributing each reason to its own leg.
+
+{
+  const view = buildGBrainHealth({
+    ...degradedEnvelope,
+    health: {
+      ...degradedEnvelope.health,
+      retrieval: {
+        state: "degraded",
+        embedding: { state: "ok", model: "embed-test", endpoint: "http://127.0.0.1:11434/v1", detail: "ok" },
+        reranker: { state: "degraded", model: "rerank-test", endpoint: "http://127.0.0.1:8081/v1", detail: "no answer at http://127.0.0.1:8081/v1; search falls back to non-reranked ordering" },
+        main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" },
+      },
+    },
+  });
+  const retrieval = view.cards.find((c) => c.label === "Retrieval");
+  check("degraded reranker states its reason",
+    retrieval.detail.includes("rerank-test @ http://127.0.0.1:8081/v1: no answer at http://127.0.0.1:8081/v1; search falls back to non-reranked ordering"),
+    retrieval.detail);
+  check("healthy embedding states no reason",
+    retrieval.detail.includes("embed-test @ http://127.0.0.1:11434/v1 /"),
+    retrieval.detail);
 }
 
 // --- degraded synthesis with healthy retrieval -----------------------------

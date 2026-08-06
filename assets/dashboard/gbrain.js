@@ -40,6 +40,17 @@ function worstTone(tones) {
   return winner;
 }
 
+// The retrieval card's value is the aggregate state, so it cannot say which
+// leg went. Each leg that is not ok therefore carries its own reason, the same
+// way the synthesis card carries its detail - a dead embedding takes hybrid
+// search out, a dead reranker only drops the reranked ordering, and the
+// operator needs to tell those apart.
+function retrievalLeg(head, probe) {
+  const state = text(probe?.state);
+  if (!state || state === "ok") return head;
+  return `${head}: ${text(probe?.detail) || state}`;
+}
+
 function ageLabel(ageSeconds) {
   if (typeof ageSeconds !== "number" || !Number.isFinite(ageSeconds) || ageSeconds < 0) return "unknown";
   if (ageSeconds < 60) return `${Math.round(ageSeconds)}s ago`;
@@ -106,8 +117,8 @@ export function buildGBrainHealth(envelope) {
     tone: retrievalState === "ok" ? "green" : retrievalState === "degraded" ? "amber" : retrievalState === "absent" ? "unknown" : "unknown",
     value: retrievalState,
     detail: [
-      `${text(embedding.model) || "no embedding model"} @ ${text(embedding.endpoint) || "no endpoint"}`,
-      `${text(reranker.model) || "no reranker model"} @ ${text(reranker.endpoint) || "no endpoint"}`,
+      retrievalLeg(`${text(embedding.model) || "no embedding model"} @ ${text(embedding.endpoint) || "no endpoint"}`, embedding),
+      retrievalLeg(`${text(reranker.model) || "no reranker model"} @ ${text(reranker.endpoint) || "no endpoint"}`, reranker),
       `${text(mainBrain.state) || "no main brain"}: ${text(mainBrain.detail) || ""}`,
     ].filter(Boolean).join(" / "),
     tooltip: "Local search uses embedding + reranker; the main-brain read is the optional cross-home share.",
