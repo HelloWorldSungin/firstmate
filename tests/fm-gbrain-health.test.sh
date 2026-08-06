@@ -104,26 +104,6 @@ make_script_dir() {  # <bin-dir>
   printf '%s\n' "$bindir"
 }
 
-# Override fm-gbrain-health.sh's reachability probe by injecting an
-# environment variable the script honours in test mode. Production mode calls
-# curl directly; this stub returns the synthetic answer without touching the
-# network, so the tests are portable.
-install_probe_stub() {  # <dir> <state>  state in ok|down
-  # shellcheck disable=SC2034 # state is the parameter name for the harness the stub reads at runtime.
-  local stubdir=$1 state=$2
-  mkdir -p "$stubdir"
-  cat > "$stubdir/probe-stub.sh" <<'SH'
-#!/usr/bin/env bash
-# Stand-in for curl reachability probe. Honours FM_PROBE_STATE: ok returns 0,
-# down returns 124 (timeout).
-# shellcheck disable=SC2034 # state is the harness the stub reads at runtime.
-state="${FM_PROBE_STATE:-ok}"
-if [ "$state" = down ]; then exit 124; fi
-exit 0
-SH
-  chmod +x "$stubdir/probe-stub.sh"
-}
-
 # Patch fm-gbrain-health.sh's probe_url at runtime by prepending a shim dir
 # whose curl writes the synthetic answer. The production curl binary is
 # resolved last on PATH, so this stub wins. FM_PROBE_STATE controls the answer:

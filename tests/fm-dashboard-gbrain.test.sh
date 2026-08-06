@@ -7,10 +7,11 @@
 # a clean test home. The health endpoint is exercised against three home
 # shapes: configured with a brain, configured without a brain, and configured
 # with a brain whose capture status is unsupported. The search endpoint is
-# exercised against a working brain and against every refusal shape: empty
-# query, single-character query, oversized body, hostile query (shell
-# metacharacters are treated as search bytes), and a second concurrent search
-# while the first is still running.
+# exercised against a working brain, against a brain that accepts the search
+# but never answers (the endpoint's own deadline is what ends it), and against
+# every refusal shape: empty query, single-character query, oversized body,
+# hostile query (shell metacharacters are treated as search bytes), and a
+# second concurrent search while the first is still running.
 #
 # No real brain is required, but this suite does shell out to bin/fm-recall.sh
 # against a recording stub, so a real gbrain binary is not needed. The stub
@@ -68,10 +69,12 @@ free_port() {
 # Replaces bin/fm-recall.sh in the fixture server's per-test bin directory.
 # The server resolves the wrapper as $SCRIPT_DIR/fm-recall.sh rather than off
 # PATH, so that copy is what a search runs and what decides the wrapper's
-# answer. sleep > 0 is meant to simulate a slow brain whose search would
-# otherwise blow the dashboard's own deadline.
+# answer. sleep-seconds > 0 simulates a slow brain: the delay is baked into the
+# stub AFTER its argv assertions, so a slow search still proves the endpoint
+# invoked the wrapper correctly before the dashboard's own deadline killed it.
 install_recall_stub() {
-  local dir=$1 body=$2 sleep=${3:-0}
+  local dir=$1 body=$2 sleep_seconds=${3:-0} delay=
+  [ "$sleep_seconds" -gt 0 ] && delay="sleep $sleep_seconds"
   mkdir -p "$dir"
   cat > "$dir/fm-recall.sh" <<SH
 #!/usr/bin/env bash
@@ -82,7 +85,7 @@ case "\${1:-}" in
     [ "\${5:-}" = "--limit" ] || { echo "stub: expected --limit" >&2; exit 2; }
     [ "\${7:-}" = "--timeout" ] || { echo "stub: expected --timeout" >&2; exit 2; }
     [ "\${9:-}" = "--" ] || { echo "stub: expected --" >&2; exit 2; }
-    [ "\$sleep_seconds" -gt 0 ] 2>/dev/null && sleep "\$sleep_seconds"
+    $delay
     printf '%s\n' '$body'
     exit 0
     ;;
@@ -90,10 +93,6 @@ case "\${1:-}" in
 esac
 SH
   chmod +x "$dir/fm-recall.sh"
-  if [ "$sleep" -gt 0 ]; then
-    printf '#!/usr/bin/env bash\nsleep %s\nexec %s/fm-recall.sh "$@"\n' "$sleep" "$dir" > "$dir/fm-recall.sh"
-    chmod +x "$dir/fm-recall.sh"
-  fi
 }
 
 # Materialise a minimal firstmate home: a data dir so the home looks like a
@@ -334,6 +333,48 @@ EOF
       and .sources[0].state == "ok"
   ' >/dev/null || fail "search envelope was not cleaned: $out"
   pass "successful search returns the cleaned envelope the page consumes"
+}
+
+# A brain that accepts the search but never answers must not hold the request
+# open forever. The endpoint bounds the wrapper at GBRAIN_SEARCH_TIMEOUT_SECONDS
+# + 1 (13s today) and kills the child, so the operator gets 504 / timed_out
+# rather than a hung tab. This is the "brain that does not answer" degraded
+# path: the panel degrades, the dashboard does not.
+test_search_returns_504_when_recall_exceeds_budget() {
+  local home bindir
+  home=$(make_home search-slow)
+  bindir=$(make_bin_dir search-slow)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  # 15s is longer than the endpoint's 13s deadline, so the dashboard's own kill
+  # is what ends the search - not the stub returning, and not curl giving up.
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","sources":[],"results":[]}' 15
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  local out code
+  out=$(curl -sS -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  code=$(printf '%s' "$out" | tail -1)
+  [ "$code" = "504" ] || fail "slow search returned $code instead of 504: $out"
+  printf '%s' "$out" | head -1 | jq -e '
+    .schema == "fm-gbrain-search.v1"
+      and .reason == "timed_out"
+      and (.results | length) == 0
+      and (.detail | test("did not answer"))
+  ' >/dev/null || fail "slow search did not report reason timed_out: $out"
+  # The gate was released, so the next search is not wedged behind the dead one.
+  # A timeout that leaked the in-flight slot would make every later search 429.
+  out=$(curl -sS -m 4 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":""}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '.reason == "query_too_short"' >/dev/null \
+    || fail "the search gate stayed held after a timeout: $out"
+  pass "a search that outlives the deadline returns 504 with reason timed_out"
 }
 
 # A hostile query - shell metacharacters, embedded backticks, command
@@ -587,6 +628,7 @@ test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
 test_search_preserves_same_as_local_source_state
+test_search_returns_504_when_recall_exceeds_budget
 test_search_treats_hostile_query_as_text
 test_search_refuses_second_concurrent_search
 test_search_refuses_empty_or_short_query
