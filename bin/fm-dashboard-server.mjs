@@ -1040,9 +1040,10 @@ function sameOriginRequest(request) {
 // a token endpoint.
 //
 // Both reads are bounded, both fail closed, and both leave the dashboard's
-// other panels untouched on any failure. The refresh cadence matches the
-// snapshot poll so the operator never sees health that is older than the
-// fleet snapshot beside it.
+// other panels untouched on any failure. The refresh cadence is the history
+// poll, not the snapshot poll: a health read shells out to a probe that can
+// take seconds, so it rides the slower of the two intervals and the panel
+// says how old the last successful read is.
 class GBrainState {
   constructor(config, clients) {
     this.config = config;

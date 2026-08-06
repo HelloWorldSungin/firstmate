@@ -507,6 +507,37 @@ for (const [reason, expectedTone] of reasonExpectations) {
     sources: [{ source: "main", state: "failed", detail: "the main brain refused the read" }],
   }, null);
   deepEqual("the partial-corpus dot carries its tone as a class", dots(results).map((d) => d.className), ["dot red"]);
+
+  // --- a routine health repaint does not erase the search ------------------
+  //
+  // The panel repaints on every health broadcast, which arrives on the health
+  // poll with no user action behind it. The results region belongs to the
+  // search, so a repaint must leave the operator's results - and the failure
+  // notice a degraded search left behind - exactly where they were.
+
+  paintGBrainSearchResults(elements, {
+    schema: "fm-gbrain-search.v1",
+    query: "fleet supervision",
+    results: [
+      { source: "local", slug: "task/one", title: "One", score: 0.5, excerpt: "body" },
+      { source: "local", slug: "task/two", title: "Two", score: 0.4, excerpt: "body" },
+    ],
+    sources: [],
+  }, null);
+  equal("a search paints one card per result", results.children.length, 2);
+  paintGBrainPanel(elements, configuredEnvelope);
+  equal("a routine health repaint keeps the search results", results.children.length, 2);
+  check("the kept results are the same cards", results.textContent.includes("task/one") && results.textContent.includes("task/two"),
+    `received ${JSON.stringify(results.textContent)}`);
+
+  paintGBrainSearchResults(elements, null, searchFailure("timed_out", "the brain did not answer within the search timeout"));
+  paintGBrainPanel(elements, configuredEnvelope);
+  equal("a routine health repaint keeps a search failure notice", results.textContent, searchReasonLabel("timed_out"));
+
+  // A brain that goes unconfigured disables the search, and results from a
+  // search that can no longer be repeated are the one thing worth clearing.
+  paintGBrainPanel(elements, noBrainEnvelope);
+  equal("losing the brain clears the stale results", results.children.length, 0);
 }
 
 if (failures.length) {

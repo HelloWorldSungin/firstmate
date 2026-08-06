@@ -277,7 +277,13 @@ export function paintGBrainPanel(elements, envelope) {
     const prior = searchForm.parentNode?.querySelector(".gbraintron-hint");
     if (prior) prior.remove();
   }
-  if (results) put(results, []);
+  // The results region belongs to the search, not to the health read. A
+  // routine repaint arrives on every health broadcast - about once a minute -
+  // and must leave whatever the operator is reading alone, results and search
+  // failure notices alike. The one transition that makes prior results
+  // meaningless is the brain going unconfigured, because the search that
+  // produced them can no longer be repeated.
+  if (results && searchDisabled) put(results, []);
   return view;
 }
 
