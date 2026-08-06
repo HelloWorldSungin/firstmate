@@ -388,6 +388,8 @@ test_brief_records_resolved_work_items() {
     "$brief" "brief did not show the worker the full tracker URL"
   assert_grep 'Reference each full URL in the PR body' \
     "$brief" "brief did not require full tracker URLs in the PR body"
+  assert_grep 'Amend the existing PR body rather than replacing it' \
+    "$brief" "work-item brief let a worker clobber the pipeline-owned PR body"
   assert_grep 'leave its bookkeeping to firstmate' \
     "$brief" "brief did not tell the worker who owns cross-tracker bookkeeping"
   assert_no_grep 'comment on it with a substantive summary' \

@@ -2,6 +2,7 @@ import { buildHealth, buildInbox, formatAge } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
 import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
 import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
+import { buildGBrainHealth, paintGBrainPanel, paintGBrainSearchResults, searchFailure, searchReasonLabel } from "./gbrain.js";
 
 const ui = {
   signals: document.querySelector("#signals"),
@@ -37,6 +38,14 @@ const ui = {
   reportNotices: document.querySelector("#report-notices"),
   reportBody: document.querySelector("#report-body"),
   reportClose: document.querySelector("#report-close"),
+  gbraintronNote: document.querySelector("#gbraintron-note"),
+  gbraintronNotices: document.querySelector("#gbraintron-notices"),
+  gbraintronStrip: document.querySelector("#gbraintron-strip"),
+  gbraintronSearchForm: document.querySelector("#gbraintron-search-form"),
+  gbraintronSearchInput: document.querySelector("#gbraintron-search-input"),
+  gbraintronSearchLimit: document.querySelector("#gbraintron-search-limit"),
+  gbraintronSearchButton: document.querySelector("#gbraintron-search-button"),
+  gbraintronResults: document.querySelector("#gbraintron-results"),
   themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
   notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
 };
@@ -1167,6 +1176,104 @@ async function showTaskTimeline(taskId) {
   }
 }
 
+// --- GBrain panel -----------------------------------------------------------
+//
+// The panel reads its health envelope from /api/gbrain/health and submits
+// searches to /api/gbrain/search. Both pass through the same authorize()
+// gate as the rest of the surface, so the panel inherits the same
+// authentication and rate limiting without owning any of it. The render
+// path is independent of fetchSnapshot/fetchHistory: the brain is
+// optional, so its panel can render an empty state without ever blocking
+// the fleet view, and its own update cadence is the server's history-poll
+// interval rather than the faster snapshot poll.
+
+const gbraintronElements = {
+  panel: document.querySelector("#gbraintron"),
+  strip: ui.gbraintronStrip,
+  notice: ui.gbraintronNotices,
+  searchForm: ui.gbraintronSearchForm,
+  searchInput: ui.gbraintronSearchInput,
+  searchLimit: ui.gbraintronSearchLimit,
+  searchButton: ui.gbraintronSearchButton,
+  results: ui.gbraintronResults,
+  refreshNote: ui.gbraintronNote,
+  // The panel's cards are .health-card and .history-card nodes, both of which
+  // ANCHOR_SELECTOR names, and a health poll replaces every one of them twice.
+  // Hand the panel this module's anchor-aware replacer so a reader parked on a
+  // GBrain card is not silently dropped on the next push.
+  replaceChildren,
+};
+
+function paintGBraintronRefreshNote(envelope) {
+  if (!gbraintronElements.refreshNote) return;
+  const status = envelope?.status || {};
+  if (status.phase === "first_run") {
+    gbraintronElements.refreshNote.textContent = "Taking the first health read";
+  } else if (status.refreshing) {
+    gbraintronElements.refreshNote.textContent = "Refreshing";
+  } else if (status.last_success_at) {
+    gbraintronElements.refreshNote.textContent = `read ${formatAge(status.last_success_age_seconds)} ago`;
+  } else if (status.error) {
+    gbraintronElements.refreshNote.textContent = "Last read failed; retrying automatically";
+  } else {
+    gbraintronElements.refreshNote.textContent = "Waiting for the first health read";
+  }
+}
+
+function renderGBraintron(envelope) {
+  state.gbraintron = envelope;
+  if (!envelope) return;
+  paintGBraintronRefreshNote(envelope);
+  paintGBrainPanel(gbraintronElements, envelope);
+}
+
+async function fetchGBraintronHealth() {
+  try {
+    const response = await fetch("/api/gbrain/health", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const envelope = await response.json();
+    if (envelope.schema !== "fm-gbrain-health.v1") throw new Error("unsupported gbraintron health envelope");
+    renderGBraintron(envelope);
+  } catch (error) {
+    renderGBraintron({
+      schema: "fm-gbrain-health.v1",
+      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
+      config: { query_max_bytes: 1024, result_limit_max: 16 },
+      health: null,
+    });
+  }
+}
+
+// The body for /api/gbrain/search is one JSON object whose every field is
+// type-checked here before it goes over the wire. The dashboard never
+// constructs a request from anything other than the input field's current
+// textContent, so the server's byte cap and the page's maxLength together
+// keep the body small without further effort.
+async function runGBraintronSearch(query, limit) {
+  const elements = gbraintronElements;
+  if (elements.searchButton) elements.searchButton.disabled = true;
+  try {
+    const response = await fetch("/api/gbrain/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, limit }),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.schema !== "fm-gbrain-search.v1") {
+      const reason = payload?.reason || (response.ok ? "unsupported_schema" : `http_${response.status}`);
+      const detail = payload?.detail;
+      paintGBrainSearchResults(elements, null, searchFailure(reason, detail || searchReasonLabel(reason)));
+      return;
+    }
+    paintGBrainSearchResults(elements, payload, null);
+  } catch (error) {
+    paintGBrainSearchResults(elements, null, { tone: "red", text: `The search could not be sent: ${error.message}` });
+  } finally {
+    if (elements.searchButton) elements.searchButton.disabled = false;
+  }
+}
+
 function connectEvents() {
   clearTimeout(state.reconnectTimer);
   state.eventSource?.close();
@@ -1193,6 +1300,14 @@ function connectEvents() {
     try {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-events.v1") renderActivityEnvelope(envelope);
+    } catch {
+      source.close();
+    }
+  });
+  source.addEventListener("gbrain_health", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-gbrain-health.v1") renderGBraintron(envelope);
     } catch {
       source.close();
     }
@@ -1250,6 +1365,20 @@ ui.reportDialog.addEventListener("close", () => {
   replaceChildren(ui.reportNotices, []);
 });
 
+// Submitting the search form fires one read-only GBrain search. The submit
+// handler is bound even on a configured home with no input: an empty form
+// submission is the same as a no-op for the wrapper, and the form's
+// novalidate state lets Enter inside the input box fire the search without
+// needing a click.
+if (ui.gbraintronSearchForm) {
+  ui.gbraintronSearchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = ui.gbraintronSearchInput?.value || "";
+    const limit = Number(ui.gbraintronSearchLimit?.value || 8);
+    void runGBraintronSearch(query, limit);
+  });
+}
+
 ui.activityForm.addEventListener("change", () => {
   for (const key of Object.keys(state.activity.filters)) {
     state.activity.filters[key] = ui.activityForm.elements[key].value;
@@ -1280,6 +1409,8 @@ initializeNotifications();
 void fetchSnapshot();
 void fetchHistory();
 void fetchActivity();
+void fetchGBraintronHealth();
 renderHistory();
 renderActivity();
+renderGBraintron(state.gbraintron);
 connectEvents();

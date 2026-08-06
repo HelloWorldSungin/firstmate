@@ -53,6 +53,8 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
 
 1. **Pin.** The version in force is the one recorded above, and it moves only by editing this file in the same change that performs the upgrade.
    Select the new tag explicitly; `latest` is not a pin.
+   That recorded string is also the version the dashboard's GBrain panel quotes: [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) reads the first backticked `v`-prefixed release token in this file rather than asking a running executable what it is.
+   Keep the pin first among such tokens, so this step is what keeps the panel true as well.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.
@@ -87,6 +89,15 @@ If an autopilot unit exists before a future upgrade, leave it unchanged unless a
 A matching filename or generic GBrain-generated unit shape is not ownership proof.
 Do not run `gbrain autopilot --uninstall` on this shared user home because its cleanup targets ignore `GBRAIN_HOME` and sweep user-home launchd, systemd, OpenClaw, crontab, and wrapper artifacts.
 Clean up only an exact artifact with separate proof that this deployment created and still owns it.
+
+### Announce a maintenance window
+
+The brain stops answering while upgrade steps 4 and 5 run, and the same is true of a reindex or an embedding migration below.
+Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free text in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage, and unset it once the step-7 gate passes.
+`bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
+The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
+For the installed user service that means a systemd drop-in: [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) rewrites its environment file on every install and carries only the names [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) documents.
+An unannounced window degrades rather than breaks: the panel reports the retrieval and synthesis legs it could not reach, capture keeps queueing into the durable outbox and drains on a later run, and fleet supervision is unaffected either way ([dashboard.md](dashboard.md#gbrain) owns what each panel state means).
 
 ## Initialize and configure retrieval
 
@@ -224,6 +235,7 @@ Check which one a home has before planning any destructive step, because a home 
 
 ### Rebuilding a damaged index
 
+Announce the window first ([Announce a maintenance window](#announce-a-maintenance-window)), because a wiped index reads as a brain that lost its memory until it is rebuilt.
 `reinit-pglite` wipes the index and re-creates it at a chosen model and dimension, preserving the old one as `<path>.bak`; rolling back is moving that directory back.
 It also clears the brain's own database-plane configuration.
 The reranker, the hosted synthesis model, and the provider base URLs are stored there, so a reinitialized brain silently retrieves without reranking until [Initialize and configure retrieval](#initialize-and-configure-retrieval) is applied again.
