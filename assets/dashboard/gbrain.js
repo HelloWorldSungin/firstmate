@@ -1,4 +1,4 @@
-// gbraintron.js - the read-only GBrain health panel and semantic search box.
+// gbrain.js - the read-only GBrain health panel and semantic search box.
 //
 // The brain is optional. A home without a brain reports configured: false and
 // renders a single card that says so, which is the normal state of a fleet

@@ -4,11 +4,12 @@
 #
 # Every case runs without a real brain and without network reachability:
 # nothing here shells out to a real gbrain or makes a real HTTP call. The
-# capture-status subcommand is stubbed at the FM_GBRAIN_CAPTURE_BIN shim
-# because fm-gbrain-health.sh is the only thing that calls it here. Embed,
-# rerank, and synthesis endpoints are simulated through the FM_PROBE_URL
-# environment variable, which the script consults in place of curl when set;
-# the production path runs curl directly.
+# script resolves both of its children from its own SCRIPT_DIR, so each case
+# runs a copy of it out of a per-test bin directory holding the stub
+# fm-gbrain-capture.sh its status read finds. Embed, rerank, synthesis, and
+# main-brain reachability are simulated with a curl stub prepended to PATH
+# that honours FM_PROBE_STATE (ok exits 0, down exits 124 like a timeout), so
+# the script runs its production probe path unchanged under test.
 #
 # The states under test are the ones the dashboard panel actually renders:
 # not configured, configured but no index yet, configured with index and
@@ -26,8 +27,6 @@ set -u
 # The per-test bin directory created by make_script_dir is the script's own
 # SCRIPT_DIR, so a stub fm-gbrain-capture.sh placed alongside it is what the
 # script calls.
-# directory created by make_script_dir is the script's own SCRIPT_DIR, so a
-# stub fm-gbrain-capture.sh placed alongside it is what the script calls.
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v bash >/dev/null 2>&1 || { echo "skip: bash not found"; exit 0; }

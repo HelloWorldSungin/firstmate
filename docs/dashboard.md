@@ -98,7 +98,7 @@ The server reads a bounded number of records per refresh, and says so in the vie
 A manifest that is missing, corrupt, or written against a schema version this dashboard does not accept is listed with its id and the reason it could not be used, never silently skipped.
 Token usage is presence-gated on the fleet's token-usage collector: totals appear when that collector is installed in this home and has attributed usage to a task, and anything else - no collector, no attributed row, an output this dashboard does not recognize, an unreadable total - renders as `unavailable` with its reason rather than as a zero.
 A blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
-Semantic search over report content is a separate integration; history is fully usable without it.
+Semantic search over captured report content belongs to the separate [GBrain](#gbrain) panel; history is fully usable without it.
 
 ## Activity
 
@@ -110,15 +110,24 @@ The short version worth knowing before reading it: instrumentation is one comman
 
 ## GBrain
 
-The GBrain panel reads the optional GBrain archive every fleet-health poll and exposes its presence, version, index status, retrieval, synthesis, capture outbox, and maintenance state. None of those are fleet signals: the brain is presence-gated, and a stopped, slow, or unconfigured brain degrades the panel, never the dashboard.
+The GBrain panel is a read-only view of this home's optional brain: its presence, pinned version, index state, retrieval health, hosted-synthesis health, durable capture outbox, and maintenance state.
+None of those are fleet health signals.
+The brain is presence-gated and every read of it is bounded, so a brain that is absent, stopped, or slow degrades the panel and never the dashboard or Firstmate supervision.
+The panel refreshes on the history poll rather than the faster snapshot poll, because a health read probes endpoints that can take seconds, and it says how old the last successful read is.
+[`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) owns that read, its `fm-gbrain-health.v1` shape, and the single probe budget every step inside it draws from; the server bounds the child inside the same deadline it gives a snapshot refresh, so a brain that answers nothing cannot hold up a poll.
 
-A home without a brain reports configured: false and renders a single card that says so, which is the normal state of a fleet that has not adopted GBrain. A configured home whose brain is not yet bootstrapped shows index.state: absent, not a fault. A configured home whose embedding or reranker endpoint is unreachable reports retrieval.state: degraded, while synthesis.state stays ok because local search keeps working. A configured home whose hosted synthesis provider is down reports synthesis.state: degraded, while retrieval stays ok. A brain the operator has paused for an upgrade reports maintenance.state: upgrading and the operator's own detail text.
+A home without a brain reports `configured: false` and renders one card that says so, which is the normal state of a fleet that has not adopted GBrain.
+A configured home whose brain is not yet bootstrapped shows `index.state: absent`, which is not a fault; capture stays off and captured documents wait in the durable outbox.
+A configured home whose embedding or reranker endpoint is unreachable reports `retrieval.state: degraded` and names the leg that went, while `synthesis.state` stays `ok` because local search keeps working.
+A configured home whose hosted synthesis provider is down reports `synthesis.state: degraded` while retrieval stays `ok`.
+A brain the operator has paused for care reports `maintenance.state: upgrading` or `reindexing` with the operator's own detail text, and [`docs/gbrain.md`](gbrain.md#announce-a-maintenance-window) owns when to announce that and how to clear it.
 
-The search affordance below the strip is a POST to /api/gbrain/search that invokes bin/fm-recall.sh with the query passed as one argv element. Shell metacharacters in a query arrive at the wrapper as discrete argv elements and never as shell syntax. Results are returned with a closed vocabulary: source, slug, title, score, excerpt, stale; the server rewrites unknown fields rather than passing them through, and the page renders every result with createElement and textContent, so a stored brain document cannot become markup.
+The search affordance below the strip is a POST to `/api/gbrain/search` that runs [`bin/fm-recall.sh`](../bin/fm-recall.sh) `search` over the read-only scopes this home already holds.
+The query reaches the wrapper as an argument array after `--`, never interpolated into a shell command, so a shell metacharacter in a query is a character to search for rather than syntax.
+The endpoint bounds the query size, the result count, and how long one search may take, and it admits one search at a time.
+Results come back in a closed vocabulary - source, slug, title, score, excerpt, stale - with anything outside it dropped rather than passed through, and [`assets/dashboard/gbrain.js`](../assets/dashboard/gbrain.js) builds every result node with `createElement` and `textContent`, so nothing in a stored brain document can become markup or restructure the page.
 
-The whole panel is presence-gated, so removing config/gbrain.json is a complete removal: no polling cost, no UI element, no failing probes.
-
-The panel lives between Board and Activity. Its filter panel shares the same 940px-edge bound the history filter uses, because both panels gate a list of bounded width; that bound is expressed against the page gutter rather than a breakpoint so it tracks the viewport continuously.
+The panel sits between Board and Activity, and it is presence-gated as a whole: removing `config/gbrain.json` removes the polling cost, the search affordance, and the probes together.
 
 ## Rendered reports
 

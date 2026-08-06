@@ -34,11 +34,14 @@
 //   FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK,
 //   FM_DASHBOARD_EVENT_SKEW_SECONDS    agent-event retention and replay caps
 //
-// Every executable and argument list is fixed. This process never accepts a
-// command, argument, fleet path, or shell fragment over HTTP. /api/report takes
-// a task id, and that id can only ever select among the ids the current durable
-// history already published with a retained report - never a caller-supplied
-// path.
+// Every executable and flag list is fixed. This process never accepts a
+// command, a flag, a fleet path, or a shell fragment over HTTP. /api/report
+// takes a task id, and that id can only ever select among the ids the current
+// durable history already published with a retained report - never a
+// caller-supplied path. POST /api/gbrain/search takes the operator's query,
+// which is the one caller-supplied value that reaches a child at all: it is
+// size-capped and handed to the fixed fm-recall.sh wrapper as bounded argv
+// elements after --, so it can never become a flag, a path, or shell syntax.
 //
 // Completed work is served from the durable completion manifests, which is why
 // history survives cleanup and Done-backlog pruning. The token-usage read and

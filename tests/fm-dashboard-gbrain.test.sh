@@ -65,11 +65,11 @@ free_port() {
 
 # install_recall_stub <dir> <body> [sleep-seconds]
 #
-# Replaces bin/fm-recall.sh on the fixture server's PATH. The dashboard shell
-# uses $SCRIPT_DIR/fm-recall.sh directly, so this stub is only useful when
-# the test wants to control the wrapper's answer for a search. sleep > 0
-# simulates a slow brain whose search would otherwise blow the dashboard's
-# own deadline.
+# Replaces bin/fm-recall.sh in the fixture server's per-test bin directory.
+# The server resolves the wrapper as $SCRIPT_DIR/fm-recall.sh rather than off
+# PATH, so that copy is what a search runs and what decides the wrapper's
+# answer. sleep > 0 is meant to simulate a slow brain whose search would
+# otherwise blow the dashboard's own deadline.
 install_recall_stub() {
   local dir=$1 body=$2 sleep=${3:-0}
   mkdir -p "$dir"

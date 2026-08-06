@@ -39,7 +39,8 @@
 #                           this home's index has not been bootstrapped yet;
 #                           detail names which of the two it is, and the counts
 #                           are reported either way.
-#   retrieval               {state, brain_root, embedding, reranker, main_brain}
+#   retrieval               {state, embedding, reranker, main_brain} where
+#                           state is the worst of the three probes below.
 #                           embedding/reranker/main_brain are each {state,
 #                           model, endpoint, detail} where state is one of
 #                           ok | degraded | absent | unconfigured | unknown.

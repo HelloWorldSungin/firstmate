@@ -1184,8 +1184,8 @@ async function showTaskTimeline(taskId) {
 // authentication and rate limiting without owning any of it. The render
 // path is independent of fetchSnapshot/fetchHistory: the brain is
 // optional, so its panel can render an empty state without ever blocking
-// the fleet view, and its own update cadence is set by the server's
-// gbrain-health-poll interval.
+// the fleet view, and its own update cadence is the server's history-poll
+// interval rather than the faster snapshot poll.
 
 const gbraintronElements = {
   panel: document.querySelector("#gbraintron"),
