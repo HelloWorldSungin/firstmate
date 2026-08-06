@@ -191,6 +191,29 @@ start_server() {
   fail "dashboard server did not come up: $(cat "$TMP_ROOT/server.log" 2>/dev/null)"
 }
 
+# settled_health
+#
+# GET /api/gbrain/health serves a cache that a background refresh fills, so a
+# read issued before the boot refresh returns is answered - correctly - with
+# the first_run/refreshing envelope and a null health document. Every panel
+# assertion below is about the SETTLED read, so poll until the first refresh
+# has landed one way or the other (a document or an error) and print that
+# envelope. Bounded, so a refresh that never returns fails the case with the
+# last envelope it saw instead of hanging the suite.
+settled_health() {
+  local deadline=$((SECONDS + 30)) out=
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+    if printf '%s' "$out" | jq -e '.status.refreshing == false and .status.phase != "first_run"' >/dev/null 2>&1; then
+      printf '%s' "$out"
+      return 0
+    fi
+    sleep 0.2
+  done
+  printf '%s' "$out"
+  return 1
+}
+
 # --- the cases --------------------------------------------------------------
 
 # A configured home with a working brain reports the full health shape. The
@@ -211,7 +234,7 @@ EOF
   mkdir -p "$home/data/gbrain/pglite"
   start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":12,"pending":0,"failed":0,"unreadable":0},"documents":[{"status":"captured","captured_at":"2026-08-05T21:07:59Z"}]}'
   local out
-  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  out=$(settled_health) || fail "configured-home health never settled: $out"
   printf '%s' "$out" | jq -e '
     .schema == "fm-gbrain-health.v1"
       and .status.phase == "ready"
@@ -239,7 +262,7 @@ test_health_panel_reports_no_brain() {
   bindir=$(make_bin_dir no-brain)
   start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
   local out
-  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  out=$(settled_health) || fail "bare-home health never settled: $out"
   printf '%s' "$out" | jq -e '
     .health.configured == false
       and .health.index.state == "absent"
@@ -291,7 +314,7 @@ EOF
     fi
   done
   local out
-  out=$(curl -sS -m 8 "http://127.0.0.1:$TEST_PORT/api/gbrain/health")
+  out=$(settled_health) || fail "degraded-home health never settled: $out"
   printf '%s' "$out" | jq -e '
     .health.retrieval.state == "degraded"
       and .health.retrieval.embedding.state == "degraded"
