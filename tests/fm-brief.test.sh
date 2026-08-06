@@ -204,6 +204,8 @@ test_issue_traceability_is_strictly_opt_in() {
   # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
   assert_grep 'Put `Closes #37` in the PR body' "$traced" \
     "issue brief did not require the atomic closing keyword"
+  assert_grep 'Amend the existing PR body rather than replacing it' "$traced" \
+    "issue brief let a worker clobber the pipeline-owned PR body"
   pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
 }
 
