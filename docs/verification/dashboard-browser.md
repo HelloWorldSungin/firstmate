@@ -11,7 +11,16 @@ Point it at a running dashboard with `bin/fm-dashboard-browser-check.sh --url <u
 Every observation below is one of four verdicts, not two.
 `ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, `????` means it could not be observed at all, and `n/a` means it does not apply to the target being checked in this mode.
 `????` exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
-`n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the two live-stream observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
+`n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the three live-stream observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
+
+Which observations a run makes is not left to be kept in step by hand.
+Each mode declares its observation set up front, and before the run exits that list is reconciled against the verdicts actually recorded; a declared observation with no verdict, one carrying two, or a verdict for something never declared names the offending observation and exits 4.
+That pass exists because the same defect shape kept recurring in this harness - a verdict with no evidence behind it, evidence with no verdict reconciling it, a proof that passed with no assertion having run, and an observation that produced no verdict at all under `--url` while this file and the script header both claimed both modes observe identically.
+Nothing structurally guaranteed that the set a mode claims to make equals the set it emits, and the reconciliation pass is that guarantee.
+
+It found another instance of the same shape on its first real run, which is the clearest evidence it was needed.
+"The X view is on the page" had a `FAIL` branch for an absent view and a `????` branch for an unreadable probe, and no verdict at all on the path where the view is present - so on a healthy page, five of the fifteen per-width view observations produced nothing, and every assertion that named them still passed.
+The run recorded 48 verdicts against 58 declared and named all ten missing observations; the presence observation now records `ok` with the section it found, and the same run reconciles.
 
 ## The first run against a live fleet
 
@@ -123,11 +132,15 @@ The server binary, the browser, and the page are real in both cases.
 
 The second is the failure [`assets/dashboard/events.js`](../../assets/dashboard/events.js) says the backfill slot exists to avoid, so it is checked by driving the page rather than by reading the module.
 
-Against the captain's live dashboard the same two observations record `n/a` rather than a pass or a `????`, and the run says why in the line itself:
+Against the captain's live dashboard these observations record `n/a` rather than a pass or a `????`, and the run says why in the line itself:
 
 ```
 n/a  a live event appears without a reload - not applicable to a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url.
 ```
+
+The run recorded above emitted two such lines rather than three.
+The middle observation - that the agent's earlier events really did leave the live stream, which is what makes the backfill result mean anything more than the live tail - resolved to no verdict at all in that mode, so a `--url` result was one observation shorter than a fixture one with nothing saying so.
+It now records `n/a` alongside the other two, for the same reason they do, and the reconciliation pass is what makes a mode dropping an observation a hard failure rather than a shorter file.
 
 That distinction is what lets a healthy live check exit 0 at all.
 While these two folded into `????`, every `--url` run failed by construction however healthy the page was, which left the only mode that can be pointed at the real dashboard with no usable exit status to automate against.
@@ -160,9 +173,9 @@ It cannot reach a branch that page does not happen to trigger - a probe that wil
 
 `FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>,...` makes each one reachable on demand.
 Each entry corrupts the single value the named check judges - the measured width, the scanned character count, the landing offset - so the check's own branch runs and prints its own detail; nothing rewrites a verdict after the fact.
-The script's header lists all thirty pairs it accepts, an entry outside that list is a usage error rather than a silent no-op, and it refuses to run alongside `--negative`, whose meaning it would destroy.
+The script's header lists every pair it accepts, an entry outside that list is a usage error rather than a silent no-op, and it refuses to run alongside `--negative`, whose meaning it would destroy.
 
-It cannot be mistaken for a check of the dashboard: it is inert unless set, it stamps every forced branch into `result.txt` as it takes it, and an injected run exits 3 whatever the page did.
+It cannot be mistaken for a check of the dashboard: it is inert unless set, it stamps every forced branch into `result.txt` as it takes it, and an injected run never exits 0 whatever the page did.
 
 ```
 $ FM_DASHBOARD_BROWSER_FORCE=nav:fail bin/fm-dashboard-browser-check.sh --width 390x844
@@ -170,7 +183,8 @@ $ FM_DASHBOARD_BROWSER_FORCE=nav:fail bin/fm-dashboard-browser-check.sh --width 
 FAIL 390x844: the Captain inbox link lands on that section's heading - the sticky bar hides the top of the section by 119px
 ```
 
-All thirty were executed against the fixture dashboard while this was written, and each printed the branch it names.
+The thirty pairs that existed when this was written were each executed against the fixture dashboard, and each printed the branch it names.
+The three `reconcile:` pairs added afterwards corrupt the emitted observation set rather than a measurement, because that set is what the reconciliation pass judges; `tests/fm-dashboard-browser.test.sh` executes all three and requires each to fail the run by naming the observation at fault.
 
 ## Limits of what a browser check can see here
 

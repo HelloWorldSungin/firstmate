@@ -89,6 +89,11 @@ do
 done
 
 grep -q '^FAIL' "$result" && fail "the check reported a failure on a correctly rendering dashboard"$'\n'"$(cat "$result")"
+# The run has to have reconciled the observations it declared against the ones
+# it recorded. Without this line the assertions above are satisfied by a run that
+# emitted a subset of them under names they happen to match.
+assert_contains "$(cat "$result")" "observation set reconciled" \
+  "the run did not reconcile its declared observations against the verdicts it recorded"
 # An observation the check could not make is not a pass. Against a fixture this
 # command starts itself, every one of them is reachable, so a ???? here means
 # the harness lost the ability to read some evidence it used to read - which
@@ -107,6 +112,9 @@ status=$?
 [ "$status" -eq 0 ] \
   || fail "the check accepted a page that renders nothing, so it proves nothing"$'\n'"$negative"
 assert_contains "$negative" "negative proof PASSED" "the negative proof did not report its verdict"
+
+assert_contains "$negative" "observation set reconciled" \
+  "the negative run did not reconcile its declared observations, so its proof rests on an unknown set"
 
 negative_result="$TMP_ROOT/negative/result.txt"
 grep -q '^FAIL' "$negative_result" \
@@ -191,3 +199,37 @@ grep -qE "^FAIL .*lands on that section's heading - the sticky bar hides the top
   "$TMP_ROOT/forced/result.txt" \
   || fail "forcing nav:fail did not run the nav assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
+
+# --- the observation set is reconciled ----------------------------------------
+#
+# The two runs above assert that named observations appear, which no amount of
+# naming can make exhaustive: the defect being closed here is a mode that emits a
+# different set from the one the script and its docs claim it makes, and one such
+# mode shipped - the tail observation was emitted nowhere under --url. So the
+# check declares its observation set and reconciles it against the verdicts it
+# recorded, and that pass is itself a check that could report success without
+# checking. These three prove it does not: an observation dropped, one recorded
+# twice, and one recorded that was never declared each have to fail the run
+# loudly and name the observation at fault.
+
+while IFS='|' read -r fault expected; do
+  [ -n "$fault" ] || continue
+  # stdin closed, because this loop's own stdin is the case list below and the
+  # check drives a browser and a server that have no business reading it.
+  out=$(FM_DASHBOARD_BROWSER_FORCE="reconcile:$fault" "$CHECK" \
+    --width 390x844 --out "$TMP_ROOT/reconcile-$fault" 2>&1 </dev/null)
+  status=$?
+  [ "$status" -eq 4 ] \
+    || fail "forcing reconcile:$fault did not fail the run as an observation set mismatch (exit $status)"$'\n'"$out"
+  assert_contains "$out" "OBSERVATION SET MISMATCH" \
+    "forcing reconcile:$fault did not report an observation set mismatch"
+  assert_contains "$out" "$expected" \
+    "the mismatch report did not name what was wrong with reconcile:$fault"
+  grep -Fq "OBSERVATION SET MISMATCH" "$TMP_ROOT/reconcile-$fault/result.txt" \
+    || fail "the mismatch was printed but never recorded in result.txt for reconcile:$fault"
+done <<'CASES'
+drop|missing: no verdict was recorded for [the browser console is clean]
+duplicate|duplicate: 2 verdicts were recorded for [the browser console is clean]
+undeclared|undeclared: a verdict was recorded for [the injector's invented observation]
+CASES
+pass "a dropped, duplicated or undeclared observation fails the run by name instead of shrinking the result"

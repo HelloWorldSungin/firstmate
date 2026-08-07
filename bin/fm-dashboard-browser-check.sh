@@ -30,6 +30,11 @@
 #                    memory and adds the header the dashboard already requires;
 #                    it never enters the URL the browser opens, so it cannot
 #                    reach the browser's history or any evidence captured here.
+#                    What that front costs is stated in its own header and is
+#                    worth reading before using this on a shared host: while it
+#                    runs it is an unauthenticated door to the authenticated
+#                    dashboard, bound to loopback on an ephemeral port and alive
+#                    only for the length of this one check.
 #   --out            evidence directory (default: a temp directory, kept and
 #                    named on exit). Holds a screenshot and the rendered text of
 #                    every view at every width, the console transcript, and
@@ -61,8 +66,9 @@
 #
 #                    An injected run cannot be mistaken for a check of the
 #                    dashboard: it stamps every forced branch into result.txt,
-#                    refuses to run with --negative, and always exits 3 whatever
-#                    the page did.
+#                    refuses to run with --negative, and never exits 0 whatever
+#                    the page did - 3 for any fault, or 4 when the fault it
+#                    injected was one the reconciliation pass below catches.
 #
 #                    The checks, and the branches each one has:
 #
@@ -96,11 +102,21 @@
 #                      backfill:unverified
 #                      console:fail         the console printed something
 #                      console:unverified   a console window could not be read
+#                      reconcile:drop       an observation left unrecorded
+#                      reconcile:duplicate  one recorded twice
+#                      reconcile:undeclared one recorded that was never declared
 #
 #                    An entry naming a check or a branch that is not in that
 #                    list is a usage error, so a typo cannot quietly inject
 #                    nothing and leave the operator believing a path was
 #                    exercised.
+#
+#                    The three reconcile entries are the exception to "corrupts
+#                    the one value that check judges", because what the
+#                    reconciliation pass judges IS the set of verdicts this run
+#                    recorded: a fault in it is an observation dropped, recorded
+#                    twice, or recorded without having been declared, so that is
+#                    what those three do to the console observation.
 #
 # Why this is a command and not a test that CI runs
 #
@@ -162,20 +178,50 @@
 #   apply here" are different answers and collapsing them costs the run its
 #   signal. ???? means something that should have been observable was not, and
 #   it fails the run. n/a means the observation is out of this mode's reach by
-#   design - the live-stream pair under --url, which can only be proved by
-#   posting events into a dashboard this command does not own - so it is
-#   reported and counted but does not fail the run. Without the distinction
+#   design - the three live-stream observations under --url, which can only be
+#   proved by posting events into a dashboard this command does not own - so it
+#   is reported and counted but does not fail the run. Without the distinction
 #   --url could never exit 0 however healthy the page was, which would leave
 #   the only mode that can be pointed at the shipped dashboard impossible to
 #   automate against.
 #
+# The declared observation set, and why it is reconciled
+#
+#   Every mode declares up front the observations it makes: the per-width ones
+#   once per --width, the three per-view ones and the nav one once per VIEWS row
+#   inside each of those, and the live-stream and console ones once for the run.
+#   That list is derived from VIEWS and WIDTHS rather than written out, so a new
+#   view row or a new width extends it without anyone remembering to.
+#
+#   Every declared observation must resolve to exactly one verdict, and at the
+#   end of every run - fixture, --url, --negative, injected - the declared set is
+#   reconciled against the set actually recorded. A declared observation with no
+#   verdict, one carrying two, or a verdict for an observation that was never
+#   declared is a hard error: it names the offending observation and exits 4. It
+#   is deliberately not a warning, not a smaller count, and not a shorter
+#   result.txt.
+#
+#   That pass exists because one defect shape kept recurring here: a verdict
+#   emitted with no evidence behind it, evidence emitted with no verdict
+#   reconciling it, a proof that passed with no assertion having run, and an
+#   observation that produced no verdict at all in one mode while this header
+#   claimed both modes observe identically. Nothing structurally guaranteed that
+#   the set of observations a mode claims to make equals the set it emits.
+#
+#   It follows that no path may leave an observation unrecorded. Where this check
+#   cannot get far enough at a width to judge - the viewport would not move, the
+#   page would not open, the probe would not decode - it records ???? for every
+#   remaining observation at that width, saying why, instead of returning with
+#   them unrecorded.
+#
 # Exit status: 0 when nothing failed and nothing was left unverified, 1 when
 # any observation is FAIL or ????, 2 on a usage or setup problem, 3 when
-# FM_DASHBOARD_BROWSER_FORCE injected a fault. An n/a observation never fails
-# the run, so a healthy dashboard checked with --url exits 0 with its two
-# live-stream observations recorded as n/a; every other observation is made
-# identically in both modes. The full per-observation result is printed and
-# written to <out>/result.txt either way.
+# FM_DASHBOARD_BROWSER_FORCE injected a fault, 4 when this run did not emit the
+# observation set it declared. An n/a observation never fails the run, so a
+# healthy dashboard checked with --url exits 0 with its three live-stream
+# observations recorded as n/a; every other observation is made identically in
+# both modes. The full per-observation result is printed and written to
+# <out>/result.txt either way.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -233,6 +279,19 @@ UNVERIFIED_COUNT=0
 INAPPLICABLE_COUNT=0
 RESULT_FILE=
 
+# The observations this run declares it will make, the ones it has recorded so
+# far, and the widths where it could not get far enough to judge. The first two
+# are reconciled against each other before the run exits; the third is what
+# stops the negative proof reading a width that never rendered as a width whose
+# assertions refused the page.
+DECLARED_FILE=
+EMITTED_LOG=
+UNREACHED_WIDTHS=
+
+# Every FM_* variable is cleared for the children this command spawns, and only
+# the ones the fixture defines are set again. Populated by fixture_env().
+FIXTURE_ENV=(env)
+
 CONSOLE_BASELINE_MSGID=
 CONSOLE_READS=0
 CONSOLE_TOTAL=0
@@ -270,18 +329,24 @@ Drives the real dashboard page in a real browser and records what it renders.
 Each observation is recorded as ok, FAIL, ???? or n/a. ???? means it could not
 be observed at all, which is not a pass and fails the run. n/a means it does
 not apply to the target being checked in this mode, which does not fail the
-run; the two live-stream observations are n/a under --url, because proving them
-means posting events into a dashboard this command does not own.
+run; the three live-stream observations are n/a under --url, because proving
+them means posting events into a dashboard this command does not own.
+
+Every mode declares the observations it makes and reconciles that list against
+what it recorded before it exits, so an observation left unrecorded, recorded
+twice, or recorded without having been declared fails the run by name rather
+than showing up as a quietly smaller result.
 
 FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>,... forces named checks down their
 failure or could-not-verify branch, so each failure path can be executed and
 read rather than reasoned about. It is inert unless set, refuses to run with
---negative, and always exits 3. This script's header lists every check and
+--negative, and never exits 0. This script's header lists every check and
 branch it accepts.
 
 Exit status: 0 when nothing failed and nothing was left unverified, 1 when any
 observation is FAIL or ????, 2 on a usage or setup problem, 3 when a fault was
-injected. The per-observation result is written to <out>/result.txt.
+injected, 4 when the run did not emit the observation set it declared. The
+per-observation result is written to <out>/result.txt.
 TEXT
 }
 
@@ -354,6 +419,12 @@ is_integer() {  # <candidate>, which may be negative
 # A viewport this check cannot parse is a usage error, not something to hand to
 # the browser and then measure against: the width assertion below compares the
 # page's own innerWidth with the number named here.
+#
+# A width named twice is a usage error too. Every observation is labelled with
+# its width, so the same width twice means every observation at it resolves to
+# two verdicts, which the reconciliation pass at the end refuses by design -
+# saying so here names the real mistake instead.
+SEEN_WIDTHS=
 for spec in $WIDTHS; do
   case "$spec" in
     *x*) ;;
@@ -362,6 +433,10 @@ for spec in $WIDTHS; do
   if ! is_number "${spec%%x*}" || ! is_number "${spec#*x}"; then
     die "--width takes <css-px>x<css-px>, not [$spec]"
   fi
+  case " $SEEN_WIDTHS " in
+    *" $spec "*) die "--width $spec was given twice; each viewport is checked once" ;;
+  esac
+  SEEN_WIDTHS="${SEEN_WIDTHS} $spec"
 done
 
 for tool in node curl; do
@@ -414,7 +489,10 @@ tail:unverified
 backfill:fail
 backfill:unverified
 console:fail
-console:unverified'
+console:unverified
+reconcile:drop
+reconcile:duplicate
+reconcile:undeclared'
 
 FORCE_SPEC=
 for entry in $(printf '%s' "${FM_DASHBOARD_BROWSER_FORCE:-}" | tr ',' ' '); do
@@ -437,6 +515,56 @@ fi
 mkdir -p "$OUT_DIR" || die "could not create the evidence directory $OUT_DIR"
 RESULT_FILE="$OUT_DIR/result.txt"
 : > "$RESULT_FILE"
+DECLARED_FILE="$WORK_DIR/declared.txt"
+EMITTED_LOG="$WORK_DIR/emitted.txt"
+: > "$EMITTED_LOG"
+
+# --- the declared observation set --------------------------------------------
+#
+# What this run says it will observe, in the order it observes it, derived from
+# VIEWS and WIDTHS so that a new view row or a new width extends it on its own.
+# reconcile_observations() below requires the recorded set to equal this one
+# exactly, which is what stops any mode from quietly emitting a different set
+# from the one this script and its documentation claim it makes.
+#
+# --negative genuinely observes a different set and says so here: it exits after
+# the widths, before the live stream and the console, because the property it
+# proves is about the assertions that read what rendered.
+declared_observations() {
+  local spec id name _landmarks
+  for spec in $WIDTHS; do
+    printf '%s: the dashboard document loaded\n' "$spec"
+    printf '%s: the browser really is at this viewport\n' "$spec"
+    printf '%s: the page rendered text rather than an empty document\n' "$spec"
+    printf '%s: the stylesheet was applied\n' "$spec"
+    printf '%s: nothing is placed behind a horizontal swipe\n' "$spec"
+    while IFS='|' read -r id name _landmarks; do
+      [ -n "$id" ] || continue
+      printf '%s: the %s view is on the page\n' "$spec" "$name"
+      printf '%s: the %s view rendered with real height\n' "$spec" "$name"
+      printf '%s: the %s view is legible\n' "$spec" "$name"
+    done <<VIEWROWS
+$VIEWS
+VIEWROWS
+    printf '%s: no credential-shaped or path-shaped value on the page\n' "$spec"
+    printf '%s: every completed record shows its usage panel\n' "$spec"
+    while IFS='|' read -r id name _landmarks; do
+      [ -n "$id" ] || continue
+      printf '%s: the %s link lands on that section'"'"'s heading\n' "$spec" "$name"
+    done <<NAVROWS
+$VIEWS
+NAVROWS
+  done
+  [ "$NEGATIVE" = yes ] && return 0
+  printf 'a live event appears without a reload\n'
+  printf 'the agent'"'"'s earlier events really did leave the live stream\n'
+  printf 'backfilled history survives a subsequent event\n'
+  printf 'the browser console is clean\n'
+  return 0
+}
+
+declared_observations > "$DECLARED_FILE" || die "could not declare the observation set"
+[ -s "$DECLARED_FILE" ] || die "the declared observation set came out empty"
 
 record() {  # <ok|FAIL|????|n/a> <observation> [detail]
   local verdict=$1 observation=$2 detail=${3:-}
@@ -449,7 +577,28 @@ record() {  # <ok|FAIL|????|n/a> <observation> [detail]
     "$INAPPLICABLE") INAPPLICABLE_COUNT=$((INAPPLICABLE_COUNT + 1)) ;;
     *) UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1)) ;;
   esac
+  printf '%s\n' "$observation" >> "$EMITTED_LOG"
   printf '%-4s %s%s\n' "$verdict" "$observation" "${detail:+ - $detail}" | tee -a "$RESULT_FILE"
+}
+
+# Every declared observation at this width that has not been recorded yet, as
+# ???? with the reason the run could not reach it.
+#
+# This is what the early returns in check_width use instead of returning with
+# the rest of the width unrecorded. A width that could not be rendered and read
+# is not a width with fewer observations - it is a width whose observations
+# could not be made, and each one has to say so under its own name.
+record_unreached() {  # <label> <reason>
+  local label=$1 reason=$2 observation
+  UNREACHED_WIDTHS="${UNREACHED_WIDTHS}${UNREACHED_WIDTHS:+, }$label"
+  while IFS= read -r observation; do
+    case "$observation" in
+      "$label: "*) ;;
+      *) continue ;;
+    esac
+    grep -Fxq "$observation" "$EMITTED_LOG" && continue
+    record "$UNVERIFIED" "$observation" "$reason"
+  done < "$DECLARED_FILE"
 }
 
 note() {  # <line>
@@ -475,8 +624,89 @@ summarize() {
     "$PASSES" "$FAILURES" "$UNVERIFIED_COUNT" "$inapplicable" | tee -a "$RESULT_FILE"
 }
 
+# The declared set against the recorded one, in every mode, before this command
+# exits. Non-zero when they differ, and it names every difference.
+#
+# The counts alone would not do it, for the same reason an empty leak list means
+# nothing without its coverage: a dropped observation and an undeclared one
+# cancel out in a total. So each declared line is looked for by name and each
+# recorded line is looked up in the declaration.
+reconcile_observations() {
+  local report declared recorded
+  report=$(awk '
+    NR == FNR { declared[$0] = 1; order[++count] = $0; next }
+    { emitted[$0] += 1 }
+    END {
+      for (index_ = 1; index_ <= count; index_ += 1) {
+        line = order[index_]
+        if (!(line in emitted)) {
+          printf "missing: no verdict was recorded for [%s]\n", line
+        } else if (emitted[line] > 1) {
+          printf "duplicate: %d verdicts were recorded for [%s]\n", emitted[line], line
+        }
+      }
+      for (line in emitted) {
+        if (!(line in declared)) {
+          printf "undeclared: a verdict was recorded for [%s], which this run never declared\n", line
+        }
+      }
+    }
+  ' "$DECLARED_FILE" "$EMITTED_LOG")
+  declared=$(grep -c . "$DECLARED_FILE")
+  recorded=$(grep -c . "$EMITTED_LOG" || true)
+  if [ -n "$report" ]; then
+    {
+      printf '\nOBSERVATION SET MISMATCH: this run did not make the observations it declares.\n'
+      printf '%s\n' "$report"
+      printf '%s observations declared, %s verdicts recorded - the result above is not a complete check and must not be read as one.\n' \
+        "$declared" "$recorded"
+    } | tee -a "$RESULT_FILE"
+    return 1
+  fi
+  printf 'observation set reconciled: all %s declared observations recorded exactly once\n' \
+    "$declared" | tee -a "$RESULT_FILE"
+  return 0
+}
+
 free_port() {
   node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'
+}
+
+# curl against a loopback port this command just opened, with the operator's
+# proxy configuration out of the way. An exported http_proxy or ALL_PROXY sends
+# these requests to a proxy that knows nothing about an ephemeral fixture port,
+# and the run then records FAIL "the fixture dashboard refused the event" - a
+# true verdict about the wrong thing. Every curl here talks to 127.0.0.1 and to
+# nothing else, so there is no case in which a proxy is wanted.
+fixture_curl() {  # <curl argument>...
+  curl --noproxy '*' "$@"
+}
+
+# The environment the fixture server and its helpers run in.
+#
+# FM_HOME, the port, the address, auth, the poll intervals and the events config
+# were always pinned, but every OTHER FM_* variable in the operator's shell
+# reached the server - and reached every helper the server spawns, because it
+# passes its own environment down to each of them. One exported
+# FM_DASHBOARD_EVENTS=off is enough: the event bus disables itself, POST /events
+# answers 401, and the run records FAIL for "a live event appears without a
+# reload" against perfectly correct code. FM_DASHBOARD_USAGE=off reaches the
+# usage panel the same way, FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK reaches the
+# backfill assertion, and FM_DATA_OVERRIDE would put the fixture's completion
+# records somewhere other than the throwaway home.
+#
+# So the whole FM_* namespace is cleared for the children this command spawns and
+# only what the fixture itself defines is set again. Everything else then resolves
+# to the server's own documented defaults, which is what a throwaway home is
+# supposed to be checked against. Clearing by prefix rather than by a list means
+# a variable added to the server later is covered without this needing to know
+# its name.
+fixture_env() {
+  local name
+  FIXTURE_ENV=(env)
+  for name in $(env | sed -n 's/^\(FM_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u); do
+    FIXTURE_ENV+=(-u "$name")
+  done
 }
 
 # --- fixture dashboard ------------------------------------------------------
@@ -565,12 +795,13 @@ seed_completed_task() {  # <home> <id> <kind> <title> [pr-url]
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
   printf 'working: started\ndone: finished\n' > "$home/state/$id.status"
   printf -- '- [x] %s - %s (since 2026-08-01)\n' "$id" "$title" >> "$home/data/backlog.md"
-  FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "$id" >/dev/null 2>&1 \
+  "${FIXTURE_ENV[@]}" FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "$id" >/dev/null 2>&1 \
     || die "could not publish the fixture completion record for $id"
 }
 
 build_fixture() {
   local runtime home
+  fixture_env
   runtime="$WORK_DIR/runtime"
   home="$WORK_DIR/home"
   mkdir -p "$runtime" "$home/data" "$home/state" "$home/projects" "$WORK_DIR/control"
@@ -626,7 +857,8 @@ SH
   printf '{"schema":"fm-dashboard-events-config.v1","url":"http://127.0.0.1:%s/events","token":"%s"}\n' \
     "$FIXTURE_PORT" "$EVENT_TOKEN" > "$WORK_DIR/dashboard-events.json"
 
-  FM_HOME="$home" \
+  "${FIXTURE_ENV[@]}" \
+    FM_HOME="$home" \
     FM_DASHBOARD_PORT="$FIXTURE_PORT" \
     FM_DASHBOARD_ADDRESS=127.0.0.1 \
     FM_DASHBOARD_AUTH=off \
@@ -641,14 +873,14 @@ SH
 
   local _
   for _ in $(seq 1 60); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:$FIXTURE_PORT/api/snapshot" 2>/dev/null; then return 0; fi
+    if fixture_curl -fsS -o /dev/null "http://127.0.0.1:$FIXTURE_PORT/api/snapshot" 2>/dev/null; then return 0; fi
     sleep 0.2
   done
   die "the fixture dashboard did not start: $(cat "$WORK_DIR/server.log")"
 }
 
 post_event() {  # <task> <type> <tool>
-  curl -fsS -o /dev/null -X POST "http://127.0.0.1:$FIXTURE_PORT/events" \
+  fixture_curl -fsS -o /dev/null -X POST "http://127.0.0.1:$FIXTURE_PORT/events" \
     -H "Authorization: Bearer $EVENT_TOKEN" \
     -H "X-Firstmate-Source: $1/claude" \
     -H "Content-Type: application/json" \
@@ -674,7 +906,7 @@ post_event_batch() {  # <task> <prefix> <count>
     }));
     process.stdout.write(JSON.stringify({ schema: "fm-agent-event.v1", events }));
   ' "$task" "$prefix" "$count")
-  curl -fsS -o /dev/null -X POST "http://127.0.0.1:$FIXTURE_PORT/events" \
+  fixture_curl -fsS -o /dev/null -X POST "http://127.0.0.1:$FIXTURE_PORT/events" \
     -H "Authorization: Bearer $EVENT_TOKEN" \
     -H "X-Firstmate-Source: $task/claude" \
     -H "Content-Type: application/json" \
@@ -881,8 +1113,14 @@ check_width() {  # <width> <height>
   local width=$1 height=$2 label="${1}x${2}" probe scalars key value
   probe="$OUT_DIR/probe-${width}x${height}.json"
 
+  # A viewport that would not move is a failure of the observation that the
+  # browser really is at this width, and every other observation at this width
+  # is one this run could not make - not one it may leave unrecorded.
   if forced viewport-set fail || ! browser resize "$width" "$height" > "$OUT_DIR/resize-$label.txt"; then
-    record FAIL "$label: the viewport could not be set"
+    record FAIL "$label: the browser really is at this viewport" \
+      "the viewport could not be set to ${width}x${height}"
+    record_unreached "$label" \
+      "the browser was never placed at this viewport, so nothing here was measured at $width"
     return
   fi
   # Opening is a navigation too, so the bucket standing before it is read
@@ -895,7 +1133,8 @@ check_width() {  # <width> <height>
   # else. What actually catches an unreachable page is the error-page marker
   # read out of the probe below, and after that the title and the measurements.
   if forced open fail || ! browser open "$PAGE_URL" > "$OUT_DIR/open-$label.txt"; then
-    record FAIL "$label: the browser refused to open the page"
+    record FAIL "$label: the dashboard document loaded" "the browser refused to open the page"
+    record_unreached "$label" "the page never opened, so nothing here was read"
     return
   fi
   CONSOLE_PAGE_OPENED=yes
@@ -909,8 +1148,8 @@ check_width() {  # <width> <height>
   console_collect "$label-load"
 
   if forced probe fail || ! browser_eval_json "$(build_probe_js)" "$probe"; then
-    record FAIL "$label: the page could be read" \
-      "the probe returned nothing the browser could decode"
+    record_unreached "$label" \
+      "the probe returned nothing the browser could decode, so nothing at this width was judged"
     return
   fi
 
@@ -921,7 +1160,7 @@ check_width() {  # <width> <height>
     clientWidth=clientWidth scrollWidth=scrollWidth background=background gutter=gutter \
     errorPage=errorPage historyCards=historyCards usagePanels=usagePanels \
     leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
-    record "$UNVERIFIED" "$label: the page could be measured" \
+    record_unreached "$label" \
       "the probe result carried none of the measurements this check reads, so nothing at this width was judged"
     return
   fi
@@ -948,8 +1187,10 @@ EOF
   page_leaks=${page_leaks:-}
 
   if [ "$error_page" = true ]; then
-    record FAIL "$label: the page could be opened" \
+    record FAIL "$label: the dashboard document loaded" \
       "the browser is showing its own network error document, not the dashboard"
+    record_unreached "$label" \
+      "the browser is showing its own network error document, so there was no dashboard here to read"
     return
   fi
 
@@ -959,7 +1200,7 @@ EOF
   # shape of a check that rubber-stamps a broken page.
   if ! is_number "$body_length" || ! is_number "$client_width" \
     || ! is_number "$scroll_width" || ! is_number "$inner_width"; then
-    record "$UNVERIFIED" "$label: the page could be measured" \
+    record_unreached "$label" \
       "the probe returned no usable geometry, so nothing further at this width was checked"
     return
   fi
@@ -1057,6 +1298,12 @@ check_views() {  # <label> <probe file>
     # stopped recording those two would be a quietly smaller run - which is the
     # shape of failure this whole command exists to end, and is exactly what the
     # negative proof below needs to be able to see.
+    #
+    # That includes the presence observation on the path where the view IS
+    # present, which had no verdict at all until the reconciliation pass asked
+    # for one: an absent view recorded FAIL and an unreadable probe recorded
+    # ????, so on a healthy page the observation this run claims to make was the
+    # only one of the three that produced nothing.
     if forced view-present unverified || ! present=$(probe_fields "$probe" "present=views.$id.present"); then
       record "$UNVERIFIED" "$label: the $name view is on the page" \
         "the probe said nothing about this view, so it was not looked at"
@@ -1075,6 +1322,7 @@ check_views() {  # <label> <probe file>
         "the view is not on the page, so none of its headings or controls are"
       continue
     fi
+    record ok "$label: the $name view is on the page" "the page carries a #$id section"
 
     if ! fields=$(probe_fields "$probe" \
       "height=views.$id.height" "checked=views.$id.landmarksChecked" \
@@ -1446,8 +1694,14 @@ check_live_stream() {
   # Before the open, because the open is a navigation and discards the bucket
   # the last width left behind.
   [ "$CONSOLE_PAGE_OPENED" = yes ] && console_collect "live-before-open"
+  # All three live-stream observations are recorded on every path out of this
+  # function, the ones that give up early included. Two of them are the reason
+  # the third can be believed, and a path that recorded only some of them would
+  # be the quietly smaller run this command exists to end.
   if forced open fail || ! browser open "$PAGE_URL#activity" > /dev/null; then
     record FAIL "a live event appears without a reload" "the browser refused to open the page"
+    record "$UNVERIFIED" "the agent's earlier events really did leave the live stream" \
+      "the page never opened, so this was never reached"
     record "$UNVERIFIED" "backfilled history survives a subsequent event" \
       "the page never opened, so this was never reached"
     return
@@ -1458,6 +1712,8 @@ check_live_stream() {
   #    must arrive on it by itself.
   if ! post_event fixture-ship tool_started fmcheck-live-now; then
     record FAIL "a live event appears without a reload" "the fixture dashboard refused the event"
+    record "$UNVERIFIED" "the agent's earlier events really did leave the live stream" \
+      "the fixture dashboard refused an event, so this was never reached"
     record "$UNVERIFIED" "backfilled history survives a subsequent event" \
       "the fixture dashboard refused an event, so this was never reached"
     return
@@ -1704,6 +1960,17 @@ console_fresh_ids() {
 
 check_console() {
   local line fresh count
+  # The reconciliation pass's own three failure paths, injected here because
+  # this is the last observation any mode records and the only one every
+  # non-negative mode records exactly once. What that pass judges is the set of
+  # verdicts this run recorded, so a fault in it is an observation dropped, one
+  # recorded twice, or one recorded that was never declared - and it is the pass
+  # itself, not these lines, that has to notice.
+  forced reconcile duplicate && record ok "the browser console is clean" \
+    "recorded a second time on purpose, so the reconciliation pass has a duplicate verdict to find"
+  forced reconcile undeclared && record ok "the injector's invented observation" \
+    "recorded on purpose, so the reconciliation pass has an undeclared verdict to find"
+  forced reconcile drop && return
   forced console unverified && CONSOLE_UNREAD="${CONSOLE_UNREAD}${CONSOLE_UNREAD:+, }forced"
   if [ -n "$CONSOLE_UNREAD" ]; then
     record "$UNVERIFIED" "the browser console is clean" \
@@ -1788,7 +2055,7 @@ JS
   NEGATIVE_PID=$!
   local _
   for _ in $(seq 1 40); do
-    curl -fsS -o /dev/null "http://127.0.0.1:$NEGATIVE_PORT/" 2>/dev/null && return 0
+    fixture_curl -fsS -o /dev/null "http://127.0.0.1:$NEGATIVE_PORT/" 2>/dev/null && return 0
     sleep 0.2
   done
   die "the deliberately broken page did not start"
@@ -1810,6 +2077,16 @@ recorded_refusal() {  # <observation fragment>
 
 negative_verdict() {
   local pattern checked=0 still_passing='' never_ran=''
+  # A width the run could not render and read records ???? for every observation
+  # at it, which is the honest verdict for each of them but is NOT a refusal of
+  # this page: the assertions never saw it. Reading those as refusals is exactly
+  # how this proof once reported PASSED on a host whose browser bridge was busy,
+  # so a width that was never reached fails the proof outright.
+  if [ -n "$UNREACHED_WIDTHS" ]; then
+    printf 'negative proof FAILED: the page was never rendered and read at these widths, so the assertions there recorded "could not be reached" rather than refusing anything: %s\n' \
+      "$UNREACHED_WIDTHS" | tee -a "$RESULT_FILE"
+    return 1
+  fi
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
     checked=$((checked + 1))
@@ -1863,6 +2140,9 @@ if [ "$NEGATIVE" = yes ]; then
   done
   summarize
   printf 'evidence: %s\n' "$OUT_DIR"
+  # Before the proof's own verdict: a proof drawn from a set of observations
+  # that is not the set this mode declares is not a proof of anything.
+  reconcile_observations || exit 4
   negative_verdict || exit 1
   exit 0
 fi
@@ -1912,13 +2192,21 @@ if [ "$MODE" = fixture ]; then
   check_live_stream
   console_collect live
 else
-  # Not "could not verify": there is nothing here to verify. Proving either of
+  # Not "could not verify": there is nothing here to verify. Proving any of
   # these means posting events into a dashboard this command does not own, so
   # no run against this target could ever observe them, and treating that as an
   # unverified observation would mean --url could never exit 0 however healthy
   # the page was.
+  #
+  # All three, not the two the fixture branch's headline guarantees are. The
+  # middle one is what makes the third believable rather than a restatement of
+  # the live tail, so it is as much an observation as they are, and leaving it
+  # to be emitted nowhere in this mode was how a --url result came out one
+  # observation shorter than a fixture one with nothing saying so.
   record "$INAPPLICABLE" "a live event appears without a reload" \
     "not applicable to a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url."
+  record "$INAPPLICABLE" "the agent's earlier events really did leave the live stream" \
+    "same reason: pushing them out of the tail means posting unrelated events into that dashboard's own store. Run without --url."
   record "$INAPPLICABLE" "backfilled history survives a subsequent event" \
     "same reason: it needs events written into that dashboard's own store. Run without --url."
 fi
@@ -1929,8 +2217,12 @@ check_console
 summarize
 printf 'evidence: %s\n' "$OUT_DIR"
 [ "$KEEP" = yes ] && [ -n "${FIXTURE_PORT:-}" ] && printf 'fixture dashboard left running at %s\n' "$PAGE_URL"
-# An injected run exits 3 whatever the page did, so its result can never be
-# quoted as a check of the dashboard - which is the whole reason a fault
+# First, and ahead of the injected-run status below: a run that did not make the
+# observations it declares has not checked the dashboard whatever its verdicts
+# say, so this outranks every other exit status this command has.
+reconcile_observations || exit 4
+# An injected run exits non-zero whatever the page did, so its result can never
+# be quoted as a check of the dashboard - which is the whole reason a fault
 # injection surface is safe to ship next to the check it injects into.
 if [ -n "$FORCE_SPEC" ]; then
   printf 'fault injection was active:%s - these verdicts say what those branches print, not what the dashboard did\n' \

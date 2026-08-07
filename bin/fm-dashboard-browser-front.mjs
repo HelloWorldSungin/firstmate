@@ -11,11 +11,27 @@
 // private file, adds the Authorization header the dashboard already requires,
 // and forwards everything else untouched.
 //
-// It weakens nothing and widens nothing. The dashboard's own authentication is
-// unchanged and still enforced; what arrives there is an ordinary authenticated
-// request. This process binds loopback only, refuses any other bind, and lives
-// only for the length of one check. bin/fm-dashboard-browser-check.sh starts and
-// stops it; running it by hand is for debugging that check.
+// What that costs, stated plainly rather than claimed away: this front attaches
+// the credential to every request it forwards and performs no authorization of
+// its own, so while it is running it is an unauthenticated door to an
+// authenticated dashboard. Any local process, and any other user on the host,
+// can read that dashboard by connecting to this port without knowing the
+// password - the dashboard enforces authentication on loopback binds too once
+// credentials are configured, and this front is what satisfies it. The door is
+// bound to loopback only, on an ephemeral port, and it exists only for the
+// length of one operator-run check.
+//
+// The parts of the rationale that do hold: the credential never enters the URL
+// the browser opens, so it cannot reach the browser's history or any evidence
+// the check captures; the dashboard's own authentication is unchanged and still
+// enforced, and what arrives there is an ordinary authenticated request; this
+// process refuses any bind but loopback; and nothing of it persists once the
+// check exits. bin/fm-dashboard-browser-check.sh starts and stops it; running it
+// by hand is for debugging that check.
+//
+// Whether to close the door - a per-run bearer token in the path the check
+// opens is the obvious shape - is a decision for the operator of a shared host,
+// not something this comment should imply has already been made.
 //
 // Bodies are streamed rather than buffered, so the dashboard's server-sent
 // event stream reaches the browser as it is produced. That matters: the live
