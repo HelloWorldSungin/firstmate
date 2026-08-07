@@ -805,6 +805,30 @@ test_usage_store_refresh_reports_its_timeout() {
   pass "bootstrap kills a usage refresh that ignores SIGTERM and reports the bound it spent"
 }
 
+# Zero is the input that reads as valid to a digit check and disables the bound
+# in every runner underneath it: GNU timeout documents DURATION 0 as "no
+# timeout", and the portable arm's `alarm 0` cancels the alarm outright. Either
+# would run a scan of every transcript on the machine unbounded at session
+# start, which is the one thing this sweep refuses to do, so the fallback is
+# pinned on both sides: the collector still runs, and the run still says nothing.
+test_usage_store_refresh_falls_back_from_a_zero_bound() {
+  local case_dir fixture home fakebin ran out
+  case_dir="$TMP_ROOT/usage-refresh-zero"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 0')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran" FM_BOOTSTRAP_USAGE_TIMEOUT=0)
+
+  assert_usage_collector_ran "$ran" "$home" "a zero bound must fall back to the default rather than skip the refresh"
+  assert_not_contains "$out" "USAGE_STORE:" \
+    "a zero bound must fall back to the default, not be handed to a runner that reads it as no bound at all"
+  pass "bootstrap treats a zero usage bound as invalid and falls back to the default"
+}
+
 test_usage_store_refresh_reports_a_collector_that_failed() {
   local case_dir fixture home fakebin ran out status
   case_dir="$TMP_ROOT/usage-refresh-failed"
@@ -1123,6 +1147,7 @@ test_fleet_sync_timeout_is_computed_before_launch
 test_usage_store_refresh_is_gated_on_an_existing_store
 test_usage_store_refresh_skips_a_detect_only_session
 test_usage_store_refresh_reports_its_timeout
+test_usage_store_refresh_falls_back_from_a_zero_bound
 test_usage_store_refresh_reports_a_collector_that_failed
 test_usage_store_refresh_refuses_to_run_unbounded
 test_routine_bootstrap_confirmations_are_silent

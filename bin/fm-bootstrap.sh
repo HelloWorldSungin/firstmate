@@ -95,8 +95,8 @@
 #          The usage refresh runs a best-effort bin/fm-usage.mjs ingest only
 #          when data/usage.db already exists, matching teardown's opt-in
 #          contract in docs/usage-accounting.md; it is bounded by
-#          FM_BOOTSTRAP_USAGE_TIMEOUT (non-numeric or blank falls back to 120s)
-#          and every bound escalates to SIGKILL. A successful refresh is silent;
+#          FM_BOOTSTRAP_USAGE_TIMEOUT (blank, non-numeric or zero falls back to
+#          120s) and every bound escalates to SIGKILL. A successful refresh is silent;
 #          one that timed out, could not be bounded on this host, or ran and
 #          exited non-zero reports itself on a single USAGE_STORE line rather
 #          than degrading silently.
@@ -143,6 +143,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 fleet_sync_origin_backed_project_count() {
   local count proj
@@ -186,35 +188,6 @@ fleet_sync_relay_filtered_output() {
   done < "$tmp"
 }
 
-# Bounded execution, mirroring bin/fm-teardown.sh's run_timed so a host without
-# GNU coreutils still bounds the call rather than dropping the bound. Every
-# branch escalates to SIGKILL, because SIGTERM alone is not a bound: a child that
-# ignores it, or that is stuck in uninterruptible IO, would park session start
-# past the deadline. A host with none of the three refuses the call outright
-# rather than running a scan of every transcript on the machine unbounded at
-# session start; bootstrap_bound_available is how a caller says so honestly
-# instead of reporting a timeout that never happened.
-FM_BOOTSTRAP_KILL_GRACE=5
-bootstrap_bound_available() {
-  command -v timeout >/dev/null 2>&1 \
-    || command -v gtimeout >/dev/null 2>&1 \
-    || command -v perl >/dev/null 2>&1
-}
-
-bootstrap_run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k "$FM_BOOTSTRAP_KILL_GRACE" "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -k "$FM_BOOTSTRAP_KILL_GRACE" "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 124
-  fi
-}
-
 # Best-effort usage refresh at a locked session boundary. Ingestion is
 # idempotent and only runs once a home already has data/usage.db, matching
 # teardown's opt-in contract in docs/usage-accounting.md. The call is bounded,
@@ -223,23 +196,39 @@ bootstrap_run_timed() {  # <seconds> <command...>
 # stalling session start. A refresh that does not finish says so on one
 # USAGE_STORE line, the way fleet_sync reports its own timeout, so a session
 # that just spent the whole budget is never left guessing why.
+#
+# The bound comes from bin/fm-timeout-lib.sh, the declared single owner: every
+# arm there escalates to SIGKILL because SIGTERM alone is not a bound, and a
+# host with no arm at all reports 125 without starting a scan of every
+# transcript on the machine unbounded at session start.
 usage_store_refresh() {
   [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && return 0
   [ -f "$DATA/usage.db" ] || return 0
   [ -x "$SCRIPT_DIR/fm-usage.mjs" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   local timeout=${FM_BOOTSTRAP_USAGE_TIMEOUT:-120} start elapsed status=0
+  # Zero falls back with the blank and the non-numeric, because zero is not a
+  # bound: GNU timeout reads DURATION 0 as "no timeout". The owner refuses it
+  # too, so the fallback is what keeps that input a 120-second refresh rather
+  # than a skipped one.
   case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
-  if ! bootstrap_bound_available; then
-    echo "USAGE_STORE: skipped: no timeout, gtimeout or perl on this host to bound the refresh"
-    return 0
-  fi
+  [ "$timeout" -ge 1 ] || timeout=120
   start=$SECONDS
-  bootstrap_run_timed "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" \
-    >/dev/null 2>&1 || status=$?
+  # The kill grace is raised from the owner's one-second default because the
+  # polite signal has real work to do here: fm-usage.mjs answers SIGTERM by
+  # checkpointing the store back out of WAL, and a kill that lands mid-close
+  # leaves behind exactly the WAL-at-rest shape the read-only dashboard cannot
+  # open (issue #65).
+  (
+    export FM_TIMEOUT_KILL_GRACE=5
+    fm_run_timed "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME"
+  ) >/dev/null 2>&1 || status=$?
   elapsed=$((SECONDS - start))
   case "$status" in
     0) ;;
+    125)
+      echo "USAGE_STORE: skipped: no timeout, gtimeout or perl on this host to bound the refresh"
+      ;;
     124|137)
       echo "USAGE_STORE: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${elapsed}s)"
       ;;

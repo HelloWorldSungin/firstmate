@@ -134,6 +134,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -168,35 +170,32 @@ META="$STATE/$ID.meta"
 # to a stale session map rather than stalling a lifecycle-critical path.
 # docs/usage-accounting.md owns the contract.
 FM_TEARDOWN_USAGE_TIMEOUT=${FM_TEARDOWN_USAGE_TIMEOUT:-60}
+# Zero falls back with the blank and the non-numeric, because zero is not a
+# bound: GNU timeout reads DURATION 0 as "no timeout", so honoring it would run
+# a scan of every transcript on the machine unbounded on a lifecycle-critical
+# path.
 case "$FM_TEARDOWN_USAGE_TIMEOUT" in ''|*[!0-9]*) FM_TEARDOWN_USAGE_TIMEOUT=60 ;; esac
+[ "$FM_TEARDOWN_USAGE_TIMEOUT" -ge 1 ] || FM_TEARDOWN_USAGE_TIMEOUT=60
 
-# Bounded execution, mirroring bin/fm-fleet-snapshot.sh's selection so a host
-# without GNU coreutils still bounds the call rather than skipping the bound.
-# Every branch escalates to SIGKILL, because SIGTERM alone is not a bound: a
+# The bound itself comes from bin/fm-timeout-lib.sh, the declared single owner:
+# every arm there escalates to SIGKILL, because SIGTERM alone is not a bound - a
 # child that ignores it, or that is stuck in uninterruptible IO, would keep this
 # lifecycle-critical path parked forever. run_bounded in
 # bin/fm-gbrain-capture.sh bounds the other call on this path the same way.
-FM_TEARDOWN_KILL_GRACE=5
-run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k "$FM_TEARDOWN_KILL_GRACE" "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -k "$FM_TEARDOWN_KILL_GRACE" "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 124
-  fi
-}
-
 refresh_usage_sessions() {
   [ -f "$DATA/usage.db" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  run_timed "$FM_TEARDOWN_USAGE_TIMEOUT" \
-    env FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+  # The kill grace is raised from the owner's one-second default because the
+  # polite signal has real work to do here: fm-usage.mjs answers SIGTERM by
+  # checkpointing the store back out of WAL, and a kill that lands mid-close
+  # leaves behind exactly the WAL-at-rest shape the read-only dashboard cannot
+  # open (issue #65).
+  (
+    export FM_TIMEOUT_KILL_GRACE=5
+    fm_run_timed "$FM_TEARDOWN_USAGE_TIMEOUT" \
+      env FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME"
+  ) >/dev/null 2>&1 || true
 }
 
 write_outcome_manifest() {  # <force-flag> [<completed-at>]

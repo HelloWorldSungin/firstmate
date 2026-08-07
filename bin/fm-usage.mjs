@@ -53,7 +53,7 @@ import { fileURLToPath } from "node:url";
 // what they hold in common.
 import {
   cleanToken,
-  closeStore,
+  closeStoreOnSignals,
   count,
   digest,
   isoToEpoch,
@@ -1250,8 +1250,11 @@ async function main() {
       die(`could not open the usage store: ${error.message}`);
     }
     // Every exit from the writer path closes through closeStore, including the
-    // ones a raised error takes: a run that left the store in WAL would be a run
-    // the read-only dashboard cannot open at all.
+    // ones a raised error takes and the ones a bounded caller's SIGTERM takes: a
+    // run that left the store in WAL would be a run the read-only dashboard
+    // cannot open at all, and both bootstrap and teardown end a refresh that
+    // outran its budget with exactly that signal.
+    const closeUsageStore = closeStoreOnSignals(db);
     try {
       if (command === "migrate") {
         emit({ schema_version: SCHEMA_VERSION, store: paths.db });
@@ -1299,7 +1302,7 @@ async function main() {
       });
       if (failures.length > 0) process.exitCode = 1;
     } finally {
-      closeStore(db);
+      closeUsageStore();
     }
     return;
   }

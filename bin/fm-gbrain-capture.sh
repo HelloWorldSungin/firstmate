@@ -131,9 +131,9 @@ brain_ready() {  # -> 0 ready, 1 not ready (reason in FM_GBRAIN_CAPTURE_ERROR)
 
 # Every branch escalates to SIGKILL, because SIGTERM alone is not a bound: a
 # gbrain that ignores it, or that is stuck in uninterruptible IO on a locked
-# PGLite index, would keep a lifecycle-critical path parked forever. This
-# mirrors run_timed in bin/fm-teardown.sh, which bounds the other call on that
-# same path.
+# PGLite index, would keep a lifecycle-critical path parked forever. The other
+# call on that same path - teardown's usage refresh - takes the same guarantee
+# from fm_run_timed in bin/fm-timeout-lib.sh.
 FM_GBRAIN_CAPTURE_KILL_GRACE=5
 
 run_bounded() {  # <seconds> <cmd...>

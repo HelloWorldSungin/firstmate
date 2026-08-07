@@ -260,3 +260,45 @@ export function closeStore(db) {
   }
   db.close();
 }
+
+// The self-contained at-rest shape closeStore leaves behind is only an
+// invariant if it also survives the way a BOUNDED writer usually ends. Every
+// caller that bounds a writer - bootstrap's session-start refresh, teardown's
+// refresh before the manifest - ends one that outran its budget with SIGTERM
+// first, and Node's default disposition for SIGTERM terminates the process
+// without running a single finally block. A writer that only closed on the
+// normal path would therefore leave the store in WAL exactly when a refresh
+// timed out, which is the read the dashboard cannot make under
+// ProtectHome=read-only: issue #65 restored by the very bound meant to keep the
+// store fresh. Both callers hold the kill back for seconds against closeStore's
+// CLOSE_BUDGET_MS, so answering the polite signal is what keeps the invariant.
+// An abnormal SIGKILL or a hard crash stays the residual case, and the next
+// writable open heals that one.
+//
+// The returned close is the normal path's close too, and it is idempotent, so a
+// signal that lands while a run is already closing can never close twice.
+const TERMINATING_SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+
+export function closeStoreOnSignals(db) {
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closeStore(db);
+  };
+  const installed = [];
+  for (const [signal, number] of Object.entries(TERMINATING_SIGNALS)) {
+    const handler = () => {
+      close();
+      // The conventional 128+n, so a caller that reads the status still sees
+      // which signal ended the run rather than a clean exit.
+      process.exit(128 + number);
+    };
+    process.on(signal, handler);
+    installed.push([signal, handler]);
+  }
+  return () => {
+    close();
+    for (const [signal, handler] of installed) process.removeListener(signal, handler);
+  };
+}

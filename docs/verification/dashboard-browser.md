@@ -32,8 +32,8 @@ Everything below was observed on the rendered page, not read out of an API respo
 
 Every row below was recorded against the captain's own running dashboard rather than a fixture, by a harness that already carried every assertion the table names.
 An initial live run was made before the harness was strengthened; it was re-run afterwards so that no row here comes from an assertion the recorded run did not actually make.
-Two later changes are not in these numbers.
-The leak scan was widened from the five view sections to the whole rendered page after this run, and the coverage note under that row says what the narrower scan can and cannot claim.
+The re-run carries both changes the first one predated: the token-totals observation beside the usage panel, and the leak scan widened from the five view sections to the whole rendered page, which is why the failing leak row now states the characters it covered and why that figure equals the rendered-text figure at the same width.
+
 | Observation | Phone | Desktop |
 | --- | --- | --- |
 | Document loads, title `Firstmate Fleet` | yes | yes |
@@ -50,7 +50,7 @@ The leak scan was widened from the five view sections to the whole rendered page
 | Collected usage shows token totals where attributed | no attributed totals on the page (home may not collect yet) | same |
 | No credential-shaped or path-shaped value | **failed**, 11 patterns over 30,584 characters, see below | **failed**, 11 patterns over 30,819 characters, see below |
 | Anchor navigation lands clear of the sticky bar | **passed**, heading 12-23px below the bar | **passed**, heading 12-23px below the bar |
-| Browser console | 7 windows read, all empty | 7 windows read, all empty |
+| Browser console | 7 windows read, all empty | 8 windows read, all empty |
 
 The console result is worth stating precisely, because the earlier version of this check could not have supported it.
 The browser tool returns only the current navigation's messages and its collector discards all but the last three navigation buckets, so a single read taken at the end of a width saw almost nothing.
@@ -58,7 +58,7 @@ The run above took a console read immediately before every navigation it made an
 Every one was empty: no errors, no warnings, no failed subresource.
 The check records one console verdict for the whole run rather than one per width, so the split above says where those windows were read, not that the verdict was reached twice.
 
-Two observations failed against the live service and are recorded as failures rather than smoothed over.
+One observation failed against the live service and is recorded as a failure rather than smoothed over.
 Absolute host paths are on the rendered page, which the next section covers.
 
 The refresh run above recorded anchor navigation landing clear of the sticky bar on the live service at both widths, with the heading 12-23px below the bar after each link was followed.
@@ -103,8 +103,7 @@ This is left as an observation rather than a fix: changing what `project` means 
 
 What that row does and does not carry is worth being exact about, because a failure that cannot state its coverage is the same defect as a pass that verified nothing wearing the other mask.
 The pattern count is established by the verdict itself: the scan reaches `ok` or `FAIL` only after the page confirms it compiled all eleven of this check's patterns, and records `????` otherwise, so a recorded failure is a recorded eleven-pattern scan.
-The character count is not, because the run above was recorded before the failing branch printed coverage at all and before the scan was widened from the five view sections to the whole rendered page.
-Both are fixed now, so the next live run's failing row carries the figure; this one cannot be given one after the fact without inventing it.
+The character count is carried by the row above, because the re-run was made after the failing branch began printing its coverage and after the scan was widened from the five view sections to the whole rendered page; it equals the rendered-text figure at the same width, which is what covering the whole page looks like from here.
 The widening matters here specifically: `assets/dashboard/index.html` puts `<section id="notice-region">` outside `.board-content`, and `assets/dashboard/app.js` renders a failed snapshot command's raw `stderr` into a `<code>` element inside it, which is the likeliest carrier of an absolute host path anywhere on the page and was outside what the scan covered.
 
 ## Two more observations from that run
@@ -150,7 +149,8 @@ $ bin/fm-dashboard-browser-check.sh --negative
 negative proof PASSED: the check refuses a page that renders nothing (44 failed, 6 could not be verified, and every one of the 8 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
-The six unverified verdicts are two per width for the usage panel and token-totals observations on a page with no completion records, plus the leak scan and console windows that could not be read on an empty body.
+The six unverified verdicts are three per width: the usage panel and the token totals, on a page with no completion record to carry either, and the leak scan, which over an empty body cannot be shown to have run at all.
+The console is not among them, because `--negative` exits after the widths, before the live stream and the console, and declares its observation set accordingly.
 The eight named assertions are unchanged, and the new observations are not among them.
 
 Counting failures would not have been enough.
@@ -161,7 +161,7 @@ An earlier version required only that the assertion was absent from the run's pa
 It now requires each named assertion to appear in `result.txt` as a `FAIL` or a `????` line of its own, which is positive evidence that it ran and refused, rather than an inference from two absences.
 
 Six observations still pass on that page and are meant to: the document loaded, because a title alone satisfies it; the browser was at the requested width, because it was; and nothing scrolls sideways, because nothing is there to.
-Four recorded `????` in that run, which is the third verdict earning its place: the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and the usage observation reports that there was no completion record to carry a panel.
+Six recorded `????` in that run, which is the third verdict earning its place: at each width the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and both usage observations report that there was no completion record to carry a panel or a total.
 
 ## Executing each failure path rather than reasoning about it
 

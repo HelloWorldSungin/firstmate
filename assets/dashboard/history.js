@@ -114,8 +114,14 @@ function prSummary(record) {
 // Usage totals are presence-gated on both sides: the collector may not exist in
 // this home at all, and a task the collector never attributed has no row. Both
 // render as `unavailable` with the reason, never as zero.
+//
+// A stale envelope is the server's last good read, retained while a writer holds
+// the store. Its totals are real, so they are shown as they are; what changes is
+// the MISSING row, which on a stale read is "not in the read we still have"
+// rather than the settled "the collector attributed nothing to this task".
 function usageFor(id, usage) {
   const collection = text(usage?.collection) || "absent";
+  const stale = usage?.stale === true;
   if (!usage || usage.available !== true) {
     return {
       available: false,
@@ -128,7 +134,9 @@ function usageFor(id, usage) {
   if (!row || typeof row !== "object") {
     return {
       available: false,
-      reason: "no token usage was attributed to this task",
+      reason: stale
+        ? "the last good token-usage read has nothing for this task yet"
+        : "no token usage was attributed to this task",
       collection: "ready",
       totals: null,
     };
@@ -346,6 +354,7 @@ export function buildHistory(envelope, view = {}) {
       available: usage?.available === true,
       reason: text(usage?.reason) || null,
       collection: text(usage?.collection) || null,
+      stale: usage?.stale === true,
       source: text(usage?.source) || null,
     },
     // Semantic search over report content is a separate integration. Until it

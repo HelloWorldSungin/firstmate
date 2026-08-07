@@ -399,12 +399,13 @@ function safeText(value, limit = 4_000) {
     .slice(0, limit);
 }
 
-function usageEnvelope({ available, reason, collection, source, tasks }) {
+function usageEnvelope({ available, reason, collection, source, tasks, stale = false }) {
   return {
     available: Boolean(available),
     reason: reason ? safeText(reason) : null,
     collection: collection ? safeText(collection, 32) : null,
     source: source ? safeText(source, 64) : null,
+    stale: Boolean(stale),
     tasks: tasks && typeof tasks === "object" ? tasks : {},
   };
 }
@@ -570,6 +571,7 @@ class HistoryState {
     this.config = config;
     this.clients = clients;
     this.lastGood = null;
+    this.lastGoodUsage = null;
     this.usage = usageEnvelope({
       available: false,
       reason: "token usage has not been read yet",
@@ -663,7 +665,7 @@ class HistoryState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
-      this.usage = await this.readUsage();
+      this.usage = this.retainUsage(await this.readUsage());
     } catch (error) {
       this.lastError = errorRecord(error, "history_refresh_failed");
     } finally {
@@ -674,6 +676,35 @@ class HistoryState {
         queueMicrotask(() => this.trigger());
       }
     }
+  }
+
+  // Token usage keeps its last good read the way history keeps its last good
+  // document, and for the same reason: a read that MISSED is not the same fact
+  // as a read that came back empty. The store has writers - teardown refreshes
+  // it on every archive, bootstrap on every locked session start - and while one
+  // holds it in WAL the service's read-only connection cannot take a read lock
+  // without write access to data/ to update the wal-index, so the collector
+  // exits non-zero and the read comes back operational. Replacing the envelope
+  // there would drop every completed card's real totals for the length of that
+  // overlap and draw the whole panel as an operator action item, at the moment a
+  // captain is most likely to be looking: teardown refreshes the store
+  // immediately before the record that triggered it appears in History.
+  //
+  // Only an operational failure retains. "absent" and "disabled" are facts about
+  // this home rather than a read that missed - a deleted store or a dashboard
+  // with usage reads switched off must not keep serving totals from before - so
+  // they drop the retained read instead of hiding behind it.
+  retainUsage(fresh) {
+    if (fresh.available) {
+      this.lastGoodUsage = fresh;
+      return fresh;
+    }
+    if (fresh.collection !== "operational") {
+      this.lastGoodUsage = null;
+      return fresh;
+    }
+    if (!this.lastGoodUsage) return fresh;
+    return usageEnvelope({ ...this.lastGoodUsage, stale: true, reason: fresh.reason });
   }
 
   // Token usage is an optional integration owned elsewhere. Its absence, its
