@@ -95,11 +95,10 @@
 #          when data/usage.db already exists, matching teardown's opt-in
 #          contract in docs/usage-accounting.md; it is bounded by
 #          FM_BOOTSTRAP_USAGE_TIMEOUT (non-numeric or blank falls back to 120s)
-#          and every bound escalates to SIGKILL. A refresh that times out or
-#          fails prints one USAGE line with the timeout and elapsed seconds
-#          rather than degrading silently, and a host with no way to bound the
-#          call at all skips it on the same line rather than running it
-#          unbounded.
+#          and every bound escalates to SIGKILL. A successful refresh is silent;
+#          one that timed out, could not be bounded on this host, or ran and
+#          exited non-zero reports itself on a single USAGE_STORE line rather
+#          than degrading silently.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eight MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, secondmate_sync,
 #          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
@@ -220,9 +219,9 @@ bootstrap_run_timed() {  # <seconds> <command...>
 # teardown's opt-in contract in docs/usage-accounting.md. The call is bounded,
 # because a first collection scans every Claude transcript and Codex rollout on
 # the machine: a slow or hung collector degrades to a staler store rather than
-# stalling session start. A refresh that does not finish says so on one line,
-# the way fleet_sync reports its own timeout, so a session that just spent the
-# whole budget is never left guessing why.
+# stalling session start. A refresh that does not finish says so on one
+# USAGE_STORE line, the way fleet_sync reports its own timeout, so a session
+# that just spent the whole budget is never left guessing why.
 usage_store_refresh() {
   [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && return 0
   [ -f "$DATA/usage.db" ] || return 0
@@ -231,7 +230,7 @@ usage_store_refresh() {
   local timeout=${FM_BOOTSTRAP_USAGE_TIMEOUT:-120} start elapsed status=0
   case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
   if ! bootstrap_bound_available; then
-    echo "USAGE: usage store: skipped: no timeout, gtimeout or perl on this host to bound the refresh"
+    echo "USAGE_STORE: skipped: no timeout, gtimeout or perl on this host to bound the refresh"
     return 0
   fi
   start=$SECONDS
@@ -241,10 +240,13 @@ usage_store_refresh() {
   case "$status" in
     0) ;;
     124|137)
-      echo "USAGE: usage store: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${elapsed}s)"
+      echo "USAGE_STORE: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${elapsed}s)"
       ;;
     *)
-      echo "USAGE: usage store: skipped: bootstrap refresh failed (status=$status elapsed=${elapsed}s)"
+      # Not "skipped": fm-usage.mjs exits non-zero for a derivation stage that
+      # failed after the collection it already committed, so the likeliest
+      # reading of this line is a refresh that ran and landed part of its work.
+      echo "USAGE_STORE: failed: bootstrap refresh ran but exited $status (elapsed=${elapsed}s)"
       ;;
   esac
   return 0

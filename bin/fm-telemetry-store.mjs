@@ -121,14 +121,18 @@ export function sleepMs(ms) {
 
 // PRAGMA journal_mode does NOT honor the busy timeout: SQLite takes the brief
 // exclusive lock that switching a store's journal mode needs without ever
-// calling the busy handler, so a second writer creating the same store gets
-// SQLITE_BUSY back in well under a millisecond however long the timeout is. The
-// switch is therefore retried explicitly on the same budget. Only a switch that
-// changes the mode can contend at all - a store that is already in WAL needs no
-// lock to be told it is in WAL, which is why steady-state overlapping runs never
-// wait here.
-function setJournalMode(db, mode) {
-  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+// calling the busy handler, so a caller that loses that race gets SQLITE_BUSY
+// back in well under a millisecond however long the timeout is. The switch is
+// therefore retried explicitly, on whatever budget the caller is willing to
+// spend rather than on the store's.
+//
+// Only a switch that changes the mode can contend at all - a store already in
+// WAL needs no lock to be told it is in WAL, which is why opening a store an
+// overlapping writer already holds never waits here. Closing back to DELETE is
+// the switch that does contend, and closeStore says below why it spends almost
+// nothing on it.
+function setJournalMode(db, mode, budgetMs) {
+  const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
       db.exec(`PRAGMA journal_mode = ${mode}`);
@@ -142,7 +146,7 @@ function setJournalMode(db, mode) {
 }
 
 function enableWalMode(db) {
-  setJournalMode(db, "WAL");
+  setJournalMode(db, "WAL", BUSY_TIMEOUT_MS);
 }
 
 // Every migration is append-only and runs inside one transaction against
@@ -185,8 +189,10 @@ export function migrate(db, migrations) {
 // readOnly opens for query-only consumers such as the dashboard service, which
 // runs under ProtectHome=read-only and must not attempt WAL setup or migration
 // writes against data/usage.db even though it never mutates fleet state itself.
-// Such an open only succeeds because every writer leaves the store in a
-// self-contained shape - closeStore below owns that half of the contract.
+// Such an open only succeeds because every writer closes through closeStore
+// below, which owns that half of the contract: both stores route their writer
+// exits through it, so neither is left in a shape a write-less reader cannot
+// open.
 export function openStore(dbPath, migrations, { create = true, readOnly = false } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
@@ -231,12 +237,24 @@ export function openStore(dbPath, migrations, { create = true, readOnly = false 
 //
 // WAL still covers every writer window, where it is what lets a collector run
 // and teardown's best-effort refresh overlap; only the at-rest shape changes.
-// Failing to switch back is survivable - the store is correct either way and the
-// next writer to close retries - so the close itself always happens.
+//
+// Both steps are held to CLOSE_BUDGET_MS rather than the store's ten-second
+// busy budget, because waiting here buys nothing: a checkpoint or a switch that
+// comes back busy means another writer still holds the store, and THAT writer's
+// own close leaves the self-contained shape behind. Spending the full budget
+// would only tax whichever writer happens to finish first - and this runs on
+// teardown's 60s-bounded refresh, where a ten-second stall is a sixth of the
+// budget spent on work someone else is about to do.
+export const CLOSE_BUDGET_MS = 500;
+
 export function closeStore(db) {
   try {
+    // The checkpoint DOES honor the busy timeout, so lowering it is what bounds
+    // that half; the mode switch never does, which is why it takes the budget
+    // as an argument instead.
+    db.exec(`PRAGMA busy_timeout = ${CLOSE_BUDGET_MS}`);
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    setJournalMode(db, "DELETE");
+    setJournalMode(db, "DELETE", CLOSE_BUDGET_MS);
   } catch {
     /* another connection still holds the store in WAL; it will switch on close */
   }
