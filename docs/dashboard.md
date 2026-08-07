@@ -142,6 +142,19 @@ Document size, line count, node count, and nesting are all bounded, and every tr
 The report itself is fetched by task id, and that id selects nothing on its own: it must name a task the current history published with a retained report, and the file is then read from this home's own data directory rather than from the path recorded in the manifest.
 A report that is missing, is no longer a plain file, or resolves outside that directory is refused with a reason, and a report larger than the configured byte limit is served truncated and labeled.
 
+## Checking it in a browser
+
+The module-level tests prove what each browser module returns; they cannot prove that the page loads, that the stylesheet arrived, that the layout holds at 390 CSS px, or that the console is clean.
+[`bin/fm-dashboard-browser-check.sh`](../bin/fm-dashboard-browser-check.sh) drives the real page in a real browser and records what it rendered, at a phone width and a desktop width.
+
+Run it with no arguments and it starts its own dashboard from this checkout on an ephemeral loopback port over a throwaway home, so it never touches an installed service.
+Pass `--url` with `--user` and `--password-file` to point it at a running dashboard; the password is held by a loopback-only front and never enters the URL the browser opens, so checking an authenticated dashboard needs no change to its exposure or its credentials.
+`--negative` proves the check can still fail, by running the same assertions against a page that renders nothing.
+
+It is a command rather than a test CI runs, because one Chrome session per host is shared state that parallel test shards would fight over and CI has no browser at all; `tests/fm-dashboard-browser.test.sh` is the opt-in wrapper, and the script's header owns that tradeoff in full.
+Run it after changing anything the page renders, and before believing any claim about what the dashboard shows.
+[`docs/verification/dashboard-browser.md`](verification/dashboard-browser.md) records what the first run observed.
+
 ## Updating configuration
 
 Re-run the installer with the desired values to replace the environment file and restart the enabled service.

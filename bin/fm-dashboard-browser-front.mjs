@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+// fm-dashboard-browser-front.mjs - a loopback-only authenticating front for a
+// browser check of an already-running, already-authenticated dashboard.
+//
+// The dashboard authenticates every browser-facing route, and a browser check
+// needs a URL it can simply open. The obvious shortcut, putting the password
+// into that URL, writes the credential into the browser's own history and into
+// every snapshot, screenshot, and console dump the check captures - which is
+// the opposite of what a check that exists to look for exposed credentials
+// should do. This holds the credential instead: it reads the password from a
+// private file, adds the Authorization header the dashboard already requires,
+// and forwards everything else untouched.
+//
+// It weakens nothing and widens nothing. The dashboard's own authentication is
+// unchanged and still enforced; what arrives there is an ordinary authenticated
+// request. This process binds loopback only, refuses any other bind, and lives
+// only for the length of one check. bin/fm-dashboard-browser-check.sh starts and
+// stops it; running it by hand is for debugging that check.
+//
+// Bodies are streamed rather than buffered, so the dashboard's server-sent
+// event stream reaches the browser as it is produced. That matters: the live
+// event observation this front exists to enable is precisely the one a
+// buffering proxy would break.
+//
+// usage:
+//   fm-dashboard-browser-front.mjs --target <url> --user <name> --password-file <path> [--port <n>]
+//
+//   --target        base URL of the dashboard to front, for example
+//                   http://192.168.68.110:8787
+//   --user          username to present
+//   --password-file file holding the password, and nothing else, trailing
+//                   newline permitted
+//   --port          loopback port to listen on (default: an ephemeral port)
+//
+// It prints one line, "listening <url>", once it is ready to serve, and exits
+// non-zero with a diagnostic if it cannot start.
+
+import http from "node:http";
+import { readFileSync } from "node:fs";
+
+const LOOPBACK = "127.0.0.1";
+// Beyond this the front is not the bottleneck the check is measuring; a
+// dashboard that has not answered a browser request in a minute is the
+// finding, not a timeout to tune away.
+const UPSTREAM_TIMEOUT_MS = 60_000;
+
+function usage(message) {
+  process.stderr.write(`${message}\n\nusage: fm-dashboard-browser-front.mjs --target <url> --user <name> --password-file <path> [--port <n>]\n`);
+  process.exit(2);
+}
+
+function parseArguments(argv) {
+  const options = { target: "", user: "", passwordFile: "", port: 0 };
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+    switch (flag) {
+      case "--target": options.target = value; index += 1; break;
+      case "--user": options.user = value; index += 1; break;
+      case "--password-file": options.passwordFile = value; index += 1; break;
+      case "--port": options.port = Number(value); index += 1; break;
+      case "--help": case "-h": usage("fm-dashboard-browser-front.mjs"); break;
+      default: usage(`unknown argument: ${flag}`);
+    }
+  }
+  if (!options.target) usage("--target is required");
+  if (!options.user) usage("--user is required");
+  if (!options.passwordFile) usage("--password-file is required");
+  if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65_535) {
+    usage("--port must be a port number");
+  }
+  return options;
+}
+
+const options = parseArguments(process.argv.slice(2));
+
+let target;
+try {
+  target = new URL(options.target);
+} catch {
+  usage(`--target must be a URL: ${options.target}`);
+}
+if (target.protocol !== "http:") {
+  // Only http upstreams, because that is what a Firstmate dashboard serves.
+  // Refusing rather than quietly attempting https keeps a mistyped target from
+  // looking like an unreachable dashboard.
+  usage(`--target must be an http:// URL: ${options.target}`);
+}
+
+// A password file readable by other users is not a credential, and this front
+// exists to keep one out of sight. Refusing here is the same judgment the
+// dashboard itself makes about its own credentials file.
+let password;
+try {
+  password = readFileSync(options.passwordFile, "utf8").replace(/\r?\n$/, "");
+} catch (error) {
+  process.stderr.write(`cannot read the password file ${options.passwordFile}: ${error.message}\n`);
+  process.exit(1);
+}
+if (!password) {
+  process.stderr.write(`the password file ${options.passwordFile} is empty\n`);
+  process.exit(1);
+}
+
+const authorization = `Basic ${Buffer.from(`${options.user}:${password}`, "utf8").toString("base64")}`;
+// The credential is now only in this process's memory. Nothing below ever
+// writes it to a log line, an error body, or a response header.
+password = "";
+
+const server = http.createServer((request, response) => {
+  const headers = { ...request.headers, authorization, host: target.host };
+  // Hop-by-hop headers belong to this connection, not to the forwarded one.
+  delete headers["proxy-authorization"];
+  delete headers.connection;
+
+  const upstream = http.request(
+    {
+      host: target.hostname,
+      port: target.port || 80,
+      method: request.method,
+      path: request.url,
+      headers,
+    },
+    (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    },
+  );
+  upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+    upstream.destroy(new Error(`the dashboard did not answer within ${UPSTREAM_TIMEOUT_MS}ms`));
+  });
+  upstream.on("error", (error) => {
+    if (response.headersSent) {
+      response.destroy();
+      return;
+    }
+    // A plain-text body, so a check that renders this page sees the reason
+    // rather than an empty document it would have to guess about.
+    response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    response.end(`the dashboard at ${target.origin} could not be reached: ${error.message}\n`);
+  });
+  request.on("error", () => upstream.destroy());
+  request.pipe(upstream);
+});
+
+server.on("error", (error) => {
+  process.stderr.write(`the authenticating front could not listen: ${error.message}\n`);
+  process.exit(1);
+});
+
+server.listen(options.port, LOOPBACK, () => {
+  const address = server.address();
+  process.stdout.write(`listening http://${LOOPBACK}:${address.port}\n`);
+});

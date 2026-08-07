@@ -122,6 +122,11 @@ main { min-width: 0; flex: 1; }
 .notice strong { display: block; margin-bottom: 2px; }
 .notice code { font: 500 11px/1.5 var(--mono); color: var(--dim); word-break: break-word; }
 .board-content { display: flex; min-width: 0; flex-direction: column; gap: var(--gap); padding: 16px 0 calc(28px + env(safe-area-inset-bottom)); }
+/* Hold every scroll target clear of the sticky bar, which would otherwise cover
+   the heading of whichever section a nav link or the Timeline button just
+   navigated to. app.js publishes the bar's current height as --sticky-top; the
+   fallback is only for the moment before the first measurement lands. */
+.board-content > section { scroll-margin-top: calc(var(--sticky-top, 120px) + 12px); }
 .board-heading { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 6px 16px; padding: 0 var(--edge); }
 .eyebrow { margin: 0 0 4px; color: var(--faint); font: 600 9.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
 h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
