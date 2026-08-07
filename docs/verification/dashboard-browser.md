@@ -8,6 +8,10 @@ Refresh with `FM_DASHBOARD_BROWSER_E2E=1 bin/fm-test-run.sh tests/fm-dashboard-b
 Point it at a running dashboard with `bin/fm-dashboard-browser-check.sh --url <url> --user <name> --password-file <path>`.
 [`bin/fm-dashboard-browser-check.sh`](../../bin/fm-dashboard-browser-check.sh)'s header owns why this is an operator command rather than an unconditional CI test.
 
+Every observation below is one of three verdicts, not two.
+`ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, and `????` means it could not be observed at all.
+The third exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
+
 ## The first run against a live fleet
 
 Host: Linux 6.14.11, Chrome via `chrome-devtools-axi`, dashboard served by the installed user service.
@@ -34,6 +38,26 @@ The console was clean at both widths: no errors, no warnings, no failed subresou
 Two observations failed against the live service and are recorded as failures rather than smoothed over.
 Absolute host paths are on the rendered page, which the next section covers.
 Anchor navigation landed every section underneath the sticky bar, covered by 135px at phone width and 119px at desktop; that defect is fixed in [`assets/dashboard/styles.css`](../../assets/dashboard/styles.css) and [`assets/dashboard/app.js`](../../assets/dashboard/app.js) and is now pinned by the check.
+
+The table above is what that run recorded, and it predates four things the harness was subsequently given: an assertion that the browser really is at the width each section is named after, an assertion that every completed record carries its usage panel, a requirement that the leak scan report how many patterns it ran over how many characters before an empty result counts as clean, and a console read taken after every navigation instead of once at the end.
+Re-running against the live fleet needs its captain credential, so those four are recorded below from the runs that could be made rather than backfilled into a table they were not part of.
+
+## The usage panel
+
+Token usage is not a view of its own, which is why it needed saying separately.
+It renders as a `USAGE` panel inside every completed-work card in History, one panel per record, so a board-level landmark would never have noticed it disappearing.
+
+The check now counts the completion records on the page and the labelled usage panels among them, and requires one per record.
+Observed on a fixture dashboard the check started itself, at both widths: 2 labelled panels across 2 completed records.
+Both render the documented unavailable-with-reason form, `USAGE / unavailable / token usage could not be read (exit_nonzero)`, because no usage collector answers on this host.
+That is the correct rendering of an absent collector and is not treated as a failure; what is treated as a failure is a record whose panel is not there at all.
+
+A home with no completed work has no history cards, and therefore no usage panel to look at.
+That case records `????` rather than a pass or a failure, and was observed that way against a dashboard started over an empty home:
+
+```
+???? 390x844: every completed record shows its usage panel - no completion record is on the page, so there is no usage panel to look at
+```
 
 ## Absolute host paths reach the rendered page
 
@@ -63,20 +87,32 @@ The second is the failure [`assets/dashboard/events.js`](../../assets/dashboard/
 ## That the check can fail
 
 A check that only ever reports success is worth nothing, so this is pinned rather than assumed.
-`bin/fm-dashboard-browser-check.sh --negative` serves a page that answers 200 and carries the title `Firstmate Fleet` with an empty body, and requires the assertions to fail:
+`bin/fm-dashboard-browser-check.sh --negative` serves a page that answers 200 and carries the title `Firstmate Fleet` with an empty body, and requires the assertions that read what rendered to stop reporting `ok`:
 
 ```
 $ bin/fm-dashboard-browser-check.sh --negative
-6 passed, 24 failed
-negative proof PASSED: the check refuses a page that renders nothing (24 assertions failed, as required)
+6 passed, 24 failed, 4 could not be verified
+negative proof PASSED: the check refuses a page that renders nothing (24 failed, 4 could not be verified, and no assertion that reads what rendered reported ok)
 ```
 
-The document-loaded assertion is among the six that still pass, which is the point of running this: a title alone satisfies it, and everything that reads what rendered does not.
+Counting failures would not have been enough.
+A harness that had degraded to noticing nothing but a missing heading would still report a failure count, so the negative proof names the assertions that read the rendered page - the text, the stylesheet, each view's presence, height and landmarks, the leak scan, the nav landing, the usage panel - and requires that none of them reported `ok`.
+
+Six observations still pass on that page and are meant to: the document loaded, because a title alone satisfies it; the browser was at the requested width, because it was; and nothing scrolls sideways, because nothing is there to.
+Four record `????`, which is the third verdict earning its place: the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and the usage observation reports that there was no completion record to carry a panel.
 
 ## Limits of what a browser check can see here
 
 `chrome-devtools-axi eval` truncates its result at about 8,060 characters with no error of its own, and a live fleet's page carries roughly 30,000.
 Every text judgment is therefore made inside the page and returned as a short verdict; a probe that returned the rendered text would come back as invalid JSON on exactly the pages worth checking.
+
+`chrome-devtools-axi console` has the same shape of limit and one more besides: it truncates its listing at 2,000 characters, head only, with no flag that lifts it, and the listing covers the currently selected page since its last navigation.
+A single read at the end of a run would therefore see one navigation's worth of a head-truncated list and call the rest clean.
+So the console is read once after every navigation the check makes, and each read is paged one message at a time, which puts the listing's own `Showing 1-1 of N` line - the count of everything there is, not of what fitted - in front of the verdict.
+A read that does not produce that line, or a browser command that exits non-zero, is a console this run could not read, and it records `????` instead of a clean console.
+
+The nav landing is measured rather than inferred: the check scrolls away from the target, follows the link, waits inside the page for the scroll to stop moving, and then requires the address bar to name the section and its heading to come to rest clear of the sticky bar and within 48px of it.
+On the fixture that lands at 12px for a section with no top rule and 23px for one with, and where a section is too near the end of the document to be scrolled that far, the check requires the page to have reached its scroll limit with the heading on screen rather than accepting any offset.
 
 The browser this ran in has no colour emoji font, so the phone header's notification control drew as an empty box.
 That is a property of this host's fonts rather than of the dashboard, and it is recorded because it is visible in the captured screenshots.

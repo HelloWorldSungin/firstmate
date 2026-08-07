@@ -62,6 +62,7 @@ assert_contains "$(cat "$result")" "1440x900" "the check did not record the desk
 # than reporting a smaller green run.
 for observation in \
   "the dashboard document loaded" \
+  "the browser really is at this viewport" \
   "the stylesheet was applied" \
   "nothing is placed behind a horizontal swipe" \
   "the Captain inbox view is legible" \
@@ -69,6 +70,7 @@ for observation in \
   "the GBrain view is legible" \
   "the Activity view is legible" \
   "the History view is legible" \
+  "every completed record shows its usage panel" \
   "no credential-shaped or path-shaped value on the page" \
   "lands on that section's heading" \
   "a live event appears without a reload" \
@@ -79,6 +81,11 @@ do
 done
 
 grep -q '^FAIL' "$result" && fail "the check reported a failure on a correctly rendering dashboard"$'\n'"$(cat "$result")"
+# An observation the check could not make is not a pass. Against a fixture this
+# command starts itself, every one of them is reachable, so a ???? here means
+# the harness lost the ability to read some evidence it used to read - which
+# would otherwise show up as a quietly smaller green run.
+grep -q '^?' "$result" && fail "the check could not verify an observation against a fixture it controls"$'\n'"$(cat "$result")"
 pass "the browser check passes against a correctly rendering dashboard at phone and desktop widths"
 
 # --- a page that renders nothing fails ---------------------------------------
@@ -102,9 +109,21 @@ grep -q '^FAIL' "$negative_result" \
 for observation in \
   "the page rendered text rather than an empty document" \
   "the stylesheet was applied" \
-  "the Board view is on the page"
+  "the Board view is on the page" \
+  "the Board link lands on that section's heading"
 do
   grep -q "^FAIL.*$observation" "$negative_result" \
     || fail "the check did not notice this on an empty page: $observation"$'\n'"$(cat "$negative_result")"
+done
+
+# And the assertions whose honest answer on an empty page is "there was nothing
+# to look at" have to say so, rather than reporting a clean scan of no text or
+# a usage panel on no records.
+for observation in \
+  "no credential-shaped or path-shaped value on the page" \
+  "every completed record shows its usage panel"
+do
+  grep -q "^?.*$observation" "$negative_result" \
+    || fail "the check claimed to have observed this on an empty page: $observation"$'\n'"$(cat "$negative_result")"
 done
 pass "the browser check refuses a page that answers 200 with the right title and renders nothing"
