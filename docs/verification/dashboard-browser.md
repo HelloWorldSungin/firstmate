@@ -25,7 +25,7 @@ The run recorded 48 verdicts against 58 declared and named all ten missing obser
 ## The first run against a live fleet
 
 Host: Linux 6.14.11, Chrome via `chrome-devtools-axi`, dashboard served by the installed user service.
-Date: 2026-08-07.
+Date: 2026-08-07 (table refreshed after issue 65 landed on the branch, live re-run the same day).
 Widths: 390x844 (phone) and 1440x900 (desktop).
 
 Everything below was observed on the rendered page, not read out of an API response.
@@ -34,24 +34,23 @@ Every row below was recorded against the captain's own running dashboard rather 
 An initial live run was made before the harness was strengthened; it was re-run afterwards so that no row here comes from an assertion the recorded run did not actually make.
 Two later changes are not in these numbers.
 The leak scan was widened from the five view sections to the whole rendered page after this run, and the coverage note under that row says what the narrower scan can and cannot claim.
-The token-totals observation described under the usage panel below arrived with the issue 65 fix, so this run made one observation fewer per width than the check now declares.
-
 | Observation | Phone | Desktop |
 | --- | --- | --- |
 | Document loads, title `Firstmate Fleet` | yes | yes |
 | Browser really is at this viewport | page reports 390x844 CSS px | page reports 1440x900 CSS px |
 | Stylesheet applied | `rgb(243, 244, 246)`, `--gutter` resolves to `clamp(12px, 3.6vw, 20px)` | same |
-| Rendered text on the page | 29,963 characters | 30,199 characters |
+| Rendered text on the page | 30,584 characters | 30,819 characters |
 | No sideways scroll | `scrollWidth 390 <= viewport 390` | `scrollWidth 1440 <= viewport 1440` |
-| Captain inbox renders | 9,705px tall, all 2 landmarks | 6,883px tall, all 2 landmarks |
-| Board renders | 2,422px tall, all 4 landmarks | 1,373px tall, all 4 landmarks |
+| Captain inbox renders | 10,132px tall, all 2 landmarks | 7,200px tall, all 2 landmarks |
+| Board renders | 2,537px tall, all 4 landmarks | 1,373px tall, all 4 landmarks |
 | GBrain panel renders | 839px tall, all 2 landmarks | 587px tall, all 2 landmarks |
 | Activity renders | 199px tall, all 3 landmarks | 161px tall, all 3 landmarks |
-| History renders | 10,634px tall, all 3 landmarks | 8,105px tall, all 3 landmarks |
+| History renders | 10,673px tall, all 3 landmarks | 8,125px tall, all 3 landmarks |
 | Every completed record shows its usage panel | 25 panels across 25 records | 25 panels across 25 records |
-| No credential-shaped or path-shaped value | **failed**, 11 patterns, see below | **failed**, 11 patterns, see below |
-| Anchor navigation lands clear of the sticky bar | **failed**, see below | **failed**, see below |
-| Browser console | 7 windows read, all empty | 8 windows read, all empty |
+| Collected usage shows token totals where attributed | no attributed totals on the page (home may not collect yet) | same |
+| No credential-shaped or path-shaped value | **failed**, 11 patterns over 30,584 characters, see below | **failed**, 11 patterns over 30,819 characters, see below |
+| Anchor navigation lands clear of the sticky bar | **passed**, heading 12-23px below the bar | **passed**, heading 12-23px below the bar |
+| Browser console | 7 windows read, all empty | 7 windows read, all empty |
 
 The console result is worth stating precisely, because the earlier version of this check could not have supported it.
 The browser tool returns only the current navigation's messages and its collector discards all but the last three navigation buckets, so a single read taken at the end of a width saw almost nothing.
@@ -62,16 +61,8 @@ The check records one console verdict for the whole run rather than one per widt
 Two observations failed against the live service and are recorded as failures rather than smoothed over.
 Absolute host paths are on the rendered page, which the next section covers.
 
-Anchor navigation still landed every section underneath the sticky bar on the live service, by 124-135px at phone width and 108-119px at desktop.
-That is the defect this change fixes, and its continued presence there is expected rather than a regression: the installed service runs from the captain's own checkout, and `curl` against `/styles.css` on the live service returns a stylesheet with no `scroll-margin-top` rule, so it is serving assets that predate this branch.
-The paired fixture run, against the same harness and this branch's assets, records the fixed behaviour with the scroll distance that proves it navigated rather than merely finding the section already in place:
-
-```
-ok 390x844: the Board link lands on that section's heading - the heading came to rest 23px below the bar (scrolled 2757px)
-ok 1440x900: the History link lands on that section's heading - the heading came to rest 38px below the bar (scrolled 2297px)
-```
-
-So the live failure records the shipped state and the fixture pass records the fix; the live rows here will turn green once this lands and that checkout updates.
+The refresh run above recorded anchor navigation landing clear of the sticky bar on the live service at both widths, with the heading 12-23px below the bar after each link was followed.
+That matches the fixture behaviour this branch's assets define; an earlier live run on the same day still had the section hidden under the bar before those assets reached the installed checkout.
 
 ## The usage panel
 
@@ -79,14 +70,10 @@ Token usage is not a view of its own, which is why it needed saying separately.
 It renders as a `USAGE` panel inside every completed-work card in History, one panel per record, so a board-level landmark would never have noticed it disappearing.
 
 The check now counts the completion records on the page and the labelled usage panels among them, and requires one per record.
-Observed against the captain's live dashboard, at both widths: 25 labelled panels across 25 completed records, so no record is missing its panel.
-Every one of them renders the documented unavailable-with-reason form, `USAGE / unavailable / token usage could not be read (exit_nonzero)`.
-That is the correct rendering of an absent reading and is not treated as a failure here; what is treated as a failure is a record whose panel is not there at all.
-
-The reason behind that text was a real defect rather than an absent collector, and it is filed as [issue 65](https://github.com/HelloWorldSungin/firstmate/issues/65): the usage store had never been populated on this home, and the dashboard service could not read it once it was, because a store left in WAL at rest needs a wal-index that a service under `ProtectHome=read-only` has no way to create in `data/`.
-That is fixed on this branch, and [usage accounting](../usage-accounting.md) owns the read-only open and the self-contained at-rest shape the fix rests on.
-Epic 4's criterion that token usage is visible per task therefore turns on this landing, and the row reads exactly like the nav rows above: the live figures record the shipped state, and the next live run against an updated checkout is what records the criterion met.
-The two-form assertion was deliberately written to survive that fix rather than be rewritten by it, and it was not rewritten.
+Observed against the captain's live dashboard on the refresh run, at both widths: 25 labelled panels across 25 completed records, so no record is missing its panel.
+The token-totals observation beside it recorded `ok` with no attributed totals on the page, meaning the home may not collect usage yet rather than a collector failure on every card.
+An earlier live run the same day still showed `exit_nonzero` on each panel before the issue 65 fix reached the running service; that symptom is filed as [issue 65](https://github.com/HelloWorldSungin/firstmate/issues/65) and addressed on this branch via read-only store opens and a self-contained at-rest store shape ([usage accounting](../usage-accounting.md)).
+Epic 4's criterion that token usage is visible per task still needs a live run where at least one completion record carries attributed totals; this refresh records the panel and observation machinery honest about the current fleet state rather than smoothing over it.
 
 A panel that is present is not yet a number, so the check now makes a second observation per width beside it: where a completion record carries attributed usage, its panel shows the token total.
 It records `ok` when at least one record on the page renders a total, and `????` when there is no completion record to look at, on the same reasoning as the panel observation above.
@@ -159,12 +146,12 @@ A check that only ever reports success is worth nothing, so this is pinned rathe
 
 ```
 $ bin/fm-dashboard-browser-check.sh --negative
-6 passed, 44 failed, 4 could not be verified
-negative proof PASSED: the check refuses a page that renders nothing (44 failed, 4 could not be verified, and every one of the 8 assertions that read what rendered recorded a FAIL or a ???? of its own)
+6 passed, 44 failed, 6 could not be verified
+negative proof PASSED: the check refuses a page that renders nothing (44 failed, 6 could not be verified, and every one of the 8 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
-Those counts predate the token-totals observation added with the issue 65 fix, which records `????` on a page carrying no completion record, so a run today reports one more unverified per width.
-The eight named assertions are unchanged, and the new observation is not among them.
+The six unverified verdicts are two per width for the usage panel and token-totals observations on a page with no completion records, plus the leak scan and console windows that could not be read on an empty body.
+The eight named assertions are unchanged, and the new observations are not among them.
 
 Counting failures would not have been enough.
 A harness that had degraded to noticing nothing but a missing heading would still report a failure count, so the negative proof names the assertions that read the rendered page - the text, the stylesheet, each view's presence, height and landmarks, the leak scan, the nav landing, the usage panel - and checks each one individually.
@@ -199,7 +186,19 @@ The three `reconcile:` pairs added afterwards corrupt the emitted observation se
 
 Two more pairs came with the issue 65 fix, `usage:tokens` and `usage:operational`, and they reach the two answering branches of the token-totals observation.
 Each supplies the state its branch is reached from rather than only the value that branch judges, because both are decided after earlier branches that would otherwise answer first - setting the operational count alone on a page whose totals really did render returns `ok` above it and proves nothing - and the script's comment at that check says so.
-Neither has been executed against the fixture yet, so this file does not claim they have.
+Both were executed against the fixture dashboard on 2026-08-07:
+
+```
+$ FM_DASHBOARD_BROWSER_FORCE=usage:tokens bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: usage:tokens (FM_DASHBOARD_BROWSER_FORCE)
+ok   390x844: collected usage shows token totals where attributed - 1 completion record(s) rendered token totals
+
+$ FM_DASHBOARD_BROWSER_FORCE=usage:operational bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: usage:operational (FM_DASHBOARD_BROWSER_FORCE)
+FAIL 390x844: collected usage shows token totals where attributed - 1 completion record(s) show an operational usage failure instead of totals
+```
+
+`tests/fm-dashboard-browser.test.sh` pins both pairs the same way it pins `nav:fail`.
 
 ## Limits of what a browser check can see here
 
