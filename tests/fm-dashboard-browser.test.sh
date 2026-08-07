@@ -44,8 +44,16 @@ TMP_ROOT=$(fm_test_tmproot fm-dashboard-browser)
 #
 # Against the real server binary and the real assets from this checkout, driven
 # in a real browser at both a phone width and a desktop width.
+#
+# The two baseline runs below clear FM_DASHBOARD_BROWSER_FORCE rather than
+# inheriting it. An operator who had exported it would otherwise get exit 3
+# from an injected run reported here as "the browser check failed against a
+# correctly rendering dashboard", and exit 2 from the negative run reported as
+# "the check accepted a page that renders nothing" - two conclusions neither
+# run reached. The injection cases further down set it explicitly, one per
+# invocation.
 
-out=$("$CHECK" --out "$TMP_ROOT/fixture" 2>&1)
+out=$(FM_DASHBOARD_BROWSER_FORCE='' "$CHECK" --out "$TMP_ROOT/fixture" 2>&1)
 status=$?
 [ "$status" -eq 0 ] || fail "the browser check failed against a correctly rendering dashboard"$'\n'"$out"
 
@@ -94,7 +102,7 @@ pass "the browser check passes against a correctly rendering dashboard at phone 
 # dashboard's own title, so nothing short of looking at what rendered can tell
 # it apart from the real thing - which is exactly the failure mode this guards.
 
-negative=$("$CHECK" --negative --out "$TMP_ROOT/negative" 2>&1)
+negative=$(FM_DASHBOARD_BROWSER_FORCE='' "$CHECK" --negative --out "$TMP_ROOT/negative" 2>&1)
 status=$?
 [ "$status" -eq 0 ] \
   || fail "the check accepted a page that renders nothing, so it proves nothing"$'\n'"$negative"

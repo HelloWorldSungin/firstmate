@@ -1017,7 +1017,12 @@ EOF
       "the body is painted $background but the dashboard's own --gutter is undefined, so this is not its stylesheet"
   fi
 
-  forced swipe unverified && at_width=no
+  # The injected width moves too, not just the flag: this branch only ever
+  # happens because the page is at a width other than the one the section is
+  # named after, so leaving the real width in place would print "the page was
+  # 390 CSS px wide, so this was never measured at 390" - a sentence no real
+  # run can produce, from an injection whose whole job is to reproduce one.
+  forced swipe unverified && { at_width=no; inner_width=$((width + 7)); }
   forced swipe fail && scroll_width=$((client_width + 240))
   if [ "$at_width" != yes ]; then
     record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe" \
