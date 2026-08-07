@@ -352,7 +352,7 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
 .usage-panel.operational { border-style: solid; border-color: var(--amber); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 35%, transparent); }
 .usage-panel .label { color: var(--faint); letter-spacing: 0.09em; }
 .usage-total { color: var(--fg); font-size: 12px; }
-.usage-panel.unknown .usage-total { color: var(--amber); }
+.usage-panel.unknown .usage-total, .usage-panel.operational .usage-total { color: var(--amber); }
 .usage-reason { color: var(--faint); font-weight: 600; letter-spacing: 0.02em; }
 .usage-part { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; }
 .usage-part .key { color: var(--faint); }

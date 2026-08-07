@@ -120,17 +120,18 @@ export function sleepMs(ms) {
 }
 
 // PRAGMA journal_mode does NOT honor the busy timeout: SQLite takes the brief
-// exclusive lock that switching a store to WAL needs without ever calling the
-// busy handler, so a second writer creating the same store gets SQLITE_BUSY back
-// in well under a millisecond however long the timeout is. The switch is
-// therefore retried explicitly on the same budget. Only the first open of a
-// store can contend at all - a store that is already in WAL needs no lock to be
-// told it is in WAL, which is why steady-state overlapping runs never wait here.
-function enableWalMode(db) {
+// exclusive lock that switching a store's journal mode needs without ever
+// calling the busy handler, so a second writer creating the same store gets
+// SQLITE_BUSY back in well under a millisecond however long the timeout is. The
+// switch is therefore retried explicitly on the same budget. Only a switch that
+// changes the mode can contend at all - a store that is already in WAL needs no
+// lock to be told it is in WAL, which is why steady-state overlapping runs never
+// wait here.
+function setJournalMode(db, mode) {
   const deadline = Date.now() + BUSY_TIMEOUT_MS;
   for (;;) {
     try {
-      db.exec("PRAGMA journal_mode = WAL");
+      db.exec(`PRAGMA journal_mode = ${mode}`);
       return;
     } catch (error) {
       const busy = /\b(locked|busy)\b/i.test(String(error?.message ?? error));
@@ -138,6 +139,10 @@ function enableWalMode(db) {
       sleepMs(20);
     }
   }
+}
+
+function enableWalMode(db) {
+  setJournalMode(db, "WAL");
 }
 
 // Every migration is append-only and runs inside one transaction against
@@ -180,6 +185,8 @@ export function migrate(db, migrations) {
 // readOnly opens for query-only consumers such as the dashboard service, which
 // runs under ProtectHome=read-only and must not attempt WAL setup or migration
 // writes against data/usage.db even though it never mutates fleet state itself.
+// Such an open only succeeds because every writer leaves the store in a
+// self-contained shape - closeStore below owns that half of the contract.
 export function openStore(dbPath, migrations, { create = true, readOnly = false } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
@@ -209,4 +216,29 @@ export function openStore(dbPath, migrations, { create = true, readOnly = false 
     /* a store on a filesystem without modes stays usable */
   }
   return db;
+}
+
+// Close a writable store and leave the db file self-contained: the WAL is
+// checkpointed back into it and the store returns to a rollback journal, so the
+// one file is everything a reader needs.
+//
+// This is what makes a readOnly open possible at all for a consumer without
+// write access. SQLite cannot open a WAL store without its wal-index, and
+// creating usage.db-shm needs write access to the DIRECTORY the store lives in -
+// which the dashboard service, running under ProtectHome=read-only, does not
+// have on data/. A store left in WAL at rest therefore fails the dashboard's
+// read outright rather than merely reading stale, which is issue #65.
+//
+// WAL still covers every writer window, where it is what lets a collector run
+// and teardown's best-effort refresh overlap; only the at-rest shape changes.
+// Failing to switch back is survivable - the store is correct either way and the
+// next writer to close retries - so the close itself always happens.
+export function closeStore(db) {
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    setJournalMode(db, "DELETE");
+  } catch {
+    /* another connection still holds the store in WAL; it will switch on close */
+  }
+  db.close();
 }

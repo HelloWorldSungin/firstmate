@@ -53,6 +53,7 @@ import { fileURLToPath } from "node:url";
 // what they hold in common.
 import {
   cleanToken,
+  closeStore,
   count,
   digest,
   isoToEpoch,
@@ -1248,53 +1249,58 @@ async function main() {
     } catch (error) {
       die(`could not open the usage store: ${error.message}`);
     }
-    if (command === "migrate") {
-      emit({ schema_version: SCHEMA_VERSION, store: paths.db });
-      db.close();
-      return;
-    }
-    const collected = await collect(db, { claude: paths.claude, codex: paths.codex }, stamp);
-    const tasks = syncTasks(db, paths, stamp);
-    const bound = bindLiveSessions(db, stamp);
-    // Each derived stage is atomic on its own, so a failure in one must not
-    // silently skip the ones after it - publishing the session map is what lets
-    // a task's usage survive the cleanup that is about to run. Every failure is
-    // named in the summary and in the exit status instead of vanishing into
-    // teardown's best-effort call.
-    const failures = [];
-    const stage = (name, run, fallback) => {
-      try {
-        return run();
-      } catch (error) {
-        failures.push({ stage: name, detail: String(error?.message ?? error).slice(0, 240) });
-        return fallback;
+    // Every exit from the writer path closes through closeStore, including the
+    // ones a raised error takes: a run that left the store in WAL would be a run
+    // the read-only dashboard cannot open at all.
+    try {
+      if (command === "migrate") {
+        emit({ schema_version: SCHEMA_VERSION, store: paths.db });
+        return;
       }
-    };
-    stage("attribution", () => attributeEvents(db), null);
-    const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
-      rate_version: null,
-      currency: null,
-      events_priced: 0,
-      events_unpriced: null,
-    });
-    const published =
-      options.sessions === false ? 0 : stage("task_sessions", () => publishTaskSessions(db, paths, stamp), 0);
-    const attribution = stage("attribution_report", () => attributionReport(db), null);
-    emit({
-      schema: "fm-usage-ingest.v1",
-      store: paths.db,
-      schema_version: SCHEMA_VERSION,
-      collected,
-      tasks,
-      sessions_bound: bound,
-      task_session_maps_published: published,
-      cost,
-      attribution,
-      failures,
-      completed_at: stamp,
-    });
-    db.close();
-    if (failures.length > 0) process.exitCode = 1;
+      const collected = await collect(db, { claude: paths.claude, codex: paths.codex }, stamp);
+      const tasks = syncTasks(db, paths, stamp);
+      const bound = bindLiveSessions(db, stamp);
+      // Each derived stage is atomic on its own, so a failure in one must not
+      // silently skip the ones after it - publishing the session map is what lets
+      // a task's usage survive the cleanup that is about to run. Every failure is
+      // named in the summary and in the exit status instead of vanishing into
+      // teardown's best-effort call.
+      const failures = [];
+      const stage = (name, run, fallback) => {
+        try {
+          return run();
+        } catch (error) {
+          failures.push({ stage: name, detail: String(error?.message ?? error).slice(0, 240) });
+          return fallback;
+        }
+      };
+      stage("attribution", () => attributeEvents(db), null);
+      const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
+        rate_version: null,
+        currency: null,
+        events_priced: 0,
+        events_unpriced: null,
+      });
+      const published =
+        options.sessions === false ? 0 : stage("task_sessions", () => publishTaskSessions(db, paths, stamp), 0);
+      const attribution = stage("attribution_report", () => attributionReport(db), null);
+      emit({
+        schema: "fm-usage-ingest.v1",
+        store: paths.db,
+        schema_version: SCHEMA_VERSION,
+        collected,
+        tasks,
+        sessions_bound: bound,
+        task_session_maps_published: published,
+        cost,
+        attribution,
+        failures,
+        completed_at: stamp,
+      });
+      if (failures.length > 0) process.exitCode = 1;
+    } finally {
+      closeStore(db);
+    }
     return;
   }
 

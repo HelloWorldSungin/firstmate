@@ -1200,8 +1200,13 @@ SH
   FM_USAGE_CLAUDE_ROOT="$claude_root" FM_USAGE_CODEX_ROOT="$case_root/codex" \
     node "$runtime/bin/fm-usage.mjs" ingest --home "$home" >/dev/null \
     || fail "the read-only usage case could not build a store"
-  FM_HOME="$home" node "$runtime/bin/fm-usage.mjs" report --by harness >/dev/null \
-    || fail "the read-only usage case could not read the store before hardening"
+  # Hardened before anything reads it, and with no sidecars in place: a read
+  # taken while data/ was still writable would leave usage.db-wal and
+  # usage.db-shm behind, and the service's read-only open would then succeed on
+  # a wal-index the ProtectHome=read-only home has no way to create.
+  if [ -e "$home/data/usage.db-wal" ] || [ -e "$home/data/usage.db-shm" ]; then
+    fail "the read-only usage case started from a WAL store the service could not open"
+  fi
   chmod -R a-w "$home/data"
   TEST_PORT=$(free_port)
   FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \

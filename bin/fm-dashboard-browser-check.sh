@@ -1496,8 +1496,21 @@ check_usage_token_totals() {  # <label> <history cards> <token panels> <operatio
     return
   fi
   forced usage unverified && cards=0
-  forced usage tokens && token_panels=1
-  forced usage operational && operational_panels=1
+  # A forced branch has to be the branch that actually runs. These two are
+  # judged after the "no completion record" and "totals rendered" answers above
+  # them, so forcing one means supplying the state it is reached from: a page
+  # with a completion record on it, and - for the operational branch - no totals
+  # left to answer first. Setting the operational count alone on a page whose
+  # usage really did render would return ok above and prove nothing.
+  if forced usage tokens; then
+    cards=1
+    token_panels=1
+  fi
+  if forced usage operational; then
+    cards=1
+    token_panels=0
+    operational_panels=1
+  fi
   if [ "$cards" -eq 0 ]; then
     record "$UNVERIFIED" "$label: collected usage shows token totals where attributed" \
       "no completion record is on the page, so there is no usage total to look at"

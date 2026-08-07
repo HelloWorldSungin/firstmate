@@ -777,6 +777,12 @@ test_store_carries_no_transcript_content() {
   pass "the store contains no prompt or response bodies and no credentials"
 }
 
+# The dashboard service reads this store under ProtectHome=read-only, so the
+# shape that matters is the one a home is in when nothing has read it yet: the
+# db file alone, no -wal and no -shm. A read that runs while the directory is
+# still writable would CREATE those sidecars and leave them behind, and a
+# read-only open then succeeds for a reason production does not have - so the
+# hardening happens first, and their absence is asserted rather than assumed.
 test_report_reads_a_read_only_data_directory() {
   local case_root
   case_root=$(mktemp -d "$TMP_ROOT/ro-report.XXXXXX")
@@ -785,10 +791,15 @@ test_report_reads_a_read_only_data_directory() {
     2026-08-01T10:00:00Z msg_ro 3 3 0 0
   FM_USAGE_CLAUDE_ROOT="$case_root/claude" FM_USAGE_CODEX_ROOT="$case_root/codex" \
     usage_run "$case_root" ingest >/dev/null || fail "read-only report setup ingest failed"
-  FM_HOME="$case_root/home" node "$USAGE_BIN" report --by harness >/dev/null \
-    || fail "read-only report setup baseline read failed"
+  if [ -e "$case_root/home/data/usage.db-wal" ] || [ -e "$case_root/home/data/usage.db-shm" ]; then
+    fail "ingest left the store in WAL, which a reader without write access cannot open"
+  fi
   chmod -R a-w "$case_root/home/data"
   usage_run "$case_root" report --by harness >/dev/null || fail "report must read a read-only usage store"
+  if [ -e "$case_root/home/data/usage.db-wal" ] || [ -e "$case_root/home/data/usage.db-shm" ]; then
+    chmod -R u+w "$case_root/home/data" 2>/dev/null || true
+    fail "a read-only report wrote a journal sidecar into the data directory"
+  fi
   chmod -R u+w "$case_root/home/data" 2>/dev/null || true
   pass "report reads the usage store without write access to the data directory"
 }

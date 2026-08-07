@@ -91,17 +91,27 @@
 #          that lacks `endpoint_task_id=` and whose recorded endpoint could not
 #          be verified to belong to that task, so cleanup still refuses it;
 #          bin/fm-endpoint-binding-migrate.sh owns that contract.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
+#          The usage refresh runs a best-effort bin/fm-usage.mjs ingest only
+#          when data/usage.db already exists, matching teardown's opt-in
+#          contract in docs/usage-accounting.md; it is bounded by
+#          FM_BOOTSTRAP_USAGE_TIMEOUT (non-numeric or blank falls back to 120s)
+#          and every bound escalates to SIGKILL. A refresh that times out or
+#          fails prints one USAGE line with the timeout and elapsed seconds
+#          rather than degrading silently, and a host with no way to bound the
+#          call at all skips it on the same line rather than running it
+#          unbounded.
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eight MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, secondmate_sync,
 #          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
-#          fleet_sync)
+#          fleet_sync, usage_store_refresh)
 #          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          PR-check artifacts, secondmate homes, pending handoff outboxes,
-#          X-mode artifacts, project clones, or repair instructions.
+#          X-mode artifacts, project clones, the usage store and its per-task
+#          session maps, or repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
 #          is purely additive.
 #        fm-bootstrap.sh install <tool>...
@@ -176,22 +186,68 @@ fleet_sync_relay_filtered_output() {
   done < "$tmp"
 }
 
+# Bounded execution, mirroring bin/fm-teardown.sh's run_timed so a host without
+# GNU coreutils still bounds the call rather than dropping the bound. Every
+# branch escalates to SIGKILL, because SIGTERM alone is not a bound: a child that
+# ignores it, or that is stuck in uninterruptible IO, would park session start
+# past the deadline. A host with none of the three refuses the call outright
+# rather than running a scan of every transcript on the machine unbounded at
+# session start; bootstrap_bound_available is how a caller says so honestly
+# instead of reporting a timeout that never happened.
+FM_BOOTSTRAP_KILL_GRACE=5
+bootstrap_bound_available() {
+  command -v timeout >/dev/null 2>&1 \
+    || command -v gtimeout >/dev/null 2>&1 \
+    || command -v perl >/dev/null 2>&1
+}
+
+bootstrap_run_timed() {  # <seconds> <command...>
+  local seconds=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k "$FM_BOOTSTRAP_KILL_GRACE" "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k "$FM_BOOTSTRAP_KILL_GRACE" "$seconds" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+  else
+    return 124
+  fi
+}
+
 # Best-effort usage refresh at a locked session boundary. Ingestion is
 # idempotent and only runs once a home already has data/usage.db, matching
-# teardown's opt-in contract in docs/usage-accounting.md. A bounded timeout
-# keeps a large first scan from stalling session start.
+# teardown's opt-in contract in docs/usage-accounting.md. The call is bounded,
+# because a first collection scans every Claude transcript and Codex rollout on
+# the machine: a slow or hung collector degrades to a staler store rather than
+# stalling session start. A refresh that does not finish says so on one line,
+# the way fleet_sync reports its own timeout, so a session that just spent the
+# whole budget is never left guessing why.
 usage_store_refresh() {
   [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && return 0
   [ -f "$DATA/usage.db" ] || return 0
   [ -x "$SCRIPT_DIR/fm-usage.mjs" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  local timeout=${FM_BOOTSTRAP_USAGE_TIMEOUT:-120}
+  local timeout=${FM_BOOTSTRAP_USAGE_TIMEOUT:-120} start elapsed status=0
   case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
-  else
-    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+  if ! bootstrap_bound_available; then
+    echo "USAGE: usage store: skipped: no timeout, gtimeout or perl on this host to bound the refresh"
+    return 0
   fi
+  start=$SECONDS
+  bootstrap_run_timed "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" \
+    >/dev/null 2>&1 || status=$?
+  elapsed=$((SECONDS - start))
+  case "$status" in
+    0) ;;
+    124|137)
+      echo "USAGE: usage store: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${elapsed}s)"
+      ;;
+    *)
+      echo "USAGE: usage store: skipped: bootstrap refresh failed (status=$status elapsed=${elapsed}s)"
+      ;;
+  esac
+  return 0
 }
 
 fleet_sync_relay_all_output() {
