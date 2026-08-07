@@ -431,7 +431,8 @@ The locked session-start bootstrap step also runs a best-effort project clone re
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 Normal completed runs keep local-only and no-origin skips silent.
 The same locked step then runs a bounded best-effort `bin/fm-usage.mjs ingest`, but only when `data/usage.db` already exists, so a home that never opted into token accounting pays nothing for it.
-A completed refresh is silent; one that timed out, could not be bounded on this host, or ran and exited non-zero reports itself on a single `USAGE_STORE:` line carrying the timeout and elapsed seconds.
+A completed refresh is silent; one that timed out, could not be bounded on this host, or ran and exited non-zero reports itself on a single `USAGE_STORE:` line.
+The timeout line carries the bound and the elapsed seconds, the failure line carries the collector's exit status and the elapsed seconds, and the unbounded-host line carries neither because nothing ran.
 `FM_BOOTSTRAP_USAGE_TIMEOUT` owns that bound (default 120 seconds) and [`usage-accounting.md`](usage-accounting.md) owns the cadence it shares with teardown.
 After that refresh, bootstrap runs the read-only `fm-vault-drift.sh` detector and emits `VAULT_DRIFT:` for stale vaults or external vault locations whose drift cannot be measured.
 The same detector runs in lock-refused detect-only sessions because it never writes project clones or vaults; the script header owns the vault-shape, threshold, and diagnostic contracts.
