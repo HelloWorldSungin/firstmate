@@ -23,12 +23,13 @@
 #                    reconfigures, or repoints an operator's dashboard service,
 #                    and there is no flag that makes it do so.
 #   --user           username for --url, when that dashboard authenticates.
-#   --password-file  file holding that password and nothing else. The password
-#                    is handed to bin/fm-dashboard-browser-front.mjs, which
-#                    holds it in memory and adds the header the dashboard
-#                    already requires; it never enters the URL the browser
-#                    opens, so it cannot reach the browser's history or any
-#                    evidence captured here.
+#   --password-file  file holding that password and nothing else, and not
+#                    readable by other users - the same rule the dashboard
+#                    applies to its own credentials file. The password is handed
+#                    to bin/fm-dashboard-browser-front.mjs, which holds it in
+#                    memory and adds the header the dashboard already requires;
+#                    it never enters the URL the browser opens, so it cannot
+#                    reach the browser's history or any evidence captured here.
 #   --out            evidence directory (default: a temp directory, kept and
 #                    named on exit). Holds a screenshot and the rendered text of
 #                    every view at every width, the console transcript, and
@@ -40,11 +41,66 @@
 #   --keep           leave the fixture server running and print its URL.
 #   --negative       prove the check can fail. Runs the identical assertions
 #                    against a deliberately broken page and exits non-zero
-#                    unless the assertions that read what rendered stop
-#                    reporting ok. A check that cannot tell "rendered
+#                    unless every assertion that reads what rendered is recorded
+#                    as FAIL or ???? by name. A check that cannot tell "rendered
 #                    correctly" from "rendered nothing" is worse than no check,
 #                    so this is how that property stays true rather than being
 #                    asserted once and assumed forever.
+#
+# Environment:
+#   FM_DASHBOARD_BROWSER_FORCE
+#                    fault injection, for the same purpose --negative serves:
+#                    proving these checks can fail, by executing each failure
+#                    path rather than reasoning about it. A space- or
+#                    comma-separated list of <check>:<branch>, where <branch> is
+#                    fail or unverified. Each entry corrupts the one value that
+#                    check judges, so the check's OWN branch runs and prints its
+#                    OWN detail - nothing here rewrites a verdict after the
+#                    fact, and nothing here weakens an assertion when it is
+#                    unset, which is the only state an ordinary run has.
+#
+#                    An injected run cannot be mistaken for a check of the
+#                    dashboard: it stamps every forced branch into result.txt,
+#                    refuses to run with --negative, and always exits 3 whatever
+#                    the page did.
+#
+#                    The checks, and the branches each one has:
+#
+#                      viewport-set:fail    the viewport could not be set
+#                      open:fail            the browser refused to open the page
+#                      probe:fail           the page could be read
+#                      probe:unverified     the page could be measured
+#                      document:fail        the dashboard document loaded
+#                      viewport:fail        the browser really is at this viewport
+#                      text:fail            the page rendered text
+#                      stylesheet:fail      the stylesheet was applied
+#                      swipe:fail           nothing behind a horizontal swipe
+#                      swipe:unverified     ... never measured at this width
+#                      view-present:fail    the view is on the page
+#                      view-present:unverified
+#                      view-height:fail     the view rendered with real height
+#                      view-height:unverified
+#                      view-legible:fail    the view is legible
+#                      view-legible:unverified
+#                      leak:fail            a credential- or path-shaped value
+#                      leak:unverified      the scan cannot be shown to have run
+#                      usage:fail           a completed record with no panel
+#                      usage:unverified     no completion record to look at
+#                      nav:fail             the link lands under the sticky bar
+#                      nav:unverified       the landing could not be read
+#                      live-event:fail      the event never reached the page
+#                      live-event:unverified
+#                      tail:fail            earlier events never left the stream
+#                      tail:unverified
+#                      backfill:fail        backfilled history was discarded
+#                      backfill:unverified
+#                      console:fail         the console printed something
+#                      console:unverified   a console window could not be read
+#
+#                    An entry naming a check or a branch that is not in that
+#                    list is a usage error, so a typo cannot quietly inject
+#                    nothing and leave the operator believing a path was
+#                    exercised.
 #
 # Why this is a command and not a test that CI runs
 #
@@ -72,9 +128,11 @@
 #   sideways scroll at any width, because reaching a fleet signal by horizontal
 #   swipe is a defect this dashboard specifically promises against; following a
 #   nav link must actually navigate and land the section's heading clear of the
-#   sticky bar; every completed record must carry its usage panel; the rendered
-#   text must contain no credential-shaped or absolute-path-shaped value; and
-#   the console must be clean. The fixture run additionally proves the live
+#   sticky bar; every completed record must carry its usage panel; no part of
+#   the rendered page - not only the view sections, but the topbar, the notice
+#   region that carries a failed command's raw stderr, the sidebar and the
+#   report dialog - may contain a credential-shaped or absolute-path-shaped
+#   value; and the console must be clean. The fixture run additionally proves the live
 #   stream: an event posted while the page is open appears with no reload, and a
 #   selected agent's backfilled history survives the next event rather than
 #   being discarded with the stream that gets replaced.
@@ -112,11 +170,12 @@
 #   automate against.
 #
 # Exit status: 0 when nothing failed and nothing was left unverified, 1 when
-# any observation is FAIL or ????, 2 on a usage or setup problem. An n/a
-# observation never fails the run, so a healthy dashboard checked with --url
-# exits 0 with its two live-stream observations recorded as n/a; every other
-# observation is made identically in both modes. The full per-observation
-# result is printed and written to <out>/result.txt either way.
+# any observation is FAIL or ????, 2 on a usage or setup problem, 3 when
+# FM_DASHBOARD_BROWSER_FORCE injected a fault. An n/a observation never fails
+# the run, so a healthy dashboard checked with --url exits 0 with its two
+# live-stream observations recorded as n/a; every other observation is made
+# identically in both modes. The full per-observation result is printed and
+# written to <out>/result.txt either way.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -196,7 +255,8 @@ Drives the real dashboard page in a real browser and records what it renders.
                           ephemeral loopback port over a throwaway fixture home,
                           and never touches an installed dashboard service.
   --user <name>           username for --url, when that dashboard authenticates
-  --password-file <path>  file holding that password; it is held by
+  --password-file <path>  file holding that password, and not readable by other
+                          users; it is held by
                           bin/fm-dashboard-browser-front.mjs and never enters
                           the URL the browser opens
   --out <dir>             evidence directory (default: a temp directory, kept
@@ -213,9 +273,15 @@ not apply to the target being checked in this mode, which does not fail the
 run; the two live-stream observations are n/a under --url, because proving them
 means posting events into a dashboard this command does not own.
 
+FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>,... forces named checks down their
+failure or could-not-verify branch, so each failure path can be executed and
+read rather than reasoned about. It is inert unless set, refuses to run with
+--negative, and always exits 3. This script's header lists every check and
+branch it accepts.
+
 Exit status: 0 when nothing failed and nothing was left unverified, 1 when any
-observation is FAIL or ????, 2 on a usage or setup problem. The per-observation
-result is written to <out>/result.txt.
+observation is FAIL or ????, 2 on a usage or setup problem, 3 when a fault was
+injected. The per-observation result is written to <out>/result.txt.
 TEXT
 }
 
@@ -240,7 +306,15 @@ cleanup() {
   [ -n "$WORK_DIR" ] && [ "$KEEP" != yes ] && rm -rf "$WORK_DIR"
   return 0
 }
-trap cleanup EXIT HUP INT TERM
+# A signal handler that only cleans up leaves bash resuming the script at the
+# interruption point, with the fixture server killed and the work directory
+# gone - so a Ctrl-C part way through drives a dead URL for the rest of the run
+# and persists an evidence directory full of failures that reads as a broken
+# dashboard. Clean up and leave, at the conventional 128+signal status.
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Every value-taking flag is guarded: bash leaves the positional parameters
 # untouched and returns non-zero when `shift 2` has nothing to shift, and this
@@ -298,6 +372,59 @@ command -v "$BROWSER" >/dev/null 2>&1 \
 [ -n "$PASSWORD_FILE" ] && [ -z "$AUTH_USER" ] && die "--password-file needs --user"
 [ "$MODE" = fixture ] && [ -n "$PASSWORD_FILE" ] && die "--password-file only applies with --url"
 
+# --- fault injection ---------------------------------------------------------
+#
+# Every branch below is written to be reachable, and reasoning about a failure
+# path is not evidence that it works. This is how an operator executes one and
+# reads what came out.
+#
+# Each entry names a check and one of its branches, and takes effect by
+# corrupting the single value that check judges - the measured width, the
+# scanned character count, the landing offset. The check's own branch then runs
+# and prints its own detail, so what is recorded is what a real failure of that
+# check would record, not a verdict substituted afterwards. Every pair this
+# supports is listed here, and an entry that is not in the list is a usage
+# error rather than a silent no-op.
+FORCE_PAIRS='viewport-set:fail
+open:fail
+probe:fail
+probe:unverified
+document:fail
+viewport:fail
+text:fail
+stylesheet:fail
+swipe:fail
+swipe:unverified
+view-present:fail
+view-present:unverified
+view-height:fail
+view-height:unverified
+view-legible:fail
+view-legible:unverified
+leak:fail
+leak:unverified
+usage:fail
+usage:unverified
+nav:fail
+nav:unverified
+live-event:fail
+live-event:unverified
+tail:fail
+tail:unverified
+backfill:fail
+backfill:unverified
+console:fail
+console:unverified'
+
+FORCE_SPEC=
+for entry in $(printf '%s' "${FM_DASHBOARD_BROWSER_FORCE:-}" | tr ',' ' '); do
+  printf '%s\n' "$FORCE_PAIRS" | grep -Fxq "$entry" \
+    || die "FM_DASHBOARD_BROWSER_FORCE: [$entry] is not a check and branch this script can force; see its header for the list"
+  FORCE_SPEC="${FORCE_SPEC} $entry"
+done
+[ -n "$FORCE_SPEC" ] && [ "$NEGATIVE" = yes ] \
+  && die "--negative proves these assertions can fail; FM_DASHBOARD_BROWSER_FORCE makes them fail, so the two together prove nothing"
+
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-browser.XXXXXX") || die "could not create a work directory"
 DIAG_LOG="$WORK_DIR/diagnostics.log"
 OK_LOG="$WORK_DIR/passed.txt"
@@ -327,6 +454,18 @@ record() {  # <ok|FAIL|????|n/a> <observation> [detail]
 
 note() {  # <line>
   printf '     %s\n' "$1" | tee -a "$RESULT_FILE"
+}
+
+# 0 when FM_DASHBOARD_BROWSER_FORCE asked for this check's branch, and it says
+# so in the record on the way past, so no forced verdict can be quoted out of
+# result.txt as an observation of the page. Inert - and cheap - when the
+# variable is unset, which is the only state an ordinary run has.
+forced() {  # <check> <branch>
+  [ -n "$FORCE_SPEC" ] || return 1
+  case " $FORCE_SPEC " in
+    *" $1:$2 "*) note "forced: $1:$2 (FM_DASHBOARD_BROWSER_FORCE)"; return 0 ;;
+  esac
+  return 1
 }
 
 summarize() {
@@ -648,12 +787,14 @@ count_landmarks() {  # <semicolon-separated landmarks>
 # Every judgment about text - which landmarks are present, whether anything
 # leak-shaped is on the page - is made INSIDE the page and comes back as a short
 # list, rather than shipping the rendered text out to be searched here. That is
-# not an optimization. The browser tool truncates an eval result at about 8000
-# characters with no error of its own, and a real fleet's page carries three
-# times that, so a probe that returned the text would come back as invalid JSON
-# on exactly the pages worth checking - and a check that breaks on real data and
-# works on fixtures is the failure this whole command exists to end. Returning a
-# verdict keeps the result a fixed small size whatever the fleet is doing.
+# not an optimization, and it is not a workaround for a limit either: the
+# browser tool truncates an eval result at about 8000 characters and says so,
+# offering --full to lift it, so a probe that shipped the text out could be made
+# to work. It is that a verdict is a fixed small result whatever the fleet is
+# doing, so it cannot be broken by page size at all, while a probe returning the
+# rendered text sits a page growth away from coming back truncated on exactly
+# the pages worth checking - and a check that breaks on real data and works on
+# fixtures is the failure this whole command exists to end.
 #
 # The counts alongside each verdict are what make the verdict readable as
 # evidence: how many landmarks this view was actually asked about, how many leak
@@ -678,9 +819,16 @@ build_probe_js() {
         try { patterns.push({ source, expression: new RegExp(source) }); } catch { /* only a pattern that compiles is one this scan ran */ }
       }
       const historyCards = [...document.querySelectorAll("#history .history-card")];
+      // The whole rendered page, because that is what the observation claims.
+      // The five view sections are not all of it: the notice region, the
+      // topbar, the sidebar and the report dialog all sit outside them, and
+      // the notice region is where a failed snapshot command'"'"'s raw stderr is
+      // rendered - the likeliest carrier of an absolute host path anywhere on
+      // the page. The per-view lists below stay, for attribution.
+      const bodyText = document.body.innerText;
       const out = {
         title: document.title,
-        bodyTextLength: document.body.innerText.length,
+        bodyTextLength: bodyText.length,
         clientWidth: doc.clientWidth,
         scrollWidth: doc.scrollWidth,
         innerWidth: window.innerWidth,
@@ -698,7 +846,8 @@ build_probe_js() {
           return panel !== null && panel.innerText.includes("USAGE");
         }).length,
         leakPatterns: patterns.length,
-        leakChars: 0,
+        leakChars: bodyText.length,
+        pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
         views: {},
       };
       for (const view of config.views) {
@@ -707,7 +856,6 @@ build_probe_js() {
         const box = element.getBoundingClientRect();
         const text = element.innerText;
         const lower = text.toLowerCase();
-        out.leakChars += text.length;
         out.views[view.id] = {
           present: true,
           height: Math.round(box.height),
@@ -733,8 +881,10 @@ check_width() {  # <width> <height>
   local width=$1 height=$2 label="${1}x${2}" probe scalars key value
   probe="$OUT_DIR/probe-${width}x${height}.json"
 
-  browser resize "$width" "$height" > "$OUT_DIR/resize-$label.txt" \
-    || { record FAIL "$label: the viewport could not be set"; return; }
+  if forced viewport-set fail || ! browser resize "$width" "$height" > "$OUT_DIR/resize-$label.txt"; then
+    record FAIL "$label: the viewport could not be set"
+    return
+  fi
   # Opening is a navigation too, so the bucket standing before it is read
   # first - but only once this run has opened a page of its own. Before that
   # the bucket belongs to whatever the shared browser was showing beforehand,
@@ -744,8 +894,10 @@ check_width() {  # <width> <height>
   # server is not there, so this guard catches the tool failing and nothing
   # else. What actually catches an unreachable page is the error-page marker
   # read out of the probe below, and after that the title and the measurements.
-  browser open "$PAGE_URL" > "$OUT_DIR/open-$label.txt" \
-    || { record FAIL "$label: the browser refused to open the page"; return; }
+  if forced open fail || ! browser open "$PAGE_URL" > "$OUT_DIR/open-$label.txt"; then
+    record FAIL "$label: the browser refused to open the page"
+    return
+  fi
   CONSOLE_PAGE_OPENED=yes
   # The page fills itself from its first snapshot poll and its history poll, so
   # give both a chance to land before reading it.
@@ -756,19 +908,19 @@ check_width() {  # <width> <height>
   # first nav click would then be the thing that discards it unread.
   console_collect "$label-load"
 
-  if ! browser_eval_json "$(build_probe_js)" "$probe"; then
+  if forced probe fail || ! browser_eval_json "$(build_probe_js)" "$probe"; then
     record FAIL "$label: the page could be read" \
       "the probe returned nothing the browser could decode"
     return
   fi
 
   local title body_length inner_width inner_height client_width scroll_width
-  local background gutter error_page history_cards usage_panels leak_patterns leak_chars
-  if ! scalars=$(probe_fields "$probe" \
+  local background gutter error_page history_cards usage_panels leak_patterns leak_chars page_leaks
+  if forced probe unverified || ! scalars=$(probe_fields "$probe" \
     title=title bodyTextLength=bodyTextLength innerWidth=innerWidth innerHeight=innerHeight \
     clientWidth=clientWidth scrollWidth=scrollWidth background=background gutter=gutter \
     errorPage=errorPage historyCards=historyCards usagePanels=usagePanels \
-    leakPatterns=leakPatterns leakChars=leakChars); then
+    leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: the page could be measured" \
       "the probe result carried none of the measurements this check reads, so nothing at this width was judged"
     return
@@ -788,10 +940,12 @@ check_width() {  # <width> <height>
       usagePanels) usage_panels=$value ;;
       leakPatterns) leak_patterns=$value ;;
       leakChars) leak_chars=$value ;;
+      pageLeaks) page_leaks=$value ;;
     esac
   done <<EOF
 $scalars
 EOF
+  page_leaks=${page_leaks:-}
 
   if [ "$error_page" = true ]; then
     record FAIL "$label: the page could be opened" \
@@ -810,6 +964,7 @@ EOF
     return
   fi
 
+  forced document fail && title="not the dashboard's title"
   if [ "$title" = "Firstmate Fleet" ]; then
     record ok "$label: the dashboard document loaded"
   else
@@ -822,6 +977,7 @@ EOF
   # measurement under it, the sideways-scroll one most of all, was taken at the
   # wrong viewport.
   local at_width=no
+  forced viewport fail && inner_width=$((inner_width + 7))
   if [ "$inner_width" = "$width" ]; then
     at_width=yes
     record ok "$label: the browser really is at this viewport" \
@@ -831,6 +987,7 @@ EOF
       "the page reports ${inner_width} CSS px wide, not the ${width} this section is named after"
   fi
 
+  forced text fail && body_length=0
   if [ "$body_length" -ge 200 ]; then
     record ok "$label: the page rendered text rather than an empty document" "$body_length characters"
   else
@@ -845,6 +1002,7 @@ EOF
   # so a painted body without it is some other stylesheet. Both hold in either
   # theme, which a fixed colour would not.
   local painted=yes
+  forced stylesheet fail && background="rgba(0, 0, 0, 0)"
   case "$background" in
     ""|"rgba(0, 0, 0, 0)"|transparent) painted=no ;;
   esac
@@ -859,6 +1017,8 @@ EOF
       "the body is painted $background but the dashboard's own --gutter is undefined, so this is not its stylesheet"
   fi
 
+  forced swipe unverified && at_width=no
+  forced swipe fail && scroll_width=$((client_width + 240))
   if [ "$at_width" != yes ]; then
     record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe" \
       "the page was ${inner_width} CSS px wide, so this was never measured at ${width}"
@@ -870,7 +1030,7 @@ EOF
   fi
 
   check_views "$label" "$probe"
-  check_leak_scan "$label" "$leak_patterns" "$leak_chars"
+  check_leak_scan "$label" "$leak_patterns" "$leak_chars" "$page_leaks"
   check_usage_panels "$label" "$history_cards" "$usage_panels"
 
   browser screenshot "$OUT_DIR/screen-$label.png" > /dev/null 2>&1 \
@@ -886,13 +1046,28 @@ check_views() {  # <label> <probe file>
     [ -n "$id" ] || continue
     expected=$(count_landmarks "$landmarks")
 
-    if ! present=$(probe_fields "$probe" "present=views.$id.present"); then
+    # All three observations are recorded on every path out of this loop, not
+    # only the one that decided it. A view that is absent was seen not to render
+    # with real height and seen not to be legible, and a run that silently
+    # stopped recording those two would be a quietly smaller run - which is the
+    # shape of failure this whole command exists to end, and is exactly what the
+    # negative proof below needs to be able to see.
+    if forced view-present unverified || ! present=$(probe_fields "$probe" "present=views.$id.present"); then
       record "$UNVERIFIED" "$label: the $name view is on the page" \
         "the probe said nothing about this view, so it was not looked at"
+      record "$UNVERIFIED" "$label: the $name view rendered with real height" \
+        "the probe said nothing about this view"
+      record "$UNVERIFIED" "$label: the $name view is legible" \
+        "the probe said nothing about this view"
       continue
     fi
+    forced view-present fail && present="present=false"
     if [ "${present#*=}" != true ]; then
       record FAIL "$label: the $name view is on the page"
+      record FAIL "$label: the $name view rendered with real height" \
+        "the view is not on the page, so it rendered no height at all"
+      record FAIL "$label: the $name view is legible" \
+        "the view is not on the page, so none of its headings or controls are"
       continue
     fi
 
@@ -917,6 +1092,11 @@ check_views() {  # <label> <probe file>
 $fields
 INNER
     capture_view_text "$label" "$id"
+
+    forced view-height unverified && height="not a measurement"
+    forced view-height fail && height=10
+    forced view-legible unverified && checked=0
+    forced view-legible fail && missing="$name"
 
     # A section that exists but occupies almost nothing is exactly the "it
     # loaded" answer this check refuses to accept.
@@ -957,13 +1137,23 @@ EOF
 # scan can be shown to have run, so the page reports how many patterns compiled
 # and how many characters they ran over, and both have to be real before an
 # empty result is read as a clean page.
-check_leak_scan() {  # <label> <patterns evaluated> <characters scanned>
-  local label=$1 patterns=$2 chars=$3
+#
+# The coverage is stated on every branch, the failing one included. A failure
+# that cannot say what it covered is the same defect as a pass that verified
+# nothing wearing the other mask: the reader cannot tell a scan that covered the
+# whole page and found one thing from a scan that covered almost none of it and
+# found one thing. The character count is the whole rendered page, so a scan
+# that narrowed back to some convenient part of it shows up here as a smaller
+# number rather than as an unchanged green line.
+check_leak_scan() {  # <label> <patterns evaluated> <characters scanned> <page-wide matches>
+  local label=$1 patterns=$2 chars=$3 matched=$4 coverage
   if ! is_number "$patterns" || ! is_number "$chars"; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on the page" \
       "the page did not report what the scan covered"
     return
   fi
+  forced leak unverified && chars=0
+  coverage="$patterns patterns over $chars rendered characters"
   if [ "$patterns" -eq 0 ] || [ "$chars" -eq 0 ]; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on the page" \
       "$patterns pattern(s) over $chars characters - the scan cannot be shown to have run"
@@ -974,12 +1164,22 @@ check_leak_scan() {  # <label> <patterns evaluated> <characters scanned>
       "the page ran $patterns of this check's $LEAK_PATTERN_COUNT patterns, so the scan was incomplete"
     return
   fi
-  if [ -z "$ALL_LEAKS" ]; then
-    record ok "$label: no credential-shaped or path-shaped value on the page" \
-      "$patterns patterns over $chars rendered characters"
+  forced leak fail && matched="${matched:+$matched, }/home/"
+  if [ -z "$matched" ]; then
+    record ok "$label: no credential-shaped or path-shaped value on the page" "$coverage"
     return
   fi
-  record FAIL "$label: no credential-shaped or path-shaped value on the page" "matched $ALL_LEAKS"
+  # The verdict is the page-wide scan; the per-view list only says where. A
+  # match the views do not account for is a match somewhere the views are not -
+  # the notice region, the topbar, the sidebar, the report dialog - and saying
+  # so is more useful than an empty attribution.
+  if [ -n "$ALL_LEAKS" ]; then
+    record FAIL "$label: no credential-shaped or path-shaped value on the page" \
+      "$coverage; matched $matched - in $ALL_LEAKS"
+  else
+    record FAIL "$label: no credential-shaped or path-shaped value on the page" \
+      "$coverage; matched $matched - outside the named views, so in the topbar, the notice region, the sidebar or the report dialog"
+  fi
 }
 
 # Token usage is not a view of its own: it renders as a USAGE panel inside every
@@ -994,6 +1194,8 @@ check_usage_panels() {  # <label> <history cards> <usage panels>
       "the page did not report how many completion records it rendered"
     return
   fi
+  forced usage unverified && cards=0
+  forced usage fail && panels=$((cards > 0 ? cards - 1 : 0))
   if [ "$cards" -eq 0 ]; then
     record "$UNVERIFIED" "$label: every completed record shows its usage panel" \
       "no completion record is on the page, so there is no usage panel to look at"
@@ -1029,7 +1231,7 @@ check_navigation() {  # <label>
     # pass that bucket is everything the page printed while loading and first
     # rendering, which is the output most worth having.
     console_collect "$label-before-$id"
-    if ! browser_eval_json "$(nav_js "$id")" "$probe"; then
+    if forced nav unverified || ! browser_eval_json "$(nav_js "$id")" "$probe"; then
       record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
         "the page returned nothing readable about where following the link landed"
       continue
@@ -1084,6 +1286,10 @@ INNER
         "the landing position could not be measured"
       continue
     fi
+    # The defect this observation exists to catch, reproduced on demand: the
+    # section's heading 119px above the sticky bar's lower edge is what the
+    # shipped dashboard did at desktop width before this was measured.
+    forced nav fail && head_top=$((bar_bottom - 119))
     if [ "$hash" != "#$id" ]; then
       record FAIL "$label: the $name link lands on that section's heading" \
         "following the link did not select the section: the address bar reads [$hash]"
@@ -1204,12 +1410,38 @@ wait_for_page_text() {  # <needle> <seconds>; 0 present, 1 confirmed absent, 2 n
   return 2
 }
 
+# The nearest enclosing element that names the agent, not the first one found
+# walking up: every card shares a board container, so a generous walk matches
+# whichever card happens to come first and silently selects the wrong agent.
+timeline_click_js() {  # <task id>
+  cat <<JS
+() => {
+  const wanted = "$1";
+  let best = null;
+  for (const button of document.querySelectorAll("button")) {
+    if (button.textContent.trim() !== "Timeline") continue;
+    let node = button.parentElement;
+    let depth = 1;
+    while (node && depth < 8) {
+      if (node.textContent.includes(wanted)) break;
+      node = node.parentElement;
+      depth += 1;
+    }
+    if (node && depth < 8 && (!best || depth < best.depth)) best = { button, depth };
+  }
+  if (!best) return "not-found";
+  best.button.click();
+  return "clicked";
+}
+JS
+}
+
 check_live_stream() {
   browser resize 1440 900 > /dev/null || true
   # Before the open, because the open is a navigation and discards the bucket
   # the last width left behind.
   [ "$CONSOLE_PAGE_OPENED" = yes ] && console_collect "live-before-open"
-  if ! browser open "$PAGE_URL#activity" > /dev/null; then
+  if forced open fail || ! browser open "$PAGE_URL#activity" > /dev/null; then
     record FAIL "a live event appears without a reload" "the browser refused to open the page"
     record "$UNVERIFIED" "backfilled history survives a subsequent event" \
       "the page never opened, so this was never reached"
@@ -1225,8 +1457,16 @@ check_live_stream() {
       "the fixture dashboard refused an event, so this was never reached"
     return
   fi
-  wait_for_page_text "fmcheck-live-now" 20
-  case $? in
+  local arrival
+  if forced live-event fail; then
+    arrival=1
+  elif forced live-event unverified; then
+    arrival=2
+  else
+    wait_for_page_text "fmcheck-live-now" 20
+    arrival=$?
+  fi
+  case $arrival in
     0) record ok "a live event appears without a reload" \
          "posted after the page was open, and it arrived on that same page" ;;
     1) record FAIL "a live event appears without a reload" "the posted event never reached the open page" ;;
@@ -1247,7 +1487,15 @@ check_live_stream() {
   done
   sleep 3
 
-  case "$(page_contains "fmcheck-backfill-1")" in
+  local left_tail
+  if forced tail fail; then
+    left_tail=present
+  elif forced tail unverified; then
+    left_tail=unreadable
+  else
+    left_tail=$(page_contains "fmcheck-backfill-1")
+  fi
+  case "$left_tail" in
     present)
       record FAIL "the agent's earlier events really did leave the live stream" \
         "they are still in the fleet-wide tail, so the backfill assertion below would prove nothing"
@@ -1265,35 +1513,25 @@ check_live_stream() {
     "confirmed absent from the page after later traffic, so selecting that agent has to fetch them back"
 
   # 3. Selecting that agent's own timeline is what fetches them back.
+  #
+  # Through the same reader every other interaction here uses, which parses the
+  # tool's own result line and fails when the browser command did. Matching the
+  # raw tool output instead would read a diagnostic that echoed the expression
+  # back - the expression contains the word it looks for - as a successful
+  # click, and would record a browser command that failed outright as a FAIL of
+  # the observation rather than as the ???? this script's header requires.
   local clicked
-  # The nearest enclosing element that names the agent, not the first one found
-  # walking up: every card shares a board container, so a generous walk matches
-  # whichever card happens to come first and silently selects the wrong agent.
-  clicked=$(browser eval '() => {
-    const wanted = "fixture-ship";
-    let best = null;
-    for (const button of document.querySelectorAll("button")) {
-      if (button.textContent.trim() !== "Timeline") continue;
-      let node = button.parentElement;
-      let depth = 1;
-      while (node && depth < 8) {
-        if (node.textContent.includes(wanted)) break;
-        node = node.parentElement;
-        depth += 1;
-      }
-      if (node && depth < 8 && (!best || depth < best.depth)) best = { button, depth };
-    }
-    if (!best) return "not-found";
-    best.button.click();
-    return "clicked";
-  }' 2>&1)
-  case "$clicked" in
-    *clicked*) ;;
-    *)
-      record FAIL "backfilled history survives a subsequent event" \
-        "the agent's own timeline control could not be found on the board, so nothing was backfilled"
-      return ;;
-  esac
+  if ! browser_eval_text "$(timeline_click_js fixture-ship)" "$WORK_DIR/timeline-click.txt"; then
+    record "$UNVERIFIED" "backfilled history survives a subsequent event" \
+      "the browser could not be asked to select the agent's own timeline, so nothing about the backfill was observed"
+    return
+  fi
+  clicked=$(cat "$WORK_DIR/timeline-click.txt")
+  if [ "$clicked" != clicked ]; then
+    record FAIL "backfilled history survives a subsequent event" \
+      "the agent's own timeline control could not be found on the board [$clicked], so nothing was backfilled"
+    return
+  fi
   sleep 3
 
   case "$(page_contains "fmcheck-backfill-1")" in
@@ -1312,7 +1550,15 @@ check_live_stream() {
   #    timeline's own design note says it is built to avoid.
   post_event fixture-scout turn_ended fmcheck-after-event >/dev/null 2>&1
   sleep 4
-  case "$(page_contains "fmcheck-backfill-1")" in
+  local survived
+  if forced backfill fail; then
+    survived=absent
+  elif forced backfill unverified; then
+    survived=unreadable
+  else
+    survived=$(page_contains "fmcheck-backfill-1")
+  fi
+  case "$survived" in
     present)
       record ok "backfilled history survives a subsequent event" \
         "the fetched earlier events are still on the page after a newer event replaced the stream" ;;
@@ -1453,6 +1699,7 @@ console_fresh_ids() {
 
 check_console() {
   local line fresh count
+  forced console unverified && CONSOLE_UNREAD="${CONSOLE_UNREAD}${CONSOLE_UNREAD:+, }forced"
   if [ -n "$CONSOLE_UNREAD" ]; then
     record "$UNVERIFIED" "the browser console is clean" \
       "these console windows could not be read: $CONSOLE_UNREAD - so nothing is known about what the page printed in them"
@@ -1464,6 +1711,7 @@ check_console() {
     return
   fi
   fresh=$(console_fresh_ids)
+  forced console fail && fresh="msgid=forced type=error text=forced by FM_DASHBOARD_BROWSER_FORCE"
   count=0
   [ -n "$fresh" ] && count=$(printf '%s\n' "$fresh" | grep -c .)
   if [ "$count" -gt 0 ] || [ "$CONSOLE_UNNAMED" -gt 0 ]; then
@@ -1500,8 +1748,18 @@ FRESH
 #
 # Counting failures is not enough to prove it: a harness that had degraded to
 # noticing nothing but a missing heading would still report a failure count.
-# What has to hold is that the assertions which read what actually rendered
-# stopped reporting ok, so those are named here and checked individually.
+# What has to hold is that the assertions which read what actually rendered ran
+# and refused the page, so those are named here and each one is required to
+# appear in result.txt as a FAIL or a ???? of its own.
+#
+# Requiring the record rather than its absence from the pass log is the whole
+# point. "It is not among the passes" is satisfied by an assertion that never
+# executed at all, which is how a --negative run on a host whose browser bridge
+# was busy could report PASSED having rendered nothing: two early FAILs for a
+# viewport that could not be set, an empty pass log, and a verdict inferred from
+# two absences. This proof is subject to the same rule as every observation
+# above it - a verdict comes from positive evidence that the thing it names
+# happened, never from the absence of a contrary signal.
 EVIDENCE_ASSERTIONS='the page rendered text rather than an empty document
 the stylesheet was applied
 view is on the page
@@ -1531,11 +1789,30 @@ JS
   die "the deliberately broken page did not start"
 }
 
+# 0 when a FAIL or a ???? line in the recorded result names this observation.
+# record() writes the verdict in a fixed four-character field, so the first four
+# characters of a line are the verdict and nothing else, and the observation is
+# matched as a literal substring rather than as a pattern - one of these carries
+# an apostrophe and none of them are regular expressions.
+recorded_refusal() {  # <observation fragment>
+  awk -v needle="$1" '
+    substr($0, 1, 4) == "FAIL" || substr($0, 1, 4) == "????" {
+      if (index($0, needle) > 0) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  ' "$RESULT_FILE"
+}
+
 negative_verdict() {
-  local pattern still_passing=
+  local pattern checked=0 still_passing='' never_ran=''
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
-    grep -Fq "$pattern" "$OK_LOG" && still_passing="${still_passing}${still_passing:+; }$pattern"
+    checked=$((checked + 1))
+    if grep -Fq "$pattern" "$OK_LOG"; then
+      still_passing="${still_passing}${still_passing:+; }$pattern"
+      continue
+    fi
+    recorded_refusal "$pattern" || never_ran="${never_ran}${never_ran:+; }$pattern"
   done <<EOF
 $EVIDENCE_ASSERTIONS
 EOF
@@ -1544,17 +1821,28 @@ EOF
       "$still_passing" | tee -a "$RESULT_FILE"
     return 1
   fi
+  if [ -n "$never_ran" ]; then
+    printf 'negative proof FAILED: these never reported anything at all on a page that renders nothing, so this run shows nothing about whether they can fail: %s\n' \
+      "$never_ran" | tee -a "$RESULT_FILE"
+    return 1
+  fi
   if [ "$FAILURES" -eq 0 ]; then
     printf 'negative proof FAILED: nothing failed on a page that renders nothing, so the check proves nothing\n' \
       | tee -a "$RESULT_FILE"
     return 1
   fi
-  printf 'negative proof PASSED: the check refuses a page that renders nothing (%s failed, %s could not be verified, and no assertion that reads what rendered reported ok)\n' \
-    "$FAILURES" "$UNVERIFIED_COUNT" | tee -a "$RESULT_FILE"
+  printf 'negative proof PASSED: the check refuses a page that renders nothing (%s failed, %s could not be verified, and every one of the %s assertions that read what rendered recorded a FAIL or a ???? of its own)\n' \
+    "$FAILURES" "$UNVERIFIED_COUNT" "$checked" | tee -a "$RESULT_FILE"
   return 0
 }
 
 # --- run ---------------------------------------------------------------------
+
+if [ -n "$FORCE_SPEC" ]; then
+  printf 'FAULT INJECTION ACTIVE:%s\n' "$FORCE_SPEC" | tee -a "$RESULT_FILE"
+  printf 'This run forces the branches named above and is NOT a check of the dashboard.\n' \
+    | tee -a "$RESULT_FILE"
+fi
 
 if CONSOLE_BASELINE=$(console_snapshot "$WORK_DIR/console-baseline.txt" "$WORK_DIR/console-baseline-names.txt"); then
   CONSOLE_BASELINE_MSGID=${CONSOLE_BASELINE#* }
@@ -1636,5 +1924,13 @@ check_console
 summarize
 printf 'evidence: %s\n' "$OUT_DIR"
 [ "$KEEP" = yes ] && [ -n "${FIXTURE_PORT:-}" ] && printf 'fixture dashboard left running at %s\n' "$PAGE_URL"
+# An injected run exits 3 whatever the page did, so its result can never be
+# quoted as a check of the dashboard - which is the whole reason a fault
+# injection surface is safe to ship next to the check it injects into.
+if [ -n "$FORCE_SPEC" ]; then
+  printf 'fault injection was active:%s - these verdicts say what those branches print, not what the dashboard did\n' \
+    "$FORCE_SPEC" | tee -a "$RESULT_FILE"
+  exit 3
+fi
 [ "$FAILURES" -eq 0 ] && [ "$UNVERIFIED_COUNT" -eq 0 ] || exit 1
 exit 0

@@ -151,6 +151,7 @@ The module-level tests prove what each browser module returns; they cannot prove
 Run it with no arguments and it starts its own dashboard from this checkout on an ephemeral loopback port over a throwaway home, so it never touches an installed service.
 Pass `--url` with `--user` and `--password-file` to point it at a running dashboard; the password is held by a loopback-only front and never enters the URL the browser opens, so checking an authenticated dashboard needs no change to its exposure or its credentials.
 `--negative` proves the check can still fail, by running the same assertions against a page that renders nothing.
+`FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>` serves the same purpose one check at a time, forcing a named check down its failure or could-not-verify branch so that path can be executed and read rather than reasoned about; it is inert unless set and an injected run always exits 3, so it can never be mistaken for a check of the dashboard.
 
 Each observation is recorded as `ok`, `FAIL`, `????`, or `n/a`.
 `????` is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, or a scan cannot be shown to have run, and a run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.

@@ -29,14 +29,16 @@
 //                   http://192.168.68.110:8787
 //   --user          username to present
 //   --password-file file holding the password, and nothing else, trailing
-//                   newline permitted
+//                   newline permitted. It must not be readable by other users,
+//                   the same rule the dashboard applies to its own credentials
+//                   file, and this refuses to start otherwise
 //   --port          loopback port to listen on (default: an ephemeral port)
 //
 // It prints one line, "listening <url>", once it is ready to serve, and exits
 // non-zero with a diagnostic if it cannot start.
 
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 
 const LOOPBACK = "127.0.0.1";
 // Beyond this the front is not the bottleneck the check is measuring; a
@@ -88,8 +90,25 @@ if (target.protocol !== "http:") {
 }
 
 // A password file readable by other users is not a credential, and this front
-// exists to keep one out of sight. Refusing here is the same judgment the
-// dashboard itself makes about its own credentials file.
+// exists to keep one out of sight. Refusing is the same judgment the dashboard
+// itself makes about its own credentials file, by the same rule: any bit set
+// outside the owner's own. Reading it anyway would take a secret the operator
+// was told they had and serve it on loopback for the length of the run.
+let info;
+try {
+  info = statSync(options.passwordFile);
+} catch (error) {
+  process.stderr.write(`cannot read the password file ${options.passwordFile}: ${error.message}\n`);
+  process.exit(1);
+}
+if ((info.mode & 0o077) !== 0) {
+  const mode = (info.mode & 0o7777).toString(8).padStart(4, "0");
+  process.stderr.write(
+    `the password file must not be readable by other users: ${options.passwordFile} is mode ${mode} - run chmod 600 ${options.passwordFile}\n`,
+  );
+  process.exit(1);
+}
+
 let password;
 try {
   password = readFileSync(options.passwordFile, "utf8").replace(/\r?\n$/, "");

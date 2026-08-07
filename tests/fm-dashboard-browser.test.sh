@@ -126,4 +126,60 @@ do
   grep -q "^?.*$observation" "$negative_result" \
     || fail "the check claimed to have observed this on an empty page: $observation"$'\n'"$(cat "$negative_result")"
 done
+
+# The negative proof has to rest on what was recorded, not on what was absent.
+# An assertion that never executed is absent from the pass log too, so requiring
+# absence alone lets a run that rendered nothing report PASSED - which is how
+# this proof once passed on a host whose browser bridge was busy.
+for observation in \
+  "the page rendered text rather than an empty document" \
+  "the stylesheet was applied" \
+  "view is on the page" \
+  "view rendered with real height" \
+  "view is legible" \
+  "no credential-shaped or path-shaped value on the page" \
+  "lands on that section's heading" \
+  "every completed record shows its usage panel"
+do
+  grep -qE "^(FAIL|\?\?\?\?) .*$observation" "$negative_result" \
+    || fail "the negative proof passed without this assertion recording a refusal of its own: $observation"$'\n'"$(cat "$negative_result")"
+done
 pass "the browser check refuses a page that answers 200 with the right title and renders nothing"
+
+# --- the failure paths are reachable on demand -------------------------------
+#
+# --negative proves the assertions can fail as a set, against one broken page.
+# It cannot reach a branch that page does not happen to trigger, and reading the
+# code and concluding those branches work is not evidence that they do. The
+# fault-injection surface is what makes each one executable, so what is pinned
+# here is that surface's guardrails: it is inert unless set, a name it does not
+# know is refused rather than silently ignored, it will not run alongside the
+# negative proof whose meaning it would destroy, and an injected run can never
+# be read as a clean check of the dashboard.
+
+out=$(FM_DASHBOARD_BROWSER_FORCE=leek:fail "$CHECK" --out "$TMP_ROOT/typo" 2>&1)
+status=$?
+[ "$status" -eq 2 ] || fail "a fault-injection entry naming no known check was not refused"$'\n'"$out"
+assert_contains "$out" "is not a check and branch this script can force" \
+  "the refusal did not say what was wrong with the entry"
+
+out=$(FM_DASHBOARD_BROWSER_FORCE=document:unverified "$CHECK" --out "$TMP_ROOT/branch" 2>&1)
+status=$?
+[ "$status" -eq 2 ] || fail "a fault-injection entry naming a branch that check does not have was not refused"$'\n'"$out"
+
+out=$(FM_DASHBOARD_BROWSER_FORCE=leak:fail "$CHECK" --negative --out "$TMP_ROOT/both" 2>&1)
+status=$?
+[ "$status" -eq 2 ] || fail "fault injection was allowed to run alongside the negative proof"$'\n'"$out"
+
+# And one branch executed for real, at a single width, to prove the mechanism
+# reaches the check's own failure branch rather than substituting a verdict for
+# it: the detail below is the nav assertion's own wording, not the injector's.
+forced=$(FM_DASHBOARD_BROWSER_FORCE=nav:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced" 2>&1)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "an injected run did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: nav:fail" "the injected run did not stamp the branch it forced"
+grep -qE "^FAIL .*lands on that section's heading - the sticky bar hides the top of the section by" \
+  "$TMP_ROOT/forced/result.txt" \
+  || fail "forcing nav:fail did not run the nav assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced/result.txt")"
+pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"

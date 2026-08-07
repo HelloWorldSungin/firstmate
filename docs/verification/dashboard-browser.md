@@ -37,13 +37,15 @@ An initial live run was made before the harness was strengthened; it was re-run 
 | Activity renders | 199px tall, all 3 landmarks | 161px tall, all 3 landmarks |
 | History renders | 10,634px tall, all 3 landmarks | 8,105px tall, all 3 landmarks |
 | Every completed record shows its usage panel | 25 panels across 25 records | 25 panels across 25 records |
-| No credential-shaped or path-shaped value | **failed**, see below | **failed**, see below |
+| No credential-shaped or path-shaped value | **failed**, 11 patterns, see below | **failed**, 11 patterns, see below |
 | Anchor navigation lands clear of the sticky bar | **failed**, see below | **failed**, see below |
-| Browser console | 15 windows read, all empty | 15 windows read, all empty |
+| Browser console | 7 windows read, all empty | 8 windows read, all empty |
 
 The console result is worth stating precisely, because the earlier version of this check could not have supported it.
 The browser tool returns only the current navigation's messages and its collector discards all but the last three navigation buckets, so a single read taken at the end of a width saw almost nothing.
-The run above took a console read immediately before every navigation it made and one after the last of each, fifteen windows in total, and every one was empty: no errors, no warnings, no failed subresource.
+The run above took a console read immediately before every navigation it made and one after the last of each: seven windows at the first width, eight at the second because the second width's own page open is a navigation with a bucket standing before it, fifteen in total.
+Every one was empty: no errors, no warnings, no failed subresource.
+The check records one console verdict for the whole run rather than one per width, so the split above says where those windows were read, not that the verdict was reached twice.
 
 Two observations failed against the live service and are recorded as failures rather than smoothed over.
 Absolute host paths are on the rendered page, which the next section covers.
@@ -95,6 +97,12 @@ At phone width the path is truncated to `/home/sungin/first…` in a card's proj
 
 This is left as an observation rather than a fix: changing what `project` means is a fleet-data contract change reaching the snapshot, the board filter's identity, and completion manifests already written with those values.
 
+What that row does and does not carry is worth being exact about, because a failure that cannot state its coverage is the same defect as a pass that verified nothing wearing the other mask.
+The pattern count is established by the verdict itself: the scan reaches `ok` or `FAIL` only after the page confirms it compiled all eleven of this check's patterns, and records `????` otherwise, so a recorded failure is a recorded eleven-pattern scan.
+The character count is not, because the run above was recorded before the failing branch printed coverage at all and before the scan was widened from the five view sections to the whole rendered page.
+Both are fixed now, so the next live run's failing row carries the figure; this one cannot be given one after the fact without inventing it.
+The widening matters here specifically: `assets/dashboard/index.html` puts `<section id="notice-region">` outside `.board-content`, and `assets/dashboard/app.js` renders a failed snapshot command's raw `stderr` into a `<code>` element inside it, which is the likeliest carrier of an absolute host path anywhere on the page and was outside what the scan covered.
+
 ## Two more observations from that run
 
 The Activity view's Agent filter offers only the agents that have events in the bounded live tail the page is currently holding, because its choices are derived from those events rather than from the fleet.
@@ -126,24 +134,49 @@ While these two folded into `????`, every `--url` run failed by construction how
 ## That the check can fail
 
 A check that only ever reports success is worth nothing, so this is pinned rather than assumed.
-`bin/fm-dashboard-browser-check.sh --negative` serves a page that answers 200 and carries the title `Firstmate Fleet` with an empty body, and requires the assertions that read what rendered to stop reporting `ok`:
+`bin/fm-dashboard-browser-check.sh --negative` serves a page that answers 200 and carries the title `Firstmate Fleet` with an empty body, and requires every assertion that reads what rendered to record a refusal of its own:
 
 ```
 $ bin/fm-dashboard-browser-check.sh --negative
-6 passed, 24 failed, 4 could not be verified
-negative proof PASSED: the check refuses a page that renders nothing (24 failed, 4 could not be verified, and no assertion that reads what rendered reported ok)
+6 passed, 44 failed, 4 could not be verified
+negative proof PASSED: the check refuses a page that renders nothing (44 failed, 4 could not be verified, and every one of the 8 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
 Counting failures would not have been enough.
-A harness that had degraded to noticing nothing but a missing heading would still report a failure count, so the negative proof names the assertions that read the rendered page - the text, the stylesheet, each view's presence, height and landmarks, the leak scan, the nav landing, the usage panel - and requires that none of them reported `ok`.
+A harness that had degraded to noticing nothing but a missing heading would still report a failure count, so the negative proof names the assertions that read the rendered page - the text, the stylesheet, each view's presence, height and landmarks, the leak scan, the nav landing, the usage panel - and checks each one individually.
+
+What it requires of each is the point, and it is the same rule every observation above obeys.
+An earlier version required only that the assertion was absent from the run's pass log, which an assertion that never executed satisfies just as well as one that refused the page: on a host whose browser bridge was busy, `browser resize` failed at both widths, the run recorded two early failures, the pass log was empty, and the negative proof reported `PASSED` having never rendered anything.
+It now requires each named assertion to appear in `result.txt` as a `FAIL` or a `????` line of its own, which is positive evidence that it ran and refused, rather than an inference from two absences.
 
 Six observations still pass on that page and are meant to: the document loaded, because a title alone satisfies it; the browser was at the requested width, because it was; and nothing scrolls sideways, because nothing is there to.
 Four record `????`, which is the third verdict earning its place: the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and the usage observation reports that there was no completion record to carry a panel.
 
+## Executing each failure path rather than reasoning about it
+
+`--negative` proves the assertions can fail as a set, against one broken page.
+It cannot reach a branch that page does not happen to trigger - a probe that will not decode, a console window that could not be read, an event that never arrives - and reading the code and concluding those branches would work is not evidence that they do.
+
+`FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>,...` makes each one reachable on demand.
+Each entry corrupts the single value the named check judges - the measured width, the scanned character count, the landing offset - so the check's own branch runs and prints its own detail; nothing rewrites a verdict after the fact.
+The script's header lists all thirty pairs it accepts, an entry outside that list is a usage error rather than a silent no-op, and it refuses to run alongside `--negative`, whose meaning it would destroy.
+
+It cannot be mistaken for a check of the dashboard: it is inert unless set, it stamps every forced branch into `result.txt` as it takes it, and an injected run exits 3 whatever the page did.
+
+```
+$ FM_DASHBOARD_BROWSER_FORCE=nav:fail bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: nav:fail (FM_DASHBOARD_BROWSER_FORCE)
+FAIL 390x844: the Captain inbox link lands on that section's heading - the sticky bar hides the top of the section by 119px
+```
+
+All thirty were executed against the fixture dashboard while this was written, and each printed the branch it names.
+
 ## Limits of what a browser check can see here
 
-`chrome-devtools-axi eval` truncates its result at about 8,060 characters with no error of its own, and a live fleet's page carries roughly 30,000.
-Every text judgment is therefore made inside the page and returned as a short verdict; a probe that returned the rendered text would come back as invalid JSON on exactly the pages worth checking.
+`chrome-devtools-axi eval` truncates its result at about 8,060 characters, and a live fleet's page carries roughly 30,000.
+It says so and offers a way out: `eval` is registered with a `--full` flag, and on truncation it emits `Result was truncated - re-run with --full flag`.
+So a probe that shipped the rendered text out could be made to work, and the reason every text judgment is instead made inside the page and returned as a short verdict is not that limit.
+It is that a verdict is a fixed small result whatever the fleet is doing, so page size cannot break it at all, while a probe returning the rendered text sits one page growth away from coming back truncated on exactly the pages worth checking - and it carries the coverage counts that make an empty result readable as evidence rather than as an absence.
 
 `chrome-devtools-axi console` has the same shape of limit and two more besides: it truncates its listing at 2,000 characters, head only, with no flag that lifts it; the listing covers only the currently selected page since its last navigation; and the collector behind it splits its storage on Puppeteer's `framenavigated`, which fires for same-document navigations too, keeping just three buckets.
 Each of the five nav-link clicks the check makes is a fragment navigation, so the bucket holding everything the page printed while loading and first rendering is discarded outright five clicks later.
