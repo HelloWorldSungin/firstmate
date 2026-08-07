@@ -42,7 +42,9 @@
 #   --width          a viewport to check, repeatable, as <css-px>x<css-px>.
 #                    Default: 390x844 (phone) and 1440x900 (desktop). The phone
 #                    width is not an afterthought - this dashboard is read on
-#                    one.
+#                    one. Naming the same viewport twice is a usage error:
+#                    every observation is labelled with its width, so the run
+#                    would owe two verdicts for each of them.
 #   --keep           leave the fixture server running and print its URL.
 #   --negative       prove the check can fail. Runs the identical assertions
 #                    against a deliberately broken page and exits non-zero
@@ -110,6 +112,17 @@
 #                    list is a usage error, so a typo cannot quietly inject
 #                    nothing and leave the operator believing a path was
 #                    exercised.
+#
+#                    Force one branch to a run when the point is to execute
+#                    that branch. A list is accepted and every entry in it
+#                    does what it says, but one fault can take away another
+#                    check's precondition: co-forcing viewport:fail leaves the
+#                    swipe check with no width it can trust, so it records
+#                    could-not-verify rather than reaching its own failure
+#                    branch. That is the swipe check behaving correctly, and it
+#                    is also a branch that run did not exercise - so one
+#                    batched run is not evidence that every branch named in it
+#                    executed.
 #
 #                    The three reconcile entries are the exception to "corrupts
 #                    the one value that check judges", because what the

@@ -184,6 +184,7 @@ FAIL 390x844: the Captain inbox link lands on that section's heading - the stick
 ```
 
 The thirty pairs that existed when this was written were each executed against the fixture dashboard, and each printed the branch it names.
+Two of them first ran alongside another forced fault that removed their precondition, so each was re-forced on its own to get there, for the reason the script's header gives under the variable.
 The three `reconcile:` pairs added afterwards corrupt the emitted observation set rather than a measurement, because that set is what the reconciliation pass judges; `tests/fm-dashboard-browser.test.sh` executes all three and requires each to fail the run by naming the observation at fault.
 
 ## Limits of what a browser check can see here
