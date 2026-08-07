@@ -21,8 +21,9 @@ Widths: 390x844 (phone) and 1440x900 (desktop).
 
 Everything below was observed on the rendered page, not read out of an API response.
 
-Every row below was recorded by the final harness against the captain's own running dashboard, not by an earlier version of it and not from a fixture.
+Every row below was recorded against the captain's own running dashboard rather than a fixture, by a harness that already carried every assertion the table names.
 An initial live run was made before the harness was strengthened; it was re-run afterwards so that no row here comes from an assertion the recorded run did not actually make.
+One later change is not in these numbers: the leak scan was widened from the five view sections to the whole rendered page after this run, and the coverage note under that row says what the narrower scan can and cannot claim.
 
 | Observation | Phone | Desktop |
 | --- | --- | --- |

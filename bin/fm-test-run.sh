@@ -358,8 +358,9 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    # real-herdr-gated has its own required CI lane; live-harness-optin needs real
-    # harness credentials, so it stays an explicit opt-in outside portable lanes.
+    # real-herdr-gated has its own required CI lane; live-harness-optin needs
+    # machine state CI does not have - real harness credentials, or a real
+    # browser session - so it stays an explicit opt-in outside portable lanes.
     case "$fam" in
       real-herdr-gated|live-harness-optin) continue ;;
     esac
