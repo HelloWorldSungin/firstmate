@@ -835,6 +835,13 @@ test_an_interrupted_ingest_leaves_a_self_contained_store() {
     fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
   ' "$case_root/home/wt" "$case_root/claude/-slot/session.jsonl"
 
+  # The store is created first so the interrupted run has nothing to migrate.
+  # The wal-index below is what says the run is inside the writer path, and on a
+  # FIRST open the whole migration list commits between that file appearing and
+  # the signal handler being installed - a window this case would otherwise have
+  # to out-wait rather than close.
+  usage_run "$case_root" migrate >/dev/null || fail "the interrupted case could not create its store"
+
   # Started directly rather than through usage_run, because the signal has to
   # reach the collector itself: backgrounding a shell function would put a
   # subshell between this kill and the process under test.
