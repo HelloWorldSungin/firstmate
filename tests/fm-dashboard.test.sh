@@ -1134,9 +1134,25 @@ SH
   jq -e '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
     || fail "an unrecognized usage report was not refused as unavailable"
 
-  # And with usage explicitly switched off, history stays fully usable.
+  # A usage read that failed never takes history with it.
   jq -e '(.history.records | length) == 1' "$case_root/history.json" >/dev/null \
     || fail "history stopped working when the usage read did"
+  stop_server
+
+  # And a dashboard told not to read usage at all is `disabled`, not a collector
+  # that failed: the off switch is answered before the collector is consulted,
+  # so nothing here can be mistaken for something to fix. The v99 collector left
+  # in place above is what makes that ordering visible rather than assumed.
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_USAGE=off \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/off.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "disabled"'
+  jq -e '.usage.available == false and (.usage.reason | test("disabled")) and (.usage.tasks | length) == 0 and (.history.records | length) == 1' \
+    "$case_root/history.json" >/dev/null \
+    || fail "a dashboard told not to read usage did not render as explicitly disabled"
   stop_server
   pass "token usage is presence-gated and renders as unavailable rather than zero"
 }

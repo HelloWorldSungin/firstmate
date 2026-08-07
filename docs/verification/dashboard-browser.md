@@ -32,7 +32,9 @@ Everything below was observed on the rendered page, not read out of an API respo
 
 Every row below was recorded against the captain's own running dashboard rather than a fixture, by a harness that already carried every assertion the table names.
 An initial live run was made before the harness was strengthened; it was re-run afterwards so that no row here comes from an assertion the recorded run did not actually make.
-One later change is not in these numbers: the leak scan was widened from the five view sections to the whole rendered page after this run, and the coverage note under that row says what the narrower scan can and cannot claim.
+Two later changes are not in these numbers.
+The leak scan was widened from the five view sections to the whole rendered page after this run, and the coverage note under that row says what the narrower scan can and cannot claim.
+The token-totals observation described under the usage panel below arrived with the issue 65 fix, so this run made one observation fewer per width than the check now declares.
 
 | Observation | Phone | Desktop |
 | --- | --- | --- |
@@ -81,9 +83,14 @@ Observed against the captain's live dashboard, at both widths: 25 labelled panel
 Every one of them renders the documented unavailable-with-reason form, `USAGE / unavailable / token usage could not be read (exit_nonzero)`.
 That is the correct rendering of an absent reading and is not treated as a failure here; what is treated as a failure is a record whose panel is not there at all.
 
-The reason behind that text is a real defect rather than an absent collector, and it is filed as [issue 65](https://github.com/HelloWorldSungin/firstmate/issues/65): the usage store had never been populated on this home, and the dashboard service still cannot read it after it was.
-So Epic 4's criterion that token usage is visible per task is not met on this home.
-The two-form assertion is deliberately written to survive that being fixed: when the service can read the store, the same check records real usage data without being rewritten.
+The reason behind that text was a real defect rather than an absent collector, and it is filed as [issue 65](https://github.com/HelloWorldSungin/firstmate/issues/65): the usage store had never been populated on this home, and the dashboard service could not read it once it was, because a store left in WAL at rest needs a wal-index that a service under `ProtectHome=read-only` has no way to create in `data/`.
+That is fixed on this branch, and [usage accounting](../usage-accounting.md) owns the read-only open and the self-contained at-rest shape the fix rests on.
+Epic 4's criterion that token usage is visible per task therefore turns on this landing, and the row reads exactly like the nav rows above: the live figures record the shipped state, and the next live run against an updated checkout is what records the criterion met.
+The two-form assertion was deliberately written to survive that fix rather than be rewritten by it, and it was not rewritten.
+
+A panel that is present is not yet a number, so the check now makes a second observation per width beside it: where a completion record carries attributed usage, its panel shows the token total.
+It records `ok` when at least one record on the page renders a total, and `????` when there is no completion record to look at, on the same reasoning as the panel observation above.
+It records `FAIL` for the shape issue 65 produced - a record whose panel shows the operational form, meaning the collector ran and failed - and `ok` with that stated when no record shows attributed totals at all, because a home that has not collected usage yet is not a page this check can improve by refusing it.
 
 A home with no completed work has no history cards, and therefore no usage panel to look at.
 That case records `????` rather than a pass or a failure, and was observed that way against a dashboard started over an empty home:
@@ -156,6 +163,9 @@ $ bin/fm-dashboard-browser-check.sh --negative
 negative proof PASSED: the check refuses a page that renders nothing (44 failed, 4 could not be verified, and every one of the 8 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
+Those counts predate the token-totals observation added with the issue 65 fix, which records `????` on a page carrying no completion record, so a run today reports one more unverified per width.
+The eight named assertions are unchanged, and the new observation is not among them.
+
 Counting failures would not have been enough.
 A harness that had degraded to noticing nothing but a missing heading would still report a failure count, so the negative proof names the assertions that read the rendered page - the text, the stylesheet, each view's presence, height and landmarks, the leak scan, the nav landing, the usage panel - and checks each one individually.
 
@@ -164,7 +174,7 @@ An earlier version required only that the assertion was absent from the run's pa
 It now requires each named assertion to appear in `result.txt` as a `FAIL` or a `????` line of its own, which is positive evidence that it ran and refused, rather than an inference from two absences.
 
 Six observations still pass on that page and are meant to: the document loaded, because a title alone satisfies it; the browser was at the requested width, because it was; and nothing scrolls sideways, because nothing is there to.
-Four record `????`, which is the third verdict earning its place: the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and the usage observation reports that there was no completion record to carry a panel.
+Four recorded `????` in that run, which is the third verdict earning its place: the leak scan reports `11 pattern(s) over 0 characters - the scan cannot be shown to have run` rather than declaring an empty page clean, and the usage observation reports that there was no completion record to carry a panel.
 
 ## Executing each failure path rather than reasoning about it
 
@@ -186,6 +196,10 @@ FAIL 390x844: the Captain inbox link lands on that section's heading - the stick
 The thirty pairs that existed when this was written were each executed against the fixture dashboard, and each printed the branch it names.
 Two of them first ran alongside another forced fault that removed their precondition, so each was re-forced on its own to get there, for the reason the script's header gives under the variable.
 The three `reconcile:` pairs added afterwards corrupt the emitted observation set rather than a measurement, because that set is what the reconciliation pass judges; `tests/fm-dashboard-browser.test.sh` executes all three and requires each to fail the run by naming the observation at fault.
+
+Two more pairs came with the issue 65 fix, `usage:tokens` and `usage:operational`, and they reach the two answering branches of the token-totals observation.
+Each supplies the state its branch is reached from rather than only the value that branch judges, because both are decided after earlier branches that would otherwise answer first - setting the operational count alone on a page whose totals really did render returns `ok` above it and proves nothing - and the script's comment at that check says so.
+Neither has been executed against the fixture yet, so this file does not claim they have.
 
 ## Limits of what a browser check can see here
 
