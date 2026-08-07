@@ -21,27 +21,43 @@ Widths: 390x844 (phone) and 1440x900 (desktop).
 
 Everything below was observed on the rendered page, not read out of an API response.
 
+Every row below was recorded by the final harness against the captain's own running dashboard, not by an earlier version of it and not from a fixture.
+An initial live run was made before the harness was strengthened; it was re-run afterwards so that no row here comes from an assertion the recorded run did not actually make.
+
 | Observation | Phone | Desktop |
 | --- | --- | --- |
 | Document loads, title `Firstmate Fleet` | yes | yes |
-| Stylesheet applied (body surface painted) | `rgb(243, 244, 246)` | `rgb(243, 244, 246)` |
-| Rendered text on the page | 30,073 characters | 30,233 characters |
+| Browser really is at this viewport | page reports 390x844 CSS px | page reports 1440x900 CSS px |
+| Stylesheet applied | `rgb(243, 244, 246)`, `--gutter` resolves to `clamp(12px, 3.6vw, 20px)` | same |
+| Rendered text on the page | 29,963 characters | 30,199 characters |
 | No sideways scroll | `scrollWidth 390 <= viewport 390` | `scrollWidth 1440 <= viewport 1440` |
-| Captain inbox renders | 9,302px tall, legible | 6,656px tall, legible |
-| Board renders | 3,068px tall, legible | 1,373px tall, legible |
-| GBrain panel renders | 839px tall, legible | 587px tall, legible |
-| Activity renders | 199px tall, legible | 161px tall, legible |
-| History renders | 10,745px tall, legible | 8,251px tall, legible |
-| Browser console | nothing printed | nothing printed |
+| Captain inbox renders | 9,705px tall, all 2 landmarks | 6,883px tall, all 2 landmarks |
+| Board renders | 2,422px tall, all 4 landmarks | 1,373px tall, all 4 landmarks |
+| GBrain panel renders | 839px tall, all 2 landmarks | 587px tall, all 2 landmarks |
+| Activity renders | 199px tall, all 3 landmarks | 161px tall, all 3 landmarks |
+| History renders | 10,634px tall, all 3 landmarks | 8,105px tall, all 3 landmarks |
+| Every completed record shows its usage panel | 25 panels across 25 records | 25 panels across 25 records |
+| No credential-shaped or path-shaped value | **failed**, see below | **failed**, see below |
+| Anchor navigation lands clear of the sticky bar | **failed**, see below | **failed**, see below |
+| Browser console | 15 windows read, all empty | 15 windows read, all empty |
 
-The console was clean at both widths: no errors, no warnings, no failed subresource.
+The console result is worth stating precisely, because the earlier version of this check could not have supported it.
+The browser tool returns only the current navigation's messages and its collector discards all but the last three navigation buckets, so a single read taken at the end of a width saw almost nothing.
+The run above took a console read immediately before every navigation it made and one after the last of each, fifteen windows in total, and every one was empty: no errors, no warnings, no failed subresource.
 
 Two observations failed against the live service and are recorded as failures rather than smoothed over.
 Absolute host paths are on the rendered page, which the next section covers.
-Anchor navigation landed every section underneath the sticky bar, covered by 135px at phone width and 119px at desktop; that defect is fixed in [`assets/dashboard/styles.css`](../../assets/dashboard/styles.css) and [`assets/dashboard/app.js`](../../assets/dashboard/app.js) and is now pinned by the check.
 
-The table above is what that run recorded, and it predates four things the harness was subsequently given: an assertion that the browser really is at the width each section is named after, an assertion that every completed record carries its usage panel, a requirement that the leak scan report how many patterns it ran over how many characters before an empty result counts as clean, and a console read taken after every navigation instead of once at the end.
-Re-running against the live fleet needs its captain credential, so those four are recorded below from the runs that could be made rather than backfilled into a table they were not part of.
+Anchor navigation still landed every section underneath the sticky bar on the live service, by 124-135px at phone width and 108-119px at desktop.
+That is the defect this change fixes, and its continued presence there is expected rather than a regression: the installed service runs from the captain's own checkout, and `curl` against `/styles.css` on the live service returns a stylesheet with no `scroll-margin-top` rule, so it is serving assets that predate this branch.
+The paired fixture run, against the same harness and this branch's assets, records the fixed behaviour with the scroll distance that proves it navigated rather than merely finding the section already in place:
+
+```
+ok 390x844: the Board link lands on that section's heading - the heading came to rest 23px below the bar (scrolled 2757px)
+ok 1440x900: the History link lands on that section's heading - the heading came to rest 38px below the bar (scrolled 2297px)
+```
+
+So the live failure records the shipped state and the fixture pass records the fix; the live rows here will turn green once this lands and that checkout updates.
 
 ## The usage panel
 
@@ -49,9 +65,13 @@ Token usage is not a view of its own, which is why it needed saying separately.
 It renders as a `USAGE` panel inside every completed-work card in History, one panel per record, so a board-level landmark would never have noticed it disappearing.
 
 The check now counts the completion records on the page and the labelled usage panels among them, and requires one per record.
-Observed on a fixture dashboard the check started itself, at both widths: 2 labelled panels across 2 completed records.
-Both render the documented unavailable-with-reason form, `USAGE / unavailable / token usage could not be read (exit_nonzero)`, because no usage collector answers on this host.
-That is the correct rendering of an absent collector and is not treated as a failure; what is treated as a failure is a record whose panel is not there at all.
+Observed against the captain's live dashboard, at both widths: 25 labelled panels across 25 completed records, so no record is missing its panel.
+Every one of them renders the documented unavailable-with-reason form, `USAGE / unavailable / token usage could not be read (exit_nonzero)`.
+That is the correct rendering of an absent reading and is not treated as a failure here; what is treated as a failure is a record whose panel is not there at all.
+
+The reason behind that text is a real defect rather than an absent collector, and it is filed as [issue 65](https://github.com/HelloWorldSungin/firstmate/issues/65): the usage store had never been populated on this home, and the dashboard service still cannot read it after it was.
+So Epic 4's criterion that token usage is visible per task is not met on this home.
+The two-form assertion is deliberately written to survive that being fixed: when the service can read the store, the same check records real usage data without being rewritten.
 
 A home with no completed work has no history cards, and therefore no usage panel to look at.
 That case records `????` rather than a pass or a failure, and was observed that way against a dashboard started over an empty home:
@@ -93,6 +113,15 @@ The server binary, the browser, and the page are real in both cases.
 - A selected agent's earlier events were pushed out of the bounded fleet-wide tail by 240 unrelated events, confirmed absent from the page, fetched back by selecting that agent, and were still on the page after a further event replaced the live stream.
 
 The second is the failure [`assets/dashboard/events.js`](../../assets/dashboard/events.js) says the backfill slot exists to avoid, so it is checked by driving the page rather than by reading the module.
+
+Against the captain's live dashboard the same two observations record `n/a` rather than a pass or a `????`, and the run says why in the line itself:
+
+```
+n/a  a live event appears without a reload - not applicable to a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url.
+```
+
+That distinction is what lets a healthy live check exit 0 at all.
+While these two folded into `????`, every `--url` run failed by construction however healthy the page was, which left the only mode that can be pointed at the real dashboard with no usable exit status to automate against.
 
 ## That the check can fail
 
