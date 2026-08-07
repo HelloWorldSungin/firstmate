@@ -56,6 +56,7 @@ Nothing is placed behind a horizontal swipe: no region of the page scrolls sidew
 The one exception is inside a rendered report, whose content is worker-written: a code block or table too wide for the screen scrolls inside its own box rather than stretching the page around it.
 The fleet health signals appear in full as cards in the "Needs you" view at every width, and the compact chip row in the sticky bar is an additional summary carried only by the wide sidebar layout, where the header has room for it.
 Full-height regions use dynamic viewport units, so a mobile browser's address bar sliding in and out does not clip content, and page edges respect safe-area insets.
+Following a nav link, or a board card's Timeline button, lands the target section with its eyebrow and heading clear of the sticky bar rather than underneath it, at whatever height that bar's own contents have taken at the current width.
 
 Folding or unfolding a device reflows the page while it stays loaded.
 The page is never reloaded for that, so the selected view, open filter panels, filter and search choices, the history page being read, an open report, and in-flight data all survive it.

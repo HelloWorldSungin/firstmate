@@ -70,10 +70,19 @@ $ curl -sS -u captain:… http://127.0.0.1:8787/api/snapshot | jq -c '[.snapshot
 ```
 
 So the value originates in the fleet snapshot, not in the dashboard's rendering, and the dashboard is faithfully showing what it was given.
-The GBrain panel separately prints this home's index path in two adjacent cards, which is health detail from `bin/fm-gbrain-health.sh`.
+The GBrain panel separately prints this home's index path in two adjacent cards, which is health detail from `bin/fm-gbrain-health.sh`, and at phone width that path wraps mid-token rather than at a path separator.
 At phone width the path is truncated to `/home/sungin/first…` in a card's project slot, which identifies nothing.
 
 This is left as an observation rather than a fix: changing what `project` means is a fleet-data contract change reaching the snapshot, the board filter's identity, and completion manifests already written with those values.
+
+## Two more observations from that run
+
+The Activity view's Agent filter offers only the agents that have events in the bounded live tail the page is currently holding, because its choices are derived from those events rather than from the fleet.
+An agent whose events have already aged out of that tail is absent from the filter, while a board card's Timeline button still reaches it, because that button selects the task directly and fetches its backfill.
+
+On a phone the board's empty columns take roughly 450px before the first populated column, so a reader arriving at the board scrolls past several empty column headings before reaching any work.
+
+Both are questions about what these views should offer rather than faults in how they render, so this run records them instead of changing them.
 
 ## The live-stream guarantees
 
