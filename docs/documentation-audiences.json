@@ -392,6 +392,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/verification/dashboard-browser.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dashboard-service-unit.md",
       "audience": "maintainer-verification"
     },

@@ -56,6 +56,7 @@ Nothing is placed behind a horizontal swipe: no region of the page scrolls sidew
 The one exception is inside a rendered report, whose content is worker-written: a code block or table too wide for the screen scrolls inside its own box rather than stretching the page around it.
 The fleet health signals appear in full as cards in the "Needs you" view at every width, and the compact chip row in the sticky bar is an additional summary carried only by the wide sidebar layout, where the header has room for it.
 Full-height regions use dynamic viewport units, so a mobile browser's address bar sliding in and out does not clip content, and page edges respect safe-area insets.
+Following a nav link, or a board card's Timeline button, lands the target section with its eyebrow and heading clear of the sticky bar rather than underneath it, at whatever height that bar's own contents have taken at the current width.
 
 Folding or unfolding a device reflows the page while it stays loaded.
 The page is never reloaded for that, so the selected view, open filter panels, filter and search choices, the history page being read, an open report, and in-flight data all survive it.
@@ -141,6 +142,30 @@ Document size, line count, node count, and nesting are all bounded, and every tr
 
 The report itself is fetched by task id, and that id selects nothing on its own: it must name a task the current history published with a retained report, and the file is then read from this home's own data directory rather than from the path recorded in the manifest.
 A report that is missing, is no longer a plain file, or resolves outside that directory is refused with a reason, and a report larger than the configured byte limit is served truncated and labeled.
+
+## Checking it in a browser
+
+The module-level tests prove what each browser module returns; they cannot prove that the page loads, that the stylesheet arrived, that the layout holds at 390 CSS px, or that the console is clean.
+[`bin/fm-dashboard-browser-check.sh`](../bin/fm-dashboard-browser-check.sh) drives the real page in a real browser and records what it rendered, at a phone width and a desktop width.
+
+Run it with no arguments and it starts its own dashboard from this checkout on an ephemeral loopback port over a throwaway home, so it never touches an installed service.
+Pass `--url` with `--user` and `--password-file` to point it at a running dashboard; the password is held by a loopback-only front and never enters the URL the browser opens, so it reaches neither the browser's history nor any evidence the check captures, and the dashboard's own exposure, authentication, and credentials are untouched.
+That front does add one thing, which its header states rather than claims away: it attaches the credential to everything it forwards and authorizes nothing itself, so for the length of the check it is an unauthenticated door to the authenticated dashboard, bound to loopback on an ephemeral port and gone when the check exits.
+On a host with other tenants that is worth weighing before running `--url`.
+`--negative` proves the check can still fail, by running the same assertions against a page that renders nothing.
+`FM_DASHBOARD_BROWSER_FORCE=<check>:<branch>` serves the same purpose one check at a time, forcing a named check down its failure or could-not-verify branch so that path can be executed and read rather than reasoned about; it is inert unless set and an injected run never exits 0, so it can never be mistaken for a check of the dashboard.
+
+Each observation is recorded as `ok`, `FAIL`, `????`, or `n/a`.
+`????` is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, or a scan cannot be shown to have run, and a run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.
+`n/a` is the separate case of an observation this mode was never able to make: the three live-stream observations under `--url`, which can only be proved by posting events into a dashboard this command does not own.
+It is reported and counted but does not fail the run, so a healthy dashboard checked with `--url` exits 0; every other observation is made identically in both modes.
+
+That last claim is structural rather than a promise anyone has to keep by hand.
+Each mode declares the observations it makes and reconciles that list against the verdicts it recorded before it exits, so an observation left unrecorded, recorded twice, or recorded without having been declared fails the run by name and exits 4 rather than showing up as a quietly smaller result.
+
+It is a command rather than a test CI runs, because one Chrome session per host is shared state that parallel test shards would fight over and CI has no browser at all; `tests/fm-dashboard-browser.test.sh` is the opt-in wrapper, and the script's header owns that tradeoff in full.
+Run it after changing anything the page renders, and before believing any claim about what the dashboard shows.
+[`docs/verification/dashboard-browser.md`](verification/dashboard-browser.md) records what the first run observed.
 
 ## Updating configuration
 

@@ -146,6 +146,20 @@ function anchorLine() {
   return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
 }
 
+// Anchor navigation is the other half of that same fact. Following a nav link,
+// or the board's Timeline button, scrolls the target section's top edge to the
+// top of the VIEWPORT - which is underneath the sticky bar, so the reader lands
+// part-way into the section with its eyebrow and heading hidden. The bar is
+// sized by its own content and rewraps with width, so its height is not a
+// constant the stylesheet could hold on its own; publishing it is what lets
+// every scroll target keep clear of it.
+function publishStickyHeight() {
+  const bar = document.querySelector(".topbar");
+  if (!bar) return;
+  const height = Math.ceil(bar.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--sticky-top", `${height}px`);
+}
+
 function captureAnchor() {
   anchorQueued = false;
   const line = anchorLine();
@@ -1394,6 +1408,15 @@ ui.activityClear.addEventListener("click", () => {
   }
   renderActivity();
 });
+
+// Observed rather than recomputed on resize alone: the bar's height also
+// changes when its own counts and health chips rewrap, which happens on a fleet
+// update at a fixed width.
+publishStickyHeight();
+if (typeof ResizeObserver === "function") {
+  const stickyBar = document.querySelector(".topbar");
+  if (stickyBar) new ResizeObserver(publishStickyHeight).observe(stickyBar);
+}
 
 window.addEventListener("scroll", queueAnchorCapture, { passive: true });
 window.addEventListener("resize", () => {

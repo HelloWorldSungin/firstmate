@@ -262,6 +262,9 @@ class FakeNode {
     this.id = "";
     this.listeners = {};
     this.value = "";
+    // app.js publishes the sticky bar's measured height as a custom property on
+    // the document element, so a node has to be able to carry one.
+    this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
   }
 
@@ -590,6 +593,9 @@ class FakeNode {
     this.dataset = {};
     this.listeners = {};
     this.value = "";
+    // app.js publishes the sticky bar's measured height as a custom property on
+    // the document element, so a node has to be able to carry one.
+    this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
   }
 

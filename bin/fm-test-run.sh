@@ -187,7 +187,8 @@ family_for_basename() {
     fm-cursor-agy-smoke.test.sh|fm-grok-stop-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
-    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
+    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
+    fm-dashboard-browser.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
@@ -357,8 +358,9 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    # real-herdr-gated has its own required CI lane; live-harness-optin needs real
-    # harness credentials, so it stays an explicit opt-in outside portable lanes.
+    # real-herdr-gated has its own required CI lane; live-harness-optin needs
+    # machine state CI does not have - real harness credentials, or a real
+    # browser session - so it stays an explicit opt-in outside portable lanes.
     case "$fam" in
       real-herdr-gated|live-harness-optin) continue ;;
     esac
