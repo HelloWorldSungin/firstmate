@@ -97,8 +97,12 @@ Project, harness, model, kind, outcome, and completion-date filters, a bounded t
 Search covers ids, titles, projects, dispatch metadata, outcome detail, pull request URLs, and work-item links; it does not read report bodies.
 The server reads a bounded number of records per refresh, and says so in the view when more completed work is stored than was read - raise `--history-limit` to widen it.
 A manifest that is missing, corrupt, or written against a schema version this dashboard does not accept is listed with its id and the reason it could not be used, never silently skipped.
-Token usage is presence-gated on the fleet's token-usage collector: totals appear when that collector is installed in this home and has attributed usage to a task, and anything else - no collector, no attributed row, an output this dashboard does not recognize, an unreadable total - renders as `unavailable` with its reason rather than as a zero.
-A blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
+Token usage is presence-gated on the fleet's token-usage collector and on its `data/usage.db` store existing under this home: with no store there is nothing to read, and no collector child is spawned at all.
+Totals appear when that store has attributed usage to a task, and every other state renders with its reason rather than as a zero, because a blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
+Those states are deliberately not collapsed together. No collector, no store, usage reads switched off for this dashboard, no attributed row for this task, or a collected row with no readable total all read as `unavailable`, which is nothing to fix; a collector that failed, or one whose output this dashboard does not recognize, reads as needing attention and is drawn distinctly, which is.
+A failed read keeps the last good one visible and says so, the way a failed snapshot refresh does, because the store has writers - teardown refreshes it on every archive and bootstrap on every locked session start - and a read that overlaps one of them fails rather than reads empty.
+A task the retained read does not carry yet says exactly that, so a just-archived record is never reported as having cost nothing.
+[usage-accounting.md](usage-accounting.md) owns the store itself, including the read-only open that lets the hardened user service read it without write access to `data/`.
 Semantic search over captured report content belongs to the separate [GBrain](#gbrain) panel; history is fully usable without it.
 
 ## Activity

@@ -493,6 +493,8 @@ leak:fail
 leak:unverified
 usage:fail
 usage:unverified
+usage:tokens
+usage:operational
 nav:fail
 nav:unverified
 live-event:fail
@@ -561,6 +563,7 @@ $VIEWS
 VIEWROWS
     printf '%s: no credential-shaped or path-shaped value on the page\n' "$spec"
     printf '%s: every completed record shows its usage panel\n' "$spec"
+    printf '%s: collected usage shows token totals where attributed\n' "$spec"
     while IFS='|' read -r id name _landmarks; do
       [ -n "$id" ] || continue
       printf '%s: the %s link lands on that section'"'"'s heading\n' "$spec" "$name"
@@ -1090,6 +1093,11 @@ build_probe_js() {
           const panel = card.querySelector(".usage-panel");
           return panel !== null && panel.innerText.includes("USAGE");
         }).length,
+        usageTokenPanels: historyCards.filter((card) => {
+          const total = card.querySelector(".usage-total");
+          return total !== null && /\\btokens\\b/i.test(total.textContent);
+        }).length,
+        usageOperationalPanels: historyCards.filter((card) => card.querySelector(".usage-panel.operational") !== null).length,
         leakPatterns: patterns.length,
         leakChars: bodyText.length,
         pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
@@ -1167,11 +1175,12 @@ check_width() {  # <width> <height>
   fi
 
   local title body_length inner_width inner_height client_width scroll_width
-  local background gutter error_page history_cards usage_panels leak_patterns leak_chars page_leaks
+  local background gutter error_page history_cards usage_panels usage_token_panels usage_operational_panels leak_patterns leak_chars page_leaks
   if forced probe unverified || ! scalars=$(probe_fields "$probe" \
     title=title bodyTextLength=bodyTextLength innerWidth=innerWidth innerHeight=innerHeight \
     clientWidth=clientWidth scrollWidth=scrollWidth background=background gutter=gutter \
     errorPage=errorPage historyCards=historyCards usagePanels=usagePanels \
+    usageTokenPanels=usageTokenPanels usageOperationalPanels=usageOperationalPanels \
     leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
     record_unreached "$label" \
       "the probe result carried none of the measurements this check reads, so nothing at this width was judged"
@@ -1190,6 +1199,8 @@ check_width() {  # <width> <height>
       errorPage) error_page=$value ;;
       historyCards) history_cards=$value ;;
       usagePanels) usage_panels=$value ;;
+      usageTokenPanels) usage_token_panels=$value ;;
+      usageOperationalPanels) usage_operational_panels=$value ;;
       leakPatterns) leak_patterns=$value ;;
       leakChars) leak_chars=$value ;;
       pageLeaks) page_leaks=$value ;;
@@ -1291,6 +1302,7 @@ EOF
   check_views "$label" "$probe"
   check_leak_scan "$label" "$leak_patterns" "$leak_chars" "$page_leaks"
   check_usage_panels "$label" "$history_cards" "$usage_panels"
+  check_usage_token_totals "$label" "$history_cards" "$usage_token_panels" "$usage_operational_panels"
 
   browser screenshot "$OUT_DIR/screen-$label.png" > /dev/null 2>&1 \
     && note "screenshot: $OUT_DIR/screen-$label.png"
@@ -1474,6 +1486,48 @@ check_usage_panels() {  # <label> <history cards> <usage panels>
   fi
   record FAIL "$label: every completed record shows its usage panel" \
     "only $panels of $cards completed records rendered one"
+}
+
+check_usage_token_totals() {  # <label> <history cards> <token panels> <operational panels>
+  local label=$1 cards=$2 token_panels=$3 operational_panels=$4
+  if ! is_number "$cards" || ! is_number "$token_panels" || ! is_number "$operational_panels"; then
+    record "$UNVERIFIED" "$label: collected usage shows token totals where attributed" \
+      "the page did not report usage totals"
+    return
+  fi
+  forced usage unverified && cards=0
+  # A forced branch has to be the branch that actually runs. These two are
+  # judged after the "no completion record" and "totals rendered" answers above
+  # them, so forcing one means supplying the state it is reached from: a page
+  # with a completion record on it, and - for the operational branch - no totals
+  # left to answer first. Setting the operational count alone on a page whose
+  # usage really did render would return ok above and prove nothing.
+  if forced usage tokens; then
+    cards=1
+    token_panels=1
+  fi
+  if forced usage operational; then
+    cards=1
+    token_panels=0
+    operational_panels=1
+  fi
+  if [ "$cards" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: collected usage shows token totals where attributed" \
+      "no completion record is on the page, so there is no usage total to look at"
+    return
+  fi
+  if [ "$token_panels" -gt 0 ]; then
+    record ok "$label: collected usage shows token totals where attributed" \
+      "$token_panels completion record(s) rendered token totals"
+    return
+  fi
+  if [ "$operational_panels" -gt 0 ]; then
+    record FAIL "$label: collected usage shows token totals where attributed" \
+      "$operational_panels completion record(s) show an operational usage failure instead of totals"
+    return
+  fi
+  record ok "$label: collected usage shows token totals where attributed" \
+    "no record on the page shows attributed totals; the home may not collect usage yet"
 }
 
 # Following a nav link must put the reader at the top of the section they asked

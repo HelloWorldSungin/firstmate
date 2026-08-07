@@ -430,9 +430,13 @@ In a read-only session that did not get the fleet lock, the same line is advisor
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 Normal completed runs keep local-only and no-origin skips silent.
+The same locked step then runs a bounded best-effort `bin/fm-usage.mjs ingest`, but only when `data/usage.db` already exists, so a home that never opted into token accounting pays nothing for it.
+A completed refresh is silent; one that timed out, could not be bounded on this host, or ran and exited non-zero reports itself on a single `USAGE_STORE:` line.
+The timeout line carries the bound and the elapsed seconds, the failure line carries the collector's exit status and the elapsed seconds, and the unbounded-host line carries neither because nothing ran.
+`FM_BOOTSTRAP_USAGE_TIMEOUT` owns that bound (default 120 seconds) and [`usage-accounting.md`](usage-accounting.md) owns the cadence it shares with teardown.
 After that refresh, bootstrap runs the read-only `fm-vault-drift.sh` detector and emits `VAULT_DRIFT:` for stale vaults or external vault locations whose drift cannot be measured.
 The same detector runs in lock-refused detect-only sessions because it never writes project clones or vaults; the script header owns the vault-shape, threshold, and diagnostic contracts.
-If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
+If bootstrap kills a timed-out clone refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
@@ -693,6 +697,8 @@ FM_RUN_PROGRESS_NM_TIMEOUT=10      # seconds allowed for that bounded `no-mistak
 FM_RUN_PROGRESS_HOLD_MAX=15        # consecutive run-progress holds one pane may spend before it wedge-escalates anyway, in both supervisors. Run progress is evidence about the RUN, not about the WORKER, so a moving pipeline may DELAY an alarm but never silence it: past the cap the escalation fires however healthy the run looks, carrying the progress detail so it reads as "still moving, this pane is not". 15 holds x FM_STALE_ESCALATE_SECS (240) is one hour, the same allowance FM_BUSY_TURN_MAX_SECS and FM_PAUSE_RESURFACE_SECS already give a live-but-quiet endpoint, and it clears this repo's own routine pipeline steps (review 11m median, test 6m) so only a genuinely long step ever reaches it. The forced escalation resets the hold count, not the escalation count. Raising it widens the blind window for a hung worker by the same amount; lowering it re-introduces routine noise on long healthy steps
 FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wake debug log
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's best-effort clone refresh; unset/blank defaults to max(20, 5 + 3 * origin-backed-project-count)
+FM_BOOTSTRAP_USAGE_TIMEOUT=120       # seconds allowed for bootstrap's best-effort token-usage refresh, which runs only when data/usage.db exists; blank, non-numeric, or zero falls back to 120, because zero is what GNU timeout reads as "no timeout"
+FM_TEARDOWN_USAGE_TIMEOUT=60         # the same bound for the refresh task teardown runs before archiving a task; blank, non-numeric, or zero falls back to 60
 FM_VAULT_DRIFT_COMMITS=20            # project commits landed since a vault update before bootstrap reports drift
 FM_VAULT_DRIFT_DAYS=7                # commit-to-commit drift-window days before bootstrap reports drift
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone

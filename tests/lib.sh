@@ -92,6 +92,10 @@ FM_TEST_CLEANUP_DIRS=()
 fm_test_cleanup() {
   local d
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
+    # A case that hardened a directory to prove a read-only path leaves a tree
+    # rm cannot unlink, and an aborted case never gets to restore it. Write
+    # permission is restored here so a failing test still cleans up after itself.
+    [ -n "$d" ] && chmod -R u+w "$d" 2>/dev/null
     [ -n "$d" ] && rm -rf "$d"
   done
   [ -n "${FM_TEST_ISOLATION_ROOT:-}" ] && rm -rf "$FM_TEST_ISOLATION_ROOT"

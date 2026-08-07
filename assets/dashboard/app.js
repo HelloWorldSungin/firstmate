@@ -835,7 +835,12 @@ function renderHistoryWarnings(view, envelope) {
 }
 
 function usagePanel(row) {
-  const panel = element("div", `usage-panel ${row.usage.available ? "" : "unknown"}`.trim());
+  const tone = row.usage.available
+    ? ""
+    : row.usage.collection === "operational"
+      ? "operational"
+      : "unknown";
+  const panel = element("div", `usage-panel ${tone}`.trim());
   panel.append(element("span", "label", "USAGE"));
   if (!row.usage.available) {
     // Never a blank cell and never a zero: "unavailable" and "nothing happened"
@@ -1001,8 +1006,15 @@ function renderHistory() {
   } else {
     summary.append(element("strong", "", "No matching completed records"));
   }
-  if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
-  else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
+  // A retained read is still attributed usage, so it is stated as such rather
+  // than as a fault - the one thing it adds is that a writer held the store when
+  // this refresh tried, which is why a just-finished task may not be in it yet.
+  if (view.usage.available && view.usage.stale) {
+    summary.append(element("span", "quiet", `showing the last known good token usage read: ${view.usage.reason || "the newest read did not land"}`));
+  } else if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
+  else if (view.usage.collection === "operational") {
+    summary.append(element("span", "quiet", `token usage needs attention: ${view.usage.reason || "the collector failed"}`));
+  } else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
   if (view.semantic_search.captured_records) {
     summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
   }

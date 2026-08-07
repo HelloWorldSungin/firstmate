@@ -198,6 +198,22 @@ assert_contains "$forced" "forced: nav:fail" "the injected run did not stamp the
 grep -qE "^FAIL .*lands on that section's heading - the sticky bar hides the top of the section by" \
   "$TMP_ROOT/forced/result.txt" \
   || fail "forcing nav:fail did not run the nav assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced/result.txt")"
+
+forced=$(FM_DASHBOARD_BROWSER_FORCE=usage:tokens "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-usage-tokens" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing usage:tokens did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: usage:tokens" "the injected run did not stamp the branch it forced"
+grep -qF "rendered token totals" "$TMP_ROOT/forced-usage-tokens/result.txt" \
+  || fail "forcing usage:tokens did not run the token-totals assertion's ok branch"$'\n'"$(cat "$TMP_ROOT/forced-usage-tokens/result.txt")"
+
+forced=$(FM_DASHBOARD_BROWSER_FORCE=usage:operational "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-usage-operational" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing usage:operational did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: usage:operational" "the injected run did not stamp the branch it forced"
+grep -qF "operational usage failure instead of totals" "$TMP_ROOT/forced-usage-operational/result.txt" \
+  || fail "forcing usage:operational did not run the token-totals assertion's failure branch"$'\n'"$(cat "$TMP_ROOT/forced-usage-operational/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
 
 # --- the observation set is reconciled ----------------------------------------

@@ -76,7 +76,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { cleanToken, digest, isoToEpoch, normalizeIso, openStore } from "./fm-telemetry-store.mjs";
+import { cleanToken, closeStore, digest, isoToEpoch, normalizeIso, openStore } from "./fm-telemetry-store.mjs";
 
 export const WIRE_SCHEMA = "fm-agent-event.v1";
 export const STORE_KIND = "fm-event-store";
@@ -436,7 +436,7 @@ export class EventStore {
 
   close() {
     try {
-      this.db.close();
+      closeStore(this.db);
     } catch {
       /* an already-closed store needs no closing */
     }

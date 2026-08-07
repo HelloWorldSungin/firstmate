@@ -86,6 +86,7 @@ const ROOT = path.resolve(SCRIPT_DIR, "..");
 const SNAPSHOT_COMMAND = path.join(SCRIPT_DIR, "fm-fleet-snapshot.sh");
 const HISTORY_COMMAND = path.join(SCRIPT_DIR, "fm-outcome-manifest.sh");
 const USAGE_COMMAND = path.join(SCRIPT_DIR, "fm-usage.mjs");
+const USAGE_DB_FILE = "usage.db";
 const ASSET_DIR = path.join(ROOT, "assets", "dashboard");
 const EXPECTED_SCHEMA = "fm-fleet-snapshot.v1";
 const ENVELOPE_SCHEMA = "fm-dashboard-envelope.v1";
@@ -398,6 +399,17 @@ function safeText(value, limit = 4_000) {
     .slice(0, limit);
 }
 
+function usageEnvelope({ available, reason, collection, source, tasks, stale = false }) {
+  return {
+    available: Boolean(available),
+    reason: reason ? safeText(reason) : null,
+    collection: collection ? safeText(collection, 32) : null,
+    source: source ? safeText(source, 64) : null,
+    stale: Boolean(stale),
+    tasks: tasks && typeof tasks === "object" ? tasks : {},
+  };
+}
+
 function nowIso() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -559,7 +571,14 @@ class HistoryState {
     this.config = config;
     this.clients = clients;
     this.lastGood = null;
-    this.usage = { available: false, reason: "token usage has not been read yet", source: null, tasks: {} };
+    this.lastGoodUsage = null;
+    this.usage = usageEnvelope({
+      available: false,
+      reason: "token usage has not been read yet",
+      collection: "absent",
+      source: null,
+      tasks: {},
+    });
     this.lastSuccessAt = null;
     this.lastSuccessAtMs = null;
     this.lastAttemptAt = null;
@@ -646,7 +665,7 @@ class HistoryState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
-      this.usage = await this.readUsage();
+      this.usage = this.retainUsage(await this.readUsage());
     } catch (error) {
       this.lastError = errorRecord(error, "history_refresh_failed");
     } finally {
@@ -659,22 +678,75 @@ class HistoryState {
     }
   }
 
+  // Token usage keeps its last good read the way history keeps its last good
+  // document, and for the same reason: a read that MISSED is not the same fact
+  // as a read that came back empty. The store has writers - teardown refreshes
+  // it on every archive, bootstrap on every locked session start - and while one
+  // holds it in WAL the service's read-only connection cannot take a read lock
+  // without write access to data/ to update the wal-index, so the collector
+  // exits non-zero and the read comes back operational. Replacing the envelope
+  // there would drop every completed card's real totals for the length of that
+  // overlap and draw the whole panel as an operator action item, at the moment a
+  // captain is most likely to be looking: teardown refreshes the store
+  // immediately before the record that triggered it appears in History.
+  //
+  // Only an operational failure retains. "absent" and "disabled" are facts about
+  // this home rather than a read that missed - a deleted store or a dashboard
+  // with usage reads switched off must not keep serving totals from before - so
+  // they drop the retained read instead of hiding behind it.
+  retainUsage(fresh) {
+    if (fresh.available) {
+      this.lastGoodUsage = fresh;
+      return fresh;
+    }
+    if (fresh.collection !== "operational") {
+      this.lastGoodUsage = null;
+      return fresh;
+    }
+    if (!this.lastGoodUsage) return fresh;
+    return usageEnvelope({ ...this.lastGoodUsage, stale: true, reason: fresh.reason });
+  }
+
   // Token usage is an optional integration owned elsewhere. Its absence, its
   // failure, and an output this dashboard does not recognize all resolve to the
   // same honest answer: unavailable with a reason. None of them ever becomes a
   // zero, because a zero would read as "this task cost nothing".
   async readUsage() {
     if (this.config.usage === "off") {
-      return { available: false, reason: "token usage reads are disabled for this dashboard", source: null, tasks: {} };
+      return usageEnvelope({
+        available: false,
+        reason: "token usage reads are disabled for this dashboard",
+        collection: "disabled",
+        source: null,
+        tasks: {},
+      });
     }
     try {
       await stat(USAGE_COMMAND);
     } catch {
-      return { available: false, reason: "token usage is not collected in this home", source: null, tasks: {} };
+      return usageEnvelope({
+        available: false,
+        reason: "token usage is not collected in this home",
+        collection: "absent",
+        source: null,
+        tasks: {},
+      });
+    }
+    const usageDb = path.join(this.config.dataDir, USAGE_DB_FILE);
+    try {
+      await stat(usageDb);
+    } catch {
+      return usageEnvelope({
+        available: false,
+        reason: "token usage is not collected in this home",
+        collection: "absent",
+        source: null,
+        tasks: {},
+      });
     }
     let document;
     try {
-      document = await runJsonCommand(USAGE_COMMAND, ["report", "--by", "task", "--limit", String(this.config.historyLimit)], {
+      document = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "task", "--limit", String(this.config.historyLimit)], {
         timeoutMs: this.config.timeoutMs,
         env: { ...process.env, FM_HOME: this.config.fmHome },
         register: (child, previous) => {
@@ -683,10 +755,22 @@ class HistoryState {
         },
       });
     } catch (error) {
-      return { available: false, reason: `token usage could not be read (${safeText(error.kind || "failed")})`, source: null, tasks: {} };
+      return usageEnvelope({
+        available: false,
+        reason: `token usage could not be read (${safeText(error.kind || "failed")})`,
+        collection: "operational",
+        source: null,
+        tasks: {},
+      });
     }
     if (!document || document.schema !== USAGE_SCHEMA || !Array.isArray(document.rows)) {
-      return { available: false, reason: "the token usage report is not a supported schema version", source: null, tasks: {} };
+      return usageEnvelope({
+        available: false,
+        reason: "the token usage report is not a supported schema version",
+        collection: "operational",
+        source: null,
+        tasks: {},
+      });
     }
     const tasks = {};
     for (const row of document.rows) {
@@ -705,7 +789,13 @@ class HistoryState {
       }
       tasks[key] = totals;
     }
-    return { available: true, reason: null, source: USAGE_SCHEMA, tasks };
+    return usageEnvelope({
+      available: true,
+      reason: null,
+      collection: "ready",
+      source: USAGE_SCHEMA,
+      tasks,
+    });
   }
 
   start() {

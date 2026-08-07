@@ -13,9 +13,31 @@
 # fm_run_timed <seconds> <command...> runs the command with a hard bound and
 # returns the command's own exit code, except:
 #   124 or 137  the bound elapsed (whichever the runner reports)
-#   125         no bounded runner could start, so nothing was executed
+#   125         nothing was executed: no bounded runner could start, or the
+#               requested bound was not a positive whole number of seconds
 # A caller distinguishes those from a real command failure and reports each
 # differently; 125 in particular means "not attempted", never "failed".
+# A command killed by a signal reports 128+signal rather than the shell's own
+# status, so a child the OOM killer or an outer bound took is never mistaken for
+# one that exited 0.
+#
+# A bound of 0 is refused rather than honored, because 0 is not a bound: GNU
+# timeout documents DURATION 0 as "no timeout", and the perl arm's `alarm 0`
+# cancels the alarm outright, so either arm would run the command unbounded on
+# the exact input a caller meant as "no time left".
+#
+# FM_TIMEOUT_KILL_GRACE is the seconds between the polite signal and the kill
+# (1 by default). A caller raises it for a call whose child must leave something
+# CONSISTENT behind rather than merely die - bin/fm-usage.mjs checkpoints its
+# store back out of WAL on SIGTERM, and a kill that arrives mid-checkpoint would
+# leave the shape the dashboard cannot read.
+#
+# The grace is a CEILING, not a cost: both arms return as soon as the child is
+# reaped, so a child that answers the polite signal promptly is not waited out.
+# A zero grace falls back to 1 with the blank and the non-numeric, because a
+# grace of zero is the one value that voids the escalation entirely - GNU
+# timeout arms no kill at all for --kill-after=0, which would leave a child that
+# ignores SIGTERM running past the deadline the caller was promised.
 #
 # fm_call_bound <per-call-default> prints the seconds the NEXT bounded call may
 # take. A script that makes several calls inside one operation the caller bounds
@@ -52,14 +74,17 @@ fm_call_bound() {  # <per-call-default>
 }
 
 fm_run_timed() {  # <seconds> <command...>
-  local seconds=$1 force=${FM_TIMEOUT_FORCE_FALLBACK:-0}
+  local seconds=$1 force=${FM_TIMEOUT_FORCE_FALLBACK:-0} grace=${FM_TIMEOUT_KILL_GRACE:-1}
   shift
+  case "$seconds" in ''|*[!0-9]*) return 125 ;; esac
+  [ "$seconds" -ge 1 ] || return 125
+  case "$grace" in ''|*[!0-9]*|0) grace=1 ;; esac
   if [ "$force" != 1 ] && command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after=1 "$seconds" "$@"
+    timeout --kill-after="$grace" "$seconds" "$@"
   elif [ "$force" != 1 ] && command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --kill-after=1 "$seconds" "$@"
+    gtimeout --kill-after="$grace" "$seconds" "$@"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+    perl -e 'use POSIX qw(WNOHANG); my $t = shift; my $g = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; for (my $i = 0; $i < $g * 20; $i++) { last if waitpid($pid, WNOHANG) != 0; select undef, undef, undef, 0.05 } kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $st = $?; exit($st & 127 ? 128 + ($st & 127) : $st >> 8)' "$seconds" "$grace" "$@"
   else
     return 125
   fi

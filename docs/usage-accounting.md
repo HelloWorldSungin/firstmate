@@ -17,6 +17,13 @@ bin/fm-usage.mjs attribution
 
 `ingest` scans this machine's Claude Code transcripts and Codex rollouts, stores every token-usage event, attributes what it can, and prints a JSON summary.
 It is safe to run on any cadence, including concurrently with an earlier run that has not finished, because ingestion is idempotent rather than incremental-only.
+A locked session bootstrap runs a bounded best-effort `ingest` when `data/usage.db` already exists, and task teardown runs the same refresh when a store is present, so an opted-in home stays current without a separate timer.
+Both bounds escalate to SIGKILL: bootstrap's is `FM_BOOTSTRAP_USAGE_TIMEOUT` (120s by default) and teardown's is `FM_TEARDOWN_USAGE_TIMEOUT` (60s).
+Only bootstrap reports a refresh that did not finish, on a `USAGE_STORE:` line; teardown's is silent, because nothing on the cleanup path may be blocked or noised by it and the next refresh converges the store either way.
+The dashboard reads the store through a read-only SQLite open so the user service can stay under `ProtectHome=read-only` without write access to `data/`.
+Every writer checkpoints the WAL and returns the store to a rollback journal as it closes, so `usage.db` at rest is one self-contained file: a reader without write access to `data/` cannot create the `-shm` wal-index a WAL store requires, and would otherwise fail to open the store at all rather than merely read it stale.
+That close also runs when a bound ends a refresh early, because `ingest` answers `SIGTERM`, `SIGINT`, and `SIGHUP` by closing the store before it exits and both bounds hold the kill back long enough for it; an abnormal `SIGKILL` is the only case that still leaves the WAL behind, and the next writable open heals it.
+A dashboard read that overlaps a writer fails rather than reads empty, so the dashboard keeps its last good read and labels it instead of dropping every total for the length of the overlap.
 Every derived table is rebuilt in place, and each rebuild commits its wipe and its repopulation together, so a failed run leaves the previous derivation rather than an empty table that would read as "nothing to report".
 A stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
 Four read-only projections print JSON without touching the store: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.

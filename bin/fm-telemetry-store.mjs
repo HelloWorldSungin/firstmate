@@ -120,17 +120,22 @@ export function sleepMs(ms) {
 }
 
 // PRAGMA journal_mode does NOT honor the busy timeout: SQLite takes the brief
-// exclusive lock that switching a store to WAL needs without ever calling the
-// busy handler, so a second writer creating the same store gets SQLITE_BUSY back
-// in well under a millisecond however long the timeout is. The switch is
-// therefore retried explicitly on the same budget. Only the first open of a
-// store can contend at all - a store that is already in WAL needs no lock to be
-// told it is in WAL, which is why steady-state overlapping runs never wait here.
-function enableWalMode(db) {
-  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+// exclusive lock that switching a store's journal mode needs without ever
+// calling the busy handler, so a caller that loses that race gets SQLITE_BUSY
+// back in well under a millisecond however long the timeout is. The switch is
+// therefore retried explicitly, on whatever budget the caller is willing to
+// spend rather than on the store's.
+//
+// Only a switch that changes the mode can contend at all - a store already in
+// WAL needs no lock to be told it is in WAL, which is why opening a store an
+// overlapping writer already holds never waits here. Closing back to DELETE is
+// the switch that does contend, and closeStore says below why it spends almost
+// nothing on it.
+function setJournalMode(db, mode, budgetMs) {
+  const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
-      db.exec("PRAGMA journal_mode = WAL");
+      db.exec(`PRAGMA journal_mode = ${mode}`);
       return;
     } catch (error) {
       const busy = /\b(locked|busy)\b/i.test(String(error?.message ?? error));
@@ -138,6 +143,10 @@ function enableWalMode(db) {
       sleepMs(20);
     }
   }
+}
+
+function enableWalMode(db) {
+  setJournalMode(db, "WAL", BUSY_TIMEOUT_MS);
 }
 
 // Every migration is append-only and runs inside one transaction against
@@ -176,14 +185,34 @@ export function migrate(db, migrations) {
 // Open one telemetry store against its own migration list. With create false a
 // store that does not exist yet is reported as absent rather than conjured, so a
 // read-only consumer never creates the file it was only asking about.
-export function openStore(dbPath, migrations, { create = true } = {}) {
+//
+// readOnly opens for query-only consumers such as the dashboard service, which
+// runs under ProtectHome=read-only and must not attempt WAL setup or migration
+// writes against data/usage.db even though it never mutates fleet state itself.
+// Such an open only succeeds because every writer closes through closeStore
+// below, which owns that half of the contract: both stores route their writer
+// exits through it, so neither is left in a shape a write-less reader cannot
+// open.
+export function openStore(dbPath, migrations, { create = true, readOnly = false } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
   if (!create && !fs.existsSync(dbPath)) return null;
-  const db = new DatabaseSync(dbPath);
+  const db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
   // The busy timeout is installed FIRST, before anything that can contend, so
   // every later statement waits for a competing writer instead of failing.
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  if (readOnly) {
+    db.exec("PRAGMA foreign_keys = ON");
+    const target = migrations[migrations.length - 1].version;
+    const version = db.prepare("PRAGMA user_version").get().user_version ?? 0;
+    if (version > target) {
+      throw new Error(`store schema version ${version} is newer than this program understands (${target})`);
+    }
+    if (version < target) {
+      throw new Error(`store schema version ${version} is older than this program understands (${target}); run ingest or migrate`);
+    }
+    return db;
+  }
   enableWalMode(db);
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db, migrations);
@@ -193,4 +222,83 @@ export function openStore(dbPath, migrations, { create = true } = {}) {
     /* a store on a filesystem without modes stays usable */
   }
   return db;
+}
+
+// Close a writable store and leave the db file self-contained: the WAL is
+// checkpointed back into it and the store returns to a rollback journal, so the
+// one file is everything a reader needs.
+//
+// This is what makes a readOnly open possible at all for a consumer without
+// write access. SQLite cannot open a WAL store without its wal-index, and
+// creating usage.db-shm needs write access to the DIRECTORY the store lives in -
+// which the dashboard service, running under ProtectHome=read-only, does not
+// have on data/. A store left in WAL at rest therefore fails the dashboard's
+// read outright rather than merely reading stale, which is issue #65.
+//
+// WAL still covers every writer window, where it is what lets a collector run
+// and teardown's best-effort refresh overlap; only the at-rest shape changes.
+//
+// Both steps are held to CLOSE_BUDGET_MS rather than the store's ten-second
+// busy budget, because waiting here buys nothing: a checkpoint or a switch that
+// comes back busy means another writer still holds the store, and THAT writer's
+// own close leaves the self-contained shape behind. Spending the full budget
+// would only tax whichever writer happens to finish first - and this runs on
+// teardown's 60s-bounded refresh, where a ten-second stall is a sixth of the
+// budget spent on work someone else is about to do.
+export const CLOSE_BUDGET_MS = 500;
+
+export function closeStore(db) {
+  try {
+    // The checkpoint DOES honor the busy timeout, so lowering it is what bounds
+    // that half; the mode switch never does, which is why it takes the budget
+    // as an argument instead.
+    db.exec(`PRAGMA busy_timeout = ${CLOSE_BUDGET_MS}`);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    setJournalMode(db, "DELETE", CLOSE_BUDGET_MS);
+  } catch {
+    /* another connection still holds the store in WAL; it will switch on close */
+  }
+  db.close();
+}
+
+// The self-contained at-rest shape closeStore leaves behind is only an
+// invariant if it also survives the way a BOUNDED writer usually ends. Every
+// caller that bounds a writer - bootstrap's session-start refresh, teardown's
+// refresh before the manifest - ends one that outran its budget with SIGTERM
+// first, and Node's default disposition for SIGTERM terminates the process
+// without running a single finally block. A writer that only closed on the
+// normal path would therefore leave the store in WAL exactly when a refresh
+// timed out, which is the read the dashboard cannot make under
+// ProtectHome=read-only: issue #65 restored by the very bound meant to keep the
+// store fresh. Both callers hold the kill back for seconds against closeStore's
+// CLOSE_BUDGET_MS, so answering the polite signal is what keeps the invariant.
+// An abnormal SIGKILL or a hard crash stays the residual case, and the next
+// writable open heals that one.
+//
+// The returned close is the normal path's close too, and it is idempotent, so a
+// signal that lands while a run is already closing can never close twice.
+const TERMINATING_SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+
+export function closeStoreOnSignals(db) {
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closeStore(db);
+  };
+  const installed = [];
+  for (const [signal, number] of Object.entries(TERMINATING_SIGNALS)) {
+    const handler = () => {
+      close();
+      // The conventional 128+n, so a caller that reads the status still sees
+      // which signal ended the run rather than a clean exit.
+      process.exit(128 + number);
+    };
+    process.on(signal, handler);
+    installed.push([signal, handler]);
+  }
+  return () => {
+    close();
+    for (const [signal, handler] of installed) process.removeListener(signal, handler);
+  };
 }

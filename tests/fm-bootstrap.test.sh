@@ -14,7 +14,9 @@
 # which no-mistakes version is on PATH.
 # Dedicated fleet-sync cases pin the computed bootstrap timeout, explicit
 # override, blank-env defaulting, partial-output relay, and pre-launch timeout
-# scan.
+# scan. The token-usage sweep's cases pin its two gates (an existing store, a
+# locked session) and all three USAGE_STORE lines, which docs/configuration.md
+# publishes the same way it publishes the fleet-sync report.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -686,6 +688,208 @@ test_fleet_sync_timeout_is_computed_before_launch() {
   pass "bootstrap computes the timeout before launching fleet sync"
 }
 
+# --- the bounded token-usage store refresh -----------------------------------
+#
+# The usage sweep publishes two gates and three lines that a session start is
+# read for, so each one is pinned here the way the fleet-sync timeout report
+# above is. The sweep runs `node <bin>/fm-usage.mjs ingest` under a bound, so a
+# fake node is what makes every outcome reachable without a real collection over
+# this machine's transcripts: it records the arguments it was handed, then
+# behaves the way the case needs.
+
+make_usage_refresh_case() {  # <case-dir> <node body> -> <home>|<fakebin>|<ran record>
+  local case_dir=$1 node_body=$2 home fakebin ran
+  home="$case_dir/home"
+  ran="$case_dir/usage-ran"
+  mkdir -p "$home/config" "$home/data"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/node" <<SH
+#!/usr/bin/env bash
+[ -z "\${FM_FAKE_USAGE_RAN:-}" ] || printf '%s\n' "\$*" >> "\$FM_FAKE_USAGE_RAN"
+$node_body
+SH
+  chmod +x "$fakebin/node"
+  printf '%s|%s|%s\n' "$home" "$fakebin" "$ran"
+}
+
+run_usage_refresh_case() {  # <home> <fakebin> <ran record> [name=value...]
+  local home=$1 fakebin=$2 ran=$3
+  local -a outer=()
+  shift 3
+  rm -f "$ran"
+  # An outer bound of its own, because a collector that ignores SIGTERM is
+  # exactly what the sweep's bound has to survive: if that bound ever stopped
+  # escalating to SIGKILL, bootstrap would wait forever and this suite would
+  # hang instead of reporting anything. The outer bound turns that into a failed
+  # assertion, and escalates the same way for the same reason.
+  command -v timeout >/dev/null 2>&1 && outer=(timeout -k 5 60)
+  "${outer[@]+"${outer[@]}"}" env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_USAGE_RAN="$ran" "$@" \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
+}
+
+assert_usage_collector_ran() {  # <ran record> <home> <message>
+  grep -Fq "fm-usage.mjs ingest --home $2" "$1" 2>/dev/null \
+    || fail "$3 (recorded: $(cat "$1" 2>/dev/null))"
+}
+
+assert_usage_collector_silent() {  # <out> <ran record> <message>
+  [ ! -e "$2" ] || fail "$3 (recorded: $(cat "$2"))"
+  assert_not_contains "$1" "USAGE_STORE:" "$3"
+}
+
+test_usage_store_refresh_is_gated_on_an_existing_store() {
+  local case_dir fixture home fakebin ran out
+  case_dir="$TMP_ROOT/usage-refresh-gate"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 0')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran")
+  assert_usage_collector_silent "$out" "$ran" \
+    "a home with no data/usage.db must not be opted into the refresh"
+
+  : > "$home/data/usage.db"
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran")
+  assert_usage_collector_ran "$ran" "$home" \
+    "an existing store must be refreshed at a locked session boundary"
+  assert_not_contains "$out" "USAGE_STORE:" "a completed refresh must stay silent"
+  pass "bootstrap refreshes the usage store only where one exists, and says nothing when it works"
+}
+
+test_usage_store_refresh_skips_a_detect_only_session() {
+  local case_dir fixture home fakebin ran out
+  case_dir="$TMP_ROOT/usage-refresh-detect-only"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 0')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran" FM_BOOTSTRAP_DETECT_ONLY=1)
+
+  assert_usage_collector_silent "$out" "$ran" \
+    "a detect-only session must never write the usage store a concurrent session owns"
+  pass "bootstrap leaves the usage store alone in a lock-refused detect-only session"
+}
+
+# The fake collector ignores SIGTERM on purpose. SIGTERM alone is not a bound -
+# a collector that ignores it, or one stuck in uninterruptible IO, would park
+# session start past the deadline - so the sweep escalates to SIGKILL, and a
+# collector that dies to the polite signal would pin the line while leaving that
+# escalation free to be dropped. This one only dies to the kill.
+test_usage_store_refresh_reports_its_timeout() {
+  local case_dir fixture home fakebin ran out timing timeout elapsed
+  case_dir="$TMP_ROOT/usage-refresh-timeout"
+  fixture=$(make_usage_refresh_case "$case_dir" $'trap \'\' TERM\nsleep 300')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran" FM_BOOTSTRAP_USAGE_TIMEOUT=1)
+
+  assert_usage_collector_ran "$ran" "$home" "the timeout case must have started the collector"
+  timing=$(printf '%s\n' "$out" | sed -n 's/^USAGE_STORE: skipped: bootstrap refresh timed out (timeout=\([0-9][0-9]*\)s elapsed=\([0-9][0-9]*\)s)$/\1 \2/p')
+  [ -n "$timing" ] || fail "missing usage-store timeout report (got: $out)"
+  timeout=${timing%% *}
+  elapsed=${timing#* }
+  [ "$timeout" -eq 1 ] || fail "expected timeout=1s, got timeout=${timeout}s"
+  [ "$elapsed" -ge "$timeout" ] || fail "expected elapsed >= timeout, got elapsed=${elapsed}s timeout=${timeout}s"
+  pass "bootstrap kills a usage refresh that ignores SIGTERM and reports the bound it spent"
+}
+
+# Zero is the input that reads as valid to a digit check and disables the bound
+# in every runner underneath it: GNU timeout documents DURATION 0 as "no
+# timeout", and the portable arm's `alarm 0` cancels the alarm outright. Either
+# would run a scan of every transcript on the machine unbounded at session
+# start, which is the one thing this sweep refuses to do, so the fallback is
+# pinned on both sides: the collector still runs, and the run still says nothing.
+test_usage_store_refresh_falls_back_from_a_zero_bound() {
+  local case_dir fixture home fakebin ran out
+  case_dir="$TMP_ROOT/usage-refresh-zero"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 0')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran" FM_BOOTSTRAP_USAGE_TIMEOUT=0)
+
+  assert_usage_collector_ran "$ran" "$home" "a zero bound must fall back to the default rather than skip the refresh"
+  assert_not_contains "$out" "USAGE_STORE:" \
+    "a zero bound must fall back to the default, not be handed to a runner that reads it as no bound at all"
+  pass "bootstrap treats a zero usage bound as invalid and falls back to the default"
+}
+
+test_usage_store_refresh_reports_a_collector_that_failed() {
+  local case_dir fixture home fakebin ran out status
+  case_dir="$TMP_ROOT/usage-refresh-failed"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 7')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+
+  out=$(run_usage_refresh_case "$home" "$fakebin" "$ran")
+
+  assert_usage_collector_ran "$ran" "$home" "the failure case must have run the collector"
+  status=$(printf '%s\n' "$out" | sed -n 's/^USAGE_STORE: failed: bootstrap refresh ran but exited \([0-9][0-9]*\) (elapsed=[0-9][0-9]*s)$/\1/p')
+  [ "$status" = 7 ] || fail "expected the collector's own exit status on the failure line (got: $out)"
+  assert_not_contains "$out" "USAGE_STORE: skipped" \
+    "a refresh that ran and committed part of its work must not be reported as skipped"
+  pass "bootstrap reports a usage refresh that ran and failed as failed, not skipped"
+}
+
+# BASE_PATH minus every tool the bound can be built from, so the "nothing here
+# can bound this" branch is reachable without pretending the rest of the
+# toolchain went missing too.
+make_unboundable_path() {  # <dir>
+  local dir=$1 entry candidate name
+  local IFS=:
+  mkdir -p "$dir"
+  for entry in $BASE_PATH; do
+    [ -d "$entry" ] || continue
+    for candidate in "$entry"/*; do
+      name=${candidate##*/}
+      case "$name" in timeout|gtimeout|perl) continue ;; esac
+      [ -e "$dir/$name" ] || ln -s "$candidate" "$dir/$name" 2>/dev/null
+    done
+  done
+  printf '%s\n' "$dir"
+}
+
+test_usage_store_refresh_refuses_to_run_unbounded() {
+  local case_dir fixture home fakebin ran out unboundable
+  case_dir="$TMP_ROOT/usage-refresh-unboundable"
+  fixture=$(make_usage_refresh_case "$case_dir" 'exit 0')
+  home=${fixture%%|*}
+  fixture=${fixture#*|}
+  fakebin=${fixture%%|*}
+  ran=${fixture#*|}
+  : > "$home/data/usage.db"
+  unboundable=$(make_unboundable_path "$case_dir/unboundable-path")
+
+  rm -f "$ran"
+  out=$(PATH="$fakebin:$unboundable" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_USAGE_RAN="$ran" \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  [ ! -e "$ran" ] || fail "an unbounded scan of every transcript must never start (recorded: $(cat "$ran"))"
+  assert_contains "$out" \
+    "USAGE_STORE: skipped: no timeout, gtimeout or perl on this host to bound the refresh" \
+    "a host with no way to bound the refresh must say so rather than skip silently"
+  pass "bootstrap skips the usage refresh on a host that cannot bound it"
+}
+
 make_routine_bootstrap_fixture() {
   local case_dir=$1 fakebin root home sm c1
   root="$case_dir/root"
@@ -940,6 +1144,12 @@ test_fleet_sync_timeout_floor_preserves_small_fleets
 test_fleet_sync_timeout_explicit_override_wins
 test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
+test_usage_store_refresh_is_gated_on_an_existing_store
+test_usage_store_refresh_skips_a_detect_only_session
+test_usage_store_refresh_reports_its_timeout
+test_usage_store_refresh_falls_back_from_a_zero_bound
+test_usage_store_refresh_reports_a_collector_that_failed
+test_usage_store_refresh_refuses_to_run_unbounded
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_relays_vault_drift_in_both_modes

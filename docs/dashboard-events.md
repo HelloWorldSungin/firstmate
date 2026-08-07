@@ -31,7 +31,7 @@ Stored events stay browsable until they age out.
 
 ## Where events are stored, and why not in `data/usage.db`
 
-Issue #14 pairs this with the [token-usage store](usage-accounting.md), and the two do share their store discipline: [`bin/fm-telemetry-store.mjs`](../bin/fm-telemetry-store.mjs) owns the opener, the forward-only `PRAGMA user_version` migrations, the WAL and busy-timeout behaviour, the private file mode, and the value sanitizers that both use.
+Issue #14 pairs this with the [token-usage store](usage-accounting.md), and the two do share their store discipline: [`bin/fm-telemetry-store.mjs`](../bin/fm-telemetry-store.mjs) owns the opener, the forward-only `PRAGMA user_version` migrations, the WAL and busy-timeout behaviour, the checkpoint-and-rollback-journal shape every writer leaves behind at close, the private file mode, and the value sanitizers that both use.
 Both spell a task id, a harness, a session id, and an instant the same way, so a task's events and a task's tokens join on `task_id`.
 
 They are nevertheless two files, for one concrete reason: **the dashboard writes nothing a fleet program owns.**

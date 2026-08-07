@@ -1092,11 +1092,13 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "absent" and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
     || fail "an absent usage collector did not render as an explained unavailable"
   stop_server
 
   # A collector that reports totals: the totals are carried through.
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the present usage case could not create a store"
   cat > "$runtime/bin/fm-usage.mjs" <<'SH'
 #!/usr/bin/env node
 process.stdout.write(JSON.stringify({
@@ -1115,7 +1117,7 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.usage.available == true'
-  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.collection == "ready" and .usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
     || fail "attributed usage totals were not carried into the history document"
   jq -e '.usage.tasks | has("../escape") | not' "$case_root/history.json" >/dev/null \
     || fail "a usage row with an unsafe task name was accepted"
@@ -1129,14 +1131,174 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
     || fail "an unrecognized usage report was not refused as unavailable"
 
-  # And with usage explicitly switched off, history stays fully usable.
+  # A usage read that failed never takes history with it.
   jq -e '(.history.records | length) == 1' "$case_root/history.json" >/dev/null \
     || fail "history stopped working when the usage read did"
   stop_server
+
+  # And a dashboard told not to read usage at all is `disabled`, not a collector
+  # that failed: the off switch is answered before the collector is consulted,
+  # so nothing here can be mistaken for something to fix. The v99 collector left
+  # in place above is what makes that ordering visible rather than assumed.
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_USAGE=off \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/off.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "disabled"'
+  jq -e '.usage.available == false and (.usage.reason | test("disabled")) and (.usage.tasks | length) == 0 and (.history.records | length) == 1' \
+    "$case_root/history.json" >/dev/null \
+    || fail "a dashboard told not to read usage did not render as explicitly disabled"
+  stop_server
   pass "token usage is presence-gated and renders as unavailable rather than zero"
+}
+
+# The store has writers - teardown refreshes it on every archive, bootstrap on
+# every locked session start - and while one holds it the service's read-only
+# connection cannot take a read lock without write access to data/ for the
+# wal-index, so an overlapping refresh reads as a collector that failed. Dropping
+# every card's real totals for the length of that overlap would report a
+# transient as an operator action item, at the moment a captain is most likely to
+# be looking. The last good read is retained and labelled instead, the way a
+# failed snapshot refresh keeps its last good snapshot.
+test_a_failed_usage_read_keeps_the_last_good_one() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-stale"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the retained usage case could not create a store"
+  # A collector that answers once and then fails every later read, which is the
+  # shape a writer holding the store in WAL produces. The marker file is what
+  # makes the first read the good one without depending on timing.
+  cat > "$runtime/bin/fm-usage.mjs" <<SH
+#!/usr/bin/env node
+import fs from "node:fs";
+const marker = "$case_root/read-once";
+if (fs.existsSync(marker)) {
+  process.stderr.write("database is locked\n");
+  process.exit(1);
+}
+fs.writeFileSync(marker, "");
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: "task",
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.stale == false and .usage.tasks.paid.total_tokens == 15' "$case_root/history.json" >/dev/null \
+    || fail "the first usage read was not carried through as a fresh one"
+  wait_for_history "$case_root" '.usage.stale == true'
+  jq -e '.usage.available == true and .usage.collection == "ready" and .usage.tasks.paid.total_tokens == 15 and (.usage.reason | test("could not be read"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "a failed usage read dropped the totals it should have retained"
+  stop_server
+  pass "a usage read that failed keeps the last good totals and says the newest read did not land"
+}
+
+test_usage_without_store_file_is_absent_not_operational() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-absent-store"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[]}\n'
+SH
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+process.stderr.write("should not run\n");
+process.exit(1);
+SH
+  chmod +x "$runtime/bin/"*.sh "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "absent"'
+  jq -e '.usage.available == false and (.usage.reason | test("not collected"))' "$case_root/history.json" >/dev/null \
+    || fail "a missing store did not classify usage as absent"
+  stop_server
+  pass "a home without a usage store is absent rather than operational"
+}
+
+test_usage_reads_a_read_only_store_through_node() {
+  local case_root runtime home claude_root
+  case_root="$TMP_ROOT/history-usage-ro"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  claude_root="$case_root/claude"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$claude_root/-slot" "$case_root/codex"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$ROOT/bin/fm-usage.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  printf '%s\n' '{"type":"assistant","sessionId":"session-ro","cwd":"'"$home"'/wt","timestamp":"2026-08-01T10:00:00Z","message":{"id":"msg_ro","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":6,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' \
+    > "$claude_root/-slot/session.jsonl"
+  FM_USAGE_CLAUDE_ROOT="$claude_root" FM_USAGE_CODEX_ROOT="$case_root/codex" \
+    node "$runtime/bin/fm-usage.mjs" ingest --home "$home" >/dev/null \
+    || fail "the read-only usage case could not build a store"
+  # Hardened before anything reads it, and with no sidecars in place: a read
+  # taken while data/ was still writable would leave usage.db-wal and
+  # usage.db-shm behind, and the service's read-only open would then succeed on
+  # a wal-index the ProtectHome=read-only home has no way to create.
+  if [ -e "$home/data/usage.db-wal" ] || [ -e "$home/data/usage.db-shm" ]; then
+    fail "the read-only usage case started from a WAL store the service could not open"
+  fi
+  chmod -R a-w "$home/data"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.collection == "ready"' "$case_root/history.json" >/dev/null \
+    || fail "a read-only store did not classify usage as ready"
+  chmod -R u+w "$home/data" 2>/dev/null || true
+  stop_server
+  pass "the dashboard reads token usage through node against a read-only data directory"
 }
 
 test_history_streams_and_isolates_bad_records() {
@@ -1205,6 +1367,9 @@ test_history_survives_teardown_and_backlog_pruning
 test_report_reads_cannot_select_a_path
 test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
+test_usage_without_store_file_is_absent_not_operational
+test_a_failed_usage_read_keeps_the_last_good_one
+test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"

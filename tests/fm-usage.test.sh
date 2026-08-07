@@ -777,6 +777,104 @@ test_store_carries_no_transcript_content() {
   pass "the store contains no prompt or response bodies and no credentials"
 }
 
+# The dashboard service reads this store under ProtectHome=read-only, so the
+# shape that matters is the one a home is in when nothing has read it yet: the
+# db file alone, no -wal and no -shm. A read that runs while the directory is
+# still writable would CREATE those sidecars and leave them behind, and a
+# read-only open then succeeds for a reason production does not have - so the
+# hardening happens first, and their absence is asserted rather than assumed.
+test_report_reads_a_read_only_data_directory() {
+  local case_root
+  case_root=$(mktemp -d "$TMP_ROOT/ro-report.XXXXXX")
+  mkdir -p "$case_root/home/data" "$case_root/claude/-slot"
+  claude_line "$case_root/claude/-slot/session.jsonl" session-ro "$case_root/home/wt" \
+    2026-08-01T10:00:00Z msg_ro 3 3 0 0
+  FM_USAGE_CLAUDE_ROOT="$case_root/claude" FM_USAGE_CODEX_ROOT="$case_root/codex" \
+    usage_run "$case_root" ingest >/dev/null || fail "read-only report setup ingest failed"
+  if [ -e "$case_root/home/data/usage.db-wal" ] || [ -e "$case_root/home/data/usage.db-shm" ]; then
+    fail "ingest left the store in WAL, which a reader without write access cannot open"
+  fi
+  chmod -R a-w "$case_root/home/data"
+  usage_run "$case_root" report --by harness >/dev/null || fail "report must read a read-only usage store"
+  if [ -e "$case_root/home/data/usage.db-wal" ] || [ -e "$case_root/home/data/usage.db-shm" ]; then
+    chmod -R u+w "$case_root/home/data" 2>/dev/null || true
+    fail "a read-only report wrote a journal sidecar into the data directory"
+  fi
+  chmod -R u+w "$case_root/home/data" 2>/dev/null || true
+  pass "report reads the usage store without write access to the data directory"
+}
+
+# Both callers that refresh this store - session-start bootstrap and task
+# teardown - bound the collector and end one that outran its budget with
+# SIGTERM. Node's default disposition terminates without running a single
+# finally block, so the close that leaves usage.db self-contained has to hold on
+# the signal path too: a refresh killed at its bound would otherwise leave the
+# store in WAL at rest, and the dashboard's read-only open cannot create the
+# wal-index a WAL store needs when data/ is not writable. That is issue 65
+# restored by the very bound meant to keep the store fresh, so it is observed
+# here rather than reasoned about.
+test_an_interrupted_ingest_leaves_a_self_contained_store() {
+  local case_root pid status waited
+  case_root=$(mktemp -d "$TMP_ROOT/interrupted.XXXXXX")
+  mkdir -p "$case_root/home/data" "$case_root/claude/-slot" "$case_root/codex"
+  # Large enough that the collector is certainly still reading when the signal
+  # lands. If it is not, the assertions below fail loudly rather than passing
+  # quietly: a completed ingest prints its summary and exits 0.
+  node -e '
+    const fs = require("node:fs");
+    const lines = [];
+    for (let i = 0; i < 40000; i += 1) {
+      lines.push(JSON.stringify({
+        type: "assistant", uuid: "u" + i, sessionId: "session-interrupted",
+        cwd: process.argv[1], timestamp: "2026-08-01T10:00:00Z", requestId: "req_" + i,
+        message: { id: "msg_" + i, model: "claude-opus-5", role: "assistant",
+          content: [{ type: "text", text: "x".repeat(120) }],
+          usage: { input_tokens: 3, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+      }));
+    }
+    fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
+  ' "$case_root/home/wt" "$case_root/claude/-slot/session.jsonl"
+
+  # The store is created first so the interrupted run has nothing to migrate.
+  # The wal-index below is what says the run is inside the writer path, and on a
+  # FIRST open the whole migration list commits between that file appearing and
+  # the signal handler being installed - a window this case would otherwise have
+  # to out-wait rather than close.
+  usage_run "$case_root" migrate >/dev/null || fail "the interrupted case could not create its store"
+
+  # Started directly rather than through usage_run, because the signal has to
+  # reach the collector itself: backgrounding a shell function would put a
+  # subshell between this kill and the process under test.
+  node "$USAGE_BIN" ingest --home "$case_root/home" \
+    --claude-root "$case_root/claude" --codex-root "$case_root/codex" \
+    > "$case_root/out.json" 2>/dev/null &
+  pid=$!
+  # The wal-index appearing is the store being open in WAL, which is the state
+  # this case has to interrupt; waiting on it is what makes the kill land inside
+  # the writer path rather than before it.
+  waited=0
+  while [ ! -e "$case_root/home/data/usage.db-shm" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [ -e "$case_root/home/data/usage.db-shm" ] || fail "the collector never opened the store in WAL"
+  kill -TERM "$pid" 2>/dev/null || fail "the collector was gone before the bound could signal it"
+  status=0
+  wait "$pid" || status=$?
+
+  [ ! -s "$case_root/out.json" ] \
+    || fail "the ingest finished before the signal landed, so nothing about the signal path was observed"
+  [ "$status" -eq 143 ] || fail "an ingest ended by SIGTERM exited $status rather than 143"
+  if [ -e "$case_root/home/data/usage.db-wal" ] || [ -e "$case_root/home/data/usage.db-shm" ]; then
+    fail "a killed ingest left the store in WAL, which a reader without write access cannot open"
+  fi
+  chmod -R a-w "$case_root/home/data"
+  usage_run "$case_root" report --by harness >/dev/null \
+    || { chmod -R u+w "$case_root/home/data"; fail "the store a killed ingest left behind could not be read without write access"; }
+  chmod -R u+w "$case_root/home/data" 2>/dev/null || true
+  pass "an ingest killed at its bound still leaves a store a read-only consumer can open"
+}
+
 test_claude_adapter
 test_codex_adapter
 test_reprocessing_is_idempotent
@@ -792,3 +890,5 @@ test_ambiguous_attribution_is_refused
 test_rollups_reconcile
 test_cost_is_an_optional_versioned_estimate
 test_store_carries_no_transcript_content
+test_report_reads_a_read_only_data_directory
+test_an_interrupted_ingest_leaves_a_self_contained_store
