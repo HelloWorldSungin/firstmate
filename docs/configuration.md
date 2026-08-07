@@ -436,7 +436,7 @@ The timeout line carries the bound and the elapsed seconds, the failure line car
 `FM_BOOTSTRAP_USAGE_TIMEOUT` owns that bound (default 120 seconds) and [`usage-accounting.md`](usage-accounting.md) owns the cadence it shares with teardown.
 After that refresh, bootstrap runs the read-only `fm-vault-drift.sh` detector and emits `VAULT_DRIFT:` for stale vaults or external vault locations whose drift cannot be measured.
 The same detector runs in lock-refused detect-only sessions because it never writes project clones or vaults; the script header owns the vault-shape, threshold, and diagnostic contracts.
-If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
+If bootstrap kills a timed-out clone refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
