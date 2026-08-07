@@ -715,9 +715,17 @@ SH
 
 run_usage_refresh_case() {  # <home> <fakebin> <ran record> [name=value...]
   local home=$1 fakebin=$2 ran=$3
+  local -a outer=()
   shift 3
   rm -f "$ran"
-  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+  # An outer bound of its own, because a collector that ignores SIGTERM is
+  # exactly what the sweep's bound has to survive: if that bound ever stopped
+  # escalating to SIGKILL, bootstrap would wait forever and this suite would
+  # hang instead of reporting anything. The outer bound turns that into a failed
+  # assertion, and escalates the same way for the same reason.
+  command -v timeout >/dev/null 2>&1 && outer=(timeout -k 5 60)
+  "${outer[@]+"${outer[@]}"}" env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_USAGE_RAN="$ran" "$@" \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
 }
@@ -770,10 +778,15 @@ test_usage_store_refresh_skips_a_detect_only_session() {
   pass "bootstrap leaves the usage store alone in a lock-refused detect-only session"
 }
 
+# The fake collector ignores SIGTERM on purpose. SIGTERM alone is not a bound -
+# a collector that ignores it, or one stuck in uninterruptible IO, would park
+# session start past the deadline - so the sweep escalates to SIGKILL, and a
+# collector that dies to the polite signal would pin the line while leaving that
+# escalation free to be dropped. This one only dies to the kill.
 test_usage_store_refresh_reports_its_timeout() {
   local case_dir fixture home fakebin ran out timing timeout elapsed
   case_dir="$TMP_ROOT/usage-refresh-timeout"
-  fixture=$(make_usage_refresh_case "$case_dir" 'exec sleep 300')
+  fixture=$(make_usage_refresh_case "$case_dir" $'trap \'\' TERM\nsleep 300')
   home=${fixture%%|*}
   fixture=${fixture#*|}
   fakebin=${fixture%%|*}
@@ -789,7 +802,7 @@ test_usage_store_refresh_reports_its_timeout() {
   elapsed=${timing#* }
   [ "$timeout" -eq 1 ] || fail "expected timeout=1s, got timeout=${timeout}s"
   [ "$elapsed" -ge "$timeout" ] || fail "expected elapsed >= timeout, got elapsed=${elapsed}s timeout=${timeout}s"
-  pass "bootstrap kills a hung usage refresh and reports the bound it spent"
+  pass "bootstrap kills a usage refresh that ignores SIGTERM and reports the bound it spent"
 }
 
 test_usage_store_refresh_reports_a_collector_that_failed() {
