@@ -83,13 +83,14 @@
 #   against fixture data, so this same command is what you point at a live
 #   dashboard. Extending it for a new view means adding a row to VIEWS below.
 #
-# The three verdicts, and why there are three
+# The four verdicts, and why there are four
 #
 #   ok    the thing the observation names was seen to happen.
 #   FAIL  it was seen not to happen.
 #   ????  it could not be observed at all - the probe would not decode, a
-#         browser command failed, the scan cannot be shown to have run, or the
-#         mode this is running in cannot reach that evidence.
+#         browser command failed, or the scan cannot be shown to have run.
+#   n/a   it does not apply to the thing being checked in this mode, and no
+#         run against this target could ever observe it.
 #
 #   Two verdicts are not enough, because every "I could not read the evidence"
 #   path then has to be folded into one of them, and folding it into ok is
@@ -99,8 +100,22 @@
 #   status, an empty match on a scan that may never have run, and a discarded
 #   eval result all record ???? instead.
 #
-# Exit status: 0 only when every observation is ok, 1 when any failed OR any
-# could not be verified, 2 on a usage or setup problem. The full per-observation
+#   n/a is the fourth because "I could not verify this" and "this does not
+#   apply here" are different answers and collapsing them costs the run its
+#   signal. ???? means something that should have been observable was not, and
+#   it fails the run. n/a means the observation is out of this mode's reach by
+#   design - the live-stream pair under --url, which can only be proved by
+#   posting events into a dashboard this command does not own - so it is
+#   reported and counted but does not fail the run. Without the distinction
+#   --url could never exit 0 however healthy the page was, which would leave
+#   the only mode that can be pointed at the shipped dashboard impossible to
+#   automate against.
+#
+# Exit status: 0 when nothing failed and nothing was left unverified, 1 when
+# any observation is FAIL or ????, 2 on a usage or setup problem. An n/a
+# observation never fails the run, so a healthy dashboard checked with --url
+# exits 0 with its two live-stream observations recorded as n/a; every other
+# observation is made identically in both modes. The full per-observation
 # result is printed and written to <out>/result.txt either way.
 set -u
 
@@ -124,6 +139,12 @@ DEFAULT_WIDTHS='390x844 1440x900'
 # separately from a pass and from a failure, and it fails the run: a check that
 # could not look is not a check that saw nothing wrong.
 UNVERIFIED='????'
+
+# The verdict for an observation this mode cannot reach by design. Counted and
+# reported separately from all three of the others, and it does NOT fail the
+# run - it is not a thing that went unobserved through some fault, it is a
+# thing there was never anything here to observe.
+INAPPLICABLE='n/a'
 
 # styles.css asks for scroll-margin-top: var(--sticky-top) + 12px on every
 # scroll target, so a section that was really navigated to lands its heading a
@@ -150,12 +171,15 @@ OK_LOG=
 PASSES=0
 FAILURES=0
 UNVERIFIED_COUNT=0
+INAPPLICABLE_COUNT=0
 RESULT_FILE=
 
 CONSOLE_BASELINE_MSGID=
 CONSOLE_READS=0
-CONSOLE_LISTED=0
+CONSOLE_TOTAL=0
+CONSOLE_UNNAMED=0
 CONSOLE_UNREAD=
+CONSOLE_PAGE_OPENED=no
 
 # Leak matches seen across the views at the width being checked, reset per
 # width by the caller.
@@ -183,10 +207,15 @@ Drives the real dashboard page in a real browser and records what it renders.
   --negative              prove the check can fail, by running the same
                           assertions against a page that renders nothing
 
-Each observation is recorded as ok, FAIL, or ???? - the last meaning it could
-not be observed at all, which is not a pass. Exit status: 0 when every
-observation is ok, 1 when any failed or could not be verified, 2 on a usage or
-setup problem. The per-observation result is written to <out>/result.txt.
+Each observation is recorded as ok, FAIL, ???? or n/a. ???? means it could not
+be observed at all, which is not a pass and fails the run. n/a means it does
+not apply to the target being checked in this mode, which does not fail the
+run; the two live-stream observations are n/a under --url, because proving them
+means posting events into a dashboard this command does not own.
+
+Exit status: 0 when nothing failed and nothing was left unverified, 1 when any
+observation is FAIL or ????, 2 on a usage or setup problem. The per-observation
+result is written to <out>/result.txt.
 TEXT
 }
 
@@ -282,7 +311,7 @@ mkdir -p "$OUT_DIR" || die "could not create the evidence directory $OUT_DIR"
 RESULT_FILE="$OUT_DIR/result.txt"
 : > "$RESULT_FILE"
 
-record() {  # <ok|FAIL|????> <observation> [detail]
+record() {  # <ok|FAIL|????|n/a> <observation> [detail]
   local verdict=$1 observation=$2 detail=${3:-}
   case "$verdict" in
     ok)
@@ -290,6 +319,7 @@ record() {  # <ok|FAIL|????> <observation> [detail]
       printf '%s\n' "$observation" >> "$OK_LOG"
       ;;
     FAIL) FAILURES=$((FAILURES + 1)) ;;
+    "$INAPPLICABLE") INAPPLICABLE_COUNT=$((INAPPLICABLE_COUNT + 1)) ;;
     *) UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1)) ;;
   esac
   printf '%-4s %s%s\n' "$verdict" "$observation" "${detail:+ - $detail}" | tee -a "$RESULT_FILE"
@@ -300,8 +330,10 @@ note() {  # <line>
 }
 
 summarize() {
-  printf '\n%s passed, %s failed, %s could not be verified\n' \
-    "$PASSES" "$FAILURES" "$UNVERIFIED_COUNT" | tee -a "$RESULT_FILE"
+  local inapplicable=
+  [ "$INAPPLICABLE_COUNT" -gt 0 ] && inapplicable=", $INAPPLICABLE_COUNT not applicable to this target"
+  printf '\n%s passed, %s failed, %s could not be verified%s\n' \
+    "$PASSES" "$FAILURES" "$UNVERIFIED_COUNT" "$inapplicable" | tee -a "$RESULT_FILE"
 }
 
 free_port() {
@@ -703,15 +735,26 @@ check_width() {  # <width> <height>
 
   browser resize "$width" "$height" > "$OUT_DIR/resize-$label.txt" \
     || { record FAIL "$label: the viewport could not be set"; return; }
+  # Opening is a navigation too, so the bucket standing before it is read
+  # first - but only once this run has opened a page of its own. Before that
+  # the bucket belongs to whatever the shared browser was showing beforehand,
+  # which the baseline read has already accounted for.
+  [ "$CONSOLE_PAGE_OPENED" = yes ] && console_collect "$label-before-open"
   # The browser tool answers 0 and renders Chrome's own error document when the
   # server is not there, so this guard catches the tool failing and nothing
   # else. What actually catches an unreachable page is the error-page marker
   # read out of the probe below, and after that the title and the measurements.
   browser open "$PAGE_URL" > "$OUT_DIR/open-$label.txt" \
     || { record FAIL "$label: the browser refused to open the page"; return; }
+  CONSOLE_PAGE_OPENED=yes
   # The page fills itself from its first snapshot poll and its history poll, so
   # give both a chance to land before reading it.
   sleep 4
+
+  # Read the load and render window here rather than only in check_navigation,
+  # because every path out of this function below can return early and the
+  # first nav click would then be the thing that discards it unread.
+  console_collect "$label-load"
 
   if ! browser_eval_json "$(build_probe_js)" "$probe"; then
     record FAIL "$label: the page could be read" \
@@ -981,6 +1024,11 @@ check_navigation() {  # <label>
   local probe="$WORK_DIR/nav-landing.json"
   while IFS='|' read -r id name _landmarks; do
     [ -n "$id" ] || continue
+    # Last thing before the click, because the click is a fragment navigation
+    # and the browser tool discards the console bucket this reads. On the first
+    # pass that bucket is everything the page printed while loading and first
+    # rendering, which is the output most worth having.
+    console_collect "$label-before-$id"
     if ! browser_eval_json "$(nav_js "$id")" "$probe"; then
       record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
         "the page returned nothing readable about where following the link landed"
@@ -1064,6 +1112,9 @@ INNER
   done <<EOF
 $VIEWS
 EOF
+  # The bucket the last click opened. Without this, whatever the page printed
+  # while landing on the final section would be in no window anyone read.
+  console_collect "$label-after-nav"
 }
 
 # Scroll away from the target, follow the link, wait for the scroll to stop
@@ -1155,6 +1206,9 @@ wait_for_page_text() {  # <needle> <seconds>; 0 present, 1 confirmed absent, 2 n
 
 check_live_stream() {
   browser resize 1440 900 > /dev/null || true
+  # Before the open, because the open is a navigation and discards the bucket
+  # the last width left behind.
+  [ "$CONSOLE_PAGE_OPENED" = yes ] && console_collect "live-before-open"
   if ! browser open "$PAGE_URL#activity" > /dev/null; then
     record FAIL "a live event appears without a reload" "the browser refused to open the page"
     record "$UNVERIFIED" "backfilled history survives a subsequent event" \
@@ -1274,18 +1328,29 @@ check_live_stream() {
 # --- console -----------------------------------------------------------------
 #
 # The browser tool truncates a console listing at 2000 characters, head only,
-# with no flag that lifts it, and the listing it returns covers the currently
-# selected page since its last navigation. So a single read at the end of the
-# run would see one navigation's worth of a head-truncated list and call the
-# rest clean.
+# with no flag that lifts it, and the listing it returns covers ONLY the
+# currently selected page since its last navigation. Worse than it sounds: the
+# collector behind it splits its storage on Puppeteer's framenavigated, which
+# fires for same-document navigations too, and it keeps three buckets. Each of
+# the five nav-link clicks this check makes is a fragment navigation, so five
+# clicks after the page loaded, the bucket holding everything the page printed
+# while loading and first rendering has been discarded outright. Measured, not
+# inferred: a message logged at load is gone from the listing after five
+# fragment navigations.
 #
-# Two things follow. The console is read once after EVERY navigation this run
-# makes, so no navigation's output falls outside what was looked at. And the
-# read is paged one message at a time, which puts the listing's own
+# So a read taken once per width, at the end, sees the moment after the last
+# nav click and nothing else, and would report a console it never looked at as
+# clean. What follows from that is placement. Each bucket is read while it is
+# still the current one - a read immediately before every navigation this check
+# performs, which captures that bucket entire, plus one read after the last
+# navigation of each window. Every bucket this run creates is therefore read
+# once, and the reads are summed rather than replacing one another.
+#
+# The read itself is paged one message at a time, which puts the listing's own
 # "Showing 1-1 of N" line - the count of everything there is, not of what fitted
 # - in front of the verdict. A read that does not produce that line, or a
-# browser command that exits non-zero, is a console this run could not read, and
-# that is reported as such rather than as a clean one.
+# browser command that exits non-zero, is a console window this run could not
+# read, and it reports ???? rather than a clean console.
 
 # Prints "<total> <highest msgid>" for one page of the listing. Returns non-zero
 # when the browser command failed or the listing was not in a form this can read.
@@ -1343,24 +1408,54 @@ console_snapshot() {  # <transcript> <names>
   printf '%s %s' "$total" "$highest"
 }
 
-console_collect() {  # <label>
-  local label=$1 snapshot total
+# Reads the console bucket that is current right now, and folds what it holds
+# into this run's tally. The caller places these so that every bucket is read
+# while it is still the current one; a bucket that was never read is a window
+# this run cannot speak for, and CONSOLE_UNREAD names it.
+#
+# Message ids are accumulated rather than counted, so a bucket that two
+# adjacent reads both happen to see is counted once. That matters because the
+# reads are placed for coverage, not for tidiness: it is better to read the
+# same bucket twice than to leave one unread, and the tally has to survive
+# that.
+console_collect() {  # <window label>
+  local label=$1 snapshot total named
   if ! snapshot=$(console_snapshot "$OUT_DIR/console-$label.txt" "$WORK_DIR/console-names-$label.txt"); then
     CONSOLE_UNREAD="${CONSOLE_UNREAD}${CONSOLE_UNREAD:+, }$label"
     return
   fi
-  total=${snapshot%% *}
   CONSOLE_READS=$((CONSOLE_READS + 1))
-  CONSOLE_LISTED=$((CONSOLE_LISTED + total))
-  [ "$total" -gt 0 ] && cat "$WORK_DIR/console-names-$label.txt" >> "$OUT_DIR/console-new.txt"
+  total=${snapshot%% *}
+  is_number "$total" || total=0
+  [ "$total" -gt 0 ] || return 0
+  CONSOLE_TOTAL=$((CONSOLE_TOTAL + total))
+  cat "$WORK_DIR/console-names-$label.txt" >> "$WORK_DIR/console-ids.txt"
+  named=$(grep -c '^msgid=' "$WORK_DIR/console-names-$label.txt" 2>/dev/null || true)
+  is_number "$named" || named=0
+  # A listing whose messages the paging could not all name still happened, and
+  # it is counted so the verdict cannot rest on the part that was readable.
+  [ "$total" -gt "$named" ] && CONSOLE_UNNAMED=$((CONSOLE_UNNAMED + total - named))
   return 0
 }
 
+# The message ids this run is answerable for: unique, and newer than the id the
+# console already stood at before the run began. A baseline that could not be
+# read leaves every id in scope, which is the conservative direction.
+console_fresh_ids() {
+  [ -s "$WORK_DIR/console-ids.txt" ] || return 0
+  awk -v since="${CONSOLE_BASELINE_MSGID:--1}" '
+    match($0, /^msgid=[0-9]+/) {
+      id = substr($0, 7, RLENGTH - 6) + 0
+      if (id > since && !(id in seen)) { seen[id]; print }
+    }
+  ' "$WORK_DIR/console-ids.txt"
+}
+
 check_console() {
-  local line
+  local line fresh count
   if [ -n "$CONSOLE_UNREAD" ]; then
     record "$UNVERIFIED" "the browser console is clean" \
-      "the console could not be read after: $CONSOLE_UNREAD - so nothing is known about what the page printed there"
+      "these console windows could not be read: $CONSOLE_UNREAD - so nothing is known about what the page printed in them"
     return
   fi
   if [ "$CONSOLE_READS" -eq 0 ]; then
@@ -1368,16 +1463,32 @@ check_console() {
       "the console was never read, so this was never observed"
     return
   fi
-  if [ "$CONSOLE_LISTED" -gt 0 ]; then
+  fresh=$(console_fresh_ids)
+  count=0
+  [ -n "$fresh" ] && count=$(printf '%s\n' "$fresh" | grep -c .)
+  if [ "$count" -gt 0 ] || [ "$CONSOLE_UNNAMED" -gt 0 ]; then
+    printf '%s\n' "$fresh" > "$OUT_DIR/console-new.txt"
     record FAIL "the browser console is clean" \
-      "$CONSOLE_LISTED message(s) listed after this run's own navigations, see $OUT_DIR/console-new.txt"
-    if [ -f "$OUT_DIR/console-new.txt" ]; then
-      while IFS= read -r line; do note "console: $line"; done < "$OUT_DIR/console-new.txt"
-    fi
+      "$count message(s) named and $CONSOLE_UNNAMED more listed but not named, across $CONSOLE_READS console window(s), see $OUT_DIR/console-new.txt"
+    while IFS= read -r line; do
+      [ -n "$line" ] && note "console: $line"
+    done <<FRESH
+$fresh
+FRESH
+    return
+  fi
+  # Every window read here is a bucket one of this run's own navigations
+  # created, so a listed message older than the baseline should be impossible -
+  # message ids only rise. Reaching this means the ids and the reads did not
+  # line up the way this check assumes, and that is a thing it did not verify
+  # rather than a clean console.
+  if [ "$CONSOLE_TOTAL" -gt 0 ]; then
+    record "$UNVERIFIED" "the browser console is clean" \
+      "messages were listed but none could be shown to be newer than this run's baseline, so what the page printed is unclear"
     return
   fi
   record ok "the browser console is clean" \
-    "$CONSOLE_READS complete console read(s), one after every navigation this run made, all empty"
+    "$CONSOLE_READS console window(s) read, one immediately before every navigation this run made and one after the last of each, all empty"
 }
 
 # --- negative proof ----------------------------------------------------------
@@ -1492,7 +1603,7 @@ fi
 
 if [ -z "$CONSOLE_BASELINE_MSGID" ]; then
   note "the browser console could not be read before this run started, so there is no baseline to compare against;"
-  note "every console read below is taken after one of this run's own navigations, which is what the verdict rests on."
+  note "every message any console window below lists is therefore counted against this run, which is the safe direction."
 else
   note "browser console baseline before this run: highest message id $CONSOLE_BASELINE_MSGID"
 fi
@@ -1501,7 +1612,6 @@ for spec in $WIDTHS; do
   printf '\n-- %s --\n' "$spec" | tee -a "$RESULT_FILE"
   ALL_LEAKS=
   check_width "${spec%%x*}" "${spec#*x}"
-  console_collect "$spec"
 done
 
 printf '\n-- live stream --\n' | tee -a "$RESULT_FILE"
@@ -1509,11 +1619,14 @@ if [ "$MODE" = fixture ]; then
   check_live_stream
   console_collect live
 else
-  # Recorded as observations this mode could not make, rather than as prose
-  # beside a count that would otherwise imply they were covered.
-  record "$UNVERIFIED" "a live event appears without a reload" \
-    "not checked against a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url."
-  record "$UNVERIFIED" "backfilled history survives a subsequent event" \
+  # Not "could not verify": there is nothing here to verify. Proving either of
+  # these means posting events into a dashboard this command does not own, so
+  # no run against this target could ever observe them, and treating that as an
+  # unverified observation would mean --url could never exit 0 however healthy
+  # the page was.
+  record "$INAPPLICABLE" "a live event appears without a reload" \
+    "not applicable to a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url."
+  record "$INAPPLICABLE" "backfilled history survives a subsequent event" \
     "same reason: it needs events written into that dashboard's own store. Run without --url."
 fi
 

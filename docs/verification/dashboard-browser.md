@@ -8,9 +8,10 @@ Refresh with `FM_DASHBOARD_BROWSER_E2E=1 bin/fm-test-run.sh tests/fm-dashboard-b
 Point it at a running dashboard with `bin/fm-dashboard-browser-check.sh --url <url> --user <name> --password-file <path>`.
 [`bin/fm-dashboard-browser-check.sh`](../../bin/fm-dashboard-browser-check.sh)'s header owns why this is an operator command rather than an unconditional CI test.
 
-Every observation below is one of three verdicts, not two.
-`ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, and `????` means it could not be observed at all.
-The third exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
+Every observation below is one of four verdicts, not two.
+`ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, `????` means it could not be observed at all, and `n/a` means it does not apply to the target being checked in this mode.
+`????` exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
+`n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the two live-stream observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
 
 ## The first run against a live fleet
 
@@ -106,10 +107,14 @@ Four record `????`, which is the third verdict earning its place: the leak scan 
 `chrome-devtools-axi eval` truncates its result at about 8,060 characters with no error of its own, and a live fleet's page carries roughly 30,000.
 Every text judgment is therefore made inside the page and returned as a short verdict; a probe that returned the rendered text would come back as invalid JSON on exactly the pages worth checking.
 
-`chrome-devtools-axi console` has the same shape of limit and one more besides: it truncates its listing at 2,000 characters, head only, with no flag that lifts it, and the listing covers the currently selected page since its last navigation.
-A single read at the end of a run would therefore see one navigation's worth of a head-truncated list and call the rest clean.
-So the console is read once after every navigation the check makes, and each read is paged one message at a time, which puts the listing's own `Showing 1-1 of N` line - the count of everything there is, not of what fitted - in front of the verdict.
-A read that does not produce that line, or a browser command that exits non-zero, is a console this run could not read, and it records `????` instead of a clean console.
+`chrome-devtools-axi console` has the same shape of limit and two more besides: it truncates its listing at 2,000 characters, head only, with no flag that lifts it; the listing covers only the currently selected page since its last navigation; and the collector behind it splits its storage on Puppeteer's `framenavigated`, which fires for same-document navigations too, keeping just three buckets.
+Each of the five nav-link clicks the check makes is a fragment navigation, so the bucket holding everything the page printed while loading and first rendering is discarded outright five clicks later.
+Measured on this host, not inferred: a message logged at load was gone from the listing after five fragment navigations.
+
+So a read taken once per width at the end would see the moment after the last nav click and nothing else.
+The console is instead read while each bucket is still the current one - immediately before every navigation the check performs, which captures that bucket entire, and once after the last navigation of each window - and the message ids are accumulated across those reads so a bucket two adjacent reads both see is counted once.
+Each read is paged one message at a time, which puts the listing's own `Showing 1-1 of N` line - the count of everything there is, not of what fitted - in front of the verdict.
+A read that does not produce that line, or a browser command that exits non-zero, is a console window this run could not read, and it records `????` instead of a clean console.
 
 The nav landing is measured rather than inferred: the check scrolls away from the target, follows the link, waits inside the page for the scroll to stop moving, and then requires the address bar to name the section and its heading to come to rest clear of the sticky bar and within 48px of it.
 On the fixture that lands at 12px for a section with no top rule and 23px for one with, and where a section is too near the end of the document to be scrolled that far, the check requires the page to have reached its scroll limit with the heading on screen rather than accepting any offset.

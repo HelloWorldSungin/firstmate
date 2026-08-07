@@ -151,8 +151,10 @@ Run it with no arguments and it starts its own dashboard from this checkout on a
 Pass `--url` with `--user` and `--password-file` to point it at a running dashboard; the password is held by a loopback-only front and never enters the URL the browser opens, so checking an authenticated dashboard needs no change to its exposure or its credentials.
 `--negative` proves the check can still fail, by running the same assertions against a page that renders nothing.
 
-Each observation is recorded as `ok`, `FAIL`, or `????`, and the last of those is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, a scan cannot be shown to have run, or the mode being used cannot reach that evidence.
-A run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.
+Each observation is recorded as `ok`, `FAIL`, `????`, or `n/a`.
+`????` is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, or a scan cannot be shown to have run, and a run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.
+`n/a` is the separate case of an observation this mode was never able to make: the two live-stream observations under `--url`, which can only be proved by posting events into a dashboard this command does not own.
+It is reported and counted but does not fail the run, so a healthy dashboard checked with `--url` exits 0; every other observation is made identically in both modes.
 
 It is a command rather than a test CI runs, because one Chrome session per host is shared state that parallel test shards would fight over and CI has no browser at all; `tests/fm-dashboard-browser.test.sh` is the opt-in wrapper, and the script's header owns that tradeoff in full.
 Run it after changing anything the page renders, and before believing any claim about what the dashboard shows.
