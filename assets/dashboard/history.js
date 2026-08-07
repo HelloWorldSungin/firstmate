@@ -115,24 +115,41 @@ function prSummary(record) {
 // this home at all, and a task the collector never attributed has no row. Both
 // render as `unavailable` with the reason, never as zero.
 function usageFor(id, usage) {
+  const collection = text(usage?.collection) || "absent";
   if (!usage || usage.available !== true) {
-    return { available: false, reason: text(usage?.reason) || "token usage is not collected in this home", totals: null };
+    return {
+      available: false,
+      reason: text(usage?.reason) || "token usage is not collected in this home",
+      collection,
+      totals: null,
+    };
   }
   const row = usage.tasks && typeof usage.tasks === "object" ? usage.tasks[id] : null;
   if (!row || typeof row !== "object") {
-    return { available: false, reason: "no token usage was attributed to this task", totals: null };
+    return {
+      available: false,
+      reason: "no token usage was attributed to this task",
+      collection: "ready",
+      totals: null,
+    };
   }
   const totals = {};
   for (const field of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "events", "sessions"]) {
     totals[field] = positiveInteger(row[field]);
   }
   if (totals.total_tokens === null) {
-    return { available: false, reason: "the collected usage record has no readable total", totals: null };
+    return {
+      available: false,
+      reason: "the collected usage record has no readable total",
+      collection: "ready",
+      totals: null,
+    };
   }
   const estimated = typeof row?.cost?.estimated === "number" && Number.isFinite(row.cost.estimated) ? row.cost.estimated : null;
   return {
     available: true,
     reason: null,
+    collection: "ready",
     totals,
     cost: estimated === null ? null : {
       estimated,
@@ -328,6 +345,7 @@ export function buildHistory(envelope, view = {}) {
     usage: {
       available: usage?.available === true,
       reason: text(usage?.reason) || null,
+      collection: text(usage?.collection) || null,
       source: text(usage?.source) || null,
     },
     // Semantic search over report content is a separate integration. Until it

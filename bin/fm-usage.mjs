@@ -1300,7 +1300,7 @@ async function main() {
 
   let db;
   try {
-    db = openStore(paths.db, { create: false });
+    db = openStore(paths.db, { create: false, readOnly: true });
   } catch (error) {
     die(`could not open the usage store: ${error.message}`);
   }

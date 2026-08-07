@@ -1092,11 +1092,13 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "absent" and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
     || fail "an absent usage collector did not render as an explained unavailable"
   stop_server
 
   # A collector that reports totals: the totals are carried through.
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the present usage case could not create a store"
   cat > "$runtime/bin/fm-usage.mjs" <<'SH'
 #!/usr/bin/env node
 process.stdout.write(JSON.stringify({
@@ -1115,7 +1117,7 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.usage.available == true'
-  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.collection == "ready" and .usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
     || fail "attributed usage totals were not carried into the history document"
   jq -e '.usage.tasks | has("../escape") | not' "$case_root/history.json" >/dev/null \
     || fail "a usage row with an unsafe task name was accepted"
@@ -1129,7 +1131,7 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
     || fail "an unrecognized usage report was not refused as unavailable"
 
   # And with usage explicitly switched off, history stays fully usable.
@@ -1137,6 +1139,81 @@ SH
     || fail "history stopped working when the usage read did"
   stop_server
   pass "token usage is presence-gated and renders as unavailable rather than zero"
+}
+
+test_usage_without_store_file_is_absent_not_operational() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-absent-store"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[]}\n'
+SH
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+process.stderr.write("should not run\n");
+process.exit(1);
+SH
+  chmod +x "$runtime/bin/"*.sh "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "absent"'
+  jq -e '.usage.available == false and (.usage.reason | test("not collected"))' "$case_root/history.json" >/dev/null \
+    || fail "a missing store did not classify usage as absent"
+  stop_server
+  pass "a home without a usage store is absent rather than operational"
+}
+
+test_usage_reads_a_read_only_store_through_node() {
+  local case_root runtime home claude_root
+  case_root="$TMP_ROOT/history-usage-ro"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  claude_root="$case_root/claude"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$claude_root/-slot" "$case_root/codex"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$ROOT/bin/fm-usage.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  printf '%s\n' '{"type":"assistant","sessionId":"session-ro","cwd":"'"$home"'/wt","timestamp":"2026-08-01T10:00:00Z","message":{"id":"msg_ro","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":6,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' \
+    > "$claude_root/-slot/session.jsonl"
+  FM_USAGE_CLAUDE_ROOT="$claude_root" FM_USAGE_CODEX_ROOT="$case_root/codex" \
+    node "$runtime/bin/fm-usage.mjs" ingest --home "$home" >/dev/null \
+    || fail "the read-only usage case could not build a store"
+  FM_HOME="$home" node "$runtime/bin/fm-usage.mjs" report --by harness >/dev/null \
+    || fail "the read-only usage case could not read the store before hardening"
+  chmod -R a-w "$home/data"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.collection == "ready"' "$case_root/history.json" >/dev/null \
+    || fail "a read-only store did not classify usage as ready"
+  chmod -R u+w "$home/data" 2>/dev/null || true
+  stop_server
+  pass "the dashboard reads token usage through node against a read-only data directory"
 }
 
 test_history_streams_and_isolates_bad_records() {
@@ -1205,6 +1282,8 @@ test_history_survives_teardown_and_backlog_pruning
 test_report_reads_cannot_select_a_path
 test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
+test_usage_without_store_file_is_absent_not_operational
+test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"

@@ -176,14 +176,30 @@ export function migrate(db, migrations) {
 // Open one telemetry store against its own migration list. With create false a
 // store that does not exist yet is reported as absent rather than conjured, so a
 // read-only consumer never creates the file it was only asking about.
-export function openStore(dbPath, migrations, { create = true } = {}) {
+//
+// readOnly opens for query-only consumers such as the dashboard service, which
+// runs under ProtectHome=read-only and must not attempt WAL setup or migration
+// writes against data/usage.db even though it never mutates fleet state itself.
+export function openStore(dbPath, migrations, { create = true, readOnly = false } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
   if (!create && !fs.existsSync(dbPath)) return null;
-  const db = new DatabaseSync(dbPath);
+  const db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
   // The busy timeout is installed FIRST, before anything that can contend, so
   // every later statement waits for a competing writer instead of failing.
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  if (readOnly) {
+    db.exec("PRAGMA foreign_keys = ON");
+    const target = migrations[migrations.length - 1].version;
+    const version = db.prepare("PRAGMA user_version").get().user_version ?? 0;
+    if (version > target) {
+      throw new Error(`store schema version ${version} is newer than this program understands (${target})`);
+    }
+    if (version < target) {
+      throw new Error(`store schema version ${version} is older than this program understands (${target}); run ingest or migrate`);
+    }
+    return db;
+  }
   enableWalMode(db);
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db, migrations);

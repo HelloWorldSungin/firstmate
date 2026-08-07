@@ -835,7 +835,12 @@ function renderHistoryWarnings(view, envelope) {
 }
 
 function usagePanel(row) {
-  const panel = element("div", `usage-panel ${row.usage.available ? "" : "unknown"}`.trim());
+  const tone = row.usage.available
+    ? ""
+    : row.usage.collection === "operational"
+      ? "operational"
+      : "unknown";
+  const panel = element("div", `usage-panel ${tone}`.trim());
   panel.append(element("span", "label", "USAGE"));
   if (!row.usage.available) {
     // Never a blank cell and never a zero: "unavailable" and "nothing happened"
@@ -1002,7 +1007,9 @@ function renderHistory() {
     summary.append(element("strong", "", "No matching completed records"));
   }
   if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
-  else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
+  else if (view.usage.collection === "operational") {
+    summary.append(element("span", "quiet", `token usage needs attention: ${view.usage.reason || "the collector failed"}`));
+  } else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
   if (view.semantic_search.captured_records) {
     summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
   }

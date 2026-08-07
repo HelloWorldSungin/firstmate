@@ -176,6 +176,24 @@ fleet_sync_relay_filtered_output() {
   done < "$tmp"
 }
 
+# Best-effort usage refresh at a locked session boundary. Ingestion is
+# idempotent and only runs once a home already has data/usage.db, matching
+# teardown's opt-in contract in docs/usage-accounting.md. A bounded timeout
+# keeps a large first scan from stalling session start.
+usage_store_refresh() {
+  [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && return 0
+  [ -f "$DATA/usage.db" ] || return 0
+  [ -x "$SCRIPT_DIR/fm-usage.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  local timeout=${FM_BOOTSTRAP_USAGE_TIMEOUT:-120}
+  case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+  else
+    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+  fi
+}
+
 fleet_sync_relay_all_output() {
   local tmp=$1 line
   while IFS= read -r line; do
@@ -1086,6 +1104,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   secondmate_handoff_resume
   x_mode_setup
   fleet_sync
+  usage_store_refresh
   vault_drift_check
 fi
 secondmate_handoff_detect

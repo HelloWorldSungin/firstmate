@@ -777,6 +777,22 @@ test_store_carries_no_transcript_content() {
   pass "the store contains no prompt or response bodies and no credentials"
 }
 
+test_report_reads_a_read_only_data_directory() {
+  local case_root
+  case_root=$(mktemp -d "$TMP_ROOT/ro-report.XXXXXX")
+  mkdir -p "$case_root/home/data" "$case_root/claude/-slot"
+  claude_line "$case_root/claude/-slot/session.jsonl" session-ro "$case_root/home/wt" \
+    2026-08-01T10:00:00Z msg_ro 3 3 0 0
+  FM_USAGE_CLAUDE_ROOT="$case_root/claude" FM_USAGE_CODEX_ROOT="$case_root/codex" \
+    usage_run "$case_root" ingest >/dev/null || fail "read-only report setup ingest failed"
+  FM_HOME="$case_root/home" node "$USAGE_BIN" report --by harness >/dev/null \
+    || fail "read-only report setup baseline read failed"
+  chmod -R a-w "$case_root/home/data"
+  usage_run "$case_root" report --by harness >/dev/null || fail "report must read a read-only usage store"
+  chmod -R u+w "$case_root/home/data" 2>/dev/null || true
+  pass "report reads the usage store without write access to the data directory"
+}
+
 test_claude_adapter
 test_codex_adapter
 test_reprocessing_is_idempotent
@@ -792,3 +808,4 @@ test_ambiguous_attribution_is_refused
 test_rollups_reconcile
 test_cost_is_an_optional_versioned_estimate
 test_store_carries_no_transcript_content
+test_report_reads_a_read_only_data_directory
