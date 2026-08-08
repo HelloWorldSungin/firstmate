@@ -176,8 +176,12 @@ It is a command rather than a test CI runs, because one Chrome session per host 
 Run it after changing anything the page renders, and before believing any claim about what the dashboard shows.
 [`docs/verification/dashboard-browser.md`](verification/dashboard-browser.md) records what the first run observed.
 
-## Updating configuration
+## Updating the installed service
 
 Re-run the installer with the desired values to replace the environment file and restart the enabled service.
 The environment file carries the service's value for every configuration name [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header documents.
 Use ordinary user-level systemd status and journal commands to inspect startup failures.
+
+Updating the code is the other case, and it does not go through the installer.
+The unit names the server by absolute path inside the checkout it was installed from and holds it open for the life of the process, so pulling that checkout and restarting the service is what loads new server or shared-store code; a running service keeps serving the code it started with until it is restarted.
+Re-run the installer only to change what the unit or the environment file says, not to pick up a change in the code they point at.
