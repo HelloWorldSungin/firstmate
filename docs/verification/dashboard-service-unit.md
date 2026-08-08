@@ -65,3 +65,24 @@ $ curl -s -u captain:… http://…:8787/api/snapshot | jq '{phase:.status.phase
 ```
 
 The PATH gap was independent of the quoting defect: the previous installer wrote no PATH anywhere, so fixing the environment file alone would have left the empty view in place.
+
+## That the sandbox gives SQLite a writable scratch path
+
+The hardened unit pairs `ProtectSystem=strict` with `ProtectHome=read-only`.
+Together they make the whole system hierarchy read-only (including `/tmp` and `/var/tmp`) and `$HOME` read-only, so SQLite has no writable path it can use for the temp file a read-only open needs.
+The token-usage collector against `data/usage.db` exits `disk I/O error` while the store itself is healthy and reads cleanly from an ordinary shell.
+Neither protection alone breaks it, which is why the defect survived earlier investigation.
+
+Host: `systemd 255` user manager, Node 22, `bin/fm-usage.mjs report --by task --limit 25` against a 37 MB `data/usage.db` in `delete` journal mode.
+Date: 2026-08-08.
+Refresh: rerun each row with `systemd-run --user --pipe --wait --collect --property=<row>`.
+
+| Sandbox                                                                 | Result   |
+| ---                                                                     | ---      |
+| `ProtectHome=read-only`                                                 | passes   |
+| `ProtectSystem=strict`                                                  | passes   |
+| `ProtectSystem=strict` + `ProtectHome=read-only` + `PrivateDevices=yes` | **fails** - `fm-usage: disk I/O error`, exit 1 |
+| the same, plus `PrivateTmp=yes`                                         | passes   |
+
+Adding `PrivateTmp=yes` gives the service a private writable `/tmp` without weakening either protection, and is the fix.
+`tests/fm-dashboard.test.sh`'s `test_installer_emits_private_tmp_for_sqlite_scratch` pins the directive in the generated unit text and the comment that names the failure it prevents, so a future hardening pass cannot silently remove it as redundant.

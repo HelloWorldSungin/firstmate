@@ -680,13 +680,31 @@ class HistoryState {
 
   // Token usage keeps its last good read the way history keeps its last good
   // document, and for the same reason: a read that MISSED is not the same fact
-  // as a read that came back empty. The store has writers - teardown refreshes
-  // it on every archive, bootstrap on every locked session start - and while one
-  // holds it in WAL the service's read-only connection cannot take a read lock
-  // without write access to data/ to update the wal-index, so the collector
-  // exits non-zero and the read comes back operational. Replacing the envelope
-  // there would drop every completed card's real totals for the length of that
-  // overlap and draw the whole panel as an operator action item, at the moment a
+  // as a read that came back empty. The collector can fail operationally for
+  // two genuinely different reasons:
+  //
+  //   1. The store has writers - teardown refreshes it on every archive,
+  //      bootstrap on every locked session start - and one of them holds the
+  //      database while the service's read-only connection tries to open it.
+  //      In WAL mode the read-only open would need write access to data/ to
+  //      update the wal-index, and exits non-zero. This store currently uses
+  //      journal_mode=delete with no -wal/-shm sidecars, so it is not the
+  //      active mechanism, but it is a real failure mode a future migration
+  //      back to WAL would re-introduce.
+  //
+  //   2. The collector's host sandbox leaves SQLite no writable scratch path
+  //      for the temp file a read-only open needs. The hardened dashboard
+  //      unit used to combine ProtectSystem=strict and ProtectHome=read-only
+  //      without PrivateTmp=yes; that combination refuses /tmp, $HOME, and
+  //      every other system path SQLite could use, and the collector exits
+  //      "disk I/O error". The unit now sets PrivateTmp=yes, but a dashboard
+  //      that loses the directive - or a stand-alone collector not running
+  //      under that unit - still hits the same exit_nonzero. The fix lives in
+  //      bin/fm-dashboard-install.sh, and docs/verification/dashboard-service-unit.md
+  //      pins the reproduced combination.
+  //
+  // Either way the panel must keep showing the last good read rather than
+  // drawing every completed card as an operator action item, at the moment a
   // captain is most likely to be looking: teardown refreshes the store
   // immediately before the record that triggered it appears in History.
   //

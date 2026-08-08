@@ -17,6 +17,13 @@
 # the operator's own bin directories; without a PATH every snapshot runs to its
 # deadline and the dashboard serves a permanently empty view.
 #
+# The unit sets PrivateTmp=yes. ProtectSystem=strict and ProtectHome=read-only
+# together leave SQLite no writable scratch path for the temp file a read-only
+# open needs, and the token-usage collector against data/usage.db exits
+# "disk I/O error" while the store itself is healthy. PrivateTmp=yes gives the
+# service a private writable /tmp without weakening either protection.
+# docs/verification/dashboard-service-unit.md pins the reproduced combination.
+#
 # Loopback is the default and remote exposure is opt-in: --address only accepts
 # a non-loopback bind once credentials exist, and the server independently
 # refuses to start beyond loopback without them.
@@ -439,6 +446,12 @@ RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
+# PrivateTmp=yes gives the service a writable /tmp without weakening either
+# protection: with ProtectSystem=strict the system hierarchy is read-only and
+# with ProtectHome=read-only $HOME is read-only, so SQLite has no scratch path
+# for the temp file the read-only open needs and exits "disk I/O error". The
+# captured combination is documented under docs/verification/dashboard-service-unit.md.
+PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

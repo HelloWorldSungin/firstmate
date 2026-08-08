@@ -882,6 +882,43 @@ test_installer_writes_hardened_user_service() {
   pass "installer configures a hardened boot-persistent user service without sudo"
 }
 
+# The hardened unit pairs ProtectSystem=strict with ProtectHome=read-only.
+# Together they leave SQLite no writable scratch path - /tmp, /var/tmp, and
+# $HOME are all read-only - and a token-usage read against data/usage.db exits
+# "disk I/O error" while the store itself is healthy. PrivateTmp=yes gives
+# the service a private /tmp without weakening either protection, and the
+# unit must keep the other two exactly as they are. The case pins the
+# directive in the generated unit text so a future "this looks redundant"
+# hardening pass cannot silently remove it. docs/verification/dashboard-service-unit.md
+# records the reproduced combination.
+test_installer_emits_private_tmp_for_sqlite_scratch() {
+  local case_root unit out
+  case_root="$TMP_ROOT/install-private-tmp"
+  mkdir -p "$case_root/config" "$case_root/home"
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
+    --allow-worktree \
+    --fm-home "$case_root/fleet" --port 18879 --poll 3 --timeout 4 --stale 9 --no-start)
+  unit="$case_root/config/systemd/user/firstmate-dashboard.service"
+  [ -f "$unit" ] || fail "installer did not create the user service: $out"
+  assert_contains "$(cat "$unit")" 'PrivateTmp=yes' "unit does not give the service a writable /tmp for SQLite scratch"
+  assert_contains "$(cat "$unit")" 'ProtectSystem=strict' "unit lost ProtectSystem=strict"
+  assert_contains "$(cat "$unit")" 'ProtectHome=read-only' "unit lost ProtectHome=read-only"
+  # The directive is the load-bearing one and must come with the comment that
+  # names the failure it exists to prevent, so a future pass that hardens the
+  # unit does not remove it as redundant. The comment lives immediately above
+  # the directive in the heredoc; check that the lines leading up to it name
+  # the failure mode that motivates the property.
+  awk '
+    BEGIN { found = 0; commented = 0 }
+    /^PrivateTmp=yes/ { found = 1; exit }
+    /SQLite has no scratch path/ { commented = 1 }
+    END { exit (found && commented) ? 0 : 1 }
+  ' "$unit" || fail "PrivateTmp=yes must carry the comment naming the SQLite scratch failure"
+  pass "installer emits PrivateTmp=yes with the comment that names the failure it prevents"
+}
+
 wait_for_history() {  # <case-root> <jq-expression>
   local case_root=$1 expression=$2
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
@@ -1372,5 +1409,6 @@ test_a_failed_usage_read_keeps_the_last_good_one
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+test_installer_emits_private_tmp_for_sqlite_scratch
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
