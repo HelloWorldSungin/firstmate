@@ -684,22 +684,27 @@ class HistoryState {
   // two genuinely different reasons:
   //
   //   1. The store has writers - teardown refreshes it on every archive,
-  //      bootstrap on every locked session start - and one of them holds the
-  //      database while the service's read-only connection tries to open it.
-  //      In WAL mode the read-only open would need write access to data/ to
-  //      update the wal-index, and exits non-zero. This store currently uses
-  //      journal_mode=delete with no -wal/-shm sidecars, so it is not the
-  //      active mechanism, but it is a real failure mode a future migration
-  //      back to WAL would re-introduce.
+  //      bootstrap on every locked session start - and every one of them holds
+  //      it in WAL for the length of its window: fm-telemetry-store.mjs
+  //      openStore enables WAL on a writable open and closeStore checkpoints
+  //      and switches back to DELETE. The at-rest DELETE shape is what makes
+  //      this service's read-only open possible at all, so a writer that exits
+  //      without closing leaves the store in WAL with no wal-index a reader
+  //      can build without write access to data/, and every read exits
+  //      non-zero until a writer closes cleanly again. This is live, not
+  //      hypothetical - the DELETE journal mode the store is normally found in
+  //      is the outcome that mechanism is guarded against, not evidence it
+  //      cannot happen.
   //
   //   2. The collector's host sandbox leaves SQLite no writable scratch path
   //      for the temp file a read-only open needs. The hardened dashboard
-  //      unit used to combine ProtectSystem=strict and ProtectHome=read-only
-  //      without PrivateTmp=yes; that combination refuses /tmp, $HOME, and
-  //      every other system path SQLite could use, and the collector exits
-  //      "disk I/O error". The unit now sets PrivateTmp=yes, but a dashboard
-  //      that loses the directive - or a stand-alone collector not running
-  //      under that unit - still hits the same exit_nonzero. The fix lives in
+  //      unit combines ProtectSystem=strict with ProtectHome=read-only, which
+  //      between them refuse /tmp, /var/tmp, $HOME, and every other path
+  //      SQLite would fall back to, and the collector exits "disk I/O error"
+  //      against a perfectly healthy store. The unit answers that with a
+  //      RuntimeDirectory= scratch path, but a dashboard whose unit loses it -
+  //      or a stand-alone collector not running under that unit at all - still
+  //      hits the same exit_nonzero. The fix lives in
   //      bin/fm-dashboard-install.sh, and docs/verification/dashboard-service-unit.md
   //      pins the reproduced combination.
   //

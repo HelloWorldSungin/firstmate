@@ -73,16 +73,46 @@ Together they make the whole system hierarchy read-only (including `/tmp` and `/
 The token-usage collector against `data/usage.db` exits `disk I/O error` while the store itself is healthy and reads cleanly from an ordinary shell.
 Neither protection alone breaks it, which is why the defect survived earlier investigation.
 
-Host: `systemd 255` user manager, Node 22, `bin/fm-usage.mjs report --by task --limit 25` against a 37 MB `data/usage.db` in `delete` journal mode.
+Host: `systemd 255` user manager, Node v22.22.2, against a 37 MB `data/usage.db` in `delete` journal mode.
 Date: 2026-08-08.
+Probe: a read-only `node:sqlite` open of the store under `PRAGMA temp_store = FILE` and `PRAGMA cache_size = 16`, spilling `usage_event` (64,151 rows) through a temp table.
+That is the temp-file path a report query takes once the store is large enough to spill; a report small enough to sort in the page cache never asks for the file and passes in every row below, which is the other half of why the defect survived earlier investigation.
 Refresh: rerun each row with `systemd-run --user --pipe --wait --collect --property=<row>`.
 
 | Sandbox                                                                 | Result   |
 | ---                                                                     | ---      |
 | `ProtectHome=read-only`                                                 | passes   |
 | `ProtectSystem=strict`                                                  | passes   |
-| `ProtectSystem=strict` + `ProtectHome=read-only` + `PrivateDevices=yes` | **fails** - `fm-usage: disk I/O error`, exit 1 |
-| the same, plus `PrivateTmp=yes`                                         | passes   |
+| `ProtectSystem=strict` + `ProtectHome=read-only` + `PrivateDevices=yes` | **fails** - `disk I/O error` |
+| the same, plus `RuntimeDirectory=` and `TMPDIR`/`SQLITE_TMPDIR` pointed at it | passes |
+| the same, plus `PrivateTmp=yes`                                         | passes, and breaks the fleet view - see below |
 
-Adding `PrivateTmp=yes` gives the service a private writable `/tmp` without weakening either protection, and is the fix.
-`tests/fm-dashboard.test.sh`'s `test_installer_emits_private_tmp_for_sqlite_scratch` pins the directive in the generated unit text and the comment that names the failure it prevents, so a future hardening pass cannot silently remove it as redundant.
+Under the failing row `/tmp`, `/var/tmp`, `/usr/tmp`, and `$HOME` are all read-only and only `/dev/shm` is writable, so SQLite exhausts every directory its unix VFS falls back to.
+Granting `RuntimeDirectory=firstmate-dashboard` and pointing `TMPDIR` and `SQLITE_TMPDIR` at `%t/firstmate-dashboard` supplies that path without weakening either protection, and gives the snapshot's helpers a working `mktemp` at the same time.
+
+## That the scratch path is not bought with the fleet view
+
+`PrivateTmp=yes` clears the same failure and is the obvious reach, so the reason it is not used is recorded here rather than left to be rediscovered.
+
+It replaces the shared `/tmp` with a private tmpfs, and the fleet's tmux server socket lives at `/tmp/tmux-$UID`.
+`bin/fm-fleet-snapshot.sh` runs inside the service's namespace and probes endpoints through `fm_backend_target_exists` and `fm_backend_capture`, both of which shell out to `tmux`.
+With the socket directory gone every probe fails, `endpoint_exists` comes back false, and the dashboard's primary view draws `endpoint absent` on every live tmux task while terminal evidence degrades to `terminal capture unavailable`.
+
+```console
+$ systemd-run --user --pipe --wait --collect \
+    --property=ProtectSystem=strict --property=ProtectHome=read-only --property=PrivateDevices=yes \
+    /bin/sh -c 'ls -d /tmp/tmux-$(id -u)'
+/tmp/tmux-1004
+
+$ systemd-run --user --pipe --wait --collect \
+    --property=ProtectSystem=strict --property=ProtectHome=read-only --property=PrivateDevices=yes \
+    --property=PrivateTmp=yes \
+    /bin/sh -c 'ls -d /tmp/tmux-$(id -u)'
+ls: cannot access '/tmp/tmux-1004': No such file or directory
+```
+
+The read-only `/tmp` of the row above does not break the socket, because the kernel exempts an existing socket from the read-only mount check; only the private tmpfs, which removes the path entirely, does.
+The `RuntimeDirectory=` row keeps the socket reachable and the scratch directory writable in the same run.
+
+`tests/fm-dashboard.test.sh`'s `test_installer_gives_sqlite_scratch_without_hiding_tmp` pins the scratch directives in the generated unit text, refuses `PrivateTmp`, and requires the comment that names both failures, so a future hardening pass can neither drop the scratch path as redundant nor reach for the directive that costs the fleet view.
+The installer additionally reads `RuntimeDirectory` and `SQLITE_TMPDIR` back out of systemd after `daemon-reload`, because a scratch directive systemd parsed past would install green and leave the panel exactly as broken as before.
