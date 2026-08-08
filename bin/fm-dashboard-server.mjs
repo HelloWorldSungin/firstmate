@@ -697,15 +697,15 @@ class HistoryState {
   //      cannot happen.
   //
   //   2. The collector's host sandbox leaves SQLite no writable scratch path
-  //      for the temp file a read-only open needs. The hardened dashboard
-  //      unit combines ProtectSystem=strict with ProtectHome=read-only, which
-  //      between them refuse /tmp, /var/tmp, $HOME, and every other path
-  //      SQLite would fall back to, and the collector exits "disk I/O error"
-  //      against a perfectly healthy store. The unit answers that with a
-  //      RuntimeDirectory= scratch path, but a dashboard whose unit loses it -
-  //      or a stand-alone collector not running under that unit at all - still
-  //      hits the same exit_nonzero. The fix lives in
-  //      bin/fm-dashboard-install.sh, and docs/verification/dashboard-service-unit.md
+  //      for the temp file a read-only query needs. This unit combines
+  //      ProtectSystem=strict with ProtectHome=read-only, which between them
+  //      refuse /tmp, /var/tmp, $HOME, and every other path SQLite's unix VFS
+  //      falls back to, and the collector exits "disk I/O error" against a
+  //      perfectly healthy store. That one is answered in the reader rather
+  //      than in the sandbox: bin/fm-telemetry-store.mjs sets
+  //      PRAGMA temp_store = MEMORY on its readOnly open, so the collector
+  //      never asks the filesystem for scratch space and no unit, drop-in, or
+  //      stand-alone invocation can deny it. docs/verification/dashboard-service-unit.md
   //      pins the reproduced combination.
   //
   // Either way the panel must keep showing the last good read rather than

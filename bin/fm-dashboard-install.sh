@@ -17,15 +17,17 @@
 # the operator's own bin directories; without a PATH every snapshot runs to its
 # deadline and the dashboard serves a permanently empty view.
 #
-# The unit also carries a scratch directory. ProtectSystem=strict and
-# ProtectHome=read-only together leave SQLite no writable path for the temp file
-# a read-only open needs, and the token-usage collector against data/usage.db
-# exits "disk I/O error" while the store itself is healthy. RuntimeDirectory=
-# plus TMPDIR/SQLITE_TMPDIR pointed at it supplies that path without weakening
-# either protection. PrivateTmp=yes would also supply it, but it substitutes a
-# private tmpfs for the shared /tmp, which hides the fleet's tmux server socket
-# from the snapshot this service runs and reports every live task's endpoint as
-# absent. docs/verification/dashboard-service-unit.md pins both results.
+# The unit deliberately grants SQLite no scratch path, and must not grow one.
+# ProtectSystem=strict and ProtectHome=read-only leave every directory SQLite's
+# unix VFS falls back to read-only, so a read-only query that needs a temp file
+# fails with "disk I/O error" against a healthy store. That is fixed in the
+# reader instead: bin/fm-telemetry-store.mjs sets PRAGMA temp_store = MEMORY on
+# its readOnly open, so no consumer of these stores asks the filesystem for
+# scratch space at all. Do NOT add PrivateTmp=yes here to solve it a second
+# time - it substitutes a private tmpfs for the shared /tmp, which hides the
+# fleet's tmux server socket at /tmp/tmux-$UID from the snapshot this service
+# runs and reports every live task's endpoint as absent.
+# docs/verification/dashboard-service-unit.md pins both results.
 #
 # Loopback is the default and remote exposure is opt-in: --address only accepts
 # a non-loopback bind once credentials exist, and the server independently
@@ -449,22 +451,6 @@ RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# The scratch directory is load-bearing, not tidiness. With ProtectSystem=strict
-# the system hierarchy is read-only and with ProtectHome=read-only $HOME is
-# read-only, so SQLite has no scratch path for the temp file its read-only open
-# needs and the token-usage read exits "disk I/O error" against a healthy store.
-# RuntimeDirectory= supplies one writable directory and TMPDIR/SQLITE_TMPDIR
-# point every child at it, so mktemp in the snapshot's helpers lands there too.
-#
-# NOT PrivateTmp=yes: it supplies the same scratch path, but it replaces the
-# shared /tmp with a private tmpfs, and the fleet's tmux server socket lives at
-# /tmp/tmux-$UID. The snapshot this service runs probes endpoints through that
-# socket, so a private /tmp reports every live task as "endpoint absent" and
-# degrades terminal evidence to "terminal capture unavailable".
-# docs/verification/dashboard-service-unit.md pins both results.
-RuntimeDirectory=firstmate-dashboard
-RuntimeDirectoryMode=0700
-Environment=TMPDIR=%t/firstmate-dashboard SQLITE_TMPDIR=%t/firstmate-dashboard
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -516,26 +502,6 @@ if [ "$START_SERVICE" -eq 1 ]; then
     *)
       printf 'fm-dashboard-install: systemd did not accept the agent-event write grant for %s (read back: %s)\n' \
         "$EVENT_DIR" "${loaded_writable:-none}" >&2
-      exit 1
-      ;;
-  esac
-  # The scratch directory is read back for the same reason: a unit whose
-  # RuntimeDirectory= or TMPDIR/SQLITE_TMPDIR systemd parsed past installs green
-  # and leaves the usage panel exactly as broken as before, which is the
-  # silent-failure shape this defect already had once.
-  loaded_runtime_dir=$(systemctl --user show -p RuntimeDirectory --value firstmate-dashboard.service 2>/dev/null || true)
-  case "$loaded_runtime_dir" in
-    *firstmate-dashboard*) ;;
-    *)
-      printf 'fm-dashboard-install: systemd did not accept the SQLite scratch directory (read back: %s)\n' \
-        "${loaded_runtime_dir:-none}" >&2
-      exit 1
-      ;;
-  esac
-  case "$loaded_environment" in
-    *SQLITE_TMPDIR=*) ;;
-    *)
-      echo "fm-dashboard-install: systemd did not accept the SQLite scratch path for the service" >&2
       exit 1
       ;;
   esac

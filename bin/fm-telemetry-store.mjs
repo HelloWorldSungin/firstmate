@@ -193,6 +193,20 @@ export function migrate(db, migrations) {
 // below, which owns that half of the contract: both stores route their writer
 // exits through it, so neither is left in a shape a write-less reader cannot
 // open.
+//
+// A read-only connection still needs somewhere to put a sorter, an ephemeral
+// index, or a temp table, and SQLite is built here with SQLITE_TEMP_STORE=1, so
+// by default that somewhere is a FILE. Its unix VFS tries $SQLITE_TMPDIR,
+// $TMPDIR, /var/tmp, /usr/tmp and /tmp in turn, and the dashboard's own hardened
+// unit makes every one of them read-only: ProtectSystem=strict takes the system
+// hierarchy and ProtectHome=read-only takes $HOME. The query then fails with
+// "disk I/O error" against a perfectly healthy store, and the panel renders as
+// unavailable. Keeping temp storage in memory is what removes the dependence
+// rather than relocating it: a reader that never asks the filesystem for scratch
+// space cannot be denied it, under this unit or any other sandbox, and a
+// stand-alone collector run outside the unit gets the same guarantee. Only the
+// query-only path takes it - writers keep the default, because their temp
+// storage can be large and they always have a writable data/ to spend it in.
 export function openStore(dbPath, migrations, { create = true, readOnly = false } = {}) {
   const dir = path.dirname(dbPath);
   if (create) fs.mkdirSync(dir, { recursive: true });
@@ -202,6 +216,7 @@ export function openStore(dbPath, migrations, { create = true, readOnly = false 
   // every later statement waits for a competing writer instead of failing.
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
   if (readOnly) {
+    db.exec("PRAGMA temp_store = MEMORY");
     db.exec("PRAGMA foreign_keys = ON");
     const target = migrations[migrations.length - 1].version;
     const version = db.prepare("PRAGMA user_version").get().user_version ?? 0;

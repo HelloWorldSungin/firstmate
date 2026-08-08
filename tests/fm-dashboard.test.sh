@@ -883,20 +883,22 @@ test_installer_writes_hardened_user_service() {
 }
 
 # The hardened unit pairs ProtectSystem=strict with ProtectHome=read-only.
-# Together they leave SQLite no writable scratch path - /tmp, /var/tmp, and
-# $HOME are all read-only - and a token-usage read against data/usage.db exits
-# "disk I/O error" while the store itself is healthy. The unit answers that with
-# a RuntimeDirectory= scratch path that TMPDIR and SQLITE_TMPDIR point at, and
-# must keep the two protections exactly as they are.
+# Together they leave SQLite no writable scratch path - /tmp, /var/tmp,
+# /usr/tmp, and $HOME are all read-only - so a read-only query that needs a temp
+# file exits "disk I/O error" while the store itself is healthy.
 #
-# PrivateTmp=yes supplies the same scratch path and is the obvious reach, which
-# is why the case refuses it: it substitutes a private tmpfs for the shared
-# /tmp, and the fleet's tmux server socket lives at /tmp/tmux-$UID. The snapshot
-# this service runs probes endpoints through that socket, so a private /tmp
-# trades the usage panel for every live task reading as "endpoint absent".
+# The two halves of the answer are pinned together here because either one alone
+# invites the other to be undone. The reader keeps its temp storage in memory,
+# so nothing ever asks the filesystem for scratch space; and the unit therefore
+# needs no scratch directive at all, which is what keeps PrivateTmp=yes out. That
+# directive is the obvious reach and the case refuses it: it substitutes a
+# private tmpfs for the shared /tmp, and the fleet's tmux server socket lives at
+# /tmp/tmux-$UID. The snapshot this service runs probes endpoints through that
+# socket, so a private /tmp would trade the usage panel for every live task
+# reading as "endpoint absent".
 # docs/verification/dashboard-service-unit.md records both reproductions.
-test_installer_gives_sqlite_scratch_without_hiding_tmp() {
-  local case_root unit out scratch_dir directives
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
+  local case_root unit out directives probe
   case_root="$TMP_ROOT/install-sqlite-scratch"
   mkdir -p "$case_root/config" "$case_root/home"
   out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
@@ -906,42 +908,35 @@ test_installer_gives_sqlite_scratch_without_hiding_tmp() {
     --fm-home "$case_root/fleet" --port 18879 --poll 3 --timeout 4 --stale 9 --no-start)
   unit="$case_root/config/systemd/user/firstmate-dashboard.service"
   [ -f "$unit" ] || fail "installer did not create the user service: $out"
-  # Assertions run against the directives alone. The comment beside them names
-  # the properties it explains, so matching the whole file would let prose
-  # satisfy a check that only a directive can really answer.
+  # Assertions run against the directives alone, so a comment that merely names
+  # a property cannot answer for the property itself.
   directives=$(grep -v '^[[:space:]]*#' "$unit")
   assert_contains "$directives" 'ProtectSystem=strict' "unit lost ProtectSystem=strict"
   assert_contains "$directives" 'ProtectHome=read-only' "unit lost ProtectHome=read-only"
-  assert_not_contains "$directives" 'PrivateTmp' \
+  assert_not_contains "$directives" 'PrivateTmp=yes' \
     "unit hides the shared /tmp, which is where the fleet's tmux server socket lives"
 
-  # The scratch directory and the paths handed to SQLite must be the same
-  # place. A TMPDIR pointed anywhere else is read-only under this sandbox, so a
-  # drifted pair reads as installed and fails exactly the way no scratch path
-  # at all does. Each name is matched whole, so SQLITE_TMPDIR alone cannot
-  # answer for TMPDIR.
-  scratch_dir=$(sed -n 's/^RuntimeDirectory=//p' "$unit")
-  [ -n "$scratch_dir" ] || fail "unit grants the service no writable scratch directory for SQLite"
-  printf '%s\n' "$directives" | grep -qE "^Environment=(.* )?TMPDIR=%t/$scratch_dir( |\$)" \
-    || fail "unit does not point TMPDIR at its own scratch directory [$scratch_dir]"
-  printf '%s\n' "$directives" | grep -qE "^Environment=(.* )?SQLITE_TMPDIR=%t/$scratch_dir( |\$)" \
-    || fail "unit does not point SQLITE_TMPDIR at its own scratch directory [$scratch_dir]"
-  assert_contains "$directives" 'RuntimeDirectoryMode=0700' \
-    "the scratch directory holding usage rows is not owner-only"
-
-  # The directives are load-bearing and must come with the comment that names
-  # the failure they exist to prevent, so a future pass that hardens the unit
-  # does not remove them as redundant, and does not reach for PrivateTmp=yes
-  # instead. The comment lives immediately above them in the heredoc; check
-  # that the lines leading up to it name both failure modes.
-  awk '
-    BEGIN { found = 0; scratch = 0; socket = 0 }
-    /^RuntimeDirectory=/ { found = 1; exit }
-    /SQLite has no scratch path/ { scratch = 1 }
-    /\/tmp\/tmux-/ { socket = 1 }
-    END { exit (found && scratch && socket) ? 0 : 1 }
-  ' "$unit" || fail "the scratch directives must carry the comment naming both failures they balance"
-  pass "installer gives SQLite a scratch path without hiding the fleet's tmux socket"
+  # The reader half, asserted where it actually takes effect rather than by
+  # reading the source: a readOnly open must report temp_store 2 (MEMORY), and a
+  # writable open must be left on the default, because a writer's temp storage
+  # can be large and it always has a writable data/ to spend it in.
+  probe=$(node --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const { openStore, closeStore } = await import(pathToFileURL(process.argv[1]).href);
+    const migrations = [{ version: 1, statements: ["CREATE TABLE t (x INTEGER)"] }];
+    const dbPath = process.argv[2];
+    const writer = openStore(dbPath, migrations);
+    process.stdout.write("writer=" + writer.prepare("PRAGMA temp_store").get().temp_store + "\n");
+    closeStore(writer);
+    const reader = openStore(dbPath, migrations, { create: false, readOnly: true });
+    process.stdout.write("reader=" + reader.prepare("PRAGMA temp_store").get().temp_store + "\n");
+  ' "$ROOT/bin/fm-telemetry-store.mjs" "$case_root/probe.db" 2>/dev/null) \
+    || fail "the shared store opener could not be probed for its temp-store setting"
+  assert_contains "$probe" 'reader=2' \
+    "the readOnly open does not keep SQLite temp storage in memory, so a sandbox with no writable scratch path fails the read"
+  assert_contains "$probe" 'writer=0' \
+    "the writable open no longer leaves temp storage on the SQLite default"
+  pass "the unit grants no private /tmp and the read-only opener keeps SQLite temps in memory"
 }
 
 wait_for_history() {  # <case-root> <jq-expression>
@@ -1225,7 +1220,9 @@ SH
 # WAL for the length of its window, so a writer that exits without closing
 # leaves behind a store whose wal-index the service cannot build without write
 # access to data/. Separately, a sandbox that leaves SQLite no writable scratch
-# path fails the read with "disk I/O error" against a healthy store. Dropping
+# path fails the read with "disk I/O error" against a healthy store - which is
+# why bin/fm-telemetry-store.mjs pins PRAGMA temp_store = MEMORY on its readOnly
+# open, so that half can no longer arise from any sandbox at all. Dropping
 # every card's real totals for the length of either would report a transient as
 # an operator action item, at the moment a captain is most likely to be looking.
 # The last good read is retained and labelled instead, the way a failed snapshot
@@ -1437,6 +1434,6 @@ test_a_failed_usage_read_keeps_the_last_good_one
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
-test_installer_gives_sqlite_scratch_without_hiding_tmp
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
