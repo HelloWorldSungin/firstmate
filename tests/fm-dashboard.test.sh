@@ -882,6 +882,63 @@ test_installer_writes_hardened_user_service() {
   pass "installer configures a hardened boot-persistent user service without sudo"
 }
 
+# The hardened unit pairs ProtectSystem=strict with ProtectHome=read-only.
+# Together they leave SQLite no writable scratch path - /tmp, /var/tmp,
+# /usr/tmp, and $HOME are all read-only - so a read-only query that needs a temp
+# file exits "disk I/O error" while the store itself is healthy.
+#
+# The two halves of the answer are pinned together here because either one alone
+# invites the other to be undone. The reader keeps its temp storage in memory,
+# so nothing ever asks the filesystem for scratch space; and the unit therefore
+# needs no scratch directive at all, which is what keeps PrivateTmp=yes out. That
+# directive is the obvious reach and the case refuses it: it substitutes a
+# private tmpfs for the shared /tmp, and the fleet's tmux server socket lives at
+# /tmp/tmux-$UID. The snapshot this service runs probes endpoints through that
+# socket, so a private /tmp would trade the usage panel for every live task
+# reading as "endpoint absent".
+# docs/verification/dashboard-service-unit.md records both reproductions.
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
+  local case_root unit out directives probe
+  case_root="$TMP_ROOT/install-sqlite-scratch"
+  mkdir -p "$case_root/config" "$case_root/home"
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
+    --allow-worktree \
+    --fm-home "$case_root/fleet" --port 18879 --poll 3 --timeout 4 --stale 9 --no-start)
+  unit="$case_root/config/systemd/user/firstmate-dashboard.service"
+  [ -f "$unit" ] || fail "installer did not create the user service: $out"
+  # Assertions run against the directives alone, so a comment that merely names
+  # a property cannot answer for the property itself.
+  directives=$(grep -v '^[[:space:]]*#' "$unit")
+  assert_contains "$directives" 'ProtectSystem=strict' "unit lost ProtectSystem=strict"
+  assert_contains "$directives" 'ProtectHome=read-only' "unit lost ProtectHome=read-only"
+  assert_not_contains "$directives" 'PrivateTmp=yes' \
+    "unit hides the shared /tmp, which is where the fleet's tmux server socket lives"
+
+  # The reader half, asserted where it actually takes effect rather than by
+  # reading the source: a readOnly open must report temp_store 2 (MEMORY), and a
+  # writable open must be left on the default, because a writer's temp storage
+  # can be large and it always has a writable data/ to spend it in.
+  probe=$(node --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const { openStore, closeStore } = await import(pathToFileURL(process.argv[1]).href);
+    const migrations = [{ version: 1, statements: ["CREATE TABLE t (x INTEGER)"] }];
+    const dbPath = process.argv[2];
+    const writer = openStore(dbPath, migrations);
+    process.stdout.write("writer=" + writer.prepare("PRAGMA temp_store").get().temp_store + "\n");
+    closeStore(writer);
+    const reader = openStore(dbPath, migrations, { create: false, readOnly: true });
+    process.stdout.write("reader=" + reader.prepare("PRAGMA temp_store").get().temp_store + "\n");
+  ' "$ROOT/bin/fm-telemetry-store.mjs" "$case_root/probe.db" 2>/dev/null) \
+    || fail "the shared store opener could not be probed for its temp-store setting"
+  assert_contains "$probe" 'reader=2' \
+    "the readOnly open does not keep SQLite temp storage in memory, so a sandbox with no writable scratch path fails the read"
+  assert_contains "$probe" 'writer=0' \
+    "the writable open no longer leaves temp storage on the SQLite default"
+  pass "the unit grants no private /tmp and the read-only opener keeps SQLite temps in memory"
+}
+
 wait_for_history() {  # <case-root> <jq-expression>
   local case_root=$1 expression=$2
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
@@ -1157,14 +1214,19 @@ SH
   pass "token usage is presence-gated and renders as unavailable rather than zero"
 }
 
-# The store has writers - teardown refreshes it on every archive, bootstrap on
-# every locked session start - and while one holds it the service's read-only
-# connection cannot take a read lock without write access to data/ for the
-# wal-index, so an overlapping refresh reads as a collector that failed. Dropping
-# every card's real totals for the length of that overlap would report a
-# transient as an operator action item, at the moment a captain is most likely to
-# be looking. The last good read is retained and labelled instead, the way a
-# failed snapshot refresh keeps its last good snapshot.
+# A usage read can fail operationally two ways, and both are transients rather
+# than facts about this home. The store has writers - teardown refreshes it on
+# every archive, bootstrap on every locked session start - and each holds it in
+# WAL for the length of its window, so a writer that exits without closing
+# leaves behind a store whose wal-index the service cannot build without write
+# access to data/. Separately, a sandbox that leaves SQLite no writable scratch
+# path fails the read with "disk I/O error" against a healthy store - which is
+# why bin/fm-telemetry-store.mjs pins PRAGMA temp_store = MEMORY on its readOnly
+# open, so that half can no longer arise from any sandbox at all. Dropping
+# every card's real totals for the length of either would report a transient as
+# an operator action item, at the moment a captain is most likely to be looking.
+# The last good read is retained and labelled instead, the way a failed snapshot
+# refresh keeps its last good snapshot.
 test_a_failed_usage_read_keeps_the_last_good_one() {
   local case_root runtime home
   case_root="$TMP_ROOT/history-usage-stale"
@@ -1372,5 +1434,6 @@ test_a_failed_usage_read_keeps_the_last_good_one
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"

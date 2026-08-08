@@ -100,7 +100,12 @@ A manifest that is missing, corrupt, or written against a schema version this da
 Token usage is presence-gated on the fleet's token-usage collector and on its `data/usage.db` store existing under this home: with no store there is nothing to read, and no collector child is spawned at all.
 Totals appear when that store has attributed usage to a task, and every other state renders with its reason rather than as a zero, because a blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
 Those states are deliberately not collapsed together. No collector, no store, usage reads switched off for this dashboard, no attributed row for this task, or a collected row with no readable total all read as `unavailable`, which is nothing to fix; a collector that failed, or one whose output this dashboard does not recognize, reads as needing attention and is drawn distinctly, which is.
-A failed read keeps the last good one visible and says so, the way a failed snapshot refresh does, because the store has writers - teardown refreshes it on every archive and bootstrap on every locked session start - and a read that overlaps one of them fails rather than reads empty.
+A failed read keeps the last good one visible and says so, the way a failed snapshot refresh does, for two genuinely different reasons.
+The store has writers - teardown refreshes it on every archive and bootstrap on every locked session start - and each holds it in WAL for the length of its window, so a writer that exits without closing leaves a store whose wal-index the dashboard's read-only open cannot build without write access to `data/`, and the read fails rather than reads empty.
+The at-rest `delete` journal mode the store is normally found in is the outcome that contract protects, not evidence the failure cannot happen.
+The collector can also fail because the host sandbox leaves SQLite no writable scratch path for the temp file a read-only query needs; the generated unit pairs `ProtectSystem=strict` with `ProtectHome=read-only`, which between them refuse `/tmp`, `/var/tmp`, `/usr/tmp`, and `$HOME`, and a read that reaches for a temp file there exits `disk I/O error` while the store itself is healthy.
+That half is answered in the reader rather than in the sandbox: [usage-accounting.md](usage-accounting.md)'s shared opener keeps SQLite temp storage in memory on its read-only open, so no consumer of these stores asks the filesystem for scratch space and no unit can deny it.
+The unit therefore carries no scratch directive of its own; [`docs/verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins the reproduced combination, the working fix, and why `PrivateTmp=yes` is the wrong answer to it.
 A task the retained read does not carry yet says exactly that, so a just-archived record is never reported as having cost nothing.
 [usage-accounting.md](usage-accounting.md) owns the store itself, including the read-only open that lets the hardened user service read it without write access to `data/`.
 Semantic search over captured report content belongs to the separate [GBrain](#gbrain) panel; history is fully usable without it.
@@ -171,8 +176,12 @@ It is a command rather than a test CI runs, because one Chrome session per host 
 Run it after changing anything the page renders, and before believing any claim about what the dashboard shows.
 [`docs/verification/dashboard-browser.md`](verification/dashboard-browser.md) records what the first run observed.
 
-## Updating configuration
+## Updating the installed service
 
 Re-run the installer with the desired values to replace the environment file and restart the enabled service.
 The environment file carries the service's value for every configuration name [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header documents.
 Use ordinary user-level systemd status and journal commands to inspect startup failures.
+
+Updating the code is the other case, and it does not go through the installer.
+The unit names the server by absolute path inside the checkout it was installed from and holds it open for the life of the process, so pulling that checkout and restarting the service is what loads new server or shared-store code; a running service keeps serving the code it started with until it is restarted.
+Re-run the installer only to change what the unit or the environment file says, not to pick up a change in the code they point at.

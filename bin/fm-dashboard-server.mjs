@@ -680,13 +680,36 @@ class HistoryState {
 
   // Token usage keeps its last good read the way history keeps its last good
   // document, and for the same reason: a read that MISSED is not the same fact
-  // as a read that came back empty. The store has writers - teardown refreshes
-  // it on every archive, bootstrap on every locked session start - and while one
-  // holds it in WAL the service's read-only connection cannot take a read lock
-  // without write access to data/ to update the wal-index, so the collector
-  // exits non-zero and the read comes back operational. Replacing the envelope
-  // there would drop every completed card's real totals for the length of that
-  // overlap and draw the whole panel as an operator action item, at the moment a
+  // as a read that came back empty. The collector can fail operationally for
+  // two genuinely different reasons:
+  //
+  //   1. The store has writers - teardown refreshes it on every archive,
+  //      bootstrap on every locked session start - and every one of them holds
+  //      it in WAL for the length of its window: fm-telemetry-store.mjs
+  //      openStore enables WAL on a writable open and closeStore checkpoints
+  //      and switches back to DELETE. The at-rest DELETE shape is what makes
+  //      this service's read-only open possible at all, so a writer that exits
+  //      without closing leaves the store in WAL with no wal-index a reader
+  //      can build without write access to data/, and every read exits
+  //      non-zero until a writer closes cleanly again. This is live, not
+  //      hypothetical - the DELETE journal mode the store is normally found in
+  //      is the outcome that mechanism is guarded against, not evidence it
+  //      cannot happen.
+  //
+  //   2. The collector's host sandbox leaves SQLite no writable scratch path
+  //      for the temp file a read-only query needs. This unit combines
+  //      ProtectSystem=strict with ProtectHome=read-only, which between them
+  //      refuse /tmp, /var/tmp, $HOME, and every other path SQLite's unix VFS
+  //      falls back to, and the collector exits "disk I/O error" against a
+  //      perfectly healthy store. That one is answered in the reader rather
+  //      than in the sandbox: bin/fm-telemetry-store.mjs sets
+  //      PRAGMA temp_store = MEMORY on its readOnly open, so the collector
+  //      never asks the filesystem for scratch space and no unit, drop-in, or
+  //      stand-alone invocation can deny it. docs/verification/dashboard-service-unit.md
+  //      pins the reproduced combination.
+  //
+  // Either way the panel must keep showing the last good read rather than
+  // drawing every completed card as an operator action item, at the moment a
   // captain is most likely to be looking: teardown refreshes the store
   // immediately before the record that triggered it appears in History.
   //

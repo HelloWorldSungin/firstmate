@@ -17,6 +17,18 @@
 # the operator's own bin directories; without a PATH every snapshot runs to its
 # deadline and the dashboard serves a permanently empty view.
 #
+# The unit deliberately grants SQLite no scratch path, and must not grow one.
+# ProtectSystem=strict and ProtectHome=read-only leave every directory SQLite's
+# unix VFS falls back to read-only, so a read-only query that needs a temp file
+# fails with "disk I/O error" against a healthy store. That is fixed in the
+# reader instead: bin/fm-telemetry-store.mjs sets PRAGMA temp_store = MEMORY on
+# its readOnly open, so no consumer of these stores asks the filesystem for
+# scratch space at all. Do NOT add PrivateTmp=yes here to solve it a second
+# time - it substitutes a private tmpfs for the shared /tmp, which hides the
+# fleet's tmux server socket at /tmp/tmux-$UID from the snapshot this service
+# runs and reports every live task's endpoint as absent.
+# docs/verification/dashboard-service-unit.md pins both results.
+#
 # Loopback is the default and remote exposure is opt-in: --address only accepts
 # a non-loopback bind once credentials exist, and the server independently
 # refuses to start beyond loopback without them.
