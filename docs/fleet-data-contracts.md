@@ -62,6 +62,8 @@ The records firstmate keeps do not all carry an explicit stamp, so the manifest 
 - `started` comes from the task metadata's mtime (`meta_mtime`), which spawn writes.
 - `completed` is the write time (`manifest_write`) unless the caller pins one (`explicit`).
 
+The `created` fallback's UTC day start is this write path's own convention and is known to disagree with the snapshot's, which reads the same `since` field at local midnight; [Snapshot projection](#snapshot-projection) owns that divergence and names the item tracking it.
+
 A future explicit recorded stamp can supersede any of these without a schema change: only the `timestamp_sources` value moves.
 
 Teardown's republish is one such pin, so which token a torn-down task carries records which write path ran, not how its completion was obtained.
@@ -130,6 +132,20 @@ Every field below is new; a v1 consumer that reads only the fields it already kn
 
 Per task: `model`, `effort`, `paths.status_log.last_event_at` and `last_event_age_seconds`, the parsed PR identity with `head`, `status`, `status_age_seconds`, and `status_freshness`, the `work_items` list, and the computed `card`.
 `status_freshness` is `cached` for a valid matching observation and `absent` otherwise; consumers use `status_age_seconds` when they need an age policy.
+
+Also per task: `hints.last_event_declared_wait`, a boolean saying whether the newest status line declares its own quiet - a `paused:` external wait or a captain-held transfer.
+[`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns that vocabulary and `status_is_paused_or_captain_held` decides it, the same call the supervision watcher makes, so a renderer never reimplements the token list and the two surfaces cannot disagree about what a declared wait is.
+A consumer that has not adopted the field reads it as absent and keeps its previous elapsed-time behavior.
+
+Per backlog record: `since_age_seconds`, the age of the row's `since` date.
+`tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
+The backlog stores a LOCAL date with no clock time - `tasks-axi` stamps the writer's own calendar day, not a UTC one - so the age runs from that day's local midnight on the observing host and is an upper bound at day granularity.
+The snapshot resolves each date to its local-midnight instant itself rather than letting `jq`'s UTC `strptime`/`mktime` decide the day start, which on a host ahead of UTC would put the start after the instant the date was written and under-report the age.
+It is null when no readable date is present, and 0 rather than negative for a row dated ahead of the observation, matching the clock-skew convention the snapshot's file ages already use.
+
+The same `since` field is read with two different day-start conventions today, and they are known to disagree.
+This projection reads it at local midnight, while the manifest's `created` fallback ([Timestamps and their provenance](#timestamps-and-their-provenance)) reads it at UTC midnight, so the two day starts differ by the observing host's UTC offset for that date.
+Reconciling the manifest's timestamp provenance is a behavior change in that write path, tracked separately as `fm-since-day-start-convention-split`.
 
 Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, plus away-mode state and age), and `history`.
 

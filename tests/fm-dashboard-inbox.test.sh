@@ -20,7 +20,7 @@ node - "$MODULE" <<'NODE' || fail "dashboard inbox policy behavior failed"
 const { pathToFileURL } = require("node:url");
 
 (async () => {
-const { buildHealth, buildInbox, prReadiness, POLICY } = await import(pathToFileURL(process.argv[2]).href);
+const { buildHealth, buildInbox, formatAge, prReadiness, POLICY } = await import(pathToFileURL(process.argv[2]).href);
 
 const failures = [];
 function check(label, condition, detail = "") {
@@ -207,7 +207,42 @@ const held = inboxOf([], [
 equal("a captain-held backlog row becomes an inbox item", held.items.length, 1);
 equal("a captain-held row has no live worker identity", held.items[0].task_id, null);
 equal("a captain-held row renders its hold reason", held.items[0].reasons[0].text, "waiting on the captain");
-check("a captain-held row has no readable age", held.items[0].age_known === false);
+check("a captain-held row with no recorded date still has no readable age", held.items[0].age_known === false);
+
+// The date the backlog does record is the date the row was RAISED, so the card
+// names that and never claims to know how long a hold has stood.
+const dated = inboxOf([], [
+  { id: "dated", title: "Pick the bind address", hold_reason: "waiting on the captain", hold_kind: "captain", captain_actionable: true, since: "2026-07-29", since_age_seconds: 1_106_623 },
+]);
+equal("a dated captain-held row carries a readable age", dated.items[0].age_known, true);
+equal("a dated captain-held row ages from the recorded date", dated.items[0].age_seconds, 1_106_623);
+equal("a captain-held age names the date it came from", dated.items[0].age_source, "raised");
+
+// A decision that has waited three weeks must outrank one raised this morning.
+// Without an age every decision ties and the order collapses to alphabetical,
+// which is the one order an inbox must not have.
+const waited = inboxOf([], [
+  { id: "z-oldest", title: "Oldest", hold_reason: "held", hold_kind: "captain", captain_actionable: true, since_age_seconds: 1_800_000 },
+  { id: "a-newest", title: "Newest", hold_reason: "held", hold_kind: "captain", captain_actionable: true, since_age_seconds: 3_600 },
+  { id: "m-middle", title: "Middle", hold_reason: "held", hold_kind: "captain", captain_actionable: true, since_age_seconds: 900_000 },
+]);
+equal("the longest-waiting decision sorts first regardless of id",
+  waited.items.map((item) => item.id).join(","), "z-oldest,m-middle,a-newest");
+
+// A backlog date is day-granular and a live event age is to the second, so an
+// item carrying both must be aged by whichever evidence has waited longest.
+const bothAges = inboxOf(
+  [task("mixed", { paths: { status_log: { last_event_age_seconds: 60 } }, hints: { open_decisions: [{ key: "k", verb: "needs-decision", summary: "live" }] } })],
+  [{ id: "mixed", title: "Same thread", hold_reason: "held", hold_kind: "captain", captain_actionable: true, since_age_seconds: 500_000 }],
+);
+equal("a merged item is aged by its oldest evidence", bothAges.items[0].age_seconds, 500_000);
+equal("and names that evidence", bothAges.items[0].age_source, "raised");
+
+// A row with an unusable date must not become a fabricated zero.
+for (const [label, value] of [["null", null], ["absent", undefined], ["empty", ""], ["negative", -1], ["not a number", "soon"]]) {
+  const bad = inboxOf([], [{ id: "bad", title: "Bad", hold_reason: "held", hold_kind: "captain", captain_actionable: true, since_age_seconds: value }]);
+  equal(`an unusable ${label} date stays age unknown`, bad.items[0].age_known, false);
+}
 
 const merged = inboxOf(
   [task("dual", { hints: { open_decisions: [{ key: "k", verb: "needs-decision", summary: "live decision" }] } })],
@@ -301,6 +336,63 @@ equal("an unreadable event age is unknown, not green",
   health(fleet({ tasks: [task("silent", { paths: { status_log: {} } })] })).byId.events.tone, "unknown");
 equal("a completed task no longer counts against activity",
   health(fleet({ tasks: [task("landed", { card: { column: "done" }, paths: { status_log: { last_event_age_seconds: 99_999 } } })] })).byId.events.tone, "green");
+
+// --- a declared wait is not silence ---------------------------------------
+//
+// The snapshot decides what counts as a declared wait with bin/fm-classify-lib.sh,
+// the same vocabulary the supervision watcher uses, and reports it as
+// hints.last_event_declared_wait. This module reads that verdict and never
+// reimplements it.
+
+function waitingTask(id, ageSeconds) {
+  return task(id, {
+    card: { column: "waiting", action: "recheck" },
+    hints: { open_decisions: [], last_event_declared_wait: true },
+    paths: { status_log: { last_event_age_seconds: ageSeconds } },
+  });
+}
+
+const parked = health(fleet({ tasks: [waitingTask("parked-a", 228_489), waitingTask("parked-b", 213_981)] }));
+equal("a fleet of declared waits is not a stalled fleet", parked.byId.events.tone, "green");
+check("a declared wait is reported as its own state, not as an age",
+  parked.byId.events.value === "2 waiting by design", parked.byId.events.value);
+check("the longest declared wait is still stated", parked.byId.events.detail.includes(formatAge(228_489)), parked.byId.events.detail);
+equal("a home whose only quiet was declared reads healthy", parked.overall.label, "Healthy");
+
+// The property the elapsed-time check was protecting survives: a task that went
+// quiet WITHOUT declaring it still turns the signal.
+const mixed = health(fleet({ tasks: [
+  waitingTask("parked", 228_489),
+  task("silent", { paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds } } }),
+] }));
+equal("an undeclared silence still turns the signal red", mixed.byId.events.tone, "red");
+check("the red verdict comes from the undeclared task alone",
+  mixed.byId.events.value === `oldest ${formatAge(POLICY.eventRedSeconds)}`, mixed.byId.events.value);
+check("the declared waits are still accounted for", mixed.byId.events.detail.includes("1 further task"), mixed.byId.events.detail);
+
+equal("an undeclared silence past the amber threshold is amber",
+  health(fleet({ tasks: [waitingTask("parked", 500_000), task("slow", { paths: { status_log: { last_event_age_seconds: POLICY.eventAmberSeconds } } })] })).byId.events.tone, "amber");
+
+// The declaration is a positive claim. Anything short of it - an older snapshot
+// that never carried the field, a null, a string - keeps the strict verdict,
+// because an unproven declaration must not excuse a silent task.
+for (const [label, value] of [["absent", undefined], ["null", null], ["a string", "true"], ["false", false]]) {
+  const unproven = health(fleet({ tasks: [task("quiet", {
+    hints: { open_decisions: [], last_event_declared_wait: value },
+    paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds } },
+  })] }));
+  equal(`an ${label} declaration does not excuse a silent task`, unproven.byId.events.tone, "red");
+}
+
+// An unreadable age on a working task is still unknown; a declared wait beside
+// it neither hides that nor invents an age of its own.
+const unreadableBeside = health(fleet({ tasks: [waitingTask("parked", 228_489), task("silent", { paths: { status_log: {} } })] }));
+equal("an unreadable working-task age stays unknown", unreadableBeside.byId.events.tone, "unknown");
+const agelessWait = health(fleet({ tasks: [waitingTask("parked", null)] }));
+equal("a declared wait with no readable age is still not a stalled fleet", agelessWait.byId.events.tone, "green");
+check("and states no duration it cannot read",
+  agelessWait.byId.events.detail === "Every live task declared its own wait. Nothing has gone quiet without saying so.",
+  agelessWait.byId.events.detail);
 
 // A secondmate reports only when it is asked to do something, so its silence is
 // health, not a stalled task. It is answered for by its own signal instead.

@@ -1203,6 +1203,98 @@ EOF
   pass "multi-line free-form backlog notes stay attributed to their parent"
 }
 
+# The two fields a renderer needs to age a captain decision and to tell a task
+# that went quiet from one that said it would be quiet. Both are decided here so
+# no consumer has to reparse a date or reimplement the declared-wait vocabulary.
+test_since_age_and_declared_wait_projections() {
+  local home fakebin out now seoul_now live_date live_floor live_age
+  # 2026-08-11T06:00:00Z, so every age below is an exact constant rather than a
+  # value that drifts with the wall clock.
+  now=1786428000
+  # 2026-08-10T16:00:00Z, which is 01:00 on 2026-08-11 in Asia/Seoul: an hour
+  # into a local day whose UTC midnight is still eight hours away.
+  seoul_now=1786377600
+  home=$(make_home ageing)
+  mkdir -p "$home/projects/paused-worktree" "$home/projects/held-worktree" "$home/projects/quiet-worktree"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] dated-decision - Choose the retention window (repo: alpha) (kind: captain) (since 2026-08-01) (hold: captain must choose) (hold-kind: captain)
+- [ ] undated-decision - Choose the bind address (repo: alpha) (kind: captain) (hold: captain must choose) (hold-kind: captain)
+- [ ] future-decision - Choose the release date (repo: alpha) (kind: captain) (since 2026-09-01) (hold: captain must choose) (hold-kind: captain)
+- [ ] unreadable-decision - Choose the log format (repo: alpha) (kind: captain) (since sometime) (hold: captain must choose) (hold-kind: captain)
+- [ ] same-day-decision - Choose the log retention (repo: alpha) (kind: captain) (since 2026-08-11) (hold: captain must choose) (hold-kind: captain)
+EOF
+  fm_write_meta "$home/state/paused-task.meta" \
+    "window=firstmate:fm-paused-task" \
+    "worktree=$home/projects/paused-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  printf 'paused: awaiting the captain merge call on PR 12\n' > "$home/state/paused-task.status"
+  fm_write_meta "$home/state/held-task.meta" \
+    "window=firstmate:fm-held-task" \
+    "worktree=$home/projects/held-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  printf 'captain-held: the captain took this thread over\n' > "$home/state/held-task.status"
+  fm_write_meta "$home/state/quiet-task.meta" \
+    "window=firstmate:fm-quiet-task" \
+    "worktree=$home/projects/quiet-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  # A reason that merely mentions being paused is prose, not a declaration: the
+  # verb before the first colon is what decides, and here it is `working`.
+  printf 'working: the upstream job is paused so I am rebasing instead\n' > "$home/state/quiet-task.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" TZ=Etc/UTC FM_HOME="$home" FM_SNAPSHOT_NOW_EPOCH="$now" \
+    FM_SNAPSHOT_NOW=2026-08-11T06:00:00Z "$SNAPSHOT" --json)
+
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "dated-decision") | .since_age_seconds) == 885600
+      and (.backlog.records[] | select(.id == "same-day-decision") | .since_age_seconds) == 21600
+      and (.backlog.records[] | select(.id == "undated-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "unreadable-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "future-decision") | .since_age_seconds) == 0
+  ' >/dev/null || fail "backlog since ageing wrong: $out"
+
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "paused-task") | .hints.last_event_declared_wait) == true
+      and (.tasks[] | select(.id == "held-task") | .hints.last_event_declared_wait) == true
+      and (.tasks[] | select(.id == "quiet-task") | .hints.last_event_declared_wait) == false
+  ' >/dev/null || fail "declared-wait projection wrong: $out"
+  pass "backlog dates age and declared waits are decided in the snapshot"
+
+  # tasks-axi writes `since` as the writer's own local calendar date, so the day
+  # it names starts at local midnight. Read as UTC midnight, a row raised earlier
+  # today on a host ahead of UTC is dated in the future and its age collapses to
+  # the clock-skew clamp - a decision that has waited an hour reporting 0 and
+  # sorting below every older item. Same fixture, same fixed instant, a host nine
+  # hours ahead: an hour into 2026-08-11 in Seoul, `same-day-decision` has waited
+  # exactly that hour and the older rows are each a further nine hours old.
+  out=$(PATH="$fakebin:$PATH" TZ=Asia/Seoul FM_HOME="$home" FM_SNAPSHOT_NOW_EPOCH="$seoul_now" \
+    FM_SNAPSHOT_NOW=2026-08-10T16:00:00Z "$SNAPSHOT" --json)
+
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "same-day-decision") | .since_age_seconds) == 3600
+      and (.backlog.records[] | select(.id == "dated-decision") | .since_age_seconds) == 867600
+      and (.backlog.records[] | select(.id == "undated-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "unreadable-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "future-decision") | .since_age_seconds) == 0
+  ' >/dev/null || fail "backlog since ageing did not read the date as local: $out"
+
+  # And against the wall clock rather than a pinned one: a row dated with the
+  # observing host's own current local date must age from that day's local
+  # midnight, so its age is the local time of day and never a fabricated zero.
+  live_date=$(TZ=Asia/Seoul date +%Y-%m-%d)
+  live_floor=$(TZ=Asia/Seoul date '+%H %M %S' \
+    | { read -r h m s; printf '%s' "$((10#$h * 3600 + 10#$m * 60 + 10#$s))"; })
+  printf -- '- [ ] live-decision - Choose the bind port (repo: alpha) (kind: captain) (since %s) (hold: captain must choose) (hold-kind: captain)\n' \
+    "$live_date" >> "$home/data/backlog.md"
+  out=$(PATH="$fakebin:$PATH" TZ=Asia/Seoul FM_HOME="$home" "$SNAPSHOT" --json)
+  live_age=$(printf '%s' "$out" \
+    | jq -r '.backlog.records[] | select(.id == "live-decision") | .since_age_seconds')
+  case "$live_age" in ''|*[!0-9]*) fail "live local date did not age: $live_age" ;; esac
+  [ "$live_age" -ge "$live_floor" ] && [ "$live_age" -le "$((live_floor + 120))" ] \
+    || fail "live local date aged from the wrong day start: $live_age not near $live_floor"
+  pass "a since date ages from its own local midnight, not UTC midnight"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
@@ -1222,6 +1314,7 @@ test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
+test_since_age_and_declared_wait_projections
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_multiline_unstructured_note_attributed_to_parent

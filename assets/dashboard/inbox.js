@@ -362,10 +362,18 @@ export function buildInbox(snapshot, options = {}) {
     if (record?.captain_actionable !== true) continue;
     const id = text(record?.id);
     if (!id) continue;
+    // `since_age_seconds` ages the date the row was RAISED, which is the only
+    // date the backlog records: `since` is written at creation and is not
+    // rewritten when the row goes on hold, so this reason is labelled "raised"
+    // rather than claiming to know how long a hold has stood. A row with no
+    // readable date keeps a null age and still renders "age unknown", because a
+    // missing date must not become a fabricated zero.
     const reason = reasonFrom("decision", {
       text: text(record?.hold_reason) || "This backlog item is held for the captain with no recorded reason.",
       key: text(record?.hold_kind) || null,
       source: "backlog hold",
+      ageSeconds: finiteAge(record?.since_age_seconds),
+      ageSource: "raised",
     });
     const existing = items.get(id);
     if (existing) {
@@ -458,20 +466,59 @@ function snapshotSignal(envelope) {
   return { id: "snapshot", label: "Snapshot", tone: "unknown", value: "waiting", detail: "The first fleet snapshot has not completed yet.", tooltip };
 }
 
+// A task that declared its own quiet has not gone quiet. The snapshot makes
+// that judgement server-side through `hints.last_event_declared_wait`, which
+// bin/fm-classify-lib.sh decides with the same declared-wait vocabulary the
+// supervision watcher uses, so this module never carries a second copy of what
+// counts as a pause and the two surfaces cannot drift apart on it.
+//
+// A field that is absent or not exactly `true` reads as NOT declared. An older
+// or partial snapshot therefore keeps the strict elapsed-time verdict rather
+// than being quietly excused: an undeclared silence is what this signal exists
+// to catch, and uncertainty about the declaration is not good news.
+function declaredWait(task) {
+  return task?.hints?.last_event_declared_wait === true;
+}
+
 function eventSignal(tasks) {
   const live = liveWorkTasks(tasks);
-  const tooltip = `How long ago the slowest live task last reported anything. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
+  const tooltip = `How long ago the slowest live task that has not declared a wait last reported anything. A task parked on a declared pause or a captain hold is counted separately and never ages into a warning, because its quiet was announced. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
   if (!live.length) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
-  const ages = live.map((task) => finiteAge(task?.paths?.status_log?.last_event_age_seconds));
-  const unreadable = live.filter((task, index) => ages[index] === null).map((task) => text(task?.id)).filter(Boolean);
+
+  const waiting = live.filter(declaredWait);
+  const working = live.filter((task) => !declaredWait(task));
+  const plural = (count) => (count === 1 ? "" : "s");
+
+  // Declared waits are reported as their own state rather than folded silently
+  // into a passing reading. How long a declared wait has stood is the useful
+  // fact about it; elapsed time alone is not, and colouring it would make the
+  // strip redder every day a decision correctly sits with the captain.
+  if (!working.length) {
+    const waits = waiting.map((task) => finiteAge(task?.paths?.status_log?.last_event_age_seconds)).filter((age) => age !== null);
+    const longest = waits.length ? Math.max(...waits) : null;
+    return {
+      id: "events",
+      label: "Task activity",
+      tone: "green",
+      value: `${waiting.length} waiting by design`,
+      detail: longest === null
+        ? "Every live task declared its own wait. Nothing has gone quiet without saying so."
+        : `Every live task declared its own wait; the longest has been waiting ${formatAge(longest)}. Nothing has gone quiet without saying so.`,
+      tooltip,
+    };
+  }
+
+  const waitingNote = waiting.length ? ` ${waiting.length} further task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here.` : "";
+  const ages = working.map((task) => finiteAge(task?.paths?.status_log?.last_event_age_seconds));
+  const unreadable = working.filter((task, index) => ages[index] === null).map((task) => text(task?.id)).filter(Boolean);
   if (unreadable.length) {
-    return { id: "events", label: "Task activity", tone: "unknown", value: "unknown", detail: `No readable event age for ${unreadable.join(", ")}.`, tooltip };
+    return { id: "events", label: "Task activity", tone: "unknown", value: "unknown", detail: `No readable event age for ${unreadable.join(", ")}.${waitingNote}`, tooltip };
   }
   const oldest = Math.max(...ages);
   const tone = oldest >= POLICY.eventRedSeconds ? "red" : oldest >= POLICY.eventAmberSeconds ? "amber" : "green";
-  return { id: "events", label: "Task activity", tone, value: `oldest ${formatAge(oldest)}`, detail: `${live.length} live task${live.length === 1 ? "" : "s"}; the slowest last reported ${formatAge(oldest)} ago.`, tooltip };
+  return { id: "events", label: "Task activity", tone, value: `oldest ${formatAge(oldest)}`, detail: `${working.length} live task${plural(working.length)} working; the slowest last reported ${formatAge(oldest)} ago.${waitingNote}`, tooltip };
 }
 
 // The snapshot answers two different questions with one field. For a secondmate

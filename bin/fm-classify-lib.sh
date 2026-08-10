@@ -242,6 +242,9 @@ status_is_paused() {  # <status-line>
 # Both declarations can intentionally leave an exited crew's endpoint idle, so
 # the watcher applies its bounded pause cadence when agent death confirms that
 # no live decision gate is being silenced.
+# This predicate is the only definition of a declared wait: supervision reads it
+# directly and the fleet snapshot projects its verdict for read-only renderers,
+# so a change here moves both surfaces and neither carries its own token list.
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1 verb
   status_is_paused "$line" && return 0
