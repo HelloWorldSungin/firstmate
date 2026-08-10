@@ -420,6 +420,7 @@ if [ "$ISSUE_SET" -eq 1 ]; then
 Before reporting the PR ready, comment on GitHub issue #$ISSUE with a substantive summary of what you found and what you actually changed.
 A bare "done" comment does not satisfy this contract: someone reading the issue later must be able to understand the outcome without opening the PR.
 Put \`Closes #$ISSUE\` in the PR body so merging the PR closes the issue atomically.
+Amend the existing PR body rather than replacing it: the pipeline that opened the PR owns sections of that body, and a wholesale rewrite drops the signature its required checks look for.
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
   ISSUE_SECTION="$ISSUE_SECTION
@@ -469,6 +470,7 @@ ${WORK_ITEM_MARKERS}<!-- firstmate-pr-target=$PR_TARGET_FORGE:$PR_TARGET_HOST/$P
 This task is linked to the work items below.
 They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
 Reference each full URL in the PR body.
+Amend the existing PR body rather than replacing it: the pipeline that opened the PR owns sections of that body, and a wholesale rewrite drops the signature its required checks look for.
 ${WORK_ITEM_BLOCK}
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}

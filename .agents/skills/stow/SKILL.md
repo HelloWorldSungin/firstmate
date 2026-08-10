@@ -61,17 +61,30 @@ Never describe the session as reset-safe while the memory total is over budget o
      Use `--archive-body` when recoverability matters.
      Never append.
    - File each undone next step as a queued backlog item with a genuine `blocked-by` dependency when applicable.
-4. **Use inspect-then-update.**
+4. **Route a pruned-but-still-true learning to the brain before deleting it.**
+   Step 4 of the memory pass removes material that is no longer worth a startup-memory slot but is still true and still expensive to rediscover.
+   Capture that with `bin/fm-gbrain-capture.sh note --id <slug> --title <title> --file <path>` before removing it, so pruning a memory file is not the same as forgetting.
+   The command redacts credential-shaped content before it stores anything and refuses a body it cannot clean, exiting non-zero with the reason on stderr, so treat a refusal as a finding about the note, not an obstacle.
+   It is inert in a home with no brain, which is a complete answer rather than an exception to report.
+5. **Use inspect-then-update.**
    For every retained fact, ask which current statement it supersedes, whether it can be a one-sentence rewrite, and whether a stale entry should be deleted, retired, or routed to an existing stronger owner.
    The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected by AGENTS.md, or deletion of a stale entry.
    Do not invent another graduation path.
 
 ## Completion receipt
 
+Run `bin/fm-gbrain-capture.sh status` as part of every sweep and translate its counts into the receipt below.
+It reports what is archived, pending, failed, unreadable, and how many values were redacted.
+It does not report a refusal, because a refused body deliberately becomes no record at all.
+`note` is the subcommand this skill calls, and a refused note writes no `state/<id>.gbrain` receipt, because a receipt is keyed to a task id and a note has none: take a refusal from `note`'s non-zero exit and the reason it prints on stderr.
+That answer is specific to `note` and does not generalise, because `task` and `backfill` refuse by writing a receipt and still exiting 0, so a rule written for them would find nothing here.
+A home with no brain reports nothing, which is the complete answer for that home.
+
 Report the outcome in plain captain-facing language with all of these facts:
 
 - effective startup-memory budget and total estimated tokens before and after;
 - one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`: `unchanged`, `added`, `rewritten`, `pruned`, or `routed`;
+- what was archived into the brain, what it refused to store and why, how many values it redacted, and anything still waiting to be stored;
 - each durable finding filed outside memory and its authoritative owner;
 - every unresolved exception, including a primary-owned shared-file constraint in a secondmate home;
 - whether the session is safe to reset, only when all durable findings are captured and the post-pass result is within budget with no exception.

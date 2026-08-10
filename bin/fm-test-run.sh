@@ -140,6 +140,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-run-progress.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -183,11 +184,12 @@ family_for_basename() {
       ;;
     fm-afk-pi-dual-supervision-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
-    fm-gbrain-readonly-e2e.test.sh|\
+    fm-gbrain-readonly-e2e.test.sh|fm-gbrain-capture-e2e.test.sh|\
     fm-cursor-agy-smoke.test.sh|fm-grok-stop-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
-    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
+    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
+    fm-dashboard-browser.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
@@ -208,7 +210,7 @@ family_for_basename() {
       printf '%s\n' afk
       ;;
     fm-bearings-snapshot.test.sh|fm-dashboard.test.sh|fm-dashboard-inbox.test.sh|\
-    fm-dashboard-history.test.sh|fm-fleet-snapshot-view.test.sh)
+    fm-dashboard-history.test.sh|fm-dashboard-access.test.sh|fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -357,8 +359,9 @@ list_portable_serial() {
     [ -n "$s" ] || continue
     base=$(basename "$s")
     fam=$(family_for_basename "$base")
-    # real-herdr-gated has its own required CI lane; live-harness-optin needs real
-    # harness credentials, so it stays an explicit opt-in outside portable lanes.
+    # real-herdr-gated has its own required CI lane; live-harness-optin needs
+    # machine state CI does not have - real harness credentials, or a real
+    # browser session - so it stays an explicit opt-in outside portable lanes.
     case "$fam" in
       real-herdr-gated|live-harness-optin) continue ;;
     esac
@@ -399,6 +402,7 @@ tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
 tests/fm-documentation-audiences.test.sh 572
+tests/fm-dashboard-access.test.sh 12000
 tests/fm-dashboard-history.test.sh 900
 tests/fm-dashboard-inbox.test.sh 300
 tests/fm-dashboard.test.sh 5000
@@ -421,6 +425,7 @@ tests/fm-pr-check-security.test.sh 199573
 tests/fm-procevent.test.sh 42789
 tests/fm-public-followup.test.sh 23365
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
+tests/fm-run-progress.test.sh 333
 tests/fm-secondmate-harness.test.sh 87895
 tests/fm-secondmate-lifecycle-e2e.test.sh 4929
 tests/fm-secondmate-liveness.test.sh 12553
@@ -899,6 +904,12 @@ families_for_changed_path() {
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
+    # The wedge-escalation gate's evidence: its own contract suite, plus both
+    # supervisors that consult it.
+    bin/fm-run-progress.sh)
+      printf '%s\n' '__script__:fm-run-progress.test.sh'
+      printf '%s\n' watcher-wake-lock
+      ;;
     bin/fm-afk*)
       printf '%s\n' afk
       printf '%s\n' real-herdr-gated
@@ -916,6 +927,7 @@ families_for_changed_path() {
     # Brain scoping owns its own contract, propagates through the inherited-
     # config path, and is the subject of the opt-in live read-only proof.
     bin/fm-gbrain.sh|bin/fm-gbrain-lib.sh|bin/fm-recall.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       printf '%s\n' live-harness-optin
@@ -924,6 +936,18 @@ families_for_changed_path() {
     # and the forge observation and write-back paths are its other consumers.
     bin/fm-timeout-lib.sh)
       printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      ;;
+    # Task-knowledge capture rides that scoping and hooks the teardown step
+    # between manifest publication and cleanup, so it selects both.
+    bin/fm-gbrain-capture.sh|bin/fm-gbrain-capture-lib.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-teardown.sh)
+      printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
       printf '%s\n' pr-forge
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
@@ -936,7 +960,7 @@ families_for_changed_path() {
     bin/fm-gate-refuse*|bin/fm-lock*|bin/fm-quota-axi-lib.sh)
       printf '%s\n' session-bootstrap
       ;;
-    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
+    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;

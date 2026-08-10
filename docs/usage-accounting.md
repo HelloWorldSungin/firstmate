@@ -17,11 +17,23 @@ bin/fm-usage.mjs attribution
 
 `ingest` scans this machine's Claude Code transcripts and Codex rollouts, stores every token-usage event, attributes what it can, and prints a JSON summary.
 It is safe to run on any cadence, including concurrently with an earlier run that has not finished, because ingestion is idempotent rather than incremental-only.
+A locked session bootstrap runs a bounded best-effort `ingest` when `data/usage.db` already exists, and task teardown runs the same refresh when a store is present, so an opted-in home stays current without a separate timer.
+Both bounds escalate to SIGKILL: bootstrap's is `FM_BOOTSTRAP_USAGE_TIMEOUT` (120s by default) and teardown's is `FM_TEARDOWN_USAGE_TIMEOUT` (60s).
+Only bootstrap reports a refresh that did not finish, on a `USAGE_STORE:` line; teardown's is silent, because nothing on the cleanup path may be blocked or noised by it and the next refresh converges the store either way.
+The dashboard reads the store through a read-only SQLite open so the user service can stay under `ProtectHome=read-only` without write access to `data/`.
+That open also pins SQLite temp storage to memory, because a sandbox that pairs `ProtectHome=read-only` with `ProtectSystem=strict` leaves no writable directory for a sorter or a temp table and the read would exit `disk I/O error` against a healthy store; a reader that never asks the filesystem for scratch space cannot be denied it by any sandbox.
+Writers keep the SQLite default, because their temp storage can be large and they always have a writable `data/` to spend it in.
+Every writer checkpoints the WAL and returns the store to a rollback journal as it closes, so `usage.db` at rest is one self-contained file: a reader without write access to `data/` cannot create the `-shm` wal-index a WAL store requires, and would otherwise fail to open the store at all rather than merely read it stale.
+That close also runs when a bound ends a refresh early, because `ingest` answers `SIGTERM`, `SIGINT`, and `SIGHUP` by closing the store before it exits and both bounds hold the kill back long enough for it; an abnormal `SIGKILL` is the only case that still leaves the WAL behind, and the next writable open heals it.
+A dashboard read that overlaps a writer fails rather than reads empty, so the dashboard keeps its last good read and labels it instead of dropping every total for the length of the overlap.
 Every derived table is rebuilt in place, and each rebuild commits its wipe and its repopulation together, so a failed run leaves the previous derivation rather than an empty table that would read as "nothing to report".
 A stage that fails names itself in the summary's `failures` and in a non-zero exit status while the stages after it still run.
 Four read-only projections print JSON without touching the store: `report --by task|project|harness|model|day`, `burn` for a bounded recent burn-rate series, `attribution` for the confidence breakdown and the percentage matched, and `sessions` for the session map itself.
 
 The store lives at `data/usage.db` under the operational home and is private to it.
+
+It is one of the fleet's two telemetry stores, and they share their discipline rather than each inventing one: [`bin/fm-telemetry-store.mjs`](../bin/fm-telemetry-store.mjs) owns the opening, migration, sanitizing, and timestamp rules this store and the dashboard's [agent-event store](dashboard-events.md) both follow, and both spell a task id, a harness, a session id, and an instant the same way so the two join on `task_id`.
+They are separate files because the event store's only writer is the dashboard, which writes nothing under an operational home at all; that page owns the reasoning.
 
 ## What is stored
 

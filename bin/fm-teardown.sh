@@ -11,6 +11,12 @@
 # durable history afterwards. A manifest that cannot be published refuses the
 # cleanup rather than erasing a task that could not be archived; see
 # publish_outcome_manifest below and bin/fm-outcome-manifest.sh.
+# Between publishing that manifest and removing anything, teardown captures the
+# task's knowledge into the home's own brain through bin/fm-gbrain-capture.sh,
+# which enqueues durably first and delivers under a tight timeout. That step is
+# advisory in both directions: it is inert in a home with no brain, and a brain
+# that is stopped or slow leaves a pending item for a later retry rather than
+# delaying or failing the cleanup.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -43,7 +49,11 @@
 # quarantine entries with the rest of the volatile state.
 # Before cleanup, teardown also enforces the terminal dispatched-model check
 # owned by docs/model-verification.md; --force surfaces that verdict while
-# retaining its explicitly authorized discard behavior.
+# retaining its explicitly authorized discard behavior. A dispatch that was
+# never armed for that check, as docs/model-verification.md defines it, can
+# never produce a verdict, so it is named plainly and passed to the ORDINARY
+# cleanup path - where the landed-work, uncommitted-change,
+# completion-manifest, and endpoint checks all still apply unchanged.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -124,6 +134,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -158,45 +170,87 @@ META="$STATE/$ID.meta"
 # to a stale session map rather than stalling a lifecycle-critical path.
 # docs/usage-accounting.md owns the contract.
 FM_TEARDOWN_USAGE_TIMEOUT=${FM_TEARDOWN_USAGE_TIMEOUT:-60}
+# Zero falls back with the blank and the non-numeric, because zero is not a
+# bound: GNU timeout reads DURATION 0 as "no timeout", so honoring it would run
+# a scan of every transcript on the machine unbounded on a lifecycle-critical
+# path.
 case "$FM_TEARDOWN_USAGE_TIMEOUT" in ''|*[!0-9]*) FM_TEARDOWN_USAGE_TIMEOUT=60 ;; esac
+[ "$FM_TEARDOWN_USAGE_TIMEOUT" -ge 1 ] || FM_TEARDOWN_USAGE_TIMEOUT=60
 
-# Bounded execution, mirroring bin/fm-fleet-snapshot.sh's selection so a host
-# without GNU coreutils still bounds the call rather than skipping the bound.
-run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 124
-  fi
-}
-
+# The bound itself comes from bin/fm-timeout-lib.sh, the declared single owner:
+# every arm there escalates to SIGKILL, because SIGTERM alone is not a bound - a
+# child that ignores it, or that is stuck in uninterruptible IO, would keep this
+# lifecycle-critical path parked forever. run_bounded in
+# bin/fm-gbrain-capture.sh bounds the other call on this path the same way.
 refresh_usage_sessions() {
   [ -f "$DATA/usage.db" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  run_timed "$FM_TEARDOWN_USAGE_TIMEOUT" \
-    env FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME" >/dev/null 2>&1 || true
+  # The kill grace is raised from the owner's one-second default because the
+  # polite signal has real work to do here: fm-usage.mjs answers SIGTERM by
+  # checkpointing the store back out of WAL, and a kill that lands mid-close
+  # leaves behind exactly the WAL-at-rest shape the read-only dashboard cannot
+  # open (issue #65).
+  (
+    export FM_TIMEOUT_KILL_GRACE=5
+    fm_run_timed "$FM_TEARDOWN_USAGE_TIMEOUT" \
+      env FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME"
+  ) >/dev/null 2>&1 || true
 }
 
-publish_outcome_manifest() {  # <force-flag>
+write_outcome_manifest() {  # <force-flag> [<completed-at>]
   local rc=0
-  refresh_usage_sessions
-  if [ "${1:-}" = "--force" ]; then
-    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" --forced >/dev/null || rc=$?
-  else
-    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-      "$SCRIPT_DIR/fm-outcome-manifest.sh" write "$ID" >/dev/null || rc=$?
-  fi
+  local -a args=(write "$ID")
+  [ "${1:-}" = "--force" ] && args+=(--forced)
+  [ -n "${2:-}" ] && args+=(--completed-at "$2")
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-outcome-manifest.sh" "${args[@]}" >/dev/null || rc=$?
   [ "$rc" -eq 0 ] && return 0
   echo "error: could not publish the durable outcome manifest for $ID; retaining every task record" >&2
   return 1
+}
+
+manifest_completed_at() {
+  jq -r '.timestamps.completed // empty' "$DATA/$ID/outcome.json" 2>/dev/null || true
+}
+
+# Capture this task's knowledge into the home's own brain, between publishing
+# the manifest and removing anything. bin/fm-gbrain-capture.sh writes its durable
+# outbox record synchronously and only then attempts a bounded delivery, so a
+# stopped or slow brain leaves a pending item for a later retry instead of
+# delaying cleanup. It is inert in a home with no brain and never fails, so
+# teardown treats it as advisory throughout.
+#
+# Returns 0 when it left a capture receipt, which is the only reason to
+# republish: the manifest reads state/<ID>.gbrain at composition time.
+capture_task_knowledge() {
+  local receipt="$STATE/$ID.gbrain" before="" after=""
+  if [ -f "$receipt" ]; then before=$(cat "$receipt" 2>/dev/null) || before=""; fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-gbrain-capture.sh" task "$ID" >/dev/null || true
+  if [ -f "$receipt" ]; then after=$(cat "$receipt" 2>/dev/null) || after=""; fi
+  if [ -n "$after" ] && [ "$before" != "$after" ]; then return 0; fi
+  return 1
+}
+
+# The session refresh belongs here rather than in write_outcome_manifest: the
+# manifest is written twice so the capture receipt can reach it, and the map
+# cannot change in that window, so the machine-wide collector scan runs once.
+#
+# The republish is pinned to the completion the first write recorded. It is a
+# republish of one completion, not a second one, and capture composed its body
+# from that first manifest: re-deriving the timestamp would move the recorded
+# completion forward by the whole capture window and leave the manifest on disk
+# disagreeing with the body already delivered, which a later backfill would see
+# as changed content and re-deliver.
+publish_outcome_manifest() {  # <force-flag>
+  refresh_usage_sessions
+  write_outcome_manifest "${1:-}" || return 1
+  local completed
+  completed=$(manifest_completed_at)
+  capture_task_knowledge || return 0
+  write_outcome_manifest "${1:-}" "$completed" || return 1
+  return 0
 }
 
 REMOTE_HANDOFF_DIR_PRESENT=0
@@ -372,7 +426,8 @@ remote_secondmate_teardown() {
   tmp="$SECONDMATE_REG.tmp.$$"
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
-  rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended"
+  rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended" \
+    "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
   return 0
 }
@@ -404,16 +459,21 @@ else
 fi
 [ "$remote_teardown_rc" -eq 3 ] || exit "$remote_teardown_rc"
 
-# The helpers below distinguish a proven no-turn worker from evidence whose
-# location was never persisted. Only the clean proven no-turn worker can enter
-# the allowance. An unknown evidence location cannot prove that boundary and
-# must refuse while preserving both worktree and task metadata, exactly like a
-# worker that ran without a usable verdict.
+# The helpers below govern the narrow proven-no-turn allowance, which applies
+# only to a dispatch that WAS armed for verification and then produced no turn.
+# Only the clean proven no-turn worker can enter it; every other blocking
+# verdict refuses while preserving both worktree and task metadata.
+#
+# A dispatch that was never armed at all (verdict `unarmed`) does not reach
+# these helpers, because fm-model-verify.sh's terminal mode does not report it
+# as blocking. Such a task takes the ordinary cleanup path instead, which keeps
+# every other teardown refusal intact rather than substituting this narrower
+# proof for them.
 
 # 0 iff this verdict means the worker never produced a model-attributed turn.
 # Every other no-verdict cause is handled separately: unreadable evidence, an
-# absent adapter, jq missing, evidence that cannot be attributed, and a missing
-# persisted evidence-store identity all keep refusing.
+# absent adapter, jq missing, evidence that cannot be attributed, and a
+# malformed persisted evidence-store identity all keep refusing.
 model_verdict_precedes_any_turn() {  # <verdict>
   case "$1" in
     unstarted|pending) return 0 ;;
@@ -527,13 +587,24 @@ refresh_terminal_model_verdict
 # The verdict is ALWAYS surfaced, so no worker's model provenance is discarded
 # unseen. Only the refusal is conditional: fm-model-verify.sh --terminal exits
 # nonzero solely for a mismatch, or for an absent verdict on a dispatch that was
-# verifiable in principle. --force retains its existing discard authority.
+# verifiable in principle - a harness with an evidence adapter, a pinned model,
+# and a record that was armed for the check, as docs/model-verification.md
+# defines it. --force retains its existing discard authority.
 printf '%s\n' "$MODEL_VERIFY_OUTPUT" >&2
+# Name the never-armed case explicitly, so an operator reading this output can
+# tell it apart from a verification that ran and failed without reading source.
+# This line IS the discriminator: an unarmed task takes the ordinary cleanup
+# path, where any other check may still refuse in the same output, so absence of
+# a REFUSED line says nothing about which case the operator is in.
+if [ "$MODEL_VERDICT" = unarmed ]; then
+  echo "teardown: task $ID was dispatched without a model-evidence store, so no model-routing verdict can ever exist for it. That is a gap in its record, not a failed verification, and it is not a reason to keep the task forever; every other cleanup check still applies to it unchanged." >&2
+fi
 if [ "$FORCE" != "--force" ] && [ "$MODEL_VERIFY_RC" -ne 0 ]; then
-  # An unknown evidence location cannot prove the absent turn at all, so it is
-  # deliberately NOT a cleanup candidate: the task has not been shown to be
-  # never-started, only not shown to have run, and the metadata linking it to
-  # its evidence is the one record that could ever prove a wrong-model run.
+  # A recorded-but-unusable evidence location cannot prove the absent turn at
+  # all, so it is deliberately NOT a cleanup candidate: the task has not been
+  # shown to be never-started, only not shown to have run, and the metadata
+  # linking it to its evidence is the one record that could ever prove a
+  # wrong-model run.
   if model_verdict_precedes_any_turn "$MODEL_VERDICT" && worker_left_nothing_to_preserve; then
     NO_VERDICT_CLEANUP_CANDIDATE=1
   else

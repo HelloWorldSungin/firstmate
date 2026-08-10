@@ -15,8 +15,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
-| `fm-dashboard-server.mjs` | Serve the read-only loopback captain inbox, kanban, completed-work history, and versioned snapshot envelope |
+| `fm-dashboard-server.mjs` | Serve the read-only captain inbox, kanban, completed-work history, versioned snapshot envelope, presence-gated GBrain health and search, and the authenticated agent-event ingest and live timeline |
 | `fm-dashboard-install.sh` | Install and configure the dashboard as a boot-persistent user systemd service        |
+| `fm-dashboard-instrument.sh` | Turn the dashboard's per-agent event timeline on or off by writing or removing its private ingest configuration pair |
+| `fm-event-emit.sh`       | The single producer boundary every harness event adapter posts through, redacting by allowlist and never blocking the agent |
+| `fm-event-store.mjs`     | Own the dashboard's agent-event store outside the operational home, its server-side redaction, and its retention caps |
+| `fm-telemetry-store.mjs` | Own the opener, forward-only migrations, and value sanitizers both telemetry stores share |
 | `fm-usage.mjs`           | Collect Claude and Codex token usage into the versioned store, attribute it to tasks, and print rollups |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
@@ -63,7 +67,11 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-config-push.sh`      | Push declared inherited local material to live local or remote secondmates and send the placement-specific config reread when changed |
 | `fm-gbrain-lib.sh`       | Resolve a home's own brain, validate the three brain-configuration planes, and read a credential only from a restrictively stored file |
 | `fm-gbrain.sh`           | Inspect a home's brain configuration, and grant, rotate, revoke, or retire read-only access to the main brain |
+| `fm-gbrain-capture-lib.sh` | Derive a captured document's identity, redact a body before it reaches disk, and own the capture outbox's wire shape |
+| `fm-gbrain-capture.sh`   | Capture a finished task's knowledge into this home's own brain, with a durable outbox, bounded delivery, retry, and backfill |
 | `fm-recall.sh`           | The retrieval surface firstmate and crewmates use to search a home's brain and the shared main brain, and to run hosted `think` |
+| `fm-gbrain-health.sh`    | Print one presence-gated, budget-bounded read-only GBrain health snapshot for the dashboard panel (schema `fm-gbrain-health.v1`) |
+| `fm-gbrain-eval.sh`      | Score a home brain's retrieval and hosted synthesis separately against a versioned evaluation set, recording the configuration and corpus revision the numbers belong to |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
@@ -81,6 +89,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
+| `fm-run-progress.sh`     | Report whether a crew's validation run is progressing or stranded, from the pipeline's own step activity |
 | `fm-model-verify.sh`     | Verify the model a dispatched worker actually ran on against the model recorded for it |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |

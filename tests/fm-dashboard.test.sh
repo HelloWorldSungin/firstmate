@@ -9,8 +9,13 @@ set -u
 SERVER="$ROOT/bin/fm-dashboard-server.mjs"
 INSTALLER="$ROOT/bin/fm-dashboard-install.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dashboard)
+# Most servers below are fixture servers that configure no instrumentation, so
+# this is where a dashboard that opened its store unconditionally would show up:
+# outside every FM_HOME, in the operator's own state root.
+USER_EVENT_STORE_BEFORE=$(fm_user_event_store_snapshot)
 SERVER_PID=
 SSE_PID=
+EVENT_TOKEN=
 
 command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
@@ -89,6 +94,10 @@ make_runtime() {  # <name> [with-command]
   runtime="$TMP_ROOT/$name/runtime"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$TMP_ROOT/$name/home/data" "$TMP_ROOT/$name/home/state" "$TMP_ROOT/$name/home/projects" "$TMP_ROOT/$name/control"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   write_payload "$TMP_ROOT/$name/control/payload.json" "Initial dashboard card"
   printf 'good\n' > "$TMP_ROOT/$name/control/mode"
@@ -136,10 +145,15 @@ start_fixture_server() {  # <case-root> <timeout> <poll> [stale]
 start_real_server() {  # <case-root>
   local case_root=$1
   TEST_PORT=$(free_port)
+  EVENT_TOKEN=0123456789abcdef0123456789abcdef
+  printf '{"schema":"fm-dashboard-events-config.v1","url":"http://127.0.0.1:%s/events","token":"%s"}\n' \
+    "$TEST_PORT" "$EVENT_TOKEN" > "$case_root/dashboard-events.json"
   FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS=4 \
     FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_EVENTS_CONFIG="$case_root/dashboard-events.json" \
+    FM_DASHBOARD_EVENT_DB="$case_root/events.db" \
     node "$SERVER" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   wait_for_http "$case_root"
@@ -172,15 +186,19 @@ stop_server() {
   fi
 }
 
-test_loopback_is_mandatory() {
+# The bind address decides what this process is reachable on, so it may not be
+# anything whose meaning is resolved elsewhere. tests/fm-dashboard-access.test.sh
+# owns the rest of that contract: exposure beyond loopback and the credentials
+# it requires.
+test_the_bind_address_is_a_numeric_address() {
   local out rc
   set +e
-  out=$(FM_DASHBOARD_ADDRESS=0.0.0.0 node "$SERVER" 2>&1)
+  out=$(FM_DASHBOARD_ADDRESS=dashboard.invalid node "$SERVER" 2>&1)
   rc=$?
   set -e
-  [ "$rc" -ne 0 ] || fail "dashboard accepted a non-loopback bind"
-  assert_contains "$out" "must name a loopback address" "non-loopback refusal was not explicit"
-  pass "dashboard refuses every configured non-loopback bind"
+  [ "$rc" -ne 0 ] || fail "dashboard accepted a name as its bind address"
+  assert_contains "$out" "must be a numeric IPv4 or IPv6 address" "the refusal was not explicit"
+  pass "dashboard refuses a bind address that name resolution would decide"
 }
 
 test_sse_poll_and_last_good() {
@@ -244,6 +262,9 @@ class FakeNode {
     this.id = "";
     this.listeners = {};
     this.value = "";
+    // app.js publishes the sticky bar's measured height as a custom property on
+    // the document element, so a node has to be able to carry one.
+    this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
   }
 
@@ -257,11 +278,14 @@ class FakeNode {
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
-      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      const node = typeof child === "string" ? new FakeNode("#text", child) : child;
+      node.attached = true;
+      this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
+    for (const child of this.children) child.detach();
     this._text = "";
     this.children = [];
     this.append(...children);
@@ -274,13 +298,28 @@ class FakeNode {
   addEventListener(name, listener) {
     this.listeners[name] = listener;
   }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
+
+  // The anchor refuses to move the page for a node a render has thrown away, so
+  // a replaced subtree has to really stop reporting itself connected. Standing
+  // nodes are never appended anywhere and stay connected by default.
+  detach() {
+    this.attached = false;
+    for (const child of this.children) child.detach();
+  }
+
+  get isConnected() { return this.attached !== false; }
 }
 
 const selectors = new Map();
 for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
   "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
   "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close"]) {
+  "report-body", "report-close",
+  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -299,10 +338,24 @@ for (const key of ["query", "project", "harness", "model", "kind", "outcome", "f
   historyForm.elements[key] = field;
 }
 selectors.set("#history-form", historyForm);
+const activityForm = new FakeNode("form");
+activityForm.elements = {};
+for (const key of ["task", "harness", "type"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  activityForm.elements[key] = select;
+}
+selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
   querySelector: (selector) => selectors.get(selector),
+  // The anchor selector matches the standing sections and the cards inside
+  // them alike. The cards are read live out of the rendered list rather than
+  // listed up front, so a render genuinely swaps the node under the anchor.
+  querySelectorAll: (selector) => (selector.includes("#inbox")
+    ? [...anchorSections, ...selectors.get("#inbox-list").children]
+    : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -356,17 +409,55 @@ const envelope = {
   },
 };
 
+// The stream is how a live fleet redraws this page. A case that needs a render
+// to happen the way one really does pushes through the recorded listener.
+const eventSources = [];
 class FakeEventSource {
-  addEventListener() {}
+  constructor() {
+    this.listeners = {};
+    eventSources.push(this);
+  }
+
+  addEventListener(name, listener) { this.listeners[name] = listener; }
   close() {}
 }
 
 // The browser app is an ES module that imports the inbox policy module beside
 // it, so it is loaded through a real module graph rather than a flat script
 // evaluation. Its DOM and platform dependencies are resolved from globals.
+
+// A fold or unfold reflows this page while it stays loaded. The dashboard
+// anchors the reader to what they were reading and puts it back at the same
+// place on screen; these fakes supply the viewport, the layout rectangles, and
+// the frame callback that behavior is expressed in terms of.
+const topbar = new FakeNode("header");
+topbar.className = "topbar";
+topbar.rect = { top: 0, bottom: 40 };
+selectors.set(".topbar", topbar);
+
+const offscreenSection = new FakeNode("section");
+offscreenSection.rect = { top: -500, bottom: -200 };
+const readingSection = new FakeNode("section");
+readingSection.rect = { top: 300, bottom: 900 };
+const anchorSections = [offscreenSection, readingSection];
+
+const frames = [];
+const scrollCalls = [];
+const fakeWindow = {
+  innerWidth: 320,
+  innerHeight: 850,
+  scrollY: 0,
+  listeners: {},
+  addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
+  scrollTo(options) { scrollCalls.push(options); fakeWindow.scrollY = options.top; },
+};
+const flushFrames = () => { const queued = frames.splice(0); for (const frame of queued) frame(); };
+
 const storage = new Map();
 Object.assign(globalThis, {
   document,
+  window: fakeWindow,
+  requestAnimationFrame: (frame) => frames.push(frame),
   EventSource: FakeEventSource,
   fetch: async () => ({ ok: true, json: async () => envelope }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
@@ -419,9 +510,70 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
   if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
   if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
+
+  // Folding and unfolding changes the width, and with it the number of columns
+  // and the whole document height. Keeping the scroll offset is not the same as
+  // keeping the reader's place, so the section they were reading has to be put
+  // back where it was on screen.
+  inboxCard.rect = { top: 800, bottom: 1400 };
+  flushFrames();
+  const anchorLine = topbar.rect.bottom + 1;
+  const wasAt = readingSection.rect.top - anchorLine;
+  readingSection.rect = { top: 5000, bottom: 5600 };
+  fakeWindow.innerWidth = 690;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error(`a width change did not restore the reading position: ${scrollCalls.length} scrolls`);
+  const landed = 5000 - anchorLine - scrollCalls[0].top;
+  if (landed !== wasAt) throw new Error(`the anchor came back at ${landed}px instead of ${wasAt}px from the top`);
+  if (scrollCalls[0].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+
+  // Mobile browser chrome sliding in and out changes only the height, and does
+  // so constantly. Moving the page under the reader for that would be worse
+  // than the problem being fixed.
+  // Both candidates move, so whichever one the re-capture anchored to has
+  // genuinely shifted and a missing width gate would have to scroll.
+  flushFrames();
+  offscreenSection.rect = { top: -3000, bottom: -2700 };
+  readingSection.rect = { top: 9000, bottom: 9600 };
+  fakeWindow.innerHeight = 700;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
+
+  // What a reader is actually holding is usually a card, not a whole section,
+  // and cards do not survive a render: every push from the fleet rebuilds the
+  // list they live in. So the anchor has to be re-derived on render as well as
+  // on scroll, or a fold after any push drops the reader exactly as far as it
+  // did before the anchor existed.
+  offscreenSection.rect = { top: -4000, bottom: -3700 };
+  readingSection.rect = { top: -2000, bottom: -1400 };
+  inboxCard.rect = { top: 200, bottom: 800 };
+  fakeWindow.listeners.scroll();
+  flushFrames();
+  const cardWasAt = inboxCard.rect.top - anchorLine;
+
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  const rebuiltCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "rebuilt inbox card");
+  if (rebuiltCard === inboxCard) throw new Error("a snapshot push left the same card node, so nothing was replaced to test");
+  if (inboxCard.isConnected) throw new Error("a card a render replaced still reported itself connected");
+  const capturesPerRender = frames.length;
+
+  // The push rebuilt the card in place: the reader has not scrolled and the
+  // width has not changed, so it sits exactly where the old one did.
+  rebuiltCard.rect = { top: 200, bottom: 800 };
+  flushFrames();
+
+  rebuiltCard.rect = { top: 6000, bottom: 6600 };
+  const scrollBefore = fakeWindow.scrollY;
+  fakeWindow.innerWidth = 950;
+  fakeWindow.listeners.resize();
+  if (scrollCalls.length !== 2) throw new Error("the reading position was lost once a render had replaced the anchored card");
+  const cardLanded = 6000 - (scrollCalls[1].top - scrollBefore) - anchorLine;
+  if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
+  if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
+  if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, and explicit unknown pull-request fields"
+  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
@@ -441,6 +593,9 @@ class FakeNode {
     this.dataset = {};
     this.listeners = {};
     this.value = "";
+    // app.js publishes the sticky bar's measured height as a custom property on
+    // the document element, so a node has to be able to carry one.
+    this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
   }
 
@@ -466,13 +621,19 @@ class FakeNode {
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+
+  // The fold anchor reads real layout. These nodes carry whatever rectangle a
+  // case assigns them, which is what lets a reflow be simulated.
+  get isConnected() { return true; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
 }
 
 const selectors = new Map();
 for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
   "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
   "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close"]) {
+  "report-body", "report-close",
+  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
   selectors.set(`#${id}`, new FakeNode("div"));
 }
 const filterForm = new FakeNode("form");
@@ -491,6 +652,14 @@ for (const key of ["query", "project", "harness", "model", "kind", "outcome", "f
   historyForm.elements[key] = field;
 }
 selectors.set("#history-form", historyForm);
+const activityForm = new FakeNode("form");
+activityForm.elements = {};
+for (const key of ["task", "harness", "type"]) {
+  const select = new FakeNode("select");
+  select.append(new FakeNode("option", `All ${key}`));
+  activityForm.elements[key] = select;
+}
+selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
@@ -551,6 +720,8 @@ class FakeEventSource {
 const storage = new Map([["fm-dashboard-alerts", "on"]]);
 Object.assign(globalThis, {
   document,
+  window: { innerWidth: 320, innerHeight: 850, scrollY: 0, addEventListener() {}, scrollTo() {} },
+  requestAnimationFrame: () => 0,
   EventSource: FakeEventSource,
   Notification: FakeNotification,
   fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),
@@ -649,18 +820,40 @@ test_real_snapshot_makes_zero_fleet_writes() {
   before=$(fleet_fingerprint "$case_root/home")
   start_real_server "$case_root"
   wait_for_expression "$case_root" '.status.phase == "ready" and .snapshot.schema == "fm-fleet-snapshot.v1"'
-  sleep 0.2
+  # Ingesting agent events is the one write this process performs, and it must
+  # land in the dashboard's own store outside the home rather than anywhere the
+  # fleet owns. Accepting a real event inside the fingerprinted window is what
+  # makes that a proof rather than a claim about an idle server.
+  curl -fsS -o /dev/null -X POST "http://127.0.0.1:$TEST_PORT/events" \
+    -H "Authorization: Bearer $EVENT_TOKEN" \
+    -H "X-Firstmate-Source: fingerprint-task/claude" \
+    -H "Content-Type: application/json" \
+    -d "{\"schema\":\"fm-agent-event.v1\",\"events\":[{\"event_id\":\"fp1\",\"task_id\":\"fingerprint-task\",\"harness\":\"claude\",\"type\":\"turn_ended\",\"occurred_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}" \
+    || fail "dashboard refused an authenticated event during the read-only proof"
+  sleep 0.3
   after=$(fleet_fingerprint "$case_root/home")
   stop_server
   [ "$after" = "$before" ] || fail "dashboard changed data, state, or projects while reading the real snapshot contract"
-  pass "filesystem fingerprinting proves zero dashboard writes across fleet-owned directories"
+  [ -s "$case_root/events.db" ] || fail "the accepted event did not reach the dashboard's own store"
+  case "$case_root/events.db" in
+    "$case_root/home"/*) fail "the agent-event store was placed inside the operational home" ;;
+  esac
+  pass "filesystem fingerprinting proves zero dashboard writes across fleet-owned directories while events are accepted"
 }
 
 test_installer_writes_hardened_user_service() {
-  local case_root unit env_file out
+  local case_root unit env_file out pinned_db granted
   case_root="$TMP_ROOT/install"
   mkdir -p "$case_root/config" "$case_root/home"
-  out=$(HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+  # The store is overridden and the instrumentation config is left to be derived,
+  # so both halves of the pinning are exercised: the one the installer was told
+  # and the one it had to work out for itself. tests/lib.sh exports a neutral
+  # FM_DASHBOARD_EVENTS_CONFIG for every suite, which is dropped here for exactly
+  # that reason.
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
+    --allow-worktree \
     --fm-home "$case_root/fleet" --port 18878 --poll 3 --timeout 4 --stale 9 --no-start)
   unit="$case_root/config/systemd/user/firstmate-dashboard.service"
   env_file="$case_root/config/firstmate/dashboard.env"
@@ -670,7 +863,80 @@ test_installer_writes_hardened_user_service() {
   assert_contains "$(cat "$unit")" 'ProtectHome=read-only' "service does not enforce a read-only home mount"
   assert_contains "$(cat "$unit")" 'WantedBy=default.target' "service is not boot-persistent"
   assert_contains "$out" "Service not started (--no-start)." "installer did not honor its no-start boundary"
+
+  # The unit's one writable path and the store the service will actually open
+  # must be the same directory. The service does not inherit this shell's
+  # environment - systemd's user manager imports neither FM_DASHBOARD_EVENT_DB
+  # nor XDG_STATE_HOME - so a path left to be re-derived at runtime lands
+  # outside the grant, under ProtectHome=read-only, and every event is refused
+  # for the life of the process.
+  pinned_db=$(sed -n 's/^FM_DASHBOARD_EVENT_DB="\(.*\)"$/\1/p' "$env_file")
+  granted=$(sed -n 's/^ReadWritePaths=-//p' "$unit")
+  [ "$pinned_db" = "$case_root/store/events.db" ] \
+    || fail "the installer did not pin the resolved event store into the environment: [$pinned_db]"
+  [ "$granted" = "${pinned_db%/*}" ] \
+    || fail "the unit grants [$granted] while the service would open a store in [${pinned_db%/*}]"
+  assert_contains "$(cat "$env_file")" \
+    "FM_DASHBOARD_EVENTS_CONFIG=\"$case_root/config/firstmate/dashboard-events.json\"" \
+    "the installer did not pin the shared instrumentation configuration"
   pass "installer configures a hardened boot-persistent user service without sudo"
+}
+
+# The hardened unit pairs ProtectSystem=strict with ProtectHome=read-only.
+# Together they leave SQLite no writable scratch path - /tmp, /var/tmp,
+# /usr/tmp, and $HOME are all read-only - so a read-only query that needs a temp
+# file exits "disk I/O error" while the store itself is healthy.
+#
+# The two halves of the answer are pinned together here because either one alone
+# invites the other to be undone. The reader keeps its temp storage in memory,
+# so nothing ever asks the filesystem for scratch space; and the unit therefore
+# needs no scratch directive at all, which is what keeps PrivateTmp=yes out. That
+# directive is the obvious reach and the case refuses it: it substitutes a
+# private tmpfs for the shared /tmp, and the fleet's tmux server socket lives at
+# /tmp/tmux-$UID. The snapshot this service runs probes endpoints through that
+# socket, so a private /tmp would trade the usage panel for every live task
+# reading as "endpoint absent".
+# docs/verification/dashboard-service-unit.md records both reproductions.
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
+  local case_root unit out directives probe
+  case_root="$TMP_ROOT/install-sqlite-scratch"
+  mkdir -p "$case_root/config" "$case_root/home"
+  out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" \
+    FM_DASHBOARD_EVENT_DB="$case_root/store/events.db" "$INSTALLER" \
+    --allow-worktree \
+    --fm-home "$case_root/fleet" --port 18879 --poll 3 --timeout 4 --stale 9 --no-start)
+  unit="$case_root/config/systemd/user/firstmate-dashboard.service"
+  [ -f "$unit" ] || fail "installer did not create the user service: $out"
+  # Assertions run against the directives alone, so a comment that merely names
+  # a property cannot answer for the property itself.
+  directives=$(grep -v '^[[:space:]]*#' "$unit")
+  assert_contains "$directives" 'ProtectSystem=strict' "unit lost ProtectSystem=strict"
+  assert_contains "$directives" 'ProtectHome=read-only' "unit lost ProtectHome=read-only"
+  assert_not_contains "$directives" 'PrivateTmp=yes' \
+    "unit hides the shared /tmp, which is where the fleet's tmux server socket lives"
+
+  # The reader half, asserted where it actually takes effect rather than by
+  # reading the source: a readOnly open must report temp_store 2 (MEMORY), and a
+  # writable open must be left on the default, because a writer's temp storage
+  # can be large and it always has a writable data/ to spend it in.
+  probe=$(node --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const { openStore, closeStore } = await import(pathToFileURL(process.argv[1]).href);
+    const migrations = [{ version: 1, statements: ["CREATE TABLE t (x INTEGER)"] }];
+    const dbPath = process.argv[2];
+    const writer = openStore(dbPath, migrations);
+    process.stdout.write("writer=" + writer.prepare("PRAGMA temp_store").get().temp_store + "\n");
+    closeStore(writer);
+    const reader = openStore(dbPath, migrations, { create: false, readOnly: true });
+    process.stdout.write("reader=" + reader.prepare("PRAGMA temp_store").get().temp_store + "\n");
+  ' "$ROOT/bin/fm-telemetry-store.mjs" "$case_root/probe.db" 2>/dev/null) \
+    || fail "the shared store opener could not be probed for its temp-store setting"
+  assert_contains "$probe" 'reader=2' \
+    "the readOnly open does not keep SQLite temp storage in memory, so a sandbox with no writable scratch path fails the read"
+  assert_contains "$probe" 'writer=0' \
+    "the writable open no longer leaves temp storage on the SQLite default"
+  pass "the unit grants no private /tmp and the read-only opener keeps SQLite temps in memory"
 }
 
 wait_for_history() {  # <case-root> <jq-expression>
@@ -861,6 +1127,10 @@ test_usage_totals_are_presence_gated() {
   home="$case_root/home"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
@@ -879,11 +1149,13 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "absent" and (.usage.reason | test("not collected")) and (.usage.tasks | length) == 0' "$case_root/history.json" >/dev/null \
     || fail "an absent usage collector did not render as an explained unavailable"
   stop_server
 
   # A collector that reports totals: the totals are carried through.
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the present usage case could not create a store"
   cat > "$runtime/bin/fm-usage.mjs" <<'SH'
 #!/usr/bin/env node
 process.stdout.write(JSON.stringify({
@@ -902,7 +1174,7 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.usage.available == true'
-  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.collection == "ready" and .usage.tasks.paid.total_tokens == 15 and .usage.tasks.paid.cost.estimated == 0.25' "$case_root/history.json" >/dev/null \
     || fail "attributed usage totals were not carried into the history document"
   jq -e '.usage.tasks | has("../escape") | not' "$case_root/history.json" >/dev/null \
     || fail "a usage row with an unsafe task name was accepted"
@@ -916,14 +1188,179 @@ SH
   SERVER_PID=$!
   wait_for_http "$case_root"
   wait_for_history "$case_root" '.status.phase == "ready"'
-  jq -e '.usage.available == false and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
+  jq -e '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
     || fail "an unrecognized usage report was not refused as unavailable"
 
-  # And with usage explicitly switched off, history stays fully usable.
+  # A usage read that failed never takes history with it.
   jq -e '(.history.records | length) == 1' "$case_root/history.json" >/dev/null \
     || fail "history stopped working when the usage read did"
   stop_server
+
+  # And a dashboard told not to read usage at all is `disabled`, not a collector
+  # that failed: the off switch is answered before the collector is consulted,
+  # so nothing here can be mistaken for something to fix. The v99 collector left
+  # in place above is what makes that ordering visible rather than assumed.
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_USAGE=off \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/off.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "disabled"'
+  jq -e '.usage.available == false and (.usage.reason | test("disabled")) and (.usage.tasks | length) == 0 and (.history.records | length) == 1' \
+    "$case_root/history.json" >/dev/null \
+    || fail "a dashboard told not to read usage did not render as explicitly disabled"
+  stop_server
   pass "token usage is presence-gated and renders as unavailable rather than zero"
+}
+
+# A usage read can fail operationally two ways, and both are transients rather
+# than facts about this home. The store has writers - teardown refreshes it on
+# every archive, bootstrap on every locked session start - and each holds it in
+# WAL for the length of its window, so a writer that exits without closing
+# leaves behind a store whose wal-index the service cannot build without write
+# access to data/. Separately, a sandbox that leaves SQLite no writable scratch
+# path fails the read with "disk I/O error" against a healthy store - which is
+# why bin/fm-telemetry-store.mjs pins PRAGMA temp_store = MEMORY on its readOnly
+# open, so that half can no longer arise from any sandbox at all. Dropping
+# every card's real totals for the length of either would report a transient as
+# an operator action item, at the moment a captain is most likely to be looking.
+# The last good read is retained and labelled instead, the way a failed snapshot
+# refresh keeps its last good snapshot.
+test_a_failed_usage_read_keeps_the_last_good_one() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-stale"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the retained usage case could not create a store"
+  # A collector that answers once and then fails every later read, which is the
+  # shape a writer holding the store in WAL produces. The marker file is what
+  # makes the first read the good one without depending on timing.
+  cat > "$runtime/bin/fm-usage.mjs" <<SH
+#!/usr/bin/env node
+import fs from "node:fs";
+const marker = "$case_root/read-once";
+if (fs.existsSync(marker)) {
+  process.stderr.write("database is locked\n");
+  process.exit(1);
+}
+fs.writeFileSync(marker, "");
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: "task",
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.stale == false and .usage.tasks.paid.total_tokens == 15' "$case_root/history.json" >/dev/null \
+    || fail "the first usage read was not carried through as a fresh one"
+  wait_for_history "$case_root" '.usage.stale == true'
+  jq -e '.usage.available == true and .usage.collection == "ready" and .usage.tasks.paid.total_tokens == 15 and (.usage.reason | test("could not be read"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "a failed usage read dropped the totals it should have retained"
+  stop_server
+  pass "a usage read that failed keeps the last good totals and says the newest read did not land"
+}
+
+test_usage_without_store_file_is_absent_not_operational() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-absent-store"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[]}\n'
+SH
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+process.stderr.write("should not run\n");
+process.exit(1);
+SH
+  chmod +x "$runtime/bin/"*.sh "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.collection == "absent"'
+  jq -e '.usage.available == false and (.usage.reason | test("not collected"))' "$case_root/history.json" >/dev/null \
+    || fail "a missing store did not classify usage as absent"
+  stop_server
+  pass "a home without a usage store is absent rather than operational"
+}
+
+test_usage_reads_a_read_only_store_through_node() {
+  local case_root runtime home claude_root
+  case_root="$TMP_ROOT/history-usage-ro"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  claude_root="$case_root/claude"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$claude_root/-slot" "$case_root/codex"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$ROOT/bin/fm-usage.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  printf '%s\n' '{"type":"assistant","sessionId":"session-ro","cwd":"'"$home"'/wt","timestamp":"2026-08-01T10:00:00Z","message":{"id":"msg_ro","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":6,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' \
+    > "$claude_root/-slot/session.jsonl"
+  FM_USAGE_CLAUDE_ROOT="$claude_root" FM_USAGE_CODEX_ROOT="$case_root/codex" \
+    node "$runtime/bin/fm-usage.mjs" ingest --home "$home" >/dev/null \
+    || fail "the read-only usage case could not build a store"
+  # Hardened before anything reads it, and with no sidecars in place: a read
+  # taken while data/ was still writable would leave usage.db-wal and
+  # usage.db-shm behind, and the service's read-only open would then succeed on
+  # a wal-index the ProtectHome=read-only home has no way to create.
+  if [ -e "$home/data/usage.db-wal" ] || [ -e "$home/data/usage.db-shm" ]; then
+    fail "the read-only usage case started from a WAL store the service could not open"
+  fi
+  chmod -R a-w "$home/data"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.collection == "ready"' "$case_root/history.json" >/dev/null \
+    || fail "a read-only store did not classify usage as ready"
+  chmod -R u+w "$home/data" 2>/dev/null || true
+  stop_server
+  pass "the dashboard reads token usage through node against a read-only data directory"
 }
 
 test_history_streams_and_isolates_bad_records() {
@@ -933,6 +1370,10 @@ test_history_streams_and_isolates_bad_records() {
   home="$case_root/home"
   mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects" "$case_root/control"
   cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  # The server imports its event store, which imports the shared telemetry
+  # store discipline. A fixture runtime that copied only the server would fail
+  # to start for a reason unrelated to the case under test.
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
   cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
   cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
@@ -976,7 +1417,7 @@ SH
   pass "completed work streams to the browser and unreadable records stay disclosed"
 }
 
-test_loopback_is_mandatory
+test_the_bind_address_is_a_numeric_address
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
 test_browser_renders_contract_actions_and_liveness
@@ -988,5 +1429,11 @@ test_history_survives_teardown_and_backlog_pruning
 test_report_reads_cannot_select_a_path
 test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
+test_usage_without_store_file_is_absent_not_operational
+test_a_failed_usage_read_keeps_the_last_good_one
+test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory
+fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
+pass "no agent-event store was created outside this suite's own temp space"

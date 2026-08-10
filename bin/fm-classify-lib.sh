@@ -31,6 +31,11 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
+# The validation-run progress reader used for the wedge-escalation decision.
+# Overridable for the same reason FM_CREW_STATE_BIN is: a test fixes the verdict
+# without a real worktree, run, or no-mistakes install.
+FM_RUN_PROGRESS_BIN="${FM_RUN_PROGRESS_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-run-progress.sh}"
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -65,6 +70,111 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+
+# How many times an UNCHANGED declared wait may be re-surfaced before its recheck
+# cadence stops widening. A fixed window re-surfaces a wait that has not changed
+# at the same rate forever: three tasks correctly parked on one external decision
+# cost a supervisor a recheck each per window, every window, for as long as the
+# decision takes - and every one of those rechecks confirms the identical thing.
+# Widening the window per unchanged recheck keeps the property the recheck exists
+# for (a forgotten hold still cannot rot invisibly) while making a long, healthy
+# wait progressively cheap. Capped rather than unbounded so the cadence has a
+# floor no wait can outrun: 3 doublings is 8x the base window (8 hours at the
+# default), which still re-surfaces every parked wait several times a day.
+FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT=3
+
+# Absolute bounds on the widening, independent of what an operator configures.
+# The backoff exists to make a long healthy wait cheap, so a misconfigured cap
+# must fail toward the base cadence rather than into the opposite: an unbounded
+# shift overflows `base * (1 << streak)` (in bash, 3600 * (1 << 52) is negative
+# and 1 << 64 is 1), and a negative window reads as due on EVERY poll - a wake
+# storm strictly worse than the fixed cadence this backoff replaced. The sibling
+# heartbeat backoff in bin/fm-watch.sh clamps its own shift and result the same
+# way. The window ceiling keeps a huge but non-overflowing product from parking a
+# wait past the point of ever being rechecked again: once a day is still finite.
+FM_PAUSE_RESURFACE_STREAK_LIMIT=12
+FM_PAUSE_RESURFACE_WINDOW_MAX=86400
+
+# Effective re-surface window for a declared wait already re-surfaced <streak>
+# times without changing. The ONE owner of the backoff both consumers apply, for
+# the same reason FM_PAUSE_RESURFACE_SECS itself has one: the watcher and the
+# away-mode daemon must not drift into two different cadences for the same wait.
+# The streak counts rechecks of ONE wait and dies with it: the crew resuming, the
+# pause being cleared, or the wait itself being replaced by a different one all
+# reset it (see pause_streak_sync), so the next wait starts at the base window
+# and never inherits a cadence widened by something else.
+pause_resurface_window() {  # <streak> -> seconds
+  local streak=${1:-0} base cap window max
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  cap=${FM_PAUSE_RESURFACE_MAX_STREAK:-$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT}
+  case "$cap" in ''|*[!0-9]*) cap=$FM_PAUSE_RESURFACE_MAX_STREAK_DEFAULT ;; esac
+  [ "$cap" -gt "$FM_PAUSE_RESURFACE_STREAK_LIMIT" ] && cap=$FM_PAUSE_RESURFACE_STREAK_LIMIT
+  [ "$streak" -gt "$cap" ] && streak=$cap
+  base=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+  case "$base" in ''|*[!0-9]*) base=$FM_PAUSE_RESURFACE_SECS_DEFAULT ;; esac
+  max=$FM_PAUSE_RESURFACE_WINDOW_MAX
+  [ "$max" -lt "$base" ] && max=$base
+  window=$(( base * (1 << streak) ))
+  { [ "$window" -gt "$max" ] || [ "$window" -lt "$base" ]; } && window=$max
+  printf '%s' "$window"
+}
+
+# The re-surface streak record for ONE declared wait: the number of rechecks that
+# found that wait unchanged on line 1, and the status line that declared it on
+# line 2. Recording the wait itself is what makes the streak die with it - "a
+# paused line is present" is not the same fact as "the same wait is still
+# standing", so a crew that replaces `paused: awaiting the 4.2 release` with
+# `paused: awaiting the captain's merge call` must start over at the base window
+# instead of inheriting a cadence widened by a wait nobody is holding anymore.
+# Both supervisors keep this record beside their own pause marker (the watcher's
+# .paused-streak-<key>, the daemon's .subsuper-pausestreak-<key>) and both read
+# and write it through these helpers, so the two cannot drift.
+#
+# This record governs the WIDTH of the recheck window and nothing else. Neither
+# supervisor's sense of when the next recheck is DUE lives here: the watcher ages
+# a declared wait from its status file mtime, and the away-mode daemon ages it
+# from the epoch its own pause marker took when the hold began. Keeping those
+# apart is deliberate, because the discriminator here is the whole status line
+# and prose can churn - a crew that rewrites an elapsed-time counter into its
+# paused reason reads as a new wait every time. The cost of that is a window that
+# stays at its base width, which is extra rechecks and never a missed one.
+
+# 0 when <wait-line> is a DIFFERENT wait from the one on record, having reset the
+# record to that new wait at streak 0. 1 when the record already describes this
+# wait, and 1 on a first sighting - nothing has been widened yet, so there is
+# nothing to reset, and the record is simply created at streak 0.
+pause_streak_sync() {  # <streak-file> <wait-line>
+  local f=$1 line=$2 count='' recorded='' changed=1
+  if [ -e "$f" ]; then
+    { IFS= read -r count; IFS= read -r recorded; } < "$f" 2>/dev/null || true
+    [ "$recorded" = "$line" ] && return 1
+    changed=0
+  fi
+  printf '%s\n%s\n' 0 "$line" > "$f"
+  return "$changed"
+}
+
+# The streak on record: 0 when there is none, or when the record is unreadable.
+pause_streak_count() {  # <streak-file>
+  local f=$1 count=''
+  if [ -e "$f" ]; then
+    { IFS= read -r count; } < "$f" 2>/dev/null || true
+  fi
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  printf '%s' "$count"
+}
+
+# Record one more recheck of <wait-line>. Reconciles the record first, so a
+# recheck of a wait that CHANGED since the last observation starts that new wait
+# at one instead of silently continuing the previous wait's streak - the three
+# helpers then agree whatever order their callers run in, rather than the daemon's
+# recheck loop depending on an earlier reconcile pass having already synced.
+pause_streak_bump() {  # <streak-file> <wait-line>
+  local f=$1 line=$2 count
+  pause_streak_sync "$f" "$line" || true
+  count=$(pause_streak_count "$f")
+  printf '%s\n%s\n' "$(( count + 1 ))" "$line" > "$f"
+}
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -132,6 +242,9 @@ status_is_paused() {  # <status-line>
 # Both declarations can intentionally leave an exited crew's endpoint idle, so
 # the watcher applies its bounded pause cadence when agent death confirms that
 # no live decision gate is being silenced.
+# This predicate is the only definition of a declared wait: supervision reads it
+# directly and the fleet snapshot projects its verdict for read-only renderers,
+# so a change here moves both surfaces and neither carries its own token list.
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1 verb
   status_is_paused "$line" && return 0
@@ -363,6 +476,76 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# --- validation-run progress (the wedge-escalation gate) --------------------
+#
+# crew_absorb_class above answers "is there an active run", which is why a
+# worker parked on a healthy multi-minute pipeline call and a worker whose run
+# has stranded look identical to it: both report working. bin/fm-run-progress.sh
+# is the separate, narrower question - is that run MOVING - and this is where
+# both supervisors read it, so the two cannot drift into different wedge
+# policies.
+#
+# Like crew_absorb_class, this is NOT a pure status-file read: it makes a
+# bounded no-mistakes call. It is deliberately reached only at the moment an
+# escalation would otherwise be raised, so the cost is once per alarm rather
+# than once per poll - the per-poll triage path stays as cheap as it is today.
+
+# Print "<class>" or "<class> <detail>", where class is progressing, stranded,
+# or none. Anything unrecognized, unreadable, or absent collapses to none.
+crew_run_progress() {  # <id>
+  local id=$1 line rest class
+  [ -n "$id" ] || { printf 'none'; return; }
+  line=$("$FM_RUN_PROGRESS_BIN" "$id" 2>/dev/null) || true
+  case "$line" in progress:*) ;; *) printf 'none'; return ;; esac
+  rest=${line#progress: }
+  class=${rest%% *}
+  case "$class" in
+    progressing|stranded) printf '%s' "$rest" ;;
+    *) printf 'none' ;;
+  esac
+}
+
+# The progress line a wedge-escalation decision must use for crew <id>, given
+# <agent-state> - the backend's liveness verdict for that crew's endpoint
+# (alive|idle|dead|unknown), which each supervisor resolves through its own
+# backend plumbing. Prints the same three classes as crew_run_progress, and is
+# the ONE place the wedge policy is expressed, so the watcher and the away-mode
+# daemon cannot drift:
+#
+#   * Only `progressing` may quiet an alarm. Every other answer - no run, a run
+#     parked at a gate, a stranded step, a lookup that could not complete, an
+#     unparseable status - is `none` or `stranded`, and leaves the escalation
+#     exactly as it was before this gate existed.
+#   * A confidently DEAD agent short-circuits to `none` without paying for the
+#     read, however well its run is moving. The pipeline executes its own steps,
+#     so a run can keep advancing with nobody left to answer its next gate; that
+#     is a wedge, and it is the one shape "the run is fine" would otherwise
+#     hide.
+#
+# Callers read the class once and reuse it for both the hold decision and the
+# escalation's own wording, so an alarm costs at most one bounded call.
+crew_wedge_progress() {  # <id> <agent-state>
+  local id=$1 agent=${2:-unknown}
+  if [ -z "$id" ] || [ "$agent" = dead ]; then printf 'none'; return; fi
+  crew_run_progress "$id"
+}
+
+# The detail half of a progress line, with its class and separator removed;
+# empty when the line carries no detail. Both supervisors quote this into an
+# escalation reason, so the trimming has one owner rather than a hand-rolled
+# prefix strip in each.
+run_progress_detail() {  # <progress-line>
+  local line=${1:-} detail
+  case "$line" in
+    *' '*) detail=${line#* } ;;
+    *) return 0 ;;
+  esac
+  case "$detail" in
+    '· '*) detail=${detail#'· '} ;;
+  esac
+  printf '%s' "$detail"
 }
 
 # 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably

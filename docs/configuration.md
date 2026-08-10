@@ -91,6 +91,18 @@ Gitea uses its host entry when present and otherwise attempts an unauthenticated
 `config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
 The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
 
+## Dashboard agent events (dashboard-events.json)
+
+The dashboard's live per-agent activity timeline is configured outside the operational home, because its store and its credential belong to the dashboard rather than to the fleet.
+`bin/fm-dashboard-instrument.sh enable` writes `dashboard-events.json` and `dashboard-events.curlrc` under the user configuration root (`$XDG_CONFIG_HOME/firstmate`, or `~/.config/firstmate`), both mode 0600, and their presence is the entire switch.
+[`docs/dashboard-events.md`](dashboard-events.md) owns that contract, the store location, the retention environment names, and what an event may contain.
+
+## Dashboard credentials (dashboard-auth.json)
+
+The dashboard's credentials live beside its event configuration under the same user configuration root, and for the same reason: they belong to the dashboard rather than to the fleet, so a secondmate home never inherits them.
+`bin/fm-dashboard-install.sh --set-password` writes `dashboard-auth.json` mode 0600 holding a salted digest and never the password itself.
+Their presence is what makes a bind beyond loopback possible at all; [`docs/dashboard-remote-access.md`](dashboard-remote-access.md) owns that posture.
+
 ## Usage cost rates (config/usage-rates.json)
 
 Token accounting is always on once [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) runs, while a cost estimate is opt-in and absent by default.
@@ -232,6 +244,7 @@ That closure is what lets the file be inherited verbatim while every home still 
 
 `bin/fm-gbrain-lib.sh` owns validation, path derivation, home resolution, credential reading, and the main-brain token mint, `bin/fm-gbrain.sh` is the operator surface, `bin/fm-recall.sh` is the agent-facing retrieval surface, and `bin/fm-config-inherit-lib.sh` carries only the shared plane.
 [`gbrain-scoping.md`](gbrain-scoping.md) owns the read-only main-brain share, how a brain is read, source precedence, offline behavior, rotation, revocation, and retirement cleanup, and [`verification/gbrain-readonly-share.md`](verification/gbrain-readonly-share.md) records the evidence.
+[`gbrain-capture.md`](gbrain-capture.md) owns what a finished task writes into that brain, and `data/gbrain-outbox/` holds its durable pending records.
 
 ## Gate defaults (.no-mistakes.yaml)
 
@@ -418,9 +431,13 @@ In a read-only session that did not get the fleet lock, the same line is advisor
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 Normal completed runs keep local-only and no-origin skips silent.
+The same locked step then runs a bounded best-effort `bin/fm-usage.mjs ingest`, but only when `data/usage.db` already exists, so a home that never opted into token accounting pays nothing for it.
+A completed refresh is silent; one that timed out, could not be bounded on this host, or ran and exited non-zero reports itself on a single `USAGE_STORE:` line.
+The timeout line carries the bound and the elapsed seconds, the failure line carries the collector's exit status and the elapsed seconds, and the unbounded-host line carries neither because nothing ran.
+`FM_BOOTSTRAP_USAGE_TIMEOUT` owns that bound (default 120 seconds) and [`usage-accounting.md`](usage-accounting.md) owns the cadence it shares with teardown.
 After that refresh, bootstrap runs the read-only `fm-vault-drift.sh` detector and emits `VAULT_DRIFT:` for stale vaults or external vault locations whose drift cannot be measured.
 The same detector runs in lock-refused detect-only sessions because it never writes project clones or vaults; the script header owns the vault-shape, threshold, and diagnostic contracts.
-If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
+If bootstrap kills a timed-out clone refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
@@ -627,8 +644,10 @@ FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per GitHub call fm-issue-comment.sh makes for the living status comment
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
-FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, and by fm-recall.sh to read this home's own brain; see "Brain scoping"
+FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, by fm-recall.sh to read this home's own brain, by fm-gbrain-capture.sh to deliver a captured document, by fm-gbrain-eval.sh to read the version, brain-plane configuration, and corpus counts an evaluation run records, and by fm-gbrain-health.sh to resolve the brain root and validate the configured planes; see "Brain scoping"
 FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either surface, and per reachability probe in fm-gbrain.sh check
+FM_GBRAIN_MAINTENANCE_STATE=   # optional operator announcement fm-gbrain-health.sh surfaces on the dashboard GBrain panel: ready | upgrading | reindexing; see docs/gbrain.md "Announce a maintenance window"
+FM_GBRAIN_MAINTENANCE_DETAIL=   # optional free text shown with that announcement, e.g. the release being installed
 FM_RECALL_TIMEOUT=      # optional seconds per fm-recall.sh retrieval call, overriding its per-command defaults (search 60, think 300)
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
@@ -637,6 +656,7 @@ FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes run rows scanned when axi status cannot be attributed to the worktree
 FM_CREW_STATE_DEGRADED_MAX_AGE=900   # seconds a recorded run-step may stand in as the degraded answer while the no-mistakes lookup cannot complete; 0 disables the degrade
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage
+FM_RUN_PROGRESS_BIN=bin/fm-run-progress.sh   # test override for the validation-run progress reader consulted at the wedge-escalation point
 FMX_PAIRING_TOKEN=      # X mode pairing token; .env opt-in authorizes replies and eligible lifecycle actions
 FMX_RELAY_URL=https://myfirstmate.io   # optional X relay override, mainly for local relay development
 FMX_ENV_FILE=           # optional alternate .env file for direct X client invocations; bootstrap still checks $FM_HOME/.env
@@ -670,10 +690,16 @@ FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|read
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane or a confidently dead parked-decision repeat escalates; other first-sighting stale states surface immediately unless they declare the pause verb
 FM_BUSY_TURN_MAX_SECS=3600         # maximum age of a busy pane's latest state/<id>.turn-ended marker, or its state/<id>.meta spawn record before any turn completes, before the same wedge escalation used for a provably-working non-busy stale takes over; inspection-only, never an automatic interrupt or restart
-FM_PAUSE_RESURFACE_SECS=3600       # seconds before an idle declared external wait re-surfaces for a recheck in the watcher or away-mode daemon
+FM_PAUSE_RESURFACE_SECS=3600       # seconds before an idle declared external wait re-surfaces for a recheck in the watcher or away-mode daemon; the away-mode clock runs from when the hold began and is never restarted by the crew rewriting its paused reason
+FM_PAUSE_RESURFACE_MAX_STREAK=3    # how many times an unchanged declared wait may double the WIDTH of its recheck window before the cadence stops widening; 0 restores a fixed FM_PAUSE_RESURFACE_SECS cadence, and the streak restarts whenever the wait itself changes, which only ever narrows the window back toward the base. Clamped internally to 12 doublings and a one-day window, so a misconfigured value cannot overflow into a permanent re-surface
 FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalations on the same unchanged pane before demand-deep-inspection is added
+FM_RUN_STRANDED_SILENCE_SECS=1800  # how long an actively-executing no-mistakes step may report NO activity before a wedge escalation stops being held for it. Both supervisors consult bin/fm-run-progress.sh at the escalation point only, so a crew parked on a run that is still moving stops alarming for as long as the hold lasts (bounded by FM_RUN_PROGRESS_HOLD_MAX below) while a stranded run, an orphaned step, an absent run, and a confidently dead agent all still do. Above the pipeline's own 10m step_quiet_warning on purpose: that marker is a liveness clue, and review or test steps routinely go 10-18 minutes on one opening line. Raising it delays a real wedge alarm by the same amount
+FM_RUN_PROGRESS_NM_TIMEOUT=10      # seconds allowed for that bounded `no-mistakes axi status` read; a read that cannot complete is no evidence, never a reason to quiet an alarm
+FM_RUN_PROGRESS_HOLD_MAX=15        # consecutive run-progress holds one pane may spend before it wedge-escalates anyway, in both supervisors. Run progress is evidence about the RUN, not about the WORKER, so a moving pipeline may DELAY an alarm but never silence it: past the cap the escalation fires however healthy the run looks, carrying the progress detail so it reads as "still moving, this pane is not". 15 holds x FM_STALE_ESCALATE_SECS (240) is one hour, the same allowance FM_BUSY_TURN_MAX_SECS and FM_PAUSE_RESURFACE_SECS already give a live-but-quiet endpoint, and it clears this repo's own routine pipeline steps (review 11m median, test 6m) so only a genuinely long step ever reaches it. The forced escalation resets the hold count, not the escalation count. Raising it widens the blind window for a hung worker by the same amount; lowering it re-introduces routine noise on long healthy steps
 FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wake debug log
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's best-effort clone refresh; unset/blank defaults to max(20, 5 + 3 * origin-backed-project-count)
+FM_BOOTSTRAP_USAGE_TIMEOUT=120       # seconds allowed for bootstrap's best-effort token-usage refresh, which runs only when data/usage.db exists; blank, non-numeric, or zero falls back to 120, because zero is what GNU timeout reads as "no timeout"
+FM_TEARDOWN_USAGE_TIMEOUT=60         # the same bound for the refresh task teardown runs before archiving a task; blank, non-numeric, or zero falls back to 60
 FM_VAULT_DRIFT_COMMITS=20            # project commits landed since a vault update before bootstrap reports drift
 FM_VAULT_DRIFT_DAYS=7                # commit-to-commit drift-window days before bootstrap reports drift
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone

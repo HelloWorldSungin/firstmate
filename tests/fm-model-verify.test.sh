@@ -234,13 +234,145 @@ sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/legacy-missing-store.met
 rm -f "$HOME_DIR/state/legacy-missing-store.meta.bak"
 out=$(run_verify legacy-missing-store); code=$?
 expect_code 4 "$code" "a legacy record without an evidence-store identity exits 4"
-assert_contains "$out" "verdict: unverifiable" \
-  "a legacy record without an evidence-store identity remains unverifiable"
+assert_contains "$out" "verdict: unarmed" \
+  "a legacy record without an evidence-store identity is reported as never armed"
 assert_not_contains "$out" "verdict: unstarted" \
   "ambient session absence did not authorize an unstarted verdict"
-assert_contains "$out" "durable record names no model-evidence store" \
-  "the unverifiable reason names the unknown evidence location"
+assert_not_contains "$out" "verdict: match" \
+  "an unarmed record manufactured a pass"
+assert_contains "$out" "names no model-evidence store" \
+  "the unarmed reason names the unknown evidence location"
 pass "a missing persisted evidence-store identity never falls back to ambient state"
+
+# `unarmed` is a REPORTING verdict, not an allowance: it stays at the same exit
+# severity as every other no-verdict outcome, so a reporting caller keeps
+# surfacing it. Only terminal mode, checked below, treats it differently.
+out=$(run_verify legacy-missing-store --terminal); code=$?
+expect_code 0 "$code" "an unarmed dispatch blocked terminal cleanup"
+assert_contains "$out" "verdict: unarmed" \
+  "terminal mode dropped the unarmed verdict line"
+pass "an unarmed dispatch reports at no-verdict severity and does not block cleanup"
+
+# The enumeration behind that release, pinned executably rather than in prose.
+# An absent store line is only the SHAPE of a never-armed record; a record
+# carrying positive proof that arming DID run must keep refusing on exactly that
+# same absence. capture_claude_watermark emits the store and the watermark
+# together, plus its baseline rows, so either marker alone is that proof.
+wt=$(meta armed-watermark-no-store opus model_evidence_watermark=claude-transcript-v1)
+sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/armed-watermark-no-store.meta"
+rm -f "$HOME_DIR/state/armed-watermark-no-store.meta.bak"
+out=$(run_verify armed-watermark-no-store); code=$?
+expect_code 4 "$code" "an arming watermark without a store exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "an arming watermark without a store was not unverifiable"
+assert_not_contains "$out" "verdict: unarmed" \
+  "a record proven to have been armed was released as never armed"
+assert_contains "$out" "arming markers but names no model-evidence store" \
+  "the damaged-armed-record cause is named"
+out=$(run_verify armed-watermark-no-store --terminal); code=$?
+expect_code 4 "$code" "an arming watermark without a store stopped blocking terminal cleanup"
+assert_not_contains "$out" "verdict: unarmed" \
+  "terminal mode released a record proven to have been armed"
+pass "an arming watermark with no store is a damaged armed record and keeps blocking"
+
+wt=$(meta armed-baseline-no-store opus model_evidence_before=previous.jsonl)
+sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/armed-baseline-no-store.meta"
+rm -f "$HOME_DIR/state/armed-baseline-no-store.meta.bak"
+out=$(run_verify armed-baseline-no-store); code=$?
+expect_code 4 "$code" "a baseline identity without a store exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "a baseline identity without a store was not unverifiable"
+assert_not_contains "$out" "verdict: unarmed" \
+  "a record carrying a captured baseline was released as never armed"
+out=$(run_verify armed-baseline-no-store --terminal); code=$?
+expect_code 4 "$code" "a baseline identity without a store stopped blocking terminal cleanup"
+assert_not_contains "$out" "verdict: unarmed" \
+  "terminal mode released a record carrying a captured baseline"
+pass "a captured baseline with no store is a damaged armed record and keeps blocking"
+
+# The third record shape reaching the store-absent branch: a remote secondmate
+# route record. bin/fm-spawn.sh's spawn_remote_secondmate writes kind=secondmate
+# with the remote route fields and no store line for a secondmate that DID
+# launch and run; its armed record lives in the remote host's own state, so the
+# evidence is not absent, only unreadable from this home.
+wt=$(meta remote-secondmate-route opus)
+sed -i.bak -e '/^model_evidence_store=/d' -e 's|^kind=.*$|kind=secondmate|' \
+  "$HOME_DIR/state/remote-secondmate-route.meta"
+rm -f "$HOME_DIR/state/remote-secondmate-route.meta.bak"
+printf '%s\n' \
+  "home=$wt" \
+  'remote_host=builder.example' \
+  'remote_root=/srv/clone' \
+  'remote_backend=tmux' \
+  'remote_target=firstmate:fm-remote-secondmate-route' \
+  >> "$HOME_DIR/state/remote-secondmate-route.meta"
+out=$(run_verify remote-secondmate-route); code=$?
+expect_code 4 "$code" "a remote secondmate route record exits 4"
+assert_contains "$out" "verdict: unverifiable" \
+  "a remote secondmate route record was not unverifiable"
+assert_not_contains "$out" "verdict: unarmed" \
+  "a secondmate that ran on a remote host was released as never armed"
+assert_contains "$out" "ran on a remote host" \
+  "the ran-elsewhere cause is named"
+out=$(run_verify remote-secondmate-route --terminal); code=$?
+expect_code 4 "$code" "a remote secondmate route record stopped blocking terminal cleanup"
+assert_not_contains "$out" "verdict: unarmed" \
+  "terminal mode released a secondmate that ran on a remote host"
+pass "a remote secondmate route record ran elsewhere and keeps blocking"
+
+# The boundary that must not move: an armed dispatch keeps blocking terminal
+# cleanup on every one of its failure modes. Same fixture, one line repointed.
+wt=$(meta armed-store-absent opus model_evidence_watermark=claude-transcript-v1)
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$TMP_ROOT/armed-but-absent|" \
+  "$HOME_DIR/state/armed-store-absent.meta"
+rm -f "$HOME_DIR/state/armed-store-absent.meta.bak"
+out=$(run_verify armed-store-absent --terminal); code=$?
+expect_code 4 "$code" "an armed dispatch whose store is gone stopped blocking cleanup"
+assert_contains "$out" "verdict: unverifiable" \
+  "an armed dispatch whose store is gone was not unverifiable"
+assert_not_contains "$out" "verdict: unarmed" \
+  "a recorded-but-missing store was misreported as never armed"
+assert_contains "$out" "model-evidence store is missing" \
+  "the missing-store cause is named"
+pass "a recorded evidence store that is gone from disk still blocks terminal cleanup"
+
+# A store that EXISTS and cannot be read is a different failure from one that is
+# gone, so terminal mode is pinned on it separately.
+armed_unreadable_store="$TMP_ROOT/armed-unreadable-store"
+mkdir -p "$armed_unreadable_store"
+wt=$(meta armed-store-unreadable opus model_evidence_watermark=claude-transcript-v1)
+sed -i.bak "s|^model_evidence_store=.*$|model_evidence_store=$armed_unreadable_store|" \
+  "$HOME_DIR/state/armed-store-unreadable.meta"
+rm -f "$HOME_DIR/state/armed-store-unreadable.meta.bak"
+chmod 000 "$armed_unreadable_store"
+out=$(run_verify armed-store-unreadable --terminal); code=$?
+chmod 755 "$armed_unreadable_store"
+if [ "$(id -u)" = 0 ]; then
+  pass "unreadable evidence store case skipped (running as root)"
+else
+  expect_code 4 "$code" "an armed dispatch with an unreadable store stopped blocking cleanup"
+  assert_contains "$out" "verdict: unverifiable" \
+    "an armed dispatch with an unreadable store was not unverifiable"
+  assert_not_contains "$out" "verdict: unarmed" \
+    "a recorded-but-unreadable store was misreported as never armed"
+  assert_contains "$out" "model-evidence store is not readable" \
+    "the unreadable-store cause is named"
+  pass "a recorded evidence store that cannot be read still blocks terminal cleanup"
+fi
+
+# A store line that is present and malformed is a damaged armed record, not an
+# unarmed one, so it keeps the blocking verdict rather than the allowance.
+wt=$(meta armed-store-malformed opus)
+sed -i.bak 's|^model_evidence_store=.*$|model_evidence_store=relative/not/absolute|' \
+  "$HOME_DIR/state/armed-store-malformed.meta"
+rm -f "$HOME_DIR/state/armed-store-malformed.meta.bak"
+out=$(run_verify armed-store-malformed --terminal); code=$?
+expect_code 4 "$code" "a malformed recorded store stopped blocking cleanup"
+assert_contains "$out" "verdict: unverifiable" \
+  "a malformed recorded store was not unverifiable"
+assert_not_contains "$out" "verdict: unarmed" \
+  "a malformed recorded store was misreported as never armed"
+pass "a malformed recorded evidence store still blocks terminal cleanup"
 
 out=$(run_verify never-dispatched); code=$?
 expect_code 4 "$code" "absent durable record exits 4"
@@ -485,13 +617,13 @@ sed -i.bak '/^model_evidence_store=/d' "$HOME_DIR/state/newline-store.meta"
 rm -f "$HOME_DIR/state/newline-store.meta.bak"
 out=$(CLAUDE_CONFIG_DIR="$newline_root-link" run_verify newline-store); code=$?
 expect_code 4 "$code" "newline-bearing physical evidence store exits 4"
-assert_contains "$out" "verdict: unverifiable" \
+assert_contains "$out" "verdict: unarmed" \
   "newline-bearing physical evidence store did not fail loudly"
-assert_contains "$out" "durable record names no model-evidence store" \
+assert_contains "$out" "names no model-evidence store" \
   "an unrecorded ambient store did not become authoritative"
 assert_not_contains "$out" "verdict: match" \
   "newline-bearing physical evidence store manufactured a match"
-pass "newline-bearing physical evidence stores are unverifiable"
+pass "newline-bearing physical evidence stores never resolve against ambient state"
 
 # Without a timestamp, disagreeing evidence cannot be attributed. Guessing which
 # half belongs to this task would be exactly the silent pass to avoid.
@@ -502,9 +634,11 @@ write_transcript "$wt" a claude-opus-5
 write_transcript "$wt" b claude-opus-4-8
 out=$(run_verify unbound-ambiguous); code=$?
 expect_code 4 "$code" "unattributable evidence exits 4"
-assert_contains "$out" "verdict: unverifiable" "disagreeing unbound evidence is unverifiable"
-assert_contains "$out" "durable record names no model-evidence store" \
+assert_contains "$out" "verdict: unarmed" "disagreeing unbound evidence produces no verdict"
+assert_contains "$out" "names no model-evidence store" \
   "unbound evidence did not bypass the missing recorded store"
+assert_not_contains "$out" "actual: claude-opus" \
+  "ambient transcripts were attributed to a dispatch that recorded no store"
 pass "unbound evidence without a recorded store fails loudly"
 
 # Unanimous ambient evidence is not attributable without a persisted store.
@@ -515,10 +649,12 @@ write_transcript "$wt" a claude-opus-5
 write_transcript "$wt" b claude-opus-5
 out=$(run_verify unbound-agreed); code=$?
 expect_code 4 "$code" "unanimous ambient evidence without a recorded store exits 4"
-assert_contains "$out" "verdict: unverifiable" \
-  "unanimous ambient evidence without a recorded store remains unverifiable"
+assert_contains "$out" "verdict: unarmed" \
+  "unanimous ambient evidence without a recorded store produced a verdict anyway"
 assert_not_contains "$out" "verdict: match" \
   "unanimous ambient evidence did not manufacture an authoritative match"
+assert_contains "$out" "actual: -" \
+  "ambient transcripts were read for a dispatch that recorded no store"
 pass "unanimous ambient evidence requires a recorded store identity"
 
 # --- secondmate: the worker runs in its own home, not a worktree ------------

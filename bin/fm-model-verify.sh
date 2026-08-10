@@ -38,6 +38,10 @@
 #   unstarted    the runtime never wrote a session for this worker's working
 #                directory at all, so no turn of its own exists to read.
 #                NOT a pass - no verdict yet.                            exit 4
+#   unarmed      verification was never armed for this dispatch, so no verdict
+#                can ever exist for it. NOT a pass, and distinct from
+#                `unverifiable`: there is no evidence location to fail to read.
+#                docs/model-verification.md owns the predicate.          exit 4
 #   pending      an adapter exists, a session exists, and the worker has simply
 #                not produced a model-attributed turn yet. NOT a pass.
 #   unpinned     meta records `model=default`: firstmate pinned no tier, so
@@ -73,11 +77,12 @@ usage: fm-model-verify.sh <task-id> [--json]
 Verify the model a dispatched worker actually ran on against the model recorded
 for it in state/<id>.meta.
 
-Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted · 2 usage error.
+Exit: 0 match/pending/unpinned · 3 mismatch · 4 unverifiable/unstarted/unarmed · 2 usage error.
 With --terminal, a mismatch exits 3, and an absent verdict exits 4 only when the
-dispatch was verifiable in principle (a claude-harness task with a pinned model);
-otherwise it exits 0 so cleanup is not blocked for a harness that can never
-produce a verdict. The verdict line is printed either way.
+dispatch was verifiable in principle (a claude-harness task with a pinned model
+whose record was armed for the check, per docs/model-verification.md); otherwise
+it exits 0 so cleanup is not blocked for a dispatch that can never produce a
+verdict. The verdict line is printed either way.
 With --all, the worst verdict across all tasks sets the exit code.
 EOF
 }
@@ -445,6 +450,7 @@ VERIFIABLE_IN_PRINCIPLE=0
 
 verify_one() {  # <id>
   local id=$1 meta cwd harness kind anchor anchor_present watermark baseline models n before store store_present
+  local armed_marker_present remote_route_present
   VERDICT=; RECORDED=; ACTUAL=; SOURCE=none; DETAIL=; VERIFIABLE_IN_PRINCIPLE=0
 
   meta="$STATE/$id.meta"
@@ -501,7 +507,10 @@ verify_one() {  # <id>
   # Past this point the dispatch was verifiable IN PRINCIPLE: a harness with an
   # evidence adapter, and a pinned model for the runtime to contradict. Only
   # such a task can be blocked from cleanup for failing to produce a verdict -
-  # see terminal_is_blocking below.
+  # see the terminal-mode block at the end of this file. The remaining
+  # requirement is that the record was armed for the check at all, decided by
+  # the store-absent branch below, which withdraws this only for a record the
+  # `unarmed` predicate accepts in full (docs/model-verification.md).
   VERIFIABLE_IN_PRINCIPLE=1
 
   if [ "$anchor_present" -eq 1 ]; then
@@ -518,14 +527,49 @@ verify_one() {  # <id>
     case "$store" in
       /*) ;;
       *)
+        # A store line that IS present and unusable is a corrupted record, not
+        # an unarmed one: the dispatch was armed and its anchor was damaged, so
+        # it keeps the blocking `unverifiable` verdict.
         VERDICT=unverifiable
         DETAIL="dispatch model-evidence store is malformed"
         return
         ;;
     esac
   else
-    VERDICT=unverifiable
-    DETAIL="durable record names no model-evidence store for this dispatch"
+    # This branch decides the `unarmed` release, whose predicate and the record
+    # shapes behind each condition are owned by docs/model-verification.md.
+    # An absent store line is only the SHAPE of a record that was never armed:
+    # a pre-guard record is a strict subset of today's schema, so there is no
+    # positive "never armed" marker to require, and absence alone cannot prove
+    # it. The two denials below are that positive proof, they prove different
+    # things, and each keeps the blocking `unverifiable` verdict - as does every
+    # recorded-store failure above and below, which this stays separate from.
+    #
+    # The verifier still reads no ambient store on any of these paths: an
+    # unknown evidence location is never resolved against whatever the current
+    # environment happens to point at, because that would attribute another
+    # dispatch's transcripts to this task.
+    armed_marker_present=0
+    grep -qE '^(model_evidence_watermark|model_evidence_before)=' "$meta" 2>/dev/null \
+      && armed_marker_present=1
+    if [ "$armed_marker_present" -eq 1 ]; then
+      VERDICT=unverifiable
+      DETAIL="dispatch carries model-evidence arming markers but names no model-evidence store, so it was armed and its record is damaged"
+      return
+    fi
+    remote_route_present=0
+    if [ "$kind" = secondmate ]; then
+      grep -qE '^(remote_host|remote_root|remote_backend|remote_target)=' "$meta" 2>/dev/null \
+        && remote_route_present=1
+    fi
+    if [ "$remote_route_present" -eq 1 ]; then
+      VERDICT=unverifiable
+      DETAIL="dispatch ran on a remote host, so its model evidence is not readable from this home"
+      return
+    fi
+    VERDICT=unarmed
+    VERIFIABLE_IN_PRINCIPLE=0
+    DETAIL="dispatch names no model-evidence store, so verification was never armed for it and no verdict can ever exist"
     return
   fi
 
@@ -630,7 +674,11 @@ EOF
 exit_for_verdict() {  # <verdict>
   case "$1" in
     mismatch) printf '3' ;;
-    unverifiable|unstarted) printf '4' ;;
+    # `unarmed` reports at the same severity as the other no-verdict outcomes so
+    # reporting callers keep surfacing it. Only TERMINAL mode treats it
+    # differently, and it does so through VERIFIABLE_IN_PRINCIPLE rather than
+    # this reporting code.
+    unverifiable|unstarted|unarmed) printf '4' ;;
     *) printf '0' ;;
   esac
 }
@@ -705,10 +753,13 @@ if [ "$TERMINAL" -eq 1 ]; then
   # Terminal mode answers one question for cleanup: may this task's evidence be
   # discarded? A MISMATCH always blocks - that is the worker this whole helper
   # exists to catch. An absent verdict blocks only when the dispatch was
-  # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter and a
-  # pinned model. Blocking otherwise would make non-forced cleanup impossible
-  # for every harness that can never produce a verdict at all, which is a fleet
-  # -wide regression rather than the boundary this refusal was meant to draw.
+  # verifiable IN PRINCIPLE, meaning a harness with an evidence adapter, a
+  # pinned model, and a record that was armed for the check as
+  # docs/model-verification.md defines it. Blocking otherwise would make
+  # non-forced cleanup impossible for every dispatch that can never produce a
+  # verdict at all, which is a fleet-wide regression rather than the boundary
+  # this refusal was meant to draw. That is the ONLY concession: an armed
+  # dispatch keeps blocking on every one of its failure modes.
   # The verdict is surfaced by the caller either way, so nothing goes unseen.
   case "$VERDICT" in
     match|unpinned) exit 0 ;;

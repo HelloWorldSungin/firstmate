@@ -26,6 +26,7 @@
   "readmeSetupTargets": [
     "docs/configuration.md",
     "docs/dashboard.md",
+    "docs/dashboard-remote-access.md",
     "docs/wedge-alarm.md",
     "docs/tmux-backend.md",
     "docs/herdr-backend.md",
@@ -251,6 +252,14 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/dashboard-events.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/dashboard-remote-access.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/documentation-audiences.md",
       "audience": "maintainer-architecture"
     },
@@ -287,6 +296,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/gbrain-capture.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/gbrain-scoping.md",
       "audience": "operator-current"
     },
@@ -296,6 +309,10 @@
     },
     {
       "path": "docs/verification/gbrain-init-retrieval.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/gbrain-capture.md",
       "audience": "maintainer-verification"
     },
     {
@@ -375,11 +392,23 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/verification/dashboard-browser.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/dashboard-service-unit.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },
     {
       "path": "docs/verification/gbrain-reranker.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/gbrain-eval.md",
       "audience": "maintainer-verification"
     },
     {

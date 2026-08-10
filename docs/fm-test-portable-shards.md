@@ -50,7 +50,7 @@ The two parallel lanes use longest-processing-time assignment from those measure
 ## Portable serial remainder
 
 `portable-serial` includes every `tests/*.test.sh` that is neither proven-isolated, `real-herdr-gated`, nor `live-harness-optin`.
-It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, GUI-backend, and other unproven work serial, while credentialed live tests stay explicit opt-ins outside every portable lane and therefore outside every serial CI shard.
+It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, GUI-backend, and other unproven work serial, while `live-harness-optin` stays an explicit opt-in outside every portable lane and therefore outside every serial CI shard, because its members need machine state CI does not have - real harness credentials, or a real browser session.
 Membership is derived rather than enumerated, so a newly added test lands here by default.
 
 ## Portable serial CI shards

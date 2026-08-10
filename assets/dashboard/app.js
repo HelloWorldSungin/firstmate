@@ -1,6 +1,8 @@
 import { buildHealth, buildInbox, formatAge } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
 import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
+import { buildGBrainHealth, paintGBrainPanel, paintGBrainSearchResults, searchFailure, searchReasonLabel } from "./gbrain.js";
 
 const ui = {
   signals: document.querySelector("#signals"),
@@ -24,12 +26,26 @@ const ui = {
   historySummary: document.querySelector("#history-summary"),
   historyList: document.querySelector("#history-list"),
   historyPager: document.querySelector("#history-pager"),
+  activityForm: document.querySelector("#activity-form"),
+  activityFilterCount: document.querySelector("#activity-filter-count"),
+  activityClear: document.querySelector("#activity-clear"),
+  activityNote: document.querySelector("#activity-note"),
+  activityNotices: document.querySelector("#activity-notices"),
+  activityList: document.querySelector("#activity-list"),
   reportDialog: document.querySelector("#report-dialog"),
   reportTask: document.querySelector("#report-task"),
   reportTitle: document.querySelector("#report-title"),
   reportNotices: document.querySelector("#report-notices"),
   reportBody: document.querySelector("#report-body"),
   reportClose: document.querySelector("#report-close"),
+  gbraintronNote: document.querySelector("#gbraintron-note"),
+  gbraintronNotices: document.querySelector("#gbraintron-notices"),
+  gbraintronStrip: document.querySelector("#gbraintron-strip"),
+  gbraintronSearchForm: document.querySelector("#gbraintron-search-form"),
+  gbraintronSearchInput: document.querySelector("#gbraintron-search-input"),
+  gbraintronSearchLimit: document.querySelector("#gbraintron-search-limit"),
+  gbraintronSearchButton: document.querySelector("#gbraintron-search-button"),
+  gbraintronResults: document.querySelector("#gbraintron-results"),
   themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
   notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
 };
@@ -84,6 +100,13 @@ const state = {
     page: 0,
     pageSize: HISTORY_LIMITS.defaultPageSize,
   },
+  activity: {
+    envelope: null,
+    filters: { task: "", harness: "", type: "" },
+    // The selected task's rows fetched from the store, kept out of the stream
+    // envelope so a broadcast cannot discard them. See mergeTaskBackfill.
+    backfill: { task: "", events: [] },
+  },
 };
 
 function element(tag, className, text) {
@@ -93,8 +116,85 @@ function element(tag, className, text) {
   return node;
 }
 
+// The project pill is ellipsized to keep a card head on one line, so the full
+// name has to stay recoverable from the element itself.
+function projectPill(name) {
+  const pill = element("span", "pill project-pill", name);
+  pill.title = name;
+  return pill;
+}
+
+// Folding and unfolding a device reflows this page between a single stacked
+// column and a multi-column grid, which changes the document height by
+// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
+// offset no longer points at the same content, so the reader is dropped
+// somewhere else in the page. Anchor to whatever they were actually reading
+// instead, and put that back at the same place on the screen.
+//
+// Only a width change counts. Mobile browser chrome sliding in and out changes
+// the height alone, constantly, and moving the page under the reader for that
+// would be far worse than the problem being fixed.
+const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
+let scrollAnchor = null;
+let anchorQueued = false;
+let lastViewportWidth = window.innerWidth;
+
+// The sticky bar covers the top of the viewport, so the first line the reader
+// can actually see is its lower edge.
+function anchorLine() {
+  const bar = document.querySelector(".topbar");
+  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
+}
+
+// Anchor navigation is the other half of that same fact. Following a nav link,
+// or the board's Timeline button, scrolls the target section's top edge to the
+// top of the VIEWPORT - which is underneath the sticky bar, so the reader lands
+// part-way into the section with its eyebrow and heading hidden. The bar is
+// sized by its own content and rewraps with width, so its height is not a
+// constant the stylesheet could hold on its own; publishing it is what lets
+// every scroll target keep clear of it.
+function publishStickyHeight() {
+  const bar = document.querySelector(".topbar");
+  if (!bar) return;
+  const height = Math.ceil(bar.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--sticky-top", `${height}px`);
+}
+
+function captureAnchor() {
+  anchorQueued = false;
+  const line = anchorLine();
+  let best = null;
+  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
+    const top = candidate.getBoundingClientRect().top;
+    if (top > window.innerHeight) break;
+    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
+  }
+  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
+}
+
+function queueAnchorCapture() {
+  if (anchorQueued) return;
+  anchorQueued = true;
+  requestAnimationFrame(captureAnchor);
+}
+
+function restoreAnchor() {
+  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
+  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
+  if (Math.abs(drift) < 1) return;
+  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
+  // is not a navigation the reader should have to watch animate.
+  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
+}
+
+// Every render rebuilds the nodes of the section it renders, so a card the
+// reader is anchored to stops existing the moment a server push arrives - and
+// pushes arrive constantly. Re-derive the anchor here, where every render path
+// meets, so it always names something still on the page. The frame throttle
+// collapses the burst of section rebuilds in one render into a single capture.
 function replaceChildren(parent, children) {
   parent.replaceChildren(...children.filter(Boolean));
+  queueAnchorCapture();
 }
 
 function dot(tone) {
@@ -285,7 +385,7 @@ function inboxCard(item) {
   const head = element("div", "inbox-head");
   head.append(dot(item.tone));
   head.append(element("span", "pill", item.label));
-  if (item.project) head.append(element("span", "pill project-pill", item.project));
+  if (item.project) head.append(projectPill(item.project));
   const age = element("span", `age ${item.age_known ? "" : "unknown"}`.trim(),
     item.age_known ? `${formatAge(item.age_seconds)} · ${item.age_source}` : "age unknown");
   head.append(age);
@@ -451,7 +551,7 @@ function taskCard(task) {
   card.setAttribute("aria-label", `${task.id}: ${titleFor(task)}`);
   const head = element("div", "card-head");
   head.append(element("span", "pill", `${task.kind || "task"}`));
-  if (task.project) head.append(element("span", "pill project-pill", task.project));
+  if (task.project) head.append(projectPill(task.project));
   head.append(dot(endpointTone(task)));
   head.append(element("span", "age", `${formatAge(task?.paths?.status_log?.last_event_age_seconds)} ago`));
   card.append(head);
@@ -483,6 +583,14 @@ function taskCard(task) {
     const link = workItemLink(reference);
     if (link) card.append(link);
   }
+
+  // The per-agent timeline is one click from the card it belongs to, because a
+  // fleet-wide stream is where you look afterwards and a single agent's own
+  // sequence is what you want while it is working.
+  const timeline = element("button", "card-timeline", "Timeline");
+  timeline.type = "button";
+  timeline.addEventListener("click", () => showTaskTimeline(task.id));
+  card.append(timeline);
   return card;
 }
 
@@ -558,6 +666,97 @@ function renderBoard(snapshot, envelope) {
 // here even though the parser already applied the same policy. No other
 // attribute is ever set, so an `onerror` or `style` carried by a crafted node
 // cannot reach the DOM. There is no innerHTML on this path by construction.
+// --- activity -------------------------------------------------------------
+//
+// Every value below reaches the page through textContent. The server already
+// refuses anything that is not an allowlisted token, so this is the second of
+// two independent reasons a stored event can never become markup.
+
+function activityRow(row) {
+  const item = element("li", "activity-row");
+  item.title = row.at;
+  item.append(element("span", "activity-time", clockLabel(row.at)));
+
+  const body = element("div", "activity-body");
+  const head = element("div", "activity-head");
+  head.append(dot(typeTone(row.type)));
+  head.append(element("strong", "", typeLabel(row.type)));
+  if (row.tool) head.append(element("span", "activity-tool", row.tool));
+  if (row.outcome) {
+    const outcome = element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome);
+    head.append(outcome);
+  }
+  body.append(head);
+
+  const meta = [row.task, row.harness].filter(Boolean).join(" · ");
+  if (meta) body.append(element("div", "activity-meta", meta));
+  if (row.summary) body.append(element("div", "activity-summary", row.summary));
+  item.append(body);
+  return item;
+}
+
+// The activity filters are rebuilt from a stream that a broadcast replaces up
+// to four times a second, so replacing their options unconditionally would
+// close an open dropdown under the reader every quarter second - on a busy
+// fleet, which is exactly when the filter is wanted. Options are therefore
+// replaced only when the list has actually changed, and never while the reader
+// is in the control; the next render picks it up once focus leaves.
+function syncActivitySelect(key, values) {
+  const select = ui.activityForm.elements[key];
+  const selected = state.activity.filters[key];
+  // A filter whose value is no longer in the stream is kept in the list rather
+  // than silently cleared, so a reader watching one agent does not get pulled
+  // back to the whole fleet the moment that agent goes quiet.
+  const wanted = selected && !values.includes(selected) ? [...values, selected] : values;
+  const current = [...select.options].slice(1).map((option) => option.value);
+  const unchanged = current.length === wanted.length
+    && current.every((value, index) => value === wanted[index]);
+  if (!unchanged && document.activeElement !== select) {
+    const first = select.options[0];
+    replaceChildren(select, [first, ...wanted.map((value) => {
+      const option = element("option", "", key === "type" ? typeLabel(value) : value);
+      option.value = value;
+      return option;
+    })]);
+  }
+  if (select.value !== selected) select.value = selected;
+}
+
+function renderActivity() {
+  const envelope = state.activity.envelope;
+  // The stream and the selected task's backfill are two separate slots and are
+  // merged here rather than in either one, so a broadcast can replace the whole
+  // stream without discarding rows that were fetched from the store.
+  const merged = mergeTaskBackfill(envelope?.events, state.activity.backfill, state.activity.filters.task);
+  const view = buildTimeline({ events: merged }, state.activity.filters);
+  for (const key of Object.keys(state.activity.filters)) syncActivitySelect(key, view.choices[key]);
+  const active = Object.values(state.activity.filters).filter(Boolean).length;
+  ui.activityFilterCount.textContent = active ? `(${active} active)` : "";
+
+  const notices = [];
+  const notice = timelineNotice(envelope, merged.length, view.total);
+  if (notice.text) notices.push(historyWarning(notice.tone, "", notice.text));
+  if (view.truncated) {
+    notices.push(historyWarning("amber", "Showing the most recent events only",
+      ` ${view.total} events match and the newest ${view.rows.length} are drawn.`));
+  }
+  const selected = state.activity.filters.task;
+  if (selected) {
+    const task = (state.envelope?.snapshot?.tasks || []).find((entry) => entry?.id === selected);
+    const gap = sourceNotice(task, envelope);
+    if (gap) notices.push(historyWarning("amber", "", gap));
+  }
+  replaceChildren(ui.activityNotices, notices);
+  replaceChildren(ui.activityList, view.rows.map(activityRow));
+
+  // Same shape as every other refresh note on the page: a relative age, not a
+  // raw stamp. The exact instant stays on each row's own title.
+  const newest = view.rows[0]?.epoch;
+  ui.activityNote.textContent = newest
+    ? `${view.total} event${view.total === 1 ? "" : "s"} · newest ${formatAge(Math.max(0, Math.floor(Date.now() / 1000) - newest))} ago`
+    : "No events to show";
+}
+
 function markdownDom(node) {
   if (typeof node?.text === "string") return document.createTextNode(node.text);
   if (!node || !MARKDOWN_TAGS.has(node.tag)) return document.createTextNode("");
@@ -584,10 +783,20 @@ function ageSince(millis) {
   return Math.max(0, Math.floor((Date.now() - millis) / 1000));
 }
 
+// Red is a fault, amber is a warning, and everything else is information on a
+// neutral surface rather than on the warning strip. A heading is optional: an
+// empty one is left out entirely rather than drawn as an empty block, which
+// would give the notice a line of leading no other notice on the page has.
+function noticeVariant(tone) {
+  if (tone === "red") return "error";
+  if (tone === "amber") return "";
+  return "info";
+}
+
 function historyWarning(tone, heading, detail) {
-  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
+  const notice = element("div", `notice ${noticeVariant(tone)}`.trim());
   const copy = element("div");
-  copy.append(element("strong", "", heading));
+  if (heading) copy.append(element("strong", "", heading));
   copy.append(document.createTextNode(detail));
   notice.append(dot(tone), copy);
   return notice;
@@ -626,7 +835,12 @@ function renderHistoryWarnings(view, envelope) {
 }
 
 function usagePanel(row) {
-  const panel = element("div", `usage-panel ${row.usage.available ? "" : "unknown"}`.trim());
+  const tone = row.usage.available
+    ? ""
+    : row.usage.collection === "operational"
+      ? "operational"
+      : "unknown";
+  const panel = element("div", `usage-panel ${tone}`.trim());
   panel.append(element("span", "label", "USAGE"));
   if (!row.usage.available) {
     // Never a blank cell and never a zero: "unavailable" and "nothing happened"
@@ -685,7 +899,7 @@ function historyCard(row) {
   head.append(dot(row.outcome.tone));
   head.append(element("span", "pill", row.outcome.label));
   head.append(element("span", "pill", row.kind));
-  if (row.project) head.append(element("span", "pill project-pill", row.project));
+  if (row.project) head.append(projectPill(row.project));
   const age = ageSince(row.completed_millis);
   head.append(element("span", "age", row.timestamps.completed
     ? `${row.timestamps.completed}${age === null ? "" : ` · ${formatAge(age)} ago`}`
@@ -792,8 +1006,15 @@ function renderHistory() {
   } else {
     summary.append(element("strong", "", "No matching completed records"));
   }
-  if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
-  else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
+  // A retained read is still attributed usage, so it is stated as such rather
+  // than as a fault - the one thing it adds is that a writer held the store when
+  // this refresh tried, which is why a just-finished task may not be in it yet.
+  if (view.usage.available && view.usage.stale) {
+    summary.append(element("span", "quiet", `showing the last known good token usage read: ${view.usage.reason || "the newest read did not land"}`));
+  } else if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
+  else if (view.usage.collection === "operational") {
+    summary.append(element("span", "quiet", `token usage needs attention: ${view.usage.reason || "the collector failed"}`));
+  } else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
   if (view.semantic_search.captured_records) {
     summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
   }
@@ -930,6 +1151,155 @@ async function fetchHistory() {
   }
 }
 
+function renderActivityEnvelope(envelope) {
+  state.activity.envelope = envelope;
+  renderActivity();
+}
+
+async function fetchActivity() {
+  try {
+    const response = await fetch("/api/timeline", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.schema !== "fm-dashboard-timeline.v1") throw new Error("unsupported timeline envelope");
+    renderActivityEnvelope({
+      schema: "fm-dashboard-events.v1",
+      status: { ...payload.status, last_event_at: payload.events?.[0]?.occurred_at ?? null },
+      instrumented_harnesses: payload.instrumented_harnesses,
+      events: payload.events,
+    });
+  } catch (error) {
+    renderActivityEnvelope({
+      schema: "fm-dashboard-events.v1",
+      status: { ingestion: "unavailable", reason: error.message },
+      instrumented_harnesses: [],
+      events: [],
+    });
+  }
+}
+
+// One agent's own timeline. The live stream carries a bounded fleet-wide tail,
+// so a task whose events have already scrolled out of it is fetched from the
+// store rather than shown as empty. The fetched rows go into their own slot,
+// not into the stream: the stream is replaced whole by every broadcast, and one
+// fetch per selection is the point - a busy fleet must not turn each broadcast
+// into an HTTP request.
+async function showTaskTimeline(taskId) {
+  state.activity.filters = { task: taskId, harness: "", type: "" };
+  state.activity.backfill = { task: taskId, events: [] };
+  renderActivity();
+  window.location.hash = "#activity";
+  try {
+    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.schema !== "fm-dashboard-timeline.v1" || state.activity.filters.task !== taskId) return;
+    state.activity.backfill = { task: taskId, events: payload.events || [] };
+    renderActivity();
+  } catch {
+    // The live stream is still authoritative for what has arrived since; a
+    // failed backfill narrows the view rather than breaking it.
+  }
+}
+
+// --- GBrain panel -----------------------------------------------------------
+//
+// The panel reads its health envelope from /api/gbrain/health and submits
+// searches to /api/gbrain/search. Both pass through the same authorize()
+// gate as the rest of the surface, so the panel inherits the same
+// authentication and rate limiting without owning any of it. The render
+// path is independent of fetchSnapshot/fetchHistory: the brain is
+// optional, so its panel can render an empty state without ever blocking
+// the fleet view, and its own update cadence is the server's history-poll
+// interval rather than the faster snapshot poll.
+
+const gbraintronElements = {
+  panel: document.querySelector("#gbraintron"),
+  strip: ui.gbraintronStrip,
+  notice: ui.gbraintronNotices,
+  searchForm: ui.gbraintronSearchForm,
+  searchInput: ui.gbraintronSearchInput,
+  searchLimit: ui.gbraintronSearchLimit,
+  searchButton: ui.gbraintronSearchButton,
+  results: ui.gbraintronResults,
+  refreshNote: ui.gbraintronNote,
+  // The panel's cards are .health-card and .history-card nodes, both of which
+  // ANCHOR_SELECTOR names, and a health poll replaces every one of them twice.
+  // Hand the panel this module's anchor-aware replacer so a reader parked on a
+  // GBrain card is not silently dropped on the next push.
+  replaceChildren,
+};
+
+function paintGBraintronRefreshNote(envelope) {
+  if (!gbraintronElements.refreshNote) return;
+  const status = envelope?.status || {};
+  if (status.phase === "first_run") {
+    gbraintronElements.refreshNote.textContent = "Taking the first health read";
+  } else if (status.refreshing) {
+    gbraintronElements.refreshNote.textContent = "Refreshing";
+  } else if (status.last_success_at) {
+    gbraintronElements.refreshNote.textContent = `read ${formatAge(status.last_success_age_seconds)} ago`;
+  } else if (status.error) {
+    gbraintronElements.refreshNote.textContent = "Last read failed; retrying automatically";
+  } else {
+    gbraintronElements.refreshNote.textContent = "Waiting for the first health read";
+  }
+}
+
+function renderGBraintron(envelope) {
+  state.gbraintron = envelope;
+  if (!envelope) return;
+  paintGBraintronRefreshNote(envelope);
+  paintGBrainPanel(gbraintronElements, envelope);
+}
+
+async function fetchGBraintronHealth() {
+  try {
+    const response = await fetch("/api/gbrain/health", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const envelope = await response.json();
+    if (envelope.schema !== "fm-gbrain-health.v1") throw new Error("unsupported gbraintron health envelope");
+    renderGBraintron(envelope);
+  } catch (error) {
+    renderGBraintron({
+      schema: "fm-gbrain-health.v1",
+      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
+      config: { query_max_bytes: 1024, result_limit_max: 16 },
+      health: null,
+    });
+  }
+}
+
+// The body for /api/gbrain/search is one JSON object whose every field is
+// type-checked here before it goes over the wire. The dashboard never
+// constructs a request from anything other than the input field's current
+// textContent, so the server's byte cap and the page's maxLength together
+// keep the body small without further effort.
+async function runGBraintronSearch(query, limit) {
+  const elements = gbraintronElements;
+  if (elements.searchButton) elements.searchButton.disabled = true;
+  try {
+    const response = await fetch("/api/gbrain/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, limit }),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.schema !== "fm-gbrain-search.v1") {
+      const reason = payload?.reason || (response.ok ? "unsupported_schema" : `http_${response.status}`);
+      const detail = payload?.detail;
+      paintGBrainSearchResults(elements, null, searchFailure(reason, detail || searchReasonLabel(reason)));
+      return;
+    }
+    paintGBrainSearchResults(elements, payload, null);
+  } catch (error) {
+    paintGBrainSearchResults(elements, null, { tone: "red", text: `The search could not be sent: ${error.message}` });
+  } finally {
+    if (elements.searchButton) elements.searchButton.disabled = false;
+  }
+}
+
 function connectEvents() {
   clearTimeout(state.reconnectTimer);
   state.eventSource?.close();
@@ -948,6 +1318,22 @@ function connectEvents() {
     try {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-history.v1") renderHistoryEnvelope(envelope);
+    } catch {
+      source.close();
+    }
+  });
+  source.addEventListener("agent_events", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-dashboard-events.v1") renderActivityEnvelope(envelope);
+    } catch {
+      source.close();
+    }
+  });
+  source.addEventListener("gbrain_health", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-gbrain-health.v1") renderGBraintron(envelope);
     } catch {
       source.close();
     }
@@ -1005,9 +1391,61 @@ ui.reportDialog.addEventListener("close", () => {
   replaceChildren(ui.reportNotices, []);
 });
 
+// Submitting the search form fires one read-only GBrain search. The submit
+// handler is bound even on a configured home with no input: an empty form
+// submission is the same as a no-op for the wrapper, and the form's
+// novalidate state lets Enter inside the input box fire the search without
+// needing a click.
+if (ui.gbraintronSearchForm) {
+  ui.gbraintronSearchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = ui.gbraintronSearchInput?.value || "";
+    const limit = Number(ui.gbraintronSearchLimit?.value || 8);
+    void runGBraintronSearch(query, limit);
+  });
+}
+
+ui.activityForm.addEventListener("change", () => {
+  for (const key of Object.keys(state.activity.filters)) {
+    state.activity.filters[key] = ui.activityForm.elements[key].value;
+  }
+  renderActivity();
+});
+ui.activityForm.addEventListener("submit", (event) => event.preventDefault());
+
+ui.activityClear.addEventListener("click", () => {
+  for (const key of Object.keys(state.activity.filters)) {
+    state.activity.filters[key] = "";
+    ui.activityForm.elements[key].value = "";
+  }
+  renderActivity();
+});
+
+// Observed rather than recomputed on resize alone: the bar's height also
+// changes when its own counts and health chips rewrap, which happens on a fleet
+// update at a fixed width.
+publishStickyHeight();
+if (typeof ResizeObserver === "function") {
+  const stickyBar = document.querySelector(".topbar");
+  if (stickyBar) new ResizeObserver(publishStickyHeight).observe(stickyBar);
+}
+
+window.addEventListener("scroll", queueAnchorCapture, { passive: true });
+window.addEventListener("resize", () => {
+  if (window.innerWidth === lastViewportWidth) return;
+  lastViewportWidth = window.innerWidth;
+  restoreAnchor();
+  queueAnchorCapture();
+});
+queueAnchorCapture();
+
 initializeTheme();
 initializeNotifications();
 void fetchSnapshot();
 void fetchHistory();
+void fetchActivity();
+void fetchGBraintronHealth();
 renderHistory();
+renderActivity();
+renderGBraintron(state.gbraintron);
 connectEvents();

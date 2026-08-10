@@ -373,6 +373,23 @@ const brokenUsage = buildHistory(envelope([manifest("alpha")], {
 })).rows[0];
 equal("an unreadable total is unavailable rather than zero", brokenUsage.usage.available, false);
 
+// A retained read is the server's last good one, kept while a writer held the
+// store. Its totals are real, so they stand; what changes is a task it does not
+// carry - "not in the read we still have" is a different claim from the settled
+// "the collector attributed nothing to this task", and a just-archived record is
+// exactly the task that lands in that gap.
+const staleUsage = buildHistory(envelope([manifest("alpha")], {
+  usage: { available: true, stale: true, reason: "token usage could not be read (exit_nonzero)", tasks: { alpha: { total_tokens: 42 } } },
+}));
+equal("a retained read keeps the totals it carries", staleUsage.rows[0].usage.totals.total_tokens, 42);
+equal("a retained read is marked stale for the view", staleUsage.usage.stale, true);
+const staleMissingRow = buildHistory(envelope([manifest("beta")], {
+  usage: { available: true, stale: true, reason: "token usage could not be read (exit_nonzero)", tasks: { alpha: { total_tokens: 42 } } },
+})).rows[0];
+equal("a task the retained read lacks is still unavailable", staleMissingRow.usage.available, false);
+check("a task the retained read lacks says the read is the old one, not that nothing was attributed",
+  /last good/.test(staleMissingRow.usage.reason), staleMissingRow.usage.reason);
+
 // --- corrupt and old-schema records are isolated with a warning ---------------
 
 const damaged = buildHistory(envelope([manifest("alpha")], {
