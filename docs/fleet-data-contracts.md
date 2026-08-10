@@ -137,7 +137,8 @@ A consumer that has not adopted the field reads it as absent and keeps its previ
 
 Per backlog record: `since_age_seconds`, the age of the row's `since` date.
 `tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
-The backlog stores a date with no clock time, so the age runs from the start of that day and is an upper bound at day granularity.
+The backlog stores a LOCAL date with no clock time - `tasks-axi` stamps the writer's own calendar day, not a UTC one - so the age runs from that day's local midnight on the observing host and is an upper bound at day granularity.
+The snapshot resolves each date to its local-midnight instant itself rather than letting `jq`'s UTC `strptime`/`mktime` decide the day start, which on a host ahead of UTC would put the start after the instant the date was written and under-report the age.
 It is null when no readable date is present, and 0 rather than negative for a row dated ahead of the observation, matching the clock-skew convention the snapshot's file ages already use.
 
 Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, plus away-mode state and age), and `history`.

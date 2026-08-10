@@ -23,8 +23,9 @@
 #     since_age_seconds ages the row's `since` date, which tasks-axi writes when
 #     the row is CREATED and never rewrites on hold, so it measures how long the
 #     item has been raised and not how long a hold has stood. The backlog records
-#     a date with no clock time, so the age runs from the start of that day: it is
-#     an upper bound at day granularity, null when no readable date is present.
+#     a LOCAL date with no clock time, so the age runs from that day's local
+#     midnight: it is an upper bound at day granularity, null when no readable
+#     date is present.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
@@ -379,6 +380,30 @@ first_pr_url_in_file() {  # <file>
   grep -Eo 'https?://[^[:space:])"]+/pull/[0-9]+' "$1" 2>/dev/null | head -1
 }
 
+# Epoch of midnight LOCAL time on a calendar date, empty when the date is not a
+# real one. BSD date takes -j -f, GNU date takes -d.
+day_start_epoch() {  # <YYYY-MM-DD>
+  date -j -f '%Y-%m-%d %H:%M:%S' "$1 00:00:00" +%s 2>/dev/null \
+    || date -d "$1 00:00:00" +%s 2>/dev/null \
+    || return 1
+}
+
+# Local-midnight instant for every calendar date a backlog names, keyed by the
+# date as written. tasks-axi writes `since` as a LOCAL date, so the day it names
+# begins at local midnight; jq's strptime|mktime reads a date as UTC and would
+# put the day start up to a whole offset away from the one the writer meant.
+# Resolving the instant here also gives each date its own offset, which a single
+# observation-time offset would get wrong across a daylight-saving change.
+backlog_day_starts_json() {  # <backlog-path>
+  local day epoch pairs=''
+  while IFS= read -r day; do
+    epoch=$(day_start_epoch "$day") || continue
+    pairs+="$day $epoch"$'\n'
+  done < <(grep -Eo '[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}' "$1" 2>/dev/null | sort -u)
+  printf '%s' "$pairs" \
+    | jq -Rn '[inputs | split(" ") | {key:.[0],value:(.[1] | tonumber)}] | from_entries'
+}
+
 backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   local backlog=${1:-$BACKLOG}
   if [ ! -f "$backlog" ]; then
@@ -387,16 +412,20 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   fi
 
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" --arg now_epoch "$SNAPSHOT_EPOCH" '
+  jq -Rn --arg path "$backlog" --arg now_epoch "$SNAPSHOT_EPOCH" \
+    --argjson day_starts "$(backlog_day_starts_json "$backlog")" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
-    # Seconds since the START of the day a row records in its `since` metadata.
-    # A backlog row carries a date and no clock time, so this is an upper bound
-    # at day granularity rather than a precise elapsed time. Never negative: a
-    # row dated ahead of this observation reports 0, the same convention
-    # path_age_seconds uses for a file whose mtime is in the future.
+    # Seconds since the START of the local day a row records in its `since`
+    # metadata, taken from the $day_starts map the caller resolved in the local
+    # timezone tasks-axi wrote that date in. A backlog row carries a date and no
+    # clock time, so this is an upper bound at day granularity rather than a
+    # precise elapsed time. A value the map does not hold was never a readable
+    # calendar date, so it stays null rather than becoming a fabricated zero.
+    # Never negative: a row dated ahead of this observation reports 0, the same
+    # convention path_age_seconds uses for a file whose mtime is in the future.
     def since_age($date):
       if $date == null or $date == "" then null
-      else (try ($date | strptime("%Y-%m-%d") | mktime) catch null) as $start
+      else ($day_starts[$date] // null) as $start
         | if $start == null then null
           else (($now_epoch | tonumber) - $start) as $age
             | (if $age < 0 then 0 else $age end)

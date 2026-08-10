@@ -92,7 +92,7 @@ The snapshot carries no per-decision timestamp, so a status-derived reason is ag
 
 That last label is deliberately not "held for".
 The backlog's `since` date is written when the row is created and is not rewritten when the row goes on hold, so it says how long the item has been raised and nothing about when the hold began.
-It is also a date with no clock time, so its age runs from the start of that day and is an upper bound at day granularity; [`docs/fleet-data-contracts.md`](fleet-data-contracts.md#snapshot-projection) owns that field.
+It is also a local date with no clock time, so its age runs from that day's local midnight and is an upper bound at day granularity; [`docs/fleet-data-contracts.md`](fleet-data-contracts.md#snapshot-projection) owns that field.
 A row with no readable date still renders "age unknown" rather than a fabricated zero.
 
 Ordering is the reason this matters more than the label does.
