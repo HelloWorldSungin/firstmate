@@ -394,6 +394,68 @@ check("and states no duration it cannot read",
   agelessWait.byId.events.detail === "Every live task declared its own wait. Nothing has gone quiet without saying so.",
   agelessWait.byId.events.detail);
 
+// --- a parked agent was exited on purpose ---------------------------------
+//
+// Parking a captain-gated task exits its agent deliberately, so its absent
+// endpoint is the runbook working rather than a worker that died. Workers reads
+// the SAME hints.last_event_declared_wait verdict Task activity reads, so the
+// pause vocabulary stays defined once in bin/fm-classify-lib.sh.
+
+function parkedWorker(id, ageSeconds = 228_489) {
+  return task(id, {
+    card: { column: "waiting", action: "recheck" },
+    endpoint: { exists: false, status: "absent" },
+    hints: { open_decisions: [], last_event_declared_wait: true },
+    paths: { status_log: { last_event_age_seconds: ageSeconds } },
+  });
+}
+
+const parkedOnly = health(fleet({ tasks: [parkedWorker("parked-a"), parkedWorker("parked-b")] }));
+equal("a deliberately parked agent is not a missing worker", parkedOnly.byId.workers.tone, "green");
+check("parked workers are reported as waiting, not counted gone",
+  parkedOnly.byId.workers.value === "2 waiting by design", parkedOnly.byId.workers.value);
+check("and the waiting tasks are named rather than silently hidden",
+  parkedOnly.byId.workers.detail.includes("parked-a") && parkedOnly.byId.workers.detail.includes("parked-b"),
+  parkedOnly.byId.workers.detail);
+equal("a home whose only absent endpoints were parked reads healthy", parkedOnly.overall.label, "Healthy");
+
+const parkedBesideLive = health(fleet({ tasks: [parkedWorker("parked"), task("busy")] }));
+equal("a parked agent beside a live one is still green", parkedBesideLive.byId.workers.tone, "green");
+check("the live worker is still counted present",
+  parkedBesideLive.byId.workers.value === "1 present · 0 gone · 0 unknown · 1 waiting",
+  parkedBesideLive.byId.workers.value);
+
+// The genuine alarm this signal exists for must survive. A worker that vanished
+// without declaring anything is red even while a declared wait sits beside it.
+const vanished = health(fleet({ tasks: [
+  parkedWorker("parked"),
+  task("vanished", { endpoint: { exists: false, status: "absent" } }),
+] }));
+equal("a worker that vanished without declaring a wait is still red", vanished.byId.workers.tone, "red");
+check("the red verdict names the undeclared task alone",
+  vanished.byId.workers.detail.startsWith("No runtime endpoint for vanished,"), vanished.byId.workers.detail);
+check("and the declared wait is not counted gone",
+  vanished.byId.workers.value === "0 present · 1 gone · 0 unknown · 1 waiting", vanished.byId.workers.value);
+equal("an undeclared vanished worker still needs attention", vanished.overall.label, "Attention needed");
+
+// The declaration is a positive claim here too: anything short of `true` keeps
+// the strict endpoint verdict, so an unproven declaration cannot hide a death.
+for (const [label, value] of [["absent", undefined], ["null", null], ["a string", "true"], ["false", false]]) {
+  const unproven = health(fleet({ tasks: [task("gone", {
+    endpoint: { exists: false, status: "absent" },
+    hints: { open_decisions: [], last_event_declared_wait: value },
+  })] }));
+  equal(`an ${label} declaration does not excuse a missing endpoint`, unproven.byId.workers.tone, "red");
+}
+
+// An unreadable endpoint on a working task is still unknown, and a declared wait
+// beside it neither hides that nor turns it green.
+const unreadableEndpoint = health(fleet({ tasks: [
+  parkedWorker("parked"),
+  task("murky", { endpoint: { exists: null, status: "unknown" } }),
+] }));
+equal("an unreadable working endpoint stays unknown", unreadableEndpoint.byId.workers.tone, "unknown");
+
 // A secondmate reports only when it is asked to do something, so its silence is
 // health, not a stalled task. It is answered for by its own signal instead.
 const idleMate = health(fleet({ tasks: [task("mate", {

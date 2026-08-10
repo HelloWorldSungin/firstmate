@@ -108,7 +108,7 @@ The strip carries seven signals plus one overall verdict.
 | Snapshot | last refresh succeeded and is fresh | showing the last known good snapshot | no valid snapshot available | first snapshot has not completed |
 | Supervision | beacon beating inside its grace window | past half the grace window | no beacon, or the snapshot marks it stale | beacon present with an unreadable age |
 | Task activity | slowest live task that has not declared a wait reported within 900s, or every live task declared one | within 3600s | past 3600s | a live task that has not declared a wait has no readable event age |
-| Workers | every live task's endpoint is present | - | any live task's endpoint is gone | any endpoint presence unreadable |
+| Workers | every live task that has not declared a wait has its endpoint, or every live task declared one | - | an endpoint is gone on a task that declared no wait | endpoint presence unreadable on a task that declared no wait |
 | Secondmates | every registered secondmate answers, or none registered | - | any secondmate agent is dead | any secondmate liveness unreadable |
 | Inventory | every in-flight backlog item has a worker record | - | an orphan, or `main_inventory.valid` false | no inventory check reported |
 | Away mode | off | on | - | no away-mode record |
@@ -129,19 +129,32 @@ Secondmates report through their own signal instead.
 
 ### Declared waits
 
+Task activity and Workers both ask a question a declared wait answers differently, so both consult the declaration before they judge.
 Task activity asks whether anything has gone quiet, and quiet a task announced is not quiet it fell into.
-A task parked on a `paused:` external wait or a captain-held transfer is counted separately, never aged into amber or red, and reported as its own reading - "2 waiting by design", with how long the longest has waited.
-Without that split the signal reddens a little more every day a decision correctly sits with the captain, which is the failure that ruins a monitoring surface: it teaches the reader to ignore the badge, so the day it means something they do not look.
+Workers asks whether a worker is still there, and an agent exited on purpose is not a worker that died.
+
+A task parked on a `paused:` external wait or a captain-held transfer is counted separately by both, never coloured, and reported as its own reading - "2 waiting by design" - with how long the longest has waited on Task activity, and the waiting tasks named on Workers.
+Without that split each signal reddens a little more every day a decision correctly sits with the captain, which is the failure that ruins a monitoring surface: it teaches the reader to ignore the badge, so the day it means something they do not look.
 
 A declared wait is green rather than a colour of its own because the strip's colours mean "does this need you", and a declared wait does not.
-What it needed was a value that says what it is instead of an elapsed time that says nothing.
+What each signal needed was a value that says what it is instead of an elapsed time or an absent-endpoint count that says nothing.
 
-The check the elapsed-time verdict was protecting survives intact.
-A task that has gone quiet without declaring it still drives the signal on its own age, an unreadable age on such a task is still unknown, and a fleet with one silent task and five declared waits still reads on the silent one.
+Workers excludes a declared wait from its endpoint counts in both directions rather than counting it present.
+Whatever that task's endpoint currently is, it is not evidence about fleet health: the documented park procedure exits the agent deliberately, precisely so a quiet pane does not read as a wedge.
+Naming the waiting tasks rather than dropping them keeps the card honest about what it stopped counting.
+
+The declaration is authoritative over the `data/<id>/parked.md` note a park also leaves behind.
+The status declaration is what supervision acts on and what [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh) reconciles into current state, while `parked.md` is an operator note no tracked code reads, writes, or retracts - a resumed task would leave a stale one on disk, and a task parked for the captain's merge word need never have written one.
+
+The check each strict verdict was protecting survives intact.
+A task that has gone quiet without declaring it still drives Task activity on its own age; a worker that vanished without declaring anything still turns Workers red and is named there alone; an unreadable age or endpoint on such a task is still unknown; and a fleet with one silent task and five declared waits still reads on the silent one.
+
+Inventory deliberately does not consult the declaration, because it never asked an endpoint question: it compares in-flight backlog rows against worker records, and a parked task keeps its record.
+That is why it read green beside a red Workers card - the two were not disagreeing about the same fleet fact, one was simply wrong.
 
 What counts as a declared wait is not decided here.
 The snapshot's `hints.last_event_declared_wait` carries the verdict, [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns the vocabulary behind it, and the supervision watcher asks the same library the same question - so the dashboard and supervision cannot drift into two different definitions of a pause, which is exactly how they arrived at the same wrong answer separately.
-A snapshot that does not carry the field, or carries anything other than `true`, keeps the strict elapsed-time verdict: an unproven declaration must not excuse a silent task.
+A snapshot that does not carry the field, or carries anything other than `true`, keeps the strict verdict on both signals: an unproven declaration must not excuse a silent task or a missing worker.
 
 ### Overall verdict
 

@@ -58,7 +58,8 @@
 #     judged by fm-classify-lib.sh's status_is_paused_or_captain_held, the same
 #     vocabulary the watcher applies. It is the one place that judgement is made
 #     for renderers, so no consumer has to reimplement the token list to tell a
-#     task that went quiet from one that said it would be quiet.
+#     task that went quiet from one that said it would be quiet, or an agent
+#     exited on purpose by the park procedure from a worker that died.
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
