@@ -62,6 +62,8 @@ The records firstmate keeps do not all carry an explicit stamp, so the manifest 
 - `started` comes from the task metadata's mtime (`meta_mtime`), which spawn writes.
 - `completed` is the write time (`manifest_write`) unless the caller pins one (`explicit`).
 
+The `created` fallback's UTC day start is this write path's own convention and is known to disagree with the snapshot's, which reads the same `since` field at local midnight; [Snapshot projection](#snapshot-projection) owns that divergence and names the item tracking it.
+
 A future explicit recorded stamp can supersede any of these without a schema change: only the `timestamp_sources` value moves.
 
 Teardown's republish is one such pin, so which token a torn-down task carries records which write path ran, not how its completion was obtained.
@@ -140,6 +142,10 @@ Per backlog record: `since_age_seconds`, the age of the row's `since` date.
 The backlog stores a LOCAL date with no clock time - `tasks-axi` stamps the writer's own calendar day, not a UTC one - so the age runs from that day's local midnight on the observing host and is an upper bound at day granularity.
 The snapshot resolves each date to its local-midnight instant itself rather than letting `jq`'s UTC `strptime`/`mktime` decide the day start, which on a host ahead of UTC would put the start after the instant the date was written and under-report the age.
 It is null when no readable date is present, and 0 rather than negative for a row dated ahead of the observation, matching the clock-skew convention the snapshot's file ages already use.
+
+The same `since` field is read with two different day-start conventions today, and they are known to disagree.
+This projection reads it at local midnight, while the manifest's `created` fallback ([Timestamps and their provenance](#timestamps-and-their-provenance)) reads it at UTC midnight, so the two day starts differ by the observing host's UTC offset for that date.
+Reconciling the manifest's timestamp provenance is a behavior change in that write path, tracked separately as `fm-since-day-start-convention-split`.
 
 Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, plus away-mode state and age), and `history`.
 
