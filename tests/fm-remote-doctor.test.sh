@@ -30,6 +30,7 @@ mkdir -p "$TOOLS"
 ln -sf "$(command -v git)" "$TOOLS/git"
 ln -sf "$(command -v jq)" "$TOOLS/jq"
 BASE_PATH="$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
+SYSTEM_ID=$(command -v id)
 
 # new_case <Darwin|Linux> [with-herdr] [gui]
 # Builds one isolated account fixture and points the module-level CASE_*
@@ -60,6 +61,16 @@ new_case() {
   cat > "$CASE_BIN/uname" <<SH
 #!/usr/bin/env bash
 printf '%s\n' '$platform'
+SH
+
+  # Keep the fixture independent of this runner's per-user Nix profile while
+  # preserving the real uid used by the launch-agent assertions below.
+  cat > "$CASE_BIN/id" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  -un) printf '%s\n' 'firstmate-remote-doctor-test-$CASE_N' ;;
+  *) exec "$SYSTEM_ID" "\$@" ;;
+esac
 SH
 
   cat > "$CASE_BIN/launchctl" <<'SH'
@@ -204,7 +215,7 @@ SH
 #!/usr/bin/env bash
 exit 0
 SH
-  chmod +x "$CASE_BIN/uname" "$CASE_BIN/launchctl" "$CASE_BIN/tasks-axi" "$CASE_BIN/treehouse" "$CASE_BIN/claude"
+  chmod +x "$CASE_BIN/uname" "$CASE_BIN/id" "$CASE_BIN/launchctl" "$CASE_BIN/tasks-axi" "$CASE_BIN/treehouse" "$CASE_BIN/claude"
   cat > "$CASE_BIN/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -543,9 +554,23 @@ assert_absent "$CASE_HOME/.local/bin/codex" "--fix wrapped an alternate harness 
 assert_absent "$CASE_HOME/.local/bin/grok" "--fix wrapped an alternate harness when claude already satisfied readiness"
 
 rm -f "$CASE_BIN/claude"
+AMBIENT_HARNESS=
+for tool in claude codex opencode pi pi-signed grok kimi; do
+  resolved=$(PATH="$BASE_PATH" command -v "$tool" 2>/dev/null || true)
+  if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+    AMBIENT_HARNESS="$tool:$resolved"
+    break
+  fi
+done
 doctor --fix
-expect_code 0 "$DOCTOR_RC" "--fix did not wrap one discoverable harness when none resolved"
-assert_present "$CASE_HOME/.local/bin/codex" "--fix did not create the first needed harness wrapper"
+expect_code 0 "$DOCTOR_RC" "--fix did not establish one usable harness"
+if [ -n "$AMBIENT_HARNESS" ]; then
+  assert_absent "$CASE_HOME/.local/bin/codex" "--fix wrapped codex even though a system harness already satisfied readiness"
+  assert_contains "$DOCTOR_OUT" "required harness=$AMBIENT_HARNESS" \
+    "the doctor did not report the system harness that made a wrapper unnecessary"
+else
+  assert_present "$CASE_HOME/.local/bin/codex" "--fix did not create the first needed harness wrapper"
+fi
 assert_absent "$CASE_HOME/.local/bin/grok" "--fix created more harness wrappers than readiness requires"
 
 mv "$CASE_BIN/treehouse" "$MANAGER_BIN/treehouse"

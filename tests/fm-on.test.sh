@@ -228,8 +228,20 @@ for candidate in "${NVM_CHILD_DIRS[@]}"; do expect_dir "$candidate"; done
 for candidate in "${MANAGER_DIRS[@]}"; do
   [ -d "$candidate" ] && [ ! -L "$candidate" ] && expect_dir "$candidate"
 done
+resolved_optional_dir() {  # <candidate>
+  local candidate=$1 physical
+  [ -d "$candidate" ] || return 1
+  if [ ! -L "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  physical=$(CDPATH='' cd -- "$candidate" 2>/dev/null && pwd -P) || return 1
+  [ -d "$physical" ] && [ ! -L "$physical" ] || return 1
+  printf '%s\n' "$physical"
+}
 for candidate in "${OPTIONAL_DIRS[@]}"; do
-  [ -d "$candidate" ] && [ ! -L "$candidate" ] && expect_dir "$candidate"
+  resolved=$(resolved_optional_dir "$candidate" 2>/dev/null || true)
+  [ -z "$resolved" ] || expect_dir "$resolved"
 done
 for fixed in /usr/bin /bin /usr/sbin /sbin; do expect_dir "$fixed"; done
 
@@ -248,12 +260,22 @@ DUPES=$(printf '%s\n' "$CHILD_PATH" | tr ':' '\n' | sort | uniq -d)
 [ -z "$DUPES" ] || fail "the child PATH repeated entries: $DUPES"
 PRESENT_CHECKED=0
 ABSENT_CHECKED=0
-for candidate in "${MANAGER_DIRS[@]}" "${OPTIONAL_DIRS[@]}"; do
+for candidate in "${MANAGER_DIRS[@]}"; do
   if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
     path_has "$CHILD_PATH" "$candidate" || fail "an existing discovered PATH directory was dropped: $candidate"
     PRESENT_CHECKED=$((PRESENT_CHECKED + 1))
   else
-    path_has "$CHILD_PATH" "$candidate" && fail "an absent or symlinked PATH directory was added: $candidate"
+    path_has "$CHILD_PATH" "$candidate" && fail "an absent or symlinked manager PATH directory was added: $candidate"
+    ABSENT_CHECKED=$((ABSENT_CHECKED + 1))
+  fi
+done
+for candidate in "${OPTIONAL_DIRS[@]}"; do
+  resolved=$(resolved_optional_dir "$candidate" 2>/dev/null || true)
+  if [ -n "$resolved" ]; then
+    path_has "$CHILD_PATH" "$resolved" || fail "an existing discovered PATH directory was dropped: $resolved"
+    PRESENT_CHECKED=$((PRESENT_CHECKED + 1))
+  else
+    path_has "$CHILD_PATH" "$candidate" && fail "an absent optional PATH directory was added: $candidate"
     ABSENT_CHECKED=$((ABSENT_CHECKED + 1))
   fi
 done
@@ -315,7 +337,13 @@ set -e
 [ "$rc" -ne 0 ] || fail "the remote doctor passed with a missing required tool"
 assert_contains "$out" 'required herdr=MISSING' "the remote doctor did not mark a missing required tool"
 assert_contains "$out" 'required tasks-axi=MISSING' "the remote doctor did not mark every missing required tool"
-assert_contains "$out" 'required tools do not resolve on the remote runtime PATH: herdr tasks-axi treehouse harness' "the remote doctor did not name the missing tools"
+if printf '%s\n' "$out" | grep -Fq 'required harness=MISSING'; then
+  assert_contains "$out" 'required tools do not resolve on the remote runtime PATH: herdr tasks-axi treehouse harness' \
+    "the remote doctor did not name the missing tools"
+else
+  assert_contains "$out" 'required tools do not resolve on the remote runtime PATH: herdr tasks-axi treehouse' \
+    "the remote doctor did not name the missing non-harness tools"
+fi
 assert_contains "$out" '.local/bin' "the remote doctor did not offer the wrapper escape hatch"
 ln -sf "$(command -v git)" "$DOCTOR_BIN/git"
 # The direct doctor fixture needs the complete required tool set. These stubs
