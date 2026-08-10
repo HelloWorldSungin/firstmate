@@ -20,6 +20,11 @@
 #     requires_child_metadata, blocked_by_ids, unresolved_blocker_ids, and
 #     captain_actionable fields. Repeated blocker tokens remain ordered; a blocker
 #     resolves only when its structured record is Done, and missing ids stay open.
+#     since_age_seconds ages the row's `since` date, which tasks-axi writes when
+#     the row is CREATED and never rewrites on hold, so it measures how long the
+#     item has been raised and not how long a hold has stood. The backlog records
+#     a date with no clock time, so the age runs from the start of that day: it is
+#     an upper bound at day granularity, null when no readable date is present.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
@@ -47,6 +52,12 @@
 #     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
 #     against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set.
+#     hints.last_event_declared_wait reports whether the newest status line
+#     DECLARES its own quiet - a paused: external wait or a captain-held transfer -
+#     judged by fm-classify-lib.sh's status_is_paused_or_captain_held, the same
+#     vocabulary the watcher applies. It is the one place that judgement is made
+#     for renderers, so no consumer has to reimplement the token list to tell a
+#     task that went quiet from one that said it would be quiet.
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
@@ -376,8 +387,21 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   fi
 
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" '
+  jq -Rn --arg path "$backlog" --arg now_epoch "$SNAPSHOT_EPOCH" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
+    # Seconds since the START of the day a row records in its `since` metadata.
+    # A backlog row carries a date and no clock time, so this is an upper bound
+    # at day granularity rather than a precise elapsed time. Never negative: a
+    # row dated ahead of this observation reports 0, the same convention
+    # path_age_seconds uses for a file whose mtime is in the future.
+    def since_age($date):
+      if $date == null or $date == "" then null
+      else (try ($date | strptime("%Y-%m-%d") | mktime) catch null) as $start
+        | if $start == null then null
+          else (($now_epoch | tonumber) - $start) as $age
+            | (if $age < 0 then 0 else $age end)
+          end
+      end;
     def section_state:
       if . == "In flight" then "in_flight"
       elif . == "Queued" then "queued"
@@ -440,6 +464,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
              blocked_by_ids:blocked_by_ids($rest),
              blocked_reason:blocked_reason($rest),
              since:metadata_word($rest; "since"),
+             since_age_seconds:since_age(metadata_word($rest; "since")),
              merged:metadata_word($rest; "merged"),
              reported:metadata_word($rest; "reported"),
              done:metadata_word($rest; "done"),
@@ -512,7 +537,7 @@ task_json_lines() {
   local meta id kind harness model effort mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json model_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
-  local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
+  local last_event_raw last_event_declared_wait current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
   local pr_head pr_identity pr_status pr_status_path pr_status_at pr_status_age work_items_json
 
@@ -576,6 +601,16 @@ task_json_lines() {
     fi
     event_json=$(status_event_json "$status_log")
     last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
+    # Whether the newest event DECLARES its own quiet, judged by the same
+    # fm-classify-lib.sh vocabulary the watcher uses so the dashboard and
+    # supervision cannot drift apart on what a declared wait is. A renderer
+    # reading elapsed time alone cannot tell "gone quiet" from "said it would
+    # be quiet"; this is the field that lets it.
+    if status_is_paused_or_captain_held "$last_event_raw"; then
+      last_event_declared_wait=1
+    else
+      last_event_declared_wait=0
+    fi
     current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
     current_source=$(printf '%s' "$current_json" | jq -r '.source // ""')
 
@@ -699,6 +734,7 @@ task_json_lines() {
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
+      --argjson last_event_declared_wait "$(bool_json "$last_event_declared_wait")" \
       '
       # Card precedence: the FIRST matching rung wins, so overlapping signals
       # resolve to exactly one column. An open decision outranks everything
@@ -778,7 +814,8 @@ task_json_lines() {
           blocked_event:$blocked_event,
           open_decisions:$open_decisions,
           scout_report_present:$report_present,
-          last_event_text:$last_event_raw
+          last_event_text:$last_event_raw,
+          last_event_declared_wait:$last_event_declared_wait
         },
         card:(card($kind;
                    $current_state.state;

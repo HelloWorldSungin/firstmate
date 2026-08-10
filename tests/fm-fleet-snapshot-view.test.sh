@@ -1203,6 +1203,59 @@ EOF
   pass "multi-line free-form backlog notes stay attributed to their parent"
 }
 
+# The two fields a renderer needs to age a captain decision and to tell a task
+# that went quiet from one that said it would be quiet. Both are decided here so
+# no consumer has to reparse a date or reimplement the declared-wait vocabulary.
+test_since_age_and_declared_wait_projections() {
+  local home fakebin out now
+  # 2026-08-11T06:00:00Z, so every age below is an exact constant rather than a
+  # value that drifts with the wall clock.
+  now=1786428000
+  home=$(make_home ageing)
+  mkdir -p "$home/projects/paused-worktree" "$home/projects/held-worktree" "$home/projects/quiet-worktree"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] dated-decision - Choose the retention window (repo: alpha) (kind: captain) (since 2026-08-01) (hold: captain must choose) (hold-kind: captain)
+- [ ] undated-decision - Choose the bind address (repo: alpha) (kind: captain) (hold: captain must choose) (hold-kind: captain)
+- [ ] future-decision - Choose the release date (repo: alpha) (kind: captain) (since 2026-09-01) (hold: captain must choose) (hold-kind: captain)
+- [ ] unreadable-decision - Choose the log format (repo: alpha) (kind: captain) (since sometime) (hold: captain must choose) (hold-kind: captain)
+EOF
+  fm_write_meta "$home/state/paused-task.meta" \
+    "window=firstmate:fm-paused-task" \
+    "worktree=$home/projects/paused-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  printf 'paused: awaiting the captain merge call on PR 12\n' > "$home/state/paused-task.status"
+  fm_write_meta "$home/state/held-task.meta" \
+    "window=firstmate:fm-held-task" \
+    "worktree=$home/projects/held-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  printf 'captain-held: the captain took this thread over\n' > "$home/state/held-task.status"
+  fm_write_meta "$home/state/quiet-task.meta" \
+    "window=firstmate:fm-quiet-task" \
+    "worktree=$home/projects/quiet-worktree" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  # A reason that merely mentions being paused is prose, not a declaration: the
+  # verb before the first colon is what decides, and here it is `working`.
+  printf 'working: the upstream job is paused so I am rebasing instead\n' > "$home/state/quiet-task.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW_EPOCH="$now" \
+    FM_SNAPSHOT_NOW=2026-08-11T06:00:00Z "$SNAPSHOT" --json)
+
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "dated-decision") | .since_age_seconds) == 885600
+      and (.backlog.records[] | select(.id == "undated-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "unreadable-decision") | .since_age_seconds) == null
+      and (.backlog.records[] | select(.id == "future-decision") | .since_age_seconds) == 0
+  ' >/dev/null || fail "backlog since ageing wrong: $out"
+
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "paused-task") | .hints.last_event_declared_wait) == true
+      and (.tasks[] | select(.id == "held-task") | .hints.last_event_declared_wait) == true
+      and (.tasks[] | select(.id == "quiet-task") | .hints.last_event_declared_wait) == false
+  ' >/dev/null || fail "declared-wait projection wrong: $out"
+  pass "backlog dates age and declared waits are decided in the snapshot"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
@@ -1222,6 +1275,7 @@ test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
+test_since_age_and_declared_wait_projections
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_multiline_unstructured_note_attributed_to_parent

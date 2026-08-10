@@ -88,8 +88,16 @@ Ties break by reason severity, then by identity, so the order is stable between 
 
 An item's age is the age of the oldest evidence supporting it, and the card names which evidence that was.
 A decision that has waited three hours must not read as one minute old because its pull request was polled a minute ago.
-The snapshot carries no per-decision timestamp, so a status-derived reason is aged by its task's last event (`last update`) and a pull-request reason by its observation (`status observed`).
-A captain-held backlog row carries no timestamp at all and renders as "age unknown".
+The snapshot carries no per-decision timestamp, so a status-derived reason is aged by its task's last event (`last update`), a pull-request reason by its observation (`status observed`), and a captain-held backlog row by the date it was raised (`raised`).
+
+That last label is deliberately not "held for".
+The backlog's `since` date is written when the row is created and is not rewritten when the row goes on hold, so it says how long the item has been raised and nothing about when the hold began.
+It is also a date with no clock time, so its age runs from the start of that day and is an upper bound at day granularity; [`docs/fleet-data-contracts.md`](fleet-data-contracts.md#snapshot-projection) owns that field.
+A row with no readable date still renders "age unknown" rather than a fabricated zero.
+
+Ordering is the reason this matters more than the label does.
+An age no item carries is an age every item ties on, and the order then collapses to reason severity and identity - which for a queue of captain decisions means alphabetical.
+An inbox that cannot put the three-week-old decision above this morning's is not doing the one job an inbox has.
 
 ## Health strip
 
@@ -99,7 +107,7 @@ The strip carries seven signals plus one overall verdict.
 | --- | --- | --- | --- | --- |
 | Snapshot | last refresh succeeded and is fresh | showing the last known good snapshot | no valid snapshot available | first snapshot has not completed |
 | Supervision | beacon beating inside its grace window | past half the grace window | no beacon, or the snapshot marks it stale | beacon present with an unreadable age |
-| Task activity | slowest live task reported within 900s | within 3600s | past 3600s | any live task has no readable event age |
+| Task activity | slowest live task that has not declared a wait reported within 900s, or every live task declared one | within 3600s | past 3600s | a live task that has not declared a wait has no readable event age |
 | Workers | every live task's endpoint is present | - | any live task's endpoint is gone | any endpoint presence unreadable |
 | Secondmates | every registered secondmate answers, or none registered | - | any secondmate agent is dead | any secondmate liveness unreadable |
 | Inventory | every in-flight backlog item has a worker record | - | an orphan, or `main_inventory.valid` false | no inventory check reported |
@@ -118,6 +126,22 @@ For every other task it reports only whether the runtime endpoint is present, so
 Task activity and Workers both read live tasks only, and neither counts a secondmate.
 A secondmate writes a status event only when it is asked to do something, so an idle one is healthy; counting its silence as a stalled task would drive the whole strip to "Attention needed" in a home where nothing is wrong.
 Secondmates report through their own signal instead.
+
+### Declared waits
+
+Task activity asks whether anything has gone quiet, and quiet a task announced is not quiet it fell into.
+A task parked on a `paused:` external wait or a captain-held transfer is counted separately, never aged into amber or red, and reported as its own reading - "2 waiting by design", with how long the longest has waited.
+Without that split the signal reddens a little more every day a decision correctly sits with the captain, which is the failure that ruins a monitoring surface: it teaches the reader to ignore the badge, so the day it means something they do not look.
+
+A declared wait is green rather than a colour of its own because the strip's colours mean "does this need you", and a declared wait does not.
+What it needed was a value that says what it is instead of an elapsed time that says nothing.
+
+The check the elapsed-time verdict was protecting survives intact.
+A task that has gone quiet without declaring it still drives the signal on its own age, an unreadable age on such a task is still unknown, and a fleet with one silent task and five declared waits still reads on the silent one.
+
+What counts as a declared wait is not decided here.
+The snapshot's `hints.last_event_declared_wait` carries the verdict, [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns the vocabulary behind it, and the supervision watcher asks the same library the same question - so the dashboard and supervision cannot drift into two different definitions of a pause, which is exactly how they arrived at the same wrong answer separately.
+A snapshot that does not carry the field, or carries anything other than `true`, keeps the strict elapsed-time verdict: an unproven declaration must not excuse a silent task.
 
 ### Overall verdict
 
@@ -144,4 +168,7 @@ A first-run or unavailable render is skipped rather than treated as an empty bas
 ```
 $ bash tests/fm-dashboard-inbox.test.sh
 $ bash tests/fm-dashboard.test.sh
+$ bash tests/fm-fleet-snapshot-view.test.sh
 ```
+
+The third pins the two snapshot fields this policy reads but does not decide: the backlog row's `since_age_seconds` and a task's `hints.last_event_declared_wait`.

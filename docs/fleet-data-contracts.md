@@ -131,6 +131,15 @@ Every field below is new; a v1 consumer that reads only the fields it already kn
 Per task: `model`, `effort`, `paths.status_log.last_event_at` and `last_event_age_seconds`, the parsed PR identity with `head`, `status`, `status_age_seconds`, and `status_freshness`, the `work_items` list, and the computed `card`.
 `status_freshness` is `cached` for a valid matching observation and `absent` otherwise; consumers use `status_age_seconds` when they need an age policy.
 
+Also per task: `hints.last_event_declared_wait`, a boolean saying whether the newest status line declares its own quiet - a `paused:` external wait or a captain-held transfer.
+[`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns that vocabulary and `status_is_paused_or_captain_held` decides it, the same call the supervision watcher makes, so a renderer never reimplements the token list and the two surfaces cannot disagree about what a declared wait is.
+A consumer that has not adopted the field reads it as absent and keeps its previous elapsed-time behavior.
+
+Per backlog record: `since_age_seconds`, the age of the row's `since` date.
+`tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
+The backlog stores a date with no clock time, so the age runs from the start of that day and is an upper bound at day granularity.
+It is null when no readable date is present, and 0 rather than negative for a row dated ahead of the observation, matching the clock-skew convention the snapshot's file ages already use.
+
 Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, plus away-mode state and age), and `history`.
 
 `history` is schema `fm-outcome-history.v1`, built from every `data/<id>/outcome.json` in the home, newest completion first and bounded by `FM_SNAPSHOT_HISTORY`.
