@@ -34,9 +34,13 @@ Stored events stay browsable until they age out.
 Issue #14 pairs this with the [token-usage store](usage-accounting.md), and the two do share their store discipline: [`bin/fm-telemetry-store.mjs`](../bin/fm-telemetry-store.mjs) owns the opener, the forward-only `PRAGMA user_version` migrations, the WAL and busy-timeout behaviour, the checkpoint-and-rollback-journal shape every writer leaves behind at close, the private file mode, and the value sanitizers that both use.
 Both spell a task id, a harness, a session id, and an instant the same way, so a task's events and a task's tokens join on `task_id`.
 
-They are nevertheless two files, for one concrete reason: **the dashboard writes nothing a fleet program owns.**
+They are nevertheless two files, for one concrete reason: **the dashboard writes nothing a fleet program owns**, with the one granted exception named below.
 `tests/fm-dashboard.test.sh` proves that by fingerprinting `data/`, `state/`, and `projects/` around a live server that is accepting events, and the installed user service is hardened to match with `ProtectSystem=strict` and `ProtectHome=read-only`.
-Putting events in `data/usage.db` would require granting that service write access to the fleet's data directory, which is the exact guarantee the dashboard is built without.
+Putting events in `data/usage.db` would require granting that service write access to the fleet's own records, which is the exact guarantee the dashboard is built without.
+
+That exception is one directory: the unit grants `data/gbrain/`, because a GBrain search updates the index it is reading and the [search affordance](dashboard.md#gbrain) would otherwise be refused by the same hardening that makes the rest of this true.
+That grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and it is tolerant because a home with no brain is normal.
+[`verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins what a search cannot do without it.
 
 So the event store lives outside the operational home, keyed by the home it describes:
 

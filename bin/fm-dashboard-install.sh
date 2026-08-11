@@ -17,17 +17,30 @@
 # the operator's own bin directories; without a PATH every snapshot runs to its
 # deadline and the dashboard serves a permanently empty view.
 #
-# The unit deliberately grants SQLite no scratch path, and must not grow one.
-# ProtectSystem=strict and ProtectHome=read-only leave every directory SQLite's
-# unix VFS falls back to read-only, so a read-only query that needs a temp file
-# fails with "disk I/O error" against a healthy store. That is fixed in the
-# reader instead: bin/fm-telemetry-store.mjs sets PRAGMA temp_store = MEMORY on
-# its readOnly open, so no consumer of these stores asks the filesystem for
-# scratch space at all. Do NOT add PrivateTmp=yes here to solve it a second
-# time - it substitutes a private tmpfs for the shared /tmp, which hides the
-# fleet's tmux server socket at /tmp/tmux-$UID from the snapshot this service
-# runs and reports every live task's endpoint as absent.
-# docs/verification/dashboard-service-unit.md pins both results.
+# The unit grants scratch space exactly once, through RuntimeDirectory= and the
+# TMPDIR= pointing at it, so a panel that needs a temp file uses that grant
+# rather than being rewritten to do without one.
+# ProtectSystem=strict and ProtectHome=read-only leave every directory the
+# service can reach read-only, so anything calling mktemp fails against healthy
+# data - and so does bash itself, which needs a temp file for any here-document
+# or here-string larger than a pipe buffer.
+# Three panels discovered that separately before the grant existed: token usage,
+# semantic search, and durable completed-work history.
+#
+# Do NOT reach for PrivateTmp=yes to grant it instead.
+# It substitutes a private tmpfs for the shared /tmp, which hides the fleet's
+# tmux server socket at /tmp/tmux-$UID from the snapshot this service runs and
+# reports every live task's endpoint as absent - trading the false absences this
+# grant fixes for a worse one in the primary view.
+# RuntimeDirectory= adds a writable directory without replacing /tmp, so the
+# socket stays reachable.
+#
+# bin/fm-telemetry-store.mjs still sets PRAGMA temp_store = MEMORY on its
+# readOnly open, and still should: a reader that never asks the filesystem for
+# scratch space cannot be denied it, including outside this unit.
+# The unit separately grants the operational home's brain directory, because a
+# GBrain search writes to its own index while reading it.
+# docs/verification/dashboard-service-unit.md pins all of it.
 #
 # Loopback is the default and remote exposure is opt-in: --address only accepts
 # a non-loopback bind once credentials exist, and the server independently
@@ -375,6 +388,21 @@ assert_unit_path_safe "the agent-event store" "$EVENT_DB"
 assert_unit_path_safe "the shared instrumentation configuration" "$EVENTS_CONFIG"
 install -d -m 700 "$EVENT_DIR"
 
+# A GBrain search writes to its own index while reading it, so the semantic
+# search panel needs this grant on top of the scratch directory. Do not narrow
+# it below data/gbrain: GBrain takes a lock file at pglite/.gbrain-lock before it
+# can open the database at all, so a denied write here is a lock timeout rather
+# than a partial read. The grant is tolerant because a home with no brain is
+# normal and must not keep the unit from loading; the panel is presence-gated
+# and simply stays off there.
+GBRAIN_DIR="$FM_DASHBOARD_HOME/data/gbrain"
+assert_unit_path_safe "the brain directory" "$GBRAIN_DIR"
+
+# The one scratch directory every panel's temp file goes to. The name is
+# relative by contract: RuntimeDirectory= is always resolved under the manager's
+# runtime root and systemd refuses an absolute one.
+RUNTIME_DIR_NAME=firstmate-dashboard
+
 # EnvironmentFile values are parsed with shell-like quoting, so a value there is
 # quoted and escaped. Unit directives are not: those are emitted literally, and
 # assert_unit_path_safe has already refused anything that would not survive it.
@@ -442,9 +470,19 @@ After=default.target
 Type=simple
 EOF
   printf 'Environment=PATH=%s\n' "$SERVICE_PATH"
+  # %t is the user manager's runtime root, so the name is written once and
+  # systemd resolves both the directory it creates and the TMPDIR pointing at
+  # it. The mode is stated rather than left to systemd's 0755 default, so the
+  # scratch space matches the UMask=0077 posture below without depending on the
+  # runtime root's own permissions to stand in for it. The directory is removed
+  # on stop, so nothing survives a restart.
+  printf 'RuntimeDirectory=%s\n' "$RUNTIME_DIR_NAME"
+  printf 'RuntimeDirectoryMode=0700\n'
+  printf 'Environment=TMPDIR=%%t/%s\n' "$RUNTIME_DIR_NAME"
   printf 'EnvironmentFile=%s\n' "$ENV_FILE"
   printf 'ExecStart=%s %s\n' "$NODE_BIN" "$SERVER"
   printf 'ReadWritePaths=-%s\n' "$EVENT_DIR"
+  printf 'ReadWritePaths=-%s\n' "$GBRAIN_DIR"
   cat <<'EOF'
 Restart=on-failure
 RestartSec=3
@@ -506,6 +544,27 @@ if [ "$START_SERVICE" -eq 1 ]; then
       ;;
   esac
 
+  # The scratch grant is read back for the same reason as the rest: a service
+  # that comes up without it stays green and reports panels empty rather than
+  # broken, which is the failure this whole installer exists to refuse.
+  loaded_runtime=$(systemctl --user show -p RuntimeDirectory --value firstmate-dashboard.service 2>/dev/null || true)
+  case "$loaded_runtime" in
+    *"$RUNTIME_DIR_NAME"*) ;;
+    *)
+      printf 'fm-dashboard-install: systemd did not accept the scratch directory %s (read back: %s)\n' \
+        "$RUNTIME_DIR_NAME" "${loaded_runtime:-none}" >&2
+      exit 1
+      ;;
+  esac
+  case "$loaded_environment" in
+    *TMPDIR=*"$RUNTIME_DIR_NAME"*) ;;
+    *)
+      printf 'fm-dashboard-install: systemd did not accept the TMPDIR pointing at %s (read back: %s)\n' \
+        "$RUNTIME_DIR_NAME" "${loaded_environment:-none}" >&2
+      exit 1
+      ;;
+  esac
+
   # A drop-in left behind by a hand repair keeps overriding this unit after it
   # has been corrected, so the operator is told about one rather than left to
   # wonder why their reinstall did not take.
@@ -539,7 +598,8 @@ if [ "$START_SERVICE" -eq 1 ]; then
   fi
 
   systemctl --user --no-pager --full status firstmate-dashboard.service || true
-  printf 'systemd accepted the environment file, the pinned PATH, and the agent-event write grant, and the service is running.\n'
+  printf 'systemd accepted the environment file, the pinned PATH, the agent-event write grant, the scratch directory %s, and the TMPDIR pointing at it, and the service is running.\n' \
+    "$RUNTIME_DIR_NAME"
 else
   echo "Service not started (--no-start)."
 fi

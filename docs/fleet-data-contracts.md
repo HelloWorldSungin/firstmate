@@ -152,6 +152,7 @@ Top level: `card_precedence`, `supervision` (watcher beacon age against the shar
 `history` is schema `fm-outcome-history.v1`, built from every `data/<id>/outcome.json` in the home, newest completion first and bounded by `FM_SNAPSHOT_HISTORY`.
 A manifest that no longer parses, lacks the complete required shape, is not a plain file, or exceeds the read bound is disclosed in `history.malformed` with its reason rather than dropped, so a consumer can distinguish "nothing completed" from "one record is unreadable".
 History orders readable same-schema candidates before applying full value conformance, then validates only enough newest candidates to fill the requested bound.
+A read that counted completion records and then produced none of them is refused with a non-zero exit and a message naming the count and the directory, never published as an empty document: a lost read and a fleet that has finished nothing are the same bytes on the wire, and only the caller that sees the refusal can tell its operator which one happened.
 
 ### Card precedence
 

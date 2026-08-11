@@ -105,7 +105,9 @@ The store has writers - teardown refreshes it on every archive and bootstrap on 
 The at-rest `delete` journal mode the store is normally found in is the outcome that contract protects, not evidence the failure cannot happen.
 The collector can also fail because the host sandbox leaves SQLite no writable scratch path for the temp file a read-only query needs; the generated unit pairs `ProtectSystem=strict` with `ProtectHome=read-only`, which between them refuse `/tmp`, `/var/tmp`, `/usr/tmp`, and `$HOME`, and a read that reaches for a temp file there exits `disk I/O error` while the store itself is healthy.
 That half is answered in the reader rather than in the sandbox: [usage-accounting.md](usage-accounting.md)'s shared opener keeps SQLite temp storage in memory on its read-only open, so no consumer of these stores asks the filesystem for scratch space and no unit can deny it.
-The unit therefore carries no scratch directive of its own; [`docs/verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins the reproduced combination, the working fix, and why `PrivateTmp=yes` is the wrong answer to it.
+The unit does grant one scratch directory of its own, through `RuntimeDirectory=` and a `TMPDIR=` pointing at it, so a panel whose command genuinely needs a temp file has one without being rewritten to do without it - semantic search is the current such panel, and the grant is made once rather than per panel.
+The store reader still asks for no scratch path at all, so it keeps reading outside this unit too and that grant is not what makes the usage panel work.
+[`docs/verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins the reproduced combinations, both fixes, and why `PrivateTmp=yes` is still the wrong way to grant scratch space here.
 A task the retained read does not carry yet says exactly that, so a just-archived record is never reported as having cost nothing.
 [usage-accounting.md](usage-accounting.md) owns the store itself, including the read-only open that lets the hardened user service read it without write access to `data/`.
 Semantic search over captured report content belongs to the separate [GBrain](#gbrain) panel; history is fully usable without it.
@@ -135,6 +137,7 @@ A brain the operator has paused for care reports `maintenance.state: upgrading` 
 The search affordance below the strip is a POST to `/api/gbrain/search` that runs [`bin/fm-recall.sh`](../bin/fm-recall.sh) `search` over the read-only scopes this home already holds.
 The query reaches the wrapper as an argument array after `--`, never interpolated into a shell command, so a shell metacharacter in a query is a character to search for rather than syntax.
 The endpoint bounds the query size, the result count, and how long one search may take, and it admits one search at a time.
+A search that never started - the wrapper could not create the working files it needs, so no corpus was asked - is reported as its own state rather than as a corpus that did not answer, because the second sends you to look at your brain for a fault in the service's own environment.
 Results come back in a closed vocabulary - source, slug, title, score, excerpt, stale - with anything outside it dropped rather than passed through, and [`assets/dashboard/gbrain.js`](../assets/dashboard/gbrain.js) builds every result node with `createElement` and `textContent`, so nothing in a stored brain document can become markup or restructure the page.
 
 The panel sits between Board and Activity, and it is presence-gated as a whole: removing `config/gbrain.json` removes the polling cost, the search affordance, and the probes together.

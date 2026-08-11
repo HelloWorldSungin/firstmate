@@ -64,7 +64,7 @@ free_port() {
   node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'
 }
 
-# install_recall_stub <dir> <body> [sleep-seconds]
+# install_recall_stub <dir> <body> [sleep-seconds] [exit-status] [stderr-line]
 #
 # Replaces bin/fm-recall.sh in the fixture server's per-test bin directory.
 # The server resolves the wrapper as $SCRIPT_DIR/fm-recall.sh rather than off
@@ -72,8 +72,14 @@ free_port() {
 # answer. sleep-seconds > 0 simulates a slow brain: the delay is baked into the
 # stub AFTER its argv assertions, so a slow search still proves the endpoint
 # invoked the wrapper correctly before the dashboard's own deadline killed it.
+#
+# exit-status and stderr-line are how the wrapper's documented failure statuses
+# are exercised. The wrapper distinguishes "every corpus was asked and none
+# answered" (3) from "the search never started" (5), and the server may only
+# keep them apart by reading the status, so the status has to be settable here
+# rather than inferred from an envelope.
 install_recall_stub() {
-  local dir=$1 body=$2 sleep_seconds=${3:-0} delay=
+  local dir=$1 body=$2 sleep_seconds=${3:-0} status=${4:-0} complaint=${5:-} delay=
   [ "$sleep_seconds" -gt 0 ] && delay="sleep $sleep_seconds"
   mkdir -p "$dir"
   cat > "$dir/fm-recall.sh" <<SH
@@ -86,8 +92,9 @@ case "\${1:-}" in
     [ "\${7:-}" = "--timeout" ] || { echo "stub: expected --timeout" >&2; exit 2; }
     [ "\${9:-}" = "--" ] || { echo "stub: expected --" >&2; exit 2; }
     $delay
+    [ -z '$complaint' ] || printf '%s\n' '$complaint' >&2
     printf '%s\n' '$body'
-    exit 0
+    exit $status
     ;;
   *) echo "stub: unsupported command \$*" >&2; exit 2 ;;
 esac
@@ -646,12 +653,63 @@ EOF
   pass "cross-origin search is refused while the dashboard's own origin is served"
 }
 
+# bin/fm-recall.sh answers a search that never started with exit 5 and a search
+# whose corpora were all asked and none answered with exit 3. Both leave the
+# wrapper with no envelope to parse, so the exit status is the only thing that
+# tells them apart, and the panel renders them as different sentences: one is a
+# fact about the brain, the other is a fact about this service's environment.
+# A server that collapsed them would send the operator to inspect an index that
+# was never consulted.
+test_search_separates_a_search_that_never_started_from_one_no_corpus_answered() {
+  local home bindir out code
+  home=$(make_home search-setup)
+  bindir=$(make_bin_dir search-setup)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '' 0 5 \
+    'fm-recall: the search could not start, so no corpus was asked and this is not a result about your brain: could not create a temporary file'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  out=$(curl -sS -m 8 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  code=$(printf '%s' "$out" | tail -1)
+  [ "$code" = "503" ] || fail "a search that never started returned $code instead of 503: $out"
+  printf '%s' "$out" | head -1 | jq -e '
+    .schema == "fm-gbrain-search.v1"
+      and .reason == "search_setup_failed"
+      and (.results | length) == 0
+      and (.detail | test("could not create a temporary file"))
+  ' >/dev/null || fail "a search that never started was not reported as search_setup_failed: $out"
+
+  # The other side of the distinction, against the same endpoint: a wrapper that
+  # exits 3 still reads as the corpora having been asked, so the new status did
+  # not swallow the one it was carved out of.
+  bindir=$(make_bin_dir search-no-corpus)
+  install_recall_stub "$bindir" '' 0 3 \
+    'fm-recall: no corpus could be read, so this is not an empty result set'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  out=$(curl -sS -m 8 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard"}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  code=$(printf '%s' "$out" | tail -1)
+  [ "$code" = "503" ] || fail "a search no corpus answered returned $code instead of 503: $out"
+  printf '%s' "$out" | head -1 | jq -e '.reason == "no_corpus_answered"' >/dev/null \
+    || fail "a search no corpus answered was not reported as no_corpus_answered: $out"
+  pass "a search that never started and a search no corpus answered are reported as different failures"
+}
+
 test_health_panel_reports_configured_home
 test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
 test_search_preserves_same_as_local_source_state
 test_search_returns_504_when_recall_exceeds_budget
+test_search_separates_a_search_that_never_started_from_one_no_corpus_answered
 test_search_treats_hostile_query_as_text
 test_search_refuses_second_concurrent_search
 test_search_refuses_empty_or_short_query

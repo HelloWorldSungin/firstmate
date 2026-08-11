@@ -1,8 +1,9 @@
 # GBrain retrieval through fm-recall.sh
 
 Active empirical evidence for the retrieval guarantees in [`../gbrain-scoping.md`](../gbrain-scoping.md): that a query crosses the GBrain boundary as data rather than as shell input, that hosted synthesis failure is distinguishable from local retrieval failure, and that hosted synthesis cannot reach a read-only shared brain.
+It also records what a search does to the index it reads, which [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) owns as a backup precondition.
 
-Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
+Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md), except where a section carries its own date.
 
 ```console
 $ gbrain version
@@ -107,9 +108,29 @@ data: {"result":{"content":[{"type":"text","text":"[\n  {\n    \"slug\": \"main-
 
 Both the SSE framing and the in-band `isError` refusal are unpacked by the wrapper rather than by its renderer, so a refused read degrades one source instead of ending the run.
 
+## A search that succeeds writes the index it read
+
+A search is a writer, which is why [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) names it in the backup precondition and why the dashboard's unit grants the brain directory ([dashboard-service-unit.md](dashboard-service-unit.md)).
+
+Measured 2026-08-11 against the operator's own brain at `/home/sungin/firstmate/data/gbrain`, by taking an md5 of every file under it before and after each `bin/fm-recall.sh search` and diffing the two manifests.
+Content hashes rather than mtimes: an mtime probe is too coarse here and had already produced a false negative on this exact question.
+Each measurement was bracketed by an idle window with no search running, which reported 0 changed files over 30 seconds and again over 45 seconds, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
+
+Three consecutive searches, each returning results with the local source `ok`, rewrote 26, 27, and 27 files under the PGLite directory:
+
+```
+pglite/global/pg_control
+pglite/pg_wal/<segment>
+pglite/pg_xact/0000
+pglite/base/5/<relation files>
+```
+
+Three in a row make this steady state rather than a cold-start or first-open artifact, and it is not an artifact of the service sandbox either: it happens both under the dashboard unit's restrictions and in an ordinary shell.
+Counts vary run to run, 7 to 27 observed, but were never zero for a search that actually succeeded.
+
 ## Refreshing this record
 
-Two suites rebuild these claims, and neither asserts anything about the wrapper's source:
+Two suites rebuild the wrapper's claims, and neither asserts anything about the wrapper's source:
 
 - `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, and the caps.
 - `tests/fm-gbrain-readonly-e2e.test.sh` is the live proof and drives the wrapper against two real brains and the real read-only share:
@@ -119,4 +140,5 @@ FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=<path-to-gbrain> bin/fm-test-run.sh tests/fm-
 ```
 
 Re-run both after any GBrain upgrade.
+The index-write measurement has no suite behind it: redo it by hand as described there, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
 The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.

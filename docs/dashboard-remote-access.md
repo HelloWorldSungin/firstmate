@@ -116,7 +116,7 @@ A check from the dashboard's own host proves the service and the proxy; it does 
 Ask systemd what it accepted, rather than reading the unit you just wrote:
 
 ```sh
-systemctl --user show -p EnvironmentFiles -p Environment -p ReadWritePaths firstmate-dashboard.service
+systemctl --user show -p EnvironmentFiles -p Environment -p ReadWritePaths -p RuntimeDirectory firstmate-dashboard.service
 ```
 
 The installer performs these same checks itself and refuses to report success without them, because a unit directive systemd read past leaves a service that starts, stays green, and runs on defaults it was never configured with.
