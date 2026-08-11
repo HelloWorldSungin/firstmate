@@ -425,6 +425,17 @@ check("the live worker is still counted present",
   parkedBesideLive.byId.workers.value === "1 present · 0 gone · 0 unknown · 1 waiting",
   parkedBesideLive.byId.workers.value);
 
+// The exclusion runs in both directions. A declared wait whose endpoint is still
+// PRESENT is dropped from the counts too: whatever that endpoint currently says
+// is not evidence about fleet health, so counting it present would let the card
+// read on a fact it deliberately stopped trusting.
+const parkedHoldingEndpoint = health(fleet({ tasks: [waitingTask("parked-with-endpoint", 228_489), task("busy")] }));
+equal("a declared wait with a present endpoint does not colour the card",
+  parkedHoldingEndpoint.byId.workers.tone, "green");
+check("and is counted as waiting rather than as a second present worker",
+  parkedHoldingEndpoint.byId.workers.value === "1 present · 0 gone · 0 unknown · 1 waiting",
+  parkedHoldingEndpoint.byId.workers.value);
+
 // The genuine alarm this signal exists for must survive. A worker that vanished
 // without declaring anything is red even while a declared wait sits beside it.
 const vanished = health(fleet({ tasks: [
@@ -437,6 +448,23 @@ check("the red verdict names the undeclared task alone",
 check("and the declared wait is not counted gone",
   vanished.byId.workers.value === "0 present · 1 gone · 0 unknown · 1 waiting", vanished.byId.workers.value);
 equal("an undeclared vanished worker still needs attention", vanished.overall.label, "Attention needed");
+
+// More than one worker can vanish at once, and the qualifier has to cover every
+// name in the list rather than reading as attaching to the last one. A captain
+// who parses "vanished-a, vanished-b, which declared no wait" as qualifying
+// vanished-b alone concludes the exact opposite of the truth about vanished-a,
+// which is the distinction this card exists to draw.
+const vanishedPair = health(fleet({ tasks: [
+  parkedWorker("parked"),
+  task("vanished-a", { endpoint: { exists: false, status: "absent" } }),
+  task("vanished-b", { endpoint: { exists: false, status: "absent" } }),
+] }));
+equal("two workers that vanished without declaring a wait are still red", vanishedPair.byId.workers.tone, "red");
+check("the qualifier covers every named worker, not just the last",
+  vanishedPair.byId.workers.detail.startsWith("No runtime endpoint for vanished-a, vanished-b, none of which declared a wait."),
+  vanishedPair.byId.workers.detail);
+check("and the declared wait is still accounted for beside them",
+  vanishedPair.byId.workers.value === "0 present · 2 gone · 0 unknown · 1 waiting", vanishedPair.byId.workers.value);
 
 // The declaration is a positive claim here too: anything short of `true` keeps
 // the strict endpoint verdict, so an unproven declaration cannot hide a death.

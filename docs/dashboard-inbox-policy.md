@@ -149,6 +149,9 @@ The status declaration is what supervision acts on and what [`bin/fm-crew-state.
 The check each strict verdict was protecting survives intact.
 A task that has gone quiet without declaring it still drives Task activity on its own age; a worker that vanished without declaring anything still turns Workers red and is named there alone; an unreadable age or endpoint on such a task is still unknown; and a fleet with one silent task and five declared waits still reads on the silent one.
 
+When several workers vanished at once, Workers names every one of them and phrases the qualifier to cover the whole list rather than trailing after it.
+A qualifier that reads as attaching to the last name states the opposite of the truth about every other name, which would undo the one distinction this card exists to draw.
+
 Inventory deliberately does not consult the declaration, because it never asked an endpoint question: it compares in-flight backlog rows against worker records, and a parked task keeps its record.
 That is why it read green beside a red Workers card - the two were not disagreeing about the same fleet fact, one was simply wrong.
 

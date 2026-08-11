@@ -93,6 +93,10 @@ export function formatAge(seconds) {
   return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3_600)}h`;
 }
 
+function plural(count) {
+  return count === 1 ? "" : "s";
+}
+
 function terminalColumn(task) {
   return task?.card?.column === "done";
 }
@@ -480,6 +484,17 @@ function declaredWait(task) {
   return task?.hints?.last_event_declared_wait === true;
 }
 
+// Task activity and Workers ask different questions but must split the fleet on
+// the declaration identically, so they split it here once. Two copies of this
+// filter is the same drift this module reads a single server-side verdict to
+// avoid, one level up.
+function splitDeclaredWaits(live) {
+  return {
+    waiting: live.filter(declaredWait),
+    working: live.filter((task) => !declaredWait(task)),
+  };
+}
+
 function eventSignal(tasks) {
   const live = liveWorkTasks(tasks);
   const tooltip = `How long ago the slowest live task that has not declared a wait last reported anything. A task parked on a declared pause or a captain hold is counted separately and never ages into a warning, because its quiet was announced. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
@@ -487,9 +502,7 @@ function eventSignal(tasks) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
 
-  const waiting = live.filter(declaredWait);
-  const working = live.filter((task) => !declaredWait(task));
-  const plural = (count) => (count === 1 ? "" : "s");
+  const { waiting, working } = splitDeclaredWaits(live);
 
   // Declared waits are reported as their own state rather than folded silently
   // into a passing reading. How long a declared wait has stood is the useful
@@ -563,11 +576,10 @@ function workerSignal(tasks) {
     return { id: "workers", label: "Workers", tone: "green", value: "none live", detail: "No live task has a runtime endpoint to check.", tooltip };
   }
 
-  const waiting = live.filter(declaredWait).map((task) => text(task?.id) || "unnamed");
-  const working = live.filter((task) => !declaredWait(task));
-  const plural = (count) => (count === 1 ? "" : "s");
+  const { waiting, working } = splitDeclaredWaits(live);
+  const waitingIds = waiting.map((task) => text(task?.id) || "unnamed");
   const waitingClause = waiting.length
-    ? `${waiting.length} task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here, so an exited agent is expected: ${waiting.join(", ")}.`
+    ? `${waiting.length} task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here, so an exited agent is expected: ${waitingIds.join(", ")}.`
     : "";
 
   if (!working.length) {
@@ -586,7 +598,8 @@ function workerSignal(tasks) {
   const value = waiting.length ? `${counts} · ${waiting.length} waiting` : counts;
   const suffix = waitingClause ? ` ${waitingClause}` : "";
   if (buckets.dead.length) {
-    return { id: "workers", label: "Workers", tone: "red", value, detail: `No runtime endpoint for ${buckets.dead.join(", ")}, which declared no wait.${suffix}`, tooltip };
+    const undeclared = buckets.dead.length === 1 ? "which declared no wait" : "none of which declared a wait";
+    return { id: "workers", label: "Workers", tone: "red", value, detail: `No runtime endpoint for ${buckets.dead.join(", ")}, ${undeclared}.${suffix}`, tooltip };
   }
   if (buckets.unknown.length) {
     return { id: "workers", label: "Workers", tone: "unknown", value, detail: `Endpoint presence could not be read for ${buckets.unknown.join(", ")}.${suffix}`, tooltip };
