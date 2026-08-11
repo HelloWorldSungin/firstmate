@@ -28,14 +28,30 @@ FAKEBIN="$LAB/fakebin"
 FIXTURE="$LAB/quota.json"
 AUTH_FIXTURE="$LAB/quota-auth.json"
 CALLS="$LAB/quota-axi.calls"
+SIDECAR_CALLS="$LAB/quota-sidecar.calls"
+SIDECAR_FIXTURE="$LAB/quota-sidecar.json"
 
 cleanup() {
   rm -rf "$LAB"
 }
 trap cleanup EXIT
 
-mkdir -p "$PROJECT/.agents/skills/quota-array-dispatch" "$FAKEBIN"
+mkdir -p "$PROJECT/.agents/skills/quota-array-dispatch" "$PROJECT/bin" "$FAKEBIN"
 cp "$OWNER" "$PROJECT/.agents/skills/quota-array-dispatch/SKILL.md"
+
+# A case that publishes no sidecar fixture gets the reader's unmounted-share
+# document, so the sidecar contributes no evidence unless the case says so.
+cat > "$PROJECT/bin/fm-quota-sidecar.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${QUOTA_SIDECAR_CALLS:?}"
+if [ -s "${QUOTA_SIDECAR_FIXTURE:-/nonexistent}" ]; then
+  cat "$QUOTA_SIDECAR_FIXTURE"
+  exit 0
+fi
+printf '%s\n' '{"schema":"fm-quota-sidecar-reader.v1","freshness_seconds":7200,"evidence_status":"UNKNOWN","providers":[],"reason":"no_provider_files"}'
+SH
+chmod +x "$PROJECT/bin/fm-quota-sidecar.sh"
 
 cat > "$FAKEBIN/quota-axi" <<'SH'
 #!/usr/bin/env bash
@@ -58,6 +74,15 @@ exit 64
 SH
 chmod +x "$FAKEBIN/quota-axi"
 
+# The lab is the only skill revision under test, but the harness cannot hide the
+# rest of the host: a developer machine or CI runner commonly holds another
+# checkout of this repository, and the agent locates a named skill by reading the
+# filesystem. Without this rule it sometimes reads `SKILL.md` from that other
+# checkout and is then judged against instructions this branch never changed.
+# The rule names no command, source, or evidence read, so the loaded skill's own
+# text remains the only thing that decides what the intake runs.
+SKILL_SOURCE_RULE='Load every named skill only from the .agents/skills directory under the current working directory. Never read an instruction, skill, or agent-context file from any other path on this host, even when a file of the same name exists elsewhere.'
+
 write_fixture() {
   cat > "$FIXTURE"
 }
@@ -66,16 +91,23 @@ write_auth_fixture() {
   cat > "$AUTH_FIXTURE"
 }
 
+write_sidecar_fixture() {
+  cat > "$SIDECAR_FIXTURE"
+}
+
 run_case() {
-  local label=$1 expected=$2 prompt=$3 out calls required snapshots stray
+  local label=$1 expected=$2 prompt=$3 out calls sidecar_calls required snapshots stray
   shift 3
   : > "$CALLS"
+  : > "$SIDECAR_CALLS"
   out=$(
     cd "$PROJECT" &&
       PATH="$FAKEBIN:$PATH" QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" \
-        QUOTA_AXI_AUTH_FIXTURE="$AUTH_FIXTURE" \
+        QUOTA_AXI_AUTH_FIXTURE="$AUTH_FIXTURE" QUOTA_SIDECAR_CALLS="$SIDECAR_CALLS" \
+        QUOTA_SIDECAR_FIXTURE="$SIDECAR_FIXTURE" \
         pi --print --approve --no-session --no-context-files --no-extensions \
           --no-skills --skill .agents/skills --tools bash \
+          --append-system-prompt "$SKILL_SOURCE_RULE" \
           --model openai-codex/gpt-5.6-sol --thinking high \
           "$prompt"
   ) || fail "$label: Pi skill run failed: $out"
@@ -87,6 +119,12 @@ run_case() {
     || fail "$label: skill did not use exactly one quota-axi --json snapshot: $calls"
   stray=$(grep -Fxv -- "--json" "$CALLS" | grep -Fxv -- "auth --json" || true)
   [ -z "$stray" ] || fail "$label: unexpected quota-axi invocation(s): $stray"
+  # No case prompt names the sidecar reader, so this asserts what the skill
+  # itself drives: loading it must produce exactly one sidecar read per intake,
+  # including in the case where quota-axi models no such provider family.
+  sidecar_calls=$(wc -l < "$SIDECAR_CALLS" | tr -d ' ')
+  [ "$sidecar_calls" = 1 ] \
+    || fail "$label: skill did not use exactly one quota sidecar snapshot: $sidecar_calls"
   printf '%s\n' "$out" | grep -Fxq "$expected" \
     || fail "$label: expected final line $expected, got: $out"
   for required in "$@"; do
@@ -103,7 +141,7 @@ JSON
 run_case \
   "higher headroom and viable runway beat a less-negative reserve" \
   "SELECTED=codex" \
-  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. Both profiles have comparable required task fit and the same strongest reasoning class. The authoritative catalogs already prove Claude/Sonnet and Codex/GPT models supported in their stated provider families, and their selected authentication surfaces are usable. The likely task-completion horizon is two hours with established confidence. Return exact lines FACT=claude|headroom=1|runway_seconds=600|reserve=-1 and FACT=codex|headroom=55|runway_seconds=14400|reserve=-40 to preserve candidate accounting, then an exact final line SELECTED=<claude|codex>. Do not use other vendor or model commands and do not modify files." \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. Both profiles have comparable required task fit and the same strongest reasoning class. The authoritative catalogs already prove Claude/Sonnet and Codex/GPT models supported in their stated provider families, and their selected authentication surfaces are usable. The likely task-completion horizon is two hours with established confidence. Return exact lines FACT=claude|headroom=1|runway_seconds=600|reserve=-1 and FACT=codex|headroom=55|runway_seconds=14400|reserve=-40 to preserve candidate accounting, then an exact final line SELECTED=<claude|codex>. Beyond the evidence reads your loaded skill directs, do not use other vendor or model commands, and do not modify files." \
   "FACT=claude|headroom=1|runway_seconds=600|reserve=-1" \
   "FACT=codex|headroom=55|runway_seconds=14400|reserve=-40"
 
@@ -113,7 +151,7 @@ JSON
 run_case \
   "unmeasurable runway stays eligible and is accounted for explicitly" \
   "DECISION=CODEX" \
-  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. Both profiles have comparable required task fit and the same strongest reasoning class. The authoritative catalogs already prove both models supported in their stated provider families, and their selected authentication surfaces are usable. The likely task-completion horizon is two hours with established confidence. Claude has higher known headroom but explicitly unmeasurable runway, while Codex has lower known headroom and established runway that supports completion. The snapshot cannot prove Pareto dominance in either direction, but the known completion-supporting runway justifies Codex while Claude remains eligible and its uncertainty must be disclosed. Return exact lines FACT=claude|eligible=yes|headroom=55|runway=unknown|unmeasurable=weekly and FACT=codex|eligible=yes|headroom=45|runway_seconds=14400|supports_horizon=yes, then an exact final line DECISION=CODEX. Do not use other vendor or model commands and do not modify files." \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. Both profiles have comparable required task fit and the same strongest reasoning class. The authoritative catalogs already prove both models supported in their stated provider families, and their selected authentication surfaces are usable. The likely task-completion horizon is two hours with established confidence. Claude has higher known headroom but explicitly unmeasurable runway, while Codex has lower known headroom and established runway that supports completion. The snapshot cannot prove Pareto dominance in either direction, but the known completion-supporting runway justifies Codex while Claude remains eligible and its uncertainty must be disclosed. Return exact lines FACT=claude|eligible=yes|headroom=55|runway=unknown|unmeasurable=weekly and FACT=codex|eligible=yes|headroom=45|runway_seconds=14400|supports_horizon=yes, then an exact final line DECISION=CODEX. Beyond the evidence reads your loaded skill directs, do not use other vendor or model commands, and do not modify files." \
   "FACT=claude|eligible=yes|headroom=55|runway=unknown|unmeasurable=weekly" \
   "FACT=codex|eligible=yes|headroom=45|runway_seconds=14400|supports_horizon=yes"
 
@@ -123,7 +161,7 @@ JSON
 run_case \
   "required strongest reasoning class is not downgraded for quota" \
   "SELECTED=claude" \
-  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. The likely task-completion horizon is two hours with established confidence. Claude/Sonnet is catalog-supported with usable authentication and is the only profile that meets the task's required strongest reasoning class. Codex/GPT is catalog-supported with usable authentication but is a weaker reasoning class and cannot meet the requirement. Return exact lines FACT=claude|reasoning=required|headroom=1|runway_seconds=10800 and FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800, then an exact final line SELECTED=<claude|codex>. Do not use other vendor or model commands and do not modify files." \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once. The likely task-completion horizon is two hours with established confidence. Claude/Sonnet is catalog-supported with usable authentication and is the only profile that meets the task's required strongest reasoning class. Codex/GPT is catalog-supported with usable authentication but is a weaker reasoning class and cannot meet the requirement. Return exact lines FACT=claude|reasoning=required|headroom=1|runway_seconds=10800 and FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800, then an exact final line SELECTED=<claude|codex>. Beyond the evidence reads your loaded skill directs, do not use other vendor or model commands, and do not modify files." \
   "FACT=claude|reasoning=required|headroom=1|runway_seconds=10800" \
   "FACT=codex|reasoning=weaker|headroom=80|runway_seconds=28800"
 
@@ -139,8 +177,28 @@ JSON
 run_case \
   "a provider family quota-axi does not model keeps a catalog-resolved surface" \
   "ELIGIBLE=BOTH" \
-  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once; you may also run quota-axi auth --json. Candidate A is harness=claude model=opus. Candidate B is harness=pi model=minimax/MiniMax-M3. Take this raw observation as given and draw your own conclusions from it: running the authoritative Pi catalog command printed the row 'minimax  MiniMax-M3  1M  128K  yes  yes'. That is the entire catalog evidence available; no other command may be run to gather more. Both candidates have comparable required task fit and the same reasoning class for this work. For each candidate decide whether its authentication surface is resolved or unresolved, whether its applicable quota is known or unmodeled, and whether it is eligible. Return exact lines FACT=claude|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled> and FACT=minimax|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled>, then an exact final line ELIGIBLE=<BOTH|CLAUDE_ONLY>. Do not use other vendor or model commands and do not modify files." \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once; you may also run quota-axi auth --json. Candidate A is harness=claude model=opus. Candidate B is harness=pi model=minimax/MiniMax-M3. Take this raw observation as given and draw your own conclusions from it: running the authoritative Pi catalog command printed the row 'minimax  MiniMax-M3  1M  128K  yes  yes'. That is the entire catalog evidence available; no further catalog command may be run to gather more of it. Both candidates have comparable required task fit and the same reasoning class for this work. For each candidate decide whether its authentication surface is resolved or unresolved, whether its applicable quota is known or unmodeled, and whether it is eligible. Return exact lines FACT=claude|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled> and FACT=minimax|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled>, then an exact final line ELIGIBLE=<BOTH|CLAUDE_ONLY>. Beyond the evidence reads your loaded skill directs, do not use other vendor or model commands, and do not modify files." \
   "FACT=claude|eligible=yes|surface=resolved|quota=known" \
   "FACT=minimax|eligible=yes|surface=resolved|quota=unmodeled"
+
+# Where both sources cover a provider - Cursor today - the host-published sidecar
+# may lag, so quota-axi owns the selection number and the sidecar stays
+# corroborating diagnostics. This case is last because it is the only one that
+# publishes a sidecar fixture. The prompt states that the sources disagree but
+# never says which one wins, so the skill's precedence rule is what has to
+# produce the authoritative number: an agent that took the sidecar's optimistic
+# 95 would report headroom=95 and would have no reason to pass Cursor over.
+write_fixture <<'JSON'
+{"schemaVersion":3,"providers":[{"provider":"cursor","quotaSemantics":{"description":"The all_models scope bounds every Cursor model.","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":8,"boundedBy":["included_usage"],"runway":{"status":"projected_exhaustion","usableRunwaySeconds":600,"projectedExhaustedAt":"2030-01-01T00:10:00Z","limitingWindowId":"included_usage","projectionConfidence":"established","projectionBasis":"cycle_average"}}]}},{"provider":"codex","quotaSemantics":{"description":"The all_models scope bounds every Codex model.","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":60,"boundedBy":["weekly"],"runway":{"status":"projected_exhaustion","usableRunwaySeconds":14400,"projectedExhaustedAt":"2030-01-01T04:00:00Z","limitingWindowId":"weekly","projectionConfidence":"established","projectionBasis":"cycle_average"}}]}}]}
+JSON
+write_sidecar_fixture <<'JSON'
+{"schema":"fm-quota-sidecar-reader.v1","freshness_seconds":7200,"clock_skew_tolerance_seconds":300,"evidence_status":"CURRENT","providers":[{"provider":"cursor","evidence_status":"CURRENT","reason":"fresh","source_status":"ok","captured_at":"2030-01-01T00:00:00Z","captured_age_seconds":45,"last_attempt_at":"2030-01-01T00:00:00Z","last_attempt_age_seconds":45,"windows":[{"id":"included_usage","percent_remaining":95,"resets_at":"2030-01-02T00:00:00Z"}]}]}
+JSON
+run_case \
+  "quota-axi stays authoritative where the sidecar overlaps it" \
+  "SELECTED=codex" \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and take every evidence read it directs exactly once. Candidate A is harness=cursor model=composer-1. Candidate B is harness=codex model=gpt-5.6. The authoritative catalogs already prove both models supported in their stated provider families, and their selected authentication surfaces are usable. Both candidates have comparable required task fit and the same reasoning class for this work. The likely task-completion horizon is two hours with established confidence. Your evidence reads disagree about how much of Cursor's included usage remains; resolve that disagreement by your own rules and account for it explicitly instead of averaging, merging, or caching either number. Return exact lines FACT=cursor|headroom=<n>|selection_source=<quota-axi|sidecar>|sidecar=<diagnostic|authoritative> and FACT=codex|headroom=60|runway_seconds=14400, then an exact final line SELECTED=<cursor|codex>. Beyond the evidence reads your loaded skill directs, do not use other vendor or model commands, and do not modify files." \
+  "FACT=cursor|headroom=8|selection_source=quota-axi|sidecar=diagnostic" \
+  "FACT=codex|headroom=60|runway_seconds=14400"
 
 echo "# all quota-array-dispatch live behavior tests passed"
