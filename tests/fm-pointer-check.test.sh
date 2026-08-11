@@ -18,12 +18,19 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pointer-check.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # A stub `gh` that answers `gh api -i <endpoint>` from a routing table, in the
-# real client's shape: the status line goes to stdout even for an error, and the
-# process exit code is nonzero. FM_GH_MODE picks the credential posture.
+# real client's shape: the status line and headers go to stdout even for an
+# error, and the process exit code is nonzero. FM_GH_MODE picks the credential
+# posture.
 #
-#   authenticated  a token that can see HelloWorldSungin/* and users/torvalds
-#   anonymous      no credential at all (real gh exits 4 with empty stdout)
-#   ratelimited    a usable credential whose pointer lookups then come back 403
+#   authenticated    a token that can see HelloWorldSungin/* and users/torvalds
+#   anonymous        no credential at all (real gh exits 4 with empty stdout)
+#   ceiling          a client that reaches the API carrying nothing, so the API
+#                    answers with the unauthenticated rate ceiling
+#   installation     what CI carries: a GitHub App installation token, which is
+#                    refused at the user-context endpoint and resolves
+#                    repository pointers perfectly well
+#   ratelimited      a usable credential whose pointer lookups come back 403
+#   throttled-probe  a credential whose very first request is throttled
 write_stub_gh() {
   local fakebin=$1
   cat > "$fakebin/gh" <<'SH'
@@ -46,20 +53,46 @@ emit() {
   exit 1
 }
 
+# The credential probe reads the core requests-per-hour ceiling from here: 60 is
+# the unauthenticated one, and every real credential is far above it.
+emit_rate_limit() {
+  printf 'HTTP/2.0 200 OK\n'
+  printf 'Content-Type: application/json\n'
+  printf 'X-RateLimit-Limit: %s\n' "$1"
+  printf 'X-RateLimit-Resource: core\n'
+  printf '\n'
+  printf '{"resources":{"core":{"limit":%s}}}\n' "$1"
+  exit 0
+}
+
 case "${FM_GH_MODE:-authenticated}" in
   anonymous)
     printf 'To get started with GitHub CLI, please run:  gh auth login\n' >&2
     exit 4
     ;;
+  ceiling)
+    [ "$endpoint" = "rate_limit" ] && emit_rate_limit 60
+    emit "401 Unauthorized"
+    ;;
+  installation)
+    # An installation token cannot reach a user-context endpoint at all. Probing
+    # there would call this credential unusable, so the stub answers the way
+    # GitHub does and the tests below prove the check does not ask.
+    [ "$endpoint" = "user" ] && emit "403 Forbidden"
+    [ "$endpoint" = "rate_limit" ] && emit_rate_limit 1000
+    ;;
   ratelimited)
     # The credential itself works; the pointer lookups are what get throttled.
-    [ "$endpoint" = "user" ] && emit "200 OK"
+    [ "$endpoint" = "rate_limit" ] && emit_rate_limit 5000
+    emit "403 Forbidden"
+    ;;
+  throttled-probe)
     emit "403 Forbidden"
     ;;
 esac
 
 case "$endpoint" in
-  user) emit "200 OK" ;;
+  rate_limit) emit_rate_limit 5000 ;;
   # An owner that exists. Account existence is public, so the stub answers
   # these the same way GitHub does regardless of what is private below them.
   users/HelloWorldSungin|users/torvalds) emit "200 OK" ;;
@@ -69,6 +102,14 @@ case "$endpoint" in
   repos/HelloWorldSungin/firstmate) emit "200 OK" ;;
   # An owner that exists with a repository this credential CANNOT see.
   repos/torvalds/*) emit "404 Not Found" ;;
+  # Refs, matched exactly. A branch name with a slash in it is the norm in this
+  # repository, so the stub carries one; every other ref is absent, including
+  # the longer readings of these same URLs.
+  repos/HelloWorldSungin/ArkNode-AI/commits?sha=master\&per_page=1) emit "200 OK" ;;
+  repos/HelloWorldSungin/firstmate/commits?sha=main\&per_page=1) emit "200 OK" ;;
+  repos/HelloWorldSungin/firstmate/commits?sha=fm/fm-slashed-branch\&per_page=1) emit "200 OK" ;;
+  repos/*/*/commits?sha=*) emit "404 Not Found" ;;
+  repos/HelloWorldSungin/firstmate/contents/docs/one-owner.md?ref=fm/fm-slashed-branch) emit "200 OK" ;;
   repos/*/*/contents/docs/design/2026-08-10-ct110-sealed-corpus.md*) emit "200 OK" ;;
   repos/*/*/contents/*) emit "404 Not Found" ;;
   repos/*/*/issues/76) emit "200 OK" ;;
@@ -124,8 +165,10 @@ test_authenticated_verdicts_split_three_ways() {
     "an owner account that does not exist is the one definitive broken case"
   assert_contains "$out" "repo-not-visible" \
     "an invisible repository must name why it could not be resolved"
-  assert_contains "$out" "ref-or-path-not-found" \
-    "a missing path inside a VISIBLE repository is broken, not unverified"
+  assert_contains "$out" "path-not-found" \
+    "a missing path at a ref that DOES exist is broken, not unverified"
+  assert_contains "$out" "has ref main, but docs/absent.md is not in it" \
+    "the broken path verdict must name the ref it confirmed before claiming it"
   assert_contains "$out" "issue-not-found" "a missing issue in a visible repository is broken"
   assert_contains "$out" "checked=6 ok=2 broken=3 unverified=1 skipped=0" \
     "the summary must account for every pointer by verdict"
@@ -146,12 +189,49 @@ test_unauthenticated_never_reads_404_as_a_verdict() {
   assert_contains "$out" "checked=6 ok=0 broken=0 unverified=6 skipped=0" \
     "with no credential every remote pointer must be unverified"
   assert_contains "$out" "credential=none" "the summary must disclose that nothing was checked"
+  assert_contains "$out" "no pointer was resolved against the GitHub API" \
+    "a run that resolved nothing must say so outright, not leave it to be inferred"
   assert_contains "$out" "no-credential" "each unverified pointer must name the missing credential"
   assert_not_contains "$out" "broken     " \
     "an unauthenticated 404 must never be reported as a broken pointer"
   assert_not_contains "$out" "ok         " \
     "an unauthenticated 404 must never be reported as a working pointer"
+
+  # The other shape of the same state: the client reaches GitHub but carries
+  # nothing, so the API answers with the unauthenticated ceiling rather than gh
+  # refusing to make the call.
+  set +e
+  out=$(FM_GH_MODE=ceiling "$CHECK" "$TMP_ROOT/pointers.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an unauthenticated client must not fail the run either"
+  assert_contains "$out" "credential=none" \
+    "the unauthenticated rate ceiling identifies a client carrying no credential"
+  assert_contains "$out" "ok=0 broken=0 unverified=6" \
+    "an unauthenticated client resolves nothing, in either direction"
   pass "no credential yields could-not-verify, never a broken or working verdict"
+}
+
+test_installation_token_is_a_usable_credential() {
+  # What CI passes as GH_TOKEN is a GitHub App installation token. It is refused
+  # at every user-context endpoint, so a probe that asks "who am I" would report
+  # the credential unusable, decide every pointer unverifiable, and then fail the
+  # run on its own conclusion - having verified nothing.
+  cat > "$TMP_ROOT/one-ok.md" <<'MD'
+[the issue](https://github.com/HelloWorldSungin/firstmate/issues/76)
+MD
+  local out rc
+  set +e
+  out=$(FM_GH_MODE=installation "$CHECK" --require-credential --verbose "$TMP_ROOT/one-ok.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an installation token must satisfy --require-credential"
+  assert_contains "$out" "credential=authenticated" \
+    "a credential the API answers for is authenticated, whatever shape it is"
+  assert_contains "$out" "issue-resolved" "an installation token resolves repository pointers"
+  assert_not_contains "$out" "credential-unusable" \
+    "the probe must not ask a question an installation token cannot answer"
+  pass "a GitHub App installation token is probed as usable, not as unusable"
 }
 
 test_require_credential_refuses_a_vacuous_pass() {
@@ -163,6 +243,16 @@ test_require_credential_refuses_a_vacuous_pass() {
   set -e
   expect_code 2 "$rc" "--require-credential must refuse to pass having verified nothing"
   assert_contains "$out" "no usable GitHub credential" "the refusal must name the missing credential"
+
+  # The other way to verify nothing: find no pointer at all. A prose surface that
+  # suddenly holds none is a regression in the extraction, not a clean run.
+  printf 'No pointer lives here.\n' > "$TMP_ROOT/empty.md"
+  set +e
+  out=$(FM_GH_MODE=authenticated "$CHECK" --require-credential "$TMP_ROOT/empty.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "--require-credential must not be satisfiable by absence"
+  assert_contains "$out" "not satisfiable by absence" "the refusal must name what was missing"
 
   set +e
   out=$(FM_GH_MODE=authenticated "$CHECK" --require-credential "$TMP_ROOT/ok-only.md" 2>&1)
@@ -186,7 +276,46 @@ MD
   assert_contains "$out" "unverified" "a 403 answer resolves nothing"
   assert_contains "$out" "broken=0" "a throttled lookup is not evidence the pointer is broken"
   assert_contains "$out" "rate-limited-or-forbidden" "the throttled lookup must name why it resolved nothing"
+
+  # Throttled at the credential probe itself, which is the same non-evidence one
+  # request earlier. It must stay out of the refusal branch: turning a rate limit
+  # into a red run contradicts the rule the rest of this check is built on.
+  set +e
+  out=$(FM_GH_MODE=throttled-probe "$CHECK" --require-credential "$TMP_ROOT/one.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a throttled probe must not turn --require-credential into a failure"
+  assert_contains "$out" "credential=throttled" "a throttled probe is its own state, not a bad credential"
+  assert_contains "$out" "no pointer was resolved against the GitHub API" \
+    "a run that resolved nothing must say so even when it passes"
   pass "a throttled or forbidden lookup is could-not-verify, never broken"
+}
+
+test_a_slashed_branch_is_not_a_missing_path() {
+  # fm/-prefixed branches are the norm in this repository, so a blob URL does not
+  # split into ref and path at the first slash. Guessing that it does fabricates
+  # a definitive "broken" on a correct pointer, which costs more trust than a
+  # false could-not-verify ever could.
+  cat > "$TMP_ROOT/slashed.md" <<'MD'
+[file on a slashed branch](https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-slashed-branch/docs/one-owner.md)
+[the branch itself](https://github.com/HelloWorldSungin/firstmate/tree/fm/fm-slashed-branch)
+[no reading names a ref](https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-no-such-branch/docs/one-owner.md)
+MD
+  local out rc
+  set +e
+  out=$(FM_GH_MODE=authenticated "$CHECK" --verbose "$TMP_ROOT/slashed.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a correct pointer at a slashed branch must not fail the run"
+  assert_contains "$out" "docs/one-owner.md  path-resolved" \
+    "the ref/path split must be settled by the API, not by the first slash"
+  assert_contains "$out" "fm-slashed-branch  ref-resolved" \
+    "a tree URL naming a slashed branch is a ref, not a path inside one"
+  assert_contains "$out" "ref-not-resolved" \
+    "when no reading of the URL names a visible ref, the split is undecided"
+  assert_contains "$out" "checked=3 ok=2 broken=0 unverified=1" \
+    "an undecidable split must be counted as could-not-verify, never as broken"
+  pass "a branch name containing a slash resolves, and an undecidable split is not broken"
 }
 
 test_examples_and_foreign_hosts_are_not_pointers() {
@@ -227,12 +356,19 @@ MD
     "link syntax inside a fence is still an example - a verification record must be able to quote a broken pointer"
   assert_not_contains "$out" "github.com/acme/widget" \
     "a URL inside an inline code span is an illustration, not a pointer"
-  assert_not_contains "$out" "<owner>" "a template URL has no target to resolve"
+
+  # A template has no target to resolve, but it is refused BY NAME rather than
+  # dropped: the marker set is broad enough to catch a real URL, and a pointer
+  # that disappears without a verdict is the failure this check exists to stop.
+  assert_contains "$out" "https://github.com/<owner>/<repo>/issues/1  template" \
+    "a template must be reported as skipped with its full text, not silently dropped"
+  assert_not_contains "$out" "https://github.com/  " \
+    "a template must never be reported as the truncated prefix it was cut down to"
   assert_contains "$out" "w3.org/TR/trace-context/  no-adapter" \
     "a host with no resolver must be skipped explicitly, not silently"
-  assert_contains "$out" "checked=2 ok=1 broken=0 unverified=0 skipped=1" \
-    "only the two real pointers may be counted"
-  pass "fenced, inline, and templated URLs are excluded from the pointer surface"
+  assert_contains "$out" "checked=3 ok=1 broken=0 unverified=0 skipped=2" \
+    "every extracted pointer must carry a verdict, including the ones nothing can resolve"
+  pass "fenced and inline URLs stay out of the pointer surface, and a template is refused by name"
 }
 
 test_code_comment_pointers_resolve() {
@@ -293,8 +429,10 @@ assert not any(s.startswith("/") for s in sources), sources
 
 test_authenticated_verdicts_split_three_ways
 test_unauthenticated_never_reads_404_as_a_verdict
+test_installation_token_is_a_usable_credential
 test_require_credential_refuses_a_vacuous_pass
 test_rate_limit_is_unverified_not_broken
+test_a_slashed_branch_is_not_a_missing_path
 test_examples_and_foreign_hosts_are_not_pointers
 test_code_comment_pointers_resolve
 test_json_output_carries_every_verdict

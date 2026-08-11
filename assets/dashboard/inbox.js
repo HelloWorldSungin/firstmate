@@ -557,8 +557,8 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
 // so its absent endpoint is the expected outcome, not a worker that died; a task
 // that went quiet without declaring anything and lost its endpoint is the real
 // alarm this signal exists to raise. What parking IS - fleet operating practice
-// rather than a procedure this repo defines - is stated once in
-// docs/dashboard-inbox-policy.md and deliberately not restated here.
+// rather than a procedure this repo defines - is owned by
+// docs/dashboard-inbox-policy.md.
 //
 // The declared-wait verdict is the same `hints.last_event_declared_wait` that
 // Task activity reads, so both cards ask bin/fm-classify-lib.sh the one question

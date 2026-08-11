@@ -15,14 +15,17 @@ A reader arrives by navigation: they open the vault page, the issue body, the ca
 Those two orderings are unrelated, so the copy that gets corrected and the copy that gets read are routinely different files.
 Nothing about that is a lapse in care, which is why "remember to update the other place" does not fix it and a named convention plus a mechanical check does.
 
-## The rule, in three parts
+## The rule, in four parts
 
 1. **A declared owner.**
    One file states the fact in full, and says it is the owner where both a reader and an editor will see it.
 2. **Every other mention is a pointer.**
    A pointer may summarise in one clause so the sentence still reads, and it names the owner.
    It may not carry the detail: carried detail is exactly what drifts.
-3. **Pointers are mechanically verified to resolve.**
+3. **A pointer points; it does not certify itself.**
+   "and deliberately not restated here", "this is not a copy", "kept in sync with": a claim a pointer makes about its own compliance is unverifiable, ages independently of the clause it defends, and takes away the reader's only defence, which is judging the clause on sight.
+   Name the owner and stop.
+4. **Pointers are mechanically verified to resolve.**
    A pointer nobody can follow is worse than no pointer, because it reads as diligence.
 
 ## Pointers cross systems, so the check has to as well
@@ -54,16 +57,18 @@ bin/fm-pointer-check.sh
 A private repository answers an unauthenticated request with 404, exactly as a repository whose owner never existed does.
 A checker with only two verdicts must therefore call one of those two cases wrong, and both mistakes are expensive: a correct pointer reported broken teaches contributors to ignore the check, and a broken pointer reported fine is the failure the check exists to catch.
 
-So `bin/fm-pointer-check.sh` reports three outcomes, and an unauthenticated 404 is never read as either of the other two:
+So `bin/fm-pointer-check.sh` reports four outcomes, and an unauthenticated 404 is never read as either of the first two:
 
 - `ok` resolved.
 - `broken` provably does not resolve, and only failing evidence taken **with** a credential earns this.
   An owner account that does not exist is definitive, because account existence is public even when every repository under it is private.
-  A path or issue missing from a repository the credential can see is definitive too.
-- `unverified` could not be resolved either way: no credential, a repository this credential cannot see, or a throttled lookup.
+  A path missing at a ref the credential has confirmed exists is definitive too, as is a missing issue in a repository it can see.
+- `unverified` could not be resolved either way: no credential, a repository this credential cannot see, a throttled lookup, or a URL whose ref and path the API cannot separate.
   It never fails a run, and it is never counted as a pass.
+- `skipped` no adapter claims the pointer: a host this check has no resolver for, a placeholder, a GitHub surface that is not a repository pointer.
+  Never counted as verified, and always printed with its reason, because a pointer that disappears without a verdict is the failure the check exists to prevent.
 
-`--require-credential` turns a credential-less run into an explicit refusal, so an automated run cannot quietly report success having verified nothing.
+`--require-credential` turns a run that resolved nothing into an explicit refusal - no usable credential, or no pointer found at all - so an automated run cannot quietly report success having verified nothing, and cannot satisfy the flag by absence.
 [`verification/pointer-check.md`](verification/pointer-check.md) records each of those outcomes observed against the real API, including the private repository and the nonexistent owner that an unauthenticated request cannot tell apart.
 
 ## What this convention does not do
