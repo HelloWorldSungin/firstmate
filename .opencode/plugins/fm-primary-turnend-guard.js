@@ -22,6 +22,11 @@ function runProcess(command, args, input = "") {
     });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    // A child that exits before draining stdin - an early-exit guard, or git,
+    // which never reads it - fails this write with EPIPE. That is the child's
+    // answer, not a host failure, so it must not reach the process as an
+    // unhandled stream error: the close handler above already carries the code.
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }

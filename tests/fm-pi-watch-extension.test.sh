@@ -892,8 +892,13 @@ test_pi_session_transition_generation_owner() {
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s\n' "$$"
-printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
 printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+# The pid file is the single commit point the assertions poll on, so it is
+# published last and by rename. Appending the arm log after it, or letting a
+# truncate-then-write expose an empty file, would let a reader observe this
+# child in the pid file while the live-arm log still reads as none.
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}.$$"
+mv -f "${FM_CHILD_PID_FILE:?}.$$" "${FM_CHILD_PID_FILE:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH

@@ -72,6 +72,10 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
     });
     child.on("error", () => resolveResult({ code: 0, stderr: "" }));
     child.on("close", (code) => resolveResult({ code: code ?? 0, stderr }));
+    // A guard that exits before draining stdin fails this write with EPIPE.
+    // That is the guard's answer, not a host failure, so it must not reach the
+    // process as an unhandled stream error: close above already carries the code.
+    child.stdin.on("error", () => {});
     child.stdin.end('{"stop_hook_active":false}');
   });
 }
