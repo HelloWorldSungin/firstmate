@@ -3,9 +3,16 @@
 # observations for current capacity.
 #
 # This reader enforces the freshness and degradation policy owned by
-# .agents/skills/quota-array-dispatch/SKILL.md. It is additive evidence only:
-# quota-axi remains authoritative for every provider it covers, and this script
-# never merges, caches, ranks, or recommends routes.
+# .agents/skills/quota-array-dispatch/SKILL.md. Every constraint it validates a
+# producer document against - the provider id and its filename match, the
+# Z-suffixed UTC timestamp form and ordering, the at-least-one-window rule, the
+# window id form and length, and the percentage range - belongs to the
+# fm-quota-sidecar.v1 producer contract owned by docs/configuration.md. This
+# script is that contract's only enforcement point, never its author: relaxing
+# or tightening a check here without changing that section leaves the documented
+# contract false. It is additive evidence only: quota-axi remains authoritative
+# for every provider it covers, and this script never merges, caches, ranks, or
+# recommends routes.
 #
 # The default freshness window is two hours (7200 seconds). The shortest
 # currently published subscription windows reset in about five hours, so two

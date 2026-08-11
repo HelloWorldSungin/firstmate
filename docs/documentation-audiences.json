@@ -122,6 +122,10 @@
       "target": ".agents/skills/quota-array-dispatch/SKILL.md"
     },
     {
+      "source": "bin/fm-quota-sidecar.sh",
+      "target": "docs/configuration.md"
+    },
+    {
       "source": "docs/one-owner.md",
       "target": "docs/verification/pointer-check.md"
     },
