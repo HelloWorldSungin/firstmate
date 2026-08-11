@@ -11,7 +11,7 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'fm_test_stop_remote_job_worker "$TMP_ROOT/remote-jobs"; rm -rf -- "$TMP_ROOT"' EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
