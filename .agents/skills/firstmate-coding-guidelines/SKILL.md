@@ -113,6 +113,7 @@ For every changed maintained prose surface, identify its inventory audience, aut
 Move or delete evidence only after the current owner and regression pointer are verified.
 After all documentation, review-fix, and lint-fix commits, review the complete branch diff again against those criteria rather than reviewing only the latest commit.
 Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup routing, local link targets, and owner pointers without keyword-linting legitimate evidence prose.
+Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this repository is its class rather than the audience check's.
 
 ## Repo style rules
 
