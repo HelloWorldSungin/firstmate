@@ -181,6 +181,9 @@ const USAGE_FIELDS = ["events", "sessions", "input_tokens", "output_tokens",
 const GBRAIN_HEALTH_SCHEMA = "fm-gbrain-health.v1";
 const GBRAIN_SEARCH_SCHEMA = "fm-gbrain-search.v1";
 const GBRAIN_RECALL_COMMAND = path.join(SCRIPT_DIR, "fm-recall.sh");
+// bin/fm-recall.sh's exit status for "this command could not create the working
+// files it needs, so no corpus was ever asked".
+const GBRAIN_RECALL_SETUP_FAILED_EXIT = 5;
 // A search query longer than this is refused before it touches the wrapper.
 // GBrain's own embedder was sized for short questions, and a 4 KB body is a
 // pathological operator error or a probing attack.
@@ -491,6 +494,10 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
       if (code !== 0) {
         finish(Object.assign(new Error(`command exited ${code ?? signal ?? "unknown"}`), {
           kind: "exit_nonzero",
+          // Carried separately from the message because callers whose command
+          // documents distinct failure states need to tell them apart, and
+          // parsing them back out of the sentence would be a second contract.
+          exitCode: typeof code === "number" ? code : null,
           stderr: stderrText,
         }));
         return;
@@ -1338,6 +1345,16 @@ class GBrainState {
       // per-source verdict, which is the operator's only way to see WHICH
       // corpus was unreachable.
       if (kind === "exit_nonzero") {
+        // fm-recall separates "every corpus was asked and none answered" from
+        // "the search never started", and the panel has to keep them apart:
+        // the first is a fact about the brain, the second is a fact about this
+        // service's environment, and only one of them is the operator's to
+        // read as an answer. bin/fm-recall.sh's header owns the statuses.
+        if (error.exitCode === GBRAIN_RECALL_SETUP_FAILED_EXIT) {
+          throw Object.assign(new Error(safeText(error.stderr) || "the search could not start"), {
+            kind: "search_setup_failed",
+          });
+        }
         throw Object.assign(new Error(safeText(error.message) || "search failed"), { kind: "no_corpus_answered" });
       }
       if (kind === "timed_out") {
@@ -2075,7 +2092,7 @@ async function serveGBrainSearch(request, response, gbraintron) {
     const status = error.kind === "timed_out" ? 504
       : error.kind === "search_busy" ? 429
         : error.kind === "query_too_short" || error.kind === "query_too_large" ? 400
-          : error.kind === "no_corpus_answered" ? 503
+          : error.kind === "no_corpus_answered" || error.kind === "search_setup_failed" ? 503
             : 502;
     sendJson(response, status, {
       schema: GBRAIN_SEARCH_SCHEMA,

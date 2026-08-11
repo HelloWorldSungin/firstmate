@@ -874,7 +874,7 @@ test_installer_writes_hardened_user_service() {
   granted=$(sed -n 's/^ReadWritePaths=-//p' "$unit")
   [ "$pinned_db" = "$case_root/store/events.db" ] \
     || fail "the installer did not pin the resolved event store into the environment: [$pinned_db]"
-  [ "$granted" = "${pinned_db%/*}" ] \
+  printf '%s\n' "$granted" | grep -qxF "${pinned_db%/*}" \
     || fail "the unit grants [$granted] while the service would open a store in [${pinned_db%/*}]"
   assert_contains "$(cat "$env_file")" \
     "FM_DASHBOARD_EVENTS_CONFIG=\"$case_root/config/firstmate/dashboard-events.json\"" \
@@ -883,22 +883,31 @@ test_installer_writes_hardened_user_service() {
 }
 
 # The hardened unit pairs ProtectSystem=strict with ProtectHome=read-only.
-# Together they leave SQLite no writable scratch path - /tmp, /var/tmp,
-# /usr/tmp, and $HOME are all read-only - so a read-only query that needs a temp
-# file exits "disk I/O error" while the store itself is healthy.
+# Together they leave no writable scratch path - /tmp, /var/tmp, /usr/tmp, and
+# $HOME are all read-only - and three panels have now been broken by it: token
+# usage exited "disk I/O error", semantic search could not mktemp, and durable
+# history silently returned zero of sixty-one records because bash could not
+# write the temp file a here-string larger than a pipe buffer needs.
 #
-# The two halves of the answer are pinned together here because either one alone
-# invites the other to be undone. The reader keeps its temp storage in memory,
-# so nothing ever asks the filesystem for scratch space; and the unit therefore
-# needs no scratch directive at all, which is what keeps PrivateTmp=yes out. That
-# directive is the obvious reach and the case refuses it: it substitutes a
-# private tmpfs for the shared /tmp, and the fleet's tmux server socket lives at
-# /tmp/tmux-$UID. The snapshot this service runs probes endpoints through that
-# socket, so a private /tmp would trade the usage panel for every live task
-# reading as "endpoint absent".
-# docs/verification/dashboard-service-unit.md records both reproductions.
-test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
-  local case_root unit out directives probe
+# The unit therefore grants scratch once, and this case pins the SHAPE of that
+# grant, because the obvious shape is the wrong one. PrivateTmp=yes also clears
+# the failure, and it is refused here: it substitutes a private tmpfs for the
+# shared /tmp, and the fleet's tmux server socket lives at /tmp/tmux-$UID. The
+# snapshot this service runs probes endpoints through that socket, so a private
+# /tmp would trade these panels for every live task reading as "endpoint
+# absent" - the same false-absence defect, moved to the primary view.
+# RuntimeDirectory= adds a writable directory without replacing /tmp, so both
+# halves hold at once, and the TMPDIR pointing at it is what makes the grant
+# reach a caller that just runs mktemp.
+#
+# The reader half is pinned in the same case deliberately: SQLite temp storage
+# stays in memory whether or not this unit grants anything, because a reader
+# that never asks the filesystem for scratch cannot be denied it, including
+# outside this unit. Each half is what keeps the other from becoming
+# load-bearing, so a future pass that drops one is told what it just changed.
+# docs/verification/dashboard-service-unit.md records the reproductions.
+test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory() {
+  local case_root unit out directives directives_file probe runtime_dir
   case_root="$TMP_ROOT/install-sqlite-scratch"
   mkdir -p "$case_root/config" "$case_root/home"
   out=$(env -u FM_DASHBOARD_EVENTS_CONFIG \
@@ -910,11 +919,25 @@ test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
   [ -f "$unit" ] || fail "installer did not create the user service: $out"
   # Assertions run against the directives alone, so a comment that merely names
   # a property cannot answer for the property itself.
-  directives=$(grep -v '^[[:space:]]*#' "$unit")
+  directives_file="$case_root/directives"
+  grep -v '^[[:space:]]*#' "$unit" > "$directives_file"
+  directives=$(cat "$directives_file")
   assert_contains "$directives" 'ProtectSystem=strict' "unit lost ProtectSystem=strict"
   assert_contains "$directives" 'ProtectHome=read-only' "unit lost ProtectHome=read-only"
   assert_not_contains "$directives" 'PrivateTmp=yes' \
     "unit hides the shared /tmp, which is where the fleet's tmux server socket lives"
+
+  # The grant and the TMPDIR are asserted together and against the same name: a
+  # RuntimeDirectory nothing points TMPDIR at is a writable directory no caller
+  # finds, which is indistinguishable from having no grant at all.
+  runtime_dir=$(sed -n 's/^RuntimeDirectory=//p' "$directives_file")
+  [ -n "$runtime_dir" ] \
+    || fail "unit grants no scratch directory, so every panel that needs a temp file fails under its own hardening"
+  case "$runtime_dir" in
+    /*) fail "RuntimeDirectory must be relative to the manager's runtime root; systemd refuses [$runtime_dir]" ;;
+  esac
+  assert_contains "$directives" "Environment=TMPDIR=%t/$runtime_dir" \
+    "unit grants a scratch directory but points TMPDIR somewhere else, so mktemp still lands on the read-only hierarchy"
 
   # The reader half, asserted where it actually takes effect rather than by
   # reading the source: a readOnly open must report temp_store 2 (MEMORY), and a
@@ -936,7 +959,7 @@ test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory() {
     "the readOnly open does not keep SQLite temp storage in memory, so a sandbox with no writable scratch path fails the read"
   assert_contains "$probe" 'writer=0' \
     "the writable open no longer leaves temp storage on the SQLite default"
-  pass "the unit grants no private /tmp and the read-only opener keeps SQLite temps in memory"
+  pass "the unit grants scratch without hiding the shared /tmp and the read-only opener keeps SQLite temps in memory"
 }
 
 wait_for_history() {  # <case-root> <jq-expression>
@@ -1434,6 +1457,6 @@ test_a_failed_usage_read_keeps_the_last_good_one
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
-test_unit_does_not_use_private_tmp_and_opener_keeps_temps_in_memory
+test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"

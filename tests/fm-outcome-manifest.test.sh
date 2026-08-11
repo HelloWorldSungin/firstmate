@@ -605,6 +605,53 @@ EOF
   pass "a task, its attribution, and its work items stay in durable history after the volatile records are gone"
 }
 
+# A history read that loses its records must fail, not return an empty list.
+#
+# This is the shape the dashboard's History panel actually broke in: under the
+# service unit's read-only filesystem, bash could not write the temp file a
+# here-string larger than a pipe buffer needs, fed the projection loop nothing,
+# and the read returned zero records with total 61 and exit 0. The panel had no
+# way to tell that from a fleet that has finished nothing, so it rendered
+# "Nothing has completed in this home" over sixty-one completion records.
+#
+# The projection no longer uses a here-string, so the fault is injected here
+# rather than reproduced: an ordering step that succeeds while emitting nothing
+# stands for any way records can be lost between disk and the result. What is
+# pinned is the response - refuse - not the mechanism that caused it.
+test_history_refuses_to_report_a_lost_read_as_an_empty_fleet() {
+  local home out rc stub real_jq
+  home=$(make_home lostread)
+  seed_ship_task "$home" kept
+  fm "$home" "$MANIFEST" write kept --completed-at 2026-07-01T00:00:00Z >/dev/null
+
+  out=$(fm "$home" "$MANIFEST" list) || fail "the unfaulted read must succeed"
+  printf '%s' "$out" | jq -e '.total == 1 and .shown == 1' >/dev/null \
+    || fail "the fixture must have a record to lose: $out"
+
+  stub="$TMP_ROOT/lostread-bin"
+  real_jq=$(command -v jq)
+  mkdir -p "$stub"
+  # The single quotes are the point: these lines are the stub's source, so the
+  # expansions must survive into the file rather than happening here.
+  # shellcheck disable=SC2016
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'for arg in "$@"; do\n'
+    printf '  case "$arg" in *sort_by*) exit 0 ;; esac\n'
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$real_jq"
+  } > "$stub/jq"
+  chmod +x "$stub/jq"
+
+  rc=0
+  out=$(PATH="$stub:$PATH" fm "$home" "$MANIFEST" list 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "a read that lost its records exited 0, which is what let the panel call the fleet empty: $out"
+  printf '%s' "$out" | jq -e '.records == [] and .total > 0' >/dev/null 2>&1 \
+    && fail "a read that lost its records still published an empty history document: $out"
+  pass "a history read that loses its records refuses instead of reporting a fleet that finished nothing"
+}
+
 # --- secret safety ----------------------------------------------------------
 
 test_no_secret_bearing_fields() {
@@ -694,5 +741,6 @@ test_gitlab_approval_state
 test_pr_status_fallback_timeout
 test_history_projection
 test_history_survives_record_removal
+test_history_refuses_to_report_a_lost_read_as_an_empty_fleet
 test_no_secret_bearing_fields
 test_free_text_is_bounded_and_single_line

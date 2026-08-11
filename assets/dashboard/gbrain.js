@@ -354,6 +354,8 @@ export function searchFailure(reason, detail) {
   // Amber is reserved for "wait and try again" - a transient fault the
   // operator can recover from. Red is reserved for a permanent or hostile
   // failure, including anything that looks like a malformed request.
+  // search_setup_failed stays red: unlike the amber reasons it will not clear
+  // by trying again, because the service is missing something it needs.
   const tone = (reason === "timed_out" || reason === "no_corpus_answered" || reason === "search_busy" || reason === "query_too_short") ? "amber" : "red";
   const label = searchReasonLabel(reason);
   // The detail is free text from the server and does not always add anything:
@@ -382,6 +384,11 @@ export function searchReasonLabel(reason) {
     case "cross_origin": return "The search was refused as a cross-origin request.";
     case "timed_out": return "The brain did not answer within the search timeout.";
     case "no_corpus_answered": return "No corpus answered the search.";
+    // Deliberately says nothing about the brain. This search never reached one,
+    // so any sentence about corpora would be an answer the dashboard does not
+    // have - and the operator would go looking at their brain instead of at
+    // the service that could not start the search.
+    case "search_setup_failed": return "The search could not start, so nothing was asked of the brain.";
     case "search_failed":
     case "unsupported_schema":
     default: return "The search could not be answered.";

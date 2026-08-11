@@ -47,6 +47,12 @@
 #   exit 4  HOSTED synthesis is unavailable or produced no answer while local
 #           retrieval worked. Every such refusal names `search` as the path that
 #           still works.
+#   exit 5  SETUP failed - this command could not create the working files it
+#           needs, so no corpus was ever reached. That is a third state, not a
+#           quiet kind of exit 3: exit 3 means every requested corpus was asked
+#           and none answered, while this means none was ever asked. A caller
+#           that renders the two alike tells the operator their brain is empty
+#           or broken when the truth is that the search never started.
 #
 # Every query is passed as an argument array and, at the GBrain boundary, as a
 # jq-built JSON value. No query text is ever interpolated into a shell command,
@@ -274,6 +280,16 @@ JQ_RENDER_PRELUDE='
 
 LOCAL_OUT=""
 LOCAL_ERR=""
+# Set by any leg that could not create its own working files. It is tracked
+# apart from the per-source detail because it changes the exit status of the
+# whole run: a corpus that was never asked is not a corpus that did not answer.
+SETUP_FAILED=0
+SETUP_DETAIL=""
+
+setup_failure() {  # <detail>
+  SETUP_FAILED=1
+  [ -n "$SETUP_DETAIL" ] || SETUP_DETAIL=$1
+}
 # Set by a caller that must hand a hosted credential to exactly one process.
 # gbrain_local_call exports it for that call only; the caller clears it after.
 GBRAIN_CALL_HOSTED_KEY=""
@@ -282,10 +298,13 @@ gbrain_local_call() {  # <tool> <params-json> <seconds> -> 0
   local tool=$1 params=$2 secs=$3 out_file err_file rc=0
   LOCAL_OUT=""; LOCAL_ERR=""
   out_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    LOCAL_ERR="could not create a temporary file"; return 1
+    LOCAL_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so this home's index was never asked"
+    setup_failure "$LOCAL_ERR"; return 1
   }
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    rm -f "$out_file"; LOCAL_ERR="could not create a temporary file"; return 1
+    rm -f "$out_file"
+    LOCAL_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so this home's index was never asked"
+    setup_failure "$LOCAL_ERR"; return 1
   }
   (
     export GBRAIN_HOME="$FM_GBRAIN_HOME_DIR"
@@ -367,7 +386,9 @@ main_brain_search() {  # <query> <limit> <seconds> -> 0 with MAIN_OUT set
     return 1
   fi
   body_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    FM_GBRAIN_TOKEN=""; MAIN_ERR="could not create a temporary file"; return 1
+    FM_GBRAIN_TOKEN=""
+    MAIN_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so the main brain was never asked"
+    setup_failure "$MAIN_ERR"; return 1
   }
   jq -cn --arg q "$query" --argjson n "$limit" \
     '{jsonrpc: "2.0", id: 1, method: "tools/call",
@@ -555,7 +576,18 @@ cmd_search() {
   # No corpus answered, so an empty result list here would be the one lie this
   # command must never tell: "nothing was found" reads the same as "nothing
   # could be read" only to a caller that was never told the difference.
+  #
+  # There is a third thing it must not say either. When this command could not
+  # create its own working files, no corpus was ever asked, and reporting that
+  # as "none answered" points the operator at their brain instead of at the
+  # environment the command was run in - which is where the fault actually is.
   if [ "$answered" -eq 0 ]; then
+    if [ "$SETUP_FAILED" -eq 1 ]; then
+      [ "$JSON_MODE" -eq 1 ] \
+        || printf 'fm-recall: the search could not start, so no corpus was asked and this is not a result about your brain: %s\n' \
+             "$SETUP_DETAIL" >&2
+      exit 5
+    fi
     [ "$JSON_MODE" -eq 1 ] \
       || printf 'fm-recall: no corpus could be read, so this is not an empty result set - see the source states above\n' >&2
     exit 3
@@ -602,7 +634,11 @@ cmd_think() {
   FM_GBRAIN_SECRET=""
   if gbrain_local_call think "$params" "$secs"; then ok=1; fi
   GBRAIN_CALL_HOSTED_KEY=""
-  [ "$ok" -eq 1 ] || die 3 local_retrieval_failed "$HOME_PATH: $LOCAL_ERR"
+  if [ "$ok" -ne 1 ]; then
+    [ "$SETUP_FAILED" -eq 0 ] \
+      || die 5 setup_failed "the search could not start, so no corpus was asked: $SETUP_DETAIL"
+    die 3 local_retrieval_failed "$HOME_PATH: $LOCAL_ERR"
+  fi
 
   # GBrain answers with a placeholder and exits 0 when it has no usable model,
   # so its synthesis flag is the only honest signal that an answer was produced.

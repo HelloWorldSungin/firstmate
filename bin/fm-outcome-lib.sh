@@ -404,7 +404,7 @@ fm_outcome_validation_fields_valid() {  # <newline-delimited-fields>
         ;;
       *) return 1 ;;
     esac
-  done <<<"$fields"
+  done < <(printf '%s\n' "$fields")
 }
 
 fm_outcome_work_items_doc_valid() {  # <document-json> <id>
@@ -424,7 +424,7 @@ fm_outcome_work_items_doc_valid() {  # <document-json> <id>
        and all(.references[]; fm_work_item_ref_valid($url_max;$host_max;$path_max;$owner_max;$repo_max;$text_max;$source_max))
     then [.references[] | fm_work_item_fields] | join("\n")
     else error("invalid work-item document") end
-  ' <<<"$doc" 2>/dev/null) || return 1
+  ' < <(printf '%s\n' "$doc") 2>/dev/null) || return 1
   fm_outcome_validation_fields_valid "$fields"
 }
 
@@ -442,7 +442,7 @@ fm_outcome_work_item_references_valid() {  # <references-json>
        and all(.[]; fm_work_item_ref_valid($url_max;$host_max;$path_max;$owner_max;$repo_max;$text_max;$source_max))
     then [.[] | fm_work_item_fields] | join("\n")
     else error("invalid work-item references") end
-  ' <<<"$refs" 2>/dev/null) || return 1
+  ' < <(printf '%s\n' "$refs") 2>/dev/null) || return 1
   fm_outcome_validation_fields_valid "$fields"
 }
 
@@ -489,8 +489,8 @@ fm_outcome_pr_status_read() {  # <state-dir> <id> <expected-url>
   local doc expected=${3:-}
   if [ -n "$expected" ] \
     && doc=$(fm_outcome_pr_status_doc_read "$1" "$2") \
-    && [ "$(jq -r '.url' <<<"$doc")" = "$expected" ]; then
-    jq -c '.status' <<<"$doc"
+    && [ "$(jq -r '.url' < <(printf '%s\n' "$doc"))" = "$expected" ]; then
+    jq -c '.status' < <(printf '%s\n' "$doc")
     return 0
   fi
   fm_outcome_pr_status_unknown
@@ -641,7 +641,7 @@ fm_outcome_pr_status_doc_valid() {  # <document-json>
     | if fm_pr_status_valid($schema;$url_max;$host_max;$path_max;$source_max)
     then fm_pr_fields
     else error("invalid PR status document") end
-  ' <<<"$doc" 2>/dev/null) || return 1
+  ' < <(printf '%s\n' "$doc") 2>/dev/null) || return 1
   fm_outcome_validation_fields_valid "$fields"
 }
 
@@ -1007,7 +1007,7 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
             + (if .pr.url == null then [] else [.pr | fm_pr_identity_fields] end))
            | join("\n")
       else error("invalid outcome manifest values") end
-  ' <<<"$json" 2>/dev/null) || return 1
+  ' < <(printf '%s\n' "$json") 2>/dev/null) || return 1
   fm_outcome_validation_fields_valid "$fields"
 }
 
@@ -1039,6 +1039,17 @@ fm_outcome_manifest_read() {  # <data-dir> <id>
 # fleet snapshot does not already depend on: the snapshot runs under hermetic
 # restricted paths, so a history read must never be the thing that needs one
 # more tool on PATH.
+#
+# "Free of temp files" includes the ones bash opens without being asked. A
+# here-string or here-document larger than a pipe buffer is written to a file
+# under TMPDIR, so `done <<<"$ordered"` needed one as soon as this home had
+# enough records to exceed 64KB - and when it could not get one, bash fed the
+# loop nothing and the read returned an empty list with exit 0. Process
+# substitution is used throughout instead, which is always a pipe.
+# The shortfall check below is the second half of that guarantee: it refuses to
+# return an empty list built from records that were there, whatever the reason,
+# because reporting a read that failed as a fleet that finished nothing is the
+# one wrong answer this function must never give.
 fm_outcome_history_json() {  # <data-dir> <limit>
   local data=$1 limit=$2 dir id path candidates='' ordered='' records='' malformed='' doc size
   local total=0 shown=0
@@ -1073,7 +1084,7 @@ fm_outcome_history_json() {  # <data-dir> <limit>
       | jq -cs 'sort_by([(.timestamps.completed // ""), .task_id]) | reverse | .[]') || return 1
     while IFS= read -r doc && [ "$shown" -lt "$limit" ]; do
       [ -n "$doc" ] || continue
-      id=$(jq -r '.task_id' <<<"$doc") || return 1
+      id=$(jq -r '.task_id' < <(printf '%s\n' "$doc")) || return 1
       path="$data/$id/outcome.json"
       if ! fm_outcome_manifest_keys_valid "$doc" 2>/dev/null; then
         malformed=$malformed$(fm_outcome_history_reject "$id" "$path" unexpected_fields)$'\n'
@@ -1087,7 +1098,15 @@ fm_outcome_history_json() {  # <data-dir> <limit>
       fi
       records=$records$doc$'\n'
       shown=$((shown + 1))
-    done <<<"$ordered"
+    done < <(printf '%s\n' "$ordered")
+    # Candidates were read off disk and survived validation, so at least one of
+    # them must have reached the record list. Nothing legitimate lands here:
+    # a limit smaller than the total still shows that limit, and records
+    # rejected as malformed are disclosed and taken off the total as they go.
+    # Reaching this point means the records exist and the read lost them.
+    if [ "$shown" -eq 0 ] && [ "$total" -gt 0 ]; then
+      return 1
+    fi
   fi
   jq -n --argjson limit "$limit" --argjson total "$total" \
     --slurpfile records_doc <(printf '%s' "$records" | jq -s '.') \

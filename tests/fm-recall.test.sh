@@ -731,4 +731,41 @@ expect_code 2 "$RECALL_RC" "the override's configuration must be the one that is
   || fail "a symlinked home must still consult its own config override: $RECALL_OUT"
 pass "a refused configuration stops the read instead of being worked around"
 
+# --- 10. a search that never started is not a search that found nothing -----
+#
+# The dashboard runs this command under a hardened service unit whose whole
+# filesystem is read-only, and mktemp is the first thing to fail there. Exit 3
+# already means "every requested corpus was asked and none answered", which a
+# panel is entitled to render as a statement about the brain. A setup failure
+# is a different fact - no corpus was ever asked - and rendering it as exit 3
+# sends the operator to inspect a brain that was never consulted.
+#
+# TMPDIR is the lever here because the script passes it to mktemp explicitly
+# rather than leaning on a fallback: bash silently falls back to /tmp when
+# TMPDIR is unusable, so a test that only set TMPDIR for bash's own here-strings
+# would pass no matter which way the code went.
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" TMPDIR="$TMP_ROOT/no-such-scratch-dir" \
+  bash "$CLI" search --json --scope local teardown 2>&1) || RECALL_RC=$?
+expect_code 5 "$RECALL_RC" "a search that could not create its working files needs its own exit status"
+[ "$RECALL_RC" -ne 3 ] \
+  || fail "a setup failure must not share the exit status that means the corpora were read"
+assert_contains "$RECALL_OUT" "never asked" \
+  "the setup failure must say the corpus was never consulted: $RECALL_OUT"
+
+# The distinction only exists if the other side still holds: with scratch space
+# available, a corpus that was genuinely asked and could not answer stays exit 3
+# rather than being swept into the new status.
+stub_fail 1 "No brain configured. Run: gbrain init"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+expect_code 3 "$RECALL_RC" "a corpus that was asked and failed must still be a retrieval failure"
+
+# And an empty result set from a corpus that WAS read is still exit 0, which is
+# the distinction the whole exit contract exists to protect.
+stub_reply '[]'
+run_recall "$MAIN_HOME" search --json --scope local teardown
+expect_code 0 "$RECALL_RC" "a corpus that was read and had no match is not a failure"
+pass "a search that never started, one that was refused, and one that found nothing each have their own exit status"
+
 echo "all fm-recall tests passed"
