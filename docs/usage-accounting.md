@@ -33,7 +33,7 @@ Four read-only projections print JSON without touching the store: `report --by t
 The store lives at `data/usage.db` under the operational home and is private to it.
 
 It is one of the fleet's two telemetry stores, and they share their discipline rather than each inventing one: [`bin/fm-telemetry-store.mjs`](../bin/fm-telemetry-store.mjs) owns the opening, migration, sanitizing, and timestamp rules this store and the dashboard's [agent-event store](dashboard-events.md) both follow, and both spell a task id, a harness, a session id, and an instant the same way so the two join on `task_id`.
-They are separate files because the event store's only writer is the dashboard, which writes nothing under an operational home at all; that page owns the reasoning.
+They are separate files because the event store's only writer is the dashboard, which writes none of the fleet's own records; that page owns the reasoning and the one narrow grant it does hold inside an operational home.
 
 ## What is stored
 

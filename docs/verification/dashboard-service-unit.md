@@ -37,7 +37,7 @@ The installer emits every path unquoted and refuses at generation time any path 
 
 ## That the write grant is real under the unit's sandbox
 
-The unit runs under `ProtectSystem=strict` and `ProtectHome=read-only` with a single `ReadWritePaths` grant for the agent-event directory.
+The unit runs under `ProtectSystem=strict` and `ProtectHome=read-only` with narrow `ReadWritePaths` grants, and this probe covers the agent-event one; the unit carries one more for this home's own brain directory, and [dashboard-events.md](../dashboard-events.md) owns why the dashboard has any write grant inside an operational home at all.
 Probed with transient units carrying the same protections, on the same host and date:
 
 ```
@@ -68,7 +68,7 @@ The PATH gap was independent of the quoting defect: the previous installer wrote
 
 ## That the read-only store opener needs no scratch path
 
-The hardened unit pairs `ProtectSystem=strict` with `ProtectHome=read-only`.
+The hardened unit pairs `ProtectSystem=strict` with `ProtectHome=read-only`, and at this date granted no writable scratch path of its own.
 Together they make the whole system hierarchy read-only (including `/tmp`, `/var/tmp`, and `/usr/tmp`) and `$HOME` read-only, so SQLite has no writable path left for the temp file a read-only query needs.
 Node bundles SQLite with `SQLITE_TEMP_STORE=1`, which means file-backed temp storage by default, so the token-usage collector exits `disk I/O error` while `data/usage.db` is healthy and reads cleanly from an ordinary shell.
 Neither protection alone breaks it, which is why the defect survived earlier investigation.

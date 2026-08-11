@@ -60,6 +60,12 @@
 // fingerprinting those directories around a live server that is accepting
 // events. The endpoint is authenticated, byte-capped, deadline-bounded, and
 // rate-limited per source before a request body is read at all.
+//
+// The one thing written under an operational home is written by a child rather
+// than here: a GBrain search updates the index it reads, so the installed unit
+// grants data/gbrain/ and nothing else under data/.
+// docs/dashboard-events.md owns that grant and why it does not widen the rule
+// above.
 
 import { spawn } from "node:child_process";
 import { readFileSync as fsReadFileSync, statSync as fsStatSync, watch } from "node:fs";
