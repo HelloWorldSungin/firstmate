@@ -30,7 +30,8 @@ Override that window only when the deployment's collection and reset cadence jus
 Accept sidecar percentages as current evidence only from a provider with `evidence_status: "CURRENT"`.
 An `UNKNOWN` provider caused by staleness, `status: "error"`, a missing directory or provider, invalid JSON or schema, invalid timestamps, or clock skew beyond the reader's tolerance remains eligible uncertainty; its `last_known_windows` are diagnostic only and must never become headroom, runway, or a healthy value.
 A reader that exits nonzero or emits no document at all - a rejected freshness or directory override, a missing `jq`, an unusable system clock - is `UNKNOWN` evidence for every provider it would have covered, and the intake continues on that basis.
-The sidecar is additive, so no reader or configuration failure may halt routing, and none may be resolved by retrying it, dropping it silently, or substituting a default or healthy value; name the reader's exit status and message in candidate accounting so the operator can see which read failed and why.
+The sidecar is additive, so neither a sidecar reader failure nor a failure of that reader's own configuration halts routing, and neither may be resolved by retrying it, dropping it silently, or substituting a default or healthy value; name the reader's exit status and message in candidate accounting so the operator can see which read failed and why.
+That continuation covers the sidecar reader alone and never extends to the matched crew-dispatch profile, which selection-order rule 1 still stops on.
 Always account for both emitted ages: `captured_age_seconds` says how old the last successful read is, while `last_attempt_age_seconds` distinguishes an old success from the producer's latest attempt.
 
 For each candidate, preserve explicit `harness`, `model`, and `provider`; `harness-adapters` owns identity, and model/provider never infer harness:
@@ -113,8 +114,8 @@ Conservation pressure is present for effective pace status `ahead`, effective pa
 Apply only among candidates satisfying required fit and strongest reasoning class.
 Never use headroom, runway, pace, or reserve to silently replace that reasoning class.
 
-1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
-   Unmeasurable quota, a missing model-level window, an absent runway field, and a provider family with no current applicable evidence from either quota source are uncertainty, never this rule.
+1. Concrete contradictory evidence, or a malformed matched crew-dispatch profile - the configuration `AGENTS.md` section 4 owns: stop and report the tuple and that evidence.
+   Unmeasurable quota, a missing model-level window, an absent runway field, a provider family with no current applicable evidence from either quota source, and any sidecar reader or sidecar-reader configuration failure are uncertainty, never this rule.
 2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.
