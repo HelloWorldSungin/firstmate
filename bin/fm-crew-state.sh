@@ -89,6 +89,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -253,46 +255,22 @@ runstep_record_read() {
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
+# trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
+# branch+head attribution rule below are thin wrappers over the ONE owner in
+# bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
-trim() {
-  local s=${1:-}
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
-}
-strip_quotes() {
-  local s
-  s=$(trim "${1:-}")
-  case "$s" in
-    \"*\") s=${s#\"}; s=${s%\"} ;;
-  esac
-  trim "$s"
-}
-
-# Bounded no-mistakes call in the worktree; stdout only, never fails the script
-# (there is no `set -e`). The EXIT STATUS is deliberately propagated rather than
-# swallowed: 124 from a timeout, or any other non-zero, is what tells the caller
-# the lookup could not COMPLETE, which must never be read as "this branch has no
-# run". With no bounding mechanism available at all the call is not made, and 127
-# reports that same inability rather than a silent empty answer.
-HAVE_TIMEOUT=none
-if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
-elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
-elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
-fi
+trim() { fm_nm_trim "$@"; }
+strip_quotes() { fm_nm_strip_quotes "$@"; }
+# Preserve the bounded call's exit status so lookup failure remains distinct
+# from a completed lookup that found no attributable run.
 nm_run() {  # <args...>
-  case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
-    *)        return 127 ;;
-  esac
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
 RUN_OUT=""
 nm_field() {  # <key>
-  printf '%s\n' "$RUN_OUT" | sed -n "s/^[[:space:]]*$1:[[:space:]]*\(.*\)/\1/p" | head -1
+  fm_nm_field "$RUN_OUT" "$1"
 }
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
@@ -521,9 +499,9 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# How a run's recorded head <sha> relates to this worktree's HEAD. One owner for
-# the commit-relationship test both the `axi status` head field and the coarse
-# runs-list short sha are judged by. Prints exactly one token:
+# How a run's recorded head <sha> relates to this worktree's HEAD. The shared
+# implementation in bin/fm-nm-run-lib.sh is the one owner of this relationship
+# for both current axi status and coarse historical runs-list evidence. It prints:
 #   equal       the run head IS the worktree HEAD
 #   run-ahead   worktree HEAD is an ancestor of the run head - pipeline fix
 #               commits advanced the run tip past what this worktree has read
@@ -536,18 +514,7 @@ CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
 #   diverged    resolvable but on neither side of the worktree HEAD - a
 #               rewritten branch tip
 nm_head_relation() {  # <sha>
-  local run_head=${1:-} local_full run_full
-  [ -n "$run_head" ] || { printf 'missing'; return; }
-  local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || { printf 'missing'; return; }
-  run_full=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) || { printf 'unresolved'; return; }
-  if [ "$run_full" = "$local_full" ]; then printf 'equal'; return; fi
-  if git -C "$WT" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null; then
-    printf 'run-ahead'; return
-  fi
-  if git -C "$WT" merge-base --is-ancestor "$run_full" "$local_full" 2>/dev/null; then
-    printf 'run-behind'; return
-  fi
-  printf 'diverged'
+  fm_nm_head_relation "$WT" "$1"
 }
 
 # 0 when a run recorded at <sha> may be attributed to this worktree's current
@@ -576,12 +543,7 @@ nm_head_relation() {  # <sha>
 # `missing` and `diverged` are always rejected - an absent sha cannot bind, and a
 # resolvable sha on neither side of HEAD is a genuinely rewritten branch.
 nm_head_attributable() {  # <sha> <authoring:0|1> <branch-scoped-live:0|1>
-  case "$(nm_head_relation "$1")" in
-    equal|run-ahead) return 0 ;;
-    run-behind)      [ "${2:-0}" = 1 ] && return 0; return 1 ;;
-    unresolved)      [ "${3:-0}" = 1 ] && return 0; return 1 ;;
-    *)               return 1 ;;
-  esac
+  fm_nm_head_attributable "$WT" "$1" "${2:-0}" "${3:-0}"
 }
 
 # 1 when the `axi status` run in $RUN_OUT is in an actively-executing step and so

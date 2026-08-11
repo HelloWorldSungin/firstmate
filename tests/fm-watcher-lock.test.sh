@@ -471,14 +471,18 @@ test_watch_restart_attaches_to_healthy_peer() {
   # legitimately steals, so the arm reports "started" and this fixture fails for
   # a reason it does not test. Have the peer announce that its handler is
   # installed and wait on that exact condition.
-  node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], "ready"); setTimeout(() => {}, 300000)' "$ready" &
+  node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], "ready\n"); setTimeout(() => {}, 300000)' "$ready" &
   peer=$!
   i=0
   while [ "$i" -lt 200 ] && [ ! -s "$ready" ]; do
     sleep 0.05
     i=$((i + 1))
   done
-  [ -s "$ready" ] || fail "TERM-resistant peer did not install its handler"
+  if [ ! -s "$ready" ]; then
+    kill -KILL "$peer" 2>/dev/null || true
+    wait "$peer" 2>/dev/null || true
+    fail "TERM-resistant peer did not install its handler"
+  fi
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
