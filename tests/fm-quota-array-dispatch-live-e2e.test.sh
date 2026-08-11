@@ -28,14 +28,23 @@ FAKEBIN="$LAB/fakebin"
 FIXTURE="$LAB/quota.json"
 AUTH_FIXTURE="$LAB/quota-auth.json"
 CALLS="$LAB/quota-axi.calls"
+SIDECAR_CALLS="$LAB/quota-sidecar.calls"
 
 cleanup() {
   rm -rf "$LAB"
 }
 trap cleanup EXIT
 
-mkdir -p "$PROJECT/.agents/skills/quota-array-dispatch" "$FAKEBIN"
+mkdir -p "$PROJECT/.agents/skills/quota-array-dispatch" "$PROJECT/bin" "$FAKEBIN"
 cp "$OWNER" "$PROJECT/.agents/skills/quota-array-dispatch/SKILL.md"
+
+cat > "$PROJECT/bin/fm-quota-sidecar.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${QUOTA_SIDECAR_CALLS:?}"
+printf '%s\n' '{"schema":"fm-quota-sidecar-reader.v1","freshness_seconds":7200,"evidence_status":"UNKNOWN","providers":[],"reason":"no_provider_files"}'
+SH
+chmod +x "$PROJECT/bin/fm-quota-sidecar.sh"
 
 cat > "$FAKEBIN/quota-axi" <<'SH'
 #!/usr/bin/env bash
@@ -67,13 +76,14 @@ write_auth_fixture() {
 }
 
 run_case() {
-  local label=$1 expected=$2 prompt=$3 out calls required snapshots stray
+  local label=$1 expected=$2 prompt=$3 out calls sidecar_calls required snapshots stray
   shift 3
   : > "$CALLS"
+  : > "$SIDECAR_CALLS"
   out=$(
     cd "$PROJECT" &&
       PATH="$FAKEBIN:$PATH" QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" \
-        QUOTA_AXI_AUTH_FIXTURE="$AUTH_FIXTURE" \
+        QUOTA_AXI_AUTH_FIXTURE="$AUTH_FIXTURE" QUOTA_SIDECAR_CALLS="$SIDECAR_CALLS" \
         pi --print --approve --no-session --no-context-files --no-extensions \
           --no-skills --skill .agents/skills --tools bash \
           --model openai-codex/gpt-5.6-sol --thinking high \
@@ -87,6 +97,9 @@ run_case() {
     || fail "$label: skill did not use exactly one quota-axi --json snapshot: $calls"
   stray=$(grep -Fxv -- "--json" "$CALLS" | grep -Fxv -- "auth --json" || true)
   [ -z "$stray" ] || fail "$label: unexpected quota-axi invocation(s): $stray"
+  sidecar_calls=$(wc -l < "$SIDECAR_CALLS" | tr -d ' ')
+  [ "$sidecar_calls" = 1 ] \
+    || fail "$label: skill did not use exactly one quota sidecar snapshot: $sidecar_calls"
   printf '%s\n' "$out" | grep -Fxq "$expected" \
     || fail "$label: expected final line $expected, got: $out"
   for required in "$@"; do
@@ -139,7 +152,7 @@ JSON
 run_case \
   "a provider family quota-axi does not model keeps a catalog-resolved surface" \
   "ELIGIBLE=BOTH" \
-  "Resolve this matched dispatch profile array now. Load quota-array-dispatch and run quota-axi --json exactly once; you may also run quota-axi auth --json. Candidate A is harness=claude model=opus. Candidate B is harness=pi model=minimax/MiniMax-M3. Take this raw observation as given and draw your own conclusions from it: running the authoritative Pi catalog command printed the row 'minimax  MiniMax-M3  1M  128K  yes  yes'. That is the entire catalog evidence available; no other command may be run to gather more. Both candidates have comparable required task fit and the same reasoning class for this work. For each candidate decide whether its authentication surface is resolved or unresolved, whether its applicable quota is known or unmodeled, and whether it is eligible. Return exact lines FACT=claude|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled> and FACT=minimax|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled>, then an exact final line ELIGIBLE=<BOTH|CLAUDE_ONLY>. Do not use other vendor or model commands and do not modify files." \
+  "Resolve this matched dispatch profile array now. Load quota-array-dispatch, run quota-axi --json exactly once, run bin/fm-quota-sidecar.sh exactly once, and optionally run quota-axi auth --json. Candidate A is harness=claude model=opus. Candidate B is harness=pi model=minimax/MiniMax-M3. Take this raw observation as given and draw your own conclusions from it: running the authoritative Pi catalog command printed the row 'minimax  MiniMax-M3  1M  128K  yes  yes'. That is the entire catalog evidence available; no other command may be run to gather more. Both candidates have comparable required task fit and the same reasoning class for this work. For each candidate decide whether its authentication surface is resolved or unresolved, whether its applicable quota is known or unmodeled, and whether it is eligible. Return exact lines FACT=claude|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled> and FACT=minimax|eligible=<yes|no>|surface=<resolved|unresolved>|quota=<known|unmodeled>, then an exact final line ELIGIBLE=<BOTH|CLAUDE_ONLY>. Do not use other vendor or model commands and do not modify files." \
   "FACT=claude|eligible=yes|surface=resolved|quota=known" \
   "FACT=minimax|eligible=yes|surface=resolved|quota=unmodeled"
 

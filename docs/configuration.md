@@ -404,6 +404,45 @@ When a valid profile selects cursor or agy while the resolved backend is not her
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## LLM quota sidecar
+
+The optional LLM quota sidecar is a read-only host-published evidence source that adds visibility for subscriptions `quota-axi` may not cover.
+Producer files live at `$HOME/shared/quota/<provider>.json` by default, and `FM_QUOTA_SIDECAR_DIR` or `bin/fm-quota-sidecar.sh --dir` selects another mounted directory.
+The directory may disappear while the publishing laptop sleeps or the share is unmounted, so its absence means unavailable evidence rather than an operating failure.
+
+This section is the single owner of the producer schema and timestamp semantics.
+Each file uses `fm-quota-sidecar.v1`:
+
+```json
+{
+  "schema": "fm-quota-sidecar.v1",
+  "provider": "minimax",
+  "captured_at": "2026-08-11T18:03:01.520Z",
+  "last_attempt_at": "2026-08-11T18:03:01.520Z",
+  "status": "ok",
+  "windows": [
+    {
+      "id": "session",
+      "percent_remaining": 97,
+      "resets_at": "2026-08-11T20:00:00.000Z"
+    }
+  ]
+}
+```
+
+`provider` is the stable provider id and matches the filename.
+`captured_at` is the UTC time of the last successful quota collection and remains unchanged after a failed attempt.
+`last_attempt_at` is the UTC time of the latest collection attempt, whether it succeeded or failed.
+`status` is `ok` after a successful attempt or `error` after a failed one.
+On an error, the producer retains the last successful `windows` so a reader can report their age without treating them as current.
+Each window has a stable `id`, numeric `percent_remaining` from 0 through 100, and a UTC `resets_at` timestamp or `null` when the producer cannot supply one.
+Producer files must contain no credentials.
+Consumers must still project only the fields they need rather than printing arbitrary fields from a mounted file.
+
+[`bin/fm-quota-sidecar.sh`](../bin/fm-quota-sidecar.sh) owns the reader interface, safe field projection, and freshness enforcement mechanics.
+The agent-only [`quota-array-dispatch`](../.agents/skills/quota-array-dispatch/SKILL.md) skill owns when to read the sidecar, the freshness decision rule, source precedence, uncertainty handling, and selection procedure.
+The sidecar is additive and never overrides or shadows quota evidence that `quota-axi` owns.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.

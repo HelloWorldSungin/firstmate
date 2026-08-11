@@ -2,7 +2,7 @@
 name: quota-array-dispatch
 description: >-
   Agent-only decision procedure for resolving a matched crew-dispatch profile
-  array from current quota-axi output, including effective headroom and usable-runway evidence.
+  array from current quota evidence, including effective headroom and usable-runway evidence.
   Load when a dispatch rule or default resolves to more than one profile candidate.
 user-invocable: false
 metadata:
@@ -14,24 +14,38 @@ metadata:
 This skill is the single owner of the completion-aware profile-array selection procedure.
 `AGENTS.md` section 4 owns the always-loaded intake boundary, load trigger, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules.
 `harness-adapters` owns harness verification, model/provider discovery, and effort fallback.
-`quota-axi` remains data-only, reports whatever granularity the vendor supplies, and never recommends, selects, ranks, or infers a route.
+`quota-axi` and the LLM quota sidecar remain data-only and never recommend, select, rank, or infer a route.
+`quota-axi` reports whatever granularity the vendor supplies and remains authoritative for every provider it covers.
+[`docs/configuration.md`](../../../docs/configuration.md#llm-quota-sidecar) owns the sidecar location, producer schema, and timestamp semantics.
 Do not add a daemon, opaque composite score, routing wrapper, hard-coded model-specific policy, or producer-side route recommendation.
 Deterministic shell owns only schema, configuration, and version validation plus concrete spawn safeguards; every model-to-provider, provider-to-credential, and quota-applicability relation is yours to establish transparently and to show your evidence for.
 
 ## Collect facts
 
-Run `quota-axi --json` once per intake and reuse that snapshot for every candidate.
-Do not take a second snapshot to settle a candidate, and read `quota-axi auth --json` when a candidate's credential surface is in question.
+Run `quota-axi --json` and `bin/fm-quota-sidecar.sh [provider ...]` once each per intake and reuse those snapshots for every candidate.
+Pass every established sidecar provider id relevant to the candidate array so a missing file is explicit `UNKNOWN`; when those relations are not yet established, omit the arguments to discover all published files and treat an absent provider as unmodeled.
+Do not take a second quota snapshot to settle a candidate, and read `quota-axi auth --json` when a candidate's credential surface is in question.
+The sidecar reader's default freshness window is two hours: this stays below half of the shortest currently published five-hour reset cadence while tolerating brief collection and share interruptions.
+Override that window only when the deployment's collection and reset cadence justifies another positive bound.
+Accept sidecar percentages as current evidence only from a provider with `evidence_status: "CURRENT"`.
+An `UNKNOWN` provider caused by staleness, `status: "error"`, a missing directory or provider, invalid JSON or schema, or invalid timestamps remains eligible uncertainty; its `last_known_windows` are diagnostic only and must never become headroom, runway, or a healthy value.
+Always account for both emitted ages: `captured_age_seconds` says how old the last successful read is, while `last_attempt_age_seconds` distinguishes an old success from the producer's latest attempt.
+
 For each candidate, preserve explicit `harness`, `model`, and `provider`; `harness-adapters` owns identity, and model/provider never infer harness:
 
 - task/profile fit and required reasoning class
-- applicable effective headroom (`effectivePercentRemaining`) from the established provider/model scope
+- applicable effective headroom (`effectivePercentRemaining` from `quota-axi`, or only established applicable `CURRENT` sidecar windows when `quota-axi` has no coverage)
 - usable runway status, `usableRunwaySeconds`, `projectedExhaustedAt`, `limitingWindowId`, `projectionConfidence`, `projectionBasis`, and any `unmeasurableWindowIds`
+- sidecar window percentages, reset times, and both observation ages when sidecar evidence applies
 - the task-completion horizon and the evidence and confidence used to estimate it
 - effective pace, signed reserve per window, and worst reserve (`worstReservePercentPoints` or minimum signed reserve) for later diagnostic tie-breaking
 - schema notes when runway or pace fields are absent
 
-Stale raw windows are diagnostic, never headroom or fabricated runway.
+A fresh sidecar percentage and reset timestamp do not establish consumption pace, projected exhaustion, or usable runway by themselves.
+Apply a sidecar window only at a scope established from provider evidence, and preserve unknown applicability rather than inventing a provider-wide or model-specific bound.
+Stale raw windows from either source are diagnostic, never headroom or fabricated runway.
+When both sources cover a provider, as they currently do for Cursor, `quota-axi` wins for selection because it owns that provider's normalized intake evidence and the host-published sidecar can lag.
+Keep the sidecar only as corroborating diagnostic evidence in that overlap, and disclose a material disagreement without overriding or shadowing `quota-axi`.
 Grok's `credits.remaining` is a prepaid balance unrelated to `percentRemaining`; never read it as exhaustion.
 Read all windows named by `boundedBy`, `limitingWindowIds`, `aheadWindowIds`, `behindWindowIds`, `onPaceWindowIds`, `unknownWindowIds`, and `unmeasurableWindowIds`.
 The compact default output intentionally omits numeric reserve, while `--json` and `--full` retain reserve diagnostics.
@@ -66,7 +80,7 @@ Never read a provider's absence from `quota-axi` as an unresolved or missing sur
 Keep the two questions separate for every candidate, because collapsing them is what silently retires a whole lane:
 
 - Is the surface resolved? Answer from the candidate's own tuple - its harness catalog and the credential source it actually selects.
-- Is the applicable quota known? Answer from `quota-axi`, which may legitimately have no coverage for that vendor.
+- Is the applicable quota known? Answer from `quota-axi` when it covers the vendor, otherwise from established applicable `CURRENT` sidecar windows; either source may legitimately leave quota unknown.
 
 When an auth-gated catalog supplies that positive evidence, an unmodeled vendor is a quota unknown on a resolved surface, never an unresolved surface.
 
@@ -98,7 +112,7 @@ Apply only among candidates satisfying required fit and strongest reasoning clas
 Never use headroom, runway, pace, or reserve to silently replace that reasoning class.
 
 1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
-   Unmeasurable quota, a missing model-level window, an absent runway field, and a provider family quota-axi does not model are uncertainty, never this rule.
+   Unmeasurable quota, a missing model-level window, an absent runway field, and a provider family with no current applicable evidence from either quota source are uncertainty, never this rule.
 2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.
