@@ -79,15 +79,14 @@
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
-#          Fleet sync fetches, fast-forwards safe default-branch states, reports
-#          recovered and STUCK clone drift, and prunes gone local branches; it is
-#          bounded by FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT when it is a non-empty
+#          Fleet sync fetches with stale remote-pointer pruning, fast-forwards
+#          safe default-branch states, and reports recovered and STUCK clone
+#          drift; it is bounded by FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT when it is a non-empty
 #          numeric override, while non-numeric values fall back to 20s.
 #          When the override is unset or blank, the timeout is
 #          max(20, 5 + 3 * origin-backed project clone count). A timed-out
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
-#          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
 #          An ENDPOINT_BINDING_MIGRATION line reports one non-tmux task record
 #          that lacks `endpoint_task_id=` and whose recorded endpoint could not
 #          be verified to belong to that task, so cleanup still refuses it;

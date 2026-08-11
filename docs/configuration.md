@@ -430,6 +430,7 @@ That floor exists because it is the first build reporting per-credential auth so
 Bootstrap also reports a `TANGLE:` line when `FM_ROOT` is on a named non-default branch; follow the printed checkout remediation rather than treating it as an installable tool problem.
 In a read-only session that did not get the fleet lock, the same line is advisory and omits the checkout command.
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.
+Its fetch prunes stale remote-tracking pointers but never local branches; exact-task local branch cleanup belongs to `fm-teardown.sh` and requires its proven-merge check.
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 Normal completed runs keep local-only and no-origin skips silent.
 The same locked step then runs a bounded best-effort `bin/fm-usage.mjs ingest`, but only when `data/usage.db` already exists, so a home that never opted into token accounting pays nothing for it.
@@ -704,7 +705,6 @@ FM_BOOTSTRAP_USAGE_TIMEOUT=120       # seconds allowed for bootstrap's best-effo
 FM_TEARDOWN_USAGE_TIMEOUT=60         # the same bound for the refresh task teardown runs before archiving a task; blank, non-numeric, or zero falls back to 60
 FM_VAULT_DRIFT_COMMITS=20            # project commits landed since a vault update before bootstrap reports drift
 FM_VAULT_DRIFT_DAYS=7                # commit-to-commit drift-window days before bootstrap reports drift
-FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
 FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh treats a leftover worktree git index.lock as provably stale
 FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature
 FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after that signature

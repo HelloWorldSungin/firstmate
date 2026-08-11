@@ -5,6 +5,13 @@
 # project's clone for PR-based ship tasks, then print a backlog-refresh reminder
 # for ship and scout teardowns (a secondmate teardown prints none, since
 # secondmates are not backlog items).
+# Ordinary ship cleanup also reaps exactly refs/heads/fm/<task-id>, never the
+# worktree's ambient branch, and only when the branch's current head is either
+# contained in a freshly fetched default branch or is the exact head of the
+# task's recorded PR as reported merged by a supported forge. The latter proof
+# also requires the forge's hidden PR head ref to retain that exact commit.
+# Missing, unreadable, unsupported, moved, or unmerged evidence keeps the branch
+# with a warning, while every branch-reap failure remains advisory to cleanup.
 # The manifest at data/<task-id>/outcome.json is written atomically BEFORE the
 # volatile records it is composed from are removed - including before a retired
 # secondmate's home, which can contain those records - so the task stays in
@@ -837,6 +844,191 @@ default_branch() {
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
+}
+
+TASK_BRANCH="fm/$ID"
+TASK_BRANCH_REF="refs/heads/$TASK_BRANCH"
+TASK_BRANCH_REAP_HEAD=
+TASK_BRANCH_REAP_PROOF=
+TASK_BRANCH_REAP_PRESERVING_REF=
+TASK_BRANCH_REAP_PR_REF=
+TASK_BRANCH_KEEP_REASON=
+BRANCH_REAP_TIMEOUT=20
+
+branch_reap_git_remote() {  # <git-args...>
+  fm_run_timed "$BRANCH_REAP_TIMEOUT" git -C "$PROJ" "$@"
+}
+
+branch_head() {  # <ref>
+  git -C "$PROJ" rev-parse --verify --quiet "$1^{commit}" 2>/dev/null
+}
+
+branch_reap_default_proof() {  # <branch-head>
+  local head=$1 name ref has_origin=0
+  name=$(default_branch) || return 1
+  if git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then
+    has_origin=1
+    if branch_reap_git_remote fetch --quiet origin \
+        "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1; then
+      ref="refs/remotes/origin/$name"
+      if git -C "$PROJ" merge-base --is-ancestor "$head" "$ref" 2>/dev/null; then
+        TASK_BRANCH_REAP_PROOF=fetched-default
+        TASK_BRANCH_REAP_PRESERVING_REF=$ref
+        return 0
+      fi
+    fi
+  fi
+  if { [ "$MODE" = local-only ] || [ "$has_origin" -eq 0 ]; } \
+      && ref="refs/heads/$name" \
+      && git -C "$PROJ" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 \
+      && git -C "$PROJ" merge-base --is-ancestor "$head" "$ref" 2>/dev/null; then
+    TASK_BRANCH_REAP_PROOF=local-default
+    TASK_BRANCH_REAP_PRESERVING_REF=$ref
+    return 0
+  fi
+  return 1
+}
+
+merged_pr_status_doc() {
+  local doc
+  if doc=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-pr-status.sh" show "$ID" 2>/dev/null) \
+      && [ "$(printf '%s\n' "$doc" | jq -r '.url')" = "$PR_URL" ] \
+      && [ "$(printf '%s\n' "$doc" | jq -r '.status.state')" = merged ]; then
+    printf '%s\n' "$doc"
+    return 0
+  fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" 2>/dev/null
+}
+
+branch_reap_pr_proof() {  # <branch-head>
+  local head=$1 doc state forge_head recorded_head remote_ref
+  if [ -z "$PR_URL" ]; then
+    TASK_BRANCH_KEEP_REASON="no recorded PR and branch is not in the default branch"
+    return 1
+  fi
+  if ! fm_pr_url_parse "$PR_URL"; then
+    TASK_BRANCH_KEEP_REASON="recorded PR forge is unsupported; merge could not be verified"
+    return 1
+  fi
+  doc=$(merged_pr_status_doc) || {
+    TASK_BRANCH_KEEP_REASON="recorded PR merge could not be verified"
+    return 1
+  }
+  state=$(printf '%s\n' "$doc" | jq -r '.status.state')
+  if [ "$state" != merged ]; then
+    TASK_BRANCH_KEEP_REASON="recorded PR is not merged"
+    return 1
+  fi
+  forge_head=$(printf '%s\n' "$doc" | jq -r '.status.head // empty')
+  if ! fm_pr_head_valid "$forge_head"; then
+    recorded_head=$(fm_meta_get "$META" pr_head)
+    if fm_pr_head_valid "$recorded_head"; then
+      forge_head=$recorded_head
+    else
+      TASK_BRANCH_KEEP_REASON="recorded PR merge has no verifiable head commit"
+      return 1
+    fi
+  fi
+  if [ "$head" != "$forge_head" ]; then
+    TASK_BRANCH_KEEP_REASON="branch moved after the recorded merge"
+    return 1
+  fi
+  case "$FM_PR_PROVIDER" in
+    github) remote_ref="refs/pull/$FM_PR_NUMBER/head" ;;
+    gitlab) remote_ref="refs/merge-requests/$FM_PR_NUMBER/head" ;;
+    *)
+      TASK_BRANCH_KEEP_REASON="recorded PR forge is unsupported; merge could not be verified"
+      return 1
+      ;;
+  esac
+  TASK_BRANCH_REAP_PROOF=recorded-pr
+  TASK_BRANCH_REAP_PR_REF=$remote_ref
+  return 0
+}
+
+prepare_task_branch_reap() {
+  local head
+  TASK_BRANCH_REAP_HEAD=
+  TASK_BRANCH_REAP_PROOF=
+  TASK_BRANCH_REAP_PRESERVING_REF=
+  TASK_BRANCH_REAP_PR_REF=
+  TASK_BRANCH_KEEP_REASON=
+  [ "$KIND" = ship ] || return 0
+  head=$(branch_head "$TASK_BRANCH_REF") || return 0
+  TASK_BRANCH_REAP_HEAD=$head
+  branch_reap_default_proof "$head" && return 0
+  branch_reap_pr_proof "$head" || true
+}
+
+branch_checked_out_or_unreadable() {
+  local worktrees
+  worktrees=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null) || return 0
+  printf '%s\n' "$worktrees" | grep -Fxq "branch $TASK_BRANCH_REF"
+}
+
+detach_task_branch_for_cleanup() {
+  local current
+  [ -d "$WT" ] || return 0
+  current=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  [ "$current" = "$TASK_BRANCH" ] || return 0
+  git -C "$WT" checkout --detach -q 2>/dev/null || true
+}
+
+reap_task_branch() {
+  local current remote_head
+  [ "$KIND" = ship ] || return 0
+  [ -n "$TASK_BRANCH_REAP_HEAD" ] || return 0
+  if [ -z "$TASK_BRANCH_REAP_PROOF" ]; then
+    echo "teardown: kept local branch $TASK_BRANCH: ${TASK_BRANCH_KEEP_REASON:-merge is unproven}" >&2
+    return 0
+  fi
+  current=$(branch_head "$TASK_BRANCH_REF") || return 0
+  if [ "$current" != "$TASK_BRANCH_REAP_HEAD" ]; then
+    echo "teardown: kept local branch $TASK_BRANCH: branch moved after merge proof" >&2
+    return 0
+  fi
+  if branch_checked_out_or_unreadable; then
+    echo "teardown: kept local branch $TASK_BRANCH: branch use by worktrees is not safely clear" >&2
+    return 0
+  fi
+  case "$TASK_BRANCH_REAP_PROOF" in
+    local-default|fetched-default)
+      if ! git -C "$PROJ" merge-base --is-ancestor "$current" \
+          "$TASK_BRANCH_REAP_PRESERVING_REF" 2>/dev/null; then
+        echo "teardown: kept local branch $TASK_BRANCH: default-branch merge proof changed" >&2
+        return 0
+      fi
+      ;;
+    recorded-pr)
+      remote_head=$(branch_reap_git_remote ls-remote --exit-code origin \
+        "$TASK_BRANCH_REAP_PR_REF" 2>/dev/null | awk 'NR == 1 { print $1 }') || remote_head=
+      if [ "$remote_head" != "$current" ]; then
+        echo "teardown: kept local branch $TASK_BRANCH: merged PR head is no longer verifiable on the remote" >&2
+        return 0
+      fi
+      ;;
+    *)
+      echo "teardown: kept local branch $TASK_BRANCH: merge proof is invalid" >&2
+      return 0
+      ;;
+  esac
+
+  # Use the ordinary fully-merged deletion for the local fast-forward path.
+  # Every other proof uses update-ref's expected-old value, which gives the
+  # same no-force behavior with a compare-and-swap guard against a racing move.
+  if [ "$TASK_BRANCH_REAP_PROOF" = local-default ] \
+      && git -C "$PROJ" branch -d -- "$TASK_BRANCH" >/dev/null 2>&1; then
+    echo "teardown: reaped merged local branch $TASK_BRANCH"
+    return 0
+  fi
+  if git -C "$PROJ" update-ref -d "$TASK_BRANCH_REF" "$current" 2>/dev/null; then
+    echo "teardown: reaped merged local branch $TASK_BRANCH"
+  else
+    echo "teardown: kept local branch $TASK_BRANCH: branch deletion failed" >&2
+  fi
+  return 0
 }
 
 remove_owned_agy_trust() {
@@ -2504,6 +2696,11 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Branch reaping has a stricter proof than worktree cleanup. In particular,
+# content equivalence may admit a squash-merged worktree but never authorizes
+# deleting its branch without a recorded merged PR at this exact head.
+prepare_task_branch_reap
+
 # Every landed/discard-work refusal above has now passed (or --force skipped
 # them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
 # --force, and before ANY destructive step below - a still-parked run or a
@@ -2590,7 +2787,9 @@ fi
 
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
 
-# Best-effort: drop the local task branch so the shared repo does not accumulate refs.
+# Detach only this task's conventional branch before removing its worktree.
+# The exact branch is reaped afterwards, when the merge proof prepared above
+# still agrees and no worktree can need it.
 if [ "$NO_VERDICT_RETAIN_WORKTREE" -eq 1 ]; then
   :
 elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
@@ -2599,12 +2798,7 @@ elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     ORCA_PATH_MATCH_VERIFIED=1
   fi
   if [ -d "$WT" ]; then
-    branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-    if [ "$branch" != "HEAD" ]; then
-      if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-      fi
-    fi
+    detach_task_branch_for_cleanup
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
       "$WT/.opencode/plugins/fm-busy-state.js" \
       "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
@@ -2612,12 +2806,7 @@ elif [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-  if [ "$branch" != "HEAD" ]; then
-    if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-    fi
-  fi
+  detach_task_branch_for_cleanup
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
     "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
@@ -2634,6 +2823,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     exit 1
   }
 fi
+reap_task_branch || true
 
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
