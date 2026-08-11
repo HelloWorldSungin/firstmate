@@ -133,7 +133,8 @@ Task activity and Workers both ask a question a declared wait answers differentl
 Task activity asks whether anything has gone quiet, and quiet a task announced is not quiet it fell into.
 Workers asks whether a worker is still there, and an agent exited on purpose is not a worker that died.
 
-A task parked on a `paused:` external wait or a captain-held transfer is counted separately by both, never coloured, and reported as its own reading - "2 waiting by design" - with how long the longest has waited on Task activity, and the waiting tasks named on Workers.
+A task parked on a `paused:` external wait or a captain-held transfer is counted separately by both and never coloured: Task activity leaves it out of the elapsed-time verdict, and Workers leaves it out of the endpoint counts, tallies it beside them, and names it in the card detail.
+When every live task is waiting, that separate count becomes the whole value on both - "2 waiting by design" - and Task activity adds how long the longest has waited.
 Without that split each signal reddens a little more every day a decision correctly sits with the captain, which is the failure that ruins a monitoring surface: it teaches the reader to ignore the badge, so the day it means something they do not look.
 
 A declared wait is green rather than a colour of its own because the strip's colours mean "does this need you", and a declared wait does not.

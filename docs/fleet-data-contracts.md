@@ -135,7 +135,7 @@ Per task: `model`, `effort`, `paths.status_log.last_event_at` and `last_event_ag
 
 Also per task: `hints.last_event_declared_wait`, a boolean saying whether the newest status line declares its own quiet - a `paused:` external wait or a captain-held transfer.
 [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns that vocabulary and `status_is_paused_or_captain_held` decides it, the same call the supervision watcher makes, so a renderer never reimplements the token list and the two surfaces cannot disagree about what a declared wait is.
-A consumer that has not adopted the field reads it as absent and keeps its previous elapsed-time behavior.
+A consumer that has not adopted the field reads it as absent and keeps its previous behavior, whether that verdict is an elapsed time or an endpoint-presence reading.
 
 Per backlog record: `since_age_seconds`, the age of the row's `since` date.
 `tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
