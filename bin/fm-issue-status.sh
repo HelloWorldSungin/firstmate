@@ -41,8 +41,11 @@
 #   gitea   reads config/forge-tokens/<host> through bin/fm-forge-lib.sh, the
 #           single owner of the credential rules (regular 0600 file or refused)
 #           and of the stdin-config transport that keeps the token out of
-#           process arguments. An absent token falls back to an unauthenticated
-#           read that works for public repositories.
+#           process arguments. The lookup calls that library's named issue-read
+#           operation rather than a transport of its own, so enrichment can
+#           reach nothing outside its allowlist. An absent token, or one whose
+#           file holds nothing usable, falls back to an unauthenticated read
+#           that works for public repositories.
 #   gitlab  has no enrichment adapter yet and reports that as its reason.
 # The token is never printed, cached, or logged.
 set -eu
@@ -383,11 +386,26 @@ adapter_github() {  # <host> <path> <number>
   LOOKUP_STATUS=ok; LOOKUP_STATE=$state; LOOKUP_DETAIL=$(sanitize "$title")
 }
 
+# A working directory for the one answer a live Gitea read writes down, created
+# only when a lookup actually needs it so the GitHub path stays free of it, and
+# removed on any exit including a terminated one, because this script is called
+# from a dashboard refresh that may be bounded away at any moment.
+FORGE_WORKDIR=
+forge_workdir() {
+  [ -z "$FORGE_WORKDIR" ] || return 0
+  FORGE_WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-issue-status.XXXXXX") || {
+    FORGE_WORKDIR=
+    return 1
+  }
+  trap 'rm -rf -- "$FORGE_WORKDIR"' EXIT
+  trap 'rm -rf -- "$FORGE_WORKDIR"; trap - EXIT; exit 143' HUP INT TERM
+}
+
 # Gitea's REST API returns {"title": ..., "state": "open"|"closed"}. Its issue
 # and pull-request numbering share one sequence, so a number that names a pull
 # request answers here too; that is Gitea's own identity model, not a mismatch.
 adapter_gitea() {  # <host> <path> <number>
-  local host=$1 path=$2 number=$3 token token_rc=0 body code response response_rc=0
+  local host=$1 path=$2 number=$3 token token_rc=0 code
   if ! command -v curl >/dev/null 2>&1; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="curl is not installed"
     return 0
@@ -402,54 +420,40 @@ adapter_gitea() {  # <host> <path> <number>
     LOOKUP_DETAIL="refusing the token at config/forge-tokens/$host: it must be a regular file with mode 0600"
     return 0
   fi
+  # An absent token, and equally one whose file holds nothing usable, falls back
+  # to the unauthenticated public-repository read this adapter has always done.
   [ "$token_rc" -eq 0 ] || token=
-  # The credential travels through bin/fm-forge-lib.sh's stdin config file, so
-  # it never appears in any process's arguments and never reaches a log or the
-  # cache; an empty token performs the unauthenticated public-repository read.
-  response=$(fm_forge_curl "$LOOKUP_TIMEOUT" "$token" -w '\n%{http_code}' \
-    -H 'Accept: application/json' \
-    "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
-  case "$response_rc" in
-    0) ;;
-    28|124|137)
-      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-      LOOKUP_DETAIL="Gitea lookup timed out after ${LOOKUP_TIMEOUT}s"
-      return 0
-      ;;
-    125)
-      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-      LOOKUP_DETAIL="Gitea lookup unavailable because no bounded timeout runner could start"
-      return 0
-      ;;
-  esac
-  if [ -z "$response" ]; then
+  if ! forge_workdir; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-    LOOKUP_DETAIL="Gitea host $host is unreachable"
+    LOOKUP_DETAIL="Gitea lookup unavailable because no temporary working directory could be created"
     return 0
   fi
-  code=${response##*$'\n'}
-  body=${response%$'\n'*}
-  case "$code" in
-    200) ;;
-    401|403)
-      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-      LOOKUP_DETAIL="Gitea rejected the credential for $host (HTTP $code)"
-      return 0
-      ;;
-    404)
-      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-      LOOKUP_DETAIL="Gitea issue not found (deleted, or the repository is private to this credential)"
-      return 0
-      ;;
-    *)
-      LOOKUP_STATUS=unavailable; LOOKUP_STATE=
-      LOOKUP_DETAIL="Gitea host $host answered HTTP $code"
-      return 0
-      ;;
-  esac
+  # The read goes through bin/fm-forge-lib.sh's named issue-read operation, the
+  # same one the write side uses: there is no general transport to call, so this
+  # script cannot reach any endpoint outside that library's allowlist. The
+  # credential travels through its stdin config file, so it never appears in any
+  # process's arguments and never reaches a log or the cache.
+  if ! fm_gitea_issue_read "$LOOKUP_TIMEOUT" "$token" "$host" "$path" "$number" \
+    "$FORGE_WORKDIR/issue.json"; then
+    LOOKUP_STATUS=unavailable; LOOKUP_STATE=
+    code=$FM_FORGE_HTTP_CODE
+    case "$FM_FORGE_OUTCOME" in
+      timeout) LOOKUP_DETAIL="Gitea lookup timed out after ${LOOKUP_TIMEOUT}s" ;;
+      no-runner) LOOKUP_DETAIL="Gitea lookup unavailable because no bounded timeout runner could start" ;;
+      unreachable) LOOKUP_DETAIL="Gitea host $host is unreachable" ;;
+      *)
+        case "$code" in
+          401|403) LOOKUP_DETAIL="Gitea rejected the credential for $host (HTTP $code)" ;;
+          404) LOOKUP_DETAIL="Gitea issue not found (deleted, or the repository is private to this credential)" ;;
+          *) LOOKUP_DETAIL="Gitea host $host answered HTTP $code" ;;
+        esac
+        ;;
+    esac
+    return 0
+  fi
   local state title
-  state=$(printf '%s' "$body" | jq -r '.state // empty' 2>/dev/null) || state=
-  title=$(printf '%s' "$body" | jq -r '.title // empty' 2>/dev/null) || title=
+  state=$(jq -r '.state // empty' "$FORGE_WORKDIR/issue.json" 2>/dev/null) || state=
+  title=$(jq -r '.title // empty' "$FORGE_WORKDIR/issue.json" 2>/dev/null) || title=
   case "$state" in
     open|closed) ;;
     *)

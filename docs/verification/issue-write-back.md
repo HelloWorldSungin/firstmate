@@ -98,5 +98,5 @@ status=In progress
 
 ## What this record does not cover
 
-Write-back to a tracker that is not the repository the pull request opens against is out of scope by design and has no credential path to verify.
+Write-back to a tracker that is not the repository the pull request opens against is out of scope by design, so this record covers only the in-scope target; the scope rule and the per-host credential behind it are owned by docs/configuration.md "Project issue trackers".
 Epic *status* rollup is deliberately not computed: only membership of the parent is ensured, and progress is read from GitHub's own sub-issue display.

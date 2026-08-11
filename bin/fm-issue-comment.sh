@@ -37,8 +37,9 @@
 #   github.com  the ambient gh authentication, as everywhere else in this repo.
 #   gitea       config/forge-tokens/<host>, the same credential the read side
 #               uses; an absent token is reported as "no write credential", a
-#               loose one is refused, and a 401/403 is reported as the forge
-#               refusing the credential - three different facts, never blurred.
+#               present but empty one as the empty file it is, a loose one is
+#               refused, and a 401/403 is reported as the forge refusing the
+#               credential - four different facts, never blurred into one.
 #   gitlab and self-hosted GitHub have no write adapter yet and say so.
 # An out-of-scope or unsupported work item is reported once rather than
 # retargeted, and the recorded link always stays resolvable.
@@ -383,22 +384,33 @@ fi
 #
 # The operations come from bin/fm-forge-lib.sh's write allowlist, bounded per
 # call exactly as gh_call bounds the GitHub side. Writing needs authentication,
-# so an absent token is a plain "no write credential" notice - genuinely true
-# here, unlike the read side's unauthenticated public fallback.
+# so a token that is absent, or present but empty, ends the write here - unlike
+# the read side, which falls back to an unauthenticated public read. Those two
+# are separate facts and are reported as separate facts: "there is no file" and
+# "the file is right there and holds nothing" send the captain to different
+# places, so neither may be worded as the other.
 if [ "$ISSUE_FORGE" = gitea ]; then
   command -v curl >/dev/null 2>&1 || { warn "curl is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
   command -v jq >/dev/null 2>&1 || { warn "jq is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
   TOKEN=
   token_rc=0
   TOKEN=$(fm_forge_token_read "$CONFIG" "$ISSUE_HOST") || token_rc=$?
-  if [ "$token_rc" -eq 2 ]; then
-    warn "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
-    exit 0
-  fi
-  if [ "$token_rc" -ne 0 ] || [ -z "$TOKEN" ]; then
-    notice "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $ISSUE_URL keeps its link without a status comment"
-    exit 0
-  fi
+  case "$token_rc" in
+    0) ;;
+    2)
+      warn "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
+      exit 0
+      ;;
+    3)
+      notice "firstmate holds no usable write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is present but empty), so $ISSUE_URL keeps its link without a status comment"
+      exit 0
+      ;;
+    *)
+      notice "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $ISSUE_URL keeps its link without a status comment"
+      exit 0
+      ;;
+  esac
+  fm_forge_scratch_set "$WORKDIR"
 
   gitea_bound() {  # sets BOUND from the shared budget, or reports it spent
     BOUND=$(fm_call_bound "$CALL_TIMEOUT")
@@ -408,14 +420,21 @@ if [ "$ISSUE_FORGE" = gitea ]; then
     fi
   }
 
-  # Find firstmate's own comment by its marker, earliest first. Pages are
-  # walked oldest-first with a hard cap, stopping on a short page; a server
+  # Find firstmate's own comment by its marker, earliest first, walking pages
+  # oldest-first under a hard cap. Only three things end the walk conclusively:
+  # the marker is found, an empty page proves the list is exhausted, or a server
   # that ignores pagination re-serves the same first id, which ends the walk
-  # instead of looping.
+  # instead of looping. A page shorter than the requested limit proves nothing -
+  # Gitea clamps every list to its own api.MAX_RESPONSE_ITEMS, so a short page is
+  # the normal answer on such an instance - and stopping there would miss an
+  # existing comment and post a second one on every milestone, the exact
+  # accumulation this whole design exists to prevent. For the same reason,
+  # exhausting the cap is not an answer of "there is none": it is reported.
   COMMENT_ID=
   : > "$WORKDIR/existing"
   page=1
   prev_first=
+  walk_conclusive=0
   while [ "$page" -le 10 ]; do
     if ! gitea_bound \
       || ! fm_gitea_comments_page "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$page" "$WORKDIR/page"; then
@@ -429,9 +448,15 @@ if [ "$ISSUE_FORGE" = gitea ]; then
         exit 0
         ;;
     esac
-    [ "$count" -gt 0 ] || break
+    if [ "$count" -eq 0 ]; then
+      walk_conclusive=1
+      break
+    fi
     first=$(jq -r '.[0].id // empty' "$WORKDIR/page" 2>/dev/null) || first=
-    [ -n "$first" ] && [ "$first" != "$prev_first" ] || break
+    if [ -z "$first" ] || [ "$first" = "$prev_first" ]; then
+      walk_conclusive=1
+      break
+    fi
     prev_first=$first
     COMMENT_ID=$(jq -r --arg m "$MARKER" \
       '[.[] | select(.body != null and (.body | contains($m))) | .id] | first // empty' \
@@ -440,11 +465,15 @@ if [ "$ISSUE_FORGE" = gitea ]; then
       jq -r --arg m "$MARKER" \
         '[.[] | select(.body != null and (.body | contains($m))) | .body] | first // empty' \
         "$WORKDIR/page" > "$WORKDIR/existing" 2>/dev/null || : > "$WORKDIR/existing"
+      walk_conclusive=1
       break
     fi
-    [ "$count" -ge 50 ] || break
     page=$((page + 1))
   done
+  if [ "$walk_conclusive" -eq 0 ]; then
+    warn "could not tell whether $ISSUE_URL already carries firstmate's status comment: its comment list is longer than the 10 pages this lookup walks, so nothing was written rather than risk a second comment"
+    exit 0
+  fi
   case "$COMMENT_ID" in
     ''|*[!0-9]*) COMMENT_ID= ;;
   esac

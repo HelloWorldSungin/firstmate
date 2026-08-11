@@ -22,9 +22,10 @@
 #   (n) a successful close request that leaves the issue open warns
 #   (o) malformed or duplicate recorded issue metadata warns without API calls
 #   (p) a gitea work item closes through its own host credential with the same
-#       linking comment, an absent credential is reported as exactly that with
-#       nothing sent, and a gitea close failure never makes the merge look
-#       retryable
+#       linking comment, an absent credential and an empty one are reported as
+#       the two different facts they are with nothing sent, a verification that
+#       fails says why it failed rather than only that it did, and a gitea close
+#       failure never makes the merge look retryable
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -657,6 +658,7 @@ emit() {  # <http-code> <body>
   printf '%s' "$1"
   exit 0
 }
+[ -z "${FM_TEST_GITEA_HTTP:-}" ] || emit "$FM_TEST_GITEA_HTTP" '{"message":"refused"}'
 case "$METHOD $URL" in
   "GET "*/issues/7)
     state=open
@@ -743,6 +745,69 @@ test_gitea_close_failure_keeps_merge_success_unambiguous() {
   assert_grep 'issue bookkeeping did not complete' "$case_dir/stderr" \
     "gitea-down: the failed close was silent"
   pass "an unreachable gitea host warns and the completed merge still stands"
+}
+
+# The state read runs in a command substitution, so a reason left in a shell
+# variable dies with it. A merge-path warning that says only "could not verify"
+# collapses an unreachable host, a timeout, a deleted issue, and a credential
+# the forge refused into one line, and those four send the captain to four
+# different places.
+test_gitea_verification_failure_names_its_own_reason() {
+  local case_dir rc
+  command -v jq >/dev/null 2>&1 || { pass "gitea verify reason (skipped: jq absent)"; return; }
+  case_dir=$(make_case work-item-gitea-403)
+  printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" dddddddddddddddddddddddddddddddddddddddd
+  add_gitea_close_mocks "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_GITEA_STORE="$case_dir/gitea-store" FM_TEST_GITEA_HTTP=403 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/58 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitea-403: a refused credential made a completed merge look retryable"
+  assert_grep 'pr merge 58 --repo example/repo' "$case_dir/gh-axi.log" \
+    "gitea-403: the merge did not happen while the tracker refused the credential"
+  assert_grep 'could not verify' "$case_dir/stderr" \
+    "gitea-403: the failed verification was silent"
+  assert_grep 'HTTP 403' "$case_dir/stderr" \
+    "gitea-403: the warning did not name the forge's answer"
+  assert_grep 'refused the credential' "$case_dir/stderr" \
+    "gitea-403: a refused credential was not attributed to the credential"
+  pass "a work item that cannot be verified says why, rather than only that it could not be"
+}
+
+# An empty credential file is a different fact from an absent one on the merge
+# path too: the captain can see the file, so calling it absent is a false
+# statement about their own disk.
+test_gitea_empty_credential_is_reported_as_present_not_absent() {
+  local case_dir rc
+  case_dir=$(make_case work-item-gitea-empty)
+  printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt" "$case_dir/config/forge-tokens"
+  : > "$case_dir/config/forge-tokens/gitea.example.com"
+  chmod 600 "$case_dir/config/forge-tokens/gitea.example.com"
+  add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/60 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitea-empty: a completed merge must remain successful"
+  assert_grep 'present but empty' "$case_dir/stderr" \
+    "gitea-empty: an empty credential file was not reported as the empty file it is"
+  assert_no_grep 'is absent' "$case_dir/stderr" \
+    "gitea-empty: a credential file that is right there was reported as absent"
+  pass "fm-pr-merge tells an empty credential file apart from a missing one"
 }
 
 test_self_hosted_github_work_item_is_reported_not_closed() {
@@ -850,8 +915,10 @@ test_issue_still_open_after_close_request_warns
 test_invalid_recorded_issue_metadata_warns_without_issue_calls
 test_work_item_closes_in_its_declared_repository_not_the_pr_repository
 test_gitea_work_item_without_credential_is_reported_not_closed
+test_gitea_empty_credential_is_reported_as_present_not_absent
 test_gitea_work_item_is_closed_with_its_own_credential
 test_gitea_close_failure_keeps_merge_success_unambiguous
+test_gitea_verification_failure_names_its_own_reason
 test_self_hosted_github_work_item_is_reported_not_closed
 test_invalid_or_multiple_work_items_warn_without_issue_calls
 test_work_item_record_wins_over_legacy_issue_line

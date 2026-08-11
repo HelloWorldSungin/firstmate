@@ -733,17 +733,28 @@ SH
 # unauthenticated path, because nothing is piped in and the inherited stdin
 # never reaches EOF - a hang whose appearance depends on how the suite was
 # launched, which is exactly the kind of flakiness a test must not carry.
+#
+# It honours `-o <file>` the way real curl does, writing the body there and
+# leaving only the `-w` code on stdout, because that is the shape the shared
+# forge transport asks for.
 fake_curl() {  # <case-dir> <http-code> <body>
   cat > "$1/fakebin/curl" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "\$FM_TEST_CURL_ARGS"
-for arg in "\$@"; do
-  if [ "\$arg" = -K ]; then
-    cat >> "\$FM_TEST_CURL_STDIN"
-    break
-  fi
+out=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -K) cat >> "\$FM_TEST_CURL_STDIN" ;;
+    -o) out=\$2; shift ;;
+  esac
+  shift
 done
-printf '%s\n%s' '$3' '$2'
+if [ -n "\$out" ]; then
+  printf '%s' '$3' > "\$out"
+  printf '%s' '$2'
+else
+  printf '%s\n%s' '$3' '$2'
+fi
 exit 0
 SH
   chmod +x "$1/fakebin/curl"

@@ -34,12 +34,15 @@
 #       one comment, and a tracker that refuses them cannot make a completed
 #       merge look retryable
 #   (k) the vocabulary and the bounded-call contract each keep exactly one
-#       owner, because a second copy drifts silently
+#       owner, because a second copy drifts silently, and the forge library
+#       exports its named operations and no general authenticated transport
 #   (l) a gitea work item receives the same living comment through the per-host
 #       credential: the token travels argv-free and 0600-enforced, an absent
-#       token, an unsupported forge, and a refused credential are three
-#       different reported facts, every forge failure warns and exits 0, and
-#       the github path never reads a forge token or invokes curl at all
+#       token, an empty one, an unsupported forge, and a refused credential are
+#       four different reported facts, comment discovery survives a host that
+#       clamps its page size below the limit asked for, every forge failure
+#       warns and exits 0, and the github path never reads a forge token or
+#       invokes curl at all
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -660,13 +663,17 @@ case "$path" in
     case "$query" in
       *page=*) page=${query#*page=}; page=${page%%&*} ;;
     esac
-    [ "$page" -le 1 ] || emit 200 '[]'
+    # A real Gitea clamps every list to its own api.MAX_RESPONSE_ITEMS, which
+    # may be well below the limit asked for; FM_FAKE_GITEA_PAGE_SIZE is how a
+    # test stands in for such an instance.
+    size=${FM_FAKE_GITEA_PAGE_SIZE:-50}
     doc=$(
       for f in "$STORE"/comments/*.body; do
         [ -f "$f" ] || continue
         id=$(basename "$f" .body)
         jq -n --rawfile b "$f" --argjson id "$id" '{id:$id, body:$b}'
-      done | jq -s 'sort_by(.id)'
+      done | jq -s --argjson p "$page" --argjson s "$size" \
+        'sort_by(.id) | .[(($p - 1) * $s):($p * $s)]'
     )
     emit 200 "$doc"
     ;;
@@ -771,6 +778,25 @@ test_gitea_absent_token_reports_no_credential_without_a_call() {
   pass "an absent gitea token is reported as no credential, and nothing is sent"
 }
 
+# "There is no file" and "the file is right there and holds nothing" send the
+# captain to different places: one is a credential that was never installed, the
+# other one that was installed wrongly or emptied. Reporting the second as the
+# first is a false statement about a file the captain can see.
+test_gitea_empty_token_is_reported_as_present_not_absent() {
+  local dir out
+  dir=$(gitea_case_dir gitea-emptytoken none)
+  mkdir -p "$dir/config/forge-tokens"
+  : > "$dir/config/forge-tokens/gitea.example.com"
+  chmod 600 "$dir/config/forge-tokens/gitea.example.com"
+  out=$(run_gitea_comment "$dir" --milestone dispatched) || fail "an empty token must not fail"
+  assert_contains "$out" 'present but empty' \
+    "an empty token file was not reported as the present-but-empty file it is"
+  assert_not_contains "$out" 'is absent' \
+    "a token file that is right there was reported as absent"
+  assert_absent "$dir/curl-args" "a task with an empty credential still contacted the forge"
+  pass "a present but empty gitea token is its own reported fact, never 'absent'"
+}
+
 test_gitea_loose_token_is_refused_before_any_call() {
   local dir out
   dir=$(gitea_case_dir gitea-loose 644)
@@ -855,6 +881,34 @@ test_github_write_back_ignores_forge_tokens_and_curl() {
   assert_absent "$dir/curl-args" "the github path invoked curl"
   assert_absent "$dir/curl-stdin" "the github path passed a credential to curl"
   pass "a github work item keeps riding gh alone, with forge tokens never read"
+}
+
+# A forge is free to answer a list with fewer items than the limit asked for:
+# Gitea clamps every response to its own api.MAX_RESPONSE_ITEMS. A walk that
+# treated a short page as the end of the list would fail to find the living
+# comment on such an instance and post a second one on every milestone, which is
+# the accumulation this whole design exists to prevent.
+test_gitea_comment_discovery_survives_a_clamped_page_size() {
+  local dir out i
+  dir=$(gitea_case_dir gitea-shortpage)
+  mkdir -p "$dir/store/comments"
+  for i in 1 2 3; do
+    printf 'a neighbour comment %s\n' "$i" > "$dir/store/comments/$i.body"
+  done
+  run_gitea_comment "$dir" --milestone dispatched >/dev/null \
+    || fail "seeding the gitea status comment failed"
+  [ "$(comment_count "$dir")" = 4 ] \
+    || fail "expected three neighbours plus one status comment, found $(comment_count "$dir")"
+
+  out=$(FM_FAKE_GITEA_PAGE_SIZE=2 run_gitea_comment "$dir" --milestone landed) \
+    || fail "a host that clamps its page size must not fail: $out"
+  assert_contains "$out" "updated: $GITEA_ISSUE_URL" \
+    "the status comment was not found past the first clamped page"
+  [ "$(comment_count "$dir")" = 4 ] \
+    || fail "a host that clamps its page size received a second status comment"
+  assert_contains "$(cat "$(firstmate_comment "$dir")")" '**Status: landed**' \
+    "the milestone did not reach the one status comment"
+  pass "comment discovery walks past a page shorter than the one it asked for"
 }
 
 test_gitea_milestone_fanout_updates_the_comment() {
@@ -1197,6 +1251,46 @@ test_the_shared_contracts_have_exactly_one_owner() {
   pass "the vocabulary and the bounded-call contract each have one owner, not a copy per surface"
 }
 
+# The functions a library actually exports once sourced, minus the ones its own
+# dependencies bring, which is its public surface as a caller experiences it.
+forge_lib_exports() {  # <lib>...
+  bash -c 'for lib; do . "$lib"; done; compgen -A function' bash "$@" | LC_ALL=C sort
+}
+
+# The write allowlist has to hold by CONSTRUCTION, not by every caller behaving.
+# A general authenticated transport reachable from outside the library would let
+# any future sourcing script take the on-disk credential to any endpoint on the
+# host - a branch, a release, a repository setting - which is exactly the reach
+# a narrow token is issued to prevent, and it would do so without touching a
+# line of the library that documents the opposite. This exercises the library's
+# public surface rather than its source text: it sources it and compares the
+# names it exports against the allowlist itself.
+test_the_forge_library_exports_only_its_named_operations() {
+  local base surface added expected
+  base=$(forge_lib_exports "$ROOT/bin/fm-timeout-lib.sh")
+  surface=$(forge_lib_exports "$ROOT/bin/fm-timeout-lib.sh" "$ROOT/bin/fm-forge-lib.sh")
+  added=$(LC_ALL=C comm -13 <(printf '%s\n' "$base") <(printf '%s\n' "$surface") \
+    | grep -v '^_' || true)
+  expected=$(printf '%s\n' \
+    fm_forge_scratch_set \
+    fm_forge_token_read \
+    fm_forge_write_supported \
+    fm_gitea_comment_create \
+    fm_gitea_comment_update \
+    fm_gitea_comments_page \
+    fm_gitea_issue_close \
+    fm_gitea_issue_read | LC_ALL=C sort)
+  if printf '%s\n' "$surface" | grep -qx 'fm_forge_curl'; then
+    fail "bin/fm-forge-lib.sh exports a general authenticated transport again; the allowlist is back to a convention"
+  fi
+  [ "$added" = "$expected" ] || fail "bin/fm-forge-lib.sh's exported surface is no longer its allowlist.
+expected:
+$expected
+got:
+$added"
+  pass "the forge library exports its named operations and no general transport"
+}
+
 test_first_milestone_creates_one_comment
 test_the_comment_carries_nothing_fleet_private
 test_repeated_milestones_edit_exactly_one_comment
@@ -1214,11 +1308,13 @@ test_dry_run_contacts_nothing
 test_gitea_first_milestone_creates_one_comment_with_the_host_token
 test_gitea_repeated_milestones_edit_one_comment
 test_gitea_absent_token_reports_no_credential_without_a_call
+test_gitea_empty_token_is_reported_as_present_not_absent
 test_gitea_loose_token_is_refused_before_any_call
 test_gitea_refused_credential_is_named
 test_gitea_forge_failures_warn_and_exit_zero
 test_gitlab_work_item_reports_no_adapter_not_a_credential_gap
 test_github_write_back_ignores_forge_tokens_and_curl
+test_gitea_comment_discovery_survives_a_clamped_page_size
 test_gitea_milestone_fanout_updates_the_comment
 test_the_board_is_inert_without_configuration
 test_board_membership_and_status_are_idempotent
@@ -1235,3 +1331,4 @@ test_an_unknown_milestone_is_a_usage_error
 test_the_merge_path_posts_its_own_milestones
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable
 test_the_shared_contracts_have_exactly_one_owner
+test_the_forge_library_exports_only_its_named_operations

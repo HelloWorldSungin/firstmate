@@ -16,8 +16,9 @@
 # gh-axi authentication; Gitea closes through config/forge-tokens/<host> via
 # bin/fm-forge-lib.sh, which owns the credential rules, the write-operation
 # allowlist, and the minimum token scope per forge. Several recorded work
-# items, a forge or host with no write adapter, a missing or loose credential,
-# or a credential the forge refuses each warn with their own distinct reason.
+# items, a forge or host with no write adapter, a credential that is missing,
+# empty, or loose, or one the forge refuses, each warn with their own distinct
+# reason, and a work item that cannot be verified says why it could not be.
 # Gitea calls are bounded by FM_ISSUE_CLOSE_TIMEOUT seconds each (default 10).
 # The landed milestone is recorded on every tracker surface firstmate keeps true
 # (bin/fm-work-item-milestone.sh) before that close bookkeeping runs.
@@ -146,14 +147,27 @@ github_issue_close() {  # <host> <repo-path> <issue-number>
 # Gitea reads and closes through bin/fm-forge-lib.sh's write allowlist, with
 # the credential resolved once below. The close posts the same linking comment
 # GitHub's close carries, then sets the issue state.
+#
+# The state read is called in a command substitution, so FM_FORGE_REASON dies
+# with that subshell. It is written to a file instead: a merge-path warning that
+# says only "could not verify" collapses an unreachable host, a timeout, a
+# deleted issue, and a credential the forge refused into one indistinguishable
+# line, and those send the captain to four different places.
 gitea_issue_state() {  # <host> <repo-path> <issue-number>
   local host=$1 repo=$2 issue=$3 state
-  fm_gitea_issue_read "$CLOSE_TIMEOUT" "$GITEA_TOKEN" "$host" "$repo" "$issue" \
-    "$CLOSE_WORKDIR/issue.json" || return 1
+  : > "$CLOSE_WORKDIR/state-reason"
+  if ! fm_gitea_issue_read "$CLOSE_TIMEOUT" "$GITEA_TOKEN" "$host" "$repo" "$issue" \
+    "$CLOSE_WORKDIR/issue.json"; then
+    printf '%s\n' "$FM_FORGE_REASON" > "$CLOSE_WORKDIR/state-reason"
+    return 1
+  fi
   state=$(jq -r '.state // empty' "$CLOSE_WORKDIR/issue.json" 2>/dev/null) || state=
   case "$state" in
     open|closed) printf '%s\n' "$state" ;;
-    *) return 1 ;;
+    *)
+      printf '%s\n' "$host returned no readable issue state" > "$CLOSE_WORKDIR/state-reason"
+      return 1
+      ;;
   esac
 }
 
@@ -170,6 +184,15 @@ issue_state() {  # <host> <repo-path> <issue-number>
     gitea) gitea_issue_state "$@" ;;
     *) github_issue_state "$@" ;;
   esac
+}
+
+# The reason the last issue_state failed for, recovered from the subshell it was
+# determined in. Empty for GitHub, whose own reporting is unchanged.
+issue_state_reason() {
+  local reason
+  [ -n "$CLOSE_WORKDIR" ] && [ -f "$CLOSE_WORKDIR/state-reason" ] || return 0
+  reason=$(cat "$CLOSE_WORKDIR/state-reason" 2>/dev/null) || return 0
+  [ -z "$reason" ] || printf ': %s' "$reason"
 }
 
 issue_close() {  # <host> <repo-path> <issue-number>
@@ -219,17 +242,25 @@ if [ "$WORK_ITEM_COUNT" -eq 1 ]; then
       || { issue_close_warning "jq is not installed, so $FM_ISSUE_URL was not closed automatically"; exit 0; }
     token_rc=0
     GITEA_TOKEN=$(fm_forge_token_read "$CONFIG" "$ISSUE_HOST") || token_rc=$?
-    if [ "$token_rc" -eq 2 ]; then
-      issue_close_warning "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
-      exit 0
-    fi
-    if [ "$token_rc" -ne 0 ] || [ -z "$GITEA_TOKEN" ]; then
-      issue_close_warning "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $FM_ISSUE_URL was not closed automatically"
-      exit 0
-    fi
+    case "$token_rc" in
+      0) ;;
+      2)
+        issue_close_warning "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
+        exit 0
+        ;;
+      3)
+        issue_close_warning "firstmate holds no usable write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is present but empty), so $FM_ISSUE_URL was not closed automatically"
+        exit 0
+        ;;
+      *)
+        issue_close_warning "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $FM_ISSUE_URL was not closed automatically"
+        exit 0
+        ;;
+    esac
     CLOSE_WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-merge.XXXXXX") \
       || { issue_close_warning "could not create a temporary working directory"; exit 0; }
     trap 'rm -rf -- "$CLOSE_WORKDIR"' EXIT
+    fm_forge_scratch_set "$CLOSE_WORKDIR"
   fi
 else
   ISSUE_LINE_COUNT=$(grep -c '^issue=' "$META" 2>/dev/null || true)
@@ -250,7 +281,7 @@ else
 fi
 
 if ! ISSUE_STATE=$(issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"); then
-  issue_close_warning "could not verify $ISSUE_REPO#$ISSUE"
+  issue_close_warning "could not verify $ISSUE_REPO#$ISSUE$(issue_state_reason)"
   exit 0
 fi
 [ "$ISSUE_STATE" = closed ] && exit 0
@@ -261,6 +292,6 @@ if ! issue_close "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"; then
 fi
 if ! ISSUE_STATE=$(issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE") \
   || [ "$ISSUE_STATE" != closed ]; then
-  issue_close_warning "$ISSUE_REPO#$ISSUE is still not closed after the close request"
+  issue_close_warning "$ISSUE_REPO#$ISSUE is still not closed after the close request$(issue_state_reason)"
 fi
 exit 0
