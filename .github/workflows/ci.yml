@@ -389,3 +389,11 @@ jobs:
             printf '%s\n' "$tracked"
             exit 1
           fi
+      # Cross-system pointers (docs/one-owner.md). Only a PROVABLY broken target
+      # fails this step: a private or throttled target reports as unverified and
+      # passes, which is why --require-credential is here. Without it a lost
+      # token would turn the step into a green run that resolved nothing.
+      - name: Cross-system pointers must resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bin/fm-pointer-check.sh --require-credential

@@ -40,11 +40,14 @@ The machine-consumed inventory in [`docs/documentation-audiences.json`](../../..
 
 ## One-owner rule
 
-Every contract - a data format, a state machine, a decision procedure - is stated in full exactly once.
-Every other mention of it is a one-line cross-reference, never a restatement.
+[`docs/one-owner.md`](../../../docs/one-owner.md) owns this rule and the checks that verify pointers resolve, and it applies to prose and tracker bodies as much as to code.
+How to apply it while editing:
+
+Every contract - a data format, a state machine, a decision procedure - is stated in full exactly once, and every other mention is a one-line cross-reference.
 A single deliberate one-line reinforcement at a genuine risk point is allowed, for example a "don't forget X" placed exactly where forgetting X is costly.
 Restating the contract's substance a second time is not allowed: the two copies will drift the moment only one is edited.
 When you touch a contract, patch, replace, or prune the owner's existing language rather than appending a new clause or paragraph wherever possible, then grep the repo for its other mentions and update the cross-references, not duplicate the change into a second full copy.
+Pin a pointer that lives in a code comment by declaring it in `requiredOwnerPointers`, so a later rename of the owner cannot orphan it silently.
 
 ## Inline-stub pattern
 
