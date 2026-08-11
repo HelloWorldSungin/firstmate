@@ -207,7 +207,9 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 ```
 
 Stop every `gbrain serve` process before copying PGLite because it is a single-writer database.
-Task-knowledge capture is the other writer of a home's index ([gbrain-capture.md](gbrain-capture.md)), so take the copy when no teardown and no `bin/fm-gbrain-capture.sh` run can start; a capture that finds the brain busy leaves a pending outbox item and is retried later.
+A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#gbrain)).
+So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
+Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
 Back up the archive, PGLite directory, and runtime configuration together to an on-box directory:
 
 ```sh
@@ -262,7 +264,7 @@ Run every step of a first migration on a disposable copy of the index before tou
 Copy the index and the runtime directory to scratch, point a scratch home's `brain_root` at the copy, and rewrite the copy's `database_path`; a scratch home with the same outbox reports the same corpus revision, so the copy's evaluation is directly comparable to the live baseline.
 
 1. Record a baseline evaluation run, and plan the change with `--dry-run`, which reports the source and target models, both dimensions, the chunk count, and that the stored vectors will be deleted.
-2. Take the backup above, with no `gbrain serve` and no capture able to start.
+2. Take the backup above, under the no-writer precondition stated with it.
 3. Migrate with `gbrain migrate embeddings --to <provider:model> --dim <N> --yes`, under this home's `GBRAIN_HOME` and `OLLAMA_BASE_URL`.
 4. Verify with `gbrain doctor --json`, whose `embedding_provider` check reports the live model, its measured dimension, and whether the database agrees, and whose `embedding_width_consistency` check compares the schema width with the configured one.
 5. Re-run the evaluation and `compare` it with the step-1 baseline.

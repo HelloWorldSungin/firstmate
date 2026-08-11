@@ -37,7 +37,7 @@ The installer emits every path unquoted and refuses at generation time any path 
 
 ## That the write grant is real under the unit's sandbox
 
-The unit runs under `ProtectSystem=strict` and `ProtectHome=read-only` with narrow `ReadWritePaths` grants, and this probe covers the agent-event one; the unit carries one more for this home's own brain directory, and [dashboard-events.md](../dashboard-events.md) owns why the dashboard has any write grant inside an operational home at all.
+The unit runs under `ProtectSystem=strict` and `ProtectHome=read-only` with narrow `ReadWritePaths` grants, and this probe covers the agent-event one; the unit's other grant, for this home's own brain directory, has its own control below, and [dashboard-events.md](../dashboard-events.md) owns why the dashboard has any write grant inside an operational home at all.
 Probed with transient units carrying the same protections, on the same host and date:
 
 ```
@@ -163,6 +163,19 @@ The third row is the point of `bin/fm-recall.sh`'s exit 5: the same environment 
 The history read is fixed in the library as well as in the unit, and deliberately so.
 `fm_outcome_history_json` documents itself as free of temp files because `bin/fm-fleet-snapshot.sh` runs it under hermetic restricted paths, and here-strings were quietly breaking that promise.
 With process substitution instead, the read returns all 61 records under the hardened restrictions with no grant at all - so the guarantee no longer depends on the unit, and the unit's grant is what the panels that genuinely need scratch space spend.
+
+## That the brain grant is what lets a search open the index
+
+The unit's second `ReadWritePaths` grant is the operational home's `data/gbrain/`, and this is its control.
+Both rows are on the host and date above, each a separate dashboard instance under the unit's protections on its own loopback port, identical but for that one grant; the scratch grant is present in both, so `mktemp` is not what either row measures.
+
+| Instance | Semantic search |
+| --- | --- |
+| with the brain grant | local source `ok`, 3 results |
+| without the brain grant | local source `failed`, 0 results - "GBrain: Timed out waiting for PGLite lock. Remove /home/sungin/firstmate/data/gbrain/pglite/.gbrain-lock and try again." |
+
+That names the proximate mechanism: GBrain writes a lock file under `pglite/` before it can open the database at all, so the grant is needed for the lock before any of the index writes that follow it.
+Those index writes are the deeper reason for the grant and are pinned in [gbrain-retrieval.md](gbrain-retrieval.md), and [../gbrain.md](../gbrain.md#archive-backup-and-rebuild) owns what a writing search means for a backup.
 
 ## That a search that never started is reported separately
 

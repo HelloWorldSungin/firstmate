@@ -389,9 +389,12 @@ assert_unit_path_safe "the shared instrumentation configuration" "$EVENTS_CONFIG
 install -d -m 700 "$EVENT_DIR"
 
 # A GBrain search writes to its own index while reading it, so the semantic
-# search panel needs this grant on top of the scratch directory. The grant is
-# tolerant because a home with no brain is normal and must not keep the unit
-# from loading; the panel is presence-gated and simply stays off there.
+# search panel needs this grant on top of the scratch directory. Do not narrow
+# it below data/gbrain: GBrain takes a lock file at pglite/.gbrain-lock before it
+# can open the database at all, so a denied write here is a lock timeout rather
+# than a partial read. The grant is tolerant because a home with no brain is
+# normal and must not keep the unit from loading; the panel is presence-gated
+# and simply stays off there.
 GBRAIN_DIR="$FM_DASHBOARD_HOME/data/gbrain"
 assert_unit_path_safe "the brain directory" "$GBRAIN_DIR"
 

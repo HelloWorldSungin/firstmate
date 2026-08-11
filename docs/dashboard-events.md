@@ -40,6 +40,7 @@ Putting events in `data/usage.db` would require granting that service write acce
 
 That exception is one directory: the unit grants `data/gbrain/`, because a GBrain search updates the index it is reading and the [search affordance](dashboard.md#gbrain) would otherwise be refused by the same hardening that makes the rest of this true.
 That grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and it is tolerant because a home with no brain is normal.
+[`verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins what a search cannot do without it.
 
 So the event store lives outside the operational home, keyed by the home it describes:
 
