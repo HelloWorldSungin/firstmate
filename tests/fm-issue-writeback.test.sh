@@ -37,12 +37,14 @@
 #       owner, because a second copy drifts silently, and the forge library
 #       exports its named operations and no general authenticated transport
 #   (l) a gitea work item receives the same living comment through the per-host
-#       credential: the token travels argv-free and 0600-enforced, an absent
-#       token, an empty one, an unsupported forge, and a refused credential are
-#       four different reported facts, comment discovery survives a host that
-#       clamps its page size below the limit asked for, every forge failure
-#       warns and exits 0, and the github path never reads a forge token or
-#       invokes curl at all
+#       credential: the token travels argv-free and 0600-enforced, a symlinked
+#       token file is refused rather than followed, an absent token, an empty
+#       one, an unsupported forge, and a refused credential are four different
+#       reported facts, comment discovery survives a host that clamps its page
+#       size below the limit asked for and reports a list it cannot walk instead
+#       of posting a second comment, a dry run renders before any credential is
+#       resolved, every forge failure warns and exits 0, and the github path
+#       never reads a forge token or invokes curl at all
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -911,6 +913,66 @@ test_gitea_comment_discovery_survives_a_clamped_page_size() {
   pass "comment discovery walks past a page shorter than the one it asked for"
 }
 
+# The other half of the same guarantee. A list longer than the walk covers is
+# not an answer of "there is no status comment yet": posting one on that guess
+# is how an issue ends up carrying a second comment, and then a third. So the
+# cap is reported and nothing is written, which a captain can act on, rather
+# than being silently resolved in the direction that accumulates.
+test_gitea_an_unwalkable_comment_list_is_reported_and_nothing_is_written() {
+  local dir out rc i
+  dir=$(gitea_case_dir gitea-longlist)
+  mkdir -p "$dir/store/comments"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf 'a neighbour comment %s\n' "$i" > "$dir/store/comments/$i.body"
+  done
+  set +e
+  out=$(FM_FAKE_GITEA_PAGE_SIZE=1 run_gitea_comment "$dir" --milestone dispatched)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an unwalkable comment list must not fail the command"
+  assert_contains "$out" 'warning:' "an unwalkable comment list was silent"
+  assert_contains "$out" 'longer than the 10 pages' \
+    "the warning did not say the comment list outran the lookup"
+  [ "$(comment_count "$dir")" = 12 ] \
+    || fail "a comment was posted on a guess after the page cap was reached"
+  [ "$(gitea_log_count "$dir" LIST)" = 10 ] \
+    || fail "expected exactly 10 walked pages, got $(gitea_log_count "$dir" LIST)"
+  pass "a comment list longer than the walk is reported, never resolved by posting a second comment"
+}
+
+# A symlink is refused for the same reason a loose mode is: the 0600 check would
+# then describe the link rather than the bytes, and what the link points at can
+# be replaced without the credential path ever changing.
+test_gitea_symlinked_token_is_refused_before_any_call() {
+  local dir out
+  dir=$(gitea_case_dir gitea-symlink none)
+  mkdir -p "$dir/config/forge-tokens"
+  printf '%s\n' "$GITEA_TOKEN_VALUE" > "$dir/token-elsewhere"
+  chmod 600 "$dir/token-elsewhere"
+  ln -s "$dir/token-elsewhere" "$dir/config/forge-tokens/gitea.example.com"
+  out=$(run_gitea_comment "$dir" --milestone dispatched) || fail "a symlinked token must not fail the command"
+  assert_contains "$out" 'regular file' "a symlinked token was not refused with a reason"
+  assert_not_contains "$out" 'is absent' "a token file that is right there was reported as absent"
+  assert_absent "$dir/curl-args" "a symlinked token was still used against the forge"
+  pass "a token reached through a symlink is refused rather than followed"
+}
+
+# A dry run is what a captain uses to review outward-facing content before any
+# credential exists, so it must render on a home holding none. Resolving the
+# credential first would turn the one offline command into one more thing that
+# needs a token.
+test_gitea_dry_run_renders_without_a_credential_or_a_call() {
+  local dir out
+  dir=$(gitea_case_dir gitea-dryrun none)
+  out=$(run_gitea_comment "$dir" --milestone dispatched --dry-run) \
+    || fail "a gitea dry run failed: $out"
+  assert_contains "$out" "target: $GITEA_ISSUE_URL" "the gitea dry run did not name its target"
+  assert_contains "$out" '**Status: dispatched**' "the gitea dry run did not render the comment"
+  assert_not_contains "$out" 'credential' "a dry run reported a credential it never needed"
+  assert_absent "$dir/curl-args" "a gitea dry run reached the forge"
+  pass "a gitea dry run renders offline, before any credential is resolved"
+}
+
 test_gitea_milestone_fanout_updates_the_comment() {
   local dir out
   dir=$(gitea_case_dir gitea-fanout)
@@ -1315,6 +1377,9 @@ test_gitea_forge_failures_warn_and_exit_zero
 test_gitlab_work_item_reports_no_adapter_not_a_credential_gap
 test_github_write_back_ignores_forge_tokens_and_curl
 test_gitea_comment_discovery_survives_a_clamped_page_size
+test_gitea_an_unwalkable_comment_list_is_reported_and_nothing_is_written
+test_gitea_symlinked_token_is_refused_before_any_call
+test_gitea_dry_run_renders_without_a_credential_or_a_call
 test_gitea_milestone_fanout_updates_the_comment
 test_the_board_is_inert_without_configuration
 test_board_membership_and_status_are_idempotent
