@@ -28,7 +28,7 @@ Do not take a second quota snapshot to settle a candidate, and read `quota-axi a
 The sidecar reader's default freshness window is two hours: this stays below half of the shortest currently published five-hour reset cadence while tolerating brief collection and share interruptions.
 Override that window only when the deployment's collection and reset cadence justifies another positive bound.
 Accept sidecar percentages as current evidence only from a provider with `evidence_status: "CURRENT"`.
-An `UNKNOWN` provider caused by staleness, `status: "error"`, a missing directory or provider, invalid JSON or schema, or invalid timestamps remains eligible uncertainty; its `last_known_windows` are diagnostic only and must never become headroom, runway, or a healthy value.
+An `UNKNOWN` provider caused by staleness, `status: "error"`, a missing directory or provider, invalid JSON or schema, invalid timestamps, or clock skew beyond the reader's tolerance remains eligible uncertainty; its `last_known_windows` are diagnostic only and must never become headroom, runway, or a healthy value.
 Always account for both emitted ages: `captured_age_seconds` says how old the last successful read is, while `last_attempt_age_seconds` distinguishes an old success from the producer's latest attempt.
 
 For each candidate, preserve explicit `harness`, `model`, and `provider`; `harness-adapters` owns identity, and model/provider never infer harness:
