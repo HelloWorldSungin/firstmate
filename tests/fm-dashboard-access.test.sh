@@ -150,6 +150,7 @@ case "\$*" in
   *"-p EnvironmentFiles"*) sed -n 's/^EnvironmentFile=//p' "\$unit" ;;
   *"-p Environment"*) sed -n 's/^Environment=//p' "\$unit" ;;
   *"-p ReadWritePaths"*) sed -n 's/^ReadWritePaths=-//p' "\$unit" ;;
+  *"-p RuntimeDirectory"*) sed -n 's/^RuntimeDirectory=//p' "\$unit" ;;
   *"-p DropInPaths"*) : ;;
   *"-p ActiveState"*) printf '%s\n' '$active_state' ;;
   *"-p NRestarts"*) printf '%s\n' '$restarts' ;;
@@ -185,19 +186,30 @@ test_generated_unit_carries_literal_paths() {
   esac
   [ -f "$env_file" ] || fail "EnvironmentFile names a file that was not written: [$env_file]"
 
-  # ReadWritePaths carries systemd's optional "-" prefix; what follows it must
-  # still be one absolute path and must be the directory the service will open.
-  local granted pinned
-  granted=$(unit_directive "$unit" ReadWritePaths)
-  granted=${granted#-}
-  case "$granted" in
-    /*) ;;
-    *) fail "ReadWritePaths is not an absolute path: [$granted]" ;;
-  esac
+  # The unit emits one ReadWritePaths= line per grant, each carrying systemd's
+  # optional "-" prefix, so every line is checked as its own absolute path and
+  # the event directory has to be one of them. A membership check rather than an
+  # equality check, because a second grant is not a defect and must not read as
+  # the unit granting the wrong path.
+  local granted grants pinned line
+  grants=$(unit_directive "$unit" ReadWritePaths)
+  [ -n "$grants" ] || fail "the unit has no ReadWritePaths directive"
+  granted=''
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    line=${line#-}
+    case "$line" in
+      /*) ;;
+      *) fail "ReadWritePaths is not an absolute path: [$line]" ;;
+    esac
+    granted=$granted$line$'\n'
+  done <<EOF
+$grants
+EOF
   pinned=$(sed -n 's/^FM_DASHBOARD_EVENT_DB="\(.*\)"$/\1/p' "$env_file")
-  [ "$granted" = "${pinned%/*}" ] \
-    || fail "the unit grants [$granted] while the service opens a store in [${pinned%/*}]"
-  [ -d "$granted" ] || fail "the granted event directory was not created: [$granted]"
+  printf '%s' "$granted" | grep -qxF "${pinned%/*}" \
+    || fail "the unit grants [$grants] while the service opens a store in [${pinned%/*}]"
+  [ -d "${pinned%/*}" ] || fail "the granted event directory was not created: [${pinned%/*}]"
 
   # ExecStart must name the interpreter and the server, both absolute.
   local exec_start interpreter program

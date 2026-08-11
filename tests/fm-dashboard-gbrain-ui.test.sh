@@ -385,6 +385,14 @@ const upgradingEnvelope = {
 // Amber is reserved for "wait and try again"; red is reserved for a
 // permanent or hostile failure.
 
+const GENERIC_REASON_LABEL = "The search could not be answered.";
+// The two reasons that are deliberately answered with the generic sentence,
+// because neither tells the operator anything the sentence does not. Naming
+// them here is what lets every other row assert it has its OWN label: a reason
+// that quietly falls through to the default is a reason the operator was told
+// nothing about, which is the regression this table exists to catch.
+const genericLabelReasons = new Set(["search_failed", "unsupported_schema"]);
+
 const reasonExpectations = [
   ["query_too_short", "amber"],
   ["query_too_large", "red"],
@@ -396,6 +404,10 @@ const reasonExpectations = [
   ["search_busy", "amber"],
   ["timed_out", "amber"],
   ["no_corpus_answered", "amber"],
+  // Red, not amber: unlike the amber reasons this one will not clear by trying
+  // again, because the service is missing something it needs. An amber tone
+  // would tell the operator to retry a search that cannot start.
+  ["search_setup_failed", "red"],
   ["search_failed", "red"],
   ["unsupported_schema", "red"],
   ["cross_origin", "red"],
@@ -403,10 +415,19 @@ const reasonExpectations = [
 for (const [reason, expectedTone] of reasonExpectations) {
   const label = searchReasonLabel(reason);
   check(`reason ${reason} has a label`, typeof label === "string" && label.length > 0);
+  equal(`reason ${reason} label is its own rather than the generic one`,
+    label === GENERIC_REASON_LABEL, genericLabelReasons.has(reason));
   const failure = searchFailure(reason, "test detail");
   equal(`reason ${reason} tone`, failure.tone, expectedTone);
   check(`reason ${reason} failure carries detail`, failure.text.includes("test detail"));
 }
+
+// The setup-failure label is pinned verbatim because its whole job is to say
+// nothing about the brain: this search never reached one, and a sentence about
+// corpora would send the operator to inspect an index that was never consulted.
+equal("search_setup_failed says the search never started",
+  searchReasonLabel("search_setup_failed"),
+  "The search could not start, so nothing was asked of the brain.");
 
 // A missing or unknown reason returns the generic "could not be answered".
 {

@@ -1104,7 +1104,14 @@ fm_outcome_history_json() {  # <data-dir> <limit>
     # a limit smaller than the total still shows that limit, and records
     # rejected as malformed are disclosed and taken off the total as they go.
     # Reaching this point means the records exist and the read lost them.
+    #
+    # The refusal says what it saw, because a refusal that only exits non-zero
+    # trades a false absence for an unexplained failure: the caller's operator
+    # reads "command exited 1" and is no better off than they were reading
+    # "nothing has completed" over sixty-one completions.
     if [ "$shown" -eq 0 ] && [ "$total" -gt 0 ]; then
+      printf 'fm-outcome: %s completed record(s) were counted in %s and none reached the result, so this read lost them - refusing to report it as a fleet that has finished nothing\n' \
+        "$total" "$data" >&2
       return 1
     fi
   fi

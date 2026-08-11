@@ -938,6 +938,12 @@ test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory() {
   esac
   assert_contains "$directives" "Environment=TMPDIR=%t/$runtime_dir" \
     "unit grants a scratch directory but points TMPDIR somewhere else, so mktemp still lands on the read-only hierarchy"
+  # systemd creates a RuntimeDirectory 0755 unless told otherwise, which is a
+  # wider posture than the UMask=0077 two lines below states for everything the
+  # service writes into it. Stated here so the scratch space does not depend on
+  # the runtime root's own permissions to be private.
+  assert_contains "$directives" 'RuntimeDirectoryMode=0700' \
+    "unit leaves the scratch directory on systemd's 0755 default while the service writes into it under UMask=0077"
 
   # The reader half, asserted where it actually takes effect rather than by
   # reading the source: a readOnly open must report temp_store 2 (MEMORY), and a

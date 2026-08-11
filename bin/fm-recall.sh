@@ -290,6 +290,24 @@ setup_failure() {  # <detail>
   SETUP_FAILED=1
   [ -n "$SETUP_DETAIL" ] || SETUP_DETAIL=$1
 }
+
+# The only place this command asks for scratch space, so the exit-5 contract
+# cannot drift as legs are added: a leg either gets a path back or the setup
+# failure is already recorded by the time this returns non-zero, and the
+# sentence the operator reads is written once.
+RECALL_SCRATCH=""
+RECALL_SCRATCH_ERR=""
+recall_scratch_file() {  # <what-was-never-asked> -> 0 with RECALL_SCRATCH set
+  local never_asked=$1
+  RECALL_SCRATCH=""; RECALL_SCRATCH_ERR=""
+  if RECALL_SCRATCH=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX"); then
+    return 0
+  fi
+  RECALL_SCRATCH=""
+  RECALL_SCRATCH_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so $never_asked was never asked"
+  setup_failure "$RECALL_SCRATCH_ERR"
+  return 1
+}
 # Set by a caller that must hand a hosted credential to exactly one process.
 # gbrain_local_call exports it for that call only; the caller clears it after.
 GBRAIN_CALL_HOSTED_KEY=""
@@ -297,15 +315,12 @@ GBRAIN_CALL_HOSTED_KEY=""
 gbrain_local_call() {  # <tool> <params-json> <seconds> -> 0
   local tool=$1 params=$2 secs=$3 out_file err_file rc=0
   LOCAL_OUT=""; LOCAL_ERR=""
-  out_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    LOCAL_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so this home's index was never asked"
-    setup_failure "$LOCAL_ERR"; return 1
+  recall_scratch_file "this home's index" || { LOCAL_ERR=$RECALL_SCRATCH_ERR; return 1; }
+  out_file=$RECALL_SCRATCH
+  recall_scratch_file "this home's index" || {
+    rm -f "$out_file"; LOCAL_ERR=$RECALL_SCRATCH_ERR; return 1
   }
-  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    rm -f "$out_file"
-    LOCAL_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so this home's index was never asked"
-    setup_failure "$LOCAL_ERR"; return 1
-  }
+  err_file=$RECALL_SCRATCH
   (
     export GBRAIN_HOME="$FM_GBRAIN_HOME_DIR"
     [ -z "$EMBED_URL" ] || export OLLAMA_BASE_URL="$EMBED_URL"
@@ -385,11 +400,10 @@ main_brain_search() {  # <query> <limit> <seconds> -> 0 with MAIN_OUT set
     MAIN_ERR=$FM_GBRAIN_ERROR
     return 1
   fi
-  body_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall.XXXXXX") || {
-    FM_GBRAIN_TOKEN=""
-    MAIN_ERR="could not create a temporary file in ${TMPDIR:-/tmp}, so the main brain was never asked"
-    setup_failure "$MAIN_ERR"; return 1
+  recall_scratch_file "the main brain" || {
+    FM_GBRAIN_TOKEN=""; MAIN_ERR=$RECALL_SCRATCH_ERR; return 1
   }
+  body_file=$RECALL_SCRATCH
   jq -cn --arg q "$query" --argjson n "$limit" \
     '{jsonrpc: "2.0", id: 1, method: "tools/call",
       params: {name: "search", arguments: {query: $q, limit: $n}}}' > "$body_file"

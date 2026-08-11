@@ -469,9 +469,12 @@ EOF
   printf 'Environment=PATH=%s\n' "$SERVICE_PATH"
   # %t is the user manager's runtime root, so the name is written once and
   # systemd resolves both the directory it creates and the TMPDIR pointing at
-  # it. It is created 0700 on start and removed on stop, so nothing survives a
-  # restart and no other user shares it.
+  # it. The mode is stated rather than left to systemd's 0755 default, so the
+  # scratch space matches the UMask=0077 posture below without depending on the
+  # runtime root's own permissions to stand in for it. The directory is removed
+  # on stop, so nothing survives a restart.
   printf 'RuntimeDirectory=%s\n' "$RUNTIME_DIR_NAME"
+  printf 'RuntimeDirectoryMode=0700\n'
   printf 'Environment=TMPDIR=%%t/%s\n' "$RUNTIME_DIR_NAME"
   printf 'EnvironmentFile=%s\n' "$ENV_FILE"
   printf 'ExecStart=%s %s\n' "$NODE_BIN" "$SERVER"
@@ -592,7 +595,8 @@ if [ "$START_SERVICE" -eq 1 ]; then
   fi
 
   systemctl --user --no-pager --full status firstmate-dashboard.service || true
-  printf 'systemd accepted the environment file, the pinned PATH, and the agent-event write grant, and the service is running.\n'
+  printf 'systemd accepted the environment file, the pinned PATH, the agent-event write grant, the scratch directory %s, and the TMPDIR pointing at it, and the service is running.\n' \
+    "$RUNTIME_DIR_NAME"
 else
   echo "Service not started (--no-start)."
 fi

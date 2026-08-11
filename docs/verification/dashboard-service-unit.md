@@ -169,10 +169,13 @@ With process substitution instead, the read returns all 61 records under the har
 `bin/fm-recall.sh` exit 3 means every requested corpus was asked and none answered, which a panel may render as a statement about the brain.
 Exit 5 means no corpus was ever asked.
 `tests/fm-recall.test.sh` pins all three outcomes together - setup failure, a corpus that was asked and refused, and a corpus that was read and had no match - because the distinction is only worth anything if the other two still hold.
+Above the wrapper, `tests/fm-dashboard-gbrain.test.sh`'s `test_search_separates_a_search_that_never_started_from_one_no_corpus_answered` pins exit 5 to HTTP 503 `search_setup_failed` and exit 3 to HTTP 503 `no_corpus_answered` against the live endpoint, and `tests/fm-dashboard-gbrain-ui.test.sh` pins the label the operator reads and its red tone.
+The tone is red rather than amber because the amber reasons all mean "wait and try again", and a search that cannot start will not start on a retry.
 
 ## That a lost history read cannot render as an empty fleet
 
-`fm_outcome_history_json` refuses when records were counted off disk and none reached the result.
+`fm_outcome_history_json` refuses when records were counted off disk and none reached the result, and says so on stderr, naming how many records it counted and where.
+A refusal that only exited non-zero would move the false absence rather than remove it: the operator would read `history_refresh_failed: command exited 1` and still not know a read had been lost.
 `tests/fm-outcome-manifest.test.sh`'s `test_history_refuses_to_report_a_lost_read_as_an_empty_fleet` injects the fault rather than reproducing it, since the here-string is gone, and was confirmed to fail with the check removed.
 
 Against a running dashboard with that fault injected, the panel renders "No history yet" under a red "Completed-work history unavailable" notice, whose copy reads "this list is empty because nothing has been read, not because nothing has finished".
@@ -205,7 +208,8 @@ error connecting to /tmp/tmux-1004/fmverify (No such file or directory)
 The read-only `/tmp` of the retained sandbox does not break the socket, because the kernel exempts an existing socket from the read-only mount check; only the private tmpfs, which removes the path entirely, does.
 That is why this is a new failure rather than one the unit already had.
 
-`tests/fm-dashboard.test.sh`'s `test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory` pins these together: the generated unit must not set `PrivateTmp=yes`, must carry a relative `RuntimeDirectory=` with a `TMPDIR=` naming that same directory, and the shared opener must report `temp_store` 2 on a `readOnly` open while leaving a writable open on the SQLite default.
+`tests/fm-dashboard.test.sh`'s `test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory` pins these together: the generated unit must not set `PrivateTmp=yes`, must carry a relative `RuntimeDirectory=` with a `TMPDIR=` naming that same directory and a `RuntimeDirectoryMode=0700` matching the unit's own `UMask=0077`, and the shared opener must report `temp_store` 2 on a `readOnly` open while leaving a writable open on the SQLite default.
+`RuntimeDirectoryMode=` is stated rather than left to systemd's 0755 default so the scratch space is private on its own terms instead of relying on `/run/user/$UID` being 0700 around it.
 Pinning them in one case is deliberate - the grant and the `TMPDIR` are worthless apart, and the in-memory opener is what keeps the store reader from depending on either, so a pass that drops one is told what it just made load-bearing.
 `bin/fm-dashboard-install.sh` reads both directives back from `systemctl --user show` before reporting success, for the same reason it reads back the environment file: a unit systemd read past leaves a green service running on defaults it was never configured with.
 

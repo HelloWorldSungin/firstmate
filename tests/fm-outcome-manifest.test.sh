@@ -649,7 +649,18 @@ test_history_refuses_to_report_a_lost_read_as_an_empty_fleet() {
     || fail "a read that lost its records exited 0, which is what let the panel call the fleet empty: $out"
   printf '%s' "$out" | jq -e '.records == [] and .total > 0' >/dev/null 2>&1 \
     && fail "a read that lost its records still published an empty history document: $out"
-  pass "a history read that loses its records refuses instead of reporting a fleet that finished nothing"
+  # A refusal that says nothing only moves the false absence: the operator
+  # trades "nothing has completed" for "command exited 1" and still cannot tell
+  # a lost read from an empty fleet. So the refusal has to name the discrepancy
+  # it saw - the records it counted, where it counted them, and that none of
+  # them arrived.
+  assert_contains "$out" "none reached the result" \
+    "the refusal did not say that counted records failed to arrive: $out"
+  assert_contains "$out" "$home/data" \
+    "the refusal did not name the directory it counted records in: $out"
+  printf '%s' "$out" | grep -q '1 completed record' \
+    || fail "the refusal did not name how many records it counted: $out"
+  pass "a history read that loses its records refuses, and says what it counted, instead of reporting a fleet that finished nothing"
 }
 
 # --- secret safety ----------------------------------------------------------
