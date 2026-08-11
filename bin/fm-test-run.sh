@@ -140,6 +140,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-pointer-check.test.sh|\
     fm-run-progress.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
@@ -873,6 +874,12 @@ families_for_changed_path() {
       ;;
     bin/fm-test-run.sh|bin/fm-test-isolation-proof.sh)
       printf '%s\n' pure-contract-unit
+      ;;
+    # The two pointer checks share one convention (docs/one-owner.md) and split
+    # its surface by class, so a change to either belongs with both suites.
+    bin/fm-pointer-check.sh|bin/fm-doc-audience-check.sh)
+      printf '%s\n' '__script__:fm-pointer-check.test.sh'
+      printf '%s\n' '__script__:fm-documentation-audiences.test.sh'
       ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
       printf '%s\n' real-herdr-gated

@@ -554,9 +554,11 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
 
 // A missing endpoint answers two different questions depending on whether the
 // task declared a wait. Parking a captain-gated task EXITS its agent on purpose,
-// so its absent endpoint is the runbook working, not a worker that died; a task
+// so its absent endpoint is the expected outcome, not a worker that died; a task
 // that went quiet without declaring anything and lost its endpoint is the real
-// alarm this signal exists to raise.
+// alarm this signal exists to raise. What parking IS - fleet operating practice
+// rather than a procedure this repo defines - is owned by
+// docs/dashboard-inbox-policy.md.
 //
 // The declared-wait verdict is the same `hints.last_event_declared_wait` that
 // Task activity reads, so both cards ask bin/fm-classify-lib.sh the one question

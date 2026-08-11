@@ -40,11 +40,14 @@ The machine-consumed inventory in [`docs/documentation-audiences.json`](../../..
 
 ## One-owner rule
 
-Every contract - a data format, a state machine, a decision procedure - is stated in full exactly once.
-Every other mention of it is a one-line cross-reference, never a restatement.
+[`docs/one-owner.md`](../../../docs/one-owner.md) owns this rule and the checks that verify pointers resolve, and it applies to prose and tracker bodies as much as to code.
+How to apply it while editing:
+
+Every contract - a data format, a state machine, a decision procedure - is stated in full exactly once, and every other mention is a one-line cross-reference.
 A single deliberate one-line reinforcement at a genuine risk point is allowed, for example a "don't forget X" placed exactly where forgetting X is costly.
 Restating the contract's substance a second time is not allowed: the two copies will drift the moment only one is edited.
 When you touch a contract, patch, replace, or prune the owner's existing language rather than appending a new clause or paragraph wherever possible, then grep the repo for its other mentions and update the cross-references, not duplicate the change into a second full copy.
+Pin a pointer that lives in a code comment by declaring it in `requiredOwnerPointers`, so a later rename of the owner cannot orphan it silently.
 
 ## Inline-stub pattern
 
@@ -110,6 +113,7 @@ For every changed maintained prose surface, identify its inventory audience, aut
 Move or delete evidence only after the current owner and regression pointer are verified.
 After all documentation, review-fix, and lint-fix commits, review the complete branch diff again against those criteria rather than reviewing only the latest commit.
 Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup routing, local link targets, and owner pointers without keyword-linting legitimate evidence prose.
+Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this repository is its class rather than the audience check's.
 
 ## Repo style rules
 

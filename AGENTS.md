@@ -243,6 +243,8 @@ Route durable knowledge to its most specific owner:
 - Knowledge useful to almost every contributor to one project belongs in that project's committed `AGENTS.md`.
 - Knowledge general to every firstmate user belongs in this repo's shared tracked surface.
 
+Whichever owner a fact lands in, it lands in exactly one, and every other mention of it is a pointer rather than a second copy; `docs/one-owner.md` owns that convention, the checks that verify pointers resolve, and the limit it deliberately does not enforce.
+
 Firstmate never writes a project's `AGENTS.md` directly.
 A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.
 Keep fleet delivery posture and captain-private strategy out of project memory.

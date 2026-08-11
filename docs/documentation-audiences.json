@@ -108,6 +108,26 @@
     {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
+    },
+    {
+      "source": "CONTRIBUTING.md",
+      "target": "docs/one-owner.md"
+    },
+    {
+      "source": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
+      "target": "docs/one-owner.md"
+    },
+    {
+      "source": "docs/one-owner.md",
+      "target": "docs/verification/pointer-check.md"
+    },
+    {
+      "source": "assets/dashboard/inbox.js",
+      "target": "docs/dashboard-inbox-policy.md"
+    },
+    {
+      "source": "assets/dashboard/inbox.js",
+      "target": "bin/fm-classify-lib.sh"
     }
   ],
   "surfaces": [
@@ -332,6 +352,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/one-owner.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/orca-backend.md",
       "audience": "operator-current"
     },
@@ -417,6 +441,10 @@
     },
     {
       "path": "docs/verification/model-verification.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/pointer-check.md",
       "audience": "maintainer-verification"
     },
     {
