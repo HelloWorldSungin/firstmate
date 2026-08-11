@@ -142,6 +142,43 @@ fm_test_tmproot() {
   printf '%s\n' "$root"
 }
 
+# fm_test_stop_remote_job_worker <remote-job-state-root> stops a remote job
+# worker a fixture started and returns only once it is really gone, so a
+# following `rm -rf` of the fixture's temp tree cannot race it.
+#
+# On Linux bin/fm-remote-job-worker.sh runs as a restart supervisor whose
+# `--serve` child is the process that publishes worker.pid. Killing that
+# recorded pid alone therefore only ends one child: the supervisor survives and
+# immediately starts a replacement, which recreates its state root inside the
+# fixture's temp tree while the fixture is removing it, and that removal then
+# fails with "Directory not empty". So the supervisor is stopped first - and
+# only when it is genuinely this worker's parent - which stops its own child
+# too. macOS has no such supervisor, and there the recorded pid is the worker.
+fm_test_stop_remote_job_worker() {
+  local state=$1 pid parent waited=0
+  pid=$(cat "$state/worker.pid" 2>/dev/null) || return 0
+  case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+  parent=$(LC_ALL=C ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')
+  case "$parent" in '' | *[!0-9]*) parent= ;; esac
+  if [ -n "$parent" ]; then
+    case "$(LC_ALL=C ps -p "$parent" -o command= 2>/dev/null)" in
+      *fm-remote-job-worker.sh*) ;;
+      *) parent= ;;
+    esac
+  fi
+  [ -z "$parent" ] || kill "$parent" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  while [ "$waited" -lt 200 ]; do
+    if ! kill -0 "$pid" 2>/dev/null &&
+      { [ -z "$parent" ] || ! kill -0 "$parent" 2>/dev/null; }; then
+      return 0
+    fi
+    waited=$((waited + 1))
+    sleep 0.05
+  done
+  return 0
+}
+
 # --- the operator's own state root ------------------------------------------
 #
 # The dashboard's agent-event store is the one fleet artifact that lives outside

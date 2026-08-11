@@ -11,6 +11,8 @@
 #     instead of a quiet skip.
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
+# Fetch pruning removes stale remote-tracking pointers but never local branches;
+# exact-task local branch cleanup belongs to fm-teardown.
 #
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
@@ -308,6 +310,26 @@ test_diverged_is_stuck_untouched() {
   assert_contains "$out" "commits behind origin/main - needs attention" "STUCK is quantified"
   [ "$(head_sha "$clone")" = "$before" ] || fail "diverged clone was moved"
   pass "diverged default branch is reported STUCK and left untouched"
+}
+
+test_fetch_prunes_remote_pointer_and_keeps_local_branch() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_packed_prunable "$home" remote-prune-only)
+
+  git -C "$clone" show-ref --verify --quiet refs/remotes/origin/feature \
+    || fail "remote-prune-only: fixture lacks the stale remote-tracking pointer"
+  git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "remote-prune-only: fixture lacks the local branch"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "remote-prune-only: synced" "remote-prune-only: clone did not refresh"
+  ! git -C "$clone" show-ref --verify --quiet refs/remotes/origin/feature \
+    || fail "remote-prune-only: fetch --prune left the dead remote-tracking pointer"
+  git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "remote-prune-only: fleet refresh deleted a local branch"
+  pass "fleet refresh prunes dead remote-tracking pointers without deleting local branches"
 }
 
 test_on_default_clean_behind_fast_forwards() {
@@ -609,6 +631,7 @@ test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
 test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
+test_fetch_prunes_remote_pointer_and_keeps_local_branch
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped

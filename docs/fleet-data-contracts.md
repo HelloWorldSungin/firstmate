@@ -119,7 +119,7 @@ A recorded PR URL does not say whether work is waiting on review, waiting on che
 
 The observation is cached at `state/<id>.pr-status` with an `observed_at` stamp, and the snapshot reports `status_age_seconds` as the age of that cached record.
 Read-only consumers report the cached value with its age and never call a forge themselves, so the fleet snapshot stays offline and fast.
-`bin/fm-pr-check.sh` seeds the cache when it arms a merge watch and `bin/fm-pr-merge.sh` refreshes it after a merge; both are best effort, and a failed refresh leaves the previous observation in place rather than overwriting a good reading with `unknown`.
+`bin/fm-pr-check.sh` seeds the cache when it arms a merge watch, `bin/fm-pr-merge.sh` refreshes it after a merge, and `bin/fm-teardown.sh` refreshes it when the cached observation cannot already prove the merge it needs before reaping a task branch; all are best effort, and a failed refresh leaves the previous observation in place rather than overwriting a good reading with `unknown`.
 Every cache read validates the canonical PR identity, the normalized enumerations, the draft type, the head SHA, the ISO-8601 UTC observation stamp, and the provider source before exposing it.
 A cache whose URL does not match the task's current canonical PR URL projects the documented unknown observation, while a failed refresh for the same URL retains the previous valid observation.
 GitLab review state combines the merge request approvals endpoint's current `approved`, `approvals_required`, `approvals_left`, and `approved_by` values to distinguish `none`, `review_required`, and `approved`, and ambiguous or unavailable results degrade to `unknown`.

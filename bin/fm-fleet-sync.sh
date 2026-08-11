@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
-# branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
-# worktree still needs.
+# Refresh project clones: prune stale remote-tracking pointers, then fast-forward
+# the checked-out local default branch to origin/<default> when safe.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -13,8 +11,9 @@
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
-# Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# The fetch uses --prune, which removes only stale remote-tracking pointers.
+# Local branch cleanup belongs exclusively to bin/fm-teardown.sh's exact-task,
+# proven-merge path and is never performed by this fleet-wide refresh.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -39,7 +38,7 @@ FM_LOCK_LOG_PREFIX=fleet-sync
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # Bounded recovery for an orphaned .git/packed-refs.lock. A git ref rewrite
-# (fetch --prune, branch -D, pack-refs) killed after creating the lock but before
+# (fetch --prune or pack-refs) killed after creating the lock but before
 # renaming it - e.g. bootstrap's fleet-sync timeout kill, or teardown's process
 # kills - leaves a lock that makes the next sync's fetch fail with Git's
 # "Unable to create '...packed-refs.lock': File exists". These knobs bound the
@@ -210,40 +209,6 @@ fetch_with_packed_refs_lock_guard() {
   return "$rc"
 }
 
-prune_gone_branches() {
-  # Delete local branches whose upstream tracking branch is gone - the remote
-  # branch was deleted, which in this fleet means its PR merged - as long as
-  # nothing still needs them. Never the checked-out branch, and never a branch
-  # that still has a worktree (a live or not-yet-torn-down task). "Gone" plus
-  # "no worktree" already proves the work landed: teardown removes a branch's
-  # worktree only after confirming the work reached the remote. We deliberately
-  # do NOT also require the branch to be an ancestor of origin/<default> - PRs in
-  # this fleet are squash-merged, so a merged branch is never an ancestor and
-  # such a check would prune nothing. The no-worktree guard is the real safety
-  # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
-  [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
-
-  local worktree_branches current refline branch track
-  worktree_branches=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null \
-    | sed -n 's#^branch refs/heads/##p')
-  current=$(git -C "$PROJ" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-
-  while IFS= read -r refline; do
-    branch=${refline%% *}
-    track=${refline#* }
-    [ "$track" = "[gone]" ] || continue
-    [ -n "$branch" ] || continue
-    [ "$branch" != "$current" ] || continue
-    if printf '%s\n' "$worktree_branches" | grep -Fxq -- "$branch"; then
-      continue
-    fi
-    if git -C "$PROJ" branch -D -- "$branch" >/dev/null 2>&1; then
-      echo "$label: pruned $branch"
-    fi
-  done < <(git -C "$PROJ" for-each-ref \
-    --format='%(refname:short) %(upstream:track)' refs/heads 2>/dev/null)
-}
-
 # True when some worktree of $PROJ has $DEFAULT checked out (so we cannot attach
 # to it here). The current worktree is detached when this is consulted, so any
 # match is necessarily another worktree.
@@ -320,8 +285,6 @@ sync_project() {
     echo "$label: skipped: $reason"
     return 0
   fi
-
-  prune_gone_branches || true
 
   DEFAULT=$(default_branch) || {
     echo "$label: skipped: cannot determine default branch"

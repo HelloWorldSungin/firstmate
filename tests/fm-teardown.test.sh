@@ -279,15 +279,26 @@ land_on_origin_main() {
 }
 
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
+# The hidden pull ref models GitHub retaining the merged head after deleting its
+# source branch, so branch cleanup can verify the commit still exists remotely.
 add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+  git -C "$case_dir/wt" push -q origin "$head:refs/pull/7/head"
+  cat > "$case_dir/fakebin/gh-axi" <<SH
 #!/usr/bin/env bash
-case "${1:-} ${2:-}" in
+case "\${1:-} \${2:-}" in
   "pr list")
     printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
   "pr view")
-    printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"' ; exit 0 ;;
+    case " \$* " in
+      *" --json "*)
+        printf '%s\n' '{"state":"MERGED","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"$head","statusCheckRollup":[]}'
+        ;;
+      *)
+        printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"'
+        ;;
+    esac
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -1713,7 +1724,9 @@ test_local_only_merged_to_local_main_allows() {
 
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
-  pass "local-only worktree with work merged into local main is torn down (no regression)"
+  ! git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "merged-main: cleanup left a task branch contained in local main"
+  pass "local-only worktree merged into local main is torn down and its contained task branch is reaped"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -1734,7 +1747,33 @@ test_no_mistakes_origin_remote_allows() {
   ! grep -q REFUSED "$case_dir/stderr" || fail "nm-origin: teardown printed a REFUSED line"
   grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
     || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
-  pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "nm-origin: cleanup deleted a branch with no recorded PR or default-branch ancestry"
+  assert_grep "kept local branch fm/task-x1" "$case_dir/stderr" \
+    "nm-origin: cleanup did not explain why the unproven branch was kept"
+  pass "no-mistakes worktree with HEAD on origin is torn down while its unproven branch is kept"
+}
+
+test_cleanup_never_deletes_the_worktrees_ambient_branch() {
+  local case_dir rc
+  case_dir=$(make_case ambient-branch)
+  write_meta "$case_dir" no-mistakes ship
+  git -C "$case_dir/wt" checkout -q -b unrelated
+  wt_commit "$case_dir" "unrelated published work"
+  git -C "$case_dir/wt" push -q origin unrelated
+  git -C "$case_dir/project" fetch -q origin unrelated
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "ambient-branch: published work should allow cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/unrelated \
+    || fail "ambient-branch: cleanup deleted the worktree's unrelated ambient branch"
+  ! git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "ambient-branch: cleanup left its own default-contained task branch behind"
+  pass "cleanup targets only the task's exact fm/<id> branch, never the ambient branch"
 }
 
 test_no_mistakes_truly_unpushed_refuses() {
@@ -1775,7 +1814,9 @@ test_squash_merged_branch_deleted_allows() {
 
   expect_code 0 "$rc" "squash-merged: teardown should succeed when the PR is merged"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-merged: teardown printed a REFUSED line"
-  pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix)"
+  ! git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "squash-merged: cleanup left the exact merged task branch behind"
+  pass "squash-merged + deleted-branch worktree is torn down and its exact merged branch is reaped"
 }
 
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {
@@ -1851,6 +1892,120 @@ test_squash_merged_pr_allows_replayed_unpushed_patch() {
   expect_code 0 "$rc" "squash-replayed-patch: teardown should succeed when unpushed local patch is in the merged PR head"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-replayed-patch: teardown printed a REFUSED line"
   pass "squash-merged PR accepts replayed unpushed local patches contained in the PR head"
+}
+
+test_merged_pr_with_pushed_later_commit_keeps_branch() {
+  local case_dir rc pr_head moved_head
+  case_dir=$(make_case stale-pr-head-pushed)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  wt_commit_file "$case_dir" later.txt published "published follow-up"
+  moved_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/wt" push -q origin "$moved_head:refs/heads/fm/task-x1"
+  git -C "$case_dir/project" fetch -q origin fm/task-x1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "stale-pr-head-pushed: published work should not block worktree cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "stale-pr-head-pushed: cleanup deleted a branch that moved after merge"
+  [ "$(git -C "$case_dir/project" rev-parse refs/heads/fm/task-x1)" = "$moved_head" ] \
+    || fail "stale-pr-head-pushed: cleanup changed the moved branch"
+  assert_grep "kept local branch fm/task-x1: branch moved after the recorded merge" "$case_dir/stderr" \
+    "stale-pr-head-pushed: cleanup did not explain why the moved branch was kept"
+  pass "cleanup keeps a task branch that moved after its recorded PR merged"
+}
+
+test_forge_unreachable_keeps_branch_and_cleanup_succeeds() {
+  local case_dir rc head
+  case_dir=$(make_case branch-forge-unreachable)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "published feature"
+  append_pr_meta_for_current_head "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/wt" push -q -u origin "$head:refs/heads/fm/task-x1"
+  git -C "$case_dir/project" fetch -q origin fm/task-x1
+  # Model server-side branch deletion without updating this clone. Worktree
+  # safety sees the still-present remote-tracking ref, then fleet refresh must
+  # prune only that stale pointer while preserving the unproven local branch.
+  git -C "$case_dir/origin.git" update-ref -d refs/heads/fm/task-x1
+  add_gh_axi_error "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "branch-forge-unreachable: branch proof failure must not fail cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "branch-forge-unreachable: cleanup deleted a branch it could not prove merged"
+  ! git -C "$case_dir/project" show-ref --verify --quiet refs/remotes/origin/fm/task-x1 \
+    || fail "branch-forge-unreachable: fleet refresh did not prune the stale remote pointer"
+  assert_grep "kept local branch fm/task-x1: recorded PR merge could not be verified" "$case_dir/stderr" \
+    "branch-forge-unreachable: cleanup did not explain why the branch was kept"
+  pass "an unreachable forge keeps the branch without failing cleanup"
+}
+
+test_unsupported_forge_keeps_branch_and_cleanup_succeeds() {
+  local case_dir rc head
+  case_dir=$(make_case branch-unsupported-forge)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "published feature"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf '%s\n' \
+    'pr=https://gitea.example/example/repo/pulls/7' \
+    "pr_head=$head" >> "$case_dir/state/task-x1.meta"
+  git -C "$case_dir/wt" push -q origin "$head:refs/heads/fm/task-x1"
+  git -C "$case_dir/project" fetch -q origin fm/task-x1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "branch-unsupported-forge: unsupported branch proof must not fail cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "branch-unsupported-forge: cleanup deleted a branch whose merge it could not query"
+  assert_grep "kept local branch fm/task-x1: recorded PR forge is unsupported" "$case_dir/stderr" \
+    "branch-unsupported-forge: cleanup did not explain why the branch was kept"
+  pass "an unsupported forge keeps the branch without failing cleanup"
+}
+
+test_merged_pr_head_not_retained_by_forge_keeps_branch() {
+  local case_dir rc head
+  case_dir=$(make_case branch-head-not-retained)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  # The forge reports the merge at this exact head but keeps no copy of that
+  # commit: its source branch is gone and its hidden pull ref is gone too. The
+  # local branch is then the only place those commits survive, so a merged
+  # verdict alone must not authorize deleting it.
+  git -C "$case_dir/origin.git" update-ref -d refs/pull/7/head
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "branch-head-not-retained: an unverifiable head must not fail cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "branch-head-not-retained: cleanup deleted the only surviving copy of the merged commits"
+  [ "$(git -C "$case_dir/project" rev-parse refs/heads/fm/task-x1)" = "$head" ] \
+    || fail "branch-head-not-retained: cleanup moved the retained branch"
+  assert_grep "kept local branch fm/task-x1: merged PR head is no longer verifiable on the remote" \
+    "$case_dir/stderr" \
+    "branch-head-not-retained: cleanup did not explain why the branch was kept"
+  pass "a merged PR whose head the forge no longer retains keeps the branch"
 }
 
 test_merged_pr_with_later_local_commit_refuses() {
@@ -3657,6 +3812,7 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
+test_cleanup_never_deletes_the_worktrees_ambient_branch
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
@@ -3671,6 +3827,10 @@ test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
+test_merged_pr_with_pushed_later_commit_keeps_branch
+test_forge_unreachable_keeps_branch_and_cleanup_succeeds
+test_unsupported_forge_keeps_branch_and_cleanup_succeeds
+test_merged_pr_head_not_retained_by_forge_keeps_branch
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
