@@ -27,12 +27,21 @@
 # dispatched, in-review, and landed themselves, so those three never depend on
 # agent memory. The rest are firstmate's to post as the work moves.
 #
-# SCOPE. Write-back applies only where a write credential genuinely exists: the
-# task records exactly one work item, it is a github.com issue, and its repository
-# is the one the PR opens against (pr_target= in task metadata, recorded at spawn
-# from the brief's PR-target marker). Cross-forge write-back needs a per-host
-# write-credential design of its own; config/forge-tokens/ is read-side only, and
-# an out-of-scope work item is reported once rather than retargeted.
+# SCOPE. The target is only ever the task's own recorded work item: exactly one
+# work_item= line, in the repository the PR opens against (pr_target= in task
+# metadata, recorded at spawn from the brief's PR-target marker), never a
+# reference parsed from prose, a PR body, or a git remote. Within that scope,
+# write-back is per-forge through bin/fm-forge-lib.sh, the single owner of the
+# per-host credential rules, the argv-free transport, the write-operation
+# allowlist, and the minimum viable token scope per forge:
+#   github.com  the ambient gh authentication, as everywhere else in this repo.
+#   gitea       config/forge-tokens/<host>, the same credential the read side
+#               uses; an absent token is reported as "no write credential", a
+#               loose one is refused, and a 401/403 is reported as the forge
+#               refusing the credential - three different facts, never blurred.
+#   gitlab and self-hosted GitHub have no write adapter yet and say so.
+# An out-of-scope or unsupported work item is reported once rather than
+# retargeted, and the recorded link always stays resolvable.
 #
 # FAIL OPEN. Write-back is decoration on top of work that already succeeded. An
 # unreachable host, a missing or expired credential, a rate limit, a deleted
@@ -61,6 +70,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 CALL_TIMEOUT=${FM_ISSUE_COMMENT_TIMEOUT:-10}
 case "$CALL_TIMEOUT" in
   ''|*[!0-9]*|0) CALL_TIMEOUT=10 ;;
@@ -74,6 +84,8 @@ esac
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-milestone-lib.sh
 . "$SCRIPT_DIR/fm-milestone-lib.sh"
+# shellcheck source=bin/fm-forge-lib.sh
+. "$SCRIPT_DIR/fm-forge-lib.sh"
 
 # The body marker is a constant, not a task-keyed one: the comment belongs to the
 # work item, and a task id has no place in outward-facing text anyway.
@@ -189,10 +201,12 @@ if ! fm_issue_work_item_parse "$WORK_ITEMS"; then
   exit 0
 fi
 ISSUE_URL=$FM_ISSUE_URL
+ISSUE_FORGE=$FM_ISSUE_FORGE
+ISSUE_HOST=$FM_ISSUE_HOST
 ISSUE_PATH=$FM_ISSUE_PATH
 ISSUE_NUMBER=$FM_ISSUE_NUMBER
-if [ "$FM_ISSUE_FORGE" != github ] || [ "$FM_ISSUE_HOST" != github.com ]; then
-  notice "the work item lives on $FM_ISSUE_FORGE host $FM_ISSUE_HOST ($ISSUE_URL), where firstmate holds no write credential"
+if ! fm_forge_write_supported "$ISSUE_FORGE" "$ISSUE_HOST"; then
+  notice "$FM_FORGE_REASON, so $ISSUE_URL keeps its link without a status comment"
   exit 0
 fi
 
@@ -205,9 +219,9 @@ if ! fm_issue_tracker_parse "$PR_TARGET"; then
   warn "the recorded PR target is malformed"
   exit 0
 fi
-if [ "$FM_ISSUE_TRACKER_FORGE" != github ] || [ "$FM_ISSUE_TRACKER_HOST" != github.com ] \
+if [ "$FM_ISSUE_TRACKER_FORGE" != "$ISSUE_FORGE" ] || [ "$FM_ISSUE_TRACKER_HOST" != "$ISSUE_HOST" ] \
   || [ "$FM_ISSUE_TRACKER_PATH" != "$ISSUE_PATH" ]; then
-  notice "$ISSUE_URL is not in the repository this task's PR opens against, so firstmate holds no write credential for it"
+  notice "$ISSUE_URL is not in the repository this task's PR opens against, so it is outside this task's write-back scope"
   exit 0
 fi
 
@@ -362,6 +376,97 @@ if [ "$DRY_RUN" -eq 1 ]; then
   build_timeline '' "$WORKDIR/timeline"
   printf 'target: %s\n' "$ISSUE_URL"
   render_body "$WORKDIR/timeline"
+  exit 0
+fi
+
+# --- gitea: the same lifecycle through the per-host credential ---------------
+#
+# The operations come from bin/fm-forge-lib.sh's write allowlist, bounded per
+# call exactly as gh_call bounds the GitHub side. Writing needs authentication,
+# so an absent token is a plain "no write credential" notice - genuinely true
+# here, unlike the read side's unauthenticated public fallback.
+if [ "$ISSUE_FORGE" = gitea ]; then
+  command -v curl >/dev/null 2>&1 || { warn "curl is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
+  command -v jq >/dev/null 2>&1 || { warn "jq is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
+  TOKEN=
+  token_rc=0
+  TOKEN=$(fm_forge_token_read "$CONFIG" "$ISSUE_HOST") || token_rc=$?
+  if [ "$token_rc" -eq 2 ]; then
+    warn "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
+    exit 0
+  fi
+  if [ "$token_rc" -ne 0 ] || [ -z "$TOKEN" ]; then
+    notice "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $ISSUE_URL keeps its link without a status comment"
+    exit 0
+  fi
+
+  gitea_bound() {  # sets BOUND from the shared budget, or reports it spent
+    BOUND=$(fm_call_bound "$CALL_TIMEOUT")
+    if [ "$BOUND" -le 0 ]; then
+      FM_FORGE_REASON="the milestone budget was already spent, so nothing was sent"
+      return 1
+    fi
+  }
+
+  # Find firstmate's own comment by its marker, earliest first. Pages are
+  # walked oldest-first with a hard cap, stopping on a short page; a server
+  # that ignores pagination re-serves the same first id, which ends the walk
+  # instead of looping.
+  COMMENT_ID=
+  : > "$WORKDIR/existing"
+  page=1
+  prev_first=
+  while [ "$page" -le 10 ]; do
+    if ! gitea_bound \
+      || ! fm_gitea_comments_page "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$page" "$WORKDIR/page"; then
+      warn "could not look up the status comment on $ISSUE_URL: $FM_FORGE_REASON"
+      exit 0
+    fi
+    count=$(jq 'length' "$WORKDIR/page" 2>/dev/null) || count=
+    case "$count" in
+      ''|*[!0-9]*)
+        warn "could not read the comment list on $ISSUE_URL"
+        exit 0
+        ;;
+    esac
+    [ "$count" -gt 0 ] || break
+    first=$(jq -r '.[0].id // empty' "$WORKDIR/page" 2>/dev/null) || first=
+    [ -n "$first" ] && [ "$first" != "$prev_first" ] || break
+    prev_first=$first
+    COMMENT_ID=$(jq -r --arg m "$MARKER" \
+      '[.[] | select(.body != null and (.body | contains($m))) | .id] | first // empty' \
+      "$WORKDIR/page" 2>/dev/null) || COMMENT_ID=
+    if [ -n "$COMMENT_ID" ]; then
+      jq -r --arg m "$MARKER" \
+        '[.[] | select(.body != null and (.body | contains($m))) | .body] | first // empty' \
+        "$WORKDIR/page" > "$WORKDIR/existing" 2>/dev/null || : > "$WORKDIR/existing"
+      break
+    fi
+    [ "$count" -ge 50 ] || break
+    page=$((page + 1))
+  done
+  case "$COMMENT_ID" in
+    ''|*[!0-9]*) COMMENT_ID= ;;
+  esac
+
+  build_timeline "$WORKDIR/existing" "$WORKDIR/timeline"
+  render_body "$WORKDIR/timeline" > "$WORKDIR/body"
+
+  if [ -n "$COMMENT_ID" ]; then
+    if gitea_bound \
+      && fm_gitea_comment_update "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$COMMENT_ID" "$WORKDIR/body"; then
+      printf 'updated: %s\n' "$ISSUE_URL"
+      exit 0
+    fi
+    warn "could not update the status comment on $ISSUE_URL: $FM_FORGE_REASON"
+    exit 0
+  fi
+  if gitea_bound \
+    && fm_gitea_comment_create "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$WORKDIR/body"; then
+    printf 'created: %s\n' "$ISSUE_URL"
+    exit 0
+  fi
+  warn "could not post the status comment on $ISSUE_URL: $FM_FORGE_REASON"
   exit 0
 fi
 

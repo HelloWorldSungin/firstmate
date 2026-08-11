@@ -21,6 +21,10 @@
 #   (m) issue-state verification failure reports the merge as successful
 #   (n) a successful close request that leaves the issue open warns
 #   (o) malformed or duplicate recorded issue metadata warns without API calls
+#   (p) a gitea work item closes through its own host credential with the same
+#       linking comment, an absent credential is reported as exactly that with
+#       nothing sent, and a gitea close failure never makes the merge look
+#       retryable
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -192,6 +196,7 @@ run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
@@ -591,9 +596,10 @@ test_work_item_closes_in_its_declared_repository_not_the_pr_repository() {
   pass "fm-pr-merge closes a work item in its declared repository, not the PR's"
 }
 
-# A work item on a forge firstmate does not write back to must leave the merge
-# successful and the link intact, and must not be silently retargeted at GitHub.
-test_non_github_work_item_is_reported_not_closed() {
+# A gitea work item with no host credential must leave the merge successful and
+# the link intact, must say the credential is missing rather than claim the
+# forge is unsupported, and must not be silently retargeted at GitHub.
+test_gitea_work_item_without_credential_is_reported_not_closed() {
   local case_dir rc
   case_dir=$(make_case work-item-gitea)
   printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
@@ -609,13 +615,134 @@ test_non_github_work_item_is_reported_not_closed() {
   set -e
 
   expect_code 0 "$rc" "work-item-gitea: a completed merge must remain successful"
-  assert_grep 'lives on gitea' "$case_dir/stderr" \
-    "work-item-gitea: the unsupported write-back was not reported"
+  assert_grep 'holds no write credential for gitea.example.com' "$case_dir/stderr" \
+    "work-item-gitea: the missing credential was not reported as exactly that"
   assert_grep 'https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7' "$case_dir/stderr" \
     "work-item-gitea: the warning did not carry the plain link"
   assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
     "work-item-gitea: a non-GitHub work item reached the GitHub close path"
-  pass "fm-pr-merge reports a non-GitHub work item instead of closing it"
+  pass "fm-pr-merge reports a credential-less gitea work item instead of closing it"
+}
+
+# The curl mock a gitea close talks to: an issue whose state is kept on disk, a
+# comment endpoint recording the linking comment, and the argv/stdin logs the
+# credential assertions read. It reads stdin only when `-K` is present, exactly
+# as real curl takes its config from stdin.
+add_gitea_close_mocks() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+set -u
+STORE=${FM_TEST_GITEA_STORE:?curl mock needs FM_TEST_GITEA_STORE}
+mkdir -p "$STORE"
+printf '%s\n' "$*" >> "$STORE/curl-args.log"
+METHOD=GET
+OUT=/dev/null
+DATA=
+URL=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -K) cat >> "$STORE/curl-stdin.log" ;;
+    -X) METHOD=$2; shift ;;
+    -o) OUT=$2; shift ;;
+    --data-binary) DATA=${2#@}; shift ;;
+    -H|-w|-m) shift ;;
+    https://*) URL=$1 ;;
+  esac
+  shift
+done
+[ -z "${FM_TEST_GITEA_UNREACHABLE:-}" ] || exit 7
+emit() {  # <http-code> <body>
+  printf '%s' "$2" > "$OUT"
+  printf '%s' "$1"
+  exit 0
+}
+case "$METHOD $URL" in
+  "GET "*/issues/7)
+    state=open
+    [ ! -f "$STORE/issue-state" ] || state=$(cat "$STORE/issue-state")
+    emit 200 "{\"state\":\"$state\"}"
+    ;;
+  "PATCH "*/issues/7)
+    jq -r '.state' "$DATA" > "$STORE/issue-state"
+    printf 'CLOSE\n' >> "$STORE/ops.log"
+    emit 201 '{"state":"closed"}'
+    ;;
+  "POST "*/issues/7/comments)
+    jq -r '.body' "$DATA" > "$STORE/close-comment"
+    printf 'COMMENT\n' >> "$STORE/ops.log"
+    emit 201 '{"id":1}'
+    ;;
+esac
+emit 404 '{}'
+SH
+  chmod +x "$case_dir/fakebin/curl"
+  mkdir -p "$case_dir/config/forge-tokens" "$case_dir/gitea-store"
+  printf 'gitea-close-token\n' > "$case_dir/config/forge-tokens/gitea.example.com"
+  chmod 600 "$case_dir/config/forge-tokens/gitea.example.com"
+}
+
+test_gitea_work_item_is_closed_with_its_own_credential() {
+  local case_dir url rc
+  command -v jq >/dev/null 2>&1 || { pass "gitea close (skipped: jq absent)"; return; }
+  case_dir=$(make_case work-item-gitea-close)
+  url=https://github.com/example/repo/pull/54
+  printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+  add_gitea_close_mocks "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_GITEA_STORE="$case_dir/gitea-store" \
+    run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitea-close: the merge with a gitea work item failed"
+  assert_grep 'pr merge 54 --repo example/repo' "$case_dir/gh-axi.log" \
+    "gitea-close: the PR was never merged"
+  [ "$(cat "$case_dir/gitea-store/issue-state" 2>/dev/null)" = closed ] \
+    || fail "gitea-close: the gitea issue was not closed"
+  assert_grep "Closed after merge of $url." "$case_dir/gitea-store/close-comment" \
+    "gitea-close: the close did not carry the linking comment"
+  assert_grep 'COMMENT' "$case_dir/gitea-store/ops.log" \
+    "gitea-close: the linking comment was never posted"
+  assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
+    "gitea-close: the close was retargeted at the GitHub client"
+  assert_no_grep 'gitea-close-token' "$case_dir/gitea-store/curl-args.log" \
+    "gitea-close: the credential appeared in curl's process arguments"
+  assert_grep 'gitea-close-token' "$case_dir/gitea-store/curl-stdin.log" \
+    "gitea-close: the credential did not travel through curl's stdin config"
+  pass "fm-pr-merge closes a gitea work item with its own credential and the linking comment"
+}
+
+test_gitea_close_failure_keeps_merge_success_unambiguous() {
+  local case_dir rc
+  command -v jq >/dev/null 2>&1 || { pass "gitea close failure (skipped: jq absent)"; return; }
+  case_dir=$(make_case work-item-gitea-down)
+  printf 'work_item=declared|gitea|https://gitea.example.com/DuckKingOri/BZ-SIM/issues/7\n' \
+    >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
+  add_gitea_close_mocks "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_GITEA_STORE="$case_dir/gitea-store" FM_TEST_GITEA_UNREACHABLE=1 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/56 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitea-down: an unreachable gitea host made a completed merge look retryable"
+  assert_grep 'pr merge 56 --repo example/repo' "$case_dir/gh-axi.log" \
+    "gitea-down: the merge did not happen while the tracker was unreachable"
+  assert_grep 'issue bookkeeping did not complete' "$case_dir/stderr" \
+    "gitea-down: the failed close was silent"
+  pass "an unreachable gitea host warns and the completed merge still stands"
 }
 
 test_self_hosted_github_work_item_is_reported_not_closed() {
@@ -722,7 +849,9 @@ test_issue_verification_failure_keeps_merge_success_unambiguous
 test_issue_still_open_after_close_request_warns
 test_invalid_recorded_issue_metadata_warns_without_issue_calls
 test_work_item_closes_in_its_declared_repository_not_the_pr_repository
-test_non_github_work_item_is_reported_not_closed
+test_gitea_work_item_without_credential_is_reported_not_closed
+test_gitea_work_item_is_closed_with_its_own_credential
+test_gitea_close_failure_keeps_merge_success_unambiguous
 test_self_hosted_github_work_item_is_reported_not_closed
 test_invalid_or_multiple_work_items_warn_without_issue_calls
 test_work_item_record_wins_over_legacy_issue_line

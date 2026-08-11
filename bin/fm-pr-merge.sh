@@ -8,12 +8,17 @@
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
 # After a successful merge, an optional work item recorded in task metadata is
-# verified and, when it is an open github.com issue, closed with a comment
-# linking the merged PR. A work_item= record names the tracker the project
-# declared and is closed on THAT host and in THAT repository; only the legacy
-# bare issue= number falls back to the repository the PR landed in, which is all
-# a bare number can mean. Several recorded work items, or one on a forge or host
-# with no write-back, warn instead.
+# verified and, when it is open on a forge with a write adapter, closed with a
+# comment linking the merged PR. A work_item= record names the tracker the
+# project declared and is closed on THAT host and in THAT repository; only the
+# legacy bare issue= number falls back to the repository the PR landed in,
+# which is all a bare number can mean. github.com closes through the ambient
+# gh-axi authentication; Gitea closes through config/forge-tokens/<host> via
+# bin/fm-forge-lib.sh, which owns the credential rules, the write-operation
+# allowlist, and the minimum token scope per forge. Several recorded work
+# items, a forge or host with no write adapter, a missing or loose credential,
+# or a credential the forge refuses each warn with their own distinct reason.
+# Gitea calls are bounded by FM_ISSUE_CLOSE_TIMEOUT seconds each (default 10).
 # The landed milestone is recorded on every tracker surface firstmate keeps true
 # (bin/fm-work-item-milestone.sh) before that close bookkeeping runs.
 # Issue verification, closure, or write-back failures warn while returning
@@ -25,11 +30,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+CLOSE_TIMEOUT=${FM_ISSUE_CLOSE_TIMEOUT:-10}
+case "$CLOSE_TIMEOUT" in
+  ''|*[!0-9]*|0) CLOSE_TIMEOUT=10 ;;
+esac
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
+# shellcheck source=bin/fm-forge-lib.sh
+. "$SCRIPT_DIR/fm-forge-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -131,15 +143,54 @@ github_issue_close() {  # <host> <repo-path> <issue-number>
     --comment "Closed after merge of $URL."
 }
 
+# Gitea reads and closes through bin/fm-forge-lib.sh's write allowlist, with
+# the credential resolved once below. The close posts the same linking comment
+# GitHub's close carries, then sets the issue state.
+gitea_issue_state() {  # <host> <repo-path> <issue-number>
+  local host=$1 repo=$2 issue=$3 state
+  fm_gitea_issue_read "$CLOSE_TIMEOUT" "$GITEA_TOKEN" "$host" "$repo" "$issue" \
+    "$CLOSE_WORKDIR/issue.json" || return 1
+  state=$(jq -r '.state // empty' "$CLOSE_WORKDIR/issue.json" 2>/dev/null) || state=
+  case "$state" in
+    open|closed) printf '%s\n' "$state" ;;
+    *) return 1 ;;
+  esac
+}
+
+gitea_issue_close() {  # <host> <repo-path> <issue-number>
+  local host=$1 repo=$2 issue=$3
+  printf 'Closed after merge of %s.\n' "$URL" > "$CLOSE_WORKDIR/close-comment"
+  fm_gitea_comment_create "$CLOSE_TIMEOUT" "$GITEA_TOKEN" "$host" "$repo" "$issue" \
+    "$CLOSE_WORKDIR/close-comment" || return 1
+  fm_gitea_issue_close "$CLOSE_TIMEOUT" "$GITEA_TOKEN" "$host" "$repo" "$issue"
+}
+
+issue_state() {  # <host> <repo-path> <issue-number>
+  case "$ISSUE_FORGE" in
+    gitea) gitea_issue_state "$@" ;;
+    *) github_issue_state "$@" ;;
+  esac
+}
+
+issue_close() {  # <host> <repo-path> <issue-number>
+  case "$ISSUE_FORGE" in
+    gitea) gitea_issue_close "$@" ;;
+    *) github_issue_close "$@" ;;
+  esac
+}
+
 # Resolve which tracker this task's issue actually lives in. A work_item=
 # record carries the whole identity the captain declared for the project, so it
 # is authoritative; the legacy bare issue= number carries none and can only mean
 # "the repository this PR landed in", which is wrong for any project whose code
 # and issues live on different hosts. Preferring the record is what stops a
 # mirrored project's bookkeeping going to the wrong forge.
+ISSUE_FORGE=github
 ISSUE_REPO=
 ISSUE_HOST=
 ISSUE=
+GITEA_TOKEN=
+CLOSE_WORKDIR=
 WORK_ITEM_COUNT=$(grep -c '^work_item=' "$META" 2>/dev/null || true)
 if [ "$WORK_ITEM_COUNT" -gt 1 ]; then
   issue_close_warning "task metadata records several work items; none was closed automatically"
@@ -151,19 +202,35 @@ if [ "$WORK_ITEM_COUNT" -eq 1 ]; then
     issue_close_warning "recorded work item is malformed"
     exit 0
   fi
-  if [ "$FM_ISSUE_FORGE" != github ]; then
-    # Writing back to a non-GitHub tracker is deliberately not implemented; the
-    # merge still succeeded and the work item is still linked.
-    issue_close_warning "the work item lives on $FM_ISSUE_FORGE ($FM_ISSUE_URL), which firstmate does not close automatically"
+  if ! fm_forge_write_supported "$FM_ISSUE_FORGE" "$FM_ISSUE_HOST"; then
+    # An honest adapter gap: the merge still succeeded and the work item is
+    # still linked, so the close is left to whoever owns that tracker.
+    issue_close_warning "the work item lives on $FM_ISSUE_FORGE host $FM_ISSUE_HOST ($FM_ISSUE_URL); $FM_FORGE_REASON, so it was not closed automatically"
     exit 0
   fi
-  if [ "$FM_ISSUE_HOST" != github.com ]; then
-    issue_close_warning "the work item lives on GitHub host $FM_ISSUE_HOST ($FM_ISSUE_URL), which firstmate does not close automatically"
-    exit 0
-  fi
+  ISSUE_FORGE="$FM_ISSUE_FORGE"
   ISSUE_HOST="$FM_ISSUE_HOST"
   ISSUE_REPO="$FM_ISSUE_PATH"
   ISSUE="$FM_ISSUE_NUMBER"
+  if [ "$ISSUE_FORGE" = gitea ]; then
+    command -v curl >/dev/null 2>&1 \
+      || { issue_close_warning "curl is not installed, so $FM_ISSUE_URL was not closed automatically"; exit 0; }
+    command -v jq >/dev/null 2>&1 \
+      || { issue_close_warning "jq is not installed, so $FM_ISSUE_URL was not closed automatically"; exit 0; }
+    token_rc=0
+    GITEA_TOKEN=$(fm_forge_token_read "$CONFIG" "$ISSUE_HOST") || token_rc=$?
+    if [ "$token_rc" -eq 2 ]; then
+      issue_close_warning "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
+      exit 0
+    fi
+    if [ "$token_rc" -ne 0 ] || [ -z "$GITEA_TOKEN" ]; then
+      issue_close_warning "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $FM_ISSUE_URL was not closed automatically"
+      exit 0
+    fi
+    CLOSE_WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-merge.XXXXXX") \
+      || { issue_close_warning "could not create a temporary working directory"; exit 0; }
+    trap 'rm -rf -- "$CLOSE_WORKDIR"' EXIT
+  fi
 else
   ISSUE_LINE_COUNT=$(grep -c '^issue=' "$META" 2>/dev/null || true)
   case "$ISSUE_LINE_COUNT" in
@@ -182,17 +249,17 @@ else
   ISSUE_REPO="$PR_OWNER/$PR_REPO"
 fi
 
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"); then
+if ! ISSUE_STATE=$(issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"); then
   issue_close_warning "could not verify $ISSUE_REPO#$ISSUE"
   exit 0
 fi
 [ "$ISSUE_STATE" = closed ] && exit 0
 
-if ! github_issue_close "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"; then
-  issue_close_warning "could not close $ISSUE_REPO#$ISSUE"
+if ! issue_close "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE"; then
+  issue_close_warning "could not close $ISSUE_REPO#$ISSUE${FM_FORGE_REASON:+: $FM_FORGE_REASON}"
   exit 0
 fi
-if ! ISSUE_STATE=$(github_issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE") \
+if ! ISSUE_STATE=$(issue_state "$ISSUE_HOST" "$ISSUE_REPO" "$ISSUE") \
   || [ "$ISSUE_STATE" != closed ]; then
   issue_close_warning "$ISSUE_REPO#$ISSUE is still not closed after the close request"
 fi

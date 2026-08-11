@@ -35,6 +35,11 @@
 #       merge look retryable
 #   (k) the vocabulary and the bounded-call contract each keep exactly one
 #       owner, because a second copy drifts silently
+#   (l) a gitea work item receives the same living comment through the per-host
+#       credential: the token travels argv-free and 0600-enforced, an absent
+#       token, an unsupported forge, and a refused credential are three
+#       different reported facts, every forge failure warns and exits 0, and
+#       the github path never reads a forge token or invokes curl at all
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -454,7 +459,8 @@ test_out_of_scope_work_items_are_reported_and_never_written() {
   dir=$(case_dir crossforge 'declared|gitea|https://gitea.example.com/o/r/issues/7' 'github:github.com/acme/widget')
   out=$(run_comment "$dir" --milestone dispatched) || fail "a cross-forge item must not fail"
   assert_contains "$out" 'notice:' "a cross-forge item was passed over silently"
-  assert_contains "$out" 'no write credential' "the reason a cross-forge item is skipped was not stated"
+  assert_contains "$out" 'outside this task'"'"'s write-back scope' \
+    "the reason a cross-forge item is skipped was not stated"
   assert_absent "$dir/store/calls.log" "a cross-forge item reached the forge"
 
   dir=$(case_dir otherrepo "$WORK_ITEM" 'github:github.com/acme/other')
@@ -466,7 +472,7 @@ test_out_of_scope_work_items_are_reported_and_never_written() {
   out=$(run_comment "$dir" --milestone dispatched) || fail "a missing PR target must not fail"
   assert_contains "$out" 'records no PR target' "a missing PR target was not explained"
   assert_absent "$dir/store/calls.log" "a task with no PR target reached the forge"
-  pass "write-back happens only where a write credential exists, and every skip says why"
+  pass "write-back stays inside the task's recorded scope, and every skip says why"
 }
 
 test_a_task_with_no_work_item_is_silent() {
@@ -569,6 +575,301 @@ test_dry_run_contacts_nothing() {
   assert_contains "$out" '<!-- firstmate-status-comment -->' "dry run did not render the comment"
   assert_absent "$dir/store/calls.log" "dry run reached the forge"
   pass "a dry run renders the comment without contacting a forge"
+}
+
+# --- (l) gitea: the same lifecycle through the per-host credential -----------
+#
+# A curl stub acting as a Gitea comment and issue store, so idempotency and
+# credential handling are observed rather than asserted. It reads stdin ONLY
+# when `-K` is present, exactly as real curl takes its config from stdin, and
+# it answers the `-o <file>` / `-w %{http_code}` shape the transport uses.
+
+write_fake_gitea_curl() {  # <fakebin>
+  cat > "$1/curl" <<'SH'
+#!/usr/bin/env bash
+set -u
+STORE=${FM_FAKE_GITEA_STORE:?fake curl needs FM_FAKE_GITEA_STORE}
+mkdir -p "$STORE/comments"
+LOG="$STORE/curl-calls.log"
+printf '%s\n' "$*" >> "${FM_TEST_CURL_ARGS:-$STORE/curl-args.log}"
+FAIL=" ${FM_FAKE_GITEA_FAIL:-} "
+
+METHOD=GET
+OUT=/dev/null
+DATA=
+URL=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -K) cat >> "${FM_TEST_CURL_STDIN:-$STORE/curl-stdin.log}" ;;
+    -X) METHOD=$2; shift ;;
+    -o) OUT=$2; shift ;;
+    --data-binary) DATA=${2#@}; shift ;;
+    -H|-w|-m) shift ;;
+    https://*) URL=$1 ;;
+  esac
+  shift
+done
+
+case "$FAIL" in
+  *" unreachable "*) exit 7 ;;
+esac
+
+emit() {  # <http-code> <body>
+  printf '%s' "$2" > "$OUT"
+  printf '%s' "$1"
+  exit 0
+}
+
+refuse() {  # <op>
+  case "$FAIL" in
+    *" $1 "*) emit "${FM_FAKE_GITEA_HTTP:-500}" '{"message":"refused"}' ;;
+  esac
+}
+
+path=${URL#https://}
+path=${path#*/api/v1/repos/}
+query=
+case "$path" in
+  *\?*) query=${path##*\?}; path=${path%%\?*} ;;
+esac
+
+case "$path" in
+  */issues/comments/*)
+    id=${path##*/}
+    if [ "$METHOD" = PATCH ]; then
+      refuse patch
+      jq -r '.body' "$DATA" > "$STORE/comments/$id.body"
+      printf 'PATCH %s\n' "$id" >> "$LOG"
+      emit 200 "{\"id\":$id}"
+    fi
+    emit 405 '{}'
+    ;;
+  */issues/*/comments)
+    num=${path##*/issues/}
+    num=${num%%/*}
+    if [ "$METHOD" = POST ]; then
+      refuse post
+      next=$(( $(ls "$STORE/comments" 2>/dev/null | wc -l) + 100 ))
+      jq -r '.body' "$DATA" > "$STORE/comments/$next.body"
+      printf 'POST %s\n' "$next" >> "$LOG"
+      emit 201 "{\"id\":$next}"
+    fi
+    refuse list
+    printf 'LIST %s\n' "$query" >> "$LOG"
+    page=1
+    case "$query" in
+      *page=*) page=${query#*page=}; page=${page%%&*} ;;
+    esac
+    [ "$page" -le 1 ] || emit 200 '[]'
+    doc=$(
+      for f in "$STORE"/comments/*.body; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f" .body)
+        jq -n --rawfile b "$f" --argjson id "$id" '{id:$id, body:$b}'
+      done | jq -s 'sort_by(.id)'
+    )
+    emit 200 "$doc"
+    ;;
+  */issues/*)
+    num=${path##*/}
+    if [ "$METHOD" = PATCH ]; then
+      refuse close
+      state=$(jq -r '.state' "$DATA")
+      printf '%s\n' "$state" > "$STORE/issue-$num.state"
+      printf 'CLOSE %s\n' "$num" >> "$LOG"
+      emit 201 "{\"state\":\"$state\"}"
+    fi
+    refuse issue
+    printf 'ISSUE %s\n' "$num" >> "$LOG"
+    state=open
+    [ ! -f "$STORE/issue-$num.state" ] || state=$(cat "$STORE/issue-$num.state")
+    emit 200 "{\"state\":\"$state\",\"title\":\"T\"}"
+    ;;
+esac
+emit 404 '{}'
+SH
+  chmod +x "$1/curl"
+}
+
+GITEA_ISSUE_URL='https://gitea.example.com/acme/widget/issues/17'
+GITEA_WORK_ITEM="declared|gitea|$GITEA_ISSUE_URL"
+GITEA_PR_TARGET='gitea:gitea.example.com/acme/widget'
+GITEA_TOKEN_VALUE='gitea-secret-token'
+
+gitea_case_dir() {  # <name> [token-mode|none]
+  local name=$1 mode=${2-600} dir
+  dir=$(case_dir "$name" "$GITEA_WORK_ITEM" "$GITEA_PR_TARGET")
+  write_fake_gitea_curl "$dir/fakebin"
+  if [ "$mode" != none ]; then
+    mkdir -p "$dir/config/forge-tokens"
+    printf '%s\n' "$GITEA_TOKEN_VALUE" > "$dir/config/forge-tokens/gitea.example.com"
+    chmod "$mode" "$dir/config/forge-tokens/gitea.example.com"
+  fi
+  printf '%s\n' "$dir"
+}
+
+run_gitea_comment() {  # <case-dir> [args...]
+  local dir=$1
+  shift
+  env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GITEA_STORE="$dir/store" \
+    FM_TEST_CURL_ARGS="$dir/curl-args" FM_TEST_CURL_STDIN="$dir/curl-stdin" \
+    PATH="$dir/fakebin:$PATH" \
+    "$COMMENT" status task-1 "$@" 2>&1
+}
+
+gitea_log_count() {  # <case-dir> <token>
+  grep -c "^$2" "$1/store/curl-calls.log" 2>/dev/null || true
+}
+
+test_gitea_first_milestone_creates_one_comment_with_the_host_token() {
+  local dir out body
+  dir=$(gitea_case_dir gitea-first)
+  out=$(run_gitea_comment "$dir" --milestone dispatched) || fail "gitea dispatched milestone failed: $out"
+  assert_contains "$out" "created: $GITEA_ISSUE_URL" "the first gitea milestone did not report a created comment"
+  [ "$(comment_count "$dir")" = 1 ] || fail "expected exactly one gitea comment, found $(comment_count "$dir")"
+  body=$(cat "$(firstmate_comment "$dir")")
+  assert_contains "$body" '<!-- firstmate-status-comment -->' "the gitea comment carries no locating marker"
+  assert_contains "$body" '**Status: dispatched**' "the gitea comment does not state its status"
+  assert_contains "$body" '<!-- firstmate-status-timeline -->' "the gitea comment carries no timeline"
+  assert_no_grep "$GITEA_TOKEN_VALUE" "$dir/curl-args" \
+    "the forge token appeared in curl's process arguments"
+  assert_grep "$GITEA_TOKEN_VALUE" "$dir/curl-stdin" \
+    "the forge token did not reach curl through its stdin config"
+  assert_not_contains "$body" "$GITEA_TOKEN_VALUE" "the forge token leaked into the published comment"
+  grep -rqF "$GITEA_TOKEN_VALUE" "$dir/state" 2>/dev/null \
+    && fail "the forge token was written into state"
+  pass "a gitea work item gets one marked status comment, with the token argv-free throughout"
+}
+
+test_gitea_repeated_milestones_edit_one_comment() {
+  local dir body
+  dir=$(gitea_case_dir gitea-repeat)
+  run_gitea_comment "$dir" --milestone dispatched >/dev/null || fail "gitea dispatched failed"
+  run_gitea_comment "$dir" --milestone implemented >/dev/null || fail "gitea implemented failed"
+  run_gitea_comment "$dir" --milestone landed >/dev/null || fail "gitea landed failed"
+  [ "$(comment_count "$dir")" = 1 ] \
+    || fail "three gitea milestones produced $(comment_count "$dir") comments; they must all edit one"
+  [ "$(gitea_log_count "$dir" POST)" = 1 ] || fail "expected exactly one gitea comment creation"
+  [ "$(gitea_log_count "$dir" PATCH)" = 2 ] || fail "expected two in-place gitea updates"
+  body=$(cat "$(firstmate_comment "$dir")")
+  assert_contains "$body" '**Status: landed**' "the gitea comment does not show the latest status"
+  assert_contains "$body" ' - dispatched' "the gitea timeline lost its first milestone"
+  pass "repeated gitea milestones edit exactly one comment through the marker"
+}
+
+test_gitea_absent_token_reports_no_credential_without_a_call() {
+  local dir out
+  dir=$(gitea_case_dir gitea-notoken none)
+  out=$(run_gitea_comment "$dir" --milestone dispatched) || fail "an absent token must not fail"
+  assert_contains "$out" 'notice:' "an absent token was passed over silently"
+  assert_contains "$out" 'holds no write credential for gitea.example.com' \
+    "an absent token was not reported as the missing credential it is"
+  assert_contains "$out" 'config/forge-tokens/gitea.example.com is absent' \
+    "the notice does not tell the captain where the credential would go"
+  assert_absent "$dir/curl-args" "a task with no credential still contacted the forge"
+  pass "an absent gitea token is reported as no credential, and nothing is sent"
+}
+
+test_gitea_loose_token_is_refused_before_any_call() {
+  local dir out
+  dir=$(gitea_case_dir gitea-loose 644)
+  out=$(run_gitea_comment "$dir" --milestone dispatched) || fail "a loose token must not fail the command"
+  assert_contains "$out" 'mode 0600' "a world-readable token was not refused with a reason"
+  assert_absent "$dir/curl-args" "a refused token was still used against the forge"
+  pass "a gitea token stored with loose permissions is refused rather than used"
+}
+
+test_gitea_refused_credential_is_named() {
+  local dir out rc
+  dir=$(gitea_case_dir gitea-403)
+  set +e
+  out=$(FM_FAKE_GITEA_FAIL=list FM_FAKE_GITEA_HTTP=403 run_gitea_comment "$dir" --milestone dispatched)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a refused credential must not fail the command"
+  assert_contains "$out" 'warning:' "a refused credential was silent"
+  assert_contains "$out" 'HTTP 403' "the refusal did not name the HTTP answer"
+  assert_contains "$out" 'refused the credential' "the refusal was not attributed to the credential"
+  pass "a credential the forge refuses is reported as exactly that, with the HTTP answer"
+}
+
+test_gitea_forge_failures_warn_and_exit_zero() {
+  local dir out rc mode
+  for mode in unreachable list post patch; do
+    dir=$(gitea_case_dir "gitea-fail-$mode")
+    [ "$mode" != patch ] || run_gitea_comment "$dir" --milestone dispatched >/dev/null \
+      || fail "seed failed for $mode"
+    set +e
+    out=$(FM_FAKE_GITEA_FAIL=$mode run_gitea_comment "$dir" --milestone landed)
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "a gitea '$mode' failure must not fail the command"
+    assert_contains "$out" 'warning:' "a gitea '$mode' failure was silent"
+  done
+
+  dir=$(gitea_case_dir gitea-hanging)
+  cat > "$dir/fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+  chmod +x "$dir/fakebin/curl"
+  set +e
+  out=$(FM_ISSUE_COMMENT_TIMEOUT=1 run_gitea_comment "$dir" --milestone landed)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a hanging gitea host must not fail the command"
+  assert_contains "$out" 'did not answer within' "a hanging gitea host was not reported as a timeout"
+  pass "an unreachable, refusing, or hanging gitea host warns and still exits 0"
+}
+
+test_gitlab_work_item_reports_no_adapter_not_a_credential_gap() {
+  local dir out
+  dir=$(case_dir gitlab-item 'declared|gitlab|https://gitlab.example.com/g/p/-/issues/4' 'gitlab:gitlab.example.com/g/p')
+  out=$(run_comment "$dir" --milestone dispatched) || fail "a gitlab item must not fail"
+  assert_contains "$out" 'no GitLab write-back adapter yet' \
+    "the gitlab gap was not reported as the missing adapter it is"
+  assert_not_contains "$out" 'credential' \
+    "a missing adapter was misreported as a credential problem"
+  assert_absent "$dir/store/calls.log" "a gitlab item reached a forge"
+  pass "a gitlab work item is an honest missing adapter, never a credential claim"
+}
+
+# The pin that GitHub behaviour is unchanged: the github path must never read a
+# forge token or invoke curl, even when both sit right there.
+test_github_write_back_ignores_forge_tokens_and_curl() {
+  local dir out
+  dir=$(case_dir gh-ignores-tokens)
+  write_fake_gitea_curl "$dir/fakebin"
+  mkdir -p "$dir/config/forge-tokens"
+  printf 'github-should-never-be-read\n' > "$dir/config/forge-tokens/github.com"
+  chmod 600 "$dir/config/forge-tokens/github.com"
+  out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
+    FM_FAKE_GITEA_STORE="$dir/store" FM_TEST_CURL_ARGS="$dir/curl-args" \
+    FM_TEST_CURL_STDIN="$dir/curl-stdin" \
+    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" PATH="$dir/fakebin:$PATH" \
+    "$COMMENT" status task-1 --milestone dispatched 2>&1) \
+    || fail "the github milestone failed with a forge token present: $out"
+  assert_contains "$out" "created: $ISSUE_URL" "the github comment was not created"
+  assert_absent "$dir/curl-args" "the github path invoked curl"
+  assert_absent "$dir/curl-stdin" "the github path passed a credential to curl"
+  pass "a github work item keeps riding gh alone, with forge tokens never read"
+}
+
+test_gitea_milestone_fanout_updates_the_comment() {
+  local dir out
+  dir=$(gitea_case_dir gitea-fanout)
+  out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GITEA_STORE="$dir/store" \
+    FM_TEST_CURL_ARGS="$dir/curl-args" FM_TEST_CURL_STDIN="$dir/curl-stdin" \
+    PATH="$dir/fakebin:$PATH" \
+    "$MILESTONE" task-1 --milestone landed 2>&1) \
+    || fail "the milestone fan-out failed for a gitea work item: $out"
+  [ "$(comment_count "$dir")" = 1 ] || fail "the fan-out did not write the gitea status comment"
+  assert_contains "$(cat "$(firstmate_comment "$dir")")" '**Status: landed**' \
+    "the fan-out milestone did not reach the gitea comment"
+  pass "the one milestone fan-out reaches a gitea tracker exactly as it reaches GitHub"
 }
 
 # --- (h) the captain's board -------------------------------------------------
@@ -910,6 +1211,15 @@ test_a_forged_timeline_entry_never_enters_the_timeline
 test_project_prose_with_routes_and_links_is_published
 test_a_clean_note_is_published
 test_dry_run_contacts_nothing
+test_gitea_first_milestone_creates_one_comment_with_the_host_token
+test_gitea_repeated_milestones_edit_one_comment
+test_gitea_absent_token_reports_no_credential_without_a_call
+test_gitea_loose_token_is_refused_before_any_call
+test_gitea_refused_credential_is_named
+test_gitea_forge_failures_warn_and_exit_zero
+test_gitlab_work_item_reports_no_adapter_not_a_credential_gap
+test_github_write_back_ignores_forge_tokens_and_curl
+test_gitea_milestone_fanout_updates_the_comment
 test_the_board_is_inert_without_configuration
 test_board_membership_and_status_are_idempotent
 test_the_board_is_never_reshaped_to_fit_a_milestone

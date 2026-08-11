@@ -62,8 +62,9 @@ FM_ISSUE_TRACKER_PATH=
 FM_ISSUE_ERROR=
 
 # Forges whose issue identity this library can address. Adding one means
-# teaching fm_issue_url_build and fm_issue_url_parse its URL shape, and
-# bin/fm-issue-status.sh its optional enrichment adapter.
+# teaching fm_issue_url_build and fm_issue_url_parse its URL shape,
+# bin/fm-issue-status.sh its optional enrichment adapter, and, for write-back,
+# the adapter set bin/fm-forge-lib.sh declares.
 FM_ISSUE_FORGES="github gitlab gitea"
 
 fm_issue_forge_valid() {  # <forge>

@@ -114,11 +114,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
 | `fm-issue-lib.sh`        | Own the registry tracker declaration, the accepted work-item reference forms, and their project-scoped resolution |
+| `fm-forge-lib.sh`        | Own per-host forge credential resolution, the argv-free authenticated transport, and the tracker write-operation allowlist |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
-| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded `github.com` work item or report why it cannot |
+| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded work item on a forge with a write adapter or report why it cannot |
 | `fm-pr-status.sh`        | Refresh and cache one task PR's normalized review, check, and mergeability observation |
 | `fm-issue-ref.sh`        | Resolve work-item references against a project's declared issue tracker, refusing to guess a forge |
 | `fm-issue-status.sh`     | Add optional cached work-item title and open/closed enrichment per forge, with best-effort per-host lookup spacing |

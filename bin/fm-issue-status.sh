@@ -38,16 +38,13 @@
 # Credentials, per host, never in tracked files and never inherited:
 #   github  uses the ambient gh-axi authentication, like every other GitHub
 #           path in this repo. No separate secret is read.
-#   gitea   reads config/forge-tokens/<host>, which must be a regular file with
-#           mode 0600. A token file with looser permissions is refused rather
-#           than used, and an absent one falls back to an unauthenticated read
-#           that works for public repositories. config/ is gitignored in full,
-#           and forge-tokens is deliberately absent from the inheritable-config
-#           allowlist in bin/fm-config-inherit-lib.sh, so a secondmate home
-#           never receives another home's forge credentials.
+#   gitea   reads config/forge-tokens/<host> through bin/fm-forge-lib.sh, the
+#           single owner of the credential rules (regular 0600 file or refused)
+#           and of the stdin-config transport that keeps the token out of
+#           process arguments. An absent token falls back to an unauthenticated
+#           read that works for public repositories.
 #   gitlab  has no enrichment adapter yet and reports that as its reason.
-# The token is passed to curl through a stdin config file so it never appears in
-# the process arguments, and it is never printed, cached, or logged.
+# The token is never printed, cached, or logged.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +64,8 @@ esac
 . "$SCRIPT_DIR/fm-issue-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-forge-lib.sh
+. "$SCRIPT_DIR/fm-forge-lib.sh"
 
 usage() {
   awk '
@@ -332,23 +331,6 @@ host_may_call() {  # <host>
   return 0
 }
 
-# Read a per-host token from its restrictive local path. A token file that is a
-# symlink, not a regular file, or readable beyond its owner is refused outright:
-# a credential stored carelessly is a finding, not something to quietly use.
-read_forge_token() {  # <host> -> prints token, or returns 1
-  local host=$1 path mode
-  path="$CONFIG/forge-tokens/$host"
-  [ -e "$path" ] || return 1
-  [ -f "$path" ] && [ ! -L "$path" ] || return 2
-  if [ "$(uname)" = Darwin ]; then
-    mode=$(stat -f %Lp "$path" 2>/dev/null)
-  else
-    mode=$(stat -c %a "$path" 2>/dev/null)
-  fi
-  [ "$mode" = 600 ] || return 2
-  head -n 1 "$path"
-}
-
 # --- per-forge adapters -----------------------------------------------------
 #
 # Each adapter sets LOOKUP_STATUS (ok|unavailable), LOOKUP_STATE (open|closed)
@@ -414,24 +396,19 @@ adapter_gitea() {  # <host> <path> <number>
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=; LOOKUP_DETAIL="jq is not installed"
     return 0
   fi
-  token=$(read_forge_token "$host") || token_rc=$?
+  token=$(fm_forge_token_read "$CONFIG" "$host") || token_rc=$?
   if [ "$token_rc" -eq 2 ]; then
     LOOKUP_STATUS=unavailable; LOOKUP_STATE=
     LOOKUP_DETAIL="refusing the token at config/forge-tokens/$host: it must be a regular file with mode 0600"
     return 0
   fi
-  # The credential travels through a stdin config file, so it never appears in
-  # this process's arguments and never reaches a log or the cache.
-  if [ "$token_rc" -eq 0 ] && [ -n "$token" ]; then
-    response=$(printf 'header = "Authorization: token %s"\n' "$token" \
-      | fm_run_timed "$LOOKUP_TIMEOUT" curl -sS -K - -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
-        -H 'Accept: application/json' \
-        "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
-  else
-    response=$(fm_run_timed "$LOOKUP_TIMEOUT" curl -sS -m "$LOOKUP_TIMEOUT" -w '\n%{http_code}' \
-      -H 'Accept: application/json' \
-      "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
-  fi
+  [ "$token_rc" -eq 0 ] || token=
+  # The credential travels through bin/fm-forge-lib.sh's stdin config file, so
+  # it never appears in any process's arguments and never reaches a log or the
+  # cache; an empty token performs the unauthenticated public-repository read.
+  response=$(fm_forge_curl "$LOOKUP_TIMEOUT" "$token" -w '\n%{http_code}' \
+    -H 'Accept: application/json' \
+    "https://$host/api/v1/repos/$path/issues/$number" 2>/dev/null) || response_rc=$?
   case "$response_rc" in
     0) ;;
     28|124|137)
