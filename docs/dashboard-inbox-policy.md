@@ -141,7 +141,8 @@ A declared wait is green rather than a colour of its own because the strip's col
 What each signal needed was a value that says what it is instead of an elapsed time or an absent-endpoint count that says nothing.
 
 Workers excludes a declared wait from its endpoint counts in both directions rather than counting it present.
-Whatever that task's endpoint currently is, it is not evidence about fleet health: the documented park procedure exits the agent deliberately, precisely so a quiet pane does not read as a wedge.
+Whatever that task's endpoint currently is, it is not evidence about fleet health: parking a captain-gated task exits its agent deliberately, precisely so a quiet pane does not read as a wedge.
+Parking is fleet operating practice rather than a procedure this repo defines, so the signal never looks for a park at all - it reads only the declaration a park leaves in the status log.
 Naming the waiting tasks rather than dropping them keeps the card honest about what it stopped counting.
 
 The declaration is authoritative over the `data/<id>/parked.md` note a park also leaves behind.
