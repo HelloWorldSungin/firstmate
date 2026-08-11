@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
-# publish the durable outcome manifest, clear volatile state, refresh/prune the
+# publish the durable outcome manifest, clear volatile state, refresh the
 # project's clone for PR-based ship tasks, then print a backlog-refresh reminder
 # for ship and scout teardowns (a secondmate teardown prints none, since
 # secondmates are not backlog items).
 # Ordinary ship cleanup also reaps exactly refs/heads/fm/<task-id>, never the
 # worktree's ambient branch, and only when the branch's current head is either
-# contained in a freshly fetched default branch or is the exact head of the
-# task's recorded PR as reported merged by a supported forge. The latter proof
-# also requires the forge's hidden PR head ref to retain that exact commit.
+# contained in the default branch - freshly fetched from origin, or the local
+# default branch that firstmate's approved merge lands on for a local-only or
+# origin-less project - or is the exact head of the task's recorded PR as
+# reported merged by GitHub or GitLab. That PR proof also requires the forge's
+# hidden PR head ref (refs/pull/<n>/head or refs/merge-requests/<n>/head) to
+# still hold that exact commit; a PR on any other forge, Gitea included, cannot
+# be queried here, so only the default-branch proof can authorize its reap.
 # Missing, unreadable, unsupported, moved, or unmerged evidence keeps the branch
 # with a warning, while every branch-reap failure remains advisory to cleanup.
 # The manifest at data/<task-id>/outcome.json is written atomically BEFORE the

@@ -1977,6 +1977,37 @@ test_unsupported_forge_keeps_branch_and_cleanup_succeeds() {
   pass "an unsupported forge keeps the branch without failing cleanup"
 }
 
+test_merged_pr_head_not_retained_by_forge_keeps_branch() {
+  local case_dir rc head
+  case_dir=$(make_case branch-head-not-retained)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  # The forge reports the merge at this exact head but keeps no copy of that
+  # commit: its source branch is gone and its hidden pull ref is gone too. The
+  # local branch is then the only place those commits survive, so a merged
+  # verdict alone must not authorize deleting it.
+  git -C "$case_dir/origin.git" update-ref -d refs/pull/7/head
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "branch-head-not-retained: an unverifiable head must not fail cleanup"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "branch-head-not-retained: cleanup deleted the only surviving copy of the merged commits"
+  [ "$(git -C "$case_dir/project" rev-parse refs/heads/fm/task-x1)" = "$head" ] \
+    || fail "branch-head-not-retained: cleanup moved the retained branch"
+  assert_grep "kept local branch fm/task-x1: merged PR head is no longer verifiable on the remote" \
+    "$case_dir/stderr" \
+    "branch-head-not-retained: cleanup did not explain why the branch was kept"
+  pass "a merged PR whose head the forge no longer retains keeps the branch"
+}
+
 test_merged_pr_with_later_local_commit_refuses() {
   local case_dir rc pr_head
   case_dir=$(make_case stale-pr-head)
@@ -3799,6 +3830,7 @@ test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_merged_pr_with_pushed_later_commit_keeps_branch
 test_forge_unreachable_keeps_branch_and_cleanup_succeeds
 test_unsupported_forge_keeps_branch_and_cleanup_succeeds
+test_merged_pr_head_not_retained_by_forge_keeps_branch
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
