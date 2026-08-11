@@ -93,6 +93,10 @@ export function formatAge(seconds) {
   return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3_600)}h`;
 }
 
+function plural(count) {
+  return count === 1 ? "" : "s";
+}
+
 function terminalColumn(task) {
   return task?.card?.column === "done";
 }
@@ -480,6 +484,17 @@ function declaredWait(task) {
   return task?.hints?.last_event_declared_wait === true;
 }
 
+// Task activity and Workers ask different questions but must split the fleet on
+// the declaration identically, so they split it here once. Two copies of this
+// filter is the same drift this module reads a single server-side verdict to
+// avoid, one level up.
+function splitDeclaredWaits(live) {
+  return {
+    waiting: live.filter(declaredWait),
+    working: live.filter((task) => !declaredWait(task)),
+  };
+}
+
 function eventSignal(tasks) {
   const live = liveWorkTasks(tasks);
   const tooltip = `How long ago the slowest live task that has not declared a wait last reported anything. A task parked on a declared pause or a captain hold is counted separately and never ages into a warning, because its quiet was announced. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
@@ -487,9 +502,7 @@ function eventSignal(tasks) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
 
-  const waiting = live.filter(declaredWait);
-  const working = live.filter((task) => !declaredWait(task));
-  const plural = (count) => (count === 1 ? "" : "s");
+  const { waiting, working } = splitDeclaredWaits(live);
 
   // Declared waits are reported as their own state rather than folded silently
   // into a passing reading. How long a declared wait has stood is the useful
@@ -539,21 +552,59 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
   return buckets;
 }
 
+// A missing endpoint answers two different questions depending on whether the
+// task declared a wait. Parking a captain-gated task EXITS its agent on purpose,
+// so its absent endpoint is the runbook working, not a worker that died; a task
+// that went quiet without declaring anything and lost its endpoint is the real
+// alarm this signal exists to raise.
+//
+// The declared-wait verdict is the same `hints.last_event_declared_wait` that
+// Task activity reads, so both cards ask bin/fm-classify-lib.sh the one question
+// and this module still carries no second copy of the pause vocabulary. That
+// verdict is authoritative over the `data/<id>/parked.md` note a park also
+// leaves behind: the status declaration is what the watcher acts on and what
+// fm-crew-state.sh reconciles, while parked.md is an operator note no tracked
+// code reads or retracts, so a resumed task would keep a stale one on disk.
+//
+// Declared waits are excluded from the endpoint buckets in both directions
+// rather than counted present: whatever their endpoint currently is, it is not
+// evidence about fleet health, and an absent one is expected.
 function workerSignal(tasks) {
   const live = liveWorkTasks(tasks);
-  const tooltip = "Whether each live task's recorded runtime endpoint is still there. The snapshot reports agent liveness only for secondmates, so ordinary tasks report endpoint presence.";
+  const tooltip = "Whether each live task that has not declared a wait still has its recorded runtime endpoint. A task parked on a declared pause or a captain hold is counted separately, because parking exits its agent on purpose. The snapshot reports agent liveness only for secondmates, so ordinary tasks report endpoint presence.";
   if (!live.length) {
     return { id: "workers", label: "Workers", tone: "green", value: "none live", detail: "No live task has a runtime endpoint to check.", tooltip };
   }
-  const buckets = bucketLiveness(live, { agentAuthoritative: false });
-  const value = `${buckets.alive.length} present · ${buckets.dead.length} gone · ${buckets.unknown.length} unknown`;
+
+  const { waiting, working } = splitDeclaredWaits(live);
+  const waitingIds = waiting.map((task) => text(task?.id) || "unnamed");
+  const waitingClause = waiting.length
+    ? `${waiting.length} task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here, so an exited agent is expected: ${waitingIds.join(", ")}.`
+    : "";
+
+  if (!working.length) {
+    return {
+      id: "workers",
+      label: "Workers",
+      tone: "green",
+      value: `${waiting.length} waiting by design`,
+      detail: `No live task is working. ${waitingClause}`,
+      tooltip,
+    };
+  }
+
+  const buckets = bucketLiveness(working, { agentAuthoritative: false });
+  const counts = `${buckets.alive.length} present · ${buckets.dead.length} gone · ${buckets.unknown.length} unknown`;
+  const value = waiting.length ? `${counts} · ${waiting.length} waiting` : counts;
+  const suffix = waitingClause ? ` ${waitingClause}` : "";
   if (buckets.dead.length) {
-    return { id: "workers", label: "Workers", tone: "red", value, detail: `No runtime endpoint for ${buckets.dead.join(", ")}.`, tooltip };
+    const undeclared = buckets.dead.length === 1 ? "which declared no wait" : "none of which declared a wait";
+    return { id: "workers", label: "Workers", tone: "red", value, detail: `No runtime endpoint for ${buckets.dead.join(", ")}, ${undeclared}.${suffix}`, tooltip };
   }
   if (buckets.unknown.length) {
-    return { id: "workers", label: "Workers", tone: "unknown", value, detail: `Endpoint presence could not be read for ${buckets.unknown.join(", ")}.`, tooltip };
+    return { id: "workers", label: "Workers", tone: "unknown", value, detail: `Endpoint presence could not be read for ${buckets.unknown.join(", ")}.${suffix}`, tooltip };
   }
-  return { id: "workers", label: "Workers", tone: "green", value, detail: "Every live task's runtime endpoint is present.", tooltip };
+  return { id: "workers", label: "Workers", tone: "green", value, detail: `Every working task's runtime endpoint is present.${suffix}`, tooltip };
 }
 
 function secondmateSignal(tasks) {
