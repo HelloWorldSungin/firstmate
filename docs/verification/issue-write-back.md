@@ -2,12 +2,13 @@
 
 Audience: maintainer verification.
 
-This record supports the guarantees that cannot be proven against a fake GitHub, because they depend on what the real forge and the real client actually do:
+This record supports the guarantees that cannot be proven against a fake forge, because they depend on what the real forge and the real client actually do:
 
 1. One status comment per work item survives repeated milestones, because the marker lookup finds the comment a previous process created.
 2. A story's parent issue is readable through GitHub's own GraphQL relationship, which is what lets epic progress roll up without a Firstmate-invented field.
 3. The captain's board carries an option for every milestone this code maps, so the "no matching option" path is a real edge rather than the normal case.
 4. The client surfaces this code depends on exist: `gh-axi` cannot edit a comment or reach Projects, and `gh api` can.
+5. A real Gitea host honors the page size the comment lookup asks for and edits Firstmate's own comment in place, so the one-living-comment guarantee and the close-with-link on merge hold on a forge that is not GitHub.
 
 [`docs/configuration.md`](../configuration.md#project-issue-trackers) owns the operator-facing contract and the script headers own the mechanics.
 `tests/fm-issue-writeback.test.sh` is the portable regression that pins idempotency, fail-open behavior, scope, and content discipline against a fake GitHub and a fake Gitea on every CI run; it needs no credential and contacts no host.
@@ -18,6 +19,7 @@ Task chronology and delivery evidence stay outside this record.
 Recorded 2026-08-04 on Linux 6.14.11-4-pve (x86_64) with GNU bash 5.3, gh 2.93.0, jq 1.8.1, and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
 The authenticated account is `HelloWorldSungin`, whose token scopes are `admin:org`, `gist`, `notifications`, `project`, `repo`, and `workflow`.
 The `project` scope is the one Projects v2 additionally requires; `repo` alone does not imply it.
+The Gitea observations carry their own environment line, because they were taken later, against a different host and a different account.
 
 ## Client surfaces
 
@@ -96,8 +98,42 @@ status=In progress
 
 `addProjectV2ItemById` answered the second run with the same item rather than adding a second card, which is the API-level property this code relies on for membership idempotency.
 
+## The Gitea write path against a real instance
+
+Verified 2026-08-11 against Gitea 1.26.0 at `https://gitea.ark-node.com`, driving this branch's pipeline head as it ships.
+
+`GET /api/v1/settings/api` on that host reported `max_response_items=50` and `default_paging_num=30`, so the `limit=50` page the comment lookup asks for is honored exactly there rather than clamped.
+
+The run used a throwaway issue, `DuckKingOri/BZ-SIM#43`, created solely for it and marked as throwaway in its title.
+A scratch task record carried `work_item=declared|gitea|https://gitea.ark-node.com/DuckKingOri/BZ-SIM/issues/43` and `pr_target=gitea:gitea.ark-node.com/DuckKingOri/BZ-SIM`.
+Only the shipped scripts performed forge writes: the GitHub merge externals `gh-axi` and `gh` were stubbed, while every Gitea call was live.
+
+Two consecutive milestones:
+
+```
+$ bin/fm-issue-comment.sh status <task> --milestone dispatched
+created: https://gitea.ark-node.com/DuckKingOri/BZ-SIM/issues/43
+
+$ bin/fm-issue-comment.sh status <task> --milestone implemented
+updated: https://gitea.ark-node.com/DuckKingOri/BZ-SIM/issues/43
+```
+
+The live comment list after the second run held exactly one comment carrying the `firstmate-status-comment` marker, showing `**Status: implementation committed**` and a two-entry timeline, so the second milestone edited that comment in place rather than adding another.
+
+`bin/fm-pr-merge.sh <task> <pr-url>` then exited `0` and posted `in review` and `landed` onto that same comment.
+Its final body, read live, carried `**Status: landed**`, the pull request line, and a four-entry timeline of `dispatched`, `implementation committed`, `in review`, and `landed`.
+The same run posted the separate `Closed after merge of <PR URL>.` linking comment and PATCHed the issue to `state=closed`; a GET afterwards returned `state=closed` with exactly two comments in total.
+Every write it performed was one of the allowlisted operations, and nothing outside that allowlist was needed to complete the lifecycle.
+
+Cleanup deleted the throwaway issue: the DELETE answered HTTP 204 and a subsequent GET answered 404, so the run left no noise on the tracker.
+The token appeared in no process arguments, no scratch state, and no captured evidence; a grep over the recorded arguments and that state found none.
+
+One limit of this run is recorded deliberately: the credential used authenticates as `DuckKingOri` with `admin=true` on this host, while the code is designed for a narrow `read:issue` plus `write:issue` token.
+The run therefore proves the code path, not the credential posture, and issuing that narrow token and re-running the procedure above remains follow-up work.
+Re-running the procedure above is what refreshes this evidence; `tests/fm-issue-writeback.test.sh` and `tests/fm-pr-merge.test.sh` pin the same path against a fake Gitea on every CI run, needing no credential and no host.
+
 ## What this record does not cover
 
 Write-back to a tracker that is not the repository the pull request opens against is out of scope by design, so this record covers only the in-scope target; the scope rule and the per-host credential behind it are owned by docs/configuration.md "Project issue trackers".
 Epic *status* rollup is deliberately not computed: only membership of the parent is ensured, and progress is read from GitHub's own sub-issue display.
-Every observation here was taken against GitHub, so the Gitea write path is covered only by the portable regressions in `tests/fm-issue-writeback.test.sh` and `tests/fm-pr-merge.test.sh`; what a real Gitea instance does with a scoped `read:issue` plus `write:issue` token and with its own list-size clamp is unrecorded until a run against one is captured here.
+The Gitea write path's live run above was performed with a host-administrator credential, so what a real instance does with a scoped `read:issue` plus `write:issue` token is unrecorded until such a run is captured here.
