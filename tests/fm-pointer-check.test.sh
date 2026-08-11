@@ -31,6 +31,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 #                    repository pointers perfectly well
 #   ratelimited      a usable credential whose pointer lookups come back 403
 #   throttled-probe  a credential whose very first request is throttled
+#   uncharacterised  a probe answered 200 without a readable rate limit, so
+#                    nothing about the client was ever established
 write_stub_gh() {
   local fakebin=$1
   cat > "$fakebin/gh" <<'SH'
@@ -88,6 +90,10 @@ case "${FM_GH_MODE:-authenticated}" in
     ;;
   throttled-probe)
     emit "403 Forbidden"
+    ;;
+  uncharacterised)
+    # A 200 that discloses no ceiling, in either the headers or the body.
+    [ "$endpoint" = "rate_limit" ] && emit "200 OK"
     ;;
 esac
 
@@ -254,6 +260,21 @@ test_require_credential_refuses_a_vacuous_pass() {
   expect_code 2 "$rc" "--require-credential must not be satisfiable by absence"
   assert_contains "$out" "not satisfiable by absence" "the refusal must name what was missing"
 
+  # A surface that holds pointers no adapter claims verified exactly as much as
+  # an empty one did, so it must be refused the same way. Otherwise a regression
+  # that drops every github.com pointer while keeping a foreign-host one passes.
+  cat > "$TMP_ROOT/all-skipped.md" <<'MD'
+[spec](https://www.w3.org/TR/trace-context/)
+A template: https://github.com/<owner>/<repo>/issues/1
+MD
+  set +e
+  out=$(FM_GH_MODE=authenticated "$CHECK" --require-credential "$TMP_ROOT/all-skipped.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "a surface where every pointer was skipped resolved nothing"
+  assert_contains "$out" "no pointer reached a resolver (checked=2, skipped=2)" \
+    "the refusal must count what it refused rather than claim the surface was empty"
+
   set +e
   out=$(FM_GH_MODE=authenticated "$CHECK" --require-credential "$TMP_ROOT/ok-only.md" 2>&1)
   rc=$?
@@ -289,6 +310,32 @@ MD
   assert_contains "$out" "no pointer was resolved against the GitHub API" \
     "a run that resolved nothing must say so even when it passes"
   pass "a throttled or forbidden lookup is could-not-verify, never broken"
+}
+
+test_an_uncharacterised_probe_is_not_credited() {
+  # The probe answered, but said nothing about which ceiling it answered under.
+  # Crediting that client would make its 404s eligible for a definitive broken,
+  # which is the worst output this check can produce, so the default falls the
+  # other way: unusable, and every pointer could-not-verify.
+  write_pointer_fixture
+  local out rc
+  set +e
+  out=$(FM_GH_MODE=uncharacterised "$CHECK" --verbose "$TMP_ROOT/pointers.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an uncharacterised probe resolves nothing and fails nothing"
+  assert_contains "$out" "credential=unusable" \
+    "a client the probe could not characterise must not be recorded as authenticated"
+  assert_contains "$out" "ok=0 broken=0 unverified=6" \
+    "nothing may be resolved in either direction on an unestablished credential"
+  assert_contains "$out" "never established" "the run must say what it failed to establish"
+
+  set +e
+  out=$(FM_GH_MODE=uncharacterised "$CHECK" --require-credential "$TMP_ROOT/pointers.md" 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "--require-credential must refuse an unestablished credential"
+  pass "a probe that establishes nothing falls to unusable, not to authenticated"
 }
 
 test_a_slashed_branch_is_not_a_missing_path() {
@@ -432,6 +479,7 @@ test_unauthenticated_never_reads_404_as_a_verdict
 test_installation_token_is_a_usable_credential
 test_require_credential_refuses_a_vacuous_pass
 test_rate_limit_is_unverified_not_broken
+test_an_uncharacterised_probe_is_not_credited
 test_a_slashed_branch_is_not_a_missing_path
 test_examples_and_foreign_hosts_are_not_pointers
 test_code_comment_pointers_resolve

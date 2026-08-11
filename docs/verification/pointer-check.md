@@ -3,6 +3,10 @@
 Repeatable evidence that [`bin/fm-pointer-check.sh`](../../bin/fm-pointer-check.sh) separates a broken pointer from one it could not verify.
 The convention it serves is owned by [`../one-owner.md`](../one-owner.md) and the flags by the script's own header and `--help`; this page records evidence only.
 
+Every console block below is a verbatim transcript, captured from a real run at this head through a pty so stdout and stderr appear in the order a terminal shows them.
+Nothing is trimmed to look tidy; where a command prints eleven lines, eleven lines are recorded.
+The only values that cannot reproduce are the timestamps and `duration_ms` in the test summary, which are wall-clock.
+
 Date: 2026-08-11.
 Shell: GNU bash 5.2.21 (Linux).
 Client: `gh version 2.93.0`, authenticated as a token that can read `HelloWorldSungin/*`.
@@ -70,15 +74,20 @@ Line 7 is the case where neither is establishable: no reading of the URL names a
 
 ```console
 $ GH_CONFIG_DIR=$(mktemp -d) GH_TOKEN= GITHUB_TOKEN= bin/fm-pointer-check.sh --verbose /tmp/pointer-cases.md
-unverified /tmp/pointer-cases.md:1  ...  no-credential
+unverified /tmp/pointer-cases.md:1  https://github.com/HelloWorldSungin/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  no-credential
            To get started with GitHub CLI, please run:  gh auth login
-unverified /tmp/pointer-cases.md:2  ...  no-credential
+unverified /tmp/pointer-cases.md:2  https://github.com/HelloWorldSungin-nope-9f3a/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  no-credential
            To get started with GitHub CLI, please run:  gh auth login
-unverified /tmp/pointer-cases.md:3  ...  no-credential
-unverified /tmp/pointer-cases.md:4  ...  no-credential
-unverified /tmp/pointer-cases.md:5  ...  no-credential
-unverified /tmp/pointer-cases.md:6  ...  no-credential
-unverified /tmp/pointer-cases.md:7  ...  no-credential
+unverified /tmp/pointer-cases.md:3  https://github.com/torvalds/definitely-not-a-real-repo-x9q7/blob/master/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:4  https://github.com/HelloWorldSungin/firstmate/blob/main/docs/this-file-does-not-exist.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:5  https://github.com/HelloWorldSungin/firstmate/issues/999999  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:6  https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-design-profile/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:7  https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-no-such-branch/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
 fm-pointer-check: checked=7 ok=0 broken=0 unverified=7 skipped=0 files=1 credential=none
 fm-pointer-check: no pointer was resolved against the GitHub API (credential=none: To get started with GitHub CLI, please run:  gh auth login).
 fm-pointer-check: 'unverified' is not a pass and not a failure - those pointers were not resolved either way.
@@ -92,20 +101,60 @@ It exits 0, because failing to reach a target is not evidence against the target
 
 ### Refusing a run that verified nothing
 
-Two ways to verify nothing, both refused under the flag: no usable credential, and no pointer to resolve.
-The second matters because a regression in the extraction would otherwise turn a silent pointer surface into a green run.
+Three ways to verify nothing, all refused under the flag: no usable credential, no pointer at all, and a surface where every pointer was skipped.
+The last two matter because a regression in the extraction or in host matching would otherwise turn a silent pointer surface into a green run.
 
 ```console
 $ GH_CONFIG_DIR=$(mktemp -d) GH_TOKEN= GITHUB_TOKEN= bin/fm-pointer-check.sh --require-credential /tmp/pointer-cases.md
+unverified /tmp/pointer-cases.md:1  https://github.com/HelloWorldSungin/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:2  https://github.com/HelloWorldSungin-nope-9f3a/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:3  https://github.com/torvalds/definitely-not-a-real-repo-x9q7/blob/master/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:4  https://github.com/HelloWorldSungin/firstmate/blob/main/docs/this-file-does-not-exist.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:5  https://github.com/HelloWorldSungin/firstmate/issues/999999  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:6  https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-design-profile/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+unverified /tmp/pointer-cases.md:7  https://github.com/HelloWorldSungin/firstmate/blob/fm/fm-no-such-branch/README.md  no-credential
+           To get started with GitHub CLI, please run:  gh auth login
+fm-pointer-check: checked=7 ok=0 broken=0 unverified=7 skipped=0 files=1 credential=none
+fm-pointer-check: no pointer was resolved against the GitHub API (credential=none: To get started with GitHub CLI, please run:  gh auth login).
+fm-pointer-check: 'unverified' is not a pass and not a failure - those pointers were not resolved either way.
 fm-pointer-check: --require-credential was given but no usable GitHub credential is available (To get started with GitHub CLI, please run:  gh auth login).
 $ echo $?
 2
+```
+
+The refusal is the last line, on stderr; everything above it is the ordinary report, which the flag does not suppress.
+
+```console
 $ bin/fm-pointer-check.sh --require-credential /tmp/no-pointers.md
-fm-pointer-check: --require-credential was given but no pointer was found to resolve, so the run verified nothing - this flag is not satisfiable by absence, and a prose surface that suddenly holds no pointer is a finding rather than a pass.
 fm-pointer-check: checked=0 ok=0 broken=0 unverified=0 skipped=0 files=1 credential=authenticated
+fm-pointer-check: --require-credential was given but no pointer reached a resolver (checked=0, skipped=0), so the run verified nothing - this flag is not satisfiable by absence, and a prose surface that suddenly resolves nothing is a finding rather than a pass.
 $ echo $?
 2
 ```
+
+The disclosure line is correctly absent from that run: the credential was fine, so the thing that resolved nothing was the surface.
+A surface that holds only pointers no adapter claims verified exactly as much as an empty one, and is refused the same way:
+
+```console
+$ bin/fm-pointer-check.sh --verbose --require-credential /tmp/all-skipped.md
+skipped    /tmp/all-skipped.md:1  https://www.w3.org/TR/trace-context/  no-adapter
+           www.w3.org has no resolver in this check
+skipped    /tmp/all-skipped.md:2  https://github.com/<owner>/<repo>/issues/1  template
+           a placeholder or illustration, so there is no target to resolve
+fm-pointer-check: checked=2 ok=0 broken=0 unverified=0 skipped=2 files=1 credential=authenticated
+fm-pointer-check: --require-credential was given but no pointer reached a resolver (checked=2, skipped=2), so the run verified nothing - this flag is not satisfiable by absence, and a prose surface that suddenly resolves nothing is a finding rather than a pass.
+$ echo $?
+2
+```
+
+That run also shows the two skipped shapes carrying their own reasons under `--verbose`: a host with no resolver, and a placeholder.
+Both are in the count either way; the default output leaves them unprinted.
 
 CI runs the check with this flag, so a lost credential surfaces as its own failure rather than as a green run over unresolved pointers.
 
@@ -122,6 +171,7 @@ X-Ratelimit-Limit: 5000
 ```
 
 The installation-token shape itself cannot be exercised from a workstation, so it is pinned offline instead: the stub in `tests/fm-pointer-check.test.sh` answers `user` with 403 exactly as GitHub does for that token, and the test asserts the run still reports `credential=authenticated` and resolves its pointer.
+A probe that answers without disclosing any ceiling is the one case the check cannot characterise, and it falls to `unusable` rather than to `authenticated`, so an unestablished client's 404s never become eligible for a definitive `broken`; that direction is pinned by its own stub mode.
 
 ### A transport failure lands in the same safe place
 
@@ -132,17 +182,18 @@ unverified /tmp/pointer-cases.md:3  ...  no-answer
            Get "https://api.github.com/users/torvalds": tls: failed to verify certificate: x509: certificate is not valid for any names, but wanted to match api.github.com
 ```
 
+That is the one block on this page reproduced from an earlier run rather than re-observed, because the interception was unplanned and cannot be summoned on demand; the `no-answer` path it exercises is unchanged since.
 Three immediately repeated runs of the same case returned the stable `repo-not-visible` verdict shown above.
 Both forms are `unverified` and neither is `broken`, which is the behaviour a flaky network must produce.
 
 ## The cross-repository case, on the real page
 
 A vault operations page in a separate repository points at the design record that owns the CT110 seal, in a private repository.
-The check resolves it from outside this repository, against a path given on the command line (home directory elided below; the run prints it in full):
+The check resolves it from outside this repository, against a path given on the command line:
 
 ```console
 $ bin/fm-pointer-check.sh --verbose ~/firstmate/projects/arknode-vault/Trading-Signal-AI/Operations/Deployment-Guide.md
-ok         ~/firstmate/projects/arknode-vault/Trading-Signal-AI/Operations/Deployment-Guide.md:189  https://github.com/HelloWorldSungin/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  path-resolved [scope=file]
+ok         /home/sungin/firstmate/projects/arknode-vault/Trading-Signal-AI/Operations/Deployment-Guide.md:189  https://github.com/HelloWorldSungin/ArkNode-AI/blob/master/docs/design/2026-08-10-ct110-sealed-corpus.md  path-resolved [scope=file]
 fm-pointer-check: checked=1 ok=1 broken=0 unverified=0 skipped=0 files=1 credential=authenticated
 ```
 
@@ -159,25 +210,31 @@ $ echo $?
 
 The 14 skipped pointers are hosts with no resolver in this check (`img.shields.io`, `discord.gg`, `x.com`, `skills.sh`, `herdr.dev`, `cmux.com`, `gitlab.com`, `huggingface.co`, `w3.org`, `kunchenguid.github.io`) and are reported as skipped rather than counted as verified.
 No tracked page carries a placeholder URL outside a fence, so the skipped column here is all `no-adapter`; a placeholder would appear in it as `template` rather than vanish from the count.
+Run with `--verbose` or `--json` to see all 14 named individually, as in the refusal transcript above.
 
 ## Offline regression
 
 `tests/fm-pointer-check.test.sh` drives every verdict through a stub GitHub client, so the portable suite is offline and deterministic.
-It asserts the verdict split rather than the presence of output: that an authenticated run separates the outcomes, that a credential-less run produces neither an `ok` nor a `broken` column, that an installation token is not mistaken for an unusable one, that `--require-credential` exits 2 for a missing credential and for an empty pointer surface but not for a throttled one, that a slashed branch name resolves while an undecidable split is could-not-verify, and that fenced and inline URLs stay out of the pointer surface while a template is refused by name.
+It asserts the verdict split rather than the presence of output: that an authenticated run separates the outcomes, that a credential-less run produces neither an `ok` nor a `broken` column, that an installation token is not mistaken for an unusable one and an uncharacterised probe is not mistaken for a usable one, that `--require-credential` exits 2 for a missing credential, an empty surface and an all-skipped surface but not for a throttled one, that a slashed branch name resolves while an undecidable split is could-not-verify, and that fenced and inline URLs stay out of the pointer surface while a template is refused by name.
 
 ```console
 $ bin/fm-test-run.sh tests/fm-pointer-check.test.sh
+FM_TEST_BEGIN 2026-08-11T04:07:51Z tests/fm-pointer-check.test.sh family=pure-contract-unit expected_gate_skip=none
 ok - authenticated resolution separates ok, broken, and could-not-verify
 ok - no credential yields could-not-verify, never a broken or working verdict
 ok - a GitHub App installation token is probed as usable, not as unusable
 ok - --require-credential turns a credential-less run into an explicit refusal
 ok - a throttled or forbidden lookup is could-not-verify, never broken
+ok - a probe that establishes nothing falls to unusable, not to authenticated
 ok - a branch name containing a slash resolves, and an undecidable split is not broken
 ok - fenced and inline URLs stay out of the pointer surface, and a template is refused by name
 ok - pointers in code comments are resolved, not only Markdown links
 ok - JSON output reports every pointer, verdict, and reason
 ok - the default scan selects tracked Markdown and reports repo-relative sources
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=495
+FM_TEST_END 2026-08-11T04:07:52Z tests/fm-pointer-check.test.sh exit=0 duration_ms=561 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=579
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=561 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-pointer-check.test.sh duration_ms=561
 ```
 
 The live half of this page - real credential, real private repository, real nonexistent owner, real slashed branch name - is what the stub cannot prove, and is the reason these commands are recorded rather than assumed.

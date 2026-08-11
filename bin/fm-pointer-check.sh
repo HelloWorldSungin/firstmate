@@ -32,9 +32,11 @@
 #               those two cases wrong. This one refuses to guess.
 #   skipped     no adapter claims the pointer (a non-GitHub host, a placeholder
 #               URL, a GitHub surface that is not a repository pointer). Never
-#               counted as verified, and always printed with its reason: a
-#               pointer that disappears without a verdict is the failure this
-#               whole check exists to prevent.
+#               counted as verified, always in the counts, and listed with its
+#               reason under --verbose or --json. Vanishing from the count is
+#               the failure this whole check exists to prevent; printing every
+#               skipped host on every run is noise a reader learns to scroll
+#               past, so the default output names only what is not ok.
 #
 # How a GitHub pointer is resolved, most specific evidence first:
 #   1. No usable credential                -> unverified (nothing was checked).
@@ -73,7 +75,7 @@
 #   0  no broken pointer (unverified and skipped never fail the run)
 #   1  at least one broken pointer
 #   2  usage error, or --require-credential with no usable credential or with
-#      nothing to resolve
+#      no pointer that reached a resolver at all
 #
 # Environment:
 #   FM_POINTER_CHECK_GH  gh binary to resolve GitHub pointers with (default gh).
@@ -301,10 +303,12 @@ def core_rate_limit(answer: Answer) -> int | None:
         data = json.loads(answer.body)
     except (TypeError, ValueError):
         return None
-    if not isinstance(data, dict):
-        return None
-    limit = data.get("resources", {}).get("core", {}).get("limit")
-    return limit if isinstance(limit, int) else None
+    node = data
+    for key in ("resources", "core", "limit"):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node if isinstance(node, int) and not isinstance(node, bool) else None
 
 
 class GitHubResolver:
@@ -356,7 +360,19 @@ class GitHubResolver:
         answer = self.cached("rate_limit")
         if answer.status == 200:
             limit = core_rate_limit(answer)
-            if limit is not None and limit <= UNAUTHENTICATED_CORE_LIMIT:
+            if limit is None:
+                # The probe answered but did not say which ceiling it answered
+                # under, so this client is uncharacterised. It falls to unusable
+                # rather than authenticated: a run of unverified costs attention,
+                # while crediting a client nothing established makes its 404s
+                # eligible for a definitive broken, which is the worst output
+                # this check can produce.
+                self.credential = "unusable"
+                self.credential_detail = (
+                    "the credential probe was answered without a readable rate limit, so "
+                    "whether this client is authenticated was never established"
+                )
+            elif limit <= UNAUTHENTICATED_CORE_LIMIT:
                 self.credential = "none"
                 self.credential_detail = (
                     f"the GitHub API answered with the unauthenticated ceiling of {limit} "
@@ -739,10 +755,11 @@ def main() -> int:
                 "no usable GitHub credential is available "
                 f"({resolver.credential_detail or 'unknown reason'})"
             )
-        elif not resolvable:
+        elif not counts["ok"] + counts["broken"] + counts["unverified"]:
             refusal = (
-                "no pointer was found to resolve, so the run verified nothing - this flag is "
-                "not satisfiable by absence, and a prose surface that suddenly holds no pointer "
+                f"no pointer reached a resolver (checked={len(pointers)}, skipped="
+                f"{counts['skipped']}), so the run verified nothing - this flag is not "
+                "satisfiable by absence, and a prose surface that suddenly resolves nothing "
                 "is a finding rather than a pass"
             )
         if refusal:

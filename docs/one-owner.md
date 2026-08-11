@@ -66,9 +66,10 @@ So `bin/fm-pointer-check.sh` reports four outcomes, and an unauthenticated 404 i
 - `unverified` could not be resolved either way: no credential, a repository this credential cannot see, a throttled lookup, or a URL whose ref and path the API cannot separate.
   It never fails a run, and it is never counted as a pass.
 - `skipped` no adapter claims the pointer: a host this check has no resolver for, a placeholder, a GitHub surface that is not a repository pointer.
-  Never counted as verified, and always printed with its reason, because a pointer that disappears without a verdict is the failure the check exists to prevent.
+  Never counted as verified, always in the counts, and listed with its reason under `--verbose` or `--json`.
+  Vanishing from the count is the failure the check exists to prevent; the default output stays quiet about skipped pointers because a check nobody can stand to read gets ignored.
 
-`--require-credential` turns a run that resolved nothing into an explicit refusal - no usable credential, or no pointer found at all - so an automated run cannot quietly report success having verified nothing, and cannot satisfy the flag by absence.
+`--require-credential` turns a run that resolved nothing into an explicit refusal - no usable credential, or no pointer that reached a resolver at all - so an automated run cannot quietly report success having verified nothing, and cannot satisfy the flag by absence.
 [`verification/pointer-check.md`](verification/pointer-check.md) records each of those outcomes observed against the real API, including the private repository and the nonexistent owner that an unauthenticated request cannot tell apart.
 
 ## What this convention does not do
