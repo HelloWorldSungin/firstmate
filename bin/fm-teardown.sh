@@ -40,9 +40,11 @@
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
-# up a merged PR whose head branch matches the worktree's branch, fetching its head
-# via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
-# by itself causes a false refusal of landed work.
+# up a merged PR whose head branch matches the task's own recorded branch=, fetching
+# its head via refs/pull/<n>/head when the branch itself was deleted. So a missing
+# pr= never by itself causes a false refusal of landed work. A legacy record with
+# no branch= has no task branch to look one up for and refuses instead of asking
+# about whichever branch the pooled worktree currently hosts.
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
@@ -132,12 +134,15 @@
 #     alone: no-mistakes drives those against its own gate-repo clone, not the
 #     crew's worktree, so they are not orphaned by removing the worktree.
 #     conclude_task_no_mistakes_run attributes the active-or-most-recent run to
-#     THIS task only when its branch AND code identity (bin/fm-nm-run-lib.sh's
-#     fm_nm_head_matches_worktree, the same rule bin/fm-crew-state.sh uses) both
-#     match this worktree, then runs `no-mistakes axi abort --run <id>` for
-#     that verified run instance. A run already terminal
-#     (an outcome is set) or not parked at a gate is left untouched. Idempotent:
-#     an already-aborted run reads back terminal and is skipped on retry.
+#     THIS task only when its branch is the task's own recorded branch= AND its
+#     code identity (bin/fm-nm-run-lib.sh's fm_nm_head_matches_worktree, the
+#     same rule bin/fm-crew-state.sh uses) matches this worktree, then runs
+#     `no-mistakes axi abort --run <id>` for that verified run instance. A run
+#     already terminal (an outcome is set) or not parked at a gate is left
+#     untouched. Idempotent: an already-aborted run reads back terminal and is
+#     skipped on retry. A parked run this task cannot claim - it is on another
+#     branch, or the record is a legacy one with no branch= at all - is named
+#     on stderr and left running rather than aborted on a guess.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -689,6 +694,16 @@ KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+# The worktree's ambient branch is where the pool happens to have placed a
+# checkout, never this task's identity: one worktree path can be handed to a
+# second task while this one is still parked (fork issue #81), and reading
+# `symbolic-ref` there answers for whoever holds it now. branch= in the task
+# record is the durable task branch - bin/fm-spawn.sh copies it from the brief's
+# exact firstmate-task-branch marker and bin/fm-promote.sh writes it on the
+# kind= flip - so the run-abort attribution and the landed-work refusal below
+# read it and nothing else. A legacy record that has none stays deliberately
+# unattributable: it refuses rather than falling back to the ambient branch.
+TASK_RECORDED_BRANCH=$(fm_meta_get "$META" branch)
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
 PUBLIC_FOLLOWUP_STATE=$STATE
 PUBLIC_FOLLOWUP_WORK_HOME=main
@@ -1612,10 +1627,12 @@ validate_worktree_teardown_safety() {
     echo "Commit them (or get the captain's explicit OK to discard, then --force)." >&2
     return 1
   elif [ -n "$unpushed" ]; then
-    branch=${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}
+    branch=$TASK_RECORDED_BRANCH
     if [ -z "$branch" ]; then
-      branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-      TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
+      echo "REFUSED: worktree $WT has work not on any remote and task $ID records no task branch to evaluate it against." >&2
+      printf 'unpushed commits:\n%s\n' "$unpushed" >&2
+      echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
+      return 1
     fi
     if ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
@@ -1630,34 +1647,46 @@ validate_worktree_teardown_safety() {
 # worktree $1 belong to THIS task, and is it parked at a gate awaiting an agent
 # that is about to be removed? Prints nothing; returns 0 only on a genuine
 # match so the caller knows it is safe to abort - never a guess.
+# Parked-ness is decided first, then identity, so the only run this can refuse
+# to attribute is one it would otherwise have aborted. Identity is the task's
+# recorded branch alone: a pooled worktree reallocated to a live second task
+# answers `axi status` with THAT task's run, and aborting it would cancel
+# another crew's pipeline. TASK_RUN_UNATTRIBUTABLE names why a parked run was
+# left alone so the captain can see the run nobody will now conclude.
 NM_TEARDOWN_TIMEOUT=${FM_TEARDOWN_NM_TIMEOUT:-10}
 case "$NM_TEARDOWN_TIMEOUT" in ''|*[!0-9]*) NM_TEARDOWN_TIMEOUT=10 ;; esac
 TASK_RUN_ID=
+TASK_RUN_UNATTRIBUTABLE=
 task_status_is_own_parked_run() {  # <worktree> <axi-status-output>
-  local wt=$1 out=$2 branch run_id run_branch run_head status outcome awaiting has_gate
+  local wt=$1 out=$2 run_id run_branch run_head status outcome awaiting has_gate
   TASK_RUN_ID=
-  branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
-  [ -n "$branch" ] || return 1
+  TASK_RUN_UNATTRIBUTABLE=
   [ -n "$out" ] || return 1
   run_id=$(fm_nm_strip_quotes "$(fm_nm_field "$out" id)")
   [ -n "$run_id" ] || return 1
-  run_branch=$(fm_nm_strip_quotes "$(fm_nm_field "$out" branch)")
-  [ -n "$run_branch" ] && [ "$run_branch" = "$branch" ] || return 1
-  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$out" head)")
-  fm_nm_head_matches_worktree "$wt" "$run_head" || return 1
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$out" outcome)")
   [ -z "$outcome" ] || return 1
   status=$(fm_nm_strip_quotes "$(fm_nm_field "$out" status)")
   awaiting=$(printf '%s\n' "$out" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
   has_gate=$(printf '%s\n' "$out" | grep -Eq '^[[:space:]]*gate:[[:space:]]*' && echo 1 || echo 0)
   case "$status" in
-    awaiting_approval|fix_review) TASK_RUN_ID=$run_id; return 0 ;;
+    awaiting_approval|fix_review) ;;
+    *) [ -n "$awaiting" ] || [ "$has_gate" = 1 ] || return 1 ;;
   esac
-  if [ -n "$awaiting" ] || [ "$has_gate" = 1 ]; then
-    TASK_RUN_ID=$run_id
-    return 0
+  run_branch=$(fm_nm_strip_quotes "$(fm_nm_field "$out" branch)")
+  [ -n "$run_branch" ] || return 1
+  if [ -z "$TASK_RECORDED_BRANCH" ]; then
+    TASK_RUN_UNATTRIBUTABLE="task $ID records no task branch, so the run on $run_branch cannot be shown to be its own"
+    return 1
   fi
-  return 1
+  if [ "$run_branch" != "$TASK_RECORDED_BRANCH" ]; then
+    TASK_RUN_UNATTRIBUTABLE="the run is on $run_branch, not this task's recorded $TASK_RECORDED_BRANCH"
+    return 1
+  fi
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$out" head)")
+  fm_nm_head_matches_worktree "$wt" "$run_head" || return 1
+  TASK_RUN_ID=$run_id
+  return 0
 }
 
 task_run_is_own_parked_run() {  # <worktree>
@@ -1690,13 +1719,18 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 # have answered its gate is removed, so no run is left orphaned holding a
 # fleet slot. Only KIND=ship drives a no-mistakes validation of its own
 # worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
-# a run not attributed to this exact branch+head is left completely alone.
+# a run not attributed to this task's recorded branch and this exact head is
+# left completely alone, and said to be, since nobody will conclude it here.
 conclude_task_no_mistakes_run() {  # <worktree>
   local wt=$1 out run_id
   [ "$KIND" = ship ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
-  task_run_is_own_parked_run "$wt" || return 0
+  if ! task_run_is_own_parked_run "$wt"; then
+    [ -z "$TASK_RUN_UNATTRIBUTABLE" ] \
+      || echo "teardown: a parked no-mistakes run in $wt is left alone: $TASK_RUN_UNATTRIBUTABLE" >&2
+    return 0
+  fi
   run_id=$TASK_RUN_ID
   echo "teardown: no-mistakes run for $ID is parked at a gate; aborting before the worker is removed" >&2
   # Accepted best-effort residual: abort supports run-id targeting but no atomic

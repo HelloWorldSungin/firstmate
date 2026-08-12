@@ -520,6 +520,9 @@ fi
 # discover whether a run exists that must be surfaced as unattributable. It never
 # becomes task identity, and a completed lookup with no run retains the historical
 # pane/status-log behavior.
+# Past this point the two agree by construction: a named worktree branch that
+# differs from a recorded one already emitted the fault above, so LOOKUP_BRANCH
+# is the recorded identity whenever there is one and the ambient name otherwise.
 LOOKUP_BRANCH=$TASK_BRANCH
 [ -n "$LOOKUP_BRANCH" ] || LOOKUP_BRANCH=$WORKTREE_BRANCH
 
@@ -637,7 +640,18 @@ LOOKUP_COMPLETED=0
 RUN_ATTRIBUTION_FAULT=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
-if [ "$KIND" = ship ] && [ -n "$LOOKUP_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
+# A DETACHED worktree skips it too, and that short-circuit is a proof rather
+# than an optimization: a run is opened by no-mistakes from the crew's own
+# worktree with the task branch checked out, and the ship brief creates that
+# branch before any validation step, so a detached HEAD is the window in which
+# the recorded branch is not checked out here and no run of this task's can
+# exist yet. Every run `axi status` would answer from a detached worktree is by
+# construction some other branch's, and the coarse runs-list rows would still
+# have to bind to a HEAD this crew has not moved onto its branch. Skipping costs
+# a just-spawned or never-branched crew two bounded CLI calls per heartbeat and
+# discards no reachable evidence.
+if [ "$KIND" = ship ] && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
+   && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   nm_rc=$?
   # Empty stdout is a failure, not an absence: `axi status` answers a branch with
