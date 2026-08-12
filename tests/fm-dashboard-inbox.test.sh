@@ -687,7 +687,12 @@ equal("a null snapshot yields a zero total", empty.counts.total, 0);
 const nothing = buildHealth(null, null);
 check("a null snapshot is never summarized as healthy",
   nothing.overall.tone !== "green" && nothing.overall.label !== "Healthy", nothing.overall.label);
-equal("a null snapshot reports no supervision", nothing.signals.find((signal) => signal.id === "supervision").tone, "red");
+equal("a null snapshot cannot verify supervision", nothing.signals.find((signal) => signal.id === "supervision").tone, "unknown");
+const unavailable = buildHealth(null, { status: { phase: "unavailable", error: { message: "snapshot failed" } } });
+equal("an unavailable snapshot cannot assert supervision is down", unavailable.signals.find((signal) => signal.id === "supervision").tone, "unknown");
+check("unavailable supervision explains that it is unverified",
+  unavailable.signals.find((signal) => signal.id === "supervision").detail.includes("Unverified"),
+  unavailable.signals.find((signal) => signal.id === "supervision").detail);
 
 if (failures.length) {
   for (const failure of failures) console.error(`  - ${failure}`);

@@ -42,9 +42,12 @@
 # GBrain search writes to its own index while reading it.
 # docs/verification/dashboard-service-unit.md pins all of it.
 #
-# Loopback is the default and remote exposure is opt-in: --address only accepts
-# a non-loopback bind once credentials exist, and the server independently
-# refuses to start beyond loopback without them.
+# Loopback is the first-install default and remote exposure is opt-in:
+# --address only accepts a non-loopback bind once credentials exist, and the
+# server independently refuses to start beyond loopback without them.
+# A later run preserves the installed operator-facing settings unless the
+# environment or an option overrides them, so repairing the unit cannot silently
+# retract an existing bind or trusted-proxy configuration.
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -68,27 +71,29 @@ usage: fm-dashboard-install.sh [options]
 Install or update the read-only Firstmate fleet dashboard user service.
 
 Options:
-  --fm-home PATH       operational home (default: FM_HOME, else the checkout
-                       the service runs from)
+  --fm-home PATH       operational home (default: FM_HOME, else an explicit
+                       --checkout, else the installed value, else this checkout)
   --checkout PATH      tracked Firstmate checkout whose dashboard server the
                        service runs (default: the checkout this script is in).
                        Use it to install the persistent service for a permanent
                        checkout while running a newer installer from elsewhere.
                        With neither FM_HOME nor --fm-home set, the operational
-                       home follows it rather than staying where this installer
-                       happens to be.
+                       home follows an explicit --checkout rather than staying
+                       where this installer happens to be.
   --allow-worktree     install a persistent service that runs from a linked git
                        worktree anyway. Refused by default: a worktree is
                        disposable, and the service breaks when it is reclaimed.
-  --address ADDRESS    numeric bind address (default: 127.0.0.1). Any address
+  --address ADDRESS    numeric bind address (first-install default: 127.0.0.1).
+                       A reinstall preserves the configured address. Any address
                        other than 127.0.0.1 or ::1 exposes the dashboard beyond
                        this host and is accepted only once --set-password has
                        stored credentials.
   --trusted-proxy ADDR numeric address or CIDR range of a reverse proxy whose
                        X-Forwarded-For this dashboard may believe when deciding
                        which client an authentication attempt is throttled as.
-                       Repeatable. Nothing is trusted by default, and behind a
-                       proxy that is what collapses every client into one.
+                       Repeatable. A reinstall preserves the configured list;
+                       the first flag replaces that installed list. Nothing is
+                       trusted on first install.
   --set-password       read a dashboard password from the terminal, or from
                        standard input when there is no terminal, and store only
                        its salted digest in the private credentials file
@@ -119,20 +124,57 @@ transport steps that belong to the operator rather than to this script.
 EOF
 }
 
-FM_DASHBOARD_HOME=${FM_HOME:-}
-FM_DASHBOARD_ADDRESS=${FM_DASHBOARD_ADDRESS:-127.0.0.1}
-FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-8787}
-FM_DASHBOARD_POLL_SECONDS=${FM_DASHBOARD_POLL_SECONDS:-5}
-FM_DASHBOARD_TIMEOUT_SECONDS=${FM_DASHBOARD_TIMEOUT_SECONDS:-15}
-FM_DASHBOARD_STALE_SECONDS=${FM_DASHBOARD_STALE_SECONDS:-30}
-FM_DASHBOARD_HISTORY_LIMIT=${FM_DASHBOARD_HISTORY_LIMIT:-500}
-FM_DASHBOARD_HISTORY_POLL_SECONDS=${FM_DASHBOARD_HISTORY_POLL_SECONDS:-60}
-FM_DASHBOARD_REPORT_MAX_BYTES=${FM_DASHBOARD_REPORT_MAX_BYTES:-262144}
-FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:-}
+# Read only values this installer itself emitted, and never source the file.
+# EnvironmentFile syntax can execute nothing, but sourcing an operator-editable
+# configuration would turn a repair into arbitrary shell execution. Every
+# preserved setting below is validated again before either output file changes.
+XDG_CONFIG_ROOT=${XDG_CONFIG_HOME:-"$HOME/.config"}
+ENV_DIR="$XDG_CONFIG_ROOT/firstmate"
+UNIT_DIR="$XDG_CONFIG_ROOT/systemd/user"
+ENV_FILE="$ENV_DIR/dashboard.env"
+UNIT_FILE="$UNIT_DIR/firstmate-dashboard.service"
+installed_setting() {  # <key>
+  [ -f "$ENV_FILE" ] || return 0
+  awk -v key="$1" 'index($0, key "=\"") == 1 && substr($0, length($0)) == "\"" {
+    print substr($0, length(key) + 3, length($0) - length(key) - 3)
+    exit
+  }' "$ENV_FILE"
+}
+
+INSTALLED_HOME=$(installed_setting FM_HOME)
+INSTALLED_ADDRESS=$(installed_setting FM_DASHBOARD_ADDRESS)
+INSTALLED_PORT=$(installed_setting FM_DASHBOARD_PORT)
+INSTALLED_POLL=$(installed_setting FM_DASHBOARD_POLL_SECONDS)
+INSTALLED_TIMEOUT=$(installed_setting FM_DASHBOARD_TIMEOUT_SECONDS)
+INSTALLED_STALE=$(installed_setting FM_DASHBOARD_STALE_SECONDS)
+INSTALLED_HISTORY_LIMIT=$(installed_setting FM_DASHBOARD_HISTORY_LIMIT)
+INSTALLED_HISTORY_POLL=$(installed_setting FM_DASHBOARD_HISTORY_POLL_SECONDS)
+INSTALLED_REPORT_BYTES=$(installed_setting FM_DASHBOARD_REPORT_MAX_BYTES)
+INSTALLED_AUTH_FILE=$(installed_setting FM_DASHBOARD_AUTH_FILE)
+INSTALLED_TRUSTED_PROXIES=$(installed_setting FM_DASHBOARD_TRUSTED_PROXIES)
+
+FM_DASHBOARD_HOME=${FM_HOME:-$INSTALLED_HOME}
+FM_DASHBOARD_HOME_EXPLICIT=0
+[ -z "${FM_HOME:-}" ] || FM_DASHBOARD_HOME_EXPLICIT=1
+FM_DASHBOARD_ADDRESS=${FM_DASHBOARD_ADDRESS:-${INSTALLED_ADDRESS:-127.0.0.1}}
+FM_DASHBOARD_PORT=${FM_DASHBOARD_PORT:-${INSTALLED_PORT:-8787}}
+FM_DASHBOARD_POLL_SECONDS=${FM_DASHBOARD_POLL_SECONDS:-${INSTALLED_POLL:-5}}
+FM_DASHBOARD_TIMEOUT_SECONDS=${FM_DASHBOARD_TIMEOUT_SECONDS:-${INSTALLED_TIMEOUT:-15}}
+FM_DASHBOARD_STALE_SECONDS=${FM_DASHBOARD_STALE_SECONDS:-${INSTALLED_STALE:-30}}
+FM_DASHBOARD_HISTORY_LIMIT=${FM_DASHBOARD_HISTORY_LIMIT:-${INSTALLED_HISTORY_LIMIT:-500}}
+FM_DASHBOARD_HISTORY_POLL_SECONDS=${FM_DASHBOARD_HISTORY_POLL_SECONDS:-${INSTALLED_HISTORY_POLL:-60}}
+FM_DASHBOARD_REPORT_MAX_BYTES=${FM_DASHBOARD_REPORT_MAX_BYTES:-${INSTALLED_REPORT_BYTES:-262144}}
+AUTH_FILE=${FM_DASHBOARD_AUTH_FILE:-$INSTALLED_AUTH_FILE}
+TRUSTED_PROXIES_FROM_INSTALL=0
+if [ "${FM_DASHBOARD_TRUSTED_PROXIES+x}" = x ]; then
+  FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:-}
+else
+  FM_DASHBOARD_TRUSTED_PROXIES=$INSTALLED_TRUSTED_PROXIES
+  [ -z "$INSTALLED_TRUSTED_PROXIES" ] || TRUSTED_PROXIES_FROM_INSTALL=1
+fi
 START_SERVICE=1
 SET_PASSWORD=0
 AUTH_USERNAME=captain
-AUTH_FILE=${FM_DASHBOARD_AUTH_FILE:-}
 CHECKOUT=
 ALLOW_WORKTREE=0
 
@@ -142,8 +184,14 @@ while [ "$#" -gt 0 ]; do
     --history-limit|--history-poll|--report-bytes|--username|--auth-file|--checkout|--trusted-proxy)
       [ "$#" -ge 2 ] || { printf 'fm-dashboard-install: %s requires a value\n' "$1" >&2; exit 2; }
       case "$1" in
-        --fm-home) FM_DASHBOARD_HOME=$2 ;;
-        --trusted-proxy) FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:+$FM_DASHBOARD_TRUSTED_PROXIES,}$2 ;;
+        --fm-home) FM_DASHBOARD_HOME=$2; FM_DASHBOARD_HOME_EXPLICIT=1 ;;
+        --trusted-proxy)
+          if [ "$TRUSTED_PROXIES_FROM_INSTALL" -eq 1 ]; then
+            FM_DASHBOARD_TRUSTED_PROXIES=
+            TRUSTED_PROXIES_FROM_INSTALL=0
+          fi
+          FM_DASHBOARD_TRUSTED_PROXIES=${FM_DASHBOARD_TRUSTED_PROXIES:+$FM_DASHBOARD_TRUSTED_PROXIES,}$2
+          ;;
         --address) FM_DASHBOARD_ADDRESS=$2 ;;
         --port) FM_DASHBOARD_PORT=$2 ;;
         --poll) FM_DASHBOARD_POLL_SECONDS=$2 ;;
@@ -194,6 +242,7 @@ command -v node >/dev/null 2>&1 || { echo "fm-dashboard-install: node not found"
 if [ -n "$CHECKOUT" ]; then
   CHECKOUT=$(CDPATH='' cd -- "$CHECKOUT" 2>/dev/null && pwd) \
     || { echo "fm-dashboard-install: --checkout is not a directory" >&2; exit 2; }
+  [ "$FM_DASHBOARD_HOME_EXPLICIT" -eq 1 ] || FM_DASHBOARD_HOME=$CHECKOUT
   SERVER="$CHECKOUT/bin/fm-dashboard-server.mjs"
 else
   CHECKOUT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
@@ -233,11 +282,6 @@ if command -v git >/dev/null 2>&1 && [ "$ALLOW_WORKTREE" -eq 0 ]; then
     "name a permanent operational home with --fm-home PATH,"
 fi
 
-XDG_CONFIG_ROOT=${XDG_CONFIG_HOME:-"$HOME/.config"}
-ENV_DIR="$XDG_CONFIG_ROOT/firstmate"
-UNIT_DIR="$XDG_CONFIG_ROOT/systemd/user"
-ENV_FILE="$ENV_DIR/dashboard.env"
-UNIT_FILE="$UNIT_DIR/firstmate-dashboard.service"
 NODE_BIN=$(command -v node)
 [ -n "$AUTH_FILE" ] || AUTH_FILE="$ENV_DIR/dashboard-auth.json"
 
@@ -479,12 +523,13 @@ EOF
   printf 'RuntimeDirectory=%s\n' "$RUNTIME_DIR_NAME"
   printf 'RuntimeDirectoryMode=0700\n'
   printf 'Environment=TMPDIR=%%t/%s\n' "$RUNTIME_DIR_NAME"
+  printf 'Environment=FM_DASHBOARD_UNIT_CONTRACT=runtime-scratch-v1\n'
   printf 'EnvironmentFile=%s\n' "$ENV_FILE"
   printf 'ExecStart=%s %s\n' "$NODE_BIN" "$SERVER"
   printf 'ReadWritePaths=-%s\n' "$EVENT_DIR"
   printf 'ReadWritePaths=-%s\n' "$GBRAIN_DIR"
   cat <<'EOF'
-Restart=on-failure
+Restart=always
 RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -564,6 +609,14 @@ if [ "$START_SERVICE" -eq 1 ]; then
       exit 1
       ;;
   esac
+  case "$loaded_environment" in
+    *FM_DASHBOARD_UNIT_CONTRACT=runtime-scratch-v1*) ;;
+    *)
+      printf 'fm-dashboard-install: systemd did not accept the dashboard runtime contract (read back: %s)\n' \
+        "${loaded_environment:-none}" >&2
+      exit 1
+      ;;
+  esac
 
   # A drop-in left behind by a hand repair keeps overriding this unit after it
   # has been corrected, so the operator is told about one rather than left to
@@ -598,7 +651,7 @@ if [ "$START_SERVICE" -eq 1 ]; then
   fi
 
   systemctl --user --no-pager --full status firstmate-dashboard.service || true
-  printf 'systemd accepted the environment file, the pinned PATH, the agent-event write grant, the scratch directory %s, and the TMPDIR pointing at it, and the service is running.\n' \
+  printf 'systemd accepted the environment file, the pinned PATH, the agent-event write grant, the scratch directory %s, the TMPDIR pointing at it, and the dashboard runtime contract, and the service is running.\n' \
     "$RUNTIME_DIR_NAME"
 else
   echo "Service not started (--no-start)."

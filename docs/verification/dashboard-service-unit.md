@@ -2,7 +2,7 @@
 
 Why this record exists: a systemd unit fails in a way `systemctl status` reports as green.
 A directive systemd read past leaves a service that starts, stays active, and runs on defaults it was never configured with.
-The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, that the installer refuses to report success unless systemd reads them back, and that it refuses to report success over a service that did not stay running.
+The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, preserves installed operator-facing values during a repair, restarts after clean or failed exits, and refuses to report success unless systemd reads the generated contract back and the service stays running.
 
 Refresh with `bin/fm-test-run.sh tests/fm-dashboard-access.test.sh tests/fm-dashboard.test.sh`, which pin the portable half without systemd: the first covers the quoting and path forms systemd accepts, the second the hardening directives the unit must carry and the ones it must not.
 The observations below need a systemd host and are what those portable suites cannot prove.
@@ -227,4 +227,5 @@ Pinning them in one case is deliberate - the grant and the `TMPDIR` are worthles
 `bin/fm-dashboard-install.sh` reads both directives back from `systemctl --user show` before reporting success, for the same reason it reads back the environment file: a unit systemd read past leaves a green service running on defaults it was never configured with.
 
 An already-installed unit does not pick any of this up on its own.
-The generator owns the change, so an existing service takes it by rerunning `bin/fm-dashboard-install.sh` with the same options, which rewrites the unit, reloads, restarts, and verifies the readback.
+The generator owns the change, so an existing service takes it by rerunning `bin/fm-dashboard-install.sh`, which preserves the installed operator-facing settings by default, rewrites the unit, reloads, restarts, and verifies the readback.
+The generated runtime-contract marker also lets current server code identify an older loaded unit before polling and report that same repair instead of surfacing the first command's scratch-space failure.
