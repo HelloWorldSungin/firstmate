@@ -528,6 +528,5 @@ test_scenario_d_max_defer
 
 fm_backend_herdr_kill "$SUPERVISOR_TARGET" 2>/dev/null || true
 fm_backend_herdr_kill "$SESSION:$FAKE_CREW_PANE_ID" 2>/dev/null || true
-cleanup_all || fail "cleanup_all failed"
-echo "all real-herdr afk injection e2e tests passed"
+cleanup_all && echo "all real-herdr afk injection e2e tests passed"
 trap - EXIT

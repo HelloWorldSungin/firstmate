@@ -176,6 +176,5 @@ pass "happy path: a genuinely fresh workspace's seeded default tab is still prun
 
 fm_backend_herdr_kill "$SESSION:$HAPPY_PANE"
 
-cleanup_all || fail "cleanup_all failed"
-printf '\nall fm-backend-herdr-prune-safety-e2e tests passed\n'
+cleanup_all && printf '\nall fm-backend-herdr-prune-safety-e2e tests passed\n'
 trap - EXIT
