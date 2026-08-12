@@ -78,7 +78,7 @@ $ bash tests/fm-brief.test.sh
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
 
 $ bash tests/fm-teardown.test.sh
-all teardown safety cases passed
+(summarized: every teardown safety case passed; the suite emitted no marker line of its own at that date)
 
 $ bin/fm-lint.sh
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
