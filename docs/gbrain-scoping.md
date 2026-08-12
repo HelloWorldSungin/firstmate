@@ -62,6 +62,7 @@ That home reads its own index directly and never grants itself a client, so `bin
 The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it, which is what [Reading a brain](#reading-a-brain) does for a worker.
 
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
+That refusal bounds what a reading home can store, not everything it can spend: `think` is a read-scope operation, so a read-only holder reaches hosted synthesis on the serving home under the serving home's model and credential, which is why a serving home carries no such credential ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule and its reason).
 Do not use `gbrain auth create` tokens or any legacy bearer token as a read-only credential: those carry no scope and are full-access.
 Do not enable Dynamic Client Registration's consent-bypassing `client_credentials` variant to obtain one, because a self-registering client would choose its own scopes.
 

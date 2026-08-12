@@ -200,6 +200,7 @@ The MiniMax credential is read only at runtime from `/home/sungin/.pi/agent/auth
 The file must remain mode `0600`.
 Do not place that value in GBrain configuration, a repository, a test, a log, or a service unit.
 A home that uses per-home brain scoping may instead keep its own copy in that home's credential plane, `config/gbrain-secrets/<name>` named by `think.secret`, under the same mode `0600` requirement ([gbrain-scoping.md](gbrain-scoping.md)).
+A home that serves its brain to another home is the exception and keeps no hosted synthesis credential anywhere ([A home serving a main brain carries no hosted synthesis credentials](#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials)).
 Either way the key reaches only the synthesizing process: `bin/fm-gbrain.sh` reports such a credential as present, absent, or refused and never prints its bytes.
 A Firstmate worker never runs the raw path below: `bin/fm-recall.sh` is the retrieval surface it uses, and it performs this same one-process injection for `think` ([gbrain-scoping.md](gbrain-scoping.md)).
 For a raw operator run, use an untraced shell to inject the key only into the `think` process:
