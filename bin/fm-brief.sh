@@ -58,7 +58,9 @@
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 #   When the resolved project checkout shares FM_ROOT's git object database,
 #   ship and scout scaffolds also emit firstmate-repo crew role guidance so a
-#   worker does not inherit firstmate's captain-facing AGENTS.md persona; see
+#   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
+#   briefs additionally require the firstmate-coding-guidelines skill, which a
+#   report-only scout has no tracked material to need. See
 #   bin/fm-brief-repo-lib.sh.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
@@ -396,18 +398,35 @@ REPO=${POS[1]}
 # files, which would also hide coding guidelines and safety boundaries the
 # worker legitimately needs. Detection compares git-common-dir against FM_ROOT
 # instead of trusting the caller-supplied REPO name (bin/fm-brief-repo-lib.sh).
+#
+# The role fact holds for every firstmate-repo task, so both scaffolds carry it:
+# a scout inherits the persona just as readily and simply has no PR to leak it
+# into. The coding-guidelines directive is ship-only, because telling a scout it
+# is changing shared tracked material would put a false statement in its brief -
+# a scout's only deliverable is a report (see the scout Rules below).
 FIRSTMATE_REPO_CREW_SECTION=
 if fm_brief_task_repo_is_firstmate "$REPO"; then
-  IFS= read -r -d '' FIRSTMATE_REPO_CREW_SECTION <<'EOF' || true
-# Before you edit anything - two firstmate-repo facts
-
-**Load the `firstmate-coding-guidelines` skill first.** This task changes firstmate's shared tracked material, and that skill owns the repo's style and knowledge-placement rules: one sentence per line, plain dash never an em dash, shellcheck-clean scripts, colocated tests, the one-owner rule for contracts, and no agent name as a commit co-author.
-
-**You report to FIRSTMATE, not the captain.** You are working in a checkout of firstmate itself, so this worktree carries firstmate's own `AGENTS.md` and its `CLAUDE.md` symlink. Those instructions describe **firstmate's** role, including a mandatory captain address. They are not your instructions. Do not adopt that address in your status lines, commits, PR body or issue comments, and never attribute firstmate's decisions to the captain.
+  IFS= read -r -d '' FIRSTMATE_REPO_ROLE_FACT <<'EOF' || true
+**You report to FIRSTMATE, not the captain.** You are working in a checkout of firstmate itself, so this worktree carries firstmate's own `AGENTS.md` and its `CLAUDE.md` symlink. Those instructions describe **firstmate's** role, including a mandatory captain address. They are not your instructions. Do not adopt that address in your status lines, commits, reports, PR body or issue comments, and never attribute firstmate's decisions to the captain.
 
 If you notice yourself reaching for the word "captain", treat that as role confusion rather than your reporting line.
-
 EOF
+  if [ "$KIND" = scout ]; then
+    FIRSTMATE_REPO_CREW_SECTION="# Before you start - one firstmate-repo fact
+
+$FIRSTMATE_REPO_ROLE_FACT"
+  else
+    IFS= read -r -d '' FIRSTMATE_REPO_GUIDELINES <<'EOF' || true
+**Load the `firstmate-coding-guidelines` skill first.** This task changes firstmate's shared tracked material, and that skill owns the repo's style and knowledge-placement rules: one sentence per line, plain dash never an em dash, shellcheck-clean scripts, colocated tests, the one-owner rule for contracts, and no agent name as a commit co-author.
+EOF
+    FIRSTMATE_REPO_CREW_SECTION="# Before you edit anything - two firstmate-repo facts
+
+$FIRSTMATE_REPO_GUIDELINES
+$FIRSTMATE_REPO_ROLE_FACT"
+  fi
+  # Each part carries its own trailing newline, so the section is trimmed to end
+  # without one and the separator appended below supplies exactly the single
+  # blank line every sibling section leaves before the next heading.
   FIRSTMATE_REPO_CREW_SECTION=${FIRSTMATE_REPO_CREW_SECTION%$'\n'}
   FIRSTMATE_REPO_CREW_SECTION="$FIRSTMATE_REPO_CREW_SECTION
 

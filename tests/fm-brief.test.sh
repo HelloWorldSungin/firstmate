@@ -938,30 +938,50 @@ test_brain_instruction_tracks_whether_the_home_has_one() {
   pass "fm-brief.sh: the brain instruction appears only for a home that has one, in every scaffold"
 }
 
+# Both non-firstmate projects here are real clones under projects/, the layout
+# docs/configuration.md describes: firstmate is the only project whose checkout
+# is the home itself, so every other name resolves to its own object database
+# and the git-common-dir comparison is what rejects it.
 test_firstmate_repo_crew_persona_section() {
-  local home same_repo_brief other_repo_brief decoy_brief
+  local home same_repo_brief scout_brief other_repo_brief decoy_brief
   home="$TMP_ROOT/firstmate-repo-persona-home"
   mkdir -p "$home/projects" "$home/data"
 
   ln -sfn "$ROOT" "$home/projects/firstmate"
-  mkdir -p "$home/projects/decoy-firstmate"
-  git -C "$home/projects/decoy-firstmate" init -q
-  printf '# decoy\n' > "$home/projects/decoy-firstmate/README.md"
-  git -C "$home/projects/decoy-firstmate" add README.md
-  git -C "$home/projects/decoy-firstmate" -c user.email=test@example.com -c user.name=test commit -qm init
+  local other
+  for other in decoy-firstmate some-proj; do
+    mkdir -p "$home/projects/$other"
+    git -C "$home/projects/$other" init -q
+    printf '# %s\n' "$other" > "$home/projects/$other/README.md"
+    git -C "$home/projects/$other" add README.md
+    git -C "$home/projects/$other" -c user.email=test@example.com -c user.name=test commit -qm init
+  done
 
+  # Ship: both facts. Breaks if the guidelines directive stops being ship-only
+  # in the wrong direction and is dropped from ship briefs too.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" fm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1
   same_repo_brief="$home/data/fm-repo-ship/brief.md"
   assert_grep 'You report to FIRSTMATE, not the captain.' "$same_repo_brief" \
     "firstmate-repo ship brief did not warn against adopting firstmate's captain address"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
   assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$same_repo_brief" \
     "firstmate-repo ship brief did not require the coding-guidelines skill"
+  assert_grep "This task changes firstmate's shared tracked material" "$same_repo_brief" \
+    "firstmate-repo ship brief did not say why the coding-guidelines skill applies"
 
+  # Scout: role fact only. Breaks if the section stops being split by KIND, which
+  # would put "this task changes firstmate's shared tracked material" - a false
+  # statement - into a brief whose only deliverable is a report.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" fm-repo-scout firstmate --scout >/dev/null 2>&1
-  assert_grep 'You report to FIRSTMATE, not the captain.' "$home/data/fm-repo-scout/brief.md" \
+  scout_brief="$home/data/fm-repo-scout/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$scout_brief" \
     "firstmate-repo scout brief did not warn against adopting firstmate's captain address"
+  assert_no_grep 'firstmate-coding-guidelines' "$scout_brief" \
+    "firstmate-repo scout brief must not carry the ship-only coding-guidelines directive"
+  assert_no_grep "changes firstmate's shared tracked material" "$scout_brief" \
+    "firstmate-repo scout brief must not claim it changes shared tracked material"
 
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" fm-decoy decoy-firstmate --mode no-mistakes >/dev/null 2>&1
@@ -974,7 +994,40 @@ test_firstmate_repo_crew_persona_section() {
   other_repo_brief="$home/data/fm-other/brief.md"
   assert_no_grep 'You report to FIRSTMATE, not the captain.' "$other_repo_brief" \
     "ordinary non-firstmate brief must not receive firstmate-repo persona guidance"
-  pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated"
+
+  # A name that resolves to no clone falls back to the home root, and this home
+  # is not a firstmate checkout. Breaks if the fallback ever emits guidance on
+  # resolution failure alone instead of on the git-common-dir verdict.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-uncloned not-cloned-here --mode no-mistakes >/dev/null 2>&1
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$home/data/fm-uncloned/brief.md" \
+    "a repo name with no clone in a non-firstmate home must not receive persona guidance"
+  pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated and split by kind"
+}
+
+# The documented home IS the firstmate clone, so firstmate has no clone under
+# projects/ and a bare `firstmate` repo name resolves nowhere else. Breaks if
+# fm_brief_resolve_project_dir stops falling back to FM_ROOT: the name resolves
+# to nothing, the git-common-dir comparison never runs, and the guidance the
+# whole section exists for is silently absent from exactly the canonical call.
+test_firstmate_repo_crew_persona_without_a_projects_clone() {
+  local data brief
+  data="$TMP_ROOT/firstmate-home-data"
+  mkdir -p "$data"
+  [ ! -d "$ROOT/projects/firstmate" ] \
+    || fail "fixture assumes the firstmate checkout has no projects/firstmate clone"
+
+  # Run from a scratch directory so the relative-name branch cannot resolve.
+  (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
+    "$ROOT/bin/fm-brief.sh" fm-home-repo firstmate --mode no-mistakes >/dev/null 2>&1)
+  brief="$data/fm-home-repo/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$brief" \
+    "a home that is the firstmate clone itself produced no firstmate-repo persona guidance"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$brief" \
+    "a home that is the firstmate clone itself produced no coding-guidelines directive"
+  pass "fm-brief.sh: firstmate-repo guidance fires for a bare repo name with no projects/ clone"
 }
 
 test_script_parses
@@ -1003,3 +1056,4 @@ test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
 test_firstmate_repo_crew_persona_section
+test_firstmate_repo_crew_persona_without_a_projects_clone
