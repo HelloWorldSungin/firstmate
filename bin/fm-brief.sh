@@ -63,7 +63,8 @@
 #   briefs additionally require the firstmate-coding-guidelines skill, which a
 #   report-only scout has no tracked material to need. Firstmate's own checkout
 #   is the home root rather than a clone under projects/, so a name is resolved
-#   against the home only when its data/projects.md line declares that layout.
+#   against the home only when its data/projects.md line declares that layout,
+#   or when this home is a marked secondmate home, which cannot carry that line.
 #   See bin/fm-brief-repo-lib.sh.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the

@@ -1021,6 +1021,8 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   mkdir -p "$data"
   [ ! -d "$ROOT/projects/firstmate" ] \
     || fail "fixture assumes the firstmate checkout has no projects/firstmate clone"
+  [ ! -e "$ROOT/.fm-secondmate-home" ] \
+    || fail "fixture assumes this checkout is a primary home, not a marked secondmate home"
   printf '%s\n' \
     '# Projects' \
     '' \
@@ -1069,6 +1071,50 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
 }
 
+# A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
+# registers only the projects it seeds - never firstmate, which is no clone under
+# projects/ - so this home structurally cannot carry the registry declaration
+# while every crew task it runs against firstmate is a firstmate-repo task.
+# Breaks if the marker stops opening the home-root candidate: the whole
+# population whose purpose is firstmate-repo work silently loses the guidance.
+# The paired negative breaks if the marker is ever treated as optional, which
+# would hand the candidate to any unresolved name in a primary home again.
+test_firstmate_repo_crew_persona_in_a_secondmate_home() {
+  local upstream home brief unmarked_brief
+  upstream="$TMP_ROOT/sm-upstream"
+  home="$TMP_ROOT/sm-home"
+  mkdir -p "$upstream"
+  git -C "$upstream" init -q
+  printf '# upstream\n' > "$upstream/README.md"
+  git -C "$upstream" add README.md
+  git -C "$upstream" -c user.email=test@example.com -c user.name=test commit -qm init
+  git -C "$upstream" worktree add -q --detach "$home" >/dev/null 2>&1 \
+    || fail "could not lease a worktree of the fixture firstmate repo"
+  printf 'sm-persona\n' > "$home/.fm-secondmate-home"
+  mkdir -p "$home/data"
+
+  (cd "$TMP_ROOT" && FM_HOME="$home" FM_ROOT_OVERRIDE="$upstream" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/sm-home-state" \
+    "$ROOT/bin/fm-brief.sh" sm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1)
+  brief="$home/data/sm-repo-ship/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$brief" \
+    "a secondmate home leased from the firstmate repo produced no firstmate-repo persona guidance"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$brief" \
+    "a secondmate home leased from the firstmate repo produced no coding-guidelines directive"
+
+  rm -f "$home/.fm-secondmate-home"
+  (cd "$TMP_ROOT" && FM_HOME="$home" FM_ROOT_OVERRIDE="$upstream" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/sm-home-state" \
+    "$ROOT/bin/fm-brief.sh" sm-unmarked firstmate --mode no-mistakes >/dev/null 2>&1)
+  unmarked_brief="$home/data/sm-unmarked/brief.md"
+  assert_grep 'disposable git worktree of firstmate' "$unmarked_brief" \
+    "the unmarked-home brief did not scaffold"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
+    "an unmarked home with no registry declaration must not resolve a name to its own root"
+  pass "fm-brief.sh: a secondmate home's marker opens the home-root candidate its registry cannot declare"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1096,3 +1142,4 @@ test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
 test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
+test_firstmate_repo_crew_persona_in_a_secondmate_home
