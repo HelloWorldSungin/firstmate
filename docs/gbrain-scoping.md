@@ -73,7 +73,9 @@ Its `--help` owns the flags, the caps, and the `fm-recall.v1` document it prints
 
 `search` reads this home's own index and, when the main brain is configured and this home holds a read-only client, the main brain's index too, labelling each result `local:<slug>` or `main:<slug>`.
 `think` is a separate command rather than a flag, because it sends the question and the excerpts it selects to the configured hosted provider.
-It runs only against this home's own brain: GBrain classifies `think` as a write-scope operation, so a read-scoped client is refused it, which is the same enforcement that makes the share read-only at all.
+It runs only against this home's own brain because the wrapper calls it there and never over the main brain's client, which is construction rather than convention.
+That construction is now the whole of the guarantee: `v0.42.76.0` reclassified `think` as `scope: read`, so a read-scoped client is admitted rather than refused, and what still makes the share read-only is the write-class refusal above, which `think` no longer belongs to.
+The hosted-synthesis boundary that scope check used to cover is now an operating rule in [`gbrain.md`](gbrain.md), measured in [`verification/gbrain-memory-verbs.md`](verification/gbrain-memory-verbs.md).
 
 The home a command reads is resolved from `--home`, then `FM_HOME`, then the directory the wrapper was invoked from, and a candidate that is a source checkout rather than an operating home is refused by name.
 That refusal matters because a crewmate on a firstmate task stands in a worktree of this repository: without it, the wrapper would build an empty brain inside a directory that cleanup is about to delete and report success while doing it.

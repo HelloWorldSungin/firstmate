@@ -246,9 +246,17 @@ EOF
   # the assertion true across pin moves instead of rotting into the previous
   # release's literal, and the shape check below stops an unreadable pin from
   # satisfying the comparison vacuously with an empty string.
+  #
+  # It is anchored to the pin SENTENCE, deliberately not to the first backticked
+  # v-token in the file, which is what bin/fm-gbrain-health.sh reads. A token
+  # inserted above the pin is the failure docs/gbrain.md warns about with "Keep
+  # the pin first among such tokens": the panel would then quote the wrong
+  # release, and a derivation sharing the production parser would compute the
+  # same wrong value and pass.
   local pin
   # shellcheck disable=SC2016 # Single quotes are required: the pattern's backticks are literal, not substitution.
-  pin=$(grep -oE '`v[0-9][^`]*`' "$ROOT/docs/gbrain.md" | head -1 | tr -d '`')
+  pin=$(grep -m1 '^The installed GBrain release is ' "$ROOT/docs/gbrain.md" \
+    | grep -oE '`v[0-9][^`]*`' | head -1 | tr -d '`')
   case "$pin" in
     v[0-9]*) : ;;
     *) fail "could not read the GBrain pin from docs/gbrain.md (got '$pin')" ;;

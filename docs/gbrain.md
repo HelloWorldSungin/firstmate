@@ -29,7 +29,7 @@ For a clean source installation with the pinned Bun binary already present, run:
 ```sh
 mkdir -p /home/sungin/.local/gbrain/{bin,bun-global,cache}
 git clone https://github.com/garrytan/gbrain.git /home/sungin/.local/gbrain/src
-git -C /home/sungin/.local/gbrain/src checkout --detach 3acd511b80bd4d2fe487290a70de75d4cf094730
+git -C /home/sungin/.local/gbrain/src checkout --detach d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775
 cd /home/sungin/.local/gbrain/src
 BUN_INSTALL=/home/sungin/.local/gbrain/bun-global \
   /home/sungin/.local/gbrain/bin/bun install \
@@ -57,6 +57,7 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    Select the new tag explicitly; `latest` is not a pin.
    That recorded string is also the version the dashboard's GBrain panel quotes: [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) reads the first backticked `v`-prefixed release token in this file rather than asking a running executable what it is.
    Keep the pin first among such tokens, so this step is what keeps the panel true as well.
+   The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.

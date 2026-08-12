@@ -27,8 +27,10 @@
 #           command rather than a flag on search because it sends the question
 #           and the excerpts it selects to the configured hosted provider, so
 #           choosing it is a deliberate act. It never reaches the main brain:
-#           GBrain classifies think as a write-scope operation, which a
-#           read-only client is refused.
+#           this wrapper calls think against this home's own brain alone and
+#           never over the main brain's read-only client. That is the wrapper's
+#           own construction, not a server refusal - GBrain has classified
+#           think as a read-scope operation since v0.42.76.0.
 #
 # Failure separation. The corpora a search reads, and hosted synthesis, fail for
 # unrelated reasons and are never reported as one outcome. Each source succeeds,

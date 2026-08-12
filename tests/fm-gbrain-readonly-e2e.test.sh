@@ -143,8 +143,23 @@ scopes=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth list 2>/dev/null || 
 assert_not_contains "$scopes" "gbrain_" "auth list should not expose a usable token value"
 
 # --- serve the main brain and drive real tool calls -------------------------
+#
+# The SERVED process is the one that would synthesize. `think` is scope:read
+# since v0.42.76.0, so the guard further down really does reach it over the
+# read-only share, and it would run on this process's model and credential: an
+# inherited provider key would send the seeded main-brain page to a hosted
+# provider from a suite that is supposed to touch nothing outside its temp root.
+# So every credential-shaped variable is stripped from the served environment
+# rather than the suite trusting the operator's shell to hold none, and the
+# degrade is asserted at the call site instead of assumed.
+serve_env=(env)
+while IFS='=' read -r _name _; do
+  case "$_name" in
+    *API_KEY*|*AUTH_TOKEN*|*API_TOKEN*|*_SECRET_KEY) serve_env+=(-u "$_name") ;;
+  esac
+done < <(env)
 
-GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
+"${serve_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" serve --http --port "$PORT" > "$TMP_ROOT/serve.log" 2>&1 &
 SERVE_PID=$!
 up=0
@@ -250,6 +265,11 @@ pass "the retrieval wrapper reads this home's own corpus and the mounted main co
 # pass on a genuinely broken read-only share. So the call is made in its most
 # dangerous form - explicitly asking to persist - and the fence is proven from
 # the parsed result AND from the main brain's page set being unchanged.
+#
+# The synthesis itself must degrade rather than run: the serving process was
+# started with every provider credential stripped, and the assertion below is
+# what proves that held, so this guard can never export the seeded page to a
+# hosted model on an operator machine that happens to carry a key.
 pages_before=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
 assert_contains "$pages_before" "main-canary" \
   "the page-set snapshot must really list pages, or the unchanged-set assertion below is vacuous"
@@ -261,13 +281,17 @@ think_json=$(mcp_result "$think_out")
 [ -n "$think_json" ] || fail "the think response could not be parsed: $think_out"
 [ "$(printf '%s' "$think_json" | jq -r '.remote_persisted_blocked')" = true ] \
   || fail "a remote think that asked to persist must report the persistence blocked: $think_json"
-[ "$(printf '%s' "$think_json" | jq -r '.saved_slug')" = null ] \
+# has() rather than a -r comparison: an absent field prints "null" too, so a
+# release that renamed it while still persisting would satisfy the string test.
+printf '%s' "$think_json" | jq -e 'has("saved_slug") and .saved_slug == null' >/dev/null \
   || fail "a remote think must never report a persisted synthesis page: $think_json"
+printf '%s' "$think_json" | jq -e 'has("synthesisOk") and .synthesisOk == false' >/dev/null \
+  || fail "the served brain reached a hosted model: this guard must run with no provider credential in the serving process: $think_json"
 
 pages_after=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
 [ "$pages_before" = "$pages_after" ] \
   || fail "think over a read-only share changed the main brain's page set"$'\n'"before: $pages_before"$'\n'"after:  $pages_after"
-pass "a read-only share admits think but cannot persist through it, and the main brain is unchanged by the call"
+pass "a read-only share admits think, degrades it with no credential, cannot persist through it, and leaves the main brain unchanged"
 
 # --- the secondmate writes only its OWN brain -------------------------------
 

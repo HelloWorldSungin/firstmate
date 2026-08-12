@@ -2,7 +2,8 @@
 
 Active empirical evidence for the evaluation and migration procedure in [`../gbrain.md`](../gbrain.md): the measured retrieval and synthesis quality of a real Firstmate home brain, the measured effect of the retrieval wrapper's own result ordering before and after it was corrected, and the recorded behaviour of the embedding migration, its rollback, its interruption, and the rebuild from durable source.
 
-Measured 2026-08-05 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
+Measured 2026-08-05 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, which was the pin recorded in [`../gbrain.md`](../gbrain.md) at the time.
+The pin has since moved, and [gbrain-memory-verbs.md](gbrain-memory-verbs.md) records the retrieval measurements taken either side of that move.
 Every migration, reinitialization, and rollback below ran on a disposable copy of the index under `/tmp`, never on the live one.
 
 ## The configuration every number below belongs to
