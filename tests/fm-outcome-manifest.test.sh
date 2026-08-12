@@ -530,12 +530,16 @@ test_pr_status_fallback_timeout() {
   seed_ship_task "$home" "$id"
   printf 'pr=https://github.com/acme/widget/pull/14\n' >> "$home/state/$id.meta"
   fakebin=$(fm_fakebin "$TMP_ROOT/prstatus-timeout")
-  cat > "$fakebin/gh-axi" <<'SH'
+  # gh is the CLI the structured read invokes, so gh is what has to hang for the
+  # fallback to have anything to bound. gh-axi hangs identically so no forge CLI
+  # on the host's own PATH can answer this case instead.
+  cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 sleep 5
 printf '%s\n' '{"state":"OPEN"}'
 SH
-  chmod +x "$fakebin/gh-axi"
+  cp "$fakebin/gh" "$fakebin/gh-axi"
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi"
 
   started=$(date +%s)
   rc=0
