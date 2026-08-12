@@ -796,4 +796,41 @@ expect_code 1 "$CLI_RC" "an invalid local plane must fail the run"
   || fail "an unreadable local plane must still skip the main-brain row, got '$(state_of main-brain)'"
 pass "a serving-credential violation fails the run without withholding rows this run could answer"
 
+# The same boundary on the sibling path. A credential stored too loosely is also
+# a finding over configuration planes that both read fine, so it withholds only
+# the row whose answer needed that exact credential: a refused `think`
+# credential is not an input the main-brain row reads. Fail by: treating any
+# refused credential as a broken configuration plane, which prints "local plane
+# must be fixed first" under a config-local row the same report calls ok.
+secret_row_home=$(make_home secret-row-context)
+printf '%s\n' '{"version":1,"client_id":"gbrain_cl_secretrow"}' \
+  > "$secret_row_home/config/gbrain-local.json"
+install_secret "$secret_row_home" minimax-key "$MINIMAX_KEY" 644
+install_secret "$secret_row_home" main-brain-client-secret "$CLIENT_SECRET"
+cli "$secret_row_home" check --json
+expect_code 1 "$CLI_RC" "a credential stored too loosely must still fail the run"
+[ "$(state_of config-local)" = ok ] \
+  || fail "this case needs a readable local plane, got '$(state_of config-local)'"
+[ "$(state_of secret:minimax-key)" = failed ] \
+  || fail "this case needs a refused think credential, got '$(state_of secret:minimax-key)'"
+[ "$(state_of main-brain)" != skipped ] \
+  || fail "a refused think credential must not blank the main-brain row, got '$(detail_of main-brain)'"
+assert_not_contains "$(detail_of main-brain)" "local plane must be fixed" \
+  "the report must not point at a local plane the same report calls valid"
+
+# The main-brain credential IS an input that row needs, so refusing it withholds
+# that one row and names the credential to fix, rather than reporting a mint
+# this run never attempted as an outage at the main brain. Fail by: dropping the
+# gate with the plane_broken one, which reads a refused credential as degraded.
+chmod 644 "$secret_row_home/config/gbrain-secrets/main-brain-client-secret"
+cli "$secret_row_home" check --json
+expect_code 1 "$CLI_RC" "a refused main-brain credential must still fail the run"
+[ "$(state_of main-brain)" = skipped ] \
+  || fail "a refused main-brain credential must skip its own row, got '$(state_of main-brain)'"
+assert_contains "$(detail_of main-brain)" "secret:main-brain-client-secret" \
+  "the skipped row must name the credential that has to be fixed"
+assert_not_contains "$(detail_of main-brain)" "local plane must be fixed" \
+  "a refused credential is not an unreadable configuration plane"
+pass "a refused credential withholds only the row that needed it"
+
 echo "all fm-gbrain-lib tests passed"

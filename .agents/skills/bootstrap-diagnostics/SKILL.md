@@ -78,6 +78,8 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Do not remove the credential yourself; that is a captain decision, and the check exists to surface the configuration, not to apply a remediation to a live home.
   `bin/fm-gbrain.sh serving-check` owns the line and re-prints it, and `bin/fm-gbrain.sh check` shows the same verdict as a `serving-credential` row.
   A line whose detail names an unreadable plane, or a missing `jq`, is `unknown` rather than a proven violation: the verdict could not be reached, which is still actionable because it is never reported as clean.
-  A home that serves no brain never raises this line at all, so the line always means the serving relationship itself was read and is live.
+  A home *proven* to serve no brain never raises this line, but an `unknown` line does not prove the home serves anything either - a missing `jq` or an unreadable home-local plane raises it before the serving relationship has been read at all.
+  Both states print the same `GBRAIN_SERVING_CREDENTIAL:` prefix, so read the state rather than the prose: `bin/fm-gbrain.sh check` answers the same verdict as a `serving-credential` row whose state is `failed` for a proven violation and `unknown` for one this home could not reach.
+  Only a `failed` verdict is the captain-authorized boundary described above; an `unknown` one is an unreadable plane to repair first, after which the verdict is re-read rather than assumed in either direction.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local X-mode poll artifacts (`docs/configuration.md` "X mode (.env)").
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

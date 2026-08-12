@@ -206,8 +206,11 @@ cmd_check() {
   fi
 
   # A credential that exists but is stored too loosely is a finding, not a
-  # degradation: it is refused rather than used, so the run fails.
-  local plane
+  # degradation: it is refused rather than used, so the run fails. The
+  # configuration planes still read fine, so it is not a broken plane either: it
+  # withholds only the one row whose answer needed that exact credential, which
+  # is why the refused main-brain credential is remembered by name here.
+  local plane refused_main_brain_secret=""
   for plane in think main_brain; do
     secret_name=$(shared_str ".$plane.secret")
     [ -n "$secret_name" ] || continue
@@ -217,7 +220,10 @@ cmd_check() {
     case $rc in
       0) check_row "secret:$secret_name" ok "mode 0600" ;;
       1) check_row "secret:$secret_name" absent "not installed" ;;
-      *) check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1 ;;
+      *)
+        check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1
+        if [ "$plane" = main_brain ]; then refused_main_brain_secret=$secret_name; fi
+        ;;
     esac
   done
 
@@ -254,8 +260,10 @@ cmd_check() {
   fi
   # Each row states what this run established and nothing else: the home that
   # owns the main brain reads it directly rather than minting a token to
-  # itself, a home that was never granted a client has no outage to report, and
-  # only a home that holds a client can call an unanswered mint degraded.
+  # itself, a home that was never granted a client has no outage to report, a
+  # mint this run refused to attempt names the credential that blocked it
+  # rather than blaming a brain it never called, and only a home that holds a
+  # usable client can call an unanswered mint degraded.
   url=$(shared_str '.main_brain.mcp_url')
   if [ -n "$url" ]; then
     if [ "$plane_broken" -ne 0 ]; then
@@ -264,6 +272,8 @@ cmd_check() {
       check_row main-brain ok "this home owns the main brain at $url and reads its own index directly"
     elif [ -z "$(fm_gbrain_json_str "$local_file" '.client_id')" ]; then
       check_row main-brain absent "this home holds no read-only client for $url; run grant-read from the home that owns it"
+    elif [ -n "$refused_main_brain_secret" ]; then
+      check_row main-brain skipped "secret:$refused_main_brain_secret must be fixed before a read-only token can be minted"
     elif mint_token >/dev/null 2>&1; then
       check_row main-brain ok "read-only token issued for $url"
     else
