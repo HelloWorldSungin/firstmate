@@ -72,9 +72,8 @@ A new skill is dead weight if nothing loads it.
 Every new skill needs its load trigger declared inline: section 13 for agent-only reference skills, or the relevant operating section for anything else.
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
-`bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
-Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
-`CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder.
+`bin/fm-brief.sh` emits that instruction automatically when the resolved project checkout shares `FM_ROOT`'s git object database (`bin/fm-brief-repo-lib.sh`), so firstmate does not hand-write it at intake.
+`CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder for contributors editing the repo directly.
 
 ## Compatibility and enforcement
 

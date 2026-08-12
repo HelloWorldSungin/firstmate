@@ -56,6 +56,10 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+#   When the resolved project checkout shares FM_ROOT's git object database,
+#   ship and scout scaffolds also emit firstmate-repo crew role guidance so a
+#   worker does not inherit firstmate's captain-facing AGENTS.md persona; see
+#   bin/fm-brief-repo-lib.sh.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
@@ -116,6 +120,8 @@ esac
 . "$SCRIPT_DIR/fm-issue-lib.sh"
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
+# shellcheck source=bin/fm-brief-repo-lib.sh
+. "$SCRIPT_DIR/fm-brief-repo-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -384,6 +390,30 @@ fi
 
 REPO=${POS[1]}
 
+# When a crewmate's disposable worktree is the firstmate repository itself, the
+# checkout's AGENTS.md installs firstmate's captain-facing persona. Emit an
+# explicit counter-instruction in the brief rather than neutralizing those
+# files, which would also hide coding guidelines and safety boundaries the
+# worker legitimately needs. Detection compares git-common-dir against FM_ROOT
+# instead of trusting the caller-supplied REPO name (bin/fm-brief-repo-lib.sh).
+FIRSTMATE_REPO_CREW_SECTION=
+if fm_brief_task_repo_is_firstmate "$REPO"; then
+  IFS= read -r -d '' FIRSTMATE_REPO_CREW_SECTION <<'EOF' || true
+# Before you edit anything - two firstmate-repo facts
+
+**Load the `firstmate-coding-guidelines` skill first.** This task changes firstmate's shared tracked material, and that skill owns the repo's style and knowledge-placement rules: one sentence per line, plain dash never an em dash, shellcheck-clean scripts, colocated tests, the one-owner rule for contracts, and no agent name as a commit co-author.
+
+**You report to FIRSTMATE, not the captain.** You are working in a checkout of firstmate itself, so this worktree carries firstmate's own `AGENTS.md` and its `CLAUDE.md` symlink. Those instructions describe **firstmate's** role, including a mandatory captain address. They are not your instructions. Do not adopt that address in your status lines, commits, PR body or issue comments, and never attribute firstmate's decisions to the captain.
+
+If you notice yourself reaching for the word "captain", treat that as role confusion rather than your reporting line.
+
+EOF
+  FIRSTMATE_REPO_CREW_SECTION=${FIRSTMATE_REPO_CREW_SECTION%$'\n'}
+  FIRSTMATE_REPO_CREW_SECTION="$FIRSTMATE_REPO_CREW_SECTION
+
+"
+fi
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -486,7 +516,7 @@ if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+${FIRSTMATE_REPO_CREW_SECTION}# Task
 {TASK}
 
 $ISSUE_SECTION$HERDR_SECTION
@@ -610,7 +640,7 @@ DOD=${DOD%$'\n'}
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+${FIRSTMATE_REPO_CREW_SECTION}# Task
 {TASK}
 
 <!-- firstmate-task-branch=fm/$ID -->

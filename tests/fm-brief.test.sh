@@ -938,6 +938,45 @@ test_brain_instruction_tracks_whether_the_home_has_one() {
   pass "fm-brief.sh: the brain instruction appears only for a home that has one, in every scaffold"
 }
 
+test_firstmate_repo_crew_persona_section() {
+  local home same_repo_brief other_repo_brief decoy_brief
+  home="$TMP_ROOT/firstmate-repo-persona-home"
+  mkdir -p "$home/projects" "$home/data"
+
+  ln -sfn "$ROOT" "$home/projects/firstmate"
+  mkdir -p "$home/projects/decoy-firstmate"
+  git -C "$home/projects/decoy-firstmate" init -q
+  printf '# decoy\n' > "$home/projects/decoy-firstmate/README.md"
+  git -C "$home/projects/decoy-firstmate" add README.md
+  git -C "$home/projects/decoy-firstmate" -c user.email=test@example.com -c user.name=test commit -qm init
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1
+  same_repo_brief="$home/data/fm-repo-ship/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$same_repo_brief" \
+    "firstmate-repo ship brief did not warn against adopting firstmate's captain address"
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$same_repo_brief" \
+    "firstmate-repo ship brief did not require the coding-guidelines skill"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-repo-scout firstmate --scout >/dev/null 2>&1
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$home/data/fm-repo-scout/brief.md" \
+    "firstmate-repo scout brief did not warn against adopting firstmate's captain address"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-decoy decoy-firstmate --mode no-mistakes >/dev/null 2>&1
+  decoy_brief="$home/data/fm-decoy/brief.md"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$decoy_brief" \
+    "misnamed non-firstmate project must not receive firstmate-repo persona guidance"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-other some-proj --mode no-mistakes >/dev/null 2>&1
+  other_repo_brief="$home/data/fm-other/brief.md"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$other_repo_brief" \
+    "ordinary non-firstmate brief must not receive firstmate-repo persona guidance"
+  pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -963,3 +1002,4 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
+test_firstmate_repo_crew_persona_section
