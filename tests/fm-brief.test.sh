@@ -338,6 +338,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
     grep -qx "Delivery contract: mode=$mode" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"
+    grep -qx "<!-- firstmate-task-branch=fm/$id -->" "$brief" \
+      || fail "$id: brief did not record its exact machine-readable task branch"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"

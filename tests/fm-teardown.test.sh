@@ -39,6 +39,16 @@
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #
+# Also covers task identity: the pool can hand one worktree path to a second
+# task, so the worktree's ambient branch is placement, not identity. Both the
+# landed-work refusal and the parked-run abort read the record's own branch=.
+#   (t1) recorded branch, ambient branch's PR merged           -> REFUSE (not this task's PR)
+#   (t2) legacy record with no branch= + no branchless proof   -> REFUSE (nothing left to judge)
+#   (t2a) legacy record with no branch= + recorded pr= merged  -> ALLOW  (pr= reads no branch)
+#   (t2b) legacy record with no branch= + content in default   -> ALLOW  (content reads no branch)
+#   (t3) reallocated worktree hosting another task's live run  -> never aborted
+#   (t4) legacy record + a perfectly matching ambient run      -> never aborted
+#
 # Also covers the model-routing refusal's never-started boundary: a worker that
 # died before its first model-attributed turn can never produce a verdict, so
 # refusing it forever preserves nothing, while a worker that RAN without a usable
@@ -221,6 +231,10 @@ SH
 }
 
 # Write a meta file for the task. Args: case_dir mode kind
+# A ship record carries the durable branch= fm-spawn copies from its brief's
+# exact task-branch marker, which is the branch make_case checks the worktree
+# out on. That record - never the worktree's ambient branch - is what teardown
+# attributes runs and unlanded work to.
 write_meta() {
   local case_dir=$1 mode=$2 kind=$3
   fm_write_meta "$case_dir/state/task-x1.meta" \
@@ -231,6 +245,16 @@ write_meta() {
     "kind=$kind" \
     "mode=$mode" \
     "model=default"
+  [ "$kind" != ship ] || printf 'branch=fm/task-x1\n' >> "$case_dir/state/task-x1.meta"
+}
+
+# A ship record from before the task-branch marker existed: it names a worktree
+# and nothing that identifies the task's own branch. Args: case_dir mode
+write_legacy_meta_without_branch() {
+  local case_dir=$1 mode=$2
+  write_meta "$case_dir" "$mode" ship
+  grep -v '^branch=' "$case_dir/state/task-x1.meta" > "$case_dir/state/task-x1.meta.new"
+  mv "$case_dir/state/task-x1.meta.new" "$case_dir/state/task-x1.meta"
 }
 
 # Commit something on the worktree's task branch. Args: case_dir [message]
@@ -316,6 +340,30 @@ echo "error: pull request not found" >&2
 exit 1
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Like add_gh_pr_merged_for_head, but the merged PR is discoverable ONLY through
+# the named head branch. Any other branch looks up empty, so a landed-work check
+# that asks about the wrong branch cannot find this PR at all.
+add_gh_pr_merged_for_branch_head() {
+  local case_dir=$1 branch=$2 head=$3
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  cat > "$case_dir/fakebin/gh-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr list")
+    case " \$* " in
+      *" --head $branch "*)
+        printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
+    esac
+    printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []" ; exit 0 ;;
+  "pr view")
+    printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"'
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
 }
 
 append_pr_meta_for_current_head() {
@@ -1792,6 +1840,93 @@ test_no_mistakes_truly_unpushed_refuses() {
   expect_code 1 "$rc" "nm-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "nm-unpushed: no REFUSED line in stderr"
   pass "no-mistakes worktree with genuinely unlanded work is refused (safety preserved)"
+}
+
+# The landed-work refusal decides whether removing this worktree destroys work
+# nobody can recover. Asking about the branch the pool happens to have left in
+# the worktree answers for whoever holds it now: here task-b's merged PR would
+# have cleared task-x1's teardown. The task's own recorded branch is the only
+# identity that can answer, and it finds no PR at all.
+test_landed_work_is_evaluated_against_the_recorded_task_branch() {
+  local case_dir rc head
+  case_dir=$(make_case landed-recorded-branch)
+  write_meta "$case_dir" no-mistakes ship
+  git -C "$case_dir/wt" checkout -q -b fm/task-b
+  wt_commit_file "$case_dir" feature.txt "task b work" "task b work"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_branch_head "$case_dir" fm/task-b "$head"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "landed-recorded-branch: another branch's merged PR cleared this task's teardown"
+  assert_grep "not on any remote and not landed" "$case_dir/stderr" \
+    "landed-recorded-branch: the refusal was not the unlanded-work one"
+  assert_present "$case_dir/wt" "landed-recorded-branch: the worktree was removed"
+  assert_present "$case_dir/state/task-x1.meta" "landed-recorded-branch: task metadata was erased"
+  pass "unlanded work is judged against the task's recorded branch, never the worktree's ambient one"
+}
+
+# The legacy half: with no recorded branch there is no identity to judge the
+# work against, and guessing one from the ambient branch is exactly what loses
+# another task's commits. Refusing keeps the worktree; --force still discards.
+test_legacy_record_without_branch_refuses_unpushed_work() {
+  local case_dir rc head
+  case_dir=$(make_case landed-legacy-record)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  wt_commit_file "$case_dir" feature.txt "task work" "task work"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "landed-legacy-record: a record with no task branch cleared its own teardown"
+  assert_grep "not on any remote and not landed" "$case_dir/stderr" \
+    "landed-legacy-record: the refusal was not the unlanded-work one"
+  assert_grep "no merged PR could be looked up by branch name" "$case_dir/stderr" \
+    "landed-legacy-record: teardown did not state which proof it could not run"
+  assert_present "$case_dir/wt" "landed-legacy-record: the worktree was removed"
+  assert_present "$case_dir/state/task-x1.meta" "landed-legacy-record: task metadata was erased"
+  pass "a legacy record with no task branch refuses unpushed work rather than guessing the branch"
+}
+
+# Fails if the missing branch= short-circuits the landed check instead of just
+# disabling the branch-keyed PR lookup: pr= is read straight from the record.
+test_legacy_record_without_branch_still_lands_on_its_recorded_pr() {
+  local case_dir rc pr_head
+  case_dir=$(make_case legacy-record-recorded-pr)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "legacy-record-recorded-pr: teardown should succeed on a recorded merged PR"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "legacy-record-recorded-pr: teardown refused work its own pr= proves landed"
+  pass "a legacy record with no task branch still lands on the merged PR its record names"
+}
+
+# Fails if the missing branch= short-circuits the landed check: content_in_default
+# takes no branch at all, merge-treeing the default branch against the worktree HEAD.
+test_legacy_record_without_branch_still_lands_on_default_content() {
+  local case_dir rc
+  case_dir=$(make_case legacy-record-content-landed)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "legacy-record-content-landed: teardown should succeed on content already in the default branch"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "legacy-record-content-landed: teardown refused work already squash-merged into the default branch"
+  pass "a legacy record with no task branch still lands on content already in the default branch"
 }
 
 test_squash_merged_branch_deleted_allows() {
@@ -3363,6 +3498,60 @@ test_another_branchs_parked_run_is_never_touched() {
   pass "a parked run on another branch is never aborted by this task's teardown (ownership is precise)"
 }
 
+# Fork issue #81's own sequence, from the teardown side. Task-x1 is parked and
+# its record still names the pooled worktree path, but the pool has since handed
+# that path to task-b, which created its own branch and started a run parked at a
+# gate. Reading "this task's branch" out of the shared worktree would answer
+# fm/task-b, match its head, and abort a DIFFERENT live task's pipeline.
+test_reallocated_worktree_never_aborts_the_other_tasks_run() {
+  local case_dir rc head
+  case_dir=$(make_case parked-run-reallocated)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  git -C "$case_dir/wt" checkout -q -b fm/task-b
+  wt_commit "$case_dir" "task-b work in the reallocated worktree"
+  git -C "$case_dir/wt" push -q origin fm/task-b
+  git -C "$case_dir/project" fetch -q origin
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-b "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-reallocated: teardown should still succeed"
+  assert_absent "$case_dir/nm-abort.log" \
+    "parked-run-reallocated: teardown aborted the run of the task now holding the worktree"
+  assert_not_contains "$(cat "$case_dir/stderr")" "aborting" \
+    "parked-run-reallocated: teardown reported aborting another task's run"
+  assert_grep "not this task's recorded fm/task-x1" "$case_dir/stderr" \
+    "parked-run-reallocated: teardown did not say which run it refused to attribute"
+  pass "a reallocated worktree's live run belongs to its new task and is never aborted"
+}
+
+# A record with no durable branch cannot show any run to be its own, so it must
+# refuse attribution outright rather than fall through to the ambient branch -
+# even when that branch's run looks like a perfect match.
+test_legacy_record_without_branch_never_aborts_an_ambient_run() {
+  local case_dir rc head
+  case_dir=$(make_case parked-run-legacy-record)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-legacy-record: teardown should still succeed"
+  assert_absent "$case_dir/nm-abort.log" \
+    "parked-run-legacy-record: teardown aborted a run it cannot prove is this task's"
+  assert_grep "records no task branch" "$case_dir/stderr" \
+    "parked-run-legacy-record: teardown did not surface the unattributable parked run"
+  pass "a legacy record with no task branch refuses run attribution instead of using the ambient branch"
+}
+
 test_own_autonomous_run_is_left_alone() {
   local case_dir rc head
   case_dir=$(make_case autonomous-run-left-alone)
@@ -3814,6 +4003,10 @@ test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_cleanup_never_deletes_the_worktrees_ambient_branch
 test_no_mistakes_truly_unpushed_refuses
+test_landed_work_is_evaluated_against_the_recorded_task_branch
+test_legacy_record_without_branch_refuses_unpushed_work
+test_legacy_record_without_branch_still_lands_on_its_recorded_pr
+test_legacy_record_without_branch_still_lands_on_default_content
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
@@ -3856,6 +4049,8 @@ test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed
 test_not_found_status_after_abort_confirms_completion
 test_another_branchs_parked_run_is_never_touched
+test_reallocated_worktree_never_aborts_the_other_tasks_run
+test_legacy_record_without_branch_never_aborts_an_ambient_run
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped

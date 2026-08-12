@@ -69,6 +69,10 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# It also records the exact ship branch in a firstmate-task-branch marker.
+# bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
+# own branch durable before the worker creates it instead of reconstructing it later
+# from the task id or from whichever branch the pooled worktree currently hosts.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -609,6 +613,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+<!-- firstmate-task-branch=fm/$ID -->
 $ISSUE_SECTION$HERDR_SECTION
 
 # Setup

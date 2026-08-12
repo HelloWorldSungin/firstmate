@@ -231,6 +231,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
+  assert_grep 'branch=fm/promote-d1' "$meta" "promotion did not record the exact branch named in its ship instruction"
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided approval posture"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"

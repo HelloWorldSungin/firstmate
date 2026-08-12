@@ -1042,6 +1042,14 @@ families_for_changed_path() {
           || printf '%s\n' "__unmapped__:$path"
       fi
       ;;
+    tests/fixtures/*)
+      # Root-level golden files have no grouping directory, so select the suite
+      # that names the exact fixture. A removed fixture has no consumer left.
+      if [ -e "$path" ]; then
+        families_for_test_reference "${path#tests/}" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
     bin/*)
       # A deleted script has no consuming suite left to select, the same rule
       # the fixture case above applies. Refusing on its absent mapping would

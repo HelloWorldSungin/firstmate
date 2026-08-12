@@ -32,6 +32,12 @@
 #   (o) a terminal pass whose ci step SKIPPED never observed the forge, whether
 #       or not it opened the PR, so it reports a local pass rather than a merge,
 #       and a declared wait standing over it reports that wait instead of done
+#   (p) the durable task branch matches normally, while a pooled worktree on a
+#       different branch or a legacy run without durable branch identity surfaces
+#       a run-attribution fault instead of overriding the task's parked event
+#   (q) a detached worktree is the ship's pre-branch window, in which no run of
+#       its own can exist, so it spends no bounded lookup at all - while the one
+#       state that can hold an attributable run still performs that lookup
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -56,6 +62,27 @@ make_repo_on_branch() {  # <dir> <branch>
   export FM_FAKE_RUN_HEAD
 }
 
+# Ship metadata written by current fm-spawn includes the exact task branch copied
+# from its brief marker. Keep the common fixture writer aligned with that public
+# record shape while preserving explicit branch= inputs and non-ship records.
+fm_write_meta() {
+  local file=$1 kv wt='' kind='' has_branch=0 branch=''
+  shift
+  : > "$file"
+  for kv in "$@"; do
+    printf '%s\n' "$kv" >> "$file"
+    case "$kv" in
+      worktree=*) wt=${kv#worktree=} ;;
+      kind=*) kind=${kv#kind=} ;;
+      branch=*) has_branch=1 ;;
+    esac
+  done
+  if [ "$kind" = ship ] && [ "$has_branch" = 0 ] && [ -d "$wt" ]; then
+    branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [ -z "$branch" ] || printf 'branch=%s\n' "$branch" >> "$file"
+  fi
+}
+
 # A fakebin with a fake `no-mistakes` (serves the env-driven run output) and a
 # fake `tmux` (serves a busy or idle pane). The fake no-mistakes mirrors the real
 # command surface the helper uses: `axi status`, `axi status --run <id>` (the
@@ -69,6 +96,9 @@ make_fakebin() {  # <dir> -> echoes fakebin path
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 set -u
+# Every invocation is recorded when FM_FAKE_NM_CALL_LOG is set, so a test can
+# assert that a lookup was made - or provably was not.
+[ -z "${FM_FAKE_NM_CALL_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_NM_CALL_LOG"
 # A lookup that cannot COMPLETE, as opposed to one that completes and finds no
 # run. FM_FAKE_NM_SLEEP outlasts the helper's own bound so the REAL timeout
 # wrapper kills the call; FM_FAKE_NM_RC returns a timeout's exit status directly
@@ -194,11 +224,13 @@ reset_fakes() {
   FM_FAKE_NM_RC=0
   FM_FAKE_RUNS_RC=0
   FM_FAKE_NM_SLEEP=""
+  FM_FAKE_NM_CALL_LOG=""
   FM_CREW_STATE_DEGRADED_MAX_AGE=""
   FM_CREW_STATE_NM_TIMEOUT=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
-  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT
+  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG
+  export FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -493,10 +525,99 @@ test_active_run_is_authoritative() {
   fm_write_meta "$d/state/feat-a.meta" "window=fm:fm-feat-a" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-a)"
   local out; out=$(run_crew_state "$d" feat-a)
-  assert_contains "$out" "state: working" "active run -> working"
-  assert_contains "$out" "source: run-step" "active run -> run-step source"
-  assert_contains "$out" "validating (running)" "active run reports the step"
-  pass "active run-step is authoritative"
+  [ "$out" = "state: working · source: run-step · validating (running)" ] \
+    || fail "matched task branch changed the established run verdict: $out"
+  pass "active run-step on the recorded task branch is authoritative and unchanged"
+}
+
+# Direct regression for issue #81. The parked task still records its own branch,
+# but its pooled worktree now hosts a newly allocated task's named branch and run.
+# That placement fault must be the whole answer: the foreign run cannot report
+# working and the parked event cannot quietly become a normal fallback either.
+test_reallocated_worktree_branch_surfaces_attribution_fault() {
+  reset_fakes
+  local d out; d=$(new_case reallocated-branch)
+  make_repo_on_branch "$d/wt" fm/new-task
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-task.meta" "window=fm:fm-parked-task" "worktree=$d/wt" \
+    "branch=fm/parked-task" "kind=ship" "harness=claude"
+  printf 'captain-held: awaiting hardware validation\n' > "$d/state/parked-task.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/new-task)"
+  out=$(run_crew_state "$d" parked-task)
+  [ "$out" = "state: unknown · source: run-attribution · task branch mismatch: recorded fm/parked-task, worktree has fm/new-task" ] \
+    || fail "reallocated worktree did not surface its branch attribution fault: $out"
+  assert_not_contains "$out" "state: working" "foreign run was attributed to the parked task"
+  assert_not_contains "$out" "source: status-log" "branch mismatch silently fell back to the event log"
+  pass "a pooled worktree on another task's branch surfaces a run-attribution fault"
+}
+
+# Before the branch marker existed, metadata did not contain enough identity to
+# attribute even a branch-and-head-matching run safely. Preserve compatibility for
+# no-run legacy tasks, but surface a run discovered through ambient placement.
+test_legacy_run_without_recorded_branch_is_unattributable() {
+  reset_fakes
+  local d out; d=$(new_case legacy-no-branch)
+  make_repo_on_branch "$d/wt" fm/legacy-task
+  make_fakebin "$d" >/dev/null
+  printf 'window=fm:fm-legacy-task\nworktree=%s\nkind=ship\nharness=claude\n' "$d/wt" \
+    > "$d/state/legacy-task.meta"
+  printf 'paused: awaiting hardware validation\n' > "$d/state/legacy-task.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/legacy-task)"
+  out=$(run_crew_state "$d" legacy-task)
+  [ "$out" = "state: unknown · source: run-attribution · run on fm/legacy-task is unattributable: task branch not recorded" ] \
+    || fail "legacy run without durable branch identity was not surfaced: $out"
+  pass "a run with no durable task branch is visible as unattributable"
+}
+
+# The detached window is the ship's pre-branch phase: the brief creates the
+# recorded branch before any validation, so while HEAD is detached no run of
+# this task's can exist to attribute. Reading state there must cost zero bounded
+# no-mistakes calls per heartbeat, however loudly `axi status` would answer.
+test_detached_worktree_skips_the_run_lookup() {
+  reset_fakes
+  local d out; d=$(new_case detached-skip)
+  make_repo_on_branch "$d/wt" fm/detached-task
+  git -C "$d/wt" checkout --detach -q
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/detached-task.meta" "window=fm:fm-detached-task" "worktree=$d/wt" \
+    "branch=fm/detached-task" "kind=ship" "harness=claude"
+  printf 'blocked: worktree isolation is not verified\n' > "$d/state/detached-task.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/some-other-task)"
+  FM_FAKE_RUNS_LIST="running fm/detached-task ${FM_FAKE_RUN_HEAD}"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" detached-task
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
+  out=$(run_crew_state "$d" detached-task)
+  [ ! -s "$FM_FAKE_NM_CALL_LOG" ] \
+    || fail "a detached worktree still spent bounded no-mistakes calls: $(cat "$FM_FAKE_NM_CALL_LOG")"
+  assert_contains "$out" "state: blocked" "detached crew lost its recorded blocked state"
+  assert_contains "$out" "source: status-log" "detached crew did not fall through to its own log"
+  pass "a detached worktree skips the run lookup entirely"
+}
+
+# The other half of that short-circuit: it must never skip a state in which a run
+# COULD be attributed. The only such state is the recorded branch checked out
+# here, and there the lookup still runs and still answers.
+test_recorded_branch_checked_out_still_runs_the_lookup() {
+  reset_fakes
+  local d out; d=$(new_case attached-lookup)
+  make_repo_on_branch "$d/wt" fm/attached-task
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/attached-task.meta" "window=fm:fm-attached-task" "worktree=$d/wt" \
+    "branch=fm/attached-task" "kind=ship" "harness=claude"
+  printf 'blocked: worktree isolation is not verified\n' > "$d/state/attached-task.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/attached-task)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" attached-task
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
+  out=$(run_crew_state "$d" attached-task)
+  grep -Fxq "axi status" "$FM_FAKE_NM_CALL_LOG" \
+    || fail "the short-circuit skipped a crew whose recorded branch is checked out"
+  [ "$out" = "state: working · source: run-step · validating (running) · status-log superseded by active run" ] \
+    || fail "an attributable run stopped being the answer: $out"
+  pass "a worktree on its recorded branch still performs the run lookup"
 }
 
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED
@@ -1183,9 +1304,9 @@ test_no_run_idle_pane_uses_log() {
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" feat-i
   local out; out=$(run_crew_state "$d" feat-i)
-  assert_contains "$out" "state: parked" "needs-decision log -> parked"
-  assert_contains "$out" "source: status-log" "idle pane -> status-log source"
-  pass "no run + idle pane uses the status-log verb"
+  [ "$out" = "state: parked · source: status-log · which database?" ] \
+    || fail "no-run behavior changed after task-branch attribution was added: $out"
+  pass "no run + matching task branch keeps the existing status-log verdict"
 }
 
 test_no_run_idle_pane_uses_keyed_log() {
@@ -1393,9 +1514,9 @@ test_torn_down_worktree() {
   local out rc
   out=$(run_crew_state "$d" gone-k); rc=$?
   expect_code 0 "$rc" "torn-down worktree exits 0"
-  assert_contains "$out" "state: unknown" "torn-down -> unknown"
-  assert_contains "$out" "source: none" "torn-down -> none source"
-  pass "torn-down worktree is handled gracefully"
+  [ "$out" = "state: unknown · source: none · worktree gone (torn down?)" ] \
+    || fail "torn-down worktree behavior changed after task-branch attribution was added: $out"
+  pass "torn-down worktree keeps its existing unknown verdict"
 }
 
 test_missing_meta() {
@@ -1915,6 +2036,10 @@ EOF
 }
 
 test_active_run_is_authoritative
+test_reallocated_worktree_branch_surfaces_attribution_fault
+test_legacy_run_without_recorded_branch_is_unattributable
+test_detached_worktree_skips_the_run_lookup
+test_recorded_branch_checked_out_still_runs_the_lookup
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded

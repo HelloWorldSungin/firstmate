@@ -16,6 +16,12 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   A generated ship brief also carries one exact firstmate-task-branch marker.
+#   Spawn validates and copies that value to branch= in state/<id>.meta before
+#   the worker creates it, so current-state reconciliation has durable task
+#   identity independent of the pooled worktree's later ambient branch.
+#   A legacy brief without the marker may still launch, but its metadata omits
+#   branch= and any run later found there is deliberately unattributable.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1230,6 +1236,31 @@ fi
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
 BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 
+TASK_BRANCH=
+if [ "$KIND" = ship ]; then
+  TASK_BRANCH_MARKER_COUNT=$(grep -c '^<!-- firstmate-task-branch=' "$BRIEF_REAL" 2>/dev/null || true)
+  case "$TASK_BRANCH_MARKER_COUNT" in
+    0)
+      echo "warning: $BRIEF records no task branch marker; validation runs for this legacy task will be surfaced as unattributable rather than guessed from its task id" >&2
+      ;;
+    1)
+      TASK_BRANCH_MARKER=$(grep '^<!-- firstmate-task-branch=' "$BRIEF_REAL")
+      case "$TASK_BRANCH_MARKER" in
+        '<!-- firstmate-task-branch='*' -->')
+          TASK_BRANCH=${TASK_BRANCH_MARKER#'<!-- firstmate-task-branch='}
+          TASK_BRANCH=${TASK_BRANCH%' -->'}
+          ;;
+        *) echo "error: malformed task branch marker in $BRIEF" >&2; exit 1 ;;
+      esac
+      if ! git check-ref-format --branch "$TASK_BRANCH" >/dev/null 2>&1; then
+        echo "error: malformed task branch marker in $BRIEF" >&2
+        exit 1
+      fi
+      ;;
+    *) echo "error: multiple task branch markers in $BRIEF" >&2; exit 1 ;;
+  esac
+fi
+
 ISSUE=
 if [ "$KIND" = ship ]; then
   ISSUE_MARKER_COUNT=$(grep -c '^<!-- firstmate-task-issue=' "$BRIEF_REAL" 2>/dev/null || true)
@@ -2242,6 +2273,7 @@ META_WINDOW=$T
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
+  [ -z "$TASK_BRANCH" ] || echo "branch=$TASK_BRANCH"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
