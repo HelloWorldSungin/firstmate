@@ -142,12 +142,19 @@ Also per task: `paths.turn_ended`, the age of `state/<id>.turn-ended` - the harn
 It exists here because the status log is a REPORTING cadence rather than an activity one - the crew brief instructs workers to append only on phase changes - so a surface that wants to know when a task last DID anything needs a clock the worker does not choose.
 An absent marker reports `present: false` with a null age, because a harness that has completed no turn yet and one that never touches the marker are both "no turn observed", and neither is evidence of a stall.
 
-Also per task: `paths.meta.age_seconds`, the age of `state/<id>.meta`.
-That file is written once at dispatch, so its age is when the task STARTED and never when it last did anything.
-It is published for one reason: it is the clock supervision falls back to.
-[`bin/fm-watch.sh`](../bin/fm-watch.sh)'s `busy_turn_over_age` ages `state/<id>.turn-ended` and uses the spawn record instead before any turn has completed, so a task that has neither reported nor completed anything still has a bound - and a renderer asking supervision's question can only apply the same fallback if the snapshot carries it.
+Also per task: `spawn_age_seconds`, how long ago the task was DISPATCHED.
+It ages the `spawned_at` epoch [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) stamps into `state/<id>.meta` at dispatch, and it is null when no readable stamp is present.
+It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor completed anything, so such a task still has a bound instead of an exemption without end.
 A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
-The other path rows - `report`, `worktree`, `home` - have no use for an age and keep the plain `{path, present}` shape.
+
+It is deliberately the recorded VALUE and not the age of the `state/<id>.meta` file, because those two mean different things.
+The file is rewritten after dispatch by firstmate's own routine actions: [`bin/fm-pr-check.sh`](../bin/fm-pr-check.sh) rebuilds it when it records a PR, [`bin/fm-promote.sh`](../bin/fm-promote.sh) rewrites it on a kind flip, and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) appends to it.
+Its mtime therefore means "when anything last touched this record", and using it as an activity clock would let arming a PR check on a hung task silently re-buy that task a full quiet window.
+Every one of those writers preserves the `spawned_at` line, so the stamped epoch stays what it says it is.
+
+[`bin/fm-watch.sh`](../bin/fm-watch.sh)'s `busy_turn_over_age` does age the meta FILE, and that is a different question with a different correct answer.
+It bounds how long a BUSY PANE may go with no completed turn, it owns that choice, and a file an operator action touched is a defensible floor for it.
+It is not wrong and must not be changed to match this field.
 
 Also per task: two further `current_state.source` values the snapshot can produce for itself, beside the existing `timeout`.
 `not-attempted` means no bounded runner could be started, so the current-state read was never made - which is not the same fact as a read that ran past its bound, and only the caller that can tell them apart can report either honestly.

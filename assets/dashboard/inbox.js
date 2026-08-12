@@ -523,7 +523,7 @@ function stateReadLive(task) {
 
 // How long ago this task last did anything the snapshot can see, from three
 // clocks in order: its last status append, its last completed turn, and - only
-// when neither of those exists - its spawn record.
+// when neither of those exists - how long ago it was dispatched.
 //
 // The status log alone is a REPORTING cadence, not an activity one. The crew
 // brief instructs workers to append only on phase changes a supervisor would
@@ -534,22 +534,31 @@ function stateReadLive(task) {
 // last happen here". A task whose harness leaves no turn marker still ages on
 // its status log exactly as before.
 //
-// The spawn record is last because it is not an activity timestamp at all: it
-// is the moment the task was dispatched, which only bounds a task that has not
-// yet produced either real clock. That is precisely how supervision bounds the
-// same case - bin/fm-watch.sh ages `state/<id>.turn-ended` and falls back to
-// the task's `state/<id>.meta` spawn record before any turn has completed - so
-// a task that has reported nothing and completed nothing still has a clock,
-// and the exemption a live reading buys stays bounded for it too. Without it a
-// worker that hung inside its very first tool call could never colour the
-// strip, however long it hung.
+// The dispatch time is last because it is not an activity timestamp at all: it
+// is when the task STARTED, which only bounds a task that has not yet produced
+// either real clock. Supervision bounds the same case the same way, so a task
+// that has reported nothing and completed nothing still has a clock and the
+// exemption a live reading buys stays bounded for it too. Without it a worker
+// that hung inside its very first tool call could never colour the strip,
+// however long it hung.
+//
+// `spawn_age_seconds` ages the `spawned_at` stamp recorded at dispatch, not the
+// mtime of `state/<id>.meta`. The file is rewritten by firstmate's own routine
+// actions - recording a PR, flipping a kind, appending a decision review - so
+// its mtime would reset a hung task's only clock and re-buy it a full quiet
+// window. That is the same exemption hole in a different place, which is why
+// the snapshot publishes the recorded value instead.
+//
+// `bin/fm-watch.sh`'s `busy_turn_over_age` does age the meta FILE, and that is
+// correct for what it asks: it bounds how long a BUSY PANE may go with no
+// completed turn, it owns that choice, and it must not be changed to match this.
 function activityAge(task) {
   const reported = [
     finiteAge(task?.paths?.status_log?.last_event_age_seconds),
     finiteAge(task?.paths?.turn_ended?.last_turn_age_seconds),
   ].filter((age) => age !== null);
   if (reported.length) return Math.min(...reported);
-  return finiteAge(task?.paths?.meta?.age_seconds);
+  return finiteAge(task?.spawn_age_seconds);
 }
 
 function eventSignal(tasks, supervision) {

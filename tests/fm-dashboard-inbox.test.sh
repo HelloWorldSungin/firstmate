@@ -410,40 +410,40 @@ equal("a task observed working with no turn inside the window is amber",
 // hung. That is the one shape of this signal that could not fail, and it has
 // been seen twice on the real fleet.
 //
-// Supervision already answers this exact case: bin/fm-watch.sh's
-// busy_turn_over_age ages state/<id>.turn-ended and falls back to the task's
-// state/<id>.meta spawn record before any turn has completed, so a fresh task
-// still gets a bound. The strip applies the same fallback through
-// paths.meta.age_seconds.
+// The strip bounds it on when the task was DISPATCHED, which the snapshot
+// publishes as spawn_age_seconds from the spawned_at stamp bin/fm-spawn.sh
+// records. Deliberately not the age of state/<id>.meta: firstmate rewrites that
+// file when it records a PR or flips a kind, so its mtime would hand a hung
+// task a fresh quiet window - the same hole in a different place.
 //
 // What has to break for this pair to fail: activityAge stops falling back to
-// the spawn record, or the snapshot stops publishing its age. The companion
-// case below is what stops the pair passing by simply always colouring.
+// the dispatch clock, or the snapshot stops publishing it. The companion case
+// below is what stops the pair passing by simply always colouring.
 const hungOnFirstCall = health(fleet({ tasks: [task("hung-on-first-call", {
   current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
-  paths: { meta: { present: true, age_seconds: QUIET_ALLOWANCE + 60 } },
+  paths: {},
+  spawn_age_seconds: QUIET_ALLOWANCE + 60,
 })] }));
-equal("a busy task with no report and no completed turn is bounded by its spawn record",
+equal("a busy task with no report and no completed turn is bounded by its dispatch",
   hungOnFirstCall.byId.events.tone, "amber");
 equal("and its fleet is not summarized as healthy", hungOnFirstCall.overall.label, "Degraded");
 
 equal("the same task inside the window still reads green",
   health(fleet({ tasks: [task("just-spawned", {
     current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
-    paths: { meta: { present: true, age_seconds: 120 } },
+    paths: {},
+    spawn_age_seconds: 120,
   })] })).byId.events.tone, "green");
 
-// The spawn record is the LAST resort, not a third activity clock: a dispatch
+// The dispatch clock is the LAST resort, not a third activity clock: a dispatch
 // time is not an activity time, so a task that has a real clock must still be
 // judged on it. This one was spawned long ago and completed a turn a minute
 // ago, and it is fine.
-equal("a real activity clock outranks the spawn record",
+equal("a real activity clock outranks the dispatch clock",
   health(fleet({ tasks: [task("long-lived", {
     current_state: { state: "unknown", source: "run-attribution", detail: "run on another branch" },
-    paths: {
-      meta: { present: true, age_seconds: 86_400 },
-      turn_ended: { present: true, last_turn_age_seconds: 60 },
-    },
+    paths: { turn_ended: { present: true, last_turn_age_seconds: 60 } },
+    spawn_age_seconds: 86_400,
   })] })).byId.events.tone, "green");
 
 // A live reading says what a task is doing now, never for how long, so it
@@ -452,7 +452,8 @@ equal("a real activity clock outranks the spawn record",
 equal("a busy task with no readable clock at all is unknown, never green",
   health(fleet({ tasks: [task("clockless", {
     current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
-    paths: { meta: { present: true, age_seconds: null } },
+    paths: {},
+    spawn_age_seconds: null,
   })] })).byId.events.tone, "unknown");
 
 // The overdue sentence reports activityAge, which is whichever clock was

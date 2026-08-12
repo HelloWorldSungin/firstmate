@@ -58,11 +58,12 @@
 #     current state. Its last_event_at and last_event_age_seconds report WHEN
 #     that event landed, from the log's mtime, so a renderer can age a task
 #     without reparsing the log.
-#     paths.meta carries age_seconds beside path and present: state/<id>.meta is
-#     written once at dispatch, so its age is when the task STARTED. It is the
-#     same fallback bin/fm-watch.sh uses when no turn has completed yet, which is
-#     what lets a renderer bound a task that has neither reported nor completed
-#     anything. The other path rows - report, worktree, home - carry no age.
+#     spawn_age_seconds ages the `spawned_at` epoch bin/fm-spawn.sh stamps into
+#     state/<id>.meta, so it reports how long ago the task was DISPATCHED. It is
+#     read from that recorded value and never from the meta file's mtime, which
+#     firstmate's own later writes to the record reset; it is what lets a
+#     renderer bound a task that has neither reported nor completed anything.
+#     Null when no readable stamp is present.
 #     paths.turn_ended ages state/<id>.turn-ended, the harness-neutral marker a
 #     completed turn touches and the same file bin/fm-watch.sh ages to bound how
 #     long a busy pane may go with no completed turn. It stays a wake
@@ -214,6 +215,17 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_RECORDS "$FM_SNAPSHOT_REGISTRY_RECO
 validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_TASK_JOBS "$FM_SNAPSHOT_TASK_JOBS"
 validate_positive_bound FM_SNAPSHOT_TASK_TIMEOUT "$FM_SNAPSHOT_TASK_TIMEOUT"
+# The outer per-task bound must leave room for a strictly smaller inner one, and
+# 1 does not: the smallest bound fm_run_timed will honor is also 1, so at an
+# outer bound of 1 the two are equal and the inner lookup can never expire
+# first. That is refused here rather than silently clamped, because a caller who
+# asked for a 1-second per-task bound asked for something this command cannot
+# deliver, and quietly giving them a different arrangement is how the two bounds
+# came to disagree in the first place.
+if [ "$FM_SNAPSHOT_TASK_TIMEOUT" -lt 2 ]; then
+  printf 'fm-fleet-snapshot: FM_SNAPSHOT_TASK_TIMEOUT must be at least 2, so the inner lookup bound can sit strictly inside it\n' >&2
+  exit 2
+fi
 # The bound fm-crew-state.sh applies to its own no-mistakes lookup while this
 # command is the caller, DERIVED from the outer bound above rather than written
 # as a second independent number so the two cannot silently invert when someone
@@ -222,7 +234,9 @@ validate_positive_bound FM_SNAPSHOT_TASK_TIMEOUT "$FM_SNAPSHOT_TASK_TIMEOUT"
 # outer bound fires first that designed answer is unreachable from here, so a
 # saturated daemon costs a task its whole reading rather than degrading it. The
 # 3 seconds of headroom cover crew-state's non-lookup work, measured well under a
-# second on this fleet in docs/verification/dashboard-fleet-health.md.
+# second on this fleet in docs/verification/dashboard-fleet-health.md. With the
+# outer bound refused below 2 above, the floor of 1 here is always strictly
+# inside it.
 FM_SNAPSHOT_TASK_NM_TIMEOUT=$(( FM_SNAPSHOT_TASK_TIMEOUT - 3 ))
 [ "$FM_SNAPSHOT_TASK_NM_TIMEOUT" -ge 1 ] || FM_SNAPSHOT_TASK_NM_TIMEOUT=1
 
@@ -331,26 +345,6 @@ path_present_json() {  # <path>
     '{path:$path,present:$present}'
 }
 
-# The task's spawn record, which carries an age the other path rows do not.
-# state/<id>.meta is written once at dispatch, so its mtime is when this task
-# started, and that is the clock supervision falls back to: bin/fm-watch.sh's
-# busy_turn_over_age ages state/<id>.turn-ended and uses the spawn record
-# instead before any turn has completed, so a task that has neither reported nor
-# completed anything still has a bound. A renderer asking supervision's question
-# needs the same fallback, and it can only have it if the snapshot publishes it.
-# report, worktree, and home have no use for an age and keep the plain shape.
-meta_path_json() {  # <meta-path>
-  local meta=$1 present=0 age=''
-  if [ -e "$meta" ]; then
-    present=1
-    age=$(path_age_seconds "$meta")
-  fi
-  jq -n --arg path "$meta" --arg age "$age" \
-    --argjson present "$(bool_json "$present")" \
-    '{path:$path,present:$present,
-      age_seconds:(if $age == "" then null else ($age | tonumber) end)}'
-}
-
 meta_value() {  # <meta-file> <key>
   fm_meta_get "$1" "$2"
 }
@@ -457,6 +451,35 @@ path_age_seconds() {  # <path>
   [ -n "$m" ] || return 0
   case "$m" in ''|*[!0-9]*) return 0 ;; esac
   age=$(( SNAPSHOT_EPOCH - m ))
+  [ "$age" -lt 0 ] && age=0
+  printf '%s' "$age"
+}
+
+# How long ago this task was dispatched, from the `spawned_at` epoch
+# bin/fm-spawn.sh stamps into state/<id>.meta.
+#
+# The VALUE is read, never the file's mtime, because the two mean different
+# things. state/<id>.meta is rewritten after dispatch by firstmate's own routine
+# actions - bin/fm-pr-check.sh rebuilds it when it records a PR,
+# bin/fm-promote.sh rewrites it on a kind flip, bin/fm-decision-hold.sh appends
+# to it - so the file's mtime means "when anything last touched this record" and
+# would silently reset a task's clock the moment a PR check was armed on it.
+# Every one of those writers preserves the spawned_at LINE, so the stamped epoch
+# stays what it says it is.
+#
+# bin/fm-watch.sh's busy_turn_over_age does age the meta FILE, and that is not
+# the same use and must not be changed to match this: it is bounding how long a
+# BUSY PANE may go with no completed turn, it owns that choice, and a file
+# touched by an operator action is a defensible floor for that question.
+#
+# The clock-skew convention is path_age_seconds' above: never negative, 0 for a
+# record stamped ahead of the observation. A record with no readable stamp has
+# no spawn clock and prints nothing.
+spawn_age_seconds() {  # <meta-file>
+  local stamped age
+  stamped=$(meta_value "$1" spawned_at) || return 0
+  case "$stamped" in ''|*[!0-9]*) return 0 ;; esac
+  age=$(( SNAPSHOT_EPOCH - stamped ))
   [ "$age" -lt 0 ] && age=0
   printf '%s' "$age"
 }
@@ -727,10 +750,11 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 # row. It is deliberately the same function rather than a second hand-written
 # object: two copies of the row shape is exactly what drifts. The cheap local
 # file reads stay, because none of them is a plausible cause of a reader dying
-# and the paths they fill - the spawn record's age above all - are what let a
-# renderer age a row it otherwise knows nothing about.
+# and the values they fill - the spawn stamp above all - are what let a renderer
+# age a row it otherwise knows nothing about.
 task_json_one() {  # <meta-path> [degraded]
   local meta=$1 degraded=${2:-}
+  local spawn_age
   local id kind harness model effort mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json model_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
@@ -897,7 +921,8 @@ task_json_one() {  # <meta-path> [degraded]
   fi
 
   [ -f "$report_path" ] && report_present=1 || report_present=0
-  meta_json=$(meta_path_json "$meta")
+  spawn_age=$(spawn_age_seconds "$meta")
+  meta_json=$(path_present_json "$meta")
   status_json=$event_json
   turn_json=$(turn_marker_json "$turn_marker")
   report_json=$(path_present_json "$report_path")
@@ -935,6 +960,7 @@ task_json_one() {  # <meta-path> [degraded]
     --argjson work_items "$work_items_json" \
     --arg agent_alive "$agent_alive" \
     --arg observed_at "$SNAPSHOT_NOW" \
+    --arg spawn_age "$spawn_age" \
     --arg last_event_raw "$last_event_raw" \
     --argjson current_state "$current_json" \
     --argjson model_verification "$model_json" \
@@ -1010,6 +1036,7 @@ task_json_one() {  # <meta-path> [degraded]
         report:$report
       },
       secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
+      spawn_age_seconds:($spawn_age | if . == "" then null else tonumber end),
       current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
       model_verification:($model_verification | del(.id) | . + {observed_at:$observed_at}),
       endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
@@ -1072,8 +1099,32 @@ task_json_one() {  # <meta-path> [degraded]
 # from the order the readers happen to finish in. Background readers do not
 # inherit this shell's EXIT trap, so none of them can remove the scratch
 # directory the others are still writing into.
+# The rows the concurrent readers actually produced, as one sorted JSON array.
+#
+# One jq for the whole fleet is the point: a per-file parse would reintroduce
+# the per-task serial cost this projection was rebuilt to remove. A file that
+# landed truncated fails that single slurp outright, so that case - and only
+# that case - falls back to parsing each file on its own, which salvages the
+# rows that are fine instead of discarding every one of them. Both paths simply
+# omit an id they cannot read; the caller reconciles what is missing.
+task_rows_produced() {  # <workdir>
+  local workdir=$1 rows='' file row
+  if rows=$(cat "$workdir"/*.json 2>/dev/null | jq -s 'sort_by(.id)' 2>/dev/null) \
+    && [ -n "$rows" ]; then
+    printf '%s' "$rows"
+    return 0
+  fi
+  rows=''
+  for file in "$workdir"/*.json; do
+    [ -s "$file" ] || continue
+    row=$(jq -c . "$file" 2>/dev/null) || continue
+    rows+="$row"$'\n'
+  done
+  printf '%s' "$rows" | jq -s 'sort_by(.id)'
+}
+
 task_json_lines() {
-  local meta id pid workdir row rows=''
+  local meta id pid workdir row rows='' produced missing
   local -a pids=() ids=()
   workdir="$SNAPSHOT_TMP/tasks"
   mkdir -p "$workdir" || return 1
@@ -1100,27 +1151,42 @@ task_json_lines() {
   # empty or unparseable one, and a task missing from tasks[] reads as a fleet
   # that does not have it - strictly worse than an unknown row, because a
   # reading that could not be taken must render as unknown and never as a pass.
-  # An id with nothing readable therefore gets task_json_one's degraded row,
-  # built here in this process rather than through the scratch file whose write
-  # may be exactly what failed. If even that cannot be produced the whole
-  # snapshot fails loudly naming the id, the same refusal the history read makes
-  # rather than publish a document it knows is incomplete.
-  for id in "${ids[@]:-}"; do
+  #
+  # The comparison is a set difference computed in the one jq that already
+  # slurps the rows, NOT a parse per task: this function exists to stop per-task
+  # cost growing with the fleet, and a jq process per row would put that cost
+  # straight back into the collector where it is purely serial. A healthy
+  # snapshot therefore spends exactly one jq here however large the fleet is,
+  # and a process per failed task only when one actually failed.
+  produced=$(task_rows_produced "$workdir")
+  missing=$(printf '%s\n' "${ids[@]:-}" | jq -R -r -s \
+    --slurpfile produced_doc <(printf '%s' "$produced") '
+      (($produced_doc[0] // []) | map(.id)) as $have
+      | [ splits("\n") | select(length > 0) ] - $have
+      | .[]')
+  if [ -z "$missing" ]; then
+    printf '%s' "$produced"
+    return 0
+  fi
+  # An id with nothing readable gets task_json_one's degraded row, built here in
+  # this process rather than through the scratch file whose write may be exactly
+  # what failed. If even that cannot be produced the whole snapshot fails loudly
+  # naming the id, the same refusal the history read makes rather than publish a
+  # document it knows is incomplete.
+  while IFS= read -r id; do
     [ -n "$id" ] || continue
-    row=''
-    if [ -s "$workdir/$id.json" ]; then
-      row=$(jq -c . "$workdir/$id.json" 2>/dev/null) || row=''
-    fi
-    if [ -z "$row" ]; then
-      row=$(task_json_one "$STATE/$id.meta" degraded | jq -c . 2>/dev/null) || row=''
-    fi
+    row=$(task_json_one "$STATE/$id.meta" degraded | jq -c . 2>/dev/null) || row=''
     if [ -z "$row" ]; then
       printf 'fm-fleet-snapshot: no readable task row for %s\n' "$id" >&2
       return 1
     fi
     rows+="$row"$'\n'
-  done
-  printf '%s' "$rows" | jq -s 'sort_by(.id)'
+  done <<EOF
+$missing
+EOF
+  printf '%s' "$rows" | jq -s \
+    --slurpfile produced_doc <(printf '%s' "$produced") \
+    '(($produced_doc[0] // []) + .) | sort_by(.id)'
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks

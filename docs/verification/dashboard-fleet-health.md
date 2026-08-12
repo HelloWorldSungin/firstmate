@@ -121,9 +121,15 @@ With the outer bound at 8 s and the inner at 10 s the outer always fires first, 
 The fix is the ORDERING, and it is corrected by lowering the inner bound rather than widening the outer one, so the dashboard's budget is untouched: the outer per-task bound is still 8 s and the runtime figures above still hold.
 Making the degraded fallback reachable and staying inside the budget therefore do not conflict here.
 The snapshot passes `FM_CREW_STATE_NM_TIMEOUT` to the child derived from its own bound, `max(1, FM_SNAPSHOT_TASK_TIMEOUT - 3)`, which is 5 s at the default, so retuning the outer bound cannot silently invert the two again.
+`FM_SNAPSHOT_TASK_TIMEOUT` is refused below 2 for the same reason: at an outer bound of 1 the derivation's floor of 1 would equal it rather than sit inside it, which is the very arrangement this derivation exists to prevent, and the refusal is explicit rather than a silent clamp.
 
 The 3 s of headroom cover `fm-crew-state.sh`'s non-lookup work, measured under a second on this fleet: the whole call costs 0.00-0.06 s for a task that never reaches the daemon and 0.80-1.61 s for one that does, per the per-task trace above.
 A healthy lookup is nowhere near the lowered bound - `FM_CREW_STATE_NM_TIMEOUT=5` answered correctly in 0.80 s against a live task - so only a pathological lookup reaches it, and there the degraded replay is a better answer than the outer bound's `unknown`.
+
+One corner is deliberately left as it is, recorded here so the next reader does not have to rediscover it.
+A single `fm-crew-state.sh` invocation can make two bounded lookups - an `axi status` call, and a `runs --limit` scan when the first answered without attributing a run - so the worst case is roughly twice the inner bound plus overhead, about 10 s against the 8 s outer bound.
+That corner does not reach the degraded replay, and it degrades to the pre-existing `timeout` row rather than to anything new.
+It is not the path this derivation is about: the saturated-daemon path measured above is single-call by design, because `fm-crew-state.sh` deliberately skips the second lookup when the primary one timed out, so the degraded replay is genuinely reachable exactly where the load that motivated this change puts it.
 
 ## Regression coverage
 
@@ -148,16 +154,21 @@ not ok - a 12-task snapshot took 13s, past 7s (half the 15s the dashboard allows
 The activity cases assert that a task quiet for 40 minutes reads green when either the snapshot observed it working or its runtime completed a turn recently.
 Against the module as it shipped, both read amber and the fleet read Degraded, which is the reported defect.
 
-Four further cases cover the bounds themselves rather than the numbers.
+Five further cases cover the bounds themselves rather than the numbers.
 
 `a per-task read that ignores SIGTERM is killed inside its bound` drives a stand-in reader that ignores `SIGTERM` and `exec`s into a 30 s sleep, so only the kill escalation can end it; it fails if the per-task bound stops escalating to `SIGKILL`.
 The existing timeout case cannot see that, because `sleep` dies politely.
 
-`the child's lookup bound is derived from the per-task bound and stays strictly inside it` has the stand-in report the `FM_CREW_STATE_NM_TIMEOUT` it was handed, and asserts 5 s at the default, 9 s when the outer bound is raised to 12 s, and the 1 s floor when it is lowered to 2 s.
-It fails if the inner bound stops being derived from the outer one, which is the shape in which the two silently inverted.
+`the child's lookup bound is derived from the per-task bound and stays strictly inside it` has the stand-in report the `FM_CREW_STATE_NM_TIMEOUT` it was handed, and asserts 5 s at the default, 9 s when the outer bound is raised to 12 s, and the 1 s floor at the smallest legal outer bound of 2 s - plus that an outer bound of 1 is refused outright.
+It fails if the inner bound stops being derived from the outer one, or if the invariant holds only at the comfortable values, which is how the equal-at-the-minimum case got through the first probe set.
 
 `a task whose reader failed is still listed, as an explicit unknown rather than absent` makes one task's reader die before the jq that prints its row, and asserts the task COUNT as well as the row's contents - a case inspecting only the rows present cannot see a missing one.
 It fails if the collector stops reconciling the ids it launched against the rows it got back.
 
-`paths.meta publishes the spawn-record age and the other path rows keep their shape` fails if the spawn clock the activity signal falls back to stops being published, or if an age leaks into `report`, `worktree`, or `home`, which have no use for one.
-Its dashboard half is the pair asserting that a busy task with no status line and no completed turn colours the strip once its spawn record passes the window and stays green inside it.
+`the collector adds no per-task cost of its own` drives 48 task records through a stand-in reader that costs nothing, so the only thing being measured is what the collector spends per row rather than the stand-in's own sleep.
+The size is chosen: at the ~10 ms a jq process per row costs, 48 rows is roughly half a second of purely serial overhead and is measurable against a stated fraction of the budget, while the 12-record concurrency case pays about a tenth of a second and cannot see it.
+It fails if per-task work is added back to the collector, whether or not that work is a jq process.
+The 12-record case stays exactly what it was, the concurrency test.
+
+`the spawn clock comes from the recorded stamp, not the meta file's mtime` fails if the clock the activity signal falls back to stops being published, or if it goes back to ageing `state/<id>.meta` - which it asserts by touching that file and requiring the published age not to move.
+Its dashboard half is the pair asserting that a busy task with no status line and no completed turn colours the strip once its dispatch passes the window and stays green inside it.

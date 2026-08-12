@@ -1451,10 +1451,11 @@ esac'
 # numbers to invert silently.
 #
 # What has to break for this to fail: the snapshot stops passing
-# FM_CREW_STATE_NM_TIMEOUT, or stops deriving it from FM_SNAPSHOT_TASK_TIMEOUT,
-# so retuning the outer bound leaves the inner one behind.
+# FM_CREW_STATE_NM_TIMEOUT, stops deriving it from FM_SNAPSHOT_TASK_TIMEOUT so
+# retuning the outer bound leaves the inner one behind, or lets the two become
+# equal at the edge of the legal range.
 test_inner_lookup_bound_stays_inside_the_outer_bound() {
-  local home stub inner
+  local home stub inner rc
   home=$(make_home inner-bound)
   stub="$TMP_ROOT/inner-bound-bin"
   # The stub reports the bound it was handed back through the detail field.
@@ -1466,10 +1467,11 @@ printf "state: working · source: pane · nm=%s\n" "${FM_CREW_STATE_NM_TIMEOUT:-
     "project=alpha" "harness=claude" "kind=ship" "mode=ship"
 
   # <outer> <expected-inner>: the default, a raised outer bound the inner one
-  # must track, and an outer bound so small the inner one floors at 1 rather
-  # than going to zero or negative.
+  # must track, and the SMALLEST legal outer bound, where the derivation's floor
+  # of 1 has to still land strictly inside it. The comfortable values alone are
+  # why the equal-at-the-minimum case got through the first time.
   local bounds outer expected
-  for bounds in "8 5" "12 9" "2 1"; do
+  for bounds in "8 5" "12 9" "3 1" "2 1"; do
     outer=${bounds% *}
     expected=${bounds#* }
     if [ "$outer" = 8 ]; then
@@ -1484,6 +1486,14 @@ printf "state: working · source: pane · nm=%s\n" "${FM_CREW_STATE_NM_TIMEOUT:-
     [ "$expected" -lt "$outer" ] \
       || fail "the inner lookup bound ${expected}s is not strictly inside the outer ${outer}s bound"
   done
+
+  # One below the smallest legal value is the case the derivation cannot honour,
+  # because the floor of 1 would equal it. It is refused rather than silently
+  # rearranged into something the caller did not ask for.
+  rc=0
+  FM_SNAPSHOT_TASK_TIMEOUT=1 FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] \
+    || fail "an outer bound of 1s, which leaves no room for a smaller inner bound, exited $rc instead of being refused"
   pass "the child's lookup bound is derived from the per-task bound and stays strictly inside it"
 }
 
@@ -1515,10 +1525,12 @@ printf "%s\n" "$verdict"
 exit 0'
   fm_write_meta "$home/state/broken-row.meta" \
     "window=firstmate:fm-broken-row" "worktree=$home/projects/broken" \
-    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship" \
+    "spawned_at=$(date +%s)"
   fm_write_meta "$home/state/sound-row.meta" \
     "window=firstmate:fm-sound-row" "worktree=$home/projects/sound" \
-    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship" \
+    "spawned_at=$(date +%s)"
 
   # The broken reader's own jq error is the point of the fixture, so its stderr
   # is captured rather than left to look like a failure of this suite.
@@ -1531,32 +1543,95 @@ exit 0'
       and (.tasks[] | select(.id == "broken-row") | .current_state.source) == "row-unavailable"
       and (.tasks[] | select(.id == "sound-row") | .current_state.state) == "working"
   ' >/dev/null || fail "a task whose reader failed is missing or not an explicit unknown: $out"
-  # The degraded row still carries the spawn record, which is the only clock a
+  # The degraded row still carries the dispatch clock, which is the only clock a
   # renderer has for a task it otherwise knows nothing about.
   printf '%s' "$out" | jq -e '
     (.tasks[] | select(.id == "broken-row") | .paths.meta.present) == true
-      and (.tasks[] | select(.id == "broken-row") | .paths.meta.age_seconds) >= 0
-  ' >/dev/null || fail "the degraded row carries no spawn-record age: $out"
+      and (.tasks[] | select(.id == "broken-row") | .spawn_age_seconds) >= 0
+  ' >/dev/null || fail "the degraded row carries no dispatch age: $out"
   pass "a task whose reader failed is still listed, as an explicit unknown rather than absent"
 }
 
-# The spawn-record age the strip falls back to when a task has neither reported
-# nor completed a turn. Only this path row carries one.
-test_meta_path_publishes_a_spawn_record_age() {
-  local home out
+# The clock the strip falls back to when a task has neither reported nor
+# completed a turn. It ages the spawned_at stamp bin/fm-spawn.sh records, NOT
+# the meta file's mtime: firstmate rewrites that file when it records a PR or
+# flips a kind, so ageing it would hand a hung task a fresh quiet window.
+#
+# What has to break for this to fail: the dispatch clock stops being published,
+# or goes back to ageing state/<id>.meta - which the touch below is what
+# catches, since it moves the file's mtime and nothing else.
+test_spawn_age_comes_from_the_record_not_the_file() {
+  local home out before after
   home=$(make_home spawn-age)
   fm_write_meta "$home/state/fresh.meta" \
     "window=firstmate:fm-fresh" "worktree=$home/projects/fresh" \
-    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship" \
+    "spawned_at=$(( $(date +%s) - 7200 ))"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-  printf '%s' "$out" | jq -e '
-    (.tasks[0].paths.meta | has("age_seconds"))
-      and (.tasks[0].paths.meta.age_seconds) >= 0
-      and (.tasks[0].paths.report | has("age_seconds") | not)
-      and (.tasks[0].paths.worktree | has("age_seconds") | not)
-      and (.tasks[0].paths.home | has("age_seconds") | not)
-  ' >/dev/null || fail "paths.meta carries no age, or an age leaked into the other path rows: $out"
-  pass "paths.meta publishes the spawn-record age and the other path rows keep their shape"
+  before=$(printf '%s' "$out" | jq -r '.tasks[0].spawn_age_seconds')
+  [ "$before" -ge 7200 ] \
+    || fail "the dispatch clock read ${before}s for a task stamped 7200s ago: $out"
+  printf '%s' "$out" | jq -e '(.tasks[0].paths.meta | has("age_seconds") | not)' >/dev/null \
+    || fail "paths.meta still carries the file-mtime age this clock replaced: $out"
+
+  touch "$home/state/fresh.meta"
+  after=$(FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json | jq -r '.tasks[0].spawn_age_seconds')
+  [ "$after" -ge 7200 ] \
+    || fail "rewriting the meta record reset the dispatch clock to ${after}s; it is ageing the file again"
+
+  # A record with no stamp has no dispatch clock, and says so rather than
+  # inventing one.
+  fm_write_meta "$home/state/stampless.meta" \
+    "window=firstmate:fm-stampless" "worktree=$home/projects/stampless" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json \
+    | jq -e '(.tasks[] | select(.id == "stampless") | .spawn_age_seconds) == null' >/dev/null \
+    || fail "a record with no spawned_at stamp published a dispatch age anyway"
+  pass "the spawn clock comes from the recorded stamp, not the meta file's mtime"
+}
+
+# What the COLLECTOR costs per row, isolated from what the readers cost.
+#
+# The 12-record case above is the concurrency test and stays that: its stand-in
+# sleeps a second, so its own cost dominates and per-row overhead disappears
+# into the noise. This one uses a stand-in that costs nothing and a fleet large
+# enough for per-row overhead to be the only thing left to measure. 48 is chosen
+# deliberately: at the ~10ms a jq process per row costs, 48 rows is roughly half
+# a second of purely serial work and is measurable against a stated fraction of
+# the budget, while 12 rows is about a tenth of a second and is not.
+#
+# What has to break for this to fail: per-task work is added back to the
+# collector, whether or not that work is a jq process.
+test_collector_adds_no_per_task_cost() {
+  local home stub tasks=48 i started ended elapsed ceiling out
+  home=$(make_home collector-cost)
+  stub="$TMP_ROOT/collector-cost-bin"
+  # shellcheck disable=SC2016
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+printf "state: working · source: pane · harness busy (stub)\n"'
+  i=1
+  while [ "$i" -le "$tasks" ]; do
+    fm_write_meta "$home/state/task-$i.meta" \
+      "window=firstmate:fm-task-$i" \
+      "worktree=$home/projects/task-$i" \
+      "project=alpha" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=ship"
+    i=$((i + 1))
+  done
+
+  started=$(date +%s)
+  out=$(FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json)
+  ended=$(date +%s)
+  elapsed=$((ended - started))
+  printf '%s' "$out" | jq -e --argjson n "$tasks" '(.tasks | length) == $n' >/dev/null \
+    || fail "the collector dropped or duplicated a task at $tasks records: $(printf '%s' "$out" | jq -c '.tasks | length')"
+
+  ceiling=$((DASHBOARD_BUDGET_SECONDS * BUDGET_FRACTION_NUMERATOR / BUDGET_FRACTION_DENOMINATOR))
+  [ "$elapsed" -le "$ceiling" ] \
+    || fail "a $tasks-task snapshot with free readers took ${elapsed}s, past ${ceiling}s (half the ${DASHBOARD_BUDGET_SECONDS}s the dashboard allows it); the collector is paying per task again"
+  pass "the collector adds no per-task cost of its own"
 }
 
 test_empty_fleet_json
@@ -1587,4 +1662,5 @@ test_a_task_read_that_times_out_is_unknown_not_absent
 test_a_task_read_that_ignores_sigterm_is_still_killed
 test_inner_lookup_bound_stays_inside_the_outer_bound
 test_a_task_whose_reader_fails_is_unknown_not_missing
-test_meta_path_publishes_a_spawn_record_age
+test_spawn_age_comes_from_the_record_not_the_file
+test_collector_adds_no_per_task_cost

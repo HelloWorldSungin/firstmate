@@ -150,10 +150,15 @@ Everything not observed working is aged on the newer of its last status append a
 That marker is a wake notification and an activity timestamp, never current state; [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns it and already ages this exact file for the same purpose.
 A task whose harness leaves no marker still ages on its status log alone, as before.
 
-A task that has neither yet - no status line and no completed turn - is aged on `paths.meta.age_seconds`, when it was spawned.
+A task that has neither yet - no status line and no completed turn - is aged on `spawn_age_seconds`, how long ago it was dispatched.
 That is not a third activity clock and is used only as a last resort, because a dispatch time is not an activity time.
-It is here because supervision already answers this exact case the same way: `bin/fm-watch.sh` falls back to the spawn record when no turn has completed, so a task that has done nothing observable since it started still gets a bound rather than an exemption without end.
+It is here so that a task which has done nothing observable since it started still gets a bound rather than an exemption without end.
 A task with no readable clock at all stays unknown, never green.
+
+That field ages the `spawned_at` stamp recorded at dispatch, not the age of the `state/<id>.meta` file.
+Firstmate rewrites that file in the course of its own work - recording a PR, flipping a kind, appending a decision review - so its mtime would reset a hung task's only clock and hand it a fresh quiet window, which is the same exemption hole in a different place.
+[`docs/fleet-data-contracts.md`](fleet-data-contracts.md) owns the distinction and names the writers.
+`bin/fm-watch.sh` does age the meta file for its own busy-pane bound, which is a different question it owns and answers correctly.
 
 The window both are judged against is supervision's, not this page's.
 `bin/fm-watch.sh` lets a busy pane go without a completed turn for `FM_BUSY_TURN_MAX_SECS` before treating it as worth inspecting, and that is the same question this signal asks, so the strip reads the window off the snapshot rather than holding a second opinion.
