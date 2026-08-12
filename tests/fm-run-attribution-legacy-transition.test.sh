@@ -258,6 +258,42 @@ test_detect_only_names_provable_candidate_without_mutating() {
   pass "detect-only transition is read-only and still names every affected task"
 }
 
+# Fails if the sweep widens past live no-mistakes ships and starts naming or
+# rewriting records the transition does not own - scouts, direct-PR and
+# local-only ships, torn-down tasks, and modern branch-bearing tasks - which
+# would bury the real diagnostic under fleet-wide noise every session.
+test_out_of_scope_records_stay_silent() {
+  local home id out before_modern
+  home=$(make_home out-of-scope)
+  mkdir -p "$home/scout-wt" "$home/direct-wt" "$home/local-wt" "$home/modern-wt" "$home/legacy-wt"
+
+  fm_write_meta "$home/state/scout-task.meta" \
+    'window=fm:fm-scout-task' "worktree=$home/scout-wt" "project=$home/scout-wt" \
+    'kind=scout' 'mode=no-mistakes' 'harness=claude'
+  write_legacy_meta "$home" direct-task "$home/direct-wt"
+  sed -i 's/^mode=no-mistakes$/mode=direct-PR/' "$home/state/direct-task.meta"
+  write_legacy_meta "$home" local-task "$home/local-wt"
+  sed -i 's/^mode=no-mistakes$/mode=local-only/' "$home/state/local-task.meta"
+  write_legacy_meta "$home" modern-task "$home/modern-wt" 'branch=fm/modern-task'
+  # Torn down: the record outlived its worktree, so cleanup owns it, not this sweep.
+  write_legacy_meta "$home" torndown-task "$home/gone-wt"
+  # Control: proves the sweep actually ran over this state directory.
+  write_legacy_meta "$home" legacy-task "$home/legacy-wt"
+  before_modern=$(cat "$home/state/modern-task.meta")
+
+  out=$(run_transition "$home")
+  assert_contains "$out" 'RUN_ATTRIBUTION: task legacy-task:' \
+    "the control legacy ship was not diagnosed, so this case proves nothing"
+  for id in scout-task direct-task local-task modern-task torndown-task; do
+    assert_not_contains "$out" "task $id" \
+      "$id is out of scope for the transition but was reported"
+  done
+  [ "$(cat "$home/state/modern-task.meta")" = "$before_modern" ] \
+    || fail "the sweep rewrote a modern branch-bearing record"
+  [ ! -s "$home/gh.log" ] || fail "an out-of-scope record contacted GitHub: $(cat "$home/gh.log")"
+  pass "only live no-mistakes ships without branch identity enter the transition"
+}
+
 # Fails if session bootstrap stops invoking the read-only transition detector,
 # which would return updated homes to silent fleet-wide blindness.
 test_bootstrap_surfaces_transition_diagnostic() {
@@ -316,6 +352,7 @@ test_sweep_budget_bounds_every_candidate_together
 test_unproven_records_remain_byte_identical_and_visible
 test_concurrent_metadata_change_refuses_publication
 test_detect_only_names_provable_candidate_without_mutating
+test_out_of_scope_records_stay_silent
 test_bootstrap_surfaces_transition_diagnostic
 test_locked_bootstrap_runs_the_transition_and_diagnoses_the_rest
 
