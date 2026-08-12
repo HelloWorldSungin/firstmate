@@ -9,32 +9,20 @@
 // extensions registered). This adapter forwards that argument through the same host
 // method so the row it substitutes keeps Pi's transformer output; the call is optional so
 // Pi 0.83.0, which has neither the host method nor the constructor argument, still gets
-// its own three-argument behavior.
-import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
+// its own three-argument behavior. ./fm-calm-visibility.ts owns the stock user-row
+// constructor contract, shared with the legacy synthetic entry renderer so both of Calm's
+// row-construction sites carry the same host inputs.
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
-import { calmPresentationHides } from "./fm-calm-visibility.ts";
+import {
+  calmPresentationHides,
+  resolveStockUserMessageConstructor,
+  type MarkdownTransformerList,
+  type StockUserMessageConstructor,
+  type UserMessageConstructorArgs,
+} from "./fm-calm-visibility.ts";
 import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.ts";
 
-type UserMessageConstructorArgs = ConstructorParameters<typeof PiUserMessageComponent>;
-// The Markdown-transformer list Pi 0.84 hands its user rows. Pi 0.83 declares neither
-// that constructor argument nor the MarkdownTransformer type it holds, so the list is
-// described locally instead of as UserMessageConstructorArgs[3] - indexing Pi's own tuple
-// is an error against any pre-0.84 declaration. Nothing here inspects or calls a
-// transformer; the value is only carried from the host method to the stock constructor,
-// so an opaque element type is the honest one and keeps a single source typechecking
-// against both releases without sniffing the Pi version.
-type MarkdownTransformerList = readonly unknown[];
-// Pi 0.83's declared constructor stops at outputPad, so the stock class is re-typed once
-// with the 4th argument every release from 0.84 on accepts. Handing it to a 0.83 process
-// is harmless - JS drops the extra argument, which is exactly the three-argument
-// behavior that release had - and handing 0.84 an undefined there selects the same empty
-// default a three-argument call would have received.
-type StockUserMessageConstructor = new (
-  text: UserMessageConstructorArgs[0],
-  markdownTheme: UserMessageConstructorArgs[1],
-  outputPad: number,
-  markdownTransformers: MarkdownTransformerList | undefined,
-) => PiUserMessageComponent;
+type PiUserMessageComponent = InstanceType<StockUserMessageConstructor>;
 type UserMessageLike = {
   role: string;
   content: unknown;
@@ -119,12 +107,7 @@ export function installCalmOperationalUserLayout(): void {
     throw new Error("Firstmate Calm requires Pi InteractiveMode.addMessageToChat");
   }
 
-  const UserMessageComponent = PiCodingAgent.UserMessageComponent;
-  if (typeof UserMessageComponent !== "function") {
-    throw new Error("Firstmate Calm requires Pi UserMessageComponent");
-  }
-  const StockUserMessageComponent =
-    UserMessageComponent as unknown as StockUserMessageConstructor;
+  const StockUserMessageComponent = resolveStockUserMessageConstructor();
   class CalmOperationalUserMessageComponent extends StockUserMessageComponent {
     private readonly hasLeadingSpacer: boolean;
 

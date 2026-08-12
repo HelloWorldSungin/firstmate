@@ -6,10 +6,11 @@
 // with a disposable component factory, and setHiddenThinkingLabel().
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking and operational-user
-// presentation adapters probe the exact API they patch and degrade independently with a
-// diagnostic (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
-// still exposes no global renderer for arbitrary built-in or custom rows.
+// newer Pi solely for its version. The collapsed-thinking, operational-user, and
+// legacy-synthetic-entry-row presentation adapters probe the exact API they patch and
+// degrade independently with a diagnostic (see installCalmPresentationAdapter below) if a
+// future Pi removes it; Pi still exposes no global renderer for arbitrary built-in or
+// custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
 //
 // Pi has one first-registration-wins ToolDefinition per tool name, with no merge or
@@ -58,6 +59,7 @@ import {
   calmPresentationHides,
   calmPresentationIsActive,
   FIRSTMATE_CALM_PRESENTATION_EVENT,
+  installCalmPiRowHostCapture,
   registerFirstmateSyntheticPresentation,
   setCalmPresentation,
   setCalmStockExportRendering,
@@ -122,6 +124,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
+  installCalmPresentationAdapter("legacy-synthetic-entry-row", installCalmPiRowHostCapture);
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;

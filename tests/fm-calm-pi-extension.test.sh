@@ -330,10 +330,12 @@ test_pi_compat_missing_adapter_exports() {
   out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
 const assistant = await import("./.pi/extensions/lib/fm-calm-assistant-layout.ts");
 const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const visibility = await import("./.pi/extensions/lib/fm-calm-visibility.ts");
 
 for (const [name, install, expected] of [
   ["collapsed-thinking", assistant.installCalmAssistantLayout, "AssistantMessageComponent"],
   ["operational-user-row", operational.installCalmOperationalUserLayout, "InteractiveMode"],
+  ["legacy-synthetic-entry-row", visibility.installCalmPiRowHostCapture, "InteractiveMode"],
 ]) {
   let reason;
   try {
@@ -1167,6 +1169,54 @@ if (
   !presentationComponent.render(100).join("\n").includes("FIRSTMATE WATCHER WAKE")
 ) {
   throw new Error("Calm-off legacy synthetic presentation did not use a stock user-message row");
+}
+
+// Behavioral guard for the legacy synthetic row's own Markdown-transformer forward.
+// Failure boundary, in one line: this fails when a Calm-off legacy
+// firstmate-synthetic-input-presentation row stops carrying the mounting host's Markdown
+// transformers, and only then.
+//
+// Pi hands entry renderers (entry, options, theme) and nothing else, so this row's
+// transformers can only come from the host Calm captures in the one method that mounts
+// these entries. Driving the real InteractiveMode.prototype.addCustomEntryToChat is what
+// makes that capture part of the assertion instead of a detail the fixture arranges: a
+// capture that never records the host, or a renderer that ignores it, leaves the probe
+// text untransformed below. The 4th-argument gate is the same one the operational row
+// uses, so this stands down on Pi 0.83.0 for the same reason.
+const legacyEntryContent = `Legacy operational text ${operationalTransformerProbe}`;
+const legacyEntryChat = {
+  children: [],
+  addChild(component) {
+    this.children.push(component);
+  },
+};
+InteractiveMode.prototype.addCustomEntryToChat.call(
+  {
+    ...operationalMode,
+    chatContainer: legacyEntryChat,
+    session: { extensionRunner: { getEntryRenderer: (type) => entryRenderers.get(type) } },
+    streamingComponent: undefined,
+    toolOutputExpanded: expanded,
+  },
+  {
+    customType: "firstmate-synthetic-input-presentation",
+    data: { content: legacyEntryContent, kind: "legacy-operational" },
+  },
+);
+const legacyEntryComponent = legacyEntryChat.children[0];
+if (!legacyEntryComponent) {
+  throw new Error("Calm-off legacy synthetic presentation row was never mounted by Pi's own custom-entry path");
+}
+const legacyEntryRows = stripAnsi(legacyEntryComponent.render(100).join("\n"));
+if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
+  if (legacyEntryRows.includes(operationalTransformerProbe)) {
+    throw new Error("Calm legacy synthetic presentation dropped Pi's Markdown transformers");
+  }
+  if (!legacyEntryRows.includes(operationalTransformerApplied)) {
+    throw new Error("Calm legacy synthetic presentation lost Pi's transformed Markdown text");
+  }
+} else if (!legacyEntryRows.includes(operationalTransformerProbe)) {
+  throw new Error("Calm legacy synthetic presentation lost the transformer probe text entirely");
 }
 
 await calmCommand.handler("", commandContext);

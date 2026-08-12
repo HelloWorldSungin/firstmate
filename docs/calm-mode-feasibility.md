@@ -14,7 +14,9 @@ Changing persisted context to remove hidden content, filtering provider context,
 
 [`calm.md`](calm.md#pi-compatibility) owns the current Pi compatibility contract.
 Pi 0.81.1 was installed when Calm was first built, and Pi 0.82.0, 0.83.0, and 0.84.1 are the later reverification targets recorded in the dated sections below.
-Across those versions only Pi 0.84 introduced a relevant presentation API change, the 4th `UserMessageComponent` Markdown-transformer argument that the operational-user adapter now forwards through an optional host call.
+This paragraph is the authoritative statement of that verified range.
+Six later statements in this file restate it inline as "Pi 0.81.1 through 0.84.1" and each has to be found and edited by hand whenever the range moves; issue [#119](https://github.com/HelloWorldSungin/firstmate/issues/119) owns consolidating those six behind this single owner.
+Across those versions only Pi 0.84 introduced a relevant presentation API change, the 4th `UserMessageComponent` Markdown-transformer argument, which both of Calm's user-row construction sites now forward: the operational-user adapter reads it off the `InteractiveMode` it patches, and the legacy synthetic entry renderer reads it off the host captured for it.
 The adapters gate on the exact method they patch rather than on a version number, so those versions remain verification evidence rather than compatibility bounds.
 The exported classes used by the adapters (`AssistantMessageComponent` and `InteractiveMode`) are undocumented internals with no stated version guarantee.
 `tests/fm-calm-pi-extension.test.sh` records the installed Pi version as evidence without gating on it and covers both newer synthetic versions and an unavailable adapter seam.
@@ -212,7 +214,7 @@ The test fixture enumerates every class below through the centralized policy, an
 | `user-bash` | `BashExecutionComponent` for `!` and `!!` | Unsupported boundary; remains visible. |
 | `skill-invocation` | `SkillInvocationMessageComponent` plus parsed user text | Unsupported boundary; remains visible. |
 | `custom-message` | `CustomMessageComponent` when `display` is true | The session-start nudge and legacy Calm context messages use `display: false`; arbitrary extension messages remain an unsupported boundary. |
-| `custom-entry` | `CustomEntryComponent` with a registered renderer | Legacy Calm presentation entries rebuild to zero children without a residual spacer and restore through ordinary expansion redraw when mounted; arbitrary extension entries remain an unsupported boundary. |
+| `custom-entry` | `CustomEntryComponent` with a registered renderer | Legacy Calm presentation entries rebuild to zero children without a residual spacer and restore through ordinary expansion redraw when mounted, and while Calm is off they render a stock user row built from the mounting host's Markdown theme, output padding, and Markdown transformers; arbitrary extension entries remain an unsupported boundary. |
 | `compaction-summary` | `CompactionSummaryMessageComponent` | Unsupported boundary; remains visible. |
 | `branch-summary` | `BranchSummaryMessageComponent` | Unsupported boundary; remains visible. |
 | `working-status` | `WorkingStatusIndicator`, or the Calm working-ship widget while Calm is active | Always visible. Calm off leaves Pi's stock row untouched; Calm on hides that row for the duration of one logical agent run and renders the working ship instead. |
@@ -225,7 +227,7 @@ The test fixture enumerates every class below through the centralized policy, an
 | `unknown` | Future or unclassified transcript component | Policy-hidden, but no generic renderer exists; never claimed as covered. |
 
 The installed extension API has no supported global transcript filter, user-message renderer, assistant-message renderer, chat-container API, or generic custom-tool wrapper.
-Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout and the complete operational-user transcript row while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
+Pi 0.81.1 through 0.84.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout, the complete operational-user transcript row, and the live-host capture the legacy synthetic entry renderer needs, while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
 General component replacement, ANSI cursor erasure, provider-context mutation, and installed-file patching remain rejected as unsupported or preservation-breaking workarounds.
 
 ## Cross-harness verification record
@@ -250,7 +252,7 @@ grok 0.2.106 (bde89716f679)
 | Claude Code 2.1.218 | Not feasible through the inspected supported project surface. | Project hooks can observe lifecycle and tool events, while the plugin CLI packages supported components; neither inspected surface exposes a transcript-row renderer or transcript-wide redraw API. |
 | Codex CLI 0.144.6 | Not feasible through the inspected supported project surface. | The tracked hooks expose session, pre-tool, and stop handling, while the plugin and feature inventories expose no TUI tool-row renderer or transcript redraw control. |
 | OpenCode 1.17.18 | Not feasible without violating the preservation boundary. | Plugins expose events and tool execution hooks, not a built-in transcript-row renderer; same-name tool replacement changes execution rather than presentation alone. |
-| Pi (verified 0.81.1 through 0.84.1) | Partially feasible with two API-probed exported-class adapters. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant and interactive-mode classes provide the collapsed-thinking and operational-user layout boundaries, gated on the exact method's presence rather than a version number, while generic user, tool, and status filtering remains unavailable. |
+| Pi (verified 0.81.1 through 0.84.1) | Partially feasible with three API-probed exported-class adapters. | Public APIs control working visibility, collapsed labels, known tool slots, custom entries, and expansion redraws; exported assistant and interactive-mode classes provide the collapsed-thinking layout, operational-user layout, and legacy synthetic entry host boundaries, gated on the exact method's presence rather than a version number, while generic user, tool, and status filtering remains unavailable. |
 | Grok CLI 0.2.106 | Not feasible through the inspected supported project surface. | Project hooks expose lifecycle and tool interception, while the plugin CLI exposes no row-renderer contract; `--minimal` changes the whole screen mode rather than selected transcript rows. |
 
 These conclusions are deliberately limited to the named versions and supported surfaces.
@@ -500,6 +502,59 @@ Re-introducing the drift by passing `undefined` as the 4th `super(...)` argument
 $ tests/fm-calm-pi-extension.test.sh
 not ok - Pi calm renderer and lifecycle contract failed: file:///tmp/fm-calm-pi-extension.KWUtm5/renderer/[eval1]:227
 Error: Calm operational user rendering dropped Pi's Markdown transformers
+```
+
+### The second construction site: the legacy synthetic entry renderer
+
+Forwarding the transformers through `CalmOperationalUserMessageComponent` alone left the same drop reachable one row over.
+`registerFirstmateSyntheticPresentation` in `.pi/extensions/lib/fm-calm-visibility.ts` also builds a Pi user row - for the `firstmate-synthetic-input-presentation` entries Calm versions before 2026-07-23 persisted - and it built that row with two arguments.
+The reachable path needs no new session: with Calm off `calmPresentationHides("synthetic-user")` is false, so any session still holding one of those legacy entries rendered it with `markdownTransformers` defaulting to `[]` and with `UserMessageComponent`'s own default `outputPad`, while every stock user row beside it in the same transcript got `[mermaid, ...extension transformers]` and the host's padding from `InteractiveMode`.
+
+The two sites differ in what they can reach, which is why the first fix did not cover both.
+The operational adapter runs inside an `InteractiveMode` method and reads those inputs off `this`.
+An entry renderer is called as `(entry, options, theme)` and `EntryRenderOptions` declares only `expanded`, so it has no host to ask; `ExtensionAPI` exposes `registerMarkdownTransformer` but no matching getter, so the supported extension surface cannot answer the question either.
+
+Exactly one Pi method mounts these entries, `InteractiveMode.addCustomEntryToChat`, and its body is byte-identical in 0.81.1, 0.83.0, and 0.84.1.
+It constructs `CustomEntryComponent`, whose constructor runs the renderer synchronously inside that same frame.
+Calm now installs a third API-probed adapter that records that method's receiver and calls straight through unchanged, and the renderer builds its row from the recorded host: `getMarkdownThemeWithSettings()`, `outputPad`, and `getMarkdownTransformers?.()`, each falling back to Pi's own constructor default when the host or that method is absent.
+The recorded reference deliberately outlives the mounting frame, because the later expansion redraws re-run the renderer from `CustomEntryComponent.invalidate` with no `InteractiveMode` on the stack.
+The captured host lives in a `Symbol.for` registry rather than in module scope, so a reloaded extension instance reads the same live host the already-installed patch records.
+Like the other two adapters it degrades alone with a diagnostic if a future Pi drops the method, and on that path the row falls back to exactly the two-argument rendering it had before.
+
+Both construction sites now build against one re-typed stock constructor owned by `fm-calm-visibility.ts`, so a future Pi constructor argument cannot be honored at one site and silently dropped at the other.
+
+Finding the second site by following the first one is not evidence that there is no third, so every production construction of a Pi transcript component on this branch was enumerated and audited individually.
+The sweep was repository-wide rather than adapter-by-adapter: the seven tracked files importing `@earendil-works/pi-*`, and every `new <Name>Component|Message|Entry|Markdown|Container|Box|Text|Spacer(` outside `tests/`.
+
+| Production site | Component | Can it carry Markdown transformers? | Audit result |
+| --- | --- | --- | --- |
+| `lib/fm-calm-operational-user-layout.ts:147` | `CalmOperationalUserMessageComponent`, a `UserMessageComponent` subclass | Yes | Preserves the contract; forwards `this.getMarkdownTransformers?.()` off the patched `InteractiveMode`. |
+| `lib/fm-calm-visibility.ts:192` | `UserMessageComponent`, re-typed as the stock constructor | Yes | Was dropping them; now forwards the captured host's theme, `outputPad`, and transformer list. |
+| `lib/fm-calm-assistant-layout.ts:48` | `AssistantMessageComponent` | Not applicable | Patches `prototype.updateContent` and constructs nothing, so it supplies no constructor arguments; Pi keeps the transformer list it built the component with. |
+| `fm-calm.ts:241`, `fm-calm.ts:264`, `fm-calm.ts:282`, `fm-calm.ts:291` | `Box`, `Container` | Not applicable | pi-tui layout primitives returned from built-in tool render slots; no Markdown pipeline and no text argument. |
+| `fm-primary-pi-watch.ts:80`, `:562`, `:564`, `:567`, `:571`, `:577`, `:581`, `:582`, `:584` | `Box`, `Container`, `Text` | Not applicable | Same tool-slot shape for `fm_watch_arm_pi`; `Text` takes an already-styled string rather than Markdown. |
+| `lib/fm-calm-working-ship.ts:222` | An object literal satisfying `Component & { dispose(): void }` | Not applicable | Imports only `type Component` and `type TUI` and constructs no Pi class; the boat's `render(width)` returns computed strings. |
+| `fm-primary-turnend-guard.ts` | none | Not applicable | Imports only `type ExtensionAPI` and constructs no component. |
+| `ToolExecutionComponent` | - | Yes, in Pi's hands | Never constructed in production. Pi owns every instance; Calm supplies only `renderCall` and `renderResult`. The only constructions are in `tests/fm-calm-pi-extension.test.sh`, which uses the real class to compare Calm's slots against a stock baseline. |
+| `CustomEntryComponent` | - | Not applicable | Never constructed in production. Pi constructs it inside `addCustomEntryToChat`; Calm supplies only the renderer, which is the site fixed above. |
+
+`registerEntryRenderer` appears exactly once in production, and `registerMessageRenderer` and `registerMarkdownTransformer` do not appear at all, so the legacy synthetic entry is the only Calm-owned custom row that builds its own component.
+
+The regression coverage drives Pi's real `addCustomEntryToChat` rather than constructing `CustomEntryComponent` directly, which is what puts the host capture inside the assertion rather than beside it.
+Both ways of losing the forward were reintroduced and run against the installed 0.84.1, and both fail the same guard:
+
+```text
+# renderer keeps the captured host but passes undefined as the 4th argument:
+$ tests/fm-calm-pi-extension.test.sh
+not ok - Pi calm renderer and lifecycle contract failed: file:///tmp/fm-calm-pi-extension.Y6LoKN/renderer/[eval1]:514
+Error: Calm legacy synthetic presentation dropped Pi's Markdown transformers
+# exit 1
+
+# host-capture adapter never installed, so no host is ever recorded:
+$ tests/fm-calm-pi-extension.test.sh
+not ok - Pi calm renderer and lifecycle contract failed: file:///tmp/fm-calm-pi-extension.hUYdE4/renderer/[eval1]:514
+Error: Calm legacy synthetic presentation dropped Pi's Markdown transformers
+# exit 1
 ```
 
 ### The `/export` success row: Calm overwrites it, and this is not Pi drift
