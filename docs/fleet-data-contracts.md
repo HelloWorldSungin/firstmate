@@ -142,6 +142,19 @@ Also per task: `paths.turn_ended`, the age of `state/<id>.turn-ended` - the harn
 It exists here because the status log is a REPORTING cadence rather than an activity one - the crew brief instructs workers to append only on phase changes - so a surface that wants to know when a task last DID anything needs a clock the worker does not choose.
 An absent marker reports `present: false` with a null age, because a harness that has completed no turn yet and one that never touches the marker are both "no turn observed", and neither is evidence of a stall.
 
+Also per task: `paths.meta.age_seconds`, the age of `state/<id>.meta`.
+That file is written once at dispatch, so its age is when the task STARTED and never when it last did anything.
+It is published for one reason: it is the clock supervision falls back to.
+[`bin/fm-watch.sh`](../bin/fm-watch.sh)'s `busy_turn_over_age` ages `state/<id>.turn-ended` and uses the spawn record instead before any turn has completed, so a task that has neither reported nor completed anything still has a bound - and a renderer asking supervision's question can only apply the same fallback if the snapshot carries it.
+A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
+The other path rows - `report`, `worktree`, `home` - have no use for an age and keep the plain `{path, present}` shape.
+
+Also per task: two further `current_state.source` values the snapshot can produce for itself, beside the existing `timeout`.
+`not-attempted` means no bounded runner could be started, so the current-state read was never made - which is not the same fact as a read that ran past its bound, and only the caller that can tell them apart can report either honestly.
+`row-unavailable` means the task's whole row could not be built; the row is still listed, with every value it would have read filled by that field's explicit unknown.
+A task that was enumerated is never absent from `tasks[]`, because a missing row reads as a fleet that does not contain that task, and an id for which not even the degraded row can be produced fails the whole command by name rather than publishing an incomplete document.
+None of the three is evidence of anything, so no consumer may treat them as a pass.
+
 Per backlog record: `since_age_seconds`, the age of the row's `since` date.
 `tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
 The backlog stores a LOCAL date with no clock time - `tasks-axi` stamps the writer's own calendar day, not a UTC one - so the age runs from that day's local midnight on the observing host and is an upper bound at day granularity.

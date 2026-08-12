@@ -29,12 +29,23 @@
 #   tasks[]: one row per state/<id>.meta, sorted by id. The rows are read
 #     concurrently, FM_SNAPSHOT_TASK_JOBS (default 8) at a time, because the
 #     per-task current_state read below dominates this command's cost and grows
-#     with the fleet.
+#     with the fleet. Every enumerated id appears exactly once: an id whose
+#     reader produced nothing readable is reconciled back in as a degraded row
+#     reporting current_state "unknown" with source "row-unavailable", because a
+#     task missing from tasks[] reads as a fleet that does not have it. An id for
+#     which not even that row can be built fails the whole command by name.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately. That call is bounded at
-#     FM_SNAPSHOT_TASK_TIMEOUT seconds (default 8); a task whose read did not
-#     finish reports state "unknown" with source "timeout", so one slow task
-#     costs its own row rather than the whole snapshot.
+#     FM_SNAPSHOT_TASK_TIMEOUT seconds (default 8) through bin/fm-timeout-lib.sh,
+#     which escalates to SIGKILL so a child ignoring SIGTERM cannot outlive the
+#     bound; a task whose read ran past it reports state "unknown" with source
+#     "timeout", and one for which no bounded runner could start at all reports
+#     source "not-attempted" rather than claiming a timeout it never reached. So
+#     one slow task costs its own row rather than the whole snapshot.
+#     The child's own no-mistakes lookup is bounded at
+#     FM_SNAPSHOT_TASK_TIMEOUT minus 3 seconds (floor 1), derived from the outer
+#     bound so it stays strictly inside it and fm-crew-state.sh's degraded replay
+#     stays reachable from here.
 #     model and effort are the dispatch record from state/<id>.meta - what was
 #     REQUESTED. model_verification is bin/fm-model-verify.sh's verdict on what
 #     actually RAN: {verdict,recorded,actual[],source,detail}. The two are
@@ -47,6 +58,11 @@
 #     current state. Its last_event_at and last_event_age_seconds report WHEN
 #     that event landed, from the log's mtime, so a renderer can age a task
 #     without reparsing the log.
+#     paths.meta carries age_seconds beside path and present: state/<id>.meta is
+#     written once at dispatch, so its age is when the task STARTED. It is the
+#     same fallback bin/fm-watch.sh uses when no turn has completed yet, which is
+#     what lets a renderer bound a task that has neither reported nor completed
+#     anything. The other path rows - report, worktree, home - carry no age.
 #     paths.turn_ended ages state/<id>.turn-ended, the harness-neutral marker a
 #     completed turn touches and the same file bin/fm-watch.sh ages to bound how
 #     long a busy pane may go with no completed turn. It stays a wake
@@ -198,6 +214,17 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_RECORDS "$FM_SNAPSHOT_REGISTRY_RECO
 validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_TASK_JOBS "$FM_SNAPSHOT_TASK_JOBS"
 validate_positive_bound FM_SNAPSHOT_TASK_TIMEOUT "$FM_SNAPSHOT_TASK_TIMEOUT"
+# The bound fm-crew-state.sh applies to its own no-mistakes lookup while this
+# command is the caller, DERIVED from the outer bound above rather than written
+# as a second independent number so the two cannot silently invert when someone
+# retunes the outer one. It has to sit strictly below the outer bound: crew-state
+# answers a failed lookup with a bounded `run-step-degraded` replay, and if the
+# outer bound fires first that designed answer is unreachable from here, so a
+# saturated daemon costs a task its whole reading rather than degrading it. The
+# 3 seconds of headroom cover crew-state's non-lookup work, measured well under a
+# second on this fleet in docs/verification/dashboard-fleet-health.md.
+FM_SNAPSHOT_TASK_NM_TIMEOUT=$(( FM_SNAPSHOT_TASK_TIMEOUT - 3 ))
+[ "$FM_SNAPSHOT_TASK_NM_TIMEOUT" -ge 1 ] || FM_SNAPSHOT_TASK_NM_TIMEOUT=1
 
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
@@ -217,6 +244,9 @@ validate_positive_bound FM_SNAPSHOT_TASK_TIMEOUT "$FM_SNAPSHOT_TASK_TIMEOUT"
 # shellcheck source=bin/fm-pr-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"  # fm_pr_url_parse: shared forge identity parsing
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the owner of bounded external execution
 
 usage() {
   cat <<'EOF'
@@ -234,9 +264,12 @@ Actionable tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason, hold_kind, and plural blocker fields for downstream
 projections. A captain hold is actionable only when every blocker is Done.
 Per-task reads run FM_SNAPSHOT_TASK_JOBS (default 8) at a time and each task's
-current-state read is bounded by FM_SNAPSHOT_TASK_TIMEOUT (default 8 seconds);
+current-state read is bounded by FM_SNAPSHOT_TASK_TIMEOUT (default 8 seconds),
+with the child's own no-mistakes lookup bounded 3 seconds inside that;
 a task whose read did not finish reports current_state unknown with source
-"timeout" rather than costing the whole snapshot.
+"timeout" rather than costing the whole snapshot, one that could not be started
+reports "not-attempted", and one whose whole row could not be built is still
+listed with source "row-unavailable".
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Terminal contradiction evidence uses
@@ -298,6 +331,26 @@ path_present_json() {  # <path>
     '{path:$path,present:$present}'
 }
 
+# The task's spawn record, which carries an age the other path rows do not.
+# state/<id>.meta is written once at dispatch, so its mtime is when this task
+# started, and that is the clock supervision falls back to: bin/fm-watch.sh's
+# busy_turn_over_age ages state/<id>.turn-ended and uses the spawn record
+# instead before any turn has completed, so a task that has neither reported nor
+# completed anything still has a bound. A renderer asking supervision's question
+# needs the same fallback, and it can only have it if the snapshot publishes it.
+# report, worktree, and home have no use for an age and keep the plain shape.
+meta_path_json() {  # <meta-path>
+  local meta=$1 present=0 age=''
+  if [ -e "$meta" ]; then
+    present=1
+    age=$(path_age_seconds "$meta")
+  fi
+  jq -n --arg path "$meta" --arg age "$age" \
+    --argjson present "$(bool_json "$present")" \
+    '{path:$path,present:$present,
+      age_seconds:(if $age == "" then null else ($age | tonumber) end)}'
+}
+
 meta_value() {  # <meta-file> <key>
   fm_meta_get "$1" "$2"
 }
@@ -339,23 +392,39 @@ model_verify_json() {  # <id>
 # source rather than a silent `none`: a reading this command could not take is
 # not the same fact as a task that has no state to read, and a renderer must be
 # able to tell them apart instead of drawing both as nothing.
+#
+# The bound comes from bin/fm-timeout-lib.sh, the declared owner of bounded
+# external execution, and not from this file's own run_timed below: only
+# fm_run_timed escalates to SIGKILL after the polite signal, and a bound that a
+# wedged child can outlive by ignoring SIGTERM is the failure this deadline
+# exists to prevent. Its exit codes are reported as that owner defines them -
+# 124 or 137 means the bound elapsed, while 125 means no bounded runner could
+# start, so the read was never attempted and must not claim a timeout it never
+# reached.
 crew_state_json() {  # <id>
   local id=$1 raw rest state source detail sep rc=0
   raw=$(
-    run_timed "$FM_SNAPSHOT_TASK_TIMEOUT" env \
+    fm_run_timed "$FM_SNAPSHOT_TASK_TIMEOUT" env \
       FM_ROOT_OVERRIDE="$FM_ROOT" \
       FM_HOME="$FM_HOME" \
       FM_STATE_OVERRIDE="$STATE" \
       FM_DATA_OVERRIDE="$DATA" \
       FM_PROJECTS_OVERRIDE="$PROJECTS" \
       FM_CONFIG_OVERRIDE="$CONFIG" \
+      FM_CREW_STATE_NM_TIMEOUT="$FM_SNAPSHOT_TASK_NM_TIMEOUT" \
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null
   ) || rc=$?
-  if [ "$rc" -eq 124 ]; then
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     jq -n --arg secs "$FM_SNAPSHOT_TASK_TIMEOUT" \
       '{state:"unknown",source:"timeout",
         detail:("the current state could not be read within " + $secs + "s"),
         raw:""}'
+    return 0
+  fi
+  if [ "$rc" -eq 125 ]; then
+    jq -n '{state:"unknown",source:"not-attempted",
+            detail:"no bounded runner was available, so the current-state read was never attempted",
+            raw:""}'
     return 0
   fi
   raw=$(printf '%s\n' "$raw" | head -1)
@@ -649,8 +718,19 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 #
 # Every read here is scoped to this one task, which is what lets
 # task_json_lines below run several of them at once.
-task_json_one() {  # <meta-path>
-  local meta=$1
+#
+# Passing `degraded` as the second argument builds the SAME row shape without
+# the reads that can fail - the crew-state and model-verify subprocesses, the
+# work-item document, and the endpoint probe - filling each with the explicit
+# unknown for its field. task_json_lines uses it to reconcile a task whose own
+# reader produced nothing readable, so a row that could not be built is still a
+# row. It is deliberately the same function rather than a second hand-written
+# object: two copies of the row shape is exactly what drifts. The cheap local
+# file reads stay, because none of them is a plausible cause of a reader dying
+# and the paths they fill - the spawn record's age above all - are what let a
+# renderer age a row it otherwise knows nothing about.
+task_json_one() {  # <meta-path> [degraded]
+  local meta=$1 degraded=${2:-}
   local id kind harness model effort mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json model_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
@@ -708,10 +788,22 @@ task_json_one() {  # <meta-path>
   else
     pr_status_age=
   fi
-  work_items_json=$(fm_outcome_work_items_read "$DATA" "$id" | jq -c '.references')
+  if [ "$degraded" = degraded ]; then
+    work_items_json='[]'
+  else
+    work_items_json=$(fm_outcome_work_items_read "$DATA" "$id" | jq -c '.references')
+  fi
 
-  current_json=$(crew_state_json "$id")
-  if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
+  if [ "$degraded" = degraded ]; then
+    current_json=$(jq -n '{state:"unknown",source:"row-unavailable",
+      detail:"the row for this task could not be built, so no current state was read",
+      raw:""}')
+  else
+    current_json=$(crew_state_json "$id")
+  fi
+  if [ "$degraded" = degraded ]; then
+    model_json='{"verdict":"unverifiable","recorded":null,"actual":[],"source":"none","detail":"the row for this task could not be built, so no model verification was attempted"}'
+  elif [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
     model_json='{"verdict":"not_checked","recorded":null,"actual":[],"source":"none","detail":"not included in bounded secondmate home summaries"}'
   else
     model_json=$(model_verify_json "$id")
@@ -767,7 +859,11 @@ task_json_one() {  # <meta-path>
 
   endpoint_exists=null
   agent_alive=not_checked
-  if [ -n "$remote_host" ]; then
+  if [ "$degraded" = degraded ]; then
+    # `not_checked` is a statement that the check was deliberately skipped and
+    # nothing is wrong; this row cannot make that statement, so it says unknown.
+    agent_alive=unknown
+  elif [ -n "$remote_host" ]; then
     if remote_state=$(run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
       "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
       remote_rc=0
@@ -801,7 +897,7 @@ task_json_one() {  # <meta-path>
   fi
 
   [ -f "$report_path" ] && report_present=1 || report_present=0
-  meta_json=$(path_present_json "$meta")
+  meta_json=$(meta_path_json "$meta")
   status_json=$event_json
   turn_json=$(turn_marker_json "$turn_marker")
   report_json=$(path_present_json "$report_path")
@@ -977,13 +1073,14 @@ task_json_one() {  # <meta-path>
 # inherit this shell's EXIT trap, so none of them can remove the scratch
 # directory the others are still writing into.
 task_json_lines() {
-  local meta id pid workdir
-  local -a pids=()
+  local meta id pid workdir row rows=''
+  local -a pids=() ids=()
   workdir="$SNAPSHOT_TMP/tasks"
   mkdir -p "$workdir" || return 1
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     id=$(basename "$meta" .meta)
+    ids+=("$id")
     task_json_one "$meta" > "$workdir/$id.json" &
     pids+=("$!")
     # Bounded fan-out, oldest first: the window refills as soon as the reader
@@ -998,12 +1095,32 @@ task_json_lines() {
     [ -n "$pid" ] || continue
     wait "$pid" 2>/dev/null || true
   done
-  # Every row is produced by one closing jq, so a reader that failed leaves an
-  # empty file rather than half an object. If one ever did land truncated, the
-  # slurp below fails and the caller reports a failed snapshot, which is the
-  # right end: a task silently missing from tasks[] reads as a fleet that does
-  # not have it.
-  cat "$workdir"/*.json 2>/dev/null | jq -s 'sort_by(.id)'
+  # Reconcile the ids this function launched a reader for against the rows those
+  # readers actually produced. Slurping the files alone would silently skip an
+  # empty or unparseable one, and a task missing from tasks[] reads as a fleet
+  # that does not have it - strictly worse than an unknown row, because a
+  # reading that could not be taken must render as unknown and never as a pass.
+  # An id with nothing readable therefore gets task_json_one's degraded row,
+  # built here in this process rather than through the scratch file whose write
+  # may be exactly what failed. If even that cannot be produced the whole
+  # snapshot fails loudly naming the id, the same refusal the history read makes
+  # rather than publish a document it knows is incomplete.
+  for id in "${ids[@]:-}"; do
+    [ -n "$id" ] || continue
+    row=''
+    if [ -s "$workdir/$id.json" ]; then
+      row=$(jq -c . "$workdir/$id.json" 2>/dev/null) || row=''
+    fi
+    if [ -z "$row" ]; then
+      row=$(task_json_one "$STATE/$id.meta" degraded | jq -c . 2>/dev/null) || row=''
+    fi
+    if [ -z "$row" ]; then
+      printf 'fm-fleet-snapshot: no readable task row for %s\n' "$id" >&2
+      return 1
+    fi
+    rows+="$row"$'\n'
+  done
+  printf '%s' "$rows" | jq -s 'sort_by(.id)'
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
@@ -1197,6 +1314,13 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=${FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME:-10}
 case "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" in ''|*[!0-9]*) FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=10 ;; esac
 
+# This script's older local bound, kept for the cross-home, terminal, registry,
+# and parent-activity reads that already call it. bin/fm-timeout-lib.sh is the
+# declared owner of bounded execution and crew_state_json above uses it, but
+# fm_run_timed reports an elapsed bound as 124 OR 137 where this one reports
+# only 124, so moving these call sites means revisiting exit-code handling at
+# each of them. That is its own change rather than one riding along with the
+# per-task bound.
 run_timed() {  # <seconds> <command...>
   local seconds=$1
   shift

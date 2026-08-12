@@ -403,6 +403,79 @@ equal("a task observed working with no turn inside the window is amber",
     paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
   })] })).byId.events.tone, "amber");
 
+// The same bound has to hold for a task that has produced NEITHER of those two
+// clocks. A job that hangs inside its very first tool call - waiting on a trust
+// prompt, say - has written no status line and completed no turn, so it had no
+// age at all, was dropped out of the bound, and stayed exempt for as long as it
+// hung. That is the one shape of this signal that could not fail, and it has
+// been seen twice on the real fleet.
+//
+// Supervision already answers this exact case: bin/fm-watch.sh's
+// busy_turn_over_age ages state/<id>.turn-ended and falls back to the task's
+// state/<id>.meta spawn record before any turn has completed, so a fresh task
+// still gets a bound. The strip applies the same fallback through
+// paths.meta.age_seconds.
+//
+// What has to break for this pair to fail: activityAge stops falling back to
+// the spawn record, or the snapshot stops publishing its age. The companion
+// case below is what stops the pair passing by simply always colouring.
+const hungOnFirstCall = health(fleet({ tasks: [task("hung-on-first-call", {
+  current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+  paths: { meta: { present: true, age_seconds: QUIET_ALLOWANCE + 60 } },
+})] }));
+equal("a busy task with no report and no completed turn is bounded by its spawn record",
+  hungOnFirstCall.byId.events.tone, "amber");
+equal("and its fleet is not summarized as healthy", hungOnFirstCall.overall.label, "Degraded");
+
+equal("the same task inside the window still reads green",
+  health(fleet({ tasks: [task("just-spawned", {
+    current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+    paths: { meta: { present: true, age_seconds: 120 } },
+  })] })).byId.events.tone, "green");
+
+// The spawn record is the LAST resort, not a third activity clock: a dispatch
+// time is not an activity time, so a task that has a real clock must still be
+// judged on it. This one was spawned long ago and completed a turn a minute
+// ago, and it is fine.
+equal("a real activity clock outranks the spawn record",
+  health(fleet({ tasks: [task("long-lived", {
+    current_state: { state: "unknown", source: "run-attribution", detail: "run on another branch" },
+    paths: {
+      meta: { present: true, age_seconds: 86_400 },
+      turn_ended: { present: true, last_turn_age_seconds: 60 },
+    },
+  })] })).byId.events.tone, "green");
+
+// A live reading says what a task is doing now, never for how long, so it
+// cannot stand in for the clock the bound needs. With no clock at all the
+// reading is unjudgeable, and unjudgeable is unknown rather than a pass.
+equal("a busy task with no readable clock at all is unknown, never green",
+  health(fleet({ tasks: [task("clockless", {
+    current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+    paths: { meta: { present: true, age_seconds: null } },
+  })] })).byId.events.tone, "unknown");
+
+// The overdue sentence reports activityAge, which is whichever clock was
+// newest. Naming a turn boundary for a figure that may have come from a status
+// append is the conflation of reporting cadence with activity that this signal
+// was rebuilt to remove, so the copy must not do it either.
+//
+// What has to break for this to fail: the sentence goes back to attributing a
+// number from another clock to a completed turn.
+const overdueCopy = health(fleet({ tasks: [task("appended-but-turnless", {
+  current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+  paths: {
+    status_log: { last_event_age_seconds: QUIET_ALLOWANCE + 300 },
+    turn_ended: { present: true, last_turn_age_seconds: 7_200 },
+  },
+})] }));
+equal("an observed task past the window is overdue on the newest clock it has",
+  overdueCopy.byId.events.tone, "amber");
+check("and the overdue sentence names the age it measured, not a turn boundary",
+  overdueCopy.byId.events.detail.includes(`recorded no activity in ${formatAge(QUIET_ALLOWANCE + 300)}`)
+    && !overdueCopy.byId.events.detail.includes("completed no turn"),
+  overdueCopy.byId.events.detail);
+
 // A remembered reading is not a live one. run-step-degraded replays a step the
 // lookup could not re-confirm, so it must not buy the exemption a busy verdict
 // buys - otherwise an unreachable daemon silently excuses the whole fleet.

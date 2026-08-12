@@ -1306,6 +1306,16 @@ EOF
 # nothing about the fleet that made the reader slow, which is exactly how a
 # snapshot that timed out two runs in three kept a green test suite.
 
+# stub_snapshot_script <dir> <name> <body>: replace one entry of a stubbed bin/
+# with the given script. The symlink is removed BEFORE the body is written, so
+# a stub can never be written through it into the real bin/.
+stub_snapshot_script() {  # <dir> <name> <body>
+  local dir=$1 name=$2 body=$3
+  rm -f "$dir/$name"
+  printf '%s\n' "$body" > "$dir/$name"
+  chmod +x "$dir/$name"
+}
+
 # stub_snapshot_bin <dir> <crew-state-body>: a bin/ whose fm-crew-state.sh is
 # the given script and whose every other entry is the real one.
 stub_snapshot_bin() {  # <dir> <crew-state-body>
@@ -1314,9 +1324,7 @@ stub_snapshot_bin() {  # <dir> <crew-state-body>
   for entry in "$ROOT"/bin/*; do
     ln -sf "$entry" "$dir/$(basename "$entry")"
   done
-  rm -f "$dir/fm-crew-state.sh"
-  printf '%s\n' "$body" > "$dir/fm-crew-state.sh"
-  chmod +x "$dir/fm-crew-state.sh"
+  stub_snapshot_script "$dir" fm-crew-state.sh "$body"
 }
 
 # The budget this asserts against is the dashboard's own snapshot deadline,
@@ -1396,6 +1404,161 @@ esac'
   pass "one unreadable task reports unknown with a timeout source and the rest of the snapshot survives"
 }
 
+# The bound has to be HARD. A child that ignores SIGTERM survives a polite
+# signal indefinitely, and a per-task deadline it can outlive is not a deadline:
+# the whole snapshot then blows past the dashboard's own budget, which is the
+# failure this bound exists to prevent. The case above cannot see this, because
+# `sleep` dies on SIGTERM like a well-behaved child.
+#
+# What has to break for this to fail: the per-task bound stops escalating to
+# SIGKILL - which is the difference between bin/fm-timeout-lib.sh's fm_run_timed
+# and a bare `timeout <secs>`.
+test_a_task_read_that_ignores_sigterm_is_still_killed() {
+  local home stub out started ended elapsed ceiling=10
+  home=$(make_home sigterm-ignoring)
+  stub="$TMP_ROOT/sigterm-bin"
+  # `exec` replaces the shell, and an ignored disposition survives exec, so this
+  # is a single process holding the reader's pipe that only SIGKILL can end.
+  # The stub's own $1 is the task id the snapshot passes it, unexpanded here.
+  # shellcheck disable=SC2016
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+case "$1" in
+  deaf-task) trap "" TERM; exec sleep 30 ;;
+  *) printf "state: working · source: pane · harness busy (stub)\n" ;;
+esac'
+  fm_write_meta "$home/state/deaf-task.meta" \
+    "window=firstmate:fm-deaf-task" "worktree=$home/projects/deaf" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+
+  started=$(date +%s)
+  out=$(FM_SNAPSHOT_TASK_TIMEOUT=2 FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json)
+  ended=$(date +%s)
+  elapsed=$((ended - started))
+  [ "$elapsed" -le "$ceiling" ] \
+    || fail "a task whose reader ignores SIGTERM held the snapshot for ${elapsed}s against a 2s bound; the bound does not escalate to SIGKILL"
+  printf '%s' "$out" | jq -e '
+    (.tasks | length) == 1
+      and (.tasks[0].current_state.state) == "unknown"
+      and (.tasks[0].current_state.source) == "timeout"
+  ' >/dev/null || fail "a SIGTERM-ignoring reader did not report an explicit timeout: $out"
+  pass "a per-task read that ignores SIGTERM is killed inside its bound"
+}
+
+# fm-crew-state.sh bounds its own no-mistakes lookup and answers a failed lookup
+# with a degraded replay of the last recorded step. That answer is only
+# reachable if the inner bound expires INSIDE the outer one, so the snapshot
+# derives the inner bound from its own rather than leaving two independent
+# numbers to invert silently.
+#
+# What has to break for this to fail: the snapshot stops passing
+# FM_CREW_STATE_NM_TIMEOUT, or stops deriving it from FM_SNAPSHOT_TASK_TIMEOUT,
+# so retuning the outer bound leaves the inner one behind.
+test_inner_lookup_bound_stays_inside_the_outer_bound() {
+  local home stub inner
+  home=$(make_home inner-bound)
+  stub="$TMP_ROOT/inner-bound-bin"
+  # The stub reports the bound it was handed back through the detail field.
+  # shellcheck disable=SC2016
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+printf "state: working · source: pane · nm=%s\n" "${FM_CREW_STATE_NM_TIMEOUT:-unset}"'
+  fm_write_meta "$home/state/bounded.meta" \
+    "window=firstmate:fm-bounded" "worktree=$home/projects/bounded" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+
+  # <outer> <expected-inner>: the default, a raised outer bound the inner one
+  # must track, and an outer bound so small the inner one floors at 1 rather
+  # than going to zero or negative.
+  local bounds outer expected
+  for bounds in "8 5" "12 9" "2 1"; do
+    outer=${bounds% *}
+    expected=${bounds#* }
+    if [ "$outer" = 8 ]; then
+      inner=$(FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json \
+        | jq -r '.tasks[0].current_state.detail')
+    else
+      inner=$(FM_SNAPSHOT_TASK_TIMEOUT="$outer" FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json \
+        | jq -r '.tasks[0].current_state.detail')
+    fi
+    [ "$inner" = "nm=$expected" ] \
+      || fail "an outer bound of ${outer}s passed the child $inner, expected nm=$expected"
+    [ "$expected" -lt "$outer" ] \
+      || fail "the inner lookup bound ${expected}s is not strictly inside the outer ${outer}s bound"
+  done
+  pass "the child's lookup bound is derived from the per-task bound and stays strictly inside it"
+}
+
+# A reader that dies before its closing jq leaves nothing behind, and slurping
+# the files alone silently skips it - so the task vanished from tasks[] with no
+# error at all. A missing row reads as a fleet that does not contain that task,
+# which is strictly worse than an unknown one: a reading that could not be taken
+# must render as unknown and never as a pass.
+#
+# What has to break for this to fail: the collector stops reconciling the ids it
+# launched against the rows it got back. The task COUNT is asserted as well as
+# the row, because a test that only inspects the rows present cannot see a
+# missing one.
+test_a_task_whose_reader_fails_is_unknown_not_missing() {
+  local home stub out
+  home=$(make_home reader-failure)
+  stub="$TMP_ROOT/reader-failure-bin"
+  # shellcheck disable=SC2016
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+printf "state: working · source: pane · harness busy (stub)\n"'
+  # A helper that answers one task with TWO documents instead of one. The row
+  # builder binds that answer with --argjson, which refuses extra JSON values,
+  # so this task's reader dies before the jq that would have printed its row.
+  # shellcheck disable=SC2016
+  stub_snapshot_script "$stub" fm-model-verify.sh '#!/usr/bin/env bash
+verdict='"'"'{"verdict":"match","recorded":null,"actual":[],"source":"stub","detail":""}'"'"'
+printf "%s\n" "$verdict"
+[ "$1" = broken-row ] && printf "%s\n" "$verdict"
+exit 0'
+  fm_write_meta "$home/state/broken-row.meta" \
+    "window=firstmate:fm-broken-row" "worktree=$home/projects/broken" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  fm_write_meta "$home/state/sound-row.meta" \
+    "window=firstmate:fm-sound-row" "worktree=$home/projects/sound" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+
+  # The broken reader's own jq error is the point of the fixture, so its stderr
+  # is captured rather than left to look like a failure of this suite.
+  out=$(FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json 2>"$TMP_ROOT/reader-failure.err") \
+    || fail "the snapshot failed outright instead of degrading one row: $(cat "$TMP_ROOT/reader-failure.err")"
+  printf '%s' "$out" | jq -e '
+    (.tasks | length) == 2
+      and ([.tasks[].id] | sort) == ["broken-row","sound-row"]
+      and (.tasks[] | select(.id == "broken-row") | .current_state.state) == "unknown"
+      and (.tasks[] | select(.id == "broken-row") | .current_state.source) == "row-unavailable"
+      and (.tasks[] | select(.id == "sound-row") | .current_state.state) == "working"
+  ' >/dev/null || fail "a task whose reader failed is missing or not an explicit unknown: $out"
+  # The degraded row still carries the spawn record, which is the only clock a
+  # renderer has for a task it otherwise knows nothing about.
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "broken-row") | .paths.meta.present) == true
+      and (.tasks[] | select(.id == "broken-row") | .paths.meta.age_seconds) >= 0
+  ' >/dev/null || fail "the degraded row carries no spawn-record age: $out"
+  pass "a task whose reader failed is still listed, as an explicit unknown rather than absent"
+}
+
+# The spawn-record age the strip falls back to when a task has neither reported
+# nor completed a turn. Only this path row carries one.
+test_meta_path_publishes_a_spawn_record_age() {
+  local home out
+  home=$(make_home spawn-age)
+  fm_write_meta "$home/state/fresh.meta" \
+    "window=firstmate:fm-fresh" "worktree=$home/projects/fresh" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$out" | jq -e '
+    (.tasks[0].paths.meta | has("age_seconds"))
+      and (.tasks[0].paths.meta.age_seconds) >= 0
+      and (.tasks[0].paths.report | has("age_seconds") | not)
+      and (.tasks[0].paths.worktree | has("age_seconds") | not)
+      and (.tasks[0].paths.home | has("age_seconds") | not)
+  ' >/dev/null || fail "paths.meta carries no age, or an age leaked into the other path rows: $out"
+  pass "paths.meta publishes the spawn-record age and the other path rows keep their shape"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
@@ -1421,3 +1584,7 @@ test_view_renders_dead_secondmate_agent_status
 test_multiline_unstructured_note_attributed_to_parent
 test_task_reads_do_not_sum_across_the_fleet
 test_a_task_read_that_times_out_is_unknown_not_absent
+test_a_task_read_that_ignores_sigterm_is_still_killed
+test_inner_lookup_bound_stays_inside_the_outer_bound
+test_a_task_whose_reader_fails_is_unknown_not_missing
+test_meta_path_publishes_a_spawn_record_age
