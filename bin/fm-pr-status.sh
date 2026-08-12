@@ -32,9 +32,10 @@
 # --json fields, which gh-axi pr view does not honour (it accepts only
 # --comments, --reviews, --full and silently ignores --json, then exits 0 with
 # its own TOON body). GitLab merge requests are read through glab. An absent
-# CLI, an unauthenticated CLI, or a request that exceeds FM_PR_STATUS_TIMEOUT
-# (default 20s) is a soft failure: it exits nonzero with a one-line reason and
-# changes nothing.
+# CLI, an unauthenticated CLI, a CLI that exits 0 with a body that is not JSON,
+# or a request that exceeds FM_PR_STATUS_TIMEOUT (default 20s) is a soft
+# failure: it exits nonzero with its own distinct one-line reason and changes
+# nothing.
 #
 # docs/fleet-data-contracts.md owns field ownership and consumer guarantees.
 set -u
