@@ -2741,17 +2741,22 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || break
   done
-  if [ "$verdict" != unknown ]; then
-    # An active Herdr target can accept Enter for delivery after its current
-    # turn, while retaining the typed text in its composer. Confirm that shape
-    # with the adapter's structural composer read before consulting native busy
-    # state, so an idle pane with genuinely unsubmitted text stays pending.
-    local composer_state busy_state
-    composer_state=$(fm_backend_herdr_composer_state "$target")
-    if [ "$composer_state" = pending ]; then
-      busy_state=$(fm_backend_herdr_busy_state "$target")
-      [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
-    fi
+  # An active Herdr target can accept Enter for delivery after its current
+  # turn, while retaining the typed text in its composer. Confirm that shape
+  # with the adapter's structural composer read before consulting native
+  # agent-state, so an idle pane with genuinely unsubmitted text stays pending
+  # and only a PROVEN pending composer can ever reach the busy conversion.
+  # The agent read is classified with this function's own submit vocabulary
+  # (fm_backend_herdr_classify_submit_agent_status, where blocked is
+  # submit-active) rather than the watcher vocabulary, so the pre-Enter
+  # baseline, every in-loop verdict, and this tail all read one raw status the
+  # same way.
+  local composer_state busy_state
+  composer_state=$(fm_backend_herdr_composer_state "$target")
+  if [ "$composer_state" = pending ]; then
+    busy_state=$(fm_backend_herdr_classify_submit_agent_status \
+      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+    [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
   fi
   printf 'pending'; return 0
 }
