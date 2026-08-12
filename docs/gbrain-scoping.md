@@ -62,7 +62,7 @@ That home reads its own index directly and never grants itself a client, so `bin
 The reading home then mints a short-lived token with `bin/fm-gbrain.sh token` and calls the main brain's read tools with it, which is what [Reading a brain](#reading-a-brain) does for a worker.
 
 Read operations succeed and every write-class operation is refused with `insufficient_scope`, enforced inside GBrain per operation rather than by a Firstmate convention.
-That refusal bounds what a reading home can store, not everything it can spend: `think` is a read-scope operation, so a read-only holder reaches hosted synthesis on the serving home under the serving home's model and credential, which is why a serving home carries no such credential ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule, its reason, and the check that now enforces it).
+That refusal bounds what a reading home can store, not everything it can spend: `think` is a read-scope operation, so a read-only holder reaches hosted synthesis on the serving home under the serving home's model and credential, which is why a serving home carries no such credential ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule, its reason, and the bounded check that now enforces it).
 Do not use `gbrain auth create` tokens or any legacy bearer token as a read-only credential: those carry no scope and are full-access.
 Do not enable Dynamic Client Registration's consent-bypassing `client_credentials` variant to obtain one, because a self-registering client would choose its own scopes.
 
@@ -114,7 +114,7 @@ When the main brain is stopped or unreachable, the reading home's own search con
 A search asking for the main corpus alone with `--scope main` has no local half to fall back on, so the same outage fails that run with exit 3 rather than reporting an empty result list as an answer.
 When the MiniMax credential is absent or its endpoint is down, synthesis is unavailable and local search is unaffected, matching the single-brain behavior in [`gbrain.md`](gbrain.md).
 A credential that is present but stored too loosely to use fails the check outright instead of degrading it, because that is a finding rather than an outage.
-So does a serving home on which hosted synthesis is reachable, which no outage explains either ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule and the check that enforces it).
+So does a serving home whose own declared configuration makes hosted synthesis reachable, which no outage explains either ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule, the surfaces the check reads, and the ones it does not).
 
 ## Rotation, revocation, and retirement
 

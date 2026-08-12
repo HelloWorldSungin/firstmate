@@ -378,6 +378,12 @@ fm_gbrain_is_main_brain_owner() {  # <home>
 # it is ok whatever its credential plane holds, and no further plane is read.
 # Past that gate a plane this process cannot read is unknown, never ok.
 #
+# Firstmate's declared surfaces above are the whole reach by decision, not by
+# oversight: GBrain's own runtime configuration and the fleet-wide runtime key
+# are never read here, so an ok verdict is "no violation in what this reads".
+# docs/gbrain.md states that limit for operators and names the open remainder;
+# widen this only through that owner rather than by adding a plane here.
+#
 # Sets FM_GBRAIN_SERVING_CREDENTIAL_STATE to ok, serving-with-credential, or
 # unknown, with the reason in FM_GBRAIN_SERVING_CREDENTIAL_DETAIL.
 # Returns 0 in every case so sourcing callers decide how each surface renders

@@ -60,16 +60,20 @@
 #   serving-check
 #                Read-only alarm for the serving-credential rule that
 #                docs/gbrain.md owns: print one GBRAIN_SERVING_CREDENTIAL line
-#                when THIS home both serves its brain as the main brain and has
-#                hosted synthesis reachable on it, or when a plane the verdict
-#                needs cannot be read; stay silent when the home is clear. A
-#                home that serves nothing is clear whatever its credential plane
-#                holds, so a reading home never raises this alarm. It reads only
-#                the config planes, so it needs no network, no token mint, and
-#                no gbrain binary, which is what makes it safe to run at every
-#                session start. It never exits non-zero: the line itself is the
-#                signal, so a caller that finds nothing stays quiet rather than
-#                failing.
+#                when THIS home both serves its brain as the main brain and
+#                has hosted synthesis reachable on it, or when a plane the
+#                verdict needs cannot be read; stay silent when it finds
+#                neither. A home that serves nothing is clear whatever its
+#                credential plane holds, so a reading home never raises this
+#                alarm. It reads this home's own Firstmate config planes and
+#                never GBrain's runtime configuration, so silence means no
+#                violation in what it reads rather than proof that hosted
+#                synthesis is unreachable (docs/gbrain.md states that limit).
+#                Reading config alone is also why it needs no network, no
+#                token mint, and no gbrain binary, which makes it safe to run
+#                at every session start. It never exits non-zero: the line
+#                itself is the signal, so a caller that finds nothing stays
+#                quiet rather than failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
