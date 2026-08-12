@@ -93,6 +93,27 @@
 #      and secondmates (which read their state from the status log) pay
 #      nothing for it.
 #
+#      Bearing on issue #87 (a park appended after a pipeline finishes never
+#      takes effect, because a terminal run-step outranks the status log
+#      forever): out of scope here, but this makes it cheaper. Step 7 opens
+#      the first general override point where a run-step-derived verdict is
+#      reconciled against evidence from OUTSIDE the run immediately before
+#      runstep_record_emit, and settles the two questions such an override
+#      raises - the overriding signal answers from a closed vocabulary, and a
+#      read that cannot complete resolves to `unknown` rather than to either
+#      confident answer. `abandoned` also proves the rest of the path (the
+#      run-step cache's write and read allowlists, and this file's declared
+#      state vocabulary) takes a new verdict without further plumbing. #87
+#      attaches at that same boundary with a different signal on the other
+#      side of the verdict: it must order a TERMINAL run-step against a LATER
+#      declared wait in the status log, generalising the narrow `done` +
+#      forge-unobserved + paused arm that already exists just above the
+#      cross-check into the ordering rule that issue asks for, while leaving
+#      an ACTIVE run outranking a park (which is what stops a worker parking
+#      its way out of a live gate). Step 7 deliberately pays nothing on
+#      terminal verdicts, so #87 adds a condition there rather than reusing
+#      this one.
+#
 # A run LOOKUP FAILURE is not a run ABSENCE. The bounded no-mistakes call
 # propagates timeout, execution, and no-bounding-mechanism failures so only a
 # failed lookup can replay the last known run step; a completed lookup that found
