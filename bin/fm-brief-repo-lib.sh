@@ -10,17 +10,27 @@
 #
 # Sourced by bin/fm-brief.sh and tests. No side effects on source.
 
+# fm_brief_repo_is_registered: return 0 when data/projects.md carries a registry
+# line for exactly this project name. Same `- <name>` parsing as
+# bin/fm-project-mode.sh, which owns the registry line format.
+fm_brief_repo_is_registered() {
+  local name=$1 registry=${FM_DATA_OVERRIDE:-${FM_HOME:-}/data}/projects.md
+  [ -f "$registry" ] || return 1
+  awk -v n="$name" '$1 == "-" && $2 == n { found = 1; exit } END { exit !found }' "$registry"
+}
+
 # fm_brief_resolve_project_dir: print the resolved project directory for a brief
 # REPO argument, or return 1 when it cannot be resolved to an existing directory.
 #
 # Firstmate is the one project whose checkout is the home itself rather than a
-# clone under projects/ (docs/configuration.md), so a bare name that matches no
-# clone falls back to the home root as the last lookup candidate; without it the
+# clone under projects/ (docs/configuration.md), so a registered name that
+# matches no clone gets the home root as a last lookup candidate; without it the
 # canonical `fm-brief.sh <id> firstmate` resolves nowhere and the comparison
-# below never runs. The fallback is deliberately not gated on the name matching
-# a basename - a display name decides nothing here. It only says where to look,
-# and the git-common-dir comparison stays the sole authority: a home that is not
-# a firstmate checkout shares no object database and is rejected there.
+# below never runs. The registry gate is what keeps that candidate off ordinary
+# projects: an unregistered name - an intake typo, a display spelling that
+# differs from the clone directory - resolves to nothing rather than to the
+# home, so it can never be labelled a firstmate checkout. The name still only
+# says where to look; git-common-dir stays the sole authority on the verdict.
 fm_brief_resolve_project_dir() {
   local repo=$1 projects=${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects} dir
   case "$repo" in
@@ -31,8 +41,10 @@ fm_brief_resolve_project_dir() {
         dir="$projects/$repo"
       elif [ -d "$repo" ]; then
         dir=$repo
-      else
+      elif fm_brief_repo_is_registered "$repo"; then
         dir=${FM_HOME:-}
+      else
+        return 1
       fi
       ;;
   esac

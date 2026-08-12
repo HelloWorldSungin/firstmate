@@ -60,11 +60,13 @@
 #   ship and scout scaffolds also emit firstmate-repo crew role guidance so a
 #   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
 #   briefs additionally require the firstmate-coding-guidelines skill, which a
-#   report-only scout has no tracked material to need. See
+#   report-only scout has no tracked material to need. Firstmate's own checkout
+#   is the home root rather than a clone under projects/, so that one name is
+#   resolved against the home only when data/projects.md registers it. See
 #   bin/fm-brief-repo-lib.sh.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never reads it:
+# captain's standing posture as context, and this script never reads a mode from it:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
