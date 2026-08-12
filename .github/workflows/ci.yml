@@ -354,6 +354,11 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
+          # Collapse floors, not tallies. set -e already catches a suite that
+          # fails; these catch one that exits 0 having silently run far fewer
+          # assertions under stock Bash 3.2. Both floors sit at the current
+          # suite size, so adding tests needs no edit here; raise a floor
+          # deliberately, and never lower one to make a shrunken suite pass.
           snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
           printf '%s\n' "$snapshot_output"
           snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
