@@ -118,6 +118,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
+| `fm-run-attribution-legacy-transition.sh` | Migrate legacy task branch identity only from a matching recorded GitHub PR head, then diagnose every task still unreadable |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded work item on a forge with a write adapter or report why it cannot |
 | `fm-pr-status.sh`        | Refresh and cache one task PR's normalized review, check, and mergeability observation |

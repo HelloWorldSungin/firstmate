@@ -554,6 +554,7 @@ test_reallocated_worktree_branch_surfaces_attribution_fault() {
 # Before the branch marker existed, metadata did not contain enough identity to
 # attribute even a branch-and-head-matching run safely. Preserve compatibility for
 # no-run legacy tasks, but surface a run discovered through ambient placement.
+# Fails if a legacy run is ever attributed from ambient branch-and-head inference.
 test_legacy_run_without_recorded_branch_is_unattributable() {
   reset_fakes
   local d out; d=$(new_case legacy-no-branch)
