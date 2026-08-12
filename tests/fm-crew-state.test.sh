@@ -1419,9 +1419,20 @@ test_dead_window_ignores_stale_status_log() {
 }
 
 # A closed/unreadable pane must NOT mask an authoritative run-step: judge by the
-# run-step, not the shell. The common case is a finished crew whose agent has
-# exited and closed its window (the normal gap between completion and teardown) -
-# it must still report its terminal run-step state (e.g. done), never unknown.
+# run-step, not the shell, so an attributed run is never collapsed to unknown or
+# answered from the stale status log. The common case is a finished crew whose
+# agent has exited and closed its window (the normal gap between completion and
+# teardown) - it must still report its terminal run-step state (e.g. done), which
+# needs no worker and is therefore unchanged by worker liveness.
+#
+# An ACTIVE run-step is where the second invariant applies on top: the run-step
+# stays visible, AND a gone worker is distinguishable from a live one - it
+# reports `abandoned`, not `working`, because a run the daemon keeps advancing
+# with nobody left to drive it is not a healthy validation (issue #105). The
+# pre-#105 `working` shape survives in full only where liveness is unverifiable.
+
+# Breaks if a closed pane masks a terminal run-step (unknown or the stale log),
+# or if the worker cross-check fires on a terminal verdict that needs no worker.
 test_dead_window_still_reports_terminal_run_step() {
   reset_fakes
   local d; d=$(new_case dead-window-done)
@@ -1439,7 +1450,13 @@ test_dead_window_still_reports_terminal_run_step() {
 }
 
 # The same for an active run: an agent pane that crashed mid-validation while the
-# daemon-backed run continues must report the live run-step, not unknown.
+# daemon-backed run continues must still report the live run-step, and must
+# report it as abandoned rather than healthy working. A closed window is exactly
+# the pairing production produces - tmux omits the window, so the recovery-grade
+# classifier answers `missing`.
+#
+# Breaks if a closed pane collapses an attributed active run to unknown (the
+# run-step stops being visible), or if a gone worker reads as plain `working`.
 test_dead_window_still_reports_active_run_step() {
   reset_fakes
   local d; d=$(new_case dead-window-active)
@@ -1448,11 +1465,33 @@ test_dead_window_still_reports_active_run_step() {
   fm_write_meta "$d/state/feat-dead-act.meta" "window=fm:fm-feat-dead-act" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-dead-act)"
   FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_AGENT_STATE=missing
   local out; out=$(run_crew_state "$d" feat-dead-act)
-  assert_contains "$out" "state: working" "closed pane still reports active run-step"
+  assert_contains "$out" "state: abandoned" "closed pane over an active run is abandoned, not healthy"
+  assert_contains "$out" "source: run-step" "closed pane does not mask the active run-step"
+  assert_contains "$out" "worker gone (missing)" "the verdict names the worker that is gone"
+  assert_not_contains "$out" "state: unknown" "closed pane with an active run must never be unknown"
+  assert_not_contains "$out" "state: working" "a gone worker must not read as healthy working"
+  pass "closed pane still reports an active run-step, as abandoned"
+}
+
+# Breaks if a closed pane collapses an attributed active run to unknown on a
+# backend with no recovery classifier, where the pre-#105 answer still holds.
+test_dead_window_active_run_unverified_stays_working() {
+  reset_fakes
+  local d out; d=$(new_case dead-window-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-dead-unver
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-dead-unver.meta" "window=fm:fm-feat-dead-unver" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-dead-unver)"
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_AGENT_STATE=unverified
+  out=$(run_crew_state "$d" feat-dead-unver)
+  assert_contains "$out" "state: working" "an unverifiable worker keeps the pre-#105 run-step answer"
   assert_contains "$out" "source: run-step" "closed pane does not mask the active run-step"
   assert_not_contains "$out" "state: unknown" "closed pane with an active run must never be unknown"
-  pass "closed pane still reports an active run-step"
+  assert_not_contains "$out" "abandoned" "an unverified read is never a confident death"
+  pass "closed pane over an active run stays working when liveness is unverifiable"
 }
 
 test_no_timeout_uses_perl_bound() {
@@ -2084,6 +2123,7 @@ test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
+test_dead_window_active_run_unverified_stays_working
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
