@@ -114,6 +114,14 @@ The captain accepted the trade on 2026-08-12 while live exposure was zero: this 
 Treat it as accepted-while-latent, and re-examine it before the first main brain is configured rather than assuming it was accepted under live traffic.
 [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the measurement behind it.
 
+The rule is checked rather than only stated.
+[`bin/fm-gbrain.sh`](../bin/fm-gbrain.sh) `check` fails a `serving-credential` row when a home serves its brain and holds a usable hosted synthesis credential, so the forbidden configuration exits non-zero instead of passing unnoticed.
+`grant-read` warns at the moment of creation, because registering the first reading client is the ordinary action that turns a latent credential into a live boundary; registration still completes, since the fix is to remove the credential rather than to block the share, while the command exits non-zero so the required follow-up cannot be missed.
+`serving-check` runs at every session start (via `bin/fm-bootstrap.sh`) and emits a `GBRAIN_SERVING_CREDENTIAL` line when a home is already in the forbidden configuration, so an existing violation cannot sit unnoticed between sessions.
+The verdict keys off the actual serving relationship and the actual credential plane - `main_brain_owner` in the home-local plane and a `think.secret` credential that is present and readable in the credential plane - never a home's name, because deriving it from a name is the defect class this repository keeps relearning.
+An unreadable serving relationship or credential plane is reported as `unknown` and never as a pass, because a check that could not run must not look like one that found nothing.
+`bin/fm-gbrain-lib.sh` owns the single verdict every surface shares; [`gbrain-scoping.md`](gbrain-scoping.md) points here for the rule and its enforcement.
+
 ### Announce a maintenance window
 
 The brain stops answering while upgrade steps 4 and 5 run, and the same is true of a reindex or an embedding migration below.

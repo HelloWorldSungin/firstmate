@@ -590,4 +590,102 @@ assert_present "$override_config/gbrain-secrets/main-brain-client-secret" \
   "retirement must never remove the active home's own credentials"
 pass "a command that names a home acts on that home, whatever config directory the active home is using"
 
+# --- 10. the serving-credential rule is checked, not only stated ------------
+#
+# docs/gbrain.md forbids a home from serving its brain while holding a usable
+# hosted synthesis credential, because since GBrain v0.42.76.0 a read-only
+# holder reaches think on the serving home. The verdict keys off the actual
+# serving relationship (main_brain_owner) and the actual credential plane
+# (think.secret present), so the cases below pin each input independently.
+# Fail by: dropping the serving-with-credential branch, keying off a home name,
+# treating an unreadable plane as clean, or removing the grant-read warning.
+
+# A home that holds the credential but serves no brain is a latent case: clean,
+# because the boundary is not live yet. Keys off the serving relationship rather
+# than the credential alone, so a check that flagged any credential-holder would
+# fail here.
+latent_home=$(make_home serving-latent)
+install_secret "$latent_home" minimax-key "$MINIMAX_KEY"
+cli "$latent_home" check --json
+expect_code 0 "$CLI_RC" "a home that holds a credential but serves no brain must pass"
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "a non-serving home should read serving-credential as ok, got '$(state_of serving-credential)'"
+cli "$latent_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check must never exit non-zero; the line is the signal"
+[ -z "$CLI_OUT" ] || fail "serving-check must stay silent on a clean home, got: $CLI_OUT"
+pass "a credential-holding home that serves no brain is clean (the latent case)"
+
+# Mark that same home as the main brain owner and the forbidden configuration
+# exists: check must fail the serving-credential row and exit non-zero, and
+# serving-check must announce it. Fail by: removing the violation branch, or by
+# the check no longer treating the violation as a hard failure.
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$latent_home/config/gbrain-local.json"
+cli "$latent_home" check --json
+expect_code 1 "$CLI_RC" "a serving home holding a usable hosted synthesis credential must fail the check"
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "a serving credential-holder should read serving-credential as failed, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "minimax-key" \
+  "the violation must name the credential by its plane name"
+assert_not_contains "$(detail_of serving-credential)" "$MINIMAX_KEY" \
+  "the violation must not leak the credential bytes"
+cli "$latent_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check never exits non-zero; the line is the signal"
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" "serving-check must announce the violation"
+assert_contains "$CLI_OUT" "serves its brain" "the alarm must say the home is serving"
+assert_not_contains "$CLI_OUT" "$MINIMAX_KEY" "the serving-check alarm must not leak the credential bytes"
+pass "a serving home that holds a usable hosted synthesis credential fails the check and raises the alarm"
+
+# Removing the credential clears the violation, pinning the credential plane as
+# a required input rather than serving alone. Fail by: flagging any serving home.
+rm -f "$latent_home/config/gbrain-secrets/minimax-key"
+cli "$latent_home" check --json
+expect_code 0 "$CLI_RC" "a serving home with no usable hosted synthesis credential must pass"
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "a serving home with the credential removed should read ok, got '$(state_of serving-credential)'"
+pass "the violation clears once the credential is gone, so serving alone is not enough"
+
+# A present credential this process refuses to read leaves the credential plane
+# unknown rather than proving it absent. Fail by: collapsing refused credentials
+# into the same clean state as a genuinely missing credential.
+install_secret "$latent_home" minimax-key "$MINIMAX_KEY" 644
+cli "$latent_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a refused credential plane should read serving-credential as unknown, got '$(state_of serving-credential)'"
+cli "$latent_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must raise an unreadable credential plane rather than pass silently"
+assert_contains "$CLI_OUT" "mode 0600" \
+  "the unknown diagnostic must say why the credential plane could not be read"
+pass "a refused credential plane is unknown, never a silent pass"
+
+# A home whose serving relationship cannot be read is unknown, never a pass: an
+# unreadable plane must not look like a check that ran and found nothing. Fail
+# by: defaulting an unreadable plane to ok (which would silence serving-check).
+unknown_home=$(make_home serving-unknown)
+install_secret "$unknown_home" minimax-key "$MINIMAX_KEY"
+printf '%s\n' '{"version":1,"main_brain_owner":' > "$unknown_home/config/gbrain-local.json"
+cli "$unknown_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an unreadable local plane should read serving-credential as unknown, got '$(state_of serving-credential)'"
+cli "$unknown_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must raise unknown rather than pass silently"
+pass "an unreadable serving relationship is unknown, never a silent pass"
+
+# grant-read warns at the moment the forbidden configuration is created:
+# registering the first reading client is the ordinary action that turns a latent
+# credential into a live boundary, so the warning must fire then and must not
+# leak the credential. Fail by: removing the grant-read warning.
+warn_owner=$(make_home serving-warn-owner)
+install_secret "$warn_owner" minimax-key "$MINIMAX_KEY"
+warn_target=$(make_home serving-warn-target)
+cli "$warn_owner" grant-read fm-warn --home "$warn_target"
+expect_code 1 "$CLI_RC" "a grant that creates the forbidden configuration returns a warning, not success"
+assert_contains "$CLI_OUT" "SERVES its brain" "grant-read must warn that the home now serves"
+assert_contains "$CLI_OUT" "hosted synthesis credential" "the warning must name what makes it a boundary"
+assert_not_contains "$CLI_OUT" "$MINIMAX_KEY" "the grant warning must not leak the credential bytes"
+[ "$(jq -r .main_brain_owner "$warn_owner/config/gbrain-local.json")" = true ] \
+  || fail "the granting home must still be recorded as the main brain owner"
+pass "grant-read warns the moment a serving home's credential becomes a live boundary"
+
 echo "all fm-gbrain-lib tests passed"
