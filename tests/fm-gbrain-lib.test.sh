@@ -647,6 +647,29 @@ expect_code 0 "$CLI_RC" "a serving home with no usable hosted synthesis credenti
   || fail "a serving home with the credential removed should read ok, got '$(state_of serving-credential)'"
 pass "the violation clears once the credential is gone, so serving alone is not enough"
 
+# That same clean row must state its own reach, because this check reads only
+# Firstmate's declared surfaces while docs/gbrain.md configures hosted synthesis
+# in GBrain's runtime plane: an operator who reads ok as proof would be wrong.
+# Fail by: dropping either disclosure - the surfaces actually read, or the
+# runtime plane and the runtime-injected key that are not read.
+assert_contains "$(detail_of serving-credential)" "gbrain-secrets" \
+  "the clean serving row must name the credential plane it read"
+assert_contains "$(detail_of serving-credential)" "think.secret" \
+  "the clean serving row must name the shared-plane fields it read"
+assert_contains "$(detail_of serving-credential)" "think.base_url" \
+  "the clean serving row must name the endpoint field it read"
+assert_contains "$(detail_of serving-credential)" "models.think" \
+  "the clean serving row must say GBrain's runtime models.think is not inspected"
+assert_contains "$(detail_of serving-credential)" "/home/sungin/.pi/agent/auth.json" \
+  "the clean serving row must say the runtime-injected fleet credential is not inspected"
+assert_contains "$(detail_of serving-credential)" "not proof" \
+  "the clean serving row must not read as proof that hosted synthesis is unreachable"
+# The disclosure belongs to the serving case alone: a home that provably serves
+# nothing answers a different question and must not inherit the caveat.
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "the disclosure assertions must run against the clean serving row"
+pass "a clean serving-credential row states the surfaces it read and the runtime plane it did not"
+
 # A present credential this process refuses to read leaves the credential plane
 # unknown rather than proving it absent. Fail by: collapsing refused credentials
 # into the same clean state as a genuinely missing credential.

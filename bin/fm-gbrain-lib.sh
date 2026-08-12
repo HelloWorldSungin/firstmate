@@ -381,8 +381,11 @@ fm_gbrain_is_main_brain_owner() {  # <home>
 # Firstmate's declared surfaces above are the whole reach by decision, not by
 # oversight: GBrain's own runtime configuration and the fleet-wide runtime key
 # are never read here, so an ok verdict is "no violation in what this reads".
-# docs/gbrain.md states that limit for operators and names the open remainder;
-# widen this only through that owner rather than by adding a plane here.
+# The ok detail for a serving home says that in its own words rather than
+# leaving it to the reader, since that is the only ok an operator could mistake
+# for proof. docs/gbrain.md states the limit for operators and names the open
+# remainder; widen this only through that owner rather than by adding a plane
+# here.
 #
 # Sets FM_GBRAIN_SERVING_CREDENTIAL_STATE to ok, serving-with-credential, or
 # unknown, with the reason in FM_GBRAIN_SERVING_CREDENTIAL_DETAIL.
@@ -472,8 +475,13 @@ fm_gbrain_serving_credential_state() {  # <home>
       "${refused:-the credential plane of this home could not be read}"
     return 0
   fi
+  # The clean verdict states its own reach. A serving home is the one case where
+  # ok is a policy claim rather than a fact about a plane, so it must not read as
+  # proof that hosted synthesis is unreachable: the planes below are all this
+  # check sees, and the runtime plane where docs/gbrain.md actually configures
+  # hosted synthesis is outside it (issue 107 owns that remainder).
   fm_gbrain_serving_verdict ok \
-    "this home serves its brain as the main brain and holds no usable hosted synthesis credential"
+    "this home serves its brain as the main brain and no violation was found in the Firstmate surfaces this check reads (think.secret and think.base_url in config/$FM_GBRAIN_SHARED_FILE, and the config/$FM_GBRAIN_SECRETS_DIR credential plane); GBrain's own runtime models.think and a credential injected at runtime from /home/sungin/.pi/agent/auth.json are not inspected, so this is not proof that hosted synthesis is unreachable"
   return 0
 }
 
