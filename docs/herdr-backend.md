@@ -204,6 +204,7 @@ On an idle or done native baseline, submit confirmation waits for `working` or `
 On an already active or unreadable baseline, it falls back to conservative composer clearance.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
+Once the Enter retry budget is spent, the OpenCode busy-queue conversion in [Active limits](#active-limits) is the only way a composer that still holds the typed text reports delivery.
 
 `pane read --lines N` can return empty output when N is below the viewport height.
 The capture owner requests at least 200 lines from Herdr and trims locally to the caller's bound.
@@ -300,7 +301,10 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
+  The tmux backend has a busy-queue fallback, and Herdr applies the same distinction through its structural composer read plus native agent state.
+  An idle pane with visible composer text remains a pending submission failure.
+  A target already blocked at a permission prompt before the send never receives the conversion either: the dialog owns the keyboard, so retained composer text there is not evidence the Enter was queued.
+  A blocked state reached only as a result of this Enter is still submit-active proof of delivery.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points

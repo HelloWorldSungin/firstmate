@@ -2717,12 +2717,12 @@ EOF
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline=$(fm_backend_herdr_classify_submit_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  baseline_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true
@@ -2739,8 +2739,37 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       unknown) printf 'unknown'; return 0 ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    [ "$i" -lt "$retries" ] || break
   done
+  # An active Herdr target can accept Enter for delivery after its current
+  # turn, while retaining the typed text in its composer. Confirm that shape
+  # with the adapter's structural composer read before consulting native
+  # agent-state, so an idle pane with genuinely unsubmitted text stays pending
+  # and only a PROVEN pending composer can ever reach the busy conversion.
+  # The agent read is classified with this function's own submit vocabulary
+  # (fm_backend_herdr_classify_submit_agent_status, where blocked is
+  # submit-active) rather than the watcher vocabulary, so a target that
+  # transitions into a permission prompt as a RESULT of this Enter still
+  # counts as proof the Enter landed, exactly as the in-loop verdicts treat it.
+  #
+  # A target that was ALREADY blocked before the send is the one shape this
+  # conversion must refuse. There the approval dialog owns the keyboard, so an
+  # Enter it consumes leaves the typed text unsubmitted in the composer while
+  # native agent-state keeps reporting the same pre-existing blocked turn -
+  # indistinguishable, at the tail, from a genuinely queued Enter. That is the
+  # message-losing direction issue #84 calls out (fm-send.sh treats `empty` as
+  # confirmed delivery and exits 0), so a blocked baseline keeps the honest
+  # `pending` verdict and never reaches the busy conversion at all.
+  local composer_state busy_state
+  if [ "$baseline_raw" != blocked ]; then
+    composer_state=$(fm_backend_herdr_composer_state "$target")
+    if [ "$composer_state" = pending ]; then
+      busy_state=$(fm_backend_herdr_classify_submit_agent_status \
+        "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+      [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
+    fi
+  fi
+  printf 'pending'; return 0
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
