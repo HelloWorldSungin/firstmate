@@ -173,8 +173,14 @@ probe_url() {  # <url> -> 0 reachable
   curl -sS -o /dev/null -m "${FM_GBRAIN_TIMEOUT:-10}" "$1" >/dev/null 2>&1
 }
 
+# `hard` is this run's exit status: any finding sets it. `plane_broken` is the
+# narrower question of whether the configuration this run reads from is
+# unusable, which is what makes a downstream row unanswerable rather than
+# merely bad news. They are not the same: a serving-credential violation is a
+# finding over planes that both read fine, so it must not blank a row whose
+# answer this run already knows.
 cmd_check() {
-  local json_mode=0 hard=0 shared local_file url secret_name rc
+  local json_mode=0 hard=0 plane_broken=0 shared local_file url secret_name rc
   [ "${1:-}" = --json ] && json_mode=1
 
   shared=$(fm_gbrain_shared_path "$FM_HOME")
@@ -183,15 +189,15 @@ cmd_check() {
   if fm_gbrain_validate_shared "$shared"; then
     check_row config ok "shared configuration valid"
   else
-    check_row config failed "$FM_GBRAIN_ERROR"; hard=1
+    check_row config failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1
   fi
   if fm_gbrain_validate_local "$local_file"; then
     check_row config-local ok "home-local configuration valid"
   else
-    check_row config-local failed "$FM_GBRAIN_ERROR"; hard=1
+    check_row config-local failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1
   fi
 
-  if [ "$hard" -eq 0 ] && fm_gbrain_resolve_paths "$FM_HOME"; then
+  if [ "$plane_broken" -eq 0 ] && fm_gbrain_resolve_paths "$FM_HOME"; then
     if [ -d "$FM_GBRAIN_PGLITE" ]; then
       check_row brain ok "$FM_GBRAIN_PGLITE"
     else
@@ -211,12 +217,15 @@ cmd_check() {
     case $rc in
       0) check_row "secret:$secret_name" ok "mode 0600" ;;
       1) check_row "secret:$secret_name" absent "not installed" ;;
-      *) check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1 ;;
+      *) check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1 ;;
     esac
   done
 
   # docs/gbrain.md owns the rule. A violation is a hard configuration finding;
-  # an unreadable plane is unknown rather than a silent pass.
+  # an unreadable plane is unknown rather than a silent pass. It fails the run
+  # without setting plane_broken: both planes were read, so every row below is
+  # still answerable and the operator reading the violation keeps the context
+  # that tells them which home is serving.
   fm_gbrain_serving_credential_state "$FM_HOME"
   case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
     ok) check_row serving-credential ok "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
@@ -249,7 +258,7 @@ cmd_check() {
   # only a home that holds a client can call an unanswered mint degraded.
   url=$(shared_str '.main_brain.mcp_url')
   if [ -n "$url" ]; then
-    if [ "$hard" -ne 0 ]; then
+    if [ "$plane_broken" -ne 0 ]; then
       check_row main-brain skipped "local plane must be fixed first"
     elif fm_gbrain_is_main_brain_owner "$FM_HOME"; then
       check_row main-brain ok "this home owns the main brain at $url and reads its own index directly"

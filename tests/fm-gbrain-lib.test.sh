@@ -758,4 +758,42 @@ cli "$hosted_home" serving-check
   || fail "a serving home whose think endpoint stays on this host must be clean, got: $CLI_OUT"
 pass "the hosted-provider half keys off the endpoint's host, not the presence of a think endpoint"
 
+# The violation must not cost the operator the rest of the report. "local plane
+# must be fixed first" is only true when a plane could not be read; a
+# serving-credential violation is a finding over two planes that both read
+# fine, so the main-brain row stays the factual answer this run established -
+# which is also the row naming the brain the operator is being told they serve.
+# Fail by: gating the main-brain row on the run's exit status rather than on
+# whether the configuration planes are usable, which prints a row that the
+# config-local row two lines above contradicts.
+row_home=$(make_home serving-row-context)
+jq '.think = {base_url: "https://api.minimax.invalid/v1", model: "minimax:MiniMax-M3"}' \
+  "$row_home/config/gbrain.json" > "$row_home/config/gbrain.json.new"
+mv "$row_home/config/gbrain.json.new" "$row_home/config/gbrain.json"
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$row_home/config/gbrain-local.json"
+cli "$row_home" check --json
+expect_code 1 "$CLI_RC" "the serving-credential violation must still fail the run"
+[ "$(state_of config-local)" = ok ] \
+  || fail "this case needs a readable local plane, got '$(state_of config-local)'"
+[ "$(state_of main-brain)" = ok ] \
+  || fail "a serving-credential violation must not blank the main-brain row, got '$(state_of main-brain)'"
+assert_contains "$(detail_of main-brain)" "owns the main brain" \
+  "the main-brain row must keep stating what this run established"
+assert_not_contains "$(detail_of main-brain)" "must be fixed first" \
+  "the report must not point at a local plane the same report calls valid"
+[ "$(state_of brain)" != skipped ] \
+  || fail "a serving-credential violation must not blank the brain row either"
+
+# The skipped row is not gone, it is reserved for the case it describes: a
+# local plane this run genuinely could not read. Fail by: dropping the gate
+# altogether and reporting reachability over configuration that never parsed.
+printf '%s\n' '{"version":1,"main_brain_owner":"yes"}' > "$row_home/config/gbrain-local.json"
+cli "$row_home" check --json
+expect_code 1 "$CLI_RC" "an invalid local plane must fail the run"
+[ "$(state_of config-local)" = failed ] \
+  || fail "this case needs an unreadable local plane, got '$(state_of config-local)'"
+[ "$(state_of main-brain)" = skipped ] \
+  || fail "an unreadable local plane must still skip the main-brain row, got '$(state_of main-brain)'"
+pass "a serving-credential violation fails the run without withholding rows this run could answer"
+
 echo "all fm-gbrain-lib tests passed"
