@@ -144,10 +144,16 @@ fm_test_cleanup() {
 fm_test_reap_descendants() {
   local pid
   for pid in $(fm_test_child_pids "$$"); do
-    fm_test_kill_tree "$pid"
+    fm_test_kill_tree "$pid" "$$"
   done
 }
 
+# fm_test_child_pids <parent> lists the PIDs that were children of <parent> at
+# the instant it ran. That is a candidate list, never a licence to signal: the
+# `$(...)` a caller captures it with forks a subshell that is itself a child of
+# the calling shell, so when <parent> is that shell the list always carries the
+# transient subshell's own PID - already exited by the time the caller reads it.
+# fm_test_pid_has_parent is what turns a candidate into a target.
 fm_test_child_pids() {
   local parent=$1
   if command -v pgrep >/dev/null 2>&1; then
@@ -155,23 +161,41 @@ fm_test_child_pids() {
   else
     ps -eo pid,ppid= 2>/dev/null \
       | awk -v p="$parent" '$2 == p { print $1 }' \
-      | grep -v "^$$$" \
       || true
   fi
 }
 
+# fm_test_pid_has_parent <pid> <parent> is true only while <pid> is still alive
+# AND still a direct child of <parent>. Every signal below is gated on it, so a
+# candidate that exited between enumeration and the kill is skipped instead of
+# signalled - which is what keeps the sweep off an unrelated host process that
+# the kernel has since handed that recycled PID to.
+fm_test_pid_has_parent() {
+  local pid=$1 parent=$2 actual
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  actual=$(LC_ALL=C ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')
+  [ -n "$actual" ] && [ "$actual" = "$parent" ]
+}
+
 fm_test_kill_tree() {
-  local pid=$1 child waited
+  local pid=$1 parent=$2 child waited
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
   for child in $(fm_test_child_pids "$pid"); do
-    fm_test_kill_tree "$child"
+    fm_test_kill_tree "$child" "$pid"
   done
+  # Re-verified after the recursion and on every escalation: draining the leaves
+  # takes real time, and the target can exit on its own inside that window.
+  # Killing leaves before parents is what keeps <parent> alive throughout, so a
+  # still-live target that stops matching it has genuinely gone.
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
   kill "$pid" 2>/dev/null || true
   waited=0
   while [ "$waited" -lt 20 ]; do
-    kill -0 "$pid" 2>/dev/null || return 0
+    fm_test_pid_has_parent "$pid" "$parent" || return 0
     sleep 0.05 2>/dev/null || true
     waited=$((waited + 1))
   done
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
   kill -9 "$pid" 2>/dev/null || true
 }
 
