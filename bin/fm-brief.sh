@@ -15,8 +15,9 @@
 #   "<forge>:<url>" argument. Resolving a loose reference (a bare number, an
 #   owner/repo#N, a project's declared tracker) is intake's job, exactly like
 #   delivery mode: firstmate runs bin/fm-issue-ref.sh --format brief and passes
-#   the result here. This script never reads data/projects.md and never guesses
-#   a forge, so a brief cannot silently point at the wrong tracker.
+#   the result here. This script reads data/projects.md only to tell whether a
+#   project's clone is the home root (bin/fm-brief-repo-lib.sh) and never
+#   guesses a forge, so a brief cannot silently point at the wrong tracker.
 #   --issue is the older same-repository GitHub form: a bare number that means
 #   "this issue lives in whichever repository the PR lands in". It still works
 #   for a task shipping to its own GitHub tracker, but it cannot express a
@@ -61,9 +62,9 @@
 #   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
 #   briefs additionally require the firstmate-coding-guidelines skill, which a
 #   report-only scout has no tracked material to need. Firstmate's own checkout
-#   is the home root rather than a clone under projects/, so that one name is
-#   resolved against the home only when data/projects.md registers it. See
-#   bin/fm-brief-repo-lib.sh.
+#   is the home root rather than a clone under projects/, so a name is resolved
+#   against the home only when its data/projects.md line declares that layout.
+#   See bin/fm-brief-repo-lib.sh.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:

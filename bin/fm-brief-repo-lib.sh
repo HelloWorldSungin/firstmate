@@ -10,27 +10,40 @@
 #
 # Sourced by bin/fm-brief.sh and tests. No side effects on source.
 
-# fm_brief_repo_is_registered: return 0 when data/projects.md carries a registry
-# line for exactly this project name. Same `- <name>` parsing as
-# bin/fm-project-mode.sh, which owns the registry line format.
-fm_brief_repo_is_registered() {
+# fm_brief_repo_registers_home_root_clone: return 0 when data/projects.md
+# carries a registry line for exactly this project name and that line declares
+# the project's clone to be the home root itself rather than a directory under
+# projects/. Same `- <name>` parsing as bin/fm-project-mode.sh, which owns the
+# registry line format; docs/configuration.md owns the declaration prose.
+fm_brief_repo_registers_home_root_clone() {
   local name=$1 registry=${FM_DATA_OVERRIDE:-${FM_HOME:-}/data}/projects.md
   [ -f "$registry" ] || return 1
-  awk -v n="$name" '$1 == "-" && $2 == n { found = 1; exit } END { exit !found }' "$registry"
+  awk -v n="$name" '
+    $1 == "-" && $2 == n {
+      line = tolower($0)
+      if (index(line, "home is the clone") || index(line, "lives at the home root rather than under projects/")) {
+        found = 1
+      }
+      exit
+    }
+    END { exit !found }
+  ' "$registry"
 }
 
 # fm_brief_resolve_project_dir: print the resolved project directory for a brief
 # REPO argument, or return 1 when it cannot be resolved to an existing directory.
 #
 # Firstmate is the one project whose checkout is the home itself rather than a
-# clone under projects/ (docs/configuration.md), so a registered name that
-# matches no clone gets the home root as a last lookup candidate; without it the
-# canonical `fm-brief.sh <id> firstmate` resolves nowhere and the comparison
-# below never runs. The registry gate is what keeps that candidate off ordinary
-# projects: an unregistered name - an intake typo, a display spelling that
-# differs from the clone directory - resolves to nothing rather than to the
-# home, so it can never be labelled a firstmate checkout. The name still only
-# says where to look; git-common-dir stays the sole authority on the verdict.
+# clone under projects/ (docs/configuration.md), so a name whose registry line
+# declares that layout gets the home root as a last lookup candidate; without it
+# the canonical `fm-brief.sh <id> firstmate` resolves nowhere and the comparison
+# below never runs. Keying on the declaration rather than on registration alone
+# is what keeps that candidate off every other project: an intake typo, a
+# display spelling that differs from the clone directory, and an ordinary
+# project registered before its clone is synced all resolve to nothing rather
+# than to the home, so none of them can be labelled a firstmate checkout. The
+# name still only says where to look; git-common-dir stays the sole authority on
+# the verdict.
 fm_brief_resolve_project_dir() {
   local repo=$1 projects=${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects} dir
   case "$repo" in
@@ -41,7 +54,7 @@ fm_brief_resolve_project_dir() {
         dir="$projects/$repo"
       elif [ -d "$repo" ]; then
         dir=$repo
-      elif fm_brief_repo_is_registered "$repo"; then
+      elif fm_brief_repo_registers_home_root_clone "$repo"; then
         dir=${FM_HOME:-}
       else
         return 1

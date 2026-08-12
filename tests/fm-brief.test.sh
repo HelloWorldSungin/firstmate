@@ -1008,14 +1008,15 @@ test_firstmate_repo_crew_persona_section() {
 # This home IS the firstmate clone, the documented default, so firstmate has no
 # clone under projects/ and a bare `firstmate` repo name resolves nowhere else.
 # Positive case breaks if fm_brief_resolve_project_dir stops offering the home
-# root to a registered name: the name resolves to nothing, the git-common-dir
-# comparison never runs, and the guidance is silently absent from exactly the
-# canonical call. Negative case breaks if that candidate is ever offered
-# unconditionally: every unresolved name would then resolve to the home, which
-# in this layout IS firstmate's repo, and ordinary projects would be told they
-# are working in a checkout of firstmate.
+# root to a name whose registry line declares that layout: the name resolves to
+# nothing, the git-common-dir comparison never runs, and the guidance is
+# silently absent from exactly the canonical call. Negative cases break if that
+# candidate is ever offered on anything weaker - registration alone, or nothing
+# at all - because every such name would resolve to the home, which in this
+# layout IS firstmate's repo, and ordinary projects would then be told they are
+# working in a checkout of firstmate.
 test_firstmate_repo_crew_persona_without_a_projects_clone() {
-  local data brief unregistered_brief
+  local data brief unregistered_brief uncloned_brief
   data="$TMP_ROOT/firstmate-home-data"
   mkdir -p "$data"
   [ ! -d "$ROOT/projects/firstmate" ] \
@@ -1023,8 +1024,8 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   printf '%s\n' \
     '# Projects' \
     '' \
-    '- firstmate [no-mistakes +yolo] - firstmate itself: this home IS the clone (added 2026-08-04)' \
-    '- some-clone [no-mistakes] - an ordinary registered project (added 2026-08-04)' \
+    '- firstmate [no-mistakes +yolo] - firstmate itself: this home IS the clone, so it lives at the home root rather than under projects/ (added 2026-08-04)' \
+    '- some-clone [no-mistakes] - an ordinary registered project whose clone is not in this home yet (added 2026-08-04)' \
     > "$data/projects.md"
 
   # Run from a scratch directory so the relative-name branch cannot resolve.
@@ -1051,7 +1052,21 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
     "an unregistered project name must not resolve to the firstmate home and inherit its persona section"
   assert_no_grep "changes firstmate's shared tracked material" "$unregistered_brief" \
     "an unregistered project name must not be told it changes firstmate's tracked material"
-  pass "fm-brief.sh: the home-root candidate is registry-gated, so only a registered firstmate resolves there"
+
+  # Registered, but its line claims no home-root clone and the clone is simply
+  # not in this home yet - register-then-clone ordering, or a renamed clone
+  # directory. Registration alone must not put it in firstmate's own checkout.
+  (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
+    "$ROOT/bin/fm-brief.sh" fm-home-uncloned some-clone --mode no-mistakes >/dev/null 2>&1)
+  uncloned_brief="$data/fm-home-uncloned/brief.md"
+  assert_grep 'disposable git worktree of some-clone' "$uncloned_brief" \
+    "the registered-but-uncloned brief did not scaffold"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$uncloned_brief" \
+    "a registered project with no home-root declaration must not inherit the firstmate persona section"
+  assert_no_grep "changes firstmate's shared tracked material" "$uncloned_brief" \
+    "a registered project with no home-root declaration must not be told it changes firstmate's tracked material"
+  pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
 }
 
 test_script_parses
