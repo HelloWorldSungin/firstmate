@@ -1161,6 +1161,36 @@ assert_contains "$out" "retired: $gone_id" \
 assert_absent "$HMISS2/state/procevent/$gone_id.source" "retire-by-gone-path removes the registration"
 pass "a deleted artifact is retirable by path even when its whole tree is gone"
 
+# The deleted tail is resolved lexically, not rejoined verbatim, so a "." or
+# ".." that falls inside the gone portion still derives the id realpath produced
+# while the file existed - the surface that armed the source is the surface that
+# can retire it. This fails if the tail is ever rejoined raw again: the id would
+# hash ".../wt/deep/../review.html" instead of ".../wt/review.html", so source-id
+# would silently return a different id and this retire would refuse with the
+# registration still in place.
+HMISS3="$TMP_ROOT/hmiss3"; new_home "$HMISS3"
+DOTDOT_TREE="$TMP_ROOT/gone-dotdot-tree"
+DOTDOT_ART="$DOTDOT_TREE/wt/review.html"
+DOTDOT_PATH="$DOTDOT_TREE/wt/deep/../review.html"
+mkdir -p "$DOTDOT_TREE/wt/deep"
+printf '<h1>dotdot</h1>\n' > "$DOTDOT_ART"
+dotdot_id=$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_ART")
+[ "$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_PATH")" = "$dotdot_id" ] \
+  || fail "a live path containing .. derived a different id than its realpath"
+PE_TRACKED+=("$HMISS3|$dotdot_id")
+PATH="$LAVISH_ENOENT_BIN:$PATH" FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" arm "$DOTDOT_PATH" >/dev/null
+assert_present "$HMISS3/state/procevent/$dotdot_id.source" \
+  "arming through a path containing .. registers the realpath id"
+rm -rf "$DOTDOT_TREE"
+[ -e "$DOTDOT_ART" ] && fail "dotdot fixture tree was not removed"
+[ "$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_PATH")" = "$dotdot_id" ] \
+  || fail "a gone path containing .. derived a different id than it did while the file existed"
+out=$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" retire "$DOTDOT_PATH")
+assert_contains "$out" "retired: $dotdot_id" "a gone path containing .. retires the source it armed"
+assert_absent "$HMISS3/state/procevent/$dotdot_id.source" \
+  "retiring by a gone path containing .. removes the registration"
+pass "a gone path's . and .. normalize to the id realpath produced at arm time"
+
 # A path with no matching registration refuses with guidance instead of a
 # silent no-op, and a bogus lavish-shaped argument is not mistaken for an id.
 unmatched_status=0

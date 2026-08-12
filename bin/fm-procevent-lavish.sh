@@ -15,9 +15,10 @@
 #            keeps it armed. This is the generic adapter contract bin/fm-procevent.sh
 #            calls, and the only place Lavish's notion of "ended" is decided.
 # source-id  Print the canonical source id for an artifact. When the artifact is
-#            gone, the longest existing ancestor is canonicalized and the rest of
-#            the path rejoined, so the id matches the one computed while the file
-#            existed; arm still refuses a file that is not there to poll.
+#            gone, the longest existing ancestor is canonicalized and the deleted
+#            tail resolved against it lexically, so the id matches the one
+#            computed while the file existed; arm still refuses a file that is
+#            not there to poll.
 # retire     Drop the Lavish source. Accepts an artifact path or its source id,
 #            and stays retirable after the artifact is deleted: a path whose file
 #            is gone resolves to its registered id, an explicit id retires
@@ -71,10 +72,13 @@ usage() {
 # A registration can outlive its file - a review published from a disposable
 # worktree disappears when the worktree returns to the pool. The id must still
 # be derivable then, so identity resolution canonicalizes the longest existing
-# ancestor and rejoins the rest of the path when the artifact itself is gone;
-# the result matches the id computed while the file existed as long as no
-# symlink lay in the deleted portion. arm still requires the file to be there,
-# because a source can only poll an artifact that exists.
+# ancestor and resolves the deleted tail against it lexically: `.` is dropped,
+# `..` pops a component and clamps at the root. That is exactly what realpath
+# would have produced, so the id matches the one computed while the file
+# existed as long as no symlink lay in the deleted portion - and nothing that
+# still exists is resolved lexically, since the ancestor walk stops at the
+# longest path the filesystem can canonicalize. arm still requires the file to
+# be there, because a source can only poll an artifact that exists.
 canonical_artifact_path() {  # <path>: print the canonical path, exit 1 if none resolves
   local p=${1-}
   case "$p" in *$'\n'*) return 1 ;; esac
@@ -101,11 +105,13 @@ canonical_artifact_path() {  # <path>: print the canonical path, exit 1 if none 
       if (defined $abs) { $base = $abs; @rest = @parts[$i..$n-1]; last; }
     }
     exit 1 unless defined $base;
-    my $full = $base;
-    $full .= "/" . $_ for @rest;
-    $full =~ s{//+}{/}g;
-    $full =~ s{/$}{} unless $full eq "/";
-    print "$full\n";
+    my @stack = grep { length } split(m{/}, $base);
+    for my $part (@rest) {
+      next if !length($part) || $part eq ".";
+      if ($part eq "..") { pop @stack; next; }
+      push @stack, $part;
+    }
+    print "/" . join("/", @stack) . "\n";
     exit 0;
   ' -- "$p"
 }
