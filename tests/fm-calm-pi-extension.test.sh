@@ -660,7 +660,7 @@ JS
 }
 
 test_rendering_and_session_lifecycle() {
-  local fixture out output_file status version
+  local fixture out output_file status version transformer_modes site mode recorded_modes
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     echo "skip: node or npm not found for Pi calm renderer test"
     return 0
@@ -693,7 +693,8 @@ SH
   chmod +x "$fixture/operational-input-probe.sh"
 
   output_file="$fixture/node-output"
-  (cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module) >"$output_file" 2>&1 <<'JS'
+  transformer_modes="$fixture/transformer-modes"
+  (cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" FM_CALM_TRANSFORMER_MODES="$transformer_modes" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module) >"$output_file" 2>&1 <<'JS'
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -903,7 +904,20 @@ const stockTransformerProbeRows = stripAnsi(
     .render(100)
     .join("\n"),
 );
-if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
+// A guard that stands down passes by staying silent, which makes a run against a
+// pre-0.84 package indistinguishable from a run where the guard was deleted, moved above
+// the probe, or never reached. Each site therefore records which side of the probe it
+// took, and the shell wrapper fails unless both recorded one, so "green on Pi 0.83.0" is
+// evidence that the stand-down path ran rather than an absence of evidence.
+const piHonorsMarkdownTransformerArgument =
+  stockTransformerProbeRows.includes(operationalTransformerApplied);
+const recordedTransformerModes = [];
+const recordTransformerMode = (site) => {
+  recordedTransformerModes.push(
+    `${site}=${piHonorsMarkdownTransformerArgument ? "enforced" : "stand-down"}`,
+  );
+};
+if (piHonorsMarkdownTransformerArgument) {
   const transformerProbeChat = {
     children: [],
     addChild(component) {
@@ -928,6 +942,7 @@ if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
 } else if (!stockTransformerProbeRows.includes(operationalTransformerProbe)) {
   throw new Error("stock Pi user rendering lost the operational transformer probe text entirely");
 }
+recordTransformerMode("operational-user-row");
 
 writeFileSync("sample.txt", "alpha\n");
 const cases = [
@@ -1208,7 +1223,7 @@ if (!legacyEntryComponent) {
   throw new Error("Calm-off legacy synthetic presentation row was never mounted by Pi's own custom-entry path");
 }
 const legacyEntryRows = stripAnsi(legacyEntryComponent.render(100).join("\n"));
-if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
+if (piHonorsMarkdownTransformerArgument) {
   if (legacyEntryRows.includes(operationalTransformerProbe)) {
     throw new Error("Calm legacy synthetic presentation dropped Pi's Markdown transformers");
   }
@@ -1218,6 +1233,8 @@ if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
 } else if (!legacyEntryRows.includes(operationalTransformerProbe)) {
   throw new Error("Calm legacy synthetic presentation lost the transformer probe text entirely");
 }
+recordTransformerMode("legacy-synthetic-entry-row");
+writeFileSync(process.env.FM_CALM_TRANSFORMER_MODES, `${recordedTransformerModes.join("\n")}\n`);
 
 await calmCommand.handler("", commandContext);
 if (expanded !== true || workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
@@ -1458,7 +1475,15 @@ JS
   out=$(cat "$output_file")
   [ "$status" -eq 0 ] || fail "Pi calm renderer and lifecycle contract failed: $out"
   [ -z "$out" ] || fail "Pi calm renderer test printed output: $out"
-  pass "Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts"
+  for site in operational-user-row legacy-synthetic-entry-row; do
+    mode=$(awk -F= -v site="$site" '$1 == site { print $2 }' "$transformer_modes" 2>/dev/null)
+    case "$mode" in
+      enforced | stand-down) ;;
+      *) fail "the $site Markdown-transformer guard recorded no exercised Pi behavior (got '${mode:-<none>}'); a green run must name which side of the 4th-argument probe it took" ;;
+    esac
+  done
+  recorded_modes=$(awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 } END { printf "\n" }' "$transformer_modes")
+  pass "Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, persists its choice across session starts, and records the Markdown-transformer behavior this Pi exercised ($recorded_modes)"
 }
 
 test_operational_followup_turn_e2e() {

@@ -541,6 +541,7 @@ The sweep was repository-wide rather than adapter-by-adapter: the seven tracked 
 `registerEntryRenderer` appears exactly once in production, and `registerMessageRenderer` and `registerMarkdownTransformer` do not appear at all, so the legacy synthetic entry is the only Calm-owned custom row that builds its own component.
 
 The regression coverage drives Pi's real `addCustomEntryToChat` rather than constructing `CustomEntryComponent` directly, which is what puts the host capture inside the assertion rather than beside it.
+It also records which side of the 4th-argument probe it took, so a green pre-0.84 run states that the stand-down path ran instead of leaving that unobservable; see [Evidence](#evidence) for the two transcripts that differ on exactly that line.
 Both ways of losing the forward were reintroduced and run against the installed 0.84.1, and both fail the same guard:
 
 ```text
@@ -586,6 +587,8 @@ Deciding whether the E2E should cover either path is deliberately left open rath
 ### Evidence
 
 Component fixtures resolve their Pi through `FM_PI_PACKAGE_DIR`, so the second command below exercises the Calm adapters against Pi 0.83.0's real rendering components; the tmux E2E always drives the installed `pi` binary, which was 0.84.1 for both runs.
+Both transcripts in this section and the next were produced on the tree as committed at `248b145`, the commit that moved the stock user-row constructor contract into `fm-calm-visibility.ts`, made its trailing parameters optional, and added the host-capture adapter and the legacy-entry guard.
+They are not carried over from the earlier `c532ed7` tree: that tree predates every one of those changes, and the 0.83.0 declaration check is the one that caught the previous round's `TS2493`/`TS2554`, so it was re-run rather than assumed.
 
 ```text
 $ pi --version
@@ -594,18 +597,30 @@ $ pi --version
 $ tests/fm-calm-pi-extension.test.sh
 $ FM_PI_PACKAGE_DIR=<pi-0.83.0-package> tests/fm-calm-pi-extension.test.sh
 
-# both runs, identical output, exit 0:
+# both runs, exit 0, and identical except for the one line marked below:
 ok - Pi calm resolves its persistent home independently of Pi's launch directory
 ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
 ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
 ok - missing Pi presentation class exports reach the independent adapter degradation path
 ok - Calm registers none of its 7 built-in tool wrappers at load while config/calm is off, and all 7 synchronously at load while config/calm is on
 ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
-ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, persists its choice across session starts, and records the Markdown-transformer behavior this Pi exercised (...)
 ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics
 ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool block at zero height while preserving expansion, history, restart, and Calm-off rendering
 ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
 ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+```
+
+A stand-down guard passes by staying silent, so a green Pi 0.83.0 run used to be indistinguishable from one where the guard was deleted or never reached.
+Both transformer guards now record which side of the 4th-argument probe they took, and the wrapper fails unless both recorded one, so the two runs differ in exactly one line and that line is the proof:
+
+```text
+$ diff <(tests/fm-calm-pi-extension.test.sh) \
+       <(FM_PI_PACKAGE_DIR=<pi-0.83.0-package> tests/fm-calm-pi-extension.test.sh)
+7c7
+< ...and records the Markdown-transformer behavior this Pi exercised (operational-user-row=enforced legacy-synthetic-entry-row=enforced)
+---
+> ...and records the Markdown-transformer behavior this Pi exercised (operational-user-row=stand-down legacy-synthetic-entry-row=stand-down)
 ```
 
 ### Strict typecheck against the 0.84.1 and 0.83.0 declarations
@@ -639,7 +654,7 @@ The other reason was `fm-calm.ts`, and it was neither Pi drift nor introduced he
 
 `TerminalInputHandler` is declared `(data: string) => { consume?: boolean; data?: string } | undefined` in Pi 0.81.1, 0.82.0, 0.83.0, and 0.84.1 alike - byte-identical in all four `dist/core/extensions/types.d.ts` - while Calm's submit handler returned nothing.
 So the earlier `ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.81.1` lines above are not reproducible today: replaying the 2026-07-23 record's own tree (`1c4d210`) against a freshly installed 0.81.1 package reports that same handler error now, alongside an unrelated `TS2322` in the same file.
-Those dated records stand as written for what they claimed at the time; this is the first one whose typecheck transcript still reproduces on the tree it documents.
+Those dated records stand as written for what they claimed at the time; this is the first one whose typecheck transcript still reproduces on the tree it documents, and "the tree it documents" means the tree as committed - both declaration packages were re-checked after the last change to the typed surface they cover, not inherited from an earlier commit on this branch.
 
 The repair here is a signature correction that preserves behavior exactly: the handler is annotated `(data): undefined`, which is what it already returned on every path.
 Calm only observes the keystroke and never returns a `{ consume, data }` directive, so Pi's own input handling is untouched, and the annotation is erased at run time.
