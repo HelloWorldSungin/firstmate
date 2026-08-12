@@ -123,5 +123,6 @@ if [ -n "$SKIPPED" ]; then
 fi
 note "checked $CHECKED installed harness(es)"
 
-cleanup_all && printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'
+cleanup_all
+printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'
 trap - EXIT

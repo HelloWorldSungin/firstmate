@@ -184,5 +184,6 @@ case "$live" in
 esac
 pass "real cmux: list_live discovers a live task workspace by fm-<id> title"
 
-cleanup_all && printf '\nall fm-backend-cmux-smoke tests passed\n'
+cleanup_all
+printf '\nall fm-backend-cmux-smoke tests passed\n'
 trap - EXIT

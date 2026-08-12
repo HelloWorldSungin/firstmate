@@ -60,16 +60,14 @@ PANE_ID=
 LOOP_SCRIPT=
 
 cleanup_all() {
-  local rc=0
   if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || rc=1
-    kill "$DAEMON_PID" 2>/dev/null || rc=1
-    wait "$DAEMON_PID" 2>/dev/null || rc=1
+    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
   fi
-  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || rc=1
+  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || true
   rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || true
   rm -rf "${STATE_DIR:-}" 2>/dev/null || true
-  return $rc
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -530,5 +528,6 @@ test_scenario_d_max_defer
 
 fm_backend_herdr_kill "$SUPERVISOR_TARGET" 2>/dev/null || true
 fm_backend_herdr_kill "$SESSION:$FAKE_CREW_PANE_ID" 2>/dev/null || true
-cleanup_all && echo "all real-herdr afk injection e2e tests passed"
+cleanup_all
+echo "all real-herdr afk injection e2e tests passed"
 trap - EXIT
