@@ -105,6 +105,7 @@ const TIMELINE_SCHEMA = "fm-dashboard-timeline.v1";
 const INGEST_SCHEMA = "fm-dashboard-ingest.v1";
 const AUTH_SCHEMA = "fm-dashboard-auth.v1";
 const AUTH_DENIAL_SCHEMA = "fm-dashboard-access.v1";
+const SERVICE_UNIT_NAME = "firstmate-dashboard.service";
 const SERVICE_UNIT_CONTRACT = "runtime-scratch-v1";
 const AUTH_REALM = "Firstmate fleet dashboard";
 // The two addresses that reach nothing off this host. Every other bind is an
@@ -295,10 +296,29 @@ function resolveTrustedProxies() {
 // contract. A service launched by systemd without the stamp is an older unit,
 // not an ordinary command failure: polling it forever only exposes the first
 // denied mktemp while hiding the repair. INVOCATION_ID is inherited by every
-// descendant, so SYSTEMD_EXEC_PID distinguishes the process the manager
-// launched from a stand-alone development server under another service.
+// descendant. Newer managers identify the process they launched directly;
+// older managers are identified through the service's kernel cgroup.
+function cgroupContainsServiceUnit(cgroup) {
+  return String(cgroup).split(/\r?\n/).some((line) => {
+    const firstColon = line.indexOf(":");
+    const secondColon = line.indexOf(":", firstColon + 1);
+    if (firstColon < 0 || secondColon < 0) return false;
+    return line.slice(secondColon + 1).split("/").includes(SERVICE_UNIT_NAME);
+  });
+}
+
+function isDashboardServiceProcess() {
+  if (!process.env.INVOCATION_ID) return false;
+  if (process.env.SYSTEMD_EXEC_PID) return process.env.SYSTEMD_EXEC_PID === String(process.pid);
+  try {
+    return cgroupContainsServiceUnit(fsReadFileSync("/proc/self/cgroup", "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 function serviceUnitContractError() {
-  if (!process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID !== String(process.pid)) return null;
+  if (!isDashboardServiceProcess()) return null;
   const repair = "rerun bin/fm-dashboard-install.sh; it preserves the installed dashboard settings unless an option overrides them";
   if (process.env.FM_DASHBOARD_UNIT_CONTRACT !== SERVICE_UNIT_CONTRACT) {
     return Object.assign(new Error(`the installed firstmate-dashboard.service is out of date and has no current scratch-space contract; ${repair}`), {
@@ -2395,7 +2415,7 @@ function checkCredentialsMode(argv) {
 // not have would get an HTTP listener where it expected one line of output, and
 // wait for a stdout that never closes. Nothing but a mode flag and its value is
 // accepted, and no argument at all still serves.
-const SERVER_MODES = new Set(["--event-store-path", "--check-credentials", "--check-trusted-proxies", "--hash-password"]);
+const SERVER_MODES = new Set(["--event-store-path", "--check-credentials", "--check-trusted-proxies", "--check-service-unit-cgroup", "--hash-password"]);
 const SERVER_MODE_VALUES = new Set(["--auth-file", "--username"]);
 
 function parseServerMode(argv) {
@@ -2425,7 +2445,8 @@ function parseServerMode(argv) {
 // access to exactly that directory and nothing else, and a single owner of the
 // rule beats two programs deriving it. The second reports whether the stored
 // credentials are usable, the third echoes the trusted-proxy allowlist this
-// server would honour, and the fourth derives a password digest to store.
+// server would honour, the fourth classifies supplied cgroup evidence, and the
+// fifth derives a password digest to store.
 let serverMode = null;
 try {
   serverMode = parseServerMode(process.argv.slice(2));
@@ -2450,6 +2471,8 @@ if (serverMode === "--event-store-path") {
     console.error(`fm-dashboard: ${safeText(error.message)}`);
     process.exit(1);
   }
+} else if (serverMode === "--check-service-unit-cgroup") {
+  console.log(cgroupContainsServiceUnit(fsReadFileSync(0, "utf8")) ? "service" : "other");
 } else if (serverMode === "--hash-password") {
   hashPasswordMode(process.argv).catch((error) => {
     console.error(`fm-dashboard: ${safeText(error.message)}`);

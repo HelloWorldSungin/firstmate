@@ -776,14 +776,23 @@ test_timeout_is_single_flight() {
 
 # A stale service unit must be diagnosed before the snapshot command turns its
 # missing scratch grant into an opaque mktemp failure. INVOCATION_ID plus a
-# matching SYSTEMD_EXEC_PID is the systemd boundary; both values are inherited,
-# so stand-alone descendants of another unit intentionally skip the diagnosis.
+# matching SYSTEMD_EXEC_PID is the newer-systemd boundary, with exact cgroup
+# membership covering older versions that do not provide that variable.
 test_stale_service_unit_is_actionable() {
-  local case_root
+  local case_root classified
+  classified=$(printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = service ] || fail "a unified cgroup did not identify the installed dashboard service"
+  classified=$(printf '5:name=systemd:/user.slice/user-1000.slice/user@1000.service/firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = service ] || fail "a legacy cgroup did not identify the installed dashboard service"
+  classified=$(printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/not-firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = other ] || fail "a different unit was misidentified as the installed dashboard service"
+
   case_root=$(make_runtime inherited-systemd-context)
   TEST_PORT=$(free_port)
   INVOCATION_ID=fixture-parent-invocation \
-    SYSTEMD_EXEC_PID=1 \
     FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS=1 \
@@ -810,7 +819,7 @@ test_stale_service_unit_is_actionable() {
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "service_unit_outdated" and (.status.error.message | contains("rerun bin/fm-dashboard-install.sh"))'
   [ ! -e "$case_root/control/executions" ] || fail "the stale unit still launched a snapshot instead of reporting its repair"
   stop_server
-  pass "a stale installed unit reports the preserving repair without misclassifying inherited systemd context"
+  pass "old and new systemd identify a stale installed unit without misclassifying inherited context"
 }
 
 test_first_run_failures_are_explicit() {

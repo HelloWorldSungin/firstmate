@@ -34,12 +34,14 @@ A trigger arriving mid-snapshot now queues no catch-up attempt, callers continue
 
 ### New server code ran under an old unit
 
-Reproduction: a server whose process id matched systemd's `SYSTEMD_EXEC_PID` and carried `INVOCATION_ID`, but lacked the generated `runtime-scratch-v1` marker, had no writable `TMPDIR` and previously reached a child command before exposing that mismatch.
+Reproduction: a server identified as `firstmate-dashboard.service` and carrying `INVOCATION_ID`, but lacking the generated `runtime-scratch-v1` marker, had no writable `TMPDIR` and previously reached a child command before exposing that mismatch.
 The initiating trigger was deploying current server code without reinstalling the already-loaded unit that predated `RuntimeDirectory=` and `TMPDIR=`.
 The masking condition was that systemd kept the old unit active and commands that did not need a temp file continued to work, so the missing grant appeared only when a snapshot path first needed scratch space.
 The visible symptom was a raw `mktemp` or read-only-filesystem failure instead of an installation diagnosis.
 The server now refuses to start polling under that stale installed contract and reports `rerun bin/fm-dashboard-install.sh` as the repair.
-An inherited `INVOCATION_ID` from an unrelated parent service does not make a stand-alone dashboard process claim that installed-unit contract, because its process id does not match the inherited `SYSTEMD_EXEC_PID`.
+On systemd versions that provide `SYSTEMD_EXEC_PID`, the server requires it to match its own process id.
+On older versions, the exact `firstmate-dashboard.service` component in `/proc/self/cgroup` supplies the same unit-specific boundary across legacy and unified cgroup formats.
+An inherited `INVOCATION_ID` from an unrelated parent service therefore does not make a stand-alone dashboard process claim the installed-unit contract.
 That repair preserves the installed address and trusted proxies unless explicit environment values or flags replace them.
 
 ### Missing snapshot data falsely condemned supervision
