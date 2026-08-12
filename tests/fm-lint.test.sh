@@ -103,11 +103,13 @@ SH
 }
 
 test_installer_outlasts_a_sustained_download_outage() {
-  # The retry loop's job is to absorb a release-CDN blip, and blips outlast a
-  # couple of seconds: the loop that stopped after three attempts one and two
-  # seconds apart gave up ~3s after the first HTTP 503 and failed a CI lane on
-  # infra noise. Four consecutive failures must therefore still recover, the
-  # waits between them must widen, and each attempt must be time-bounded so a
+  # The retry loop's job is to absorb a release-CDN blip, and a blip outlasts
+  # any budget stated as a count of attempts. The loop that stopped after three
+  # attempts one and two seconds apart gave up ~3s after the first HTTP 503; the
+  # five-attempt loop that replaced it gave up 31s in, and both failed a CI lane
+  # on infra noise. An outage past that 30s ceiling must therefore still
+  # recover, the waits must widen but stay capped so a long blip is probed
+  # rather than slept through, and each attempt must be time-bounded so a
   # stalled connection cannot hold the lane until the job timeout.
   local tmp fakebin destination out waits
   tmp=$(fm_test_tmproot fm-shellcheck-outage)
@@ -121,9 +123,11 @@ count=0
 [ ! -f "$CURL_COUNT" ] || count=$(cat "$CURL_COUNT")
 count=$((count + 1))
 printf '%s\n' "$count" > "$CURL_COUNT"
-# 503 then three dead connections: the exact shape CI observed.
+# 503s and dead connections, the exact shape CI observed, sustained past the
+# ~30s that exhausted the previous budget.
 [ "$count" -gt 1 ] || exit 22
-[ "$count" -gt 4 ] || exit 56
+[ "$count" -gt 5 ] || exit 56
+[ "$count" -gt 6 ] || exit 22
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then
     : > "$2"
@@ -165,21 +169,26 @@ SH
   out=$(CURL_COUNT="$tmp/curl-count" CURL_ARGS="$tmp/curl-args" SLEEP_WAITS="$tmp/sleep-waits" \
     PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) \
     || fail "installer gave up on a sustained but transient outage"$'\n'"$out"
-  [ "$(cat "$tmp/curl-count")" -eq 5 ] || fail "installer did not retry through four failed attempts"
+  [ "$(cat "$tmp/curl-count")" -eq 7 ] || fail "installer did not retry through six failed attempts"
   [ -x "$destination/shellcheck" ] || fail "installer did not install ShellCheck after the outage"
   assert_contains "$out" "curl exit 22" "installer did not disclose the HTTP failure status"
   assert_contains "$out" "curl exit 56" "installer did not disclose the dead-connection status"
   waits=$(paste -sd, "$tmp/sleep-waits")
-  [ "$waits" = "2,4,8,16" ] || fail "backoff schedule was $waits, expected a doubling 2,4,8,16"
+  # 122s of waiting, four times the span that exhausted the previous budget,
+  # and the sixth wait shows the doubling capped instead of running to 64s.
+  [ "$waits" = "2,4,8,16,32,60" ] \
+    || fail "backoff schedule was $waits, expected a capped doubling 2,4,8,16,32,60"
   assert_grep '--max-time' "$tmp/curl-args" "installer left a download attempt unbounded in time"
   assert_grep '--connect-timeout' "$tmp/curl-args" "installer left a connection attempt unbounded"
   pass "ShellCheck installer outlasts a sustained transient outage with widening bounded attempts"
 }
 
-test_installer_stops_after_its_attempt_budget() {
+test_installer_stops_after_its_retry_budget() {
   # The widened budget must still end: a genuinely gone asset has to fail the
-  # lane fast rather than retry forever.
-  local tmp fakebin destination out rc
+  # lane rather than retry forever. It ends on the declared wall-time budget,
+  # so the final wait is trimmed to what is left of it and the total spent is
+  # exactly the constant the installer states.
+  local tmp fakebin destination out rc waits total
   tmp=$(fm_test_tmproot fm-shellcheck-gone)
   fakebin=$(fm_fakebin "$tmp")
   destination="$tmp/bin"
@@ -193,17 +202,25 @@ exit 22
 SH
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$1" >> "$SLEEP_WAITS"
 exit 0
 SH
   chmod +x "$fakebin/curl" "$fakebin/sleep"
 
   rc=0
-  out=$(CURL_COUNT="$tmp/curl-count" PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) || rc=$?
+  out=$(CURL_COUNT="$tmp/curl-count" SLEEP_WAITS="$tmp/sleep-waits" \
+    PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "installer reported success without downloading anything"
-  [ "$(cat "$tmp/curl-count")" -eq 5 ] || fail "installer did not stop at its attempt budget"
-  assert_contains "$out" "download failed after 5 attempts" "installer did not name its exhausted budget"
+  [ "$(cat "$tmp/curl-count")" -eq 9 ] || fail "installer did not stop at its retry budget"
+  waits=$(paste -sd, "$tmp/sleep-waits")
+  [ "$waits" = "2,4,8,16,32,60,60,58" ] \
+    || fail "backoff schedule was $waits, expected 2,4,8,16,32,60,60,58"
+  total=$(awk '{sum += $1} END {print sum + 0}' "$tmp/sleep-waits")
+  [ "$total" -eq 240 ] || fail "installer waited ${total}s in total, expected its declared 240s budget"
+  assert_contains "$out" "download failed after 9 attempts spanning 240s of retries" \
+    "installer did not name its exhausted budget"
   [ ! -e "$destination/shellcheck" ] || fail "installer installed a binary it never downloaded"
-  pass "ShellCheck installer stops at its attempt budget on a permanent failure"
+  pass "ShellCheck installer stops after spending its whole retry budget"
 }
 
 test_rejects_wrong_shellcheck_version() {
@@ -534,7 +551,7 @@ test_list_files_reports_the_shell_inventory
 test_pins_an_explicit_version
 test_installer_retries_transient_download_failure
 test_installer_outlasts_a_sustained_download_outage
-test_installer_stops_after_its_attempt_budget
+test_installer_stops_after_its_retry_budget
 test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
