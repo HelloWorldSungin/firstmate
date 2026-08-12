@@ -572,6 +572,34 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
   if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
   if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
+
+  const staleUnitEnvelope = {
+    schema: "fm-dashboard-envelope.v1",
+    status: {
+      phase: "unavailable",
+      stale: false,
+      error: {
+        kind: "service_unit_outdated",
+        message: "rerun bin/fm-dashboard-install.sh",
+      },
+    },
+    snapshot: null,
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(staleUnitEnvelope) });
+  const staleUnitNotice = selectors.get("#notice-region").textContent;
+  if (!staleUnitNotice.includes("Snapshot polling is paused until the service is reinstalled.")) {
+    throw new Error(`snapshot notice did not explain the stale unit's paused polling: ${staleUnitNotice}`);
+  }
+  if (staleUnitNotice.includes("Retrying automatically.")) {
+    throw new Error(`snapshot notice falsely claimed the stale unit would retry automatically: ${staleUnitNotice}`);
+  }
+  const staleUnitBoard = selectors.get("#kanban").textContent;
+  if (!staleUnitBoard.includes("Snapshot polling will resume after the service is reinstalled.")) {
+    throw new Error(`board did not explain how stale-unit polling resumes: ${staleUnitBoard}`);
+  }
+  if (staleUnitBoard.includes("refreshes continue automatically.")) {
+    throw new Error(`board falsely claimed the stale unit would refresh automatically: ${staleUnitBoard}`);
+  }
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
   pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"

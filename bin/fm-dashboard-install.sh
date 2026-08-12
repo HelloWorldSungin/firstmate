@@ -99,14 +99,25 @@ Options:
                        its salted digest in the private credentials file
   --username NAME      username stored with --set-password (default: captain)
   --auth-file PATH     credentials file
-                       (default: $XDG_CONFIG_HOME/firstmate/dashboard-auth.json)
-  --port PORT          listen port (default: 8787)
-  --poll SECONDS       snapshot poll interval (default: 5)
-  --timeout SECONDS    hard snapshot deadline (default: 15)
-  --stale SECONDS      last-good stale threshold (default: 30)
-  --history-limit N    completion records read per history refresh (default: 500)
-  --history-poll SEC   history refresh interval (default: 60)
-  --report-bytes N     report bytes returned per request (default: 262144)
+                       (first-install default:
+                       $XDG_CONFIG_HOME/firstmate/dashboard-auth.json).
+                       A reinstall preserves the configured file.
+  --port PORT          listen port (first-install default: 8787).
+                       A reinstall preserves the configured port.
+  --poll SECONDS       snapshot poll interval (first-install default: 5).
+                       A reinstall preserves the configured interval.
+  --timeout SECONDS    hard snapshot deadline (first-install default: 15).
+                       A reinstall preserves the configured deadline.
+  --stale SECONDS      last-good stale threshold (first-install default: 30).
+                       A reinstall preserves the configured threshold.
+  --history-limit N    completion records read per history refresh
+                       (first-install default: 500).
+                       A reinstall preserves the configured limit.
+  --history-poll SEC   history refresh interval (first-install default: 60).
+                       A reinstall preserves the configured interval.
+  --report-bytes N     report bytes returned per request
+                       (first-install default: 262144).
+                       A reinstall preserves the configured limit.
   --no-start           install files without enabling or starting the service
   -h, --help           show this help
 
