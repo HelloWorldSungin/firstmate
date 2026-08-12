@@ -124,7 +124,7 @@ Refresh left the previous observation in place." >&2
         else "success" end;
     [(.state // ""), (.isDraft // false | tostring), (.mergeable // ""),
      (.mergeStateStatus // ""), (.reviewDecision // ""), (.headRefOid // ""), rollup]
-    | @tsv'
+    | join("\u001f")'
 }
 
 # GitLab merge requests through glab. detailed_merge_status carries the
@@ -163,7 +163,7 @@ refresh_gitlab() {  # <host> <project-path> <number>
      $review,
      (.sha // ""),
      (.head_pipeline.status // .pipeline.status // "")]
-    | @tsv'
+    | join("\u001f")'
 }
 
 cmd_refresh() {  # <id> [--url <url>]
@@ -192,7 +192,12 @@ cmd_refresh() {  # <id> [--url <url>]
     gitlab) fields=$(refresh_gitlab "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER") || return 1 ;;
     *) echo "fm-pr-status: unsupported forge for $id" >&2; return 1 ;;
   esac
-  IFS=$'\t' read -r raw_state raw_draft raw_mergeable raw_merge_state raw_review raw_head raw_checks \
+  # Unit-separated, not tab-separated: a tab is IFS whitespace, so bash folds a
+  # run of them into one delimiter and an empty column silently shifts every
+  # later one left. A PR with no review decision would then land its head SHA in
+  # the review slot and lose the head entirely - a wrong reading that still
+  # validates. The same separator already carries the GitLab approval fields.
+  IFS=$'\037' read -r raw_state raw_draft raw_mergeable raw_merge_state raw_review raw_head raw_checks \
     <<<"$fields"
 
   local merged=false

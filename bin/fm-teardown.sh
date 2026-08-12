@@ -877,6 +877,10 @@ TASK_BRANCH_REAP_PROOF=
 TASK_BRANCH_REAP_PRESERVING_REF=
 TASK_BRANCH_REAP_PR_REF=
 TASK_BRANCH_KEEP_REASON=
+# The cause a failed PR-status refresh named on its own stderr. The keep-reason
+# line is the only place an operator sees why a branch was preserved, so that
+# cause is carried here and folded into it instead of being discarded.
+FM_PR_REFRESH_REASON=
 BRANCH_REAP_TIMEOUT=20
 
 branch_reap_git_remote() {  # <git-args...>
@@ -913,6 +917,9 @@ branch_reap_default_proof() {  # <branch-head>
   return 1
 }
 
+# stdout is the observation document; a refresh's stderr is deliberately left
+# alone so the caller can capture the cause it names and say why verification
+# could not happen.
 merged_pr_status_doc() {
   local doc
   if doc=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
@@ -923,11 +930,12 @@ merged_pr_status_doc() {
     return 0
   fi
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" 2>/dev/null
+    "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID"
 }
 
 branch_reap_pr_proof() {  # <branch-head>
   local head=$1 doc state forge_head recorded_head remote_ref
+  local refresh_err_file refresh_rc=0
   if [ -z "$PR_URL" ]; then
     TASK_BRANCH_KEEP_REASON="no recorded PR and branch is not in the default branch"
     return 1
@@ -936,10 +944,20 @@ branch_reap_pr_proof() {  # <branch-head>
     TASK_BRANCH_KEEP_REASON="recorded PR forge is unsupported; merge could not be verified"
     return 1
   fi
-  doc=$(merged_pr_status_doc) || {
+  FM_PR_REFRESH_REASON=
+  refresh_err_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/.fm-teardown-pr-refresh.XXXXXX") \
+    || refresh_err_file=/dev/null
+  doc=$(merged_pr_status_doc 2>"$refresh_err_file") || refresh_rc=$?
+  if [ "$refresh_rc" -ne 0 ]; then
+    FM_PR_REFRESH_REASON=$(fm_pr_reason_normalize "$(cat "$refresh_err_file" 2>/dev/null)")
+  fi
+  [ "$refresh_err_file" = /dev/null ] || rm -f "$refresh_err_file"
+  if [ "$refresh_rc" -ne 0 ]; then
     TASK_BRANCH_KEEP_REASON="recorded PR merge could not be verified"
+    [ -z "$FM_PR_REFRESH_REASON" ] \
+      || TASK_BRANCH_KEEP_REASON="$TASK_BRANCH_KEEP_REASON: $FM_PR_REFRESH_REASON"
     return 1
-  }
+  fi
   state=$(printf '%s\n' "$doc" | jq -r '.status.state')
   if [ "$state" != merged ]; then
     TASK_BRANCH_KEEP_REASON="recorded PR is not merged"

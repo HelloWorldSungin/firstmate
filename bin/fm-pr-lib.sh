@@ -90,6 +90,35 @@ FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
 
+# A failed forge read explains itself on its own stderr, and a caller that
+# already prints an operator-visible line folds that explanation into it rather
+# than onto a channel every production call site discards. The appended cause
+# stays subordinate to the caller's own wording: 160 characters carries every
+# reason bin/fm-pr-status.sh emits, and the bound keeps a multi-line or
+# pathological stderr from turning one warning line into a wall of text.
+FM_PR_REASON_MAX=${FM_PR_REASON_MAX:-160}
+case "$FM_PR_REASON_MAX" in
+  ''|*[!0-9]*|0) FM_PR_REASON_MAX=160 ;;
+esac
+
+# Reduce a captured stderr to one bounded single-line reason. Empty in, empty
+# out, so a caller falls back to its plain wording instead of emitting a line
+# that trails off after a colon. The caller captures the stderr itself (with
+# `<cmd> 2>&1 >/dev/null` or a redirect to a file); this runs no external
+# command, so a failure path that must never gain another way to fail does not
+# gain one here.
+fm_pr_reason_normalize() {  # <raw-stderr> -> single-line bounded reason
+  local raw=${1-} reason
+  local IFS=$' \t\n'
+  local -a words=()
+  read -r -d '' -a words <<<"$raw" || true
+  reason=${words[*]:-}
+  [ -n "$reason" ] || return 0
+  [ "${#reason}" -le "$FM_PR_REASON_MAX" ] \
+    || reason="${reason:0:$FM_PR_REASON_MAX}..."
+  printf '%s' "$reason"
+}
+
 fm_task_id_path_safe() {
   local id=${1-}
   local LC_ALL=C

@@ -13,8 +13,6 @@ set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=/dev/null
-. "$ROOT/bin/fm-pr-lib.sh"
 
 PR_STATUS="$ROOT/bin/fm-pr-status.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-status)
@@ -101,22 +99,30 @@ run_status_strict_path() {  # <dir> <id>
 
 # Each test states in one line what would have to break for it to fail.
 
-# Test 1: the structured read accepts real JSON and produces normalized
-# fields. What would have to break: refresh_github stops calling `gh` with
-# --json fields OR the jq reduction stops emitting the seven TSV columns.
+# Test 1: the structured read accepts real JSON and reduces it to the
+# normalized observation. What would have to break: refresh_github stops
+# calling `gh` with the --json field list OR a column of the jq reduction stops
+# reaching the document, which the normalizers would otherwise absorb as an
+# honest-looking "unknown".
 test_github_refresh_accepts_real_json() {
-  local dir
+  local dir head
   dir=$(make_case real-json)
-  export FM_TEST_GH_BODY='{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[]}'
-  FM_TEST_GH_BODY="$FM_TEST_GH_BODY" run_status "$dir" refresh task-a > "$dir/out" 2> "$dir/err" \
+  head=0123456789abcdef0123456789abcdef01234567
+  FM_TEST_GH_BODY="{\"state\":\"OPEN\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"reviewDecision\":\"\",\"headRefOid\":\"$head\",\"statusCheckRollup\":[]}" \
+    run_status "$dir" refresh task-a > "$dir/out" 2> "$dir/err" \
     || fail "valid JSON refresh failed: $(cat "$dir/err")"
-  local state rest
-  IFS=$'\t' read -r state rest _ _ _ _ _ <<< "$(cat "$dir/out")"
-  [ -n "$state" ] || fail "refresh did not emit a state field"
+  [ "$(jq -r '.status.state' "$dir/out")" = open ] \
+    || fail "refresh did not normalize the forge state to open: $(cat "$dir/out")"
+  [ "$(jq -r '.status.checks' "$dir/out")" = none ] \
+    || fail "refresh did not fold an empty check rollup to none: $(cat "$dir/out")"
+  [ "$(jq -r '.status.mergeable' "$dir/out")" = mergeable ] \
+    || fail "refresh did not normalize CLEAN to mergeable: $(cat "$dir/out")"
+  [ "$(jq -r '.status.head' "$dir/out")" = "$head" ] \
+    || fail "refresh did not carry the head commit through: $(cat "$dir/out")"
   grep -qxF 'pr view 1 --repo o/r --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup' "$dir/gh.log" \
     || fail "refresh did not call gh with the full --json field list"
-  grep -qxF '0' "$(wc -l < "$dir/gh-axi.log")" >/dev/null 2>&1 || [ ! -s "$dir/gh-axi.log" ] \
-    || fail "refresh called gh-axi even though gh-axi does not honour --json"
+  [ ! -s "$dir/gh-axi.log" ] \
+    || fail "refresh called gh-axi even though gh-axi does not honour --json: $(cat "$dir/gh-axi.log")"
   pass "real JSON refresh routes through gh and never touches gh-axi"
 }
 
@@ -142,7 +148,7 @@ SH
   set +e
   run_status "$dir" refresh task-a > "$dir/out" 2> "$dir/err"
   local rc=$?
-  set -e
+  set +e
   [ "$rc" -ne 0 ] || fail "non-JSON success response was accepted as a successful refresh"
   assert_contains "$(cat "$dir/err")" "exited 0" \
     "the new actionable message must say the CLI exited 0"
@@ -178,7 +184,7 @@ test_github_refresh_fails_closed_when_only_gh_axi_is_on_path() {
   set +e
   run_status_strict_path "$dir" refresh task-a > "$dir/out" 2> "$dir/err"
   local rc=$?
-  set -e
+  set +e
   [ "$rc" -ne 0 ] || fail "refresh succeeded with only gh-axi on PATH"
   assert_contains "$(cat "$dir/err")" "no gh on PATH" \
     "the missing-gh message must name the missing CLI"

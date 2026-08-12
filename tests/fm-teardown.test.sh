@@ -305,6 +305,12 @@ land_on_origin_main() {
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 # The hidden pull ref models GitHub retaining the merged head after deleting its
 # source branch, so branch cleanup can verify the commit still exists remotely.
+# The two CLIs answer the two different questions they are really asked: gh-axi
+# serves the TOON reads (pr list, plain pr view), and only gh serves a --json
+# structured read. gh-axi is deliberately given no --json answer at all, because
+# it has none in reality - it ignores the flag and exits 0 with its own TOON
+# body - so a structured read routed back through the wrapper fails this fixture
+# instead of quietly passing it.
 add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
   git -C "$case_dir/wt" push -q origin "$head:refs/pull/7/head"
@@ -314,14 +320,7 @@ case "\${1:-} \${2:-}" in
   "pr list")
     printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
   "pr view")
-    case " \$* " in
-      *" --json "*)
-        printf '%s\n' '{"state":"MERGED","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"$head","statusCheckRollup":[]}'
-        ;;
-      *)
-        printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"'
-        ;;
-    esac
+    printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"'
     exit 0 ;;
 esac
 exit 0
@@ -331,6 +330,9 @@ SH
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
+      *statusCheckRollup*)
+        printf '%s\n' '{"state":"MERGED","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"$head","statusCheckRollup":[]}'
+        exit 0 ;;
       *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
@@ -2084,6 +2086,11 @@ test_forge_unreachable_keeps_branch_and_cleanup_succeeds() {
     || fail "branch-forge-unreachable: fleet refresh did not prune the stale remote pointer"
   assert_grep "kept local branch fm/task-x1: recorded PR merge could not be verified" "$case_dir/stderr" \
     "branch-forge-unreachable: cleanup did not explain why the branch was kept"
+  # The keep-reason line is the only place an operator learns why the merge
+  # could not be proven, so the refresh's own cause has to be folded into it
+  # rather than discarded with its stderr.
+  assert_grep "recorded PR merge could not be verified: fm-pr-status:" "$case_dir/stderr" \
+    "branch-forge-unreachable: the keep reason did not name the cause the refresh reported"
   pass "an unreachable forge keeps the branch without failing cleanup"
 }
 
