@@ -166,7 +166,8 @@ all fm-model-verify tests passed
 ```
 
 Teardown suite, stdout.
-It printed 74 `ok -` lines and no trailing summary line of its own; the ellipses below elide the 66 of them that fall outside this boundary.
+It printed 74 `ok -` lines and, at that commit, no trailing summary line of its own; the ellipses below elide the 66 of them that fall outside this boundary.
+The suite has since gained the sibling `all fm-teardown tests passed` marker, so a rerun today closes with that line.
 
 ```text
 ...
