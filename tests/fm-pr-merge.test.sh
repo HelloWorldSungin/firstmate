@@ -26,10 +26,14 @@
 #       the two different facts they are with nothing sent, a verification that
 #       fails says why it failed rather than only that it did, and a gitea close
 #       failure never makes the merge look retryable
+#   (q) a cached-PR-state refresh that fails hands the operator the cause the
+#       refresh named, bounded to one line, instead of only the symptom
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$ROOT/bin/fm-pr-lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
@@ -896,6 +900,66 @@ test_work_item_record_wins_over_legacy_issue_line() {
   pass "fm-pr-merge prefers a declared work item over a legacy bare issue number"
 }
 
+# The refresh that follows a merge is best effort, but its failure is the only
+# thing standing between an operator and a stale cached PR state, so the reason
+# it failed has to reach the same line the operator already reads. The gh mock
+# here answers the structured read with a bare SHA and exit 0 - the wrapper's
+# exact failure shape - so the cause travels the real path from
+# bin/fm-pr-status.sh's stderr into bin/fm-pr-merge.sh's warning.
+#
+# What would have to break for this to fail: fm-pr-merge.sh stops capturing
+# fm-pr-status.sh's stderr, it drops the ": <cause>" fold, or fm-pr-status.sh
+# goes back to reporting a non-JSON success as a generic unusable-response line.
+test_refresh_failure_warning_names_the_cause() {
+  local case_dir rc
+  case_dir=$(make_case refresh-cause)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 4444444444444444444444444444444444444444
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "refresh-cause: a failed cache refresh must not fail the merge"
+  assert_grep 'the cached PR state could not be refreshed: ' "$case_dir/stderr" \
+    "refresh-cause: the warning did not fold in the cause the refresh named"
+  assert_grep 'exited 0' "$case_dir/stderr" \
+    "refresh-cause: the operator-visible line did not say the CLI exited 0"
+  assert_grep 'non-JSON' "$case_dir/stderr" \
+    "refresh-cause: the operator-visible line did not say the body was not JSON"
+  [ "$(grep -c 'the cached PR state could not be refreshed' "$case_dir/stderr")" = 1 ] \
+    || fail "refresh-cause: the refresh warning was emitted more than once"
+  pass "a failed post-merge refresh warns with the cause, not only the symptom"
+}
+
+# The cause is interpolated into a line an operator reads, so it is bounded:
+# one line, trimmed, truncated with an ellipsis, and empty for empty input so a
+# caller can fall back to its plain wording instead of a dangling colon. What
+# would have to break: fm_pr_reason_normalize stops collapsing newlines, stops
+# bounding its output, or starts returning a non-empty string for empty stderr.
+test_refresh_reason_is_bounded_to_one_line() {
+  local long normalized
+  [ -z "$(fm_pr_reason_normalize '')" ] \
+    || fail "reason-normalize: empty stderr must produce an empty reason"
+  [ -z "$(fm_pr_reason_normalize "$(printf '\n  \n\t')")" ] \
+    || fail "reason-normalize: whitespace-only stderr must produce an empty reason"
+  [ "$(fm_pr_reason_normalize "$(printf '  first line\nsecond   line  \n')")" \
+    = 'first line second line' ] \
+    || fail "reason-normalize: multi-line stderr was not collapsed to one trimmed line"
+  long=$(printf 'x%.0s' $(seq 1 $((FM_PR_REASON_MAX + 40))))
+  normalized=$(fm_pr_reason_normalize "$long")
+  [ "${#normalized}" -eq "$((FM_PR_REASON_MAX + 3))" ] \
+    || fail "reason-normalize: an overlong reason was not truncated to the bound"
+  case "$normalized" in
+    *...) ;;
+    *) fail "reason-normalize: a truncated reason did not say it was truncated" ;;
+  esac
+  pass "a captured cause is collapsed to one trimmed, bounded line"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -922,3 +986,5 @@ test_gitea_verification_failure_names_its_own_reason
 test_self_hosted_github_work_item_is_reported_not_closed
 test_invalid_or_multiple_work_items_warn_without_issue_calls
 test_work_item_record_wins_over_legacy_issue_line
+test_refresh_failure_warning_names_the_cause
+test_refresh_reason_is_bounded_to_one_line

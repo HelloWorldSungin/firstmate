@@ -28,10 +28,14 @@
 #   fm-pr-status.sh show <task-id>
 #
 # refresh resolves the PR URL from task metadata unless --url names one.
-# GitHub is read through gh-axi, falling back to gh. GitLab merge requests are
-# read through glab. An absent CLI, an unauthenticated CLI, or a request that
-# exceeds FM_PR_STATUS_TIMEOUT (default 20s) is a soft failure: it exits nonzero
-# with a one-line reason and changes nothing.
+# GitHub is read through plain gh because the structured-read path requires
+# --json fields, which gh-axi pr view does not honour (it accepts only
+# --comments, --reviews, --full and silently ignores --json, then exits 0 with
+# its own TOON body). GitLab merge requests are read through glab. An absent
+# CLI, an unauthenticated CLI, a CLI that exits 0 with a body that is not JSON,
+# or a request that exceeds FM_PR_STATUS_TIMEOUT (default 20s) is a soft
+# failure: it exits nonzero with its own distinct one-line reason and changes
+# nothing.
 #
 # docs/fleet-data-contracts.md owns field ownership and consumer guarantees.
 set -u
@@ -85,27 +89,31 @@ run_bounded() {  # <cmd...>
   return "$rc"
 }
 
-github_cli() {
-  if command -v gh-axi >/dev/null 2>&1; then
-    printf 'gh-axi'
-  elif command -v gh >/dev/null 2>&1; then
-    printf 'gh'
-  else
-    return 1
-  fi
-}
-
 # GitHub's own vocabulary, read through one bounded call and immediately reduced
 # to the normalized tokens. statusCheckRollup is a list of check runs, so the
-# rollup is folded here rather than stored.
+# rollup is folded here rather than stored. The CLI exit status and the parse
+# success are checked separately so a wrapper that returns non-JSON while
+# reporting success is reported as the distinct, actionable condition it is,
+# not folded into the same "unusable response" line a genuine forge error
+# produces; that collapse was exactly what hid the gh-axi --json regression.
 refresh_github() {  # <owner/repo> <number> -> normalized fields on stdout
-  local repo=$1 number=$2 cli raw
-  cli=$(github_cli) || { echo "fm-pr-status: no gh-axi or gh on PATH" >&2; return 1; }
-  raw=$(run_bounded "$cli" pr view "$number" --repo "$repo" --json \
+  local repo=$1 number=$2 raw rc
+  command -v gh >/dev/null 2>&1 \
+    || { echo "fm-pr-status: no gh on PATH" >&2; return 1; }
+  raw=$(run_bounded gh pr view "$number" --repo "$repo" --json \
     state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup \
-    2>/dev/null) || { echo "fm-pr-status: $cli could not read $repo#$number" >&2; return 1; }
-  printf '%s' "$raw" | jq -e 'type == "object"' >/dev/null 2>&1 \
-    || { echo "fm-pr-status: unusable response for $repo#$number" >&2; return 1; }
+    2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "fm-pr-status: gh could not read $repo#$number (exit $rc)" >&2
+    return 1
+  fi
+  if ! printf '%s' "$raw" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "fm-pr-status: gh exited 0 for $repo#$number but returned non-JSON output; \
+the forge CLI likely ignored an unknown flag (the gh-axi wrapper ignores --json). \
+Refresh left the previous observation in place." >&2
+    return 1
+  fi
   printf '%s' "$raw" | jq -r '
     def rollup:
       ([.statusCheckRollup // [] | .[] | (.conclusion // .state // .status // "")] | map(ascii_downcase)) as $c
@@ -117,7 +125,7 @@ refresh_github() {  # <owner/repo> <number> -> normalized fields on stdout
         else "success" end;
     [(.state // ""), (.isDraft // false | tostring), (.mergeable // ""),
      (.mergeStateStatus // ""), (.reviewDecision // ""), (.headRefOid // ""), rollup]
-    | @tsv'
+    | join("\u001f")'
 }
 
 # GitLab merge requests through glab. detailed_merge_status carries the
@@ -156,7 +164,7 @@ refresh_gitlab() {  # <host> <project-path> <number>
      $review,
      (.sha // ""),
      (.head_pipeline.status // .pipeline.status // "")]
-    | @tsv'
+    | join("\u001f")'
 }
 
 cmd_refresh() {  # <id> [--url <url>]
@@ -185,7 +193,12 @@ cmd_refresh() {  # <id> [--url <url>]
     gitlab) fields=$(refresh_gitlab "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER") || return 1 ;;
     *) echo "fm-pr-status: unsupported forge for $id" >&2; return 1 ;;
   esac
-  IFS=$'\t' read -r raw_state raw_draft raw_mergeable raw_merge_state raw_review raw_head raw_checks \
+  # Unit-separated, not tab-separated: a tab is IFS whitespace, so bash folds a
+  # run of them into one delimiter and an empty column silently shifts every
+  # later one left. A PR with no review decision would then land its head SHA in
+  # the review slot and lose the head entirely - a wrong reading that still
+  # validates. The same separator already carries the GitLab approval fields.
+  IFS=$'\037' read -r raw_state raw_draft raw_mergeable raw_merge_state raw_review raw_head raw_checks \
     <<<"$fields"
 
   local merged=false

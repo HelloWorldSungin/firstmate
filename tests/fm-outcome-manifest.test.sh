@@ -416,15 +416,29 @@ test_pr_status_refresh_and_cache() {
   seed_ship_task "$home" "$id"
   printf 'pr=https://github.com/acme/widget/pull/12\n' >> "$home/state/$id.meta"
   fakebin=$(fm_fakebin "$TMP_ROOT/prstatus")
-  cat > "$fakebin/gh-axi" <<'SH'
+  # Only gh answers a --json structured read. gh-axi is given the TOON body it
+  # really returns for the same request - it ignores --json and still exits 0 -
+  # so a read routed back through the wrapper fails this fixture rather than
+  # quietly passing it, and an unmocked read cannot reach the live forge.
+  cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
-cat <<'JSON'
+case " $* " in
+  *statusCheckRollup*)
+    cat <<'JSON'
 {"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED",
  "reviewDecision":"REVIEW_REQUIRED","headRefOid":"abcdef1234567890abcdef1234567890abcdef12",
  "statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"SUCCESS"}]}
 JSON
+    exit 0 ;;
+esac
+exit 1
 SH
-  chmod +x "$fakebin/gh-axi"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "pull_request:" "  number: 12" "  state: OPEN"
+exit 0
+SH
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi"
 
   PATH="$fakebin:$PATH" fm "$home" "$PRSTATUS" refresh "$id" >/dev/null \
     || fail "PR status refresh failed"
@@ -438,11 +452,11 @@ SH
     || fail "the PR observation cache must be private"
 
   # A failing refresh keeps the good reading rather than overwriting it.
-  cat > "$fakebin/gh-axi" <<'SH'
+  cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 1
 SH
-  chmod +x "$fakebin/gh-axi"
+  chmod +x "$fakebin/gh"
   PATH="$fakebin:$PATH" fm "$home" "$PRSTATUS" refresh "$id" >/dev/null 2>&1 \
     && fail "a failed refresh must exit nonzero"
   out=$(fm "$home" "$PRSTATUS" show "$id")
@@ -516,12 +530,16 @@ test_pr_status_fallback_timeout() {
   seed_ship_task "$home" "$id"
   printf 'pr=https://github.com/acme/widget/pull/14\n' >> "$home/state/$id.meta"
   fakebin=$(fm_fakebin "$TMP_ROOT/prstatus-timeout")
-  cat > "$fakebin/gh-axi" <<'SH'
+  # gh is the CLI the structured read invokes, so gh is what has to hang for the
+  # fallback to have anything to bound. gh-axi hangs identically so no forge CLI
+  # on the host's own PATH can answer this case instead.
+  cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 sleep 5
 printf '%s\n' '{"state":"OPEN"}'
 SH
-  chmod +x "$fakebin/gh-axi"
+  cp "$fakebin/gh" "$fakebin/gh-axi"
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi"
 
   started=$(date +%s)
   rc=0

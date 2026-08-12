@@ -113,9 +113,19 @@ gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${mer
 # `merged` in the fleet snapshot and in the outcome manifest teardown publishes.
 # Best effort by design: the merge already succeeded and must never look
 # retryable, so a failed refresh only leaves the previous observation in place.
-FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-  "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" >/dev/null 2>&1 || \
-  echo "warning: PR merge succeeded: $URL; the cached PR state could not be refreshed" >&2
+# The refresh names its own cause on stderr, which is captured and folded into
+# this warning: discarding it would leave the operator reading a symptom while
+# the one line that says why sits in /dev/null. An empty stderr keeps the plain
+# wording rather than a line that trails off after a colon.
+if ! REFRESH_ERR=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  "$SCRIPT_DIR/fm-pr-status.sh" refresh "$ID" 2>&1 >/dev/null); then
+  REFRESH_REASON=$(fm_pr_reason_normalize "$REFRESH_ERR")
+  if [ -n "$REFRESH_REASON" ]; then
+    echo "warning: PR merge succeeded: $URL; the cached PR state could not be refreshed: $REFRESH_REASON" >&2
+  else
+    echo "warning: PR merge succeeded: $URL; the cached PR state could not be refreshed" >&2
+  fi
+fi
 
 # Record the landing on every tracker surface before the close bookkeeping below,
 # which has several legitimate early exits. Best effort by design: the merge has
