@@ -231,13 +231,14 @@ ok - fenced and inline URLs stay out of the pointer surface, and a template is r
 ok - pointers in code comments are resolved, not only Markdown links
 ok - JSON output reports every pointer, verdict, and reason
 ok - the default scan selects tracked Markdown and reports repo-relative sources
-
-all fm-pointer-check tests passed
 FM_TEST_END 2026-08-11T04:07:52Z tests/fm-pointer-check.test.sh exit=0 duration_ms=561 gate_skip=false
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=579
 FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=561 failed=0
 FM_TEST_SLOWEST rank=1 script=tests/fm-pointer-check.test.sh duration_ms=561
 ```
+
+Annotation, 2026-08-12: the run transcribed above predates the suite's trailing completion marker, so it carries none.
+`tests/fm-pointer-check.test.sh` now closes with `all fm-pointer-check tests passed`, and a rerun today prints that line after the last `ok -` and before `FM_TEST_END`.
 
 The live half of this page - real credential, real private repository, real nonexistent owner, real slashed branch name - is what the stub cannot prove, and is the reason these commands are recorded rather than assumed.
 Re-run them after a change to the resolution ladder or to the `gh` major version.
