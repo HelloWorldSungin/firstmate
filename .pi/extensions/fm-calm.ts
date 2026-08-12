@@ -1,15 +1,18 @@
 // Firstmate's home-persistent Pi transcript presentation toggle.
 //
-// Verified against Pi 0.81.1 and 0.82.0, which expose built-in ToolDefinitions, per-slot
-// renderers, renderShell: "self", session_start replacement reasons, agent_start and
-// agent_settled, ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), setWidget()
-// with a disposable component factory, and setHiddenThinkingLabel().
+// Calm assumes Pi exposes built-in ToolDefinitions, per-slot renderers,
+// renderShell: "self", session_start replacement reasons, agent_start and agent_settled,
+// ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), setWidget() with a
+// disposable component factory, and setHiddenThinkingLabel();
+// docs/calm-mode-feasibility.md owns which Pi versions those assumptions are verified
+// against.
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
-// newer Pi solely for its version. The collapsed-thinking and operational-user
-// presentation adapters probe the exact API they patch and degrade independently with a
-// diagnostic (see installCalmPresentationAdapter below) if a future Pi removes it; Pi
-// still exposes no global renderer for arbitrary built-in or custom rows.
+// newer Pi solely for its version. The collapsed-thinking, operational-user, and
+// legacy-synthetic-entry-row presentation adapters probe the exact API they patch and
+// degrade independently with a diagnostic (see installCalmPresentationAdapter below) if a
+// future Pi removes it; Pi still exposes no global renderer for arbitrary built-in or
+// custom rows.
 // docs/configuration.md owns the home-local Calm preference contract.
 //
 // Pi has one first-registration-wins ToolDefinition per tool name, with no merge or
@@ -58,6 +61,7 @@ import {
   calmPresentationHides,
   calmPresentationIsActive,
   FIRSTMATE_CALM_PRESENTATION_EVENT,
+  installCalmPiRowHostCapture,
   registerFirstmateSyntheticPresentation,
   setCalmPresentation,
   setCalmStockExportRendering,
@@ -122,6 +126,7 @@ function installCalmPresentationAdapter(name: string, install: () => void): void
 export default function (pi: ExtensionAPI) {
   installCalmPresentationAdapter("collapsed-thinking", installCalmAssistantLayout);
   installCalmPresentationAdapter("operational-user-row", installCalmOperationalUserLayout);
+  installCalmPresentationAdapter("legacy-synthetic-entry-row", installCalmPiRowHostCapture);
 
   let exportRendering = false;
   let removeTerminalInputHandler: (() => void) | undefined;
@@ -399,7 +404,10 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setHiddenThinkingLabel(calmPresentationIsActive() ? "" : undefined);
     ctx.ui.setStatus("firstmate-calm", undefined);
     removeTerminalInputHandler?.();
-    removeTerminalInputHandler = ctx.ui.onTerminalInput((data) => {
+    // Pi's TerminalInputHandler may return a { consume, data } directive to swallow or
+    // rewrite the keystroke. Calm only observes it, so the return type is declared
+    // undefined: every path here leaves Pi's own input handling untouched.
+    removeTerminalInputHandler = ctx.ui.onTerminalInput((data): undefined => {
       if (!getKeybindings().matches(data, "tui.input.submit")) return;
 
       const input = ctx.ui.getEditorText().trim();
@@ -414,6 +422,11 @@ export default function (pi: ExtensionAPI) {
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
+      // Pi's extension API exposes no render invalidation without a status side effect,
+      // so restoring Calm rendering here means toggling setToolsExpanded, and each toggle
+      // ends in Pi's showStatus. That status row rewrites Pi's own "Session exported to:
+      // <path>" confirmation in place, so the confirmation never reaches a drawn frame.
+      // docs/calm.md owns that user-visible limitation; changing this redraw changes it.
       setTimeout(() => {
         exportRendering = false;
         setCalmStockExportRendering(false);

@@ -1,14 +1,28 @@
-// Verified against Pi 0.81.1 and 0.82.0, which add the ordinary-user spacer and row
-// together via InteractiveMode.addMessageToChat. This adapter probes that exact method
-// and throws if it is missing; fm-calm.ts catches that and skips only this adapter with a
-// diagnostic instead of blocking Calm or Pi. It changes only that presentation and never
-// message delivery.
-import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
+// Pi adds the ordinary-user spacer and row together via InteractiveMode.addMessageToChat;
+// docs/calm-mode-feasibility.md owns which Pi versions that is verified against. This
+// adapter probes that exact method and throws if it is missing; fm-calm.ts catches that
+// and skips only this adapter with a diagnostic instead of blocking Calm or Pi. It
+// changes only that presentation and never message delivery.
+//
+// Pi 0.84 gave UserMessageComponent a 4th Markdown-transformer argument and feeds every
+// stock user row this.getMarkdownTransformers() (the mermaid transformer plus whatever
+// extensions registered). This adapter forwards that argument through the same host
+// method so the row it substitutes keeps Pi's transformer output; the call is optional so
+// Pi 0.83.0, which has neither the host method nor the constructor argument, still gets
+// its own three-argument behavior. ./fm-calm-visibility.ts owns the stock user-row
+// constructor contract, shared with the legacy synthetic entry renderer so both of Calm's
+// row-construction sites carry the same host inputs.
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
-import { calmPresentationHides } from "./fm-calm-visibility.ts";
+import {
+  calmPresentationHides,
+  resolveStockUserMessageConstructor,
+  type MarkdownTransformerList,
+  type StockUserMessageConstructor,
+  type UserMessageConstructorArgs,
+} from "./fm-calm-visibility.ts";
 import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.ts";
 
-type UserMessageConstructorArgs = ConstructorParameters<typeof PiUserMessageComponent>;
+type PiUserMessageComponent = InstanceType<StockUserMessageConstructor>;
 type UserMessageLike = {
   role: string;
   content: unknown;
@@ -25,6 +39,7 @@ type InteractiveModePresentation = {
     addToHistory?(text: string): void;
   };
   getMarkdownThemeWithSettings(): UserMessageConstructorArgs[1];
+  getMarkdownTransformers?(): MarkdownTransformerList;
   getUserMessageText(message: UserMessageLike): string;
   outputPad: number;
 };
@@ -92,20 +107,18 @@ export function installCalmOperationalUserLayout(): void {
     throw new Error("Firstmate Calm requires Pi InteractiveMode.addMessageToChat");
   }
 
-  const UserMessageComponent = PiCodingAgent.UserMessageComponent;
-  if (typeof UserMessageComponent !== "function") {
-    throw new Error("Firstmate Calm requires Pi UserMessageComponent");
-  }
-  class CalmOperationalUserMessageComponent extends UserMessageComponent {
+  const StockUserMessageComponent = resolveStockUserMessageConstructor();
+  class CalmOperationalUserMessageComponent extends StockUserMessageComponent {
     private readonly hasLeadingSpacer: boolean;
 
     constructor(
       text: UserMessageConstructorArgs[0],
       markdownTheme: UserMessageConstructorArgs[1],
       outputPad: number,
+      markdownTransformers: MarkdownTransformerList | undefined,
       hasLeadingSpacer: boolean,
     ) {
-      super(text, markdownTheme, outputPad);
+      super(text, markdownTheme, outputPad, markdownTransformers);
       this.hasLeadingSpacer = hasLeadingSpacer;
     }
 
@@ -135,6 +148,7 @@ export function installCalmOperationalUserLayout(): void {
       text,
       this.getMarkdownThemeWithSettings(),
       this.outputPad,
+      this.getMarkdownTransformers?.(),
       this.chatContainer.children.length > 0,
     );
     this.chatContainer.addChild(component);

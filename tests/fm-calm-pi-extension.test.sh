@@ -17,12 +17,13 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
-# Verified against Pi 0.81.1 and 0.82.0 (docs/calm-mode-feasibility.md). This is
-# known-good evidence, not a support ceiling: the fixtures below run against whatever
-# Pi is actually installed, and record_pi_version_evidence never rejects a newer
-# version. The tracked presentation adapters probe the exact API they patch (see
-# .pi/extensions/fm-calm.ts) instead of relying on version inference, so a version
-# string is evidence for the record, not a gate.
+# docs/calm-mode-feasibility.md owns which Pi versions this suite has been verified
+# against. That list is known-good evidence, not a support ceiling: the fixtures below
+# run against whatever Pi is actually installed - or whichever package FM_PI_PACKAGE_DIR
+# names - and record_pi_version_evidence never rejects a newer version. The tracked
+# presentation adapters probe the exact API they patch (see .pi/extensions/fm-calm.ts)
+# instead of relying on version inference, so a version string is evidence for the
+# record, not a gate.
 record_pi_version_evidence() {
   local version=$1 context=$2
   [ -n "$version" ] || fail "$context could not determine the installed Pi version"
@@ -329,10 +330,12 @@ test_pi_compat_missing_adapter_exports() {
   out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
 const assistant = await import("./.pi/extensions/lib/fm-calm-assistant-layout.ts");
 const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
+const visibility = await import("./.pi/extensions/lib/fm-calm-visibility.ts");
 
 for (const [name, install, expected] of [
   ["collapsed-thinking", assistant.installCalmAssistantLayout, "AssistantMessageComponent"],
   ["operational-user-row", operational.installCalmOperationalUserLayout, "InteractiveMode"],
+  ["legacy-synthetic-entry-row", visibility.installCalmPiRowHostCapture, "InteractiveMode"],
 ]) {
   let reason;
   try {
@@ -657,7 +660,7 @@ JS
 }
 
 test_rendering_and_session_lifecycle() {
-  local fixture out output_file status version
+  local fixture out output_file status version transformer_modes site mode recorded_modes
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     echo "skip: node or npm not found for Pi calm renderer test"
     return 0
@@ -690,7 +693,8 @@ SH
   chmod +x "$fixture/operational-input-probe.sh"
 
   output_file="$fixture/node-output"
-  (cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module) >"$output_file" 2>&1 <<'JS'
+  transformer_modes="$fixture/transformer-modes"
+  (cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" FM_CALM_TRANSFORMER_MODES="$transformer_modes" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module) >"$output_file" 2>&1 <<'JS'
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -823,10 +827,23 @@ const operationalChat = {
     this.children.push(component);
   },
 };
+// Pi 0.84+ asks the host for its Markdown transformers while rendering user rows and
+// passes them into UserMessageComponent's 4th constructor argument. A real host always
+// returns at least Pi's own mermaid transformer, so this fixture returns a marker
+// transformer rather than an empty list: that is what makes a dropped forward visible
+// below instead of silently identical on both sides of the comparison.
+const operationalTransformerProbe = "CALM_MARKDOWN_TRANSFORMER_PROBE";
+const operationalTransformerApplied = "CALM_MARKDOWN_TRANSFORMER_APPLIED";
+const operationalMarkdownTransformers = [
+  (markdown) => markdown.replaceAll(operationalTransformerProbe, operationalTransformerApplied),
+];
+const ansiSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const stripAnsi = (value) => value.replace(ansiSequence, "");
 const operationalMode = {
   chatContainer: operationalChat,
   editor: { addToHistory: (value) => operationalHistory.push(value) },
   getMarkdownThemeWithSettings: () => undefined,
+  getMarkdownTransformers: () => operationalMarkdownTransformers,
   getUserMessageText: (message) => typeof message.content === "string"
     ? message.content
     : message.content.filter((item) => item.type === "text").map((item) => item.text).join(""),
@@ -859,7 +876,12 @@ InteractiveMode.prototype.addMessageToChat.call(
 );
 const operationalComponent = operationalChat.children[1];
 const legacyOperationalComponent = operationalChat.children[2];
-const stockOperationalComponent = new UserMessageComponent(watcherMessage, undefined, 1);
+const stockOperationalComponent = new UserMessageComponent(
+  watcherMessage,
+  undefined,
+  1,
+  operationalMarkdownTransformers,
+);
 const expectedCalmOffOperationalRows = ["", ...stockOperationalComponent.render(100)];
 if (JSON.stringify(operationalComponent.render(100)) !== JSON.stringify(expectedCalmOffOperationalRows)) {
   throw new Error("Calm-off operational user rendering changed from Pi stock rows");
@@ -867,6 +889,60 @@ if (JSON.stringify(operationalComponent.render(100)) !== JSON.stringify(expected
 if (operationalHistory.length !== 1 || operationalHistory[0] !== watcherMessage) {
   throw new Error("operational user presentation changed Pi input history behavior");
 }
+
+// Behavioral guard for the Markdown-transformer forward. The equality check above alone
+// cannot catch a dropped forward, because a baseline built the same wrong way would drop
+// it too. So first ask this Pi whether a stock row honors the 4th argument at all - Pi
+// 0.83.0 does not, and there the guard correctly stands down - and only then require the
+// substituted operational row to produce the same transformed text.
+const transformerProbeMessage = operationalInput.encodeFirstmateOperationalInput(
+  "watcher",
+  operationalTransformerProbe,
+);
+const stockTransformerProbeRows = stripAnsi(
+  new UserMessageComponent(transformerProbeMessage, undefined, 1, operationalMarkdownTransformers)
+    .render(100)
+    .join("\n"),
+);
+// A guard that stands down passes by staying silent, which makes a run against a
+// pre-0.84 package indistinguishable from a run where the guard was deleted, moved above
+// the probe, or never reached. Each site therefore records which side of the probe it
+// took, and the shell wrapper fails unless both recorded one, so "green on Pi 0.83.0" is
+// evidence that the stand-down path ran rather than an absence of evidence.
+const piHonorsMarkdownTransformerArgument =
+  stockTransformerProbeRows.includes(operationalTransformerApplied);
+const recordedTransformerModes = [];
+const recordTransformerMode = (site) => {
+  recordedTransformerModes.push(
+    `${site}=${piHonorsMarkdownTransformerArgument ? "enforced" : "stand-down"}`,
+  );
+};
+if (piHonorsMarkdownTransformerArgument) {
+  const transformerProbeChat = {
+    children: [],
+    addChild(component) {
+      this.children.push(component);
+    },
+  };
+  InteractiveMode.prototype.addMessageToChat.call(
+    { ...operationalMode, chatContainer: transformerProbeChat },
+    { role: "user", content: transformerProbeMessage },
+  );
+  const transformerProbeComponent = transformerProbeChat.children[0];
+  if (!transformerProbeComponent) {
+    throw new Error("operational transformer probe row was not rendered at all");
+  }
+  const calmTransformerProbeRows = stripAnsi(transformerProbeComponent.render(100).join("\n"));
+  if (calmTransformerProbeRows.includes(operationalTransformerProbe)) {
+    throw new Error("Calm operational user rendering dropped Pi's Markdown transformers");
+  }
+  if (!calmTransformerProbeRows.includes(operationalTransformerApplied)) {
+    throw new Error("Calm operational user rendering lost Pi's transformed Markdown text");
+  }
+} else if (!stockTransformerProbeRows.includes(operationalTransformerProbe)) {
+  throw new Error("stock Pi user rendering lost the operational transformer probe text entirely");
+}
+recordTransformerMode("operational-user-row");
 
 writeFileSync("sample.txt", "alpha\n");
 const cases = [
@@ -1110,6 +1186,56 @@ if (
   throw new Error("Calm-off legacy synthetic presentation did not use a stock user-message row");
 }
 
+// Behavioral guard for the legacy synthetic row's own Markdown-transformer forward.
+// Failure boundary, in one line: this fails when a Calm-off legacy
+// firstmate-synthetic-input-presentation row stops carrying the mounting host's Markdown
+// transformers, and only then.
+//
+// Pi hands entry renderers (entry, options, theme) and nothing else, so this row's
+// transformers can only come from the host Calm captures in the one method that mounts
+// these entries. Driving the real InteractiveMode.prototype.addCustomEntryToChat is what
+// makes that capture part of the assertion instead of a detail the fixture arranges: a
+// capture that never records the host, or a renderer that ignores it, leaves the probe
+// text untransformed below. The 4th-argument gate is the same one the operational row
+// uses, so this stands down on Pi 0.83.0 for the same reason.
+const legacyEntryContent = `Legacy operational text ${operationalTransformerProbe}`;
+const legacyEntryChat = {
+  children: [],
+  addChild(component) {
+    this.children.push(component);
+  },
+};
+InteractiveMode.prototype.addCustomEntryToChat.call(
+  {
+    ...operationalMode,
+    chatContainer: legacyEntryChat,
+    session: { extensionRunner: { getEntryRenderer: (type) => entryRenderers.get(type) } },
+    streamingComponent: undefined,
+    toolOutputExpanded: expanded,
+  },
+  {
+    customType: "firstmate-synthetic-input-presentation",
+    data: { content: legacyEntryContent, kind: "legacy-operational" },
+  },
+);
+const legacyEntryComponent = legacyEntryChat.children[0];
+if (!legacyEntryComponent) {
+  throw new Error("Calm-off legacy synthetic presentation row was never mounted by Pi's own custom-entry path");
+}
+const legacyEntryRows = stripAnsi(legacyEntryComponent.render(100).join("\n"));
+if (piHonorsMarkdownTransformerArgument) {
+  if (legacyEntryRows.includes(operationalTransformerProbe)) {
+    throw new Error("Calm legacy synthetic presentation dropped Pi's Markdown transformers");
+  }
+  if (!legacyEntryRows.includes(operationalTransformerApplied)) {
+    throw new Error("Calm legacy synthetic presentation lost Pi's transformed Markdown text");
+  }
+} else if (!legacyEntryRows.includes(operationalTransformerProbe)) {
+  throw new Error("Calm legacy synthetic presentation lost the transformer probe text entirely");
+}
+recordTransformerMode("legacy-synthetic-entry-row");
+writeFileSync(process.env.FM_CALM_TRANSFORMER_MODES, `${recordedTransformerModes.join("\n")}\n`);
+
 await calmCommand.handler("", commandContext);
 if (expanded !== true || workingVisible !== true || hiddenThinkingLabel !== "" || statuses.get("firstmate-calm") !== undefined) {
   throw new Error("Calm did not preserve working visibility or apply its thinking and footer presentation controls");
@@ -1349,7 +1475,15 @@ JS
   out=$(cat "$output_file")
   [ "$status" -eq 0 ] || fail "Pi calm renderer and lifecycle contract failed: $out"
   [ -z "$out" ] || fail "Pi calm renderer test printed output: $out"
-  pass "Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts"
+  for site in operational-user-row legacy-synthetic-entry-row; do
+    mode=$(awk -F= -v site="$site" '$1 == site { print $2 }' "$transformer_modes" 2>/dev/null)
+    case "$mode" in
+      enforced | stand-down) ;;
+      *) fail "the $site Markdown-transformer guard recorded no exercised Pi behavior (got '${mode:-<none>}'); a green run must name which side of the 4th-argument probe it took" ;;
+    esac
+  done
+  recorded_modes=$(awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 } END { printf "\n" }' "$transformer_modes")
+  pass "Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, persists its choice across session starts, and records the Markdown-transformer behavior this Pi exercised ($recorded_modes)"
 }
 
 test_operational_followup_turn_e2e() {
@@ -2815,7 +2949,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait export_status_wait trailing_export_status boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: pi or tmux not found for Pi calm interactive E2E"
     return 0
@@ -3230,8 +3364,54 @@ JS
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export $export_file"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
-  wait_for_text "$export_snapshot" "Session exported to: $export_file" \
+  active_wait=0
+  while ! grep -Fq '</html>' "$export_file" 2>/dev/null && [ "$active_wait" -lt 120 ]; do
+    sleep 0.05
+    active_wait=$((active_wait + 1))
+  done
+  grep -Fq '</html>' "$export_file" 2>/dev/null \
     || fail "/export did not complete while calm mode was on"
+  # Pi appends /export's "Session exported to: <path>" through showStatus, which rewrites
+  # the previous status row in place whenever that row is still the last thing in the
+  # chat instead of appending a new one. Calm's own post-export redraw restores Calm
+  # rendering by toggling setToolsExpanded off and back on (see fm-calm.ts), and each of
+  # those toggles ends in the same showStatus - so Calm's "Tool output:" row lands on top
+  # of Pi's confirmation and the confirmation never survives to a drawn frame. Removing
+  # only fm-calm.ts from an otherwise identical session flips this: the confirmation then
+  # reaches the terminal (docs/calm-mode-feasibility.md records the counterfactual). This
+  # is tracked current behavior, not the behavior Calm wants, so the check runs in both
+  # directions and names the record to update when it changes.
+  #
+  # The Ctrl+O press earlier in this test already left its own "Tool output: expanded" row
+  # in the transcript, and Calm's post-export toggle ends on the same expansion state, so
+  # it emits a byte-identical string. Matching that string anywhere in the 600-line capture
+  # would therefore still pass with Calm's whole post-export redraw removed. Anchor on
+  # position instead: the only two callers of setToolsExpanded are Ctrl+O and Calm's own
+  # /calm and post-export redraws, and both of the pre-export ones run before the
+  # operational injections append their " Error:" rows. So a status row below the last of
+  # those error rows can only have been written after /export, and which message that
+  # trailing row carries is the discriminating signal.
+  export_status_wait=0
+  trailing_export_status=""
+  while [ "$export_status_wait" -lt 120 ]; do
+    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S -600 >"$export_snapshot"
+    trailing_export_status=$(awk '
+      / Error:/ { last_error = NR }
+      /Tool output:|Session exported to:/ { last_status = NR; last_status_line = $0 }
+      END { if (last_error && last_status > last_error) print last_status_line }
+    ' "$export_snapshot")
+    [ -n "$trailing_export_status" ] && break
+    sleep 0.05
+    export_status_wait=$((export_status_wait + 1))
+  done
+  [ -n "$trailing_export_status" ] \
+    || fail "no status row reached the terminal below the operational rows after /export"
+  assert_not_contains "$(cat "$export_snapshot")" "Session exported to: $export_file" \
+    "Calm's post-export redraw no longer overwrites Pi's export confirmation; restore the confirmation assertion and refresh docs/calm-mode-feasibility.md"
+  assert_contains "$trailing_export_status" "Tool output:" \
+    "Calm's post-export redraw status row never reached the terminal"
+  assert_not_contains "$(cat "$export_snapshot")" "/export $export_file" \
+    "/export did not leave the editor while calm mode was on"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);
