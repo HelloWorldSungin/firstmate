@@ -271,6 +271,15 @@ Quoted current markers, ASCII-only labels, ordinary text before a marker, unrela
 `tests/fm-pi-primary-types.test.sh` performs strict no-emit TypeScript checking against the Pi declaration package named by `FM_PI_PACKAGE_DIR`, defaulting to the globally installed one, so each dated record below names the declaration version its own run covered rather than pinning one version here.
 That check exits 0 with `skip: tsc not found for Pi extension typecheck` where TypeScript is absent, no `tsc` version is pinned anywhere in this repository, and `.github/workflows/ci.yml` installs Node without TypeScript, so a green suite is evidence of this check only when the environment that produced it had `tsc` installed.
 
+CI does not exercise this suite.
+CI run `31630144139` executed both Pi-dependent test scripts, but the Pi package was absent, so `tests/fm-pi-primary-types.test.sh` and `tests/fm-calm-pi-extension.test.sh` both exited successfully after skipping their Pi-dependent checks rather than running them.
+Those are the only two suites in that run that skipped for a missing package: the log contains seven matching skip lines because the Calm suite reports the absent package from six separate subtests, while the typecheck reports it once.
+The per-lane log summaries expose only aggregate `skipped_gate=1` counts, while the GitHub run summary names neither skipped suite and reports every job successful.
+The strict typecheck and runtime guards therefore both skip silently in CI.
+The evidence for this fix is local, dated, and reproducible by hand; it is not enforced anywhere.
+A future Pi version bump will reintroduce this class of drift without any check failing.
+Issue [#118](https://github.com/HelloWorldSungin/firstmate/issues/118) owns the question of whether CI can install and pin real Pi or needs another non-stub compatibility guard, and folds in TypeScript pinning plus strict-typecheck enforcement.
+
 The relevant commands are:
 
 ```sh
