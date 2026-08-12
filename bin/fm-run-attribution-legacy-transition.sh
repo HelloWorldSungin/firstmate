@@ -28,10 +28,22 @@
 # already carry a non-empty branch stay silent.
 #
 # The GitHub proof lookup is bounded per candidate by
-# FM_RUN_ATTRIBUTION_MIGRATION_TIMEOUT (10 seconds by default).
-# A failed or unavailable lookup leaves the record unchanged and lets the
-# diagnostic expose the accepted legacy cost.
+# FM_RUN_ATTRIBUTION_MIGRATION_TIMEOUT (10 seconds by default), and the whole
+# sweep is bounded by FM_RUN_ATTRIBUTION_MIGRATION_BUDGET (30 seconds by
+# default) through bin/fm-timeout-lib.sh's fm_call_bound, so a slow or hung
+# forge costs one budget at session start rather than one timeout per candidate.
+# A tighter inherited FM_WRITE_BACK_BUDGET wins. Once the budget is spent, the
+# remaining candidates are not attempted at all.
+# A failed, unattempted, or unavailable lookup leaves the record unchanged and
+# lets the diagnostic expose the accepted legacy cost.
+#
 # Metadata publication is atomic and refuses a concurrent record change.
+# `branch=` is inserted immediately BEFORE the record's first `pr=` line, never
+# appended: bin/fm-pr-lib.sh's fm_pr_metadata_identity_parse rejects any line
+# after `pr=` other than `pr_head=`/`x_*=`, so an appended key would invalidate
+# the PR identity of exactly the records this migrates and disarm their merge
+# poll. Publication verifies the staged bytes against that same parser, and
+# refuses unless they differ from the record by only the one inserted line.
 #
 # Usage: fm-run-attribution-legacy-transition.sh [--detect-only]
 # Lines:
@@ -62,6 +74,15 @@ LOOKUP_TIMEOUT=${FM_RUN_ATTRIBUTION_MIGRATION_TIMEOUT:-10}
 case "$LOOKUP_TIMEOUT" in ''|*[!0-9]*) LOOKUP_TIMEOUT=10 ;; esac
 [ "$LOOKUP_TIMEOUT" -ge 1 ] || LOOKUP_TIMEOUT=10
 
+SWEEP_BUDGET=${FM_RUN_ATTRIBUTION_MIGRATION_BUDGET:-30}
+case "$SWEEP_BUDGET" in ''|*[!0-9]*) SWEEP_BUDGET=30 ;; esac
+[ "$SWEEP_BUDGET" -ge 1 ] || SWEEP_BUDGET=30
+case "${FM_WRITE_BACK_BUDGET:-}" in
+  ''|*[!0-9]*) ;;
+  *) [ "$FM_WRITE_BACK_BUDGET" -ge "$SWEEP_BUDGET" ] || SWEEP_BUDGET=$FM_WRITE_BACK_BUDGET ;;
+esac
+FM_WRITE_BACK_BUDGET=$SWEEP_BUDGET
+
 meta_exact_value() {  # <meta> <key>
   local meta=$1 key=$2 count value
   count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
@@ -82,30 +103,54 @@ record_is_legacy_live_no_mistakes_ship() {  # <meta>
 }
 
 lookup_github_pr_head() {  # <project-path> <number>
-  local project=$1 number=$2
+  local project=$1 number=$2 bound
   command -v gh >/dev/null 2>&1 || return 1
-  fm_run_timed "$LOOKUP_TIMEOUT" gh api "repos/$project/pulls/$number" \
+  bound=$(fm_call_bound "$LOOKUP_TIMEOUT")
+  [ "$bound" -ge 1 ] 2>/dev/null || return 1
+  fm_run_timed "$bound" gh api "repos/$project/pulls/$number" \
     --jq '[.head.ref, .head.sha] | @tsv' 2>/dev/null
 }
 
 publish_branch() {  # <meta> <snapshot> <branch>
-  local meta=$1 snapshot=$2 branch=$3 tmp
+  local meta=$1 snapshot=$2 branch=$3 tmp line placed=0
+  local provider url host path number
+  fm_pr_metadata_identity_parse "$snapshot" || return 1
+  provider=$FM_PR_META_PROVIDER
+  url=$FM_PR_META_URL
+  host=$FM_PR_META_HOST
+  path=$FM_PR_META_PATH
+  number=$FM_PR_META_NUMBER
   tmp=$(mktemp "$meta.transition.XXXXXX") || return 1
   {
-    cat -- "$snapshot" && printf 'branch=%s\n' "$branch"
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ "$placed" = 0 ]; then
+        case "$line" in
+          pr=*)
+            printf 'branch=%s\n' "$branch"
+            placed=1
+            ;;
+        esac
+      fi
+      printf '%s\n' "$line"
+    done < "$snapshot"
   } > "$tmp" 2>/dev/null || {
     rm -f -- "$tmp"
     return 1
   }
-  [ "$(grep -c '^branch=' "$tmp" 2>/dev/null || true)" = 1 ] || {
-    rm -f -- "$tmp"
-    return 1
-  }
-  [ "$(meta_exact_value "$tmp" branch 2>/dev/null || true)" = "$branch" ] || {
-    rm -f -- "$tmp"
-    return 1
-  }
   chmod 600 -- "$tmp" 2>/dev/null || true
+  if [ "$placed" != 1 ] \
+    || [ "$(grep -c '^branch=' "$tmp" 2>/dev/null || true)" != 1 ] \
+    || [ "$(meta_exact_value "$tmp" branch 2>/dev/null || true)" != "$branch" ] \
+    || ! cmp -s -- <(grep -v '^branch=' "$tmp" 2>/dev/null) "$snapshot" \
+    || ! fm_pr_metadata_identity_parse "$tmp" \
+    || [ "$FM_PR_META_PROVIDER" != "$provider" ] \
+    || [ "$FM_PR_META_URL" != "$url" ] \
+    || [ "$FM_PR_META_HOST" != "$host" ] \
+    || [ "$FM_PR_META_PATH" != "$path" ] \
+    || [ "$FM_PR_META_NUMBER" != "$number" ]; then
+    rm -f -- "$tmp"
+    return 1
+  fi
   cmp -s -- "$snapshot" "$meta" || {
     rm -f -- "$tmp"
     return 1
