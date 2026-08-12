@@ -439,21 +439,84 @@ Escape aborted the run leaving `Operation aborted`, no boat, and no stale sprite
 
 ## 2026-08-12 Pi 0.84.1 compatibility verification
 
-Pi 0.84.1 added a Markdown-transformer lookup to delegated `InteractiveMode.addMessageToChat` rendering, so the real-component fixture now supplies that host method.
-Pi 0.83.0 and 0.84.1 can complete `/export` without retaining the success status row long enough for the terminal capture, so the native E2E now waits for the completed HTML document and then validates its rendered tool data and synthetic provenance directly.
-The structural export check still fails on a missing or incomplete HTML document, missing rendered tool data, or missing synthetic provenance.
-The same suite passed against Pi 0.83.0 after the fixture update, preserving compatibility with the release immediately before the new Markdown-transformer call.
+### The deterministic base failure: Pi 0.84's Markdown-transformer argument
+
+Initiating trigger: Pi 0.84 gave `UserMessageComponent` a 4th `markdownTransformers` constructor argument and made `InteractiveMode.addMessageToChat` feed every user row `this.getMarkdownTransformers()`.
+Masking package version: Pi 0.83.0's `UserMessageComponent` constructor is `(text, markdownTheme = getMarkdownTheme(), outputPad = 1)` and its `interactive-mode.js` contains no occurrence of `getMarkdownTransformers` at all, so nothing asked a host object for that method until 0.84.
+Changed emitted behavior: the real-component fixture in `tests/fm-calm-pi-extension.test.sh` drives `InteractiveMode.prototype.addMessageToChat` with a hand-built host object, and that object had no such method.
+Visible symptom at base `b5cf66e`: `not ok - Pi calm renderer and lifecycle contract failed: TypeError: this.getMarkdownTransformers is not a function`, thrown on the first of the 50 ordinary replay rows.
+Smallest outcome-flipping counterfactual, reduced to two calls against the installed 0.84.1 package:
+
+```text
+$ node -e '...InteractiveMode.prototype.addMessageToChat.call(hostWithoutTheMethod, userRow)...'
+THROW: TypeError: this.getMarkdownTransformers is not a function
+OK with getMarkdownTransformers
+```
+
+Disconfirming evidence checked and ruled out: this is not a redraw race.
+The throw is synchronous, in-process, and has no tmux, timer, or terminal involvement; it reproduces on every run and on the first replay row rather than intermittently.
+
+### PR 1271's three transient active-screen checks predate this work
+
+kunchenguid/firstmate PR 1271's three transient active-screen checks were already present on this fork's base, added by commit `8a97167` ("Stabilize locale and Calm regression checks", 2026-07-29), long before this branch.
+They are the three `! grep -Fq` guards - `Thinking...`, `fm_watch_arm_pi`, and `FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status` - inside the first `/calm` redraw wait loop of `test_interactive_terminal_e2e`.
+Nothing in this change transplanted them, and they are not what fixed the failure above: they gate a terminal wait loop, while the deterministic 0.84.1 failure is a synchronous `TypeError` in a node fixture that never starts tmux.
+They are preserved untouched because they still guard the live redraw race they were written for - without them the loop can sample a half-redrawn transcript.
+
+### Fix: forward Pi's Markdown transformers through the Calm adapter
+
+The fixture now supplies `getMarkdownTransformers`, and - the part the fixture alone did not cover - `CalmOperationalUserMessageComponent` in `.pi/extensions/lib/fm-calm-operational-user-layout.ts` now forwards `this.getMarkdownTransformers?.()` into its `super(...)` call.
+Without that forward the adapter substituted a row that silently dropped every transformer stock Pi applies (Pi's own mermaid transformer plus any a third-party Pi extension registered), which contradicts the adapter's promise to change only spacer-and-row presentation.
+The optional call keeps Pi 0.83.0 working unchanged: that release has neither the host method nor the constructor argument, so the forward resolves to `undefined` and 0.83.0 renders exactly as before.
+
+The regression coverage is behavioral, not structural.
+The fixture's host now returns a real marker transformer rather than an empty list, because a baseline built the same wrong way would drop transformers identically and the comparison would stay green.
+The fixture first asks the installed Pi whether a stock `UserMessageComponent` honors the 4th argument at all - on 0.83.0 it does not and the guard stands down - and only then requires the substituted operational row to carry the same transformed text.
+Re-introducing the drift by deleting the 4th `super(...)` argument fails the suite:
+
+```text
+$ tests/fm-calm-pi-extension.test.sh
+not ok - Pi calm renderer and lifecycle contract failed:
+Error: Calm operational user rendering dropped Pi's Markdown transformers
+```
+
+### The `/export` success row: Calm overwrites it, and this is not Pi drift
+
+The earlier reading of this - that Pi "can complete `/export` without retaining the success status row long enough for the terminal capture" - was wrong, and the correction matters because it points at Calm rather than at Pi.
+`showStatus` appends a `Spacer` plus a `Text` to `chatContainer` with no timer and no expiry, so the row is permanent; and `handleExportCommand` only calls it after `exportToHtml` has already returned.
+The coalescing branch is the mechanism: when the last two chat children are still the spacer and text `showStatus` appended for the previous status, the next status **rewrites that text in place** instead of appending.
+Calm's own post-export handler in `.pi/extensions/fm-calm.ts` restores Calm rendering on a `setTimeout(..., 0)` and forces every rendered row to rebuild with `setToolsExpanded(!expanded); setToolsExpanded(expanded)`, and each of those toggles ends in that same `showStatus`.
+So Calm's `Tool output:` row lands on top of Pi's `Session exported to: <path>` and the confirmation never reaches a drawn frame.
+
+Counterfactual, two otherwise identical Pi 0.84.1 tmux sessions differing only in whether `fm-calm.ts` is present:
+
+```text
+calm-loaded : html_written=yes status_row_seen=no  last_status_row=Tool output: collapsed
+calm-absent : html_written=yes status_row_seen=yes last_status_row=Session exported to: /tmp/fm-export-probe.1YevZh/export.html
+```
+
+This is a Calm defect, not a Pi one, and it is older than Pi 0.84: the `showStatus` coalescing branch is byte-identical in 0.82.0, 0.83.0, and 0.84.1, and the toggle has been Calm's redraw mechanism since PR #895/#936.
+Pi's extension API offers no render-invalidation call without a status side effect, so fixing it needs a deliberate change to Calm's export redraw (or a Pi API addition) rather than a test edit; that fix is not attempted here.
+Until then the E2E records the behavior in both directions: it waits for the completed HTML document, fails if Pi's confirmation *does* appear (which would mean the clobber was fixed and this record is stale), and requires the editor to have cleared and Calm's redraw status row to be on screen.
+The structural export check is unchanged and still fails on a missing or incomplete HTML document, missing rendered tool data, or missing synthetic provenance.
+
+### Evidence
+
+Component fixtures resolve their Pi through `FM_PI_PACKAGE_DIR`, so the second command below exercises the Calm adapters against Pi 0.83.0's real rendering components; the tmux E2E always drives the installed `pi` binary, which was 0.84.1 for both runs.
 
 ```text
 $ pi --version
 0.84.1
 
 $ tests/fm-calm-pi-extension.test.sh
+$ FM_PI_PACKAGE_DIR=<pi-0.83.0-package> tests/fm-calm-pi-extension.test.sh
+
+# both runs, identical output, exit 0:
 ok - Pi calm resolves its persistent home independently of Pi's launch directory
 ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
 ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
 ok - missing Pi presentation class exports reach the independent adapter degradation path
-ok - Calm registers none of its 7 built-in tool wrappers at load while calm mode was off, and all 7 synchronously at load while config/calm=on
+ok - Calm registers none of its 7 built-in tool wrappers at load while config/calm is off, and all 7 synchronously at load while config/calm is on
 ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
 ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
 ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics

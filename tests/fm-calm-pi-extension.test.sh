@@ -823,12 +823,23 @@ const operationalChat = {
     this.children.push(component);
   },
 };
+// Pi 0.84+ asks the host for its Markdown transformers while rendering user rows and
+// passes them into UserMessageComponent's 4th constructor argument. A real host always
+// returns at least Pi's own mermaid transformer, so this fixture returns a marker
+// transformer rather than an empty list: that is what makes a dropped forward visible
+// below instead of silently identical on both sides of the comparison.
+const operationalTransformerProbe = "CALM_MARKDOWN_TRANSFORMER_PROBE";
+const operationalTransformerApplied = "CALM_MARKDOWN_TRANSFORMER_APPLIED";
+const operationalMarkdownTransformers = [
+  (markdown) => markdown.replaceAll(operationalTransformerProbe, operationalTransformerApplied),
+];
+const ansiSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const stripAnsi = (value) => value.replace(ansiSequence, "");
 const operationalMode = {
   chatContainer: operationalChat,
   editor: { addToHistory: (value) => operationalHistory.push(value) },
   getMarkdownThemeWithSettings: () => undefined,
-  // Pi 0.84+ asks for its Markdown transformers while rendering delegated rows.
-  getMarkdownTransformers: () => [],
+  getMarkdownTransformers: () => operationalMarkdownTransformers,
   getUserMessageText: (message) => typeof message.content === "string"
     ? message.content
     : message.content.filter((item) => item.type === "text").map((item) => item.text).join(""),
@@ -861,13 +872,58 @@ InteractiveMode.prototype.addMessageToChat.call(
 );
 const operationalComponent = operationalChat.children[1];
 const legacyOperationalComponent = operationalChat.children[2];
-const stockOperationalComponent = new UserMessageComponent(watcherMessage, undefined, 1);
+const stockOperationalComponent = new UserMessageComponent(
+  watcherMessage,
+  undefined,
+  1,
+  operationalMarkdownTransformers,
+);
 const expectedCalmOffOperationalRows = ["", ...stockOperationalComponent.render(100)];
 if (JSON.stringify(operationalComponent.render(100)) !== JSON.stringify(expectedCalmOffOperationalRows)) {
   throw new Error("Calm-off operational user rendering changed from Pi stock rows");
 }
 if (operationalHistory.length !== 1 || operationalHistory[0] !== watcherMessage) {
   throw new Error("operational user presentation changed Pi input history behavior");
+}
+
+// Behavioral guard for the Markdown-transformer forward. The equality check above alone
+// cannot catch a dropped forward, because a baseline built the same wrong way would drop
+// it too. So first ask this Pi whether a stock row honors the 4th argument at all - Pi
+// 0.83.0 does not, and there the guard correctly stands down - and only then require the
+// substituted operational row to produce the same transformed text.
+const transformerProbeMessage = operationalInput.encodeFirstmateOperationalInput(
+  "watcher",
+  operationalTransformerProbe,
+);
+const stockTransformerProbeRows = stripAnsi(
+  new UserMessageComponent(transformerProbeMessage, undefined, 1, operationalMarkdownTransformers)
+    .render(100)
+    .join("\n"),
+);
+if (stockTransformerProbeRows.includes(operationalTransformerApplied)) {
+  const transformerProbeChat = {
+    children: [],
+    addChild(component) {
+      this.children.push(component);
+    },
+  };
+  InteractiveMode.prototype.addMessageToChat.call(
+    { ...operationalMode, chatContainer: transformerProbeChat },
+    { role: "user", content: transformerProbeMessage },
+  );
+  const transformerProbeComponent = transformerProbeChat.children[0];
+  if (!transformerProbeComponent) {
+    throw new Error("operational transformer probe row was not rendered at all");
+  }
+  const calmTransformerProbeRows = stripAnsi(transformerProbeComponent.render(100).join("\n"));
+  if (calmTransformerProbeRows.includes(operationalTransformerProbe)) {
+    throw new Error("Calm operational user rendering dropped Pi's Markdown transformers");
+  }
+  if (!calmTransformerProbeRows.includes(operationalTransformerApplied)) {
+    throw new Error("Calm operational user rendering lost Pi's transformed Markdown text");
+  }
+} else if (!stockTransformerProbeRows.includes(operationalTransformerProbe)) {
+  throw new Error("stock Pi user rendering lost the operational transformer probe text entirely");
 }
 
 writeFileSync("sample.txt", "alpha\n");
@@ -2817,7 +2873,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: pi or tmux not found for Pi calm interactive E2E"
     return 0
@@ -2836,6 +2892,7 @@ test_interactive_terminal_e2e() {
   hidden_snapshot="$TMP_ROOT/hidden.txt"
   active_before_snapshot="$TMP_ROOT/active-before.txt"
   active_hidden_snapshot="$TMP_ROOT/active-hidden.txt"
+  export_snapshot="$TMP_ROOT/export.txt"
   restored_snapshot="$TMP_ROOT/restored.txt"
   working_snapshot="$TMP_ROOT/working.txt"
   working_response_snapshot="$TMP_ROOT/working-response.txt"
@@ -3238,6 +3295,22 @@ JS
   done
   grep -Fq '</html>' "$export_file" 2>/dev/null \
     || fail "/export did not complete while calm mode was on"
+  # Pi appends /export's "Session exported to: <path>" through showStatus, which rewrites
+  # the previous status row in place whenever that row is still the last thing in the
+  # chat instead of appending a new one. Calm's own post-export redraw restores Calm
+  # rendering by toggling setToolsExpanded off and back on (see fm-calm.ts), and each of
+  # those toggles ends in the same showStatus - so Calm's "Tool output:" row lands on top
+  # of Pi's confirmation and the confirmation never survives to a drawn frame. Removing
+  # only fm-calm.ts from an otherwise identical session flips this: the confirmation then
+  # reaches the terminal (docs/calm-mode-feasibility.md records the counterfactual). This
+  # is tracked current behavior, not the behavior Calm wants, so the check runs in both
+  # directions and names the record to update when it changes.
+  wait_for_text "$export_snapshot" "Session exported to: $export_file" &&
+    fail "Calm's post-export redraw no longer overwrites Pi's export confirmation; restore the confirmation assertion and refresh docs/calm-mode-feasibility.md"
+  assert_not_contains "$(cat "$export_snapshot")" "/export $export_file" \
+    "/export did not leave the editor while calm mode was on"
+  assert_contains "$(cat "$export_snapshot")" "Tool output:" \
+    "Calm's post-export redraw status row never reached the terminal"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);

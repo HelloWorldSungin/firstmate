@@ -1,8 +1,15 @@
-// Verified against Pi 0.81.1 and 0.82.0, which add the ordinary-user spacer and row
-// together via InteractiveMode.addMessageToChat. This adapter probes that exact method
-// and throws if it is missing; fm-calm.ts catches that and skips only this adapter with a
-// diagnostic instead of blocking Calm or Pi. It changes only that presentation and never
-// message delivery.
+// Verified against Pi 0.81.1, 0.82.0, 0.83.0, and 0.84.1, which add the ordinary-user
+// spacer and row together via InteractiveMode.addMessageToChat. This adapter probes that
+// exact method and throws if it is missing; fm-calm.ts catches that and skips only this
+// adapter with a diagnostic instead of blocking Calm or Pi. It changes only that
+// presentation and never message delivery.
+//
+// Pi 0.84 gave UserMessageComponent a 4th Markdown-transformer argument and feeds every
+// stock user row this.getMarkdownTransformers() (the mermaid transformer plus whatever
+// extensions registered). This adapter forwards that argument through the same host
+// method so the row it substitutes keeps Pi's transformer output; the call is optional so
+// Pi 0.83.0, which has neither the host method nor the constructor argument, still gets
+// its own three-argument behavior.
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
@@ -25,6 +32,7 @@ type InteractiveModePresentation = {
     addToHistory?(text: string): void;
   };
   getMarkdownThemeWithSettings(): UserMessageConstructorArgs[1];
+  getMarkdownTransformers?(): UserMessageConstructorArgs[3];
   getUserMessageText(message: UserMessageLike): string;
   outputPad: number;
 };
@@ -103,9 +111,10 @@ export function installCalmOperationalUserLayout(): void {
       text: UserMessageConstructorArgs[0],
       markdownTheme: UserMessageConstructorArgs[1],
       outputPad: number,
+      markdownTransformers: UserMessageConstructorArgs[3],
       hasLeadingSpacer: boolean,
     ) {
-      super(text, markdownTheme, outputPad);
+      super(text, markdownTheme, outputPad, markdownTransformers);
       this.hasLeadingSpacer = hasLeadingSpacer;
     }
 
@@ -135,6 +144,7 @@ export function installCalmOperationalUserLayout(): void {
       text,
       this.getMarkdownThemeWithSettings(),
       this.outputPad,
+      this.getMarkdownTransformers?.(),
       this.chatContainer.children.length > 0,
     );
     this.chatContainer.addChild(component);
