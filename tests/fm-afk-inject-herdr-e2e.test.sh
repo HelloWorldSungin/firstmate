@@ -60,14 +60,16 @@ PANE_ID=
 LOOP_SCRIPT=
 
 cleanup_all() {
+  local rc=0
   if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    afk_exit "${STATE_DIR:-}" 2>/dev/null || rc=1
+    kill "$DAEMON_PID" 2>/dev/null || rc=1
+    wait "$DAEMON_PID" 2>/dev/null || rc=1
   fi
-  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || true
+  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || rc=1
   rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || true
   rm -rf "${STATE_DIR:-}" 2>/dev/null || true
+  return $rc
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
