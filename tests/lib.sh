@@ -113,6 +113,11 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 }
 
 fm_test_cleanup() {
+  # Reap any descendant processes the fixture started before removing their
+  # temp directories, so a killed or forgotten background daemon is not left
+  # orphaned on the host. The current shell itself is excluded.
+  fm_test_reap_descendants
+
   local d
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     # A case that hardened a directory to prove a read-only path leaves a tree
@@ -129,6 +134,45 @@ fm_test_cleanup() {
   fi
   [ -n "${FM_TEST_ISOLATION_ROOT:-}" ] && rm -rf "$FM_TEST_ISOLATION_ROOT"
   return 0
+}
+
+# fm_test_reap_descendants: best-effort kill of the entire process subtree
+# rooted at the current shell. Test fixtures frequently background long-lived
+# daemons (e.g. fm-watch.sh); without this, a fixture that exits without
+# explicit teardown leaves those daemons orphaned. Leaves are killed before
+# parents so no process is reparented mid-sweep. The current shell is excluded.
+fm_test_reap_descendants() {
+  local pid
+  for pid in $(fm_test_child_pids "$$"); do
+    fm_test_kill_tree "$pid"
+  done
+}
+
+fm_test_child_pids() {
+  local parent=$1
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -P "$parent" 2>/dev/null || true
+  else
+    ps -eo pid,ppid= 2>/dev/null \
+      | awk -v p="$parent" '$2 == p { print $1 }' \
+      | grep -v "^$$$" \
+      || true
+  fi
+}
+
+fm_test_kill_tree() {
+  local pid=$1 child waited
+  for child in $(fm_test_child_pids "$pid"); do
+    fm_test_kill_tree "$child"
+  done
+  kill "$pid" 2>/dev/null || true
+  waited=0
+  while [ "$waited" -lt 20 ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.05 2>/dev/null || true
+    waited=$((waited + 1))
+  done
+  kill -9 "$pid" 2>/dev/null || true
 }
 
 fm_test_tmproot() {

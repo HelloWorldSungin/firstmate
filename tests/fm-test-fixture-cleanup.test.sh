@@ -10,6 +10,9 @@
 # terminating signal - plus that a stale marked fixture from a killed prior
 # run gets reaped on the next source. Nothing here inspects tests/lib.sh's
 # source text; it only observes filesystem state around the real helper.
+#
+# Process cleanup is covered too: a fixture that backgrounds a long-lived
+# daemon must not leave it orphaned when the owning shell exits.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -97,6 +100,65 @@ test_fixture_registration_failure_rolls_back_root() {
   pass "failed fixture registration rolls back the new root"
 }
 
+# Fails if fm_test_cleanup stops killing descendant processes on normal exit.
+# This catches regressions where the EXIT trap fires but only removes dirs.
+test_fixture_processes_reaped_after_normal_exit() {
+  local child_out child_dir leaked_pid
+  child_out=$(bash -c '
+    # shellcheck source=tests/lib.sh
+    . "'"$LIB"'"
+    d=$(fm_test_tmproot fm-test-cleanup-proc-exit)
+    printf "%s\n" "$d"
+    sleep 3600 > "$d/sleep.log" 2>&1 &
+    printf "pid:%s\n" "$!"
+  ')
+  child_dir=$(printf '%s\n' "$child_out" | sed -n '1p')
+  leaked_pid=$(printf '%s\n' "$child_out" | sed -n 's/^pid://p')
+  assert_absent "$child_dir" \
+    "fm_test_tmproot's fixture root survived its owning process's normal exit"
+  if [ -n "$leaked_pid" ] && kill -0 "$leaked_pid" 2>/dev/null; then
+    fail "a background process started by the fixture owner outlived its normal exit"
+  fi
+  pass "fm_test_cleanup reaps background processes on normal exit"
+}
+
+# Fails if SIGTERM teardown kills the fixture root but not its descendant
+# processes. The signal path is separate from the normal EXIT path, so a
+# regression can hide in one but not the other.
+test_fixture_processes_reaped_after_sigterm() {
+  local harness dirfile child_dir leaked_pid pid tries
+  harness=$(fm_test_tmproot fm-test-cleanup-proc-sigterm-harness)
+  dirfile="$harness/child-info"
+  bash -c '
+    # shellcheck source=tests/lib.sh
+    . "'"$LIB"'"
+    d=$(fm_test_tmproot fm-test-cleanup-proc-term)
+    printf "%s\n" "$d" > "'"$dirfile"'"
+    sleep 3600 > "$d/sleep.log" 2>&1 &
+    printf "pid:%s\n" "$!" >> "'"$dirfile"'"
+    while :; do sleep 0.1; done
+  ' &
+  pid=$!
+  tries=0
+  while [ "$tries" -lt 100 ]; do
+    [ -s "$dirfile" ] && break
+    sleep 0.05
+    tries=$((tries + 1))
+  done
+  [ -s "$dirfile" ] || fail "the child never published its fixture info before the wait timed out"
+  child_dir=$(sed -n '1p' "$dirfile")
+  leaked_pid=$(sed -n 's/^pid://p' "$dirfile")
+  assert_present "$child_dir" "the child's fixture root did not exist before it was signaled"
+  kill -TERM "$pid"
+  wait "$pid" 2>/dev/null
+  assert_absent "$child_dir" \
+    "fm_test_tmproot's fixture root survived SIGTERM to its owning process"
+  if [ -n "$leaked_pid" ] && kill -0 "$leaked_pid" 2>/dev/null; then
+    fail "a background process started by the fixture owner outlived SIGTERM to its owner"
+  fi
+  pass "fm_test_cleanup reaps background processes on SIGTERM"
+}
+
 test_orphan_sweep_respects_fixture_ownership() {
   local harness dirfile active_dir stale_dir fresh_dir pid tries
   harness=$(fm_test_tmproot fm-test-cleanup-orphan-harness)
@@ -146,6 +208,8 @@ test_orphan_sweep_respects_fixture_ownership() {
 
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
+test_fixture_processes_reaped_after_normal_exit
+test_fixture_processes_reaped_after_sigterm
 test_cleanup_registry_resists_precreation
 test_fixture_registration_failure_rolls_back_root
 test_orphan_sweep_respects_fixture_ownership
