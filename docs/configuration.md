@@ -46,8 +46,8 @@ Firstmate resolves references once at intake with `bin/fm-issue-ref.sh`, exactly
 `bin/fm-spawn.sh` records those resolved markers as they stand and consults the registry only to upgrade a legacy bare `issue=` number through the project's declared tracker, reporting rather than guessing when that project declares none.
 A task may carry several references or none, and one unresolvable reference refuses the whole set rather than recording a partial one.
 Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in task metadata, and `bin/fm-issue-ref.sh --format json` emits the reference-object array in the shape defined by issue #18's outcome-manifest contract.
-`bin/fm-pr-merge.sh` closes a recorded work item only when it is a `github.com` issue, and then in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
-A work item on a self-hosted GitHub host, or on any other forge, is reported as one Firstmate does not close automatically rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
+`bin/fm-pr-merge.sh` closes a recorded work item when its forge has a write adapter - a `github.com` issue through the ambient `gh-axi` authentication, or a Gitea issue on any host through that host's `config/forge-tokens/<host>` credential - and always in the repository that record names; only the legacy bare `issue=` number falls back to the repository the pull request landed in, which is all a bare number can mean.
+A work item on a forge or host with no write adapter, or one whose credential is absent, loose, or refused, is reported with that distinct reason rather than being retargeted at `github.com`: the merge still succeeds and the link stays recorded and resolvable, but the close is left to whoever owns that host.
 
 Firstmate also writes back, so a tracker shows where its work stands without anyone opening the pull request.
 `bin/fm-work-item-milestone.sh` records one lifecycle milestone - `queued`, `dispatched`, `implemented`, `validated`, `in-review`, `landed`, `blocked`, or `stopped` - on every surface Firstmate keeps true, so those surfaces cannot drift into different opinions about the same task.
@@ -59,12 +59,18 @@ Every argument is validated before either surface runs, so a caller's mistake is
 `bin/fm-issue-comment.sh` owns the tracker comment: ONE living status comment per work item, created once and thereafter edited in place, located idempotently by a Firstmate-owned marker in its body so a restart, a partial failure, or a repeated milestone all correct the same comment rather than adding another.
 It carries the current status, the note, the pull request when one is recorded, and a short dated timeline of the milestones so far.
 The task's worker owns exactly one separate comment, its substantive delivery summary, which `bin/fm-brief.sh` requires of it before the PR is ready.
-Write-back applies only where a write credential genuinely exists: exactly one recorded work item, a `github.com` issue, in the repository the PR opens against, which `bin/fm-brief.sh --pr-target` records as `pr_target=` in task metadata.
-Cross-forge write-back needs a per-host write-credential design of its own and is deliberately out of scope, because `config/forge-tokens/` is read-side only.
+Write-back targets only the task's own recorded work item - exactly one `work_item=` line, in the repository the PR opens against, which `bin/fm-brief.sh --pr-target` records as `pr_target=` in task metadata - never a reference parsed from prose, a PR body, or a git remote.
+Within that scope it is per-forge: `github.com` writes ride the ambient `gh` authentication, and Gitea on any host writes with the same `config/forge-tokens/<host>` credential the read side uses, while GitLab and self-hosted GitHub have no write adapter yet and say so honestly.
+`bin/fm-forge-lib.sh` is the single owner of the credential rules, the argv-free transport, the complete write-operation allowlist (the status comment, the linking close comment, and the close itself - never any branch, release, settings, permission, or repository mutation), and the minimum viable token scope per forge, so a narrow credential is sufficient by construction and a wide one gains no extra reach.
+That allowlist is structural rather than advisory: the transport and the request builder are private to that library, so no caller is offered a way to name a method, URL, or body of its own, and its exported surface is pinned by a test that fails if a general transport reappears.
+Every skipped write states which distinct fact applies: no credential on disk, a credential file present but empty, a credential present but the forge unsupported, or a credential the forge refused for permissions.
 The note is withheld when it carries a Firstmate marker, a credential, an absolute filesystem path, or a value the task's own record marks as private, because a leak cannot be undone and a marker in a note could forge entries into the machine-owned timeline.
 Withholding is not losing: the milestone still lands without the note and one warning on stderr says what was withheld and why, so a false positive costs a sentence rather than the whole update.
 An absolute path is recognised by the roots a filesystem path actually starts at, so a project's own route such as `/api/v2/reports`, and a Markdown link whose target starts at the site root, read as the project prose they are.
-Each call is bounded by `FM_ISSUE_COMMENT_TIMEOUT` seconds (default 10), and the marker lookup asks for 100 comments per page so a busy issue does not spend that bound on round trips.
+Each call is bounded by `FM_ISSUE_COMMENT_TIMEOUT` seconds (default 10), and the marker lookup asks for 100 comments per page on GitHub and 50 on Gitea so a busy issue does not spend that bound on round trips.
+A page shorter than the one it asked for never ends that lookup, because a forge is free to clamp a list to its own maximum, and a walk that stopped there would miss the living comment and post a second one.
+A comment is created only where the lookup proved there is none to edit; wherever it could not prove that - the page cap ran out, the host re-served a page the walk had already seen, a page carried no readable comment id, or the comment was found under an id that cannot be addressed - nothing is written and the uncertainty is reported, because guessing in the create direction is what accumulates a comment per milestone.
+`bin/fm-pr-merge.sh` bounds each of its own per-host verify and close calls by `FM_ISSUE_CLOSE_TIMEOUT` seconds (default 10).
 
 `config/project-board` optionally names the captain's GitHub Projects board as one line, `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`; absent, `bin/fm-project-board.sh` does nothing and contacts no host.
 It adds board membership for each tracked work item and drives the board's existing Status field from the same milestones, and it ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
@@ -85,9 +91,10 @@ Each live request is bounded by `FM_ISSUE_STATUS_TIMEOUT` seconds (default 10); 
 That spacing is deliberately best-effort rather than guaranteed: there is no lock, so two concurrent processes may each observe no recent call and each perform one lookup.
 Cache entries and the per-host timestamp are replaced atomically, so a concurrent reader always sees a whole record rather than a torn one.
 
-Per-host credentials live in `config/forge-tokens/<host>`, which must be a regular file with mode 0600; a token stored more loosely is refused rather than used.
+Per-host credentials live in `config/forge-tokens/<host>`, which must be a regular file with mode 0600; a token stored more loosely is refused rather than used, on the read and write sides alike, because `bin/fm-forge-lib.sh` resolves it once for both.
 GitHub needs no entry because it uses the ambient `gh-axi` authentication.
-Gitea uses its host entry when present and otherwise attempts an unauthenticated read, which can enrich public repositories while private repositories retain only the link and reason.
+Gitea uses its host entry for both enrichment and write-back; an absent entry, or one whose file is present but empty, still allows an unauthenticated read of public repositories, while write-back reports which of those two it found rather than blurring them.
+That library's header states the minimum viable token scope per forge - Gitea needs only `read:issue` plus `write:issue`, never repository admin - so the captain can issue a narrow token and revoke a wider one.
 `config/` is gitignored in full, and `forge-tokens` is deliberately absent from the inheritable-config allowlist in `bin/fm-config-inherit-lib.sh`, so a secondmate home never receives another home's forge credentials.
 The token reaches `curl` through a stdin config file, so it never appears in process arguments, output, or the cache.
 
@@ -691,7 +698,8 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_ISSUE_STATUS_TTL=900   # seconds a cached work-item enrichment result stays fresh
 FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work-item lookups to one host
 FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
-FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per GitHub call fm-issue-comment.sh makes for the living status comment
+FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per forge call fm-issue-comment.sh makes for the living status comment, on GitHub and on a per-host forge alike
+FM_ISSUE_CLOSE_TIMEOUT=10   # seconds allowed per per-host forge call fm-pr-merge.sh makes to verify and close a landed work item
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
 FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, by fm-recall.sh to read this home's own brain, by fm-gbrain-capture.sh to deliver a captured document, by fm-gbrain-eval.sh to read the version, brain-plane configuration, and corpus counts an evaluation run records, and by fm-gbrain-health.sh to resolve the brain root and validate the configured planes; see "Brain scoping"

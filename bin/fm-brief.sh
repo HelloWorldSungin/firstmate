@@ -25,10 +25,10 @@
 #   `Closes` line in the PR body. The --work-item section decides that per item
 #   against --pr-target: an item whose tracker IS the repository the PR opens
 #   against carries the same substantive-comment and `Closes` contract, because
-#   that is exactly where firstmate already holds write access, and every other
-#   item stays link-only. Write-back to a foreign forge needs a per-host
-#   write-credential design of its own and is deliberately out of scope, so a
-#   cross-forge item is linked and left to firstmate's own merge path.
+#   a forge can only auto-close its own issues from its own PR body, and every
+#   other item stays link-only for that same reason. Link-only is not a gap in
+#   the bookkeeping: firstmate closes a cross-forge item itself on its merge
+#   path (docs/configuration.md "Project issue trackers").
 #   --pr-target is therefore REQUIRED with --work-item and names the tracker
 #   identity of the repository this task's PR opens against, in the same
 #   <forge>:<host>/<path> spelling data/projects.md uses. It is required rather
@@ -431,10 +431,9 @@ fi
 if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
   # Each item is classified against the PR target: same repository means the
   # worker owes it a substantive delivery summary and a Closes line, because a
-  # forge can only auto-close its own issues and this is the one tracker
-  # firstmate is already authenticated to write. Every other item is linked and
-  # left to firstmate's own merge path - write-back to a foreign forge needs a
-  # per-host write credential that does not exist yet.
+  # forge can only auto-close its own issues from its own PR body. Every other
+  # item is linked and left to firstmate's own merge path, which closes it on
+  # its own host (docs/configuration.md "Project issue trackers").
   WORK_ITEM_MARKERS=
   WORK_ITEM_LINES=
   SAME_REPO_ITEMS=0

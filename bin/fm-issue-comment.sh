@@ -27,12 +27,35 @@
 # dispatched, in-review, and landed themselves, so those three never depend on
 # agent memory. The rest are firstmate's to post as the work moves.
 #
-# SCOPE. Write-back applies only where a write credential genuinely exists: the
-# task records exactly one work item, it is a github.com issue, and its repository
-# is the one the PR opens against (pr_target= in task metadata, recorded at spawn
-# from the brief's PR-target marker). Cross-forge write-back needs a per-host
-# write-credential design of its own; config/forge-tokens/ is read-side only, and
-# an out-of-scope work item is reported once rather than retargeted.
+# SCOPE. The target is only ever the task's own recorded work item: exactly one
+# work_item= line, in the repository the PR opens against (pr_target= in task
+# metadata, recorded at spawn from the brief's PR-target marker), never a
+# reference parsed from prose, a PR body, or a git remote. Within that scope,
+# write-back is per-forge through bin/fm-forge-lib.sh, the single owner of the
+# per-host credential rules, the argv-free transport, the write-operation
+# allowlist, and the minimum viable token scope per forge:
+#   github.com  the ambient gh authentication, as everywhere else in this repo.
+#   gitea       config/forge-tokens/<host>, the same credential the read side
+#               uses; an absent token is reported as "no write credential", a
+#               present but empty one as the empty file it is, a loose one is
+#               refused, and a 401/403 is reported as the forge refusing the
+#               credential - four different facts, never blurred into one.
+#   gitlab and self-hosted GitHub have no write adapter yet and say so.
+# An out-of-scope or unsupported work item is reported once rather than
+# retargeted, and the recorded link always stays resolvable.
+#
+# NEVER CREATE ON A GUESS. Creating is the one act here that cannot be taken
+# back: a second status comment can never be edited into the first. So a create
+# happens only where the lookup PROVED there is nothing to edit - it reached the
+# end of the comment list without finding the marker. Every other way the lookup
+# can end is the same epistemic state, "could not prove absence", and every one
+# of them takes the same branch: warn and write nothing. That covers the page cap
+# running out, a host that re-serves a page it already served, a page carrying no
+# readable comment id, and a comment found under an id that cannot be addressed.
+# Refusing costs one milestone on one comment; guessing costs a tracker that
+# accumulates a comment per milestone, which is what this design exists to
+# prevent. This rule governs both forge paths below, not just the one whose
+# server shape suggested it.
 #
 # FAIL OPEN. Write-back is decoration on top of work that already succeeded. An
 # unreachable host, a missing or expired credential, a rate limit, a deleted
@@ -61,6 +84,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 CALL_TIMEOUT=${FM_ISSUE_COMMENT_TIMEOUT:-10}
 case "$CALL_TIMEOUT" in
   ''|*[!0-9]*|0) CALL_TIMEOUT=10 ;;
@@ -74,6 +98,8 @@ esac
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-milestone-lib.sh
 . "$SCRIPT_DIR/fm-milestone-lib.sh"
+# shellcheck source=bin/fm-forge-lib.sh
+. "$SCRIPT_DIR/fm-forge-lib.sh"
 
 # The body marker is a constant, not a task-keyed one: the comment belongs to the
 # work item, and a task id has no place in outward-facing text anyway.
@@ -96,6 +122,12 @@ notice() { printf 'notice: no tracker status comment for this task: %s\n' "$1" >
 # A withheld note is not a withheld milestone: the update still lands, so this
 # says what was dropped rather than reporting the whole write-back as skipped.
 withheld() { printf 'warning: the note was withheld and the milestone recorded without it: %s\n' "$1" >&2; }
+# A comment that was found but cannot be addressed is not an absent one; see the
+# never-create-on-a-guess rule in the header.
+refuse_unaddressable_comment() {
+  warn "$ISSUE_URL already carries firstmate's status comment but $ISSUE_HOST reported it under an id that is not a number, so nothing was written rather than risk a second comment"
+  exit 0
+}
 
 GH_REASON=
 
@@ -189,10 +221,12 @@ if ! fm_issue_work_item_parse "$WORK_ITEMS"; then
   exit 0
 fi
 ISSUE_URL=$FM_ISSUE_URL
+ISSUE_FORGE=$FM_ISSUE_FORGE
+ISSUE_HOST=$FM_ISSUE_HOST
 ISSUE_PATH=$FM_ISSUE_PATH
 ISSUE_NUMBER=$FM_ISSUE_NUMBER
-if [ "$FM_ISSUE_FORGE" != github ] || [ "$FM_ISSUE_HOST" != github.com ]; then
-  notice "the work item lives on $FM_ISSUE_FORGE host $FM_ISSUE_HOST ($ISSUE_URL), where firstmate holds no write credential"
+if ! fm_forge_write_supported "$ISSUE_FORGE" "$ISSUE_HOST"; then
+  notice "$FM_FORGE_REASON, so $ISSUE_URL keeps its link without a status comment"
   exit 0
 fi
 
@@ -205,9 +239,9 @@ if ! fm_issue_tracker_parse "$PR_TARGET"; then
   warn "the recorded PR target is malformed"
   exit 0
 fi
-if [ "$FM_ISSUE_TRACKER_FORGE" != github ] || [ "$FM_ISSUE_TRACKER_HOST" != github.com ] \
+if [ "$FM_ISSUE_TRACKER_FORGE" != "$ISSUE_FORGE" ] || [ "$FM_ISSUE_TRACKER_HOST" != "$ISSUE_HOST" ] \
   || [ "$FM_ISSUE_TRACKER_PATH" != "$ISSUE_PATH" ]; then
-  notice "$ISSUE_URL is not in the repository this task's PR opens against, so firstmate holds no write credential for it"
+  notice "$ISSUE_URL is not in the repository this task's PR opens against, so it is outside this task's write-back scope"
   exit 0
 fi
 
@@ -365,6 +399,136 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
+# --- gitea: the same lifecycle through the per-host credential ---------------
+#
+# The operations come from bin/fm-forge-lib.sh's write allowlist, bounded per
+# call exactly as gh_call bounds the GitHub side. Writing needs authentication,
+# so a token that is absent, or present but empty, ends the write here - unlike
+# the read side, which falls back to an unauthenticated public read. Those two
+# are separate facts and are reported as separate facts: "there is no file" and
+# "the file is right there and holds nothing" send the captain to different
+# places, so neither may be worded as the other.
+if [ "$ISSUE_FORGE" = gitea ]; then
+  command -v curl >/dev/null 2>&1 || { warn "curl is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
+  command -v jq >/dev/null 2>&1 || { warn "jq is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
+  TOKEN=
+  token_rc=0
+  TOKEN=$(fm_forge_token_read "$CONFIG" "$ISSUE_HOST") || token_rc=$?
+  case "$token_rc" in
+    0) ;;
+    2)
+      warn "refusing the token at config/forge-tokens/$ISSUE_HOST: it must be a regular file with mode 0600"
+      exit 0
+      ;;
+    3)
+      notice "firstmate holds no usable write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is present but empty), so $ISSUE_URL keeps its link without a status comment"
+      exit 0
+      ;;
+    *)
+      notice "firstmate holds no write credential for $ISSUE_HOST (config/forge-tokens/$ISSUE_HOST is absent), so $ISSUE_URL keeps its link without a status comment"
+      exit 0
+      ;;
+  esac
+  fm_forge_scratch_set "$WORKDIR"
+
+  gitea_bound() {  # sets BOUND from the shared budget, or reports it spent
+    BOUND=$(fm_call_bound "$CALL_TIMEOUT")
+    if [ "$BOUND" -le 0 ]; then
+      FM_FORGE_REASON="the milestone budget was already spent, so nothing was sent"
+      return 1
+    fi
+  }
+
+  # Find firstmate's own comment by its marker, earliest first, walking pages
+  # oldest-first under a hard cap. Exactly two things ANSWER the lookup: the
+  # marker is found, or an empty page proves the list is exhausted. A page
+  # shorter than the requested limit proves nothing - Gitea clamps every list to
+  # its own api.MAX_RESPONSE_ITEMS, so a short page is the normal answer on such
+  # an instance - so the walk carries on past it.
+  #
+  # Everything else that stops the walk records WALK_GAP and reaches the refusal
+  # below instead of the create, per the header's never-create-on-a-guess rule.
+  # A server that ignores the page parameter and re-serves its first id is the
+  # case that makes this matter: it is indistinguishable from a list this lookup
+  # cannot see the end of, and treating it as "there is no comment" would post a
+  # second one on every milestone. Exhausting the cap is the same state and has
+  # always been reported; so is a page whose first entry carries no readable id.
+  COMMENT_ID=
+  : > "$WORKDIR/existing"
+  page=1
+  prev_first=
+  walk_answered=0
+  WALK_GAP=
+  while [ "$page" -le 10 ]; do
+    if ! gitea_bound \
+      || ! fm_gitea_comments_page "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$page" "$WORKDIR/page"; then
+      warn "could not look up the status comment on $ISSUE_URL: $FM_FORGE_REASON"
+      exit 0
+    fi
+    count=$(jq 'length' "$WORKDIR/page" 2>/dev/null) || count=
+    case "$count" in
+      ''|*[!0-9]*)
+        warn "could not read the comment list on $ISSUE_URL"
+        exit 0
+        ;;
+    esac
+    if [ "$count" -eq 0 ]; then
+      walk_answered=1
+      break
+    fi
+    first=$(jq -r '.[0].id // empty' "$WORKDIR/page" 2>/dev/null) || first=
+    if [ -z "$first" ]; then
+      WALK_GAP="page $page of its comment list came back with no readable comment id"
+      break
+    fi
+    if [ "$first" = "$prev_first" ]; then
+      WALK_GAP="$ISSUE_HOST answered page $page with the same first comment as the page before it, so the walk cannot reach the end of the list"
+      break
+    fi
+    prev_first=$first
+    COMMENT_ID=$(jq -r --arg m "$MARKER" \
+      '[.[] | select(.body != null and (.body | contains($m))) | .id] | first // empty' \
+      "$WORKDIR/page" 2>/dev/null) || COMMENT_ID=
+    if [ -n "$COMMENT_ID" ]; then
+      jq -r --arg m "$MARKER" \
+        '[.[] | select(.body != null and (.body | contains($m))) | .body] | first // empty' \
+        "$WORKDIR/page" > "$WORKDIR/existing" 2>/dev/null || : > "$WORKDIR/existing"
+      walk_answered=1
+      break
+    fi
+    page=$((page + 1))
+  done
+  if [ "$walk_answered" -eq 0 ]; then
+    [ -n "$WALK_GAP" ] || WALK_GAP="its comment list is longer than the 10 pages this lookup walks"
+    warn "could not tell whether $ISSUE_URL already carries firstmate's status comment: $WALK_GAP, so nothing was written rather than risk a second comment"
+    exit 0
+  fi
+  case "$COMMENT_ID" in
+    '') ;;
+    *[!0-9]*) refuse_unaddressable_comment ;;
+  esac
+
+  build_timeline "$WORKDIR/existing" "$WORKDIR/timeline"
+  render_body "$WORKDIR/timeline" > "$WORKDIR/body"
+
+  if [ -n "$COMMENT_ID" ]; then
+    if gitea_bound \
+      && fm_gitea_comment_update "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$COMMENT_ID" "$WORKDIR/body"; then
+      printf 'updated: %s\n' "$ISSUE_URL"
+      exit 0
+    fi
+    warn "could not update the status comment on $ISSUE_URL: $FM_FORGE_REASON"
+    exit 0
+  fi
+  if gitea_bound \
+    && fm_gitea_comment_create "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$WORKDIR/body"; then
+    printf 'created: %s\n' "$ISSUE_URL"
+    exit 0
+  fi
+  warn "could not post the status comment on $ISSUE_URL: $FM_FORGE_REASON"
+  exit 0
+fi
+
 command -v gh >/dev/null 2>&1 || { warn "gh is not installed, so $ISSUE_URL cannot be updated"; exit 0; }
 
 gh_call() {  # <output-file> <args...>
@@ -402,8 +566,13 @@ else
   warn "could not look up the status comment on $ISSUE_URL: $GH_REASON"
   exit 0
 fi
+# --paginate walks the whole list, so an empty answer here IS proof of absence
+# and may create. An id that is not a number is not: the comment exists and this
+# lookup simply cannot address it, which the header's rule sends to the refusal
+# rather than to a second comment.
 case "$COMMENT_ID" in
-  ''|*[!0-9]*) COMMENT_ID= ;;
+  '') ;;
+  *[!0-9]*) refuse_unaddressable_comment ;;
 esac
 
 : > "$WORKDIR/existing"

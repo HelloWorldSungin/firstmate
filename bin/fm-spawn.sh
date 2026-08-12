@@ -1259,8 +1259,9 @@ fi
 # number of them, including none.
 WORK_ITEM_RECORDS=()
 # The brief's PR target says which tracker firstmate's own write-back may reach:
-# a work item in that exact repository is one it already holds write access to,
-# and anything else is link-only (bin/fm-issue-comment.sh).
+# a work item in that exact repository is this task's own, and anything else is
+# link-only, whatever credentials happen to exist (bin/fm-issue-comment.sh;
+# docs/configuration.md "Project issue trackers").
 PR_TARGET=
 if [ "$KIND" = ship ]; then
   PR_TARGET_MARKER_COUNT=$(grep -c '^<!-- firstmate-pr-target=' "$BRIEF_REAL" 2>/dev/null || true)
