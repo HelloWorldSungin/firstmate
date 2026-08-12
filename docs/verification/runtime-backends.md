@@ -130,10 +130,12 @@ The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCo
 tests/fm-composer-ghost.test.sh
 tests/fm-kimi-harness.test.sh
 tests/fm-tmux-submit-busy.test.sh
+tests/fm-backend-herdr.test.sh
 ```
 
 Expected structural matrix: real text on any content row is pending; all-empty complete boxes are empty; unreadable, incomplete, or unsafe boxes are unknown; and non-bordered panes retain cursor-row compatibility.
 Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; and only a proven empty composer succeeds directly.
+Herdr reaches that same matrix from its own structural composer read and native agent state, with the extra blocked-baseline exclusion owned by [`herdr-backend.md`](../herdr-backend.md#active-limits).
 
 ### Cleanup endpoint identity
 
