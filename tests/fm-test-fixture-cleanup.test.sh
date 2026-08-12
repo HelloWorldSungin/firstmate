@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for tests/lib.sh's shared fixture-tempdir helper
-# (fm_test_tmproot / fm_test_cleanup / fm_test_reap_orphans).
+# (fm_test_tmproot / fm_test_cleanup / fm_test_reap_descendants /
+# fm_test_reap_orphans).
 #
 # The near-universal call pattern across this suite is
 # `TMP_ROOT=$(fm_test_tmproot prefix)`, which forks a subshell to capture the

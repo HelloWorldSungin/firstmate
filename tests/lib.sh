@@ -83,9 +83,13 @@ pass() {
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT/INT/TERM. A test file that needs extra teardown (e.g. killing a
-# daemon) should define its own EXIT trap and call fm_test_cleanup from inside
-# it so registered dirs are still removed.
+# on EXIT/INT/TERM. That teardown first sweeps the shell's descendant process
+# subtree (fm_test_reap_descendants below), so a fixture that backgrounds a
+# daemon does not leave it orphaned. A test file that still needs extra teardown
+# - a process that escapes the subtree by daemonizing, or one that must be
+# stopped in a specific order before its tree is removed, as in
+# fm_test_stop_remote_job_worker below - should define its own EXIT trap and
+# call fm_test_cleanup from inside it so registered dirs are still removed.
 #
 # The call site is almost always `TMP_ROOT=$(fm_test_tmproot prefix)`, which
 # forks a subshell to capture stdout. Anything that function does to the
@@ -113,9 +117,10 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 }
 
 fm_test_cleanup() {
-  # Reap any descendant processes the fixture started before removing their
-  # temp directories, so a killed or forgotten background daemon is not left
-  # orphaned on the host. The current shell itself is excluded.
+  # Ordered before the directory removal below on purpose: a daemon left alive
+  # can write its state back into a tree that is being unlinked, which fails the
+  # removal (see fm_test_stop_remote_job_worker for one such supervisor).
+  # fm_test_reap_descendants owns what the sweep may signal.
   fm_test_reap_descendants
 
   local d
