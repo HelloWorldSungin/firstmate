@@ -83,9 +83,13 @@ pass() {
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT/INT/TERM. A test file that needs extra teardown (e.g. killing a
-# daemon) should define its own EXIT trap and call fm_test_cleanup from inside
-# it so registered dirs are still removed.
+# on EXIT/INT/TERM. That teardown first sweeps the shell's descendant process
+# subtree (fm_test_reap_descendants below), so a fixture that backgrounds a
+# daemon does not leave it orphaned. A test file that still needs extra teardown
+# - a process that escapes the subtree by daemonizing, or one that must be
+# stopped in a specific order before its tree is removed, as in
+# fm_test_stop_remote_job_worker below - should define its own EXIT trap and
+# call fm_test_cleanup from inside it so registered dirs are still removed.
 #
 # The call site is almost always `TMP_ROOT=$(fm_test_tmproot prefix)`, which
 # forks a subshell to capture stdout. Anything that function does to the
@@ -113,6 +117,12 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 }
 
 fm_test_cleanup() {
+  # Ordered before the directory removal below on purpose: a daemon left alive
+  # can write its state back into a tree that is being unlinked, which fails the
+  # removal (see fm_test_stop_remote_job_worker for one such supervisor).
+  # fm_test_reap_descendants owns what the sweep may signal.
+  fm_test_reap_descendants
+
   local d
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     # A case that hardened a directory to prove a read-only path leaves a tree
@@ -129,6 +139,69 @@ fm_test_cleanup() {
   fi
   [ -n "${FM_TEST_ISOLATION_ROOT:-}" ] && rm -rf "$FM_TEST_ISOLATION_ROOT"
   return 0
+}
+
+# fm_test_reap_descendants: best-effort kill of the entire process subtree
+# rooted at the current shell. Test fixtures frequently background long-lived
+# daemons (e.g. fm-watch.sh); without this, a fixture that exits without
+# explicit teardown leaves those daemons orphaned. Leaves are killed before
+# parents so no process is reparented mid-sweep. The current shell is excluded.
+fm_test_reap_descendants() {
+  local pid
+  for pid in $(fm_test_child_pids "$$"); do
+    fm_test_kill_tree "$pid" "$$"
+  done
+}
+
+# fm_test_child_pids <parent> lists the PIDs that were children of <parent> at
+# the instant it ran. That is a candidate list, never a licence to signal: the
+# `$(...)` a caller captures it with forks a subshell that is itself a child of
+# the calling shell, so when <parent> is that shell the list always carries the
+# transient subshell's own PID - already exited by the time the caller reads it.
+# fm_test_pid_has_parent is what turns a candidate into a target.
+fm_test_child_pids() {
+  local parent=$1
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -P "$parent" 2>/dev/null || true
+  else
+    ps -eo pid,ppid= 2>/dev/null \
+      | awk -v p="$parent" '$2 == p { print $1 }' \
+      || true
+  fi
+}
+
+# fm_test_pid_has_parent <pid> <parent> is true only while <pid> is still alive
+# AND still a direct child of <parent>. Every signal below is gated on it, so a
+# candidate that exited between enumeration and the kill is skipped instead of
+# signalled - which is what keeps the sweep off an unrelated host process that
+# the kernel has since handed that recycled PID to.
+fm_test_pid_has_parent() {
+  local pid=$1 parent=$2 actual
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  actual=$(LC_ALL=C ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')
+  [ -n "$actual" ] && [ "$actual" = "$parent" ]
+}
+
+fm_test_kill_tree() {
+  local pid=$1 parent=$2 child waited
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
+  for child in $(fm_test_child_pids "$pid"); do
+    fm_test_kill_tree "$child" "$pid"
+  done
+  # Re-verified after the recursion and on every escalation: draining the leaves
+  # takes real time, and the target can exit on its own inside that window.
+  # Killing leaves before parents is what keeps <parent> alive throughout, so a
+  # still-live target that stops matching it has genuinely gone.
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
+  kill "$pid" 2>/dev/null || true
+  waited=0
+  while [ "$waited" -lt 20 ]; do
+    fm_test_pid_has_parent "$pid" "$parent" || return 0
+    sleep 0.05 2>/dev/null || true
+    waited=$((waited + 1))
+  done
+  fm_test_pid_has_parent "$pid" "$parent" || return 0
+  kill -9 "$pid" 2>/dev/null || true
 }
 
 fm_test_tmproot() {
