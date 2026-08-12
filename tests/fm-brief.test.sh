@@ -938,6 +938,183 @@ test_brain_instruction_tracks_whether_the_home_has_one() {
   pass "fm-brief.sh: the brain instruction appears only for a home that has one, in every scaffold"
 }
 
+# Both non-firstmate projects here are real clones under projects/, the layout
+# docs/configuration.md describes: firstmate is the only project whose checkout
+# is the home itself, so every other name resolves to its own object database
+# and the git-common-dir comparison is what rejects it.
+test_firstmate_repo_crew_persona_section() {
+  local home same_repo_brief scout_brief other_repo_brief decoy_brief
+  home="$TMP_ROOT/firstmate-repo-persona-home"
+  mkdir -p "$home/projects" "$home/data"
+
+  ln -sfn "$ROOT" "$home/projects/firstmate"
+  local other
+  for other in decoy-firstmate some-proj; do
+    mkdir -p "$home/projects/$other"
+    git -C "$home/projects/$other" init -q
+    printf '# %s\n' "$other" > "$home/projects/$other/README.md"
+    git -C "$home/projects/$other" add README.md
+    git -C "$home/projects/$other" -c user.email=test@example.com -c user.name=test commit -qm init
+  done
+
+  # Ship: both facts. Breaks if the guidelines directive stops being ship-only
+  # in the wrong direction and is dropped from ship briefs too.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1
+  same_repo_brief="$home/data/fm-repo-ship/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$same_repo_brief" \
+    "firstmate-repo ship brief did not warn against adopting firstmate's captain address"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$same_repo_brief" \
+    "firstmate-repo ship brief did not require the coding-guidelines skill"
+  assert_grep "This task changes firstmate's shared tracked material" "$same_repo_brief" \
+    "firstmate-repo ship brief did not say why the coding-guidelines skill applies"
+
+  # Scout: role fact only. Breaks if the section stops being split by KIND, which
+  # would put "this task changes firstmate's shared tracked material" - a false
+  # statement - into a brief whose only deliverable is a report.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-repo-scout firstmate --scout >/dev/null 2>&1
+  scout_brief="$home/data/fm-repo-scout/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$scout_brief" \
+    "firstmate-repo scout brief did not warn against adopting firstmate's captain address"
+  assert_no_grep 'firstmate-coding-guidelines' "$scout_brief" \
+    "firstmate-repo scout brief must not carry the ship-only coding-guidelines directive"
+  assert_no_grep "changes firstmate's shared tracked material" "$scout_brief" \
+    "firstmate-repo scout brief must not claim it changes shared tracked material"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-decoy decoy-firstmate --mode no-mistakes >/dev/null 2>&1
+  decoy_brief="$home/data/fm-decoy/brief.md"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$decoy_brief" \
+    "misnamed non-firstmate project must not receive firstmate-repo persona guidance"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-other some-proj --mode no-mistakes >/dev/null 2>&1
+  other_repo_brief="$home/data/fm-other/brief.md"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$other_repo_brief" \
+    "ordinary non-firstmate brief must not receive firstmate-repo persona guidance"
+
+  # A name that resolves to no clone, in a home with no registry at all. Breaks
+  # if resolution ever answers with a directory it did not resolve the name to,
+  # since guidance must follow the git-common-dir verdict, not a lookup failure.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-uncloned not-cloned-here --mode no-mistakes >/dev/null 2>&1
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$home/data/fm-uncloned/brief.md" \
+    "a repo name with no clone in a non-firstmate home must not receive persona guidance"
+  pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated and split by kind"
+}
+
+# This home IS the firstmate clone, the documented default, so firstmate has no
+# clone under projects/ and a bare `firstmate` repo name resolves nowhere else.
+# Positive case breaks if fm_brief_resolve_project_dir stops offering the home
+# root to a name whose registry line declares that layout: the name resolves to
+# nothing, the git-common-dir comparison never runs, and the guidance is
+# silently absent from exactly the canonical call. Negative cases break if that
+# candidate is ever offered on anything weaker - registration alone, or nothing
+# at all - because every such name would resolve to the home, which in this
+# layout IS firstmate's repo, and ordinary projects would then be told they are
+# working in a checkout of firstmate.
+test_firstmate_repo_crew_persona_without_a_projects_clone() {
+  local data brief unregistered_brief uncloned_brief
+  data="$TMP_ROOT/firstmate-home-data"
+  mkdir -p "$data"
+  [ ! -d "$ROOT/projects/firstmate" ] \
+    || fail "fixture assumes the firstmate checkout has no projects/firstmate clone"
+  [ ! -e "$ROOT/.fm-secondmate-home" ] \
+    || fail "fixture assumes this checkout is a primary home, not a marked secondmate home"
+  printf '%s\n' \
+    '# Projects' \
+    '' \
+    '- firstmate [no-mistakes +yolo] - firstmate itself: this home IS the clone, so it lives at the home root rather than under projects/ (added 2026-08-04)' \
+    '- some-clone [no-mistakes] - an ordinary registered project whose clone is not in this home yet (added 2026-08-04)' \
+    > "$data/projects.md"
+
+  # Run from a scratch directory so the relative-name branch cannot resolve.
+  (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
+    "$ROOT/bin/fm-brief.sh" fm-home-repo firstmate --mode no-mistakes >/dev/null 2>&1)
+  brief="$data/fm-home-repo/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$brief" \
+    "a home that is the firstmate clone itself produced no firstmate-repo persona guidance"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$brief" \
+    "a home that is the firstmate clone itself produced no coding-guidelines directive"
+
+  # An intake spelling the registry does not carry, in the same firstmate home:
+  # the clone directory is `ark-robhinhood` while `ark-robinhood` is the name
+  # that circulates for gh-axi calls, so both reach this scaffold in practice.
+  (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
+    "$ROOT/bin/fm-brief.sh" fm-home-other ark-robinhood --mode no-mistakes >/dev/null 2>&1)
+  unregistered_brief="$data/fm-home-other/brief.md"
+  assert_grep 'disposable git worktree of ark-robinhood' "$unregistered_brief" \
+    "the unregistered-name brief did not scaffold"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$unregistered_brief" \
+    "an unregistered project name must not resolve to the firstmate home and inherit its persona section"
+  assert_no_grep "changes firstmate's shared tracked material" "$unregistered_brief" \
+    "an unregistered project name must not be told it changes firstmate's tracked material"
+
+  # Registered, but its line claims no home-root clone and the clone is simply
+  # not in this home yet - register-then-clone ordering, or a renamed clone
+  # directory. Registration alone must not put it in firstmate's own checkout.
+  (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
+    "$ROOT/bin/fm-brief.sh" fm-home-uncloned some-clone --mode no-mistakes >/dev/null 2>&1)
+  uncloned_brief="$data/fm-home-uncloned/brief.md"
+  assert_grep 'disposable git worktree of some-clone' "$uncloned_brief" \
+    "the registered-but-uncloned brief did not scaffold"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$uncloned_brief" \
+    "a registered project with no home-root declaration must not inherit the firstmate persona section"
+  assert_no_grep "changes firstmate's shared tracked material" "$uncloned_brief" \
+    "a registered project with no home-root declaration must not be told it changes firstmate's tracked material"
+  pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
+}
+
+# A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
+# registers only the projects it seeds - never firstmate, which is no clone under
+# projects/ - so this home structurally cannot carry the registry declaration
+# while every crew task it runs against firstmate is a firstmate-repo task.
+# Breaks if the marker stops opening the home-root candidate: the whole
+# population whose purpose is firstmate-repo work silently loses the guidance.
+# The paired negative breaks if the marker is ever treated as optional, which
+# would hand the candidate to any unresolved name in a primary home again.
+test_firstmate_repo_crew_persona_in_a_secondmate_home() {
+  local upstream home brief unmarked_brief
+  upstream="$TMP_ROOT/sm-upstream"
+  home="$TMP_ROOT/sm-home"
+  mkdir -p "$upstream"
+  git -C "$upstream" init -q
+  printf '# upstream\n' > "$upstream/README.md"
+  git -C "$upstream" add README.md
+  git -C "$upstream" -c user.email=test@example.com -c user.name=test commit -qm init
+  git -C "$upstream" worktree add -q --detach "$home" >/dev/null 2>&1 \
+    || fail "could not lease a worktree of the fixture firstmate repo"
+  printf 'sm-persona\n' > "$home/.fm-secondmate-home"
+  mkdir -p "$home/data"
+
+  (cd "$TMP_ROOT" && FM_HOME="$home" FM_ROOT_OVERRIDE="$upstream" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/sm-home-state" \
+    "$ROOT/bin/fm-brief.sh" sm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1)
+  brief="$home/data/sm-repo-ship/brief.md"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$brief" \
+    "a secondmate home leased from the firstmate repo produced no firstmate-repo persona guidance"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$brief" \
+    "a secondmate home leased from the firstmate repo produced no coding-guidelines directive"
+
+  rm -f "$home/.fm-secondmate-home"
+  (cd "$TMP_ROOT" && FM_HOME="$home" FM_ROOT_OVERRIDE="$upstream" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/sm-home-state" \
+    "$ROOT/bin/fm-brief.sh" sm-unmarked firstmate --mode no-mistakes >/dev/null 2>&1)
+  unmarked_brief="$home/data/sm-unmarked/brief.md"
+  assert_grep 'disposable git worktree of firstmate' "$unmarked_brief" \
+    "the unmarked-home brief did not scaffold"
+  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
+    "an unmarked home with no registry declaration must not resolve a name to its own root"
+  pass "fm-brief.sh: a secondmate home's marker opens the home-root candidate its registry cannot declare"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -963,3 +1140,6 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
+test_firstmate_repo_crew_persona_section
+test_firstmate_repo_crew_persona_without_a_projects_clone
+test_firstmate_repo_crew_persona_in_a_secondmate_home

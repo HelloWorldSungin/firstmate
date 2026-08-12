@@ -14,6 +14,8 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 [`fleet-data-contracts.md`](fleet-data-contracts.md) owns the durable manifest, work-item, and normalized PR-observation contracts and the field ownership across their producers and consumers.
 `state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, generated X-mode artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
+A project whose clone is the home root itself rather than a directory under `projects/` says so in its `data/projects.md` line - "this home IS the clone", "lives at the home root rather than under projects/" - and `bin/fm-brief-repo-lib.sh` offers the home root as a resolution candidate only for a name carrying that declaration.
+A secondmate home is exempt because it cannot carry that line - `bin/fm-home-seed.sh` leases it as a firstmate worktree and registers only the projects it seeds - so its `.fm-secondmate-home` marker opens the same candidate there.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
@@ -42,7 +44,7 @@ The token rides inside the delivery-posture annotation that `bin/fm-project-mode
 
 `bin/fm-issue-lib.sh` is the single owner of this declaration and of the reference forms resolved against it: a full canonical issue URL, a `<forge>:<url>` prefixed URL for the self-hosted shape several forges share, `<owner>/<repo>#<n>`, and a bare `#<n>` or `<n>`.
 Firstmate resolves references once at intake with `bin/fm-issue-ref.sh`, exactly as it resolves delivery mode and yolo, and passes the resolved result explicitly onward.
-`bin/fm-brief.sh --work-item` accepts only a fully qualified reference and never reads the registry at all.
+`bin/fm-brief.sh --work-item` accepts only a fully qualified reference and reads no tracker declaration from the registry.
 `bin/fm-spawn.sh` records those resolved markers as they stand and consults the registry only to upgrade a legacy bare `issue=` number through the project's declared tracker, reporting rather than guessing when that project declares none.
 A task may carry several references or none, and one unresolvable reference refuses the whole set rather than recording a partial one.
 Resolved references are recorded as `work_item=<origin>|<forge>|<url>` lines in task metadata, and `bin/fm-issue-ref.sh --format json` emits the reference-object array in the shape defined by issue #18's outcome-manifest contract.
