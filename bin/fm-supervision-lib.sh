@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Shared "supervision missing" predicate.
+# Shared "supervision missing" predicate, plus the watcher-beacon grace window
+# and the tolerated-quiet window its consumers measure against.
 # Usage: . bin/fm-supervision-lib.sh
 #
 # Reports whether a firstmate home needs supervision because it has in-flight

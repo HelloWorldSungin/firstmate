@@ -107,7 +107,7 @@ The strip carries seven signals plus one overall verdict.
 | --- | --- | --- | --- | --- |
 | Snapshot | last refresh succeeded and is fresh | showing the last known good snapshot | no valid snapshot available | first snapshot has not completed |
 | Supervision | beacon beating inside its grace window | past half the grace window | no beacon, or the snapshot marks it stale | beacon present with an unreadable age |
-| Task activity | every working task was observed working and none of them has done nothing for the whole tolerated-quiet window, or the quietest unobserved one last did something inside half that window | past half that window, or an observed task has done nothing for the whole of it | an unobserved task is past the whole window | an unobserved working task has no readable activity age, or the snapshot carries no window |
+| Task activity | every working task was observed working and none of them has done nothing for the whole tolerated-quiet window, or the quietest unobserved one last did something inside half that window | past half that window, or an observed task has done nothing for the whole of it | an unobserved task is past the whole window | any working task has no readable activity age, observed or not, or the snapshot carries no window |
 | Workers | every live task that has not declared a wait has its endpoint, or every live task declared one | - | an endpoint is gone on a task that declared no wait | endpoint presence unreadable on a task that declared no wait |
 | Secondmates | every registered secondmate answers, or none registered | - | any secondmate agent is dead | any secondmate liveness unreadable |
 | Inventory | every in-flight backlog item has a worker record | - | an orphan, or `main_inventory.valid` false | no inventory check reported |
@@ -141,7 +141,7 @@ Two things answer for a quiet task, and either is enough.
 
 The first is being caught in the act.
 The snapshot's `current_state` is reconciled by [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), and two of the sources it can answer with are readings taken during that refresh: `run-step`, the validation run's own current step, and `pane`, the harness's own busy verdict.
-A task carrying a definite state from either was observed working, and it is not aged at all.
+A task carrying a definite state from either was observed working, so ordinary quiet does not colour it; the one bound that still applies to it is below.
 Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `status-log` is the event log this signal already reads, and `timeout`, `not-attempted`, `row-unavailable` and `none` are readings that were not taken.
 None of those excuses quiet, because the rule at the top of this page applies here too: not knowing is not the same as knowing it is fine.
 
