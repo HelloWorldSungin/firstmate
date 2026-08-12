@@ -2,7 +2,9 @@
 
 Active empirical evidence for the guarantees in [`../gbrain-scoping.md`](../gbrain-scoping.md): that GBrain's own OAuth scope model can express a read-only share, that its mount model in the installed version cannot, and that a reading home can read the main brain and cannot mutate it.
 
-Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md).
+Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, which was the pin recorded in [`../gbrain.md`](../gbrain.md) at the time.
+The pin has since moved and the write refusals below were re-confirmed on the current one.
+What that later release changed for a read-only caller is that `think` became reachable rather than scope-refused, which is now bounded by an operating rule in [`../gbrain.md`](../gbrain.md) and measured in [gbrain-memory-verbs.md](gbrain-memory-verbs.md).
 
 ```console
 $ gbrain version

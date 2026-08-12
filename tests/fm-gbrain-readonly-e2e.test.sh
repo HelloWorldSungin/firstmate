@@ -143,8 +143,23 @@ scopes=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth list 2>/dev/null || 
 assert_not_contains "$scopes" "gbrain_" "auth list should not expose a usable token value"
 
 # --- serve the main brain and drive real tool calls -------------------------
+#
+# The SERVED process is the one that would synthesize. `think` is scope:read
+# since v0.42.76.0, so the guard further down really does reach it over the
+# read-only share, and it would run on this process's model and credential: an
+# inherited provider key would send the seeded main-brain page to a hosted
+# provider from a suite that is supposed to touch nothing outside its temp root.
+# So every credential-shaped variable is stripped from the served environment
+# rather than the suite trusting the operator's shell to hold none, and the
+# degrade is asserted at the call site instead of assumed.
+serve_env=(env)
+while IFS='=' read -r _name _; do
+  case "$_name" in
+    *API_KEY*|*AUTH_TOKEN*|*API_TOKEN*|*_SECRET_KEY) serve_env+=(-u "$_name") ;;
+  esac
+done < <(env)
 
-GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
+"${serve_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" serve --http --port "$PORT" > "$TMP_ROOT/serve.log" 2>&1 &
 SERVE_PID=$!
 up=0
@@ -167,6 +182,24 @@ mcp_call() {  # <tool> <arguments-json> -> response body
     -H 'Accept: application/json, text/event-stream' \
     -d "$(jq -cn --arg n "$1" --argjson a "$2" \
       '{jsonrpc: "2.0", method: "tools/call", params: {name: $n, arguments: $a}, id: 1}')"
+}
+
+# The endpoint answers either a bare JSON-RPC body or an SSE frame depending on
+# content negotiation, and the tool result is itself JSON encoded inside a
+# string. Normalize both layers here so assertions can read parsed values
+# instead of pattern-matching escaped JSON through the transport envelope.
+mcp_result() {  # <response-body> -> tool result JSON, empty when unparseable
+  local body="$1" sse
+  sse=$(printf '%s\n' "$body" | sed -n 's/^data: //p' | tail -1)
+  if [ -n "$sse" ]; then body="$sse"; fi
+  printf '%s' "$body" | jq -r '.result.content[0].text // empty' 2>/dev/null
+}
+
+# The sorted slug set of a list_pages response, for proving a call left the
+# page set alone. Shape-tolerant on purpose: it harvests every slug in the
+# payload rather than binding to one envelope key that a release could rename.
+mcp_result_slugs() {  # stdin: response body -> one sorted slug per line
+  mcp_result "$(cat)" | jq -r '[.. | objects | .slug? // empty] | sort | .[]' 2>/dev/null
 }
 
 read_out=$(mcp_call get_page '{"slug":"main-canary"}')
@@ -218,13 +251,47 @@ assert_contains "$recall_out" '"citation": "local:sm-canary"' \
   "a local result must arrive citable as local:<slug>"
 pass "the retrieval wrapper reads this home's own corpus and the mounted main corpus, each labelled"
 
-# The wrapper must never be able to widen the share: think is a write-scope
-# operation in GBrain, so it is refused over the read-only client. Proving the
-# refusal at the transport is what keeps "read-only" true for retrieval too.
-think_out=$(mcp_call think '{"question":"what is the canary?"}')
-assert_contains "$think_out" "insufficient_scope" \
-  "hosted synthesis against the mounted main brain must be refused for lack of scope"
-pass "synthesis against the mounted main brain is refused, so the wrapper's think stays local by construction"
+# What a read-only share can and cannot trigger through `think`.
+#
+# GBrain v0.42.76.0 reclassified `think` from a write-scope operation to
+# scope:read, so the transport admits it and this guard can NO LONGER prove
+# that main-brain content cannot reach a hosted model. That boundary is now
+# operational rather than structural: docs/gbrain.md requires a home serving a
+# main brain to carry no hosted synthesis credentials, and nothing here can
+# enforce that for it.
+#
+# What IS still guaranteed is asserted directly rather than inferred from the
+# op being unreachable, because "think returned something" alone would also
+# pass on a genuinely broken read-only share. So the call is made in its most
+# dangerous form - explicitly asking to persist - and the fence is proven from
+# the parsed result AND from the main brain's page set being unchanged.
+#
+# The synthesis itself must degrade rather than run: the serving process was
+# started with every provider credential stripped, and the assertion below is
+# what proves that held, so this guard can never export the seeded page to a
+# hosted model on an operator machine that happens to carry a key.
+pages_before=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
+assert_contains "$pages_before" "main-canary" \
+  "the page-set snapshot must really list pages, or the unchanged-set assertion below is vacuous"
+
+think_out=$(mcp_call think '{"question":"what is the canary?","save":true}')
+assert_not_contains "$think_out" "insufficient_scope" \
+  "think is scope:read since v0.42.76.0, so the transport must admit it rather than refuse it"
+think_json=$(mcp_result "$think_out")
+[ -n "$think_json" ] || fail "the think response could not be parsed: $think_out"
+[ "$(printf '%s' "$think_json" | jq -r '.remote_persisted_blocked')" = true ] \
+  || fail "a remote think that asked to persist must report the persistence blocked: $think_json"
+# has() rather than a -r comparison: an absent field prints "null" too, so a
+# release that renamed it while still persisting would satisfy the string test.
+printf '%s' "$think_json" | jq -e 'has("saved_slug") and .saved_slug == null' >/dev/null \
+  || fail "a remote think must never report a persisted synthesis page: $think_json"
+printf '%s' "$think_json" | jq -e 'has("synthesisOk") and .synthesisOk == false' >/dev/null \
+  || fail "the served brain reached a hosted model: this guard must run with no provider credential in the serving process: $think_json"
+
+pages_after=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
+[ "$pages_before" = "$pages_after" ] \
+  || fail "think over a read-only share changed the main brain's page set"$'\n'"before: $pages_before"$'\n'"after:  $pages_after"
+pass "a read-only share admits think, degrades it with no credential, cannot persist through it, and leaves the main brain unchanged"
 
 # --- the secondmate writes only its OWN brain -------------------------------
 

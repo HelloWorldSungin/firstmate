@@ -5,7 +5,8 @@ The evidence was refreshed on 2026-08-04.
 
 ## Version and installation evidence
 
-GBrain `v0.42.69.0` is installed from commit `3acd511b80bd4d2fe487290a70de75d4cf094730` in the pinned source checkout at `/home/sungin/.local/gbrain/src`.
+GBrain `v0.42.69.0` was installed from commit `3acd511b80bd4d2fe487290a70de75d4cf094730` in the pinned source checkout at `/home/sungin/.local/gbrain/src`, which was the pin in force when this record was taken.
+The pin has since moved; [`gbrain.md`](../gbrain.md) records the one in force now, and [`gbrain-memory-verbs.md`](gbrain-memory-verbs.md) records the upgrade that moved it.
 GBrain's native MiniMax recipe change is commit `fecd331f0247c7ff224a3723268233a62799425b` from 2026-07-23.
 `git tag --contains` identified `v0.42.69.0` as the first release tag containing that change.
 The installed CLI reported `gbrain 0.42.69.0`.

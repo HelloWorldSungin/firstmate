@@ -1,9 +1,10 @@
 # GBrain retrieval through fm-recall.sh
 
-Active empirical evidence for the retrieval guarantees in [`../gbrain-scoping.md`](../gbrain-scoping.md): that a query crosses the GBrain boundary as data rather than as shell input, that hosted synthesis failure is distinguishable from local retrieval failure, and that hosted synthesis cannot reach a read-only shared brain.
+Active empirical evidence for the retrieval guarantees in [`../gbrain-scoping.md`](../gbrain-scoping.md): that a query crosses the GBrain boundary as data rather than as shell input, that hosted synthesis failure is distinguishable from local retrieval failure, and that `fm-recall.sh think` runs only against a home's own brain.
 It also records what a search does to the index it reads, which [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) owns as a backup precondition.
 
-Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, the pin recorded in [`../gbrain.md`](../gbrain.md), except where a section carries its own date.
+Verified 2026-08-04 against GBrain `0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, which was the pin recorded in [`../gbrain.md`](../gbrain.md) at the time, except where a section carries its own date.
+The pin has since moved, and what that later release changed for a read-only caller is recorded in [gbrain-memory-verbs.md](gbrain-memory-verbs.md) and marked in the `think` section below.
 
 ```console
 $ gbrain version
@@ -84,11 +85,14 @@ $ MINIMAX_API_KEY=<key> GBRAIN_HOME=$tmp/runtime OLLAMA_BASE_URL=http://127.0.0.
 }
 ```
 
-## Synthesis cannot reach a read-only shared brain
+## `think` runs only against a home's own brain, by wrapper construction
 
-GBrain classifies `think` as a write-scope operation, so a read-scoped client is refused it at the server.
-That is why `fm-recall.sh think` runs only against a home's own brain, by construction rather than by convention.
-Observed over the real read-only share built by `tests/fm-gbrain-readonly-e2e.test.sh`:
+`fm-recall.sh think` calls `think` against the home's own brain alone and never over the main brain's read-only client, so the guarantee is construction rather than convention.
+That construction is now the whole of it: a server-side scope check used to make the same call impossible, and `v0.42.76.0` retired it by reclassifying `think` as `scope: read`, so a read-scoped client is admitted.
+[gbrain-memory-verbs.md](gbrain-memory-verbs.md) measures what a read-only share can and cannot trigger through it on the current pin, and the hosted-synthesis boundary that scope check used to cover is now an operating rule in [`../gbrain.md`](../gbrain.md).
+
+The transcript below is the retired refusal as it stood on 2026-08-04 under `0.42.69.0`, over the real read-only share built by `tests/fm-gbrain-readonly-e2e.test.sh`.
+It is kept as the record of what changed, not as current behaviour:
 
 ```console
 $ curl -sS -X POST http://127.0.0.1:$PORT/mcp -H "Authorization: Bearer $TOKEN" \
@@ -98,7 +102,7 @@ event: message
 data: {"result":{"content":[{"type":"text","text":"{\"error\":\"insufficient_scope\",\"message\":\"Operation think requires 'write' scope\",\"your_scopes\":[\"read\"]}"}],"isError":true},"jsonrpc":"2.0","id":1}
 ```
 
-A `search` over the same client succeeds, and the response is an SSE stream whose payload carries the operation's JSON as a string:
+A `search` over the same client succeeds on both pins, and the response is an SSE stream whose payload carries the operation's JSON as a string:
 
 ```console
 $ curl ... -d '{...,"params":{"name":"search","arguments":{"query":"canary","limit":1}}}'

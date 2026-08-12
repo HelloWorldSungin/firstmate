@@ -17,7 +17,9 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 
 ## Pinned installation and upgrade
 
-The installed GBrain release is `v0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, which is the first release whose tag contains GBrain's native MiniMax chat-touchpoint change for `MiniMax-M3`.
+The installed GBrain release is `v0.45.0.0` at commit `d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775`.
+The pin moved there from `v0.42.69.0` on 2026-08-12, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records what that upgrade measured, including the capture guarantees it did not change.
+The earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
 The installation uses GBrain's documented `git clone` plus `bun install` fallback because the tested standalone Linux release binaries did not initialize PGLite correctly.
 The supporting Bun runtime is `1.3.14` at `/home/sungin/.local/gbrain/bin/bun`.
 
@@ -27,7 +29,7 @@ For a clean source installation with the pinned Bun binary already present, run:
 ```sh
 mkdir -p /home/sungin/.local/gbrain/{bin,bun-global,cache}
 git clone https://github.com/garrytan/gbrain.git /home/sungin/.local/gbrain/src
-git -C /home/sungin/.local/gbrain/src checkout --detach 3acd511b80bd4d2fe487290a70de75d4cf094730
+git -C /home/sungin/.local/gbrain/src checkout --detach d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775
 cd /home/sungin/.local/gbrain/src
 BUN_INSTALL=/home/sungin/.local/gbrain/bun-global \
   /home/sungin/.local/gbrain/bin/bun install \
@@ -55,6 +57,7 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    Select the new tag explicitly; `latest` is not a pin.
    That recorded string is also the version the dashboard's GBrain panel quotes: [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) reads the first backticked `v`-prefixed release token in this file rather than asking a running executable what it is.
    Keep the pin first among such tokens, so this step is what keeps the panel true as well.
+   The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.
@@ -89,6 +92,27 @@ If an autopilot unit exists before a future upgrade, leave it unchanged unless a
 A matching filename or generic GBrain-generated unit shape is not ownership proof.
 Do not run `gbrain autopilot --uninstall` on this shared user home because its cleanup targets ignore `GBRAIN_HOME` and sweep user-home launchd, systemd, OpenClaw, crontab, and wrapper artifacts.
 Clean up only an exact artifact with separate proof that this deployment created and still owns it.
+
+Since `v0.42.76.0` every command rejects a flag it does not recognize instead of ignoring it, so step 6 must exercise the wrapper scripts rather than the executable alone.
+An invocation that had been passing a stray or misspelled flag was doing nothing with it and now fails outright.
+
+### A home serving a main brain carries no hosted synthesis credentials
+
+A home that serves its brain to another home must not point `models.think` at a hosted provider or hold that provider's credential.
+The rule constrains hosted synthesis alone: local embedding, local reranking, retrieval, and capture are unaffected, and a home that serves no one keeps its hosted synthesis as configured.
+
+The reason is that the boundary is no longer structural.
+`v0.42.76.0` reclassified `think` from a write-scope operation to `scope: read`.
+Before that change the read-only scope check refused the call outright, so no configuration could cross the boundary; now a holder of a read-only share reaches `think` on the serving home, and the synthesis runs on the serving home's configured model under the serving home's credential.
+No serving option avoids it, because `--surface verbs` still exposes the equivalent `synthesize` verb.
+
+The consequence of breaking the rule is that any holder of a read-only share can cause the serving home's own brain content to be sent to that hosted provider, at the holder's choosing and with no further consent gate.
+Storage stays read-only regardless: writes are still refused and a remote caller still cannot persist a synthesis, and [`../tests/fm-gbrain-readonly-e2e.test.sh`](../tests/fm-gbrain-readonly-e2e.test.sh) proves both directly rather than inferring them from the operation being unreachable.
+What that guard can no longer prove is that main-brain content cannot reach a hosted model, which is exactly the gap this rule fills.
+
+The captain accepted the trade on 2026-08-12 while live exposure was zero: this fleet configured no shared main brain, so no home was serving one and the path was latent rather than in use.
+Treat it as accepted-while-latent, and re-examine it before the first main brain is configured rather than assuming it was accepted under live traffic.
+[verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the measurement behind it.
 
 ### Announce a maintenance window
 
@@ -176,6 +200,7 @@ The MiniMax credential is read only at runtime from `/home/sungin/.pi/agent/auth
 The file must remain mode `0600`.
 Do not place that value in GBrain configuration, a repository, a test, a log, or a service unit.
 A home that uses per-home brain scoping may instead keep its own copy in that home's credential plane, `config/gbrain-secrets/<name>` named by `think.secret`, under the same mode `0600` requirement ([gbrain-scoping.md](gbrain-scoping.md)).
+A home that serves its brain to another home is the exception and keeps no hosted synthesis credential anywhere ([A home serving a main brain carries no hosted synthesis credentials](#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials)).
 Either way the key reaches only the synthesizing process: `bin/fm-gbrain.sh` reports such a credential as present, absent, or refused and never prints its bytes.
 A Firstmate worker never runs the raw path below: `bin/fm-recall.sh` is the retrieval surface it uses, and it performs this same one-process injection for `think` ([gbrain-scoping.md](gbrain-scoping.md)).
 For a raw operator run, use an untraced shell to inject the key only into the `think` process:
