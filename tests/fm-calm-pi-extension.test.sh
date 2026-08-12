@@ -17,12 +17,13 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
-# Verified against Pi 0.81.1 and 0.82.0 (docs/calm-mode-feasibility.md). This is
-# known-good evidence, not a support ceiling: the fixtures below run against whatever
-# Pi is actually installed, and record_pi_version_evidence never rejects a newer
-# version. The tracked presentation adapters probe the exact API they patch (see
-# .pi/extensions/fm-calm.ts) instead of relying on version inference, so a version
-# string is evidence for the record, not a gate.
+# docs/calm-mode-feasibility.md owns which Pi versions this suite has been verified
+# against. That list is known-good evidence, not a support ceiling: the fixtures below
+# run against whatever Pi is actually installed - or whichever package FM_PI_PACKAGE_DIR
+# names - and record_pi_version_evidence never rejects a newer version. The tracked
+# presentation adapters probe the exact API they patch (see .pi/extensions/fm-calm.ts)
+# instead of relying on version inference, so a version string is evidence for the
+# record, not a gate.
 record_pi_version_evidence() {
   local version=$1 context=$2
   [ -n "$version" ] || fail "$context could not determine the installed Pi version"

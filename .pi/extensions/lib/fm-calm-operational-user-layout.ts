@@ -9,16 +9,32 @@
 // extensions registered). This adapter forwards that argument through the same host
 // method so the row it substitutes keeps Pi's transformer output; the call is optional so
 // Pi 0.83.0, which has neither the host method nor the constructor argument, still gets
-// its own three-argument behavior. That 0.83.0 guarantee is a run-time one: this file
-// reads UserMessageConstructorArgs[3], which pre-0.84 declarations do not have, so
-// tests/fm-pi-primary-types.test.sh reports it when FM_PI_PACKAGE_DIR names an older
-// package (docs/calm-mode-feasibility.md quotes the exact errors).
+// its own three-argument behavior.
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
 import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.ts";
 
 type UserMessageConstructorArgs = ConstructorParameters<typeof PiUserMessageComponent>;
+// The Markdown-transformer list Pi 0.84 hands its user rows. Pi 0.83 declares neither
+// that constructor argument nor the MarkdownTransformer type it holds, so the list is
+// described locally instead of as UserMessageConstructorArgs[3] - indexing Pi's own tuple
+// is an error against any pre-0.84 declaration. Nothing here inspects or calls a
+// transformer; the value is only carried from the host method to the stock constructor,
+// so an opaque element type is the honest one and keeps a single source typechecking
+// against both releases without sniffing the Pi version.
+type MarkdownTransformerList = readonly unknown[];
+// Pi 0.83's declared constructor stops at outputPad, so the stock class is re-typed once
+// with the 4th argument every release from 0.84 on accepts. Handing it to a 0.83 process
+// is harmless - JS drops the extra argument, which is exactly the three-argument
+// behavior that release had - and handing 0.84 an undefined there selects the same empty
+// default a three-argument call would have received.
+type StockUserMessageConstructor = new (
+  text: UserMessageConstructorArgs[0],
+  markdownTheme: UserMessageConstructorArgs[1],
+  outputPad: number,
+  markdownTransformers: MarkdownTransformerList | undefined,
+) => PiUserMessageComponent;
 type UserMessageLike = {
   role: string;
   content: unknown;
@@ -35,7 +51,7 @@ type InteractiveModePresentation = {
     addToHistory?(text: string): void;
   };
   getMarkdownThemeWithSettings(): UserMessageConstructorArgs[1];
-  getMarkdownTransformers?(): UserMessageConstructorArgs[3];
+  getMarkdownTransformers?(): MarkdownTransformerList;
   getUserMessageText(message: UserMessageLike): string;
   outputPad: number;
 };
@@ -107,14 +123,16 @@ export function installCalmOperationalUserLayout(): void {
   if (typeof UserMessageComponent !== "function") {
     throw new Error("Firstmate Calm requires Pi UserMessageComponent");
   }
-  class CalmOperationalUserMessageComponent extends UserMessageComponent {
+  const StockUserMessageComponent =
+    UserMessageComponent as unknown as StockUserMessageConstructor;
+  class CalmOperationalUserMessageComponent extends StockUserMessageComponent {
     private readonly hasLeadingSpacer: boolean;
 
     constructor(
       text: UserMessageConstructorArgs[0],
       markdownTheme: UserMessageConstructorArgs[1],
       outputPad: number,
-      markdownTransformers: UserMessageConstructorArgs[3],
+      markdownTransformers: MarkdownTransformerList | undefined,
       hasLeadingSpacer: boolean,
     ) {
       super(text, markdownTheme, outputPad, markdownTransformers);

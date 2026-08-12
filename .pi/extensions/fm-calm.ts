@@ -399,7 +399,10 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setHiddenThinkingLabel(calmPresentationIsActive() ? "" : undefined);
     ctx.ui.setStatus("firstmate-calm", undefined);
     removeTerminalInputHandler?.();
-    removeTerminalInputHandler = ctx.ui.onTerminalInput((data) => {
+    // Pi's TerminalInputHandler may return a { consume, data } directive to swallow or
+    // rewrite the keystroke. Calm only observes it, so the return type is declared
+    // undefined: every path here leaves Pi's own input handling untouched.
+    removeTerminalInputHandler = ctx.ui.onTerminalInput((data): undefined => {
       if (!getKeybindings().matches(data, "tui.input.submit")) return;
 
       const input = ctx.ui.getEditorText().trim();
