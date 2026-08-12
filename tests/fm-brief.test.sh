@@ -206,6 +206,8 @@ test_issue_traceability_is_strictly_opt_in() {
     "issue brief did not require the atomic closing keyword"
   assert_grep 'Amend the existing PR body rather than replacing it' "$traced" \
     "issue brief let a worker clobber the pipeline-owned PR body"
+  assert_grep 'Read the body in full' "$traced" \
+    "issue brief did not require amending from a complete read of the PR body"
   pass "fm-brief.sh: issue traceability appears only for an explicitly recorded issue"
 }
 

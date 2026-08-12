@@ -425,6 +425,8 @@ Before reporting the PR ready, comment on GitHub issue #$ISSUE with a substantiv
 A bare "done" comment does not satisfy this contract: someone reading the issue later must be able to understand the outcome without opening the PR.
 Put \`Closes #$ISSUE\` in the PR body so merging the PR closes the issue atomically.
 Amend the existing PR body rather than replacing it: the pipeline that opened the PR owns sections of that body, and a wholesale rewrite drops the signature its required checks look for.
+That amend starts with a complete read: \`gh-axi\` truncates a long body by default, so writing back what an unverified read printed replaces the body with a truncated copy of itself and drops the signature just as a wholesale rewrite would.
+Read the body in full, edit that text, write it back from a file, then re-read the PR and confirm the pipeline's section survived.
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
   ISSUE_SECTION="$ISSUE_SECTION
@@ -474,6 +476,8 @@ This task is linked to the work items below.
 They live in the project's own tracker, which is not necessarily the repository your PR opens against, so use the full URLs rather than a bare number.
 Reference each full URL in the PR body.
 Amend the existing PR body rather than replacing it: the pipeline that opened the PR owns sections of that body, and a wholesale rewrite drops the signature its required checks look for.
+That amend starts with a complete read: \`gh-axi\` truncates a long body by default, so writing back what an unverified read printed replaces the body with a truncated copy of itself and drops the signature just as a wholesale rewrite would.
+Read the body in full, edit that text, write it back from a file, then re-read the PR and confirm the pipeline's section survived.
 ${WORK_ITEM_BLOCK}
 EOF
   ISSUE_SECTION=${ISSUE_SECTION%$'\n'}
