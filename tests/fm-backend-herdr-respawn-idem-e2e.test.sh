@@ -178,6 +178,6 @@ pass "fixed: a genuinely live duplicate (a real registered agent) still refuses 
 fm_backend_herdr_kill "$SESSION:$NEW_CREW_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$NEW_SM_PANE_ID"
 
-cleanup_all
+cleanup_all || fail "cleanup_all failed"
 printf '\nall fm-backend-herdr-respawn-idem-e2e tests passed\n'
 trap - EXIT

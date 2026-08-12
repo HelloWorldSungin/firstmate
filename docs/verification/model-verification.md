@@ -166,8 +166,7 @@ all fm-model-verify tests passed
 ```
 
 Teardown suite, stdout.
-It printed 74 `ok -` lines and, at that commit, no trailing summary line of its own; the ellipses below elide the 66 of them that fall outside this boundary.
-The suite has since gained the sibling `all fm-teardown tests passed` marker, so a rerun today closes with that line.
+It printed 74 `ok -` lines and no trailing summary line of its own; the ellipses below elide the 66 of them that fall outside this boundary.
 
 ```text
 ...
@@ -207,3 +206,5 @@ The allowance fires only for a never-armed record whose work has landed on a spo
 The paired refusals hold the boundary that must not move: a recorded store whose verdict did not pass, a recorded store with a damaged dispatch anchor, and an arming marker with no store all keep refusing on the same landed, spotless fixture.
 
 The contract these rows pin is owned by [`../model-verification.md`](../model-verification.md); this entry records only that these commands produced this output at that commit.
+
+Annotation, 2026-08-12: the section above records the teardown suite as observed before this change. It printed 74 `ok -` lines and had no trailing summary line of its own at that commit. The suite has since gained the sibling `all fm-teardown tests passed` marker, so a rerun today closes with that line after the last `ok -`.

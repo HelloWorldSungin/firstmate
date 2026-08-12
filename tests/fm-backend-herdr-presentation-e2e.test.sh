@@ -1360,6 +1360,6 @@ PATH="$HERDR_ORIGINAL_PATH" \
 LAB_READY=0
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
-cleanup_all
+cleanup_all || fail "cleanup_all failed"
 printf '\nall fm-backend-herdr-presentation-e2e tests passed\n'
 trap - EXIT

@@ -169,6 +169,6 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
-cleanup_all
+cleanup_all || fail "cleanup_all failed"
 printf '\nall fm-backend-tmux-smoke tests passed\n'
 trap - EXIT
