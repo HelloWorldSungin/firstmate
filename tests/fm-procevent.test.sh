@@ -1053,6 +1053,178 @@ printf 'session:\n  file: /a.html\n  status: feedback\nfeedback[1]{text}:\n  ses
   && fail "prompt payload text was read as a session-level terminal marker"
 pass "the adapter owns which Lavish results end a source, and payload text cannot forge one"
 
+# --- a deleted artifact stays retirable through its adapter ----------------
+# The dogfood defect (issue #88): a review surface published from a disposable
+# worktree was deleted when the worktree returned to the pool. Its armed source
+# kept producing ENOENT results - each a check wake - and the adapter's own
+# `retire <path>` refused because it could no longer resolve the path to the
+# canonical source id. The adapter now retires by source id, retires a path
+# whose file is gone by matching its registered id, classifies the ENOENT
+# distinctly, and does NOT auto-retire (a file can reappear mid edit).
+HMISS="$TMP_ROOT/hmiss"; new_home "$HMISS"
+LAVISH_ENOENT_BIN=$(fm_fakebin "$TMP_ROOT/lavish-enoent")
+cat > "$LAVISH_ENOENT_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Stand-in for `lavish-axi poll <file>` when the artifact file is gone: the
+# published command fails opening the file and wraps the OS error.
+printf 'error: "ENOENT: no such file or directory, realpath %s"\ncode: UNKNOWN\n' "$2"
+SH
+chmod +x "$LAVISH_ENOENT_BIN/lavish-axi"
+# Reconcile until the source has captured at least <count> results. Each round
+# either starts a runner or skips because the previous one still holds the
+# claim, so progress is observed rather than timed; the bound turns a source
+# that stopped firing into a failed assertion instead of a hang.
+reconcile_until_results() {  # <home> <source-id> <count> [tries]
+  local home=$1 id=$2 want=$3 tries=${4:-20}
+  for _ in $(seq 1 "$tries"); do
+    [ "$(count_results "$home" "$id")" -ge "$want" ] && return 0
+    PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$home" reconcile >/dev/null
+    sleep 0.1
+  done
+  [ "$(count_results "$home" "$id")" -ge "$want" ]
+}
+ENOENT_RESULT="$TMP_ROOT/enoent-result"
+printf 'error: "ENOENT: no such file or directory, realpath /gone.html"\ncode: UNKNOWN\n' > "$ENOENT_RESULT"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$ENOENT_RESULT")" artifact-missing \
+  "an ENOENT on the artifact classifies as artifact-missing, not unknown"
+"$ROOT/bin/fm-procevent-lavish.sh" terminal "$ENOENT_RESULT" \
+  && fail "an artifact-missing result was reported terminal and would auto-retire"
+# An unrelated lavish-axi internal ENOENT (no realpath of the artifact) must
+# NOT classify as artifact-missing - it stays unknown so the handler is not told
+# to retire a live review whose artifact is fine. This fails if the realpath
+# narrowing is ever undone and the match broadens back to any ENOENT.
+UNRELATED_ENOENT="$TMP_ROOT/unrelated-enoent-result"
+printf 'error: "ENOENT: no such file or directory, open /home/user/.lavish/state.json"\ncode: UNKNOWN\n' > "$UNRELATED_ENOENT"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$UNRELATED_ENOENT")" unknown \
+  "an unrelated ENOENT without realpath classifies as unknown, not artifact-missing"
+"$ROOT/bin/fm-procevent-lavish.sh" terminal "$UNRELATED_ENOENT" \
+  && fail "an unrelated ENOENT was reported terminal"
+pass "a deleted artifact classifies distinctly and stays armed (a file can reappear)"
+
+MISSING_ART="$TMP_ROOT/missing-review/deep/contract-review.html"
+mkdir -p "$(dirname "$MISSING_ART")"
+printf '<h1>gone</h1>\n' > "$MISSING_ART"
+missing_id=$(FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$MISSING_ART")
+PE_TRACKED+=("$HMISS|$missing_id")
+PATH="$LAVISH_ENOENT_BIN:$PATH" FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" arm "$MISSING_ART" >/dev/null
+# A deleted artifact keeps producing wakes; only an explicit retire stops it.
+rm -f "$MISSING_ART"
+# A second result proves the source survived the first one instead of retiring
+# on it. Waiting for the count rather than for a fixed delay keeps this honest
+# on a loaded machine, where a round can be skipped by the previous runner.
+reconcile_until_results "$HMISS" "$missing_id" 2 \
+  || fail "a deleted artifact did not keep producing results"
+assert_present "$HMISS/state/procevent/$missing_id.source" \
+  "a deleted artifact does not retire itself automatically"
+MISSING_CAPTURED=$(first_result "$HMISS" "$missing_id" || true)
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$MISSING_CAPTURED")" artifact-missing \
+  "the recurring result from a deleted artifact classifies as artifact-missing"
+# Retire by source id stops the recurring wakes (the wake text carries the id).
+# Retire returns only after the runner it owns is stopped and its claim
+# released, so the count taken after it is a settled baseline.
+out=$(FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" retire "$missing_id")
+assert_contains "$out" "retired: $missing_id" "the adapter retires by source id"
+assert_absent "$HMISS/state/procevent/$missing_id.source" "retire-by-id removes the registration"
+# The handler is told to retire an artifact-missing source, and a repeat wake
+# for the same still-unhandled result asks it to do so again - by the same gone
+# path it armed. That repeat must not fail once the registration is gone.
+out=$(FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" retire "$MISSING_ART")
+assert_contains "$out" "retired: $missing_id" \
+  "re-retiring by the same gone path after retirement stays idempotent"
+before=$(count_results "$HMISS" "$missing_id")
+for _ in $(seq 1 10); do
+  PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$HMISS" reconcile >/dev/null
+  sleep 0.1
+  [ "$(count_results "$HMISS" "$missing_id")" = "$before" ] \
+    || fail "retire-by-id did not stop the recurring source"
+done
+ack_out=$(pe "$HMISS" handled "$missing_id" 1)
+assert_contains "$ack_out" "handled: $missing_id 1" \
+  "retirement did not implicitly acknowledge the captured result"
+pass "a deleted artifact is retirable by source id, which stops wakes without acknowledging"
+
+# Retire by path also works once the artifact and its directory are gone, the
+# exact shape of a pooled worktree being returned.
+HMISS2="$TMP_ROOT/hmiss2"; new_home "$HMISS2"
+GONE_TREE="$TMP_ROOT/gone-tree-xyz"
+GONE_ART="$GONE_TREE/deep/contract-review.html"
+mkdir -p "$(dirname "$GONE_ART")"
+printf '<h1>gone too</h1>\n' > "$GONE_ART"
+gone_id=$(FM_HOME="$HMISS2" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$GONE_ART")
+PE_TRACKED+=("$HMISS2|$gone_id")
+PATH="$LAVISH_ENOENT_BIN:$PATH" FM_HOME="$HMISS2" "$ROOT/bin/fm-procevent-lavish.sh" arm "$GONE_ART" >/dev/null
+rm -rf "$GONE_TREE"
+[ -e "$GONE_ART" ] && fail "fixture artifact was not removed"
+out=$(FM_HOME="$HMISS2" "$ROOT/bin/fm-procevent-lavish.sh" retire "$GONE_ART")
+assert_contains "$out" "retired: $gone_id" \
+  "the adapter retires a path whose whole tree is gone by matching its registered id"
+assert_absent "$HMISS2/state/procevent/$gone_id.source" "retire-by-gone-path removes the registration"
+pass "a deleted artifact is retirable by path even when its whole tree is gone"
+
+# The deleted tail is resolved lexically, not rejoined verbatim, so a "." or
+# ".." that falls inside the gone portion still derives the id realpath produced
+# while the file existed - the surface that armed the source is the surface that
+# can retire it. This fails if the tail is ever rejoined raw again: the id would
+# hash ".../wt/deep/../review.html" instead of ".../wt/review.html", so source-id
+# would silently return a different id and this retire would refuse with the
+# registration still in place.
+HMISS3="$TMP_ROOT/hmiss3"; new_home "$HMISS3"
+DOTDOT_TREE="$TMP_ROOT/gone-dotdot-tree"
+DOTDOT_ART="$DOTDOT_TREE/wt/review.html"
+DOTDOT_PATH="$DOTDOT_TREE/wt/deep/../review.html"
+mkdir -p "$DOTDOT_TREE/wt/deep"
+printf '<h1>dotdot</h1>\n' > "$DOTDOT_ART"
+dotdot_id=$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_ART")
+[ "$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_PATH")" = "$dotdot_id" ] \
+  || fail "a live path containing .. derived a different id than its realpath"
+PE_TRACKED+=("$HMISS3|$dotdot_id")
+PATH="$LAVISH_ENOENT_BIN:$PATH" FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" arm "$DOTDOT_PATH" >/dev/null
+assert_present "$HMISS3/state/procevent/$dotdot_id.source" \
+  "arming through a path containing .. registers the realpath id"
+rm -rf "$DOTDOT_TREE"
+[ -e "$DOTDOT_ART" ] && fail "dotdot fixture tree was not removed"
+[ "$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$DOTDOT_PATH")" = "$dotdot_id" ] \
+  || fail "a gone path containing .. derived a different id than it did while the file existed"
+out=$(FM_HOME="$HMISS3" "$ROOT/bin/fm-procevent-lavish.sh" retire "$DOTDOT_PATH")
+assert_contains "$out" "retired: $dotdot_id" "a gone path containing .. retires the source it armed"
+assert_absent "$HMISS3/state/procevent/$dotdot_id.source" \
+  "retiring by a gone path containing .. removes the registration"
+pass "a gone path's . and .. normalize to the id realpath produced at arm time"
+
+# A path with no matching registration refuses with guidance instead of a
+# silent no-op, and a bogus lavish-shaped argument is not mistaken for an id.
+unmatched_status=0
+unmatched_out=$(FM_HOME="$HMISS2" "$ROOT/bin/fm-procevent-lavish.sh" retire "$TMP_ROOT/never-armed.html" 2>&1) || unmatched_status=$?
+[ "$unmatched_status" -ne 0 ] || fail "retire accepted a path with no registered source"
+assert_contains "$unmatched_out" "Retire by source id" "an unmatched retire points at retire-by-id"
+bogus_status=0
+bogus_out=$(FM_HOME="$HMISS2" "$ROOT/bin/fm-procevent-lavish.sh" retire "lavish-notreally" 2>&1) || bogus_status=$?
+[ "$bogus_status" -ne 0 ] || fail "retire accepted a malformed lavish-shaped argument as an id"
+assert_contains "$bogus_out" "Retire by source id" "a non-id lavish- prefix falls back to path resolution and refuses"
+pass "an unmatched or malformed retire refuses with guidance rather than a silent no-op"
+
+# A healthy armed source still retires exactly by path, idempotently, the way it
+# always has - including after the source has already retired on its own.
+HHEALTH="$TMP_ROOT/hhealth"; new_home "$HHEALTH"
+HEALTH_ART="$TMP_ROOT/health-review.html"
+printf '<h1>healthy</h1>\n' > "$HEALTH_ART"
+health_id=$(FM_HOME="$HHEALTH" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$HEALTH_ART")
+PE_TRACKED+=("$HHEALTH|$health_id")
+HEALTH_LAVISH_BIN=$(fm_fakebin "$TMP_ROOT/lavish-health")
+cat > "$HEALTH_LAVISH_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Never returns; only present so `arm` can verify the published command exists.
+sleep 30
+SH
+chmod +x "$HEALTH_LAVISH_BIN/lavish-axi"
+PATH="$HEALTH_LAVISH_BIN:$PATH" FM_HOME="$HHEALTH" "$ROOT/bin/fm-procevent-lavish.sh" arm "$HEALTH_ART" >/dev/null
+out=$(FM_HOME="$HHEALTH" "$ROOT/bin/fm-procevent-lavish.sh" retire "$HEALTH_ART")
+assert_contains "$out" "retired: $health_id" "a healthy source retires by path"
+assert_absent "$HHEALTH/state/procevent/$health_id.source" "a healthy retire removes the registration"
+out=$(FM_HOME="$HHEALTH" "$ROOT/bin/fm-procevent-lavish.sh" retire "$HEALTH_ART")
+assert_contains "$out" "retired: $health_id" "retire stays idempotent by path after the source is gone"
+pass "a healthy source retires by path and stays idempotent"
+
 # --- the loss limitation is stated on the public interface ------------------
 # Checked through --help, the operator-facing surface, rather than by reading
 # implementation bytes.
