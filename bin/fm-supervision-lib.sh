@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Shared "supervision missing" predicate.
+# Shared "supervision missing" predicate, plus the watcher-beacon grace window
+# and the tolerated-quiet window its consumers measure against.
 # Usage: . bin/fm-supervision-lib.sh
 #
 # Reports whether a firstmate home needs supervision because it has in-flight
@@ -26,6 +27,24 @@ fm_sup_grace_seconds() {  # [explicit-override]
   local grace=${1:-${FM_GUARD_GRACE:-$FM_SUP_GRACE_DEFAULT}}
   case "$grace" in ''|*[!0-9]*) grace=$FM_SUP_GRACE_DEFAULT ;; esac
   printf '%s' "$grace"
+}
+
+# How long a live worker may stay quiet before that quiet is worth inspecting,
+# in seconds. This is the single owner of the window, and it is a window about
+# ACTIVITY rather than about the beacon above: bin/fm-watch.sh ages a busy
+# pane's latest state/<id>.turn-ended marker against it (busy_turn_over_age),
+# and bin/fm-fleet-snapshot.sh publishes it as
+# supervision.watcher.quiet_allowance_seconds so the dashboard's Task activity
+# signal judges quiet on the window supervision already uses instead of
+# carrying a second number of its own. docs/configuration.md documents the
+# FM_BUSY_TURN_MAX_SECS override; an unparseable override falls back to the
+# default rather than silently disabling the bound.
+FM_SUP_BUSY_TURN_MAX_DEFAULT=3600
+
+fm_sup_busy_turn_max_seconds() {  # [explicit-override]
+  local secs=${1:-${FM_BUSY_TURN_MAX_SECS:-$FM_SUP_BUSY_TURN_MAX_DEFAULT}}
+  case "$secs" in ''|*[!0-9]*) secs=$FM_SUP_BUSY_TURN_MAX_DEFAULT ;; esac
+  printf '%s' "$secs"
 }
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.

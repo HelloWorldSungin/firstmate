@@ -138,6 +138,31 @@ Also per task: `hints.last_event_declared_wait`, a boolean saying whether the ne
 [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns that vocabulary and `status_is_paused_or_captain_held` decides it, the same call the supervision watcher makes, so a renderer never reimplements the token list and the two surfaces cannot disagree about what a declared wait is.
 A consumer that has not adopted the field reads it as absent and keeps its previous behavior, whether that verdict is an elapsed time or an endpoint-presence reading.
 
+Also per task: `paths.turn_ended`, the age of `state/<id>.turn-ended` - the harness-neutral marker a completed turn touches.
+[`bin/fm-watch.sh`](../bin/fm-watch.sh) owns that marker and already ages this exact file to bound how long a busy pane may go with no completed turn, so it stays what that owner says it is: a wake notification and an activity timestamp, never current state.
+It exists here because the status log is a REPORTING cadence rather than an activity one - the crew brief instructs workers to append only on phase changes - so a surface that wants to know when a task last DID anything needs a clock the worker does not choose.
+An absent marker reports `present: false` with a null age, because a harness that has completed no turn yet and one that never touches the marker are both "no turn observed", and neither is evidence of a stall.
+
+Also per task: `spawn_age_seconds`, how long ago the task was DISPATCHED.
+It ages the `spawned_at` epoch [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) stamps into `state/<id>.meta` at dispatch, and it is null when no readable stamp is present.
+It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor completed anything, so such a task still has a bound instead of an exemption without end.
+A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
+
+It is deliberately the recorded VALUE and not the age of the `state/<id>.meta` file, because those two mean different things.
+The file is rewritten after dispatch by firstmate's own routine actions: [`bin/fm-pr-check.sh`](../bin/fm-pr-check.sh) rebuilds it when it records a PR, [`bin/fm-promote.sh`](../bin/fm-promote.sh) rewrites it on a kind flip, and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) appends to it.
+Its mtime therefore means "when anything last touched this record", and using it as an activity clock would let arming a PR check on a hung task silently re-buy that task a full quiet window.
+Every one of those writers preserves the `spawned_at` line, so the stamped epoch stays what it says it is.
+
+[`bin/fm-watch.sh`](../bin/fm-watch.sh)'s `busy_turn_over_age` does age the meta FILE, and that is a different question with a different correct answer.
+It bounds how long a BUSY PANE may go with no completed turn, it owns that choice, and a file an operator action touched is a defensible floor for it.
+It is not wrong and must not be changed to match this field.
+
+Also per task: two further `current_state.source` values the snapshot can produce for itself, beside the existing `timeout`.
+`not-attempted` means no bounded runner could be started, so the current-state read was never made - which is not the same fact as a read that ran past its bound, and only the caller that can tell them apart can report either honestly.
+`row-unavailable` means the task's whole row could not be built; the row is still listed, with every value it would have read filled by that field's explicit unknown.
+A task that was enumerated is never absent from `tasks[]`, because a missing row reads as a fleet that does not contain that task, and an id for which not even the degraded row can be produced fails the whole command by name rather than publishing an incomplete document.
+None of the three is evidence of anything, so no consumer may treat them as a pass.
+
 Per backlog record: `since_age_seconds`, the age of the row's `since` date.
 `tasks-axi` writes `since` when the row is created and does not rewrite it on hold, so this measures how long the item has been raised and never how long a hold has stood; a surface that needs hold duration needs a hold stamp the backlog does not yet record.
 The backlog stores a LOCAL date with no clock time - `tasks-axi` stamps the writer's own calendar day, not a UTC one - so the age runs from that day's local midnight on the observing host and is an upper bound at day granularity.
@@ -148,7 +173,11 @@ The same `since` field is read with two different day-start conventions today, a
 This projection reads it at local midnight, while the manifest's `created` fallback ([Timestamps and their provenance](#timestamps-and-their-provenance)) reads it at UTC midnight, so the two day starts differ by the observing host's UTC offset for that date.
 Reconciling the manifest's timestamp provenance is a behavior change in that write path, tracked separately as `fm-since-day-start-convention-split`.
 
-Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, plus away-mode state and age), and `history`.
+Top level: `card_precedence`, `supervision` (watcher beacon age against the shared grace window from `bin/fm-supervision-lib.sh`, that library's `quiet_allowance_seconds`, plus away-mode state and age), and `history`.
+
+`supervision.watcher.quiet_allowance_seconds` is how long a live worker may stay quiet before the quiet is worth inspecting.
+It is published for the same reason `grace_seconds` is: supervision already decides it, and a renderer that picks its own number ends up disagreeing with supervision about one fleet.
+[`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) owns the window and [`docs/configuration.md`](configuration.md) documents its `FM_BUSY_TURN_MAX_SECS` override.
 
 `history` is schema `fm-outcome-history.v1`, built from every `data/<id>/outcome.json` in the home, newest completion first and bounded by `FM_SNAPSHOT_HISTORY`.
 A manifest that no longer parses, lacks the complete required shape, is not a plain file, or exceeds the read bound is disclosed in `history.malformed` with its reason rather than dropped, so a consumer can distinguish "nothing completed" from "one record is unreadable".

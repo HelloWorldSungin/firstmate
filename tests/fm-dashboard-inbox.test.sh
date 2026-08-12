@@ -285,12 +285,29 @@ function health(snapshot, envelope = { status: { phase: "ready", last_success_ag
   const built = buildHealth(snapshot, envelope);
   return { overall: built.overall, byId: Object.fromEntries(built.signals.map((signal) => [signal.id, signal])) };
 }
+// The tolerated-quiet window a real snapshot carries in
+// supervision.watcher.quiet_allowance_seconds, which bin/fm-supervision-lib.sh
+// owns and bin/fm-watch.sh measures a busy worker's last completed turn
+// against. This module holds no seconds constant of its own, so the fixture
+// has to supply the window the same way the snapshot does.
+const QUIET_ALLOWANCE = 3_600;
+const QUIET_AMBER = QUIET_ALLOWANCE * POLICY.activityAmberFraction;
+
 function fleet(overrides = {}) {
   return {
     tasks: [],
     main_inventory: { valid: true, orphan_in_flight: [] },
     supervision: {
-      watcher: { present: true, age_seconds: 5, grace_seconds: 120, stale: false },
+      watcher: {
+        present: true,
+        age_seconds: 5,
+        grace_seconds: 120,
+        // The window bin/fm-supervision-lib.sh owns and the snapshot publishes.
+        // Task activity judges quiet against this and never a constant of its
+        // own, so the fixture supplies it exactly as a real snapshot does.
+        quiet_allowance_seconds: QUIET_ALLOWANCE,
+        stale: false,
+      },
       afk: { active: false },
     },
     ...overrides,
@@ -329,13 +346,163 @@ equal("a missing inventory check is unknown, not green",
   health(fleet({ main_inventory: undefined })).byId.inventory.tone, "unknown");
 
 equal("a slow fleet is amber",
-  health(fleet({ tasks: [task("slow", { paths: { status_log: { last_event_age_seconds: POLICY.eventAmberSeconds } } })] })).byId.events.tone, "amber");
+  health(fleet({ tasks: [task("slow", { paths: { status_log: { last_event_age_seconds: QUIET_AMBER } } })] })).byId.events.tone, "amber");
 equal("a stopped fleet is red",
-  health(fleet({ tasks: [task("stopped", { paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds } } })] })).byId.events.tone, "red");
+  health(fleet({ tasks: [task("stopped", { paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } } })] })).byId.events.tone, "red");
 equal("an unreadable event age is unknown, not green",
   health(fleet({ tasks: [task("silent", { paths: { status_log: {} } })] })).byId.events.tone, "unknown");
 equal("a completed task no longer counts against activity",
   health(fleet({ tasks: [task("landed", { card: { column: "done" }, paths: { status_log: { last_event_age_seconds: 99_999 } } })] })).byId.events.tone, "green");
+
+// --- quiet the crew brief instructs is not degradation ---------------------
+//
+// This is the defect the signal shipped with. The generated brief tells every
+// worker to append only on phase changes a supervisor would act on, and a
+// single long agent step in this fleet runs tens of minutes, so a healthy
+// worker is INSTRUCTED to say nothing for far longer than the 900s the strip
+// used to alarm at. The two cases below are the two ways a task can be quiet
+// and demonstrably fine, and both must read green at a duration that used to
+// read amber or red.
+//
+// The window itself is not this module's to pick. Both cases would fail if a
+// seconds constant came back here and drifted below the window supervision
+// applies to the same silence.
+
+const INSTRUCTED_QUIET = 2_400; // 40 minutes: past the old 900s amber, inside one long step.
+
+// 1. Caught in the act. The snapshot's reconciled current state came from a
+//    live source - the validation run's own step, or the harness's busy verdict
+//    this refresh - so the task is not quiet, it is working.
+const observedQuiet = health(fleet({ tasks: [task("deep-in-a-step", {
+  current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+  paths: { status_log: { last_event_age_seconds: INSTRUCTED_QUIET } },
+})] }));
+equal("a task observed working is not aged on its reporting silence", observedQuiet.byId.events.tone, "green");
+equal("and the fleet it is the only member of reads healthy", observedQuiet.overall.label, "Healthy");
+check("the card says why it was not aged",
+  observedQuiet.byId.events.detail.includes("live state reading"), observedQuiet.byId.events.detail);
+
+// 2. Between steps. Nothing live could be read, but the runtime completed a
+//    turn recently, which is activity the worker never had to report.
+const turnedRecently = health(fleet({ tasks: [task("between-steps", {
+  current_state: { state: "unknown", source: "run-attribution", detail: "run on another branch" },
+  paths: {
+    status_log: { last_event_age_seconds: INSTRUCTED_QUIET },
+    turn_ended: { present: true, last_turn_age_seconds: 90 },
+  },
+})] }));
+equal("a recent completed turn answers for a quiet status log", turnedRecently.byId.events.tone, "green");
+check("and the age shown is the activity, not the reporting silence",
+  turnedRecently.byId.events.value === `oldest ${formatAge(90)}`, turnedRecently.byId.events.value);
+
+// The exemption is bounded exactly as supervision bounds it: a busy worker is
+// excused until its last completed turn reaches the window, not forever.
+equal("a task observed working with no turn inside the window is amber",
+  health(fleet({ tasks: [task("busy-but-turnless", {
+    current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+    paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
+  })] })).byId.events.tone, "amber");
+
+// The same bound has to hold for a task that has produced NEITHER of those two
+// clocks. A job that hangs inside its very first tool call - waiting on a trust
+// prompt, say - has written no status line and completed no turn, so it had no
+// age at all, was dropped out of the bound, and stayed exempt for as long as it
+// hung. That is the one shape of this signal that could not fail, and it has
+// been seen twice on the real fleet.
+//
+// The strip bounds it on when the task was DISPATCHED, which the snapshot
+// publishes as spawn_age_seconds from the spawned_at stamp bin/fm-spawn.sh
+// records. Deliberately not the age of state/<id>.meta: firstmate rewrites that
+// file when it records a PR or flips a kind, so its mtime would hand a hung
+// task a fresh quiet window - the same hole in a different place.
+//
+// What has to break for this pair to fail: activityAge stops falling back to
+// the dispatch clock, or the snapshot stops publishing it. The companion case
+// below is what stops the pair passing by simply always colouring.
+const hungOnFirstCall = health(fleet({ tasks: [task("hung-on-first-call", {
+  current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+  paths: {},
+  spawn_age_seconds: QUIET_ALLOWANCE + 60,
+})] }));
+equal("a busy task with no report and no completed turn is bounded by its dispatch",
+  hungOnFirstCall.byId.events.tone, "amber");
+equal("and its fleet is not summarized as healthy", hungOnFirstCall.overall.label, "Degraded");
+
+equal("the same task inside the window still reads green",
+  health(fleet({ tasks: [task("just-spawned", {
+    current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+    paths: {},
+    spawn_age_seconds: 120,
+  })] })).byId.events.tone, "green");
+
+// The dispatch clock is the LAST resort, not a third activity clock: a dispatch
+// time is not an activity time, so a task that has a real clock must still be
+// judged on it. This one was spawned long ago and completed a turn a minute
+// ago, and it is fine.
+equal("a real activity clock outranks the dispatch clock",
+  health(fleet({ tasks: [task("long-lived", {
+    current_state: { state: "unknown", source: "run-attribution", detail: "run on another branch" },
+    paths: { turn_ended: { present: true, last_turn_age_seconds: 60 } },
+    spawn_age_seconds: 86_400,
+  })] })).byId.events.tone, "green");
+
+// A live reading says what a task is doing now, never for how long, so it
+// cannot stand in for the clock the bound needs. With no clock at all the
+// reading is unjudgeable, and unjudgeable is unknown rather than a pass.
+equal("a busy task with no readable clock at all is unknown, never green",
+  health(fleet({ tasks: [task("clockless", {
+    current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+    paths: {},
+    spawn_age_seconds: null,
+  })] })).byId.events.tone, "unknown");
+
+// The overdue sentence reports activityAge, which is whichever clock was
+// newest. Naming a turn boundary for a figure that may have come from a status
+// append is the conflation of reporting cadence with activity that this signal
+// was rebuilt to remove, so the copy must not do it either.
+//
+// What has to break for this to fail: the sentence goes back to attributing a
+// number from another clock to a completed turn.
+const overdueCopy = health(fleet({ tasks: [task("appended-but-turnless", {
+  current_state: { state: "working", source: "pane", detail: "harness busy (claude-hook)" },
+  paths: {
+    status_log: { last_event_age_seconds: QUIET_ALLOWANCE + 300 },
+    turn_ended: { present: true, last_turn_age_seconds: 7_200 },
+  },
+})] }));
+equal("an observed task past the window is overdue on the newest clock it has",
+  overdueCopy.byId.events.tone, "amber");
+check("and the overdue sentence names the age it measured, not a turn boundary",
+  overdueCopy.byId.events.detail.includes(`recorded no activity in ${formatAge(QUIET_ALLOWANCE + 300)}`)
+    && !overdueCopy.byId.events.detail.includes("completed no turn"),
+  overdueCopy.byId.events.detail);
+
+// A remembered reading is not a live one. run-step-degraded replays a step the
+// lookup could not re-confirm, so it must not buy the exemption a busy verdict
+// buys - otherwise an unreachable daemon silently excuses the whole fleet.
+equal("a replayed run step does not excuse quiet",
+  health(fleet({ tasks: [task("remembered", {
+    current_state: { state: "working", source: "run-step-degraded", detail: "run lookup unavailable" },
+    paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
+  })] })).byId.events.tone, "red");
+
+// A current-state read this snapshot could not take is the same: it names its
+// own failure rather than reporting a state, and it excuses nothing.
+equal("a timed-out current-state read does not excuse quiet",
+  health(fleet({ tasks: [task("unread", {
+    current_state: { state: "unknown", source: "timeout", detail: "the current-state read did not finish" },
+    paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
+  })] })).byId.events.tone, "red");
+
+// The window is the snapshot's to state. Without it there is no threshold to
+// judge against, and inventing one here is the defect; an unjudgeable reading
+// is unknown, never a pass.
+const noWindow = health(fleet({
+  tasks: [task("quiet", { paths: { status_log: { last_event_age_seconds: 30 } } })],
+  supervision: { watcher: { present: true, age_seconds: 5, grace_seconds: 120, stale: false }, afk: { active: false } },
+}));
+equal("a snapshot with no tolerated-quiet window cannot judge activity", noWindow.byId.events.tone, "unknown");
+equal("and the fleet is not summarized as healthy", noWindow.overall.label, "Partly unknown");
 
 // --- a declared wait is not silence ---------------------------------------
 //
@@ -363,15 +530,15 @@ equal("a home whose only quiet was declared reads healthy", parked.overall.label
 // quiet WITHOUT declaring it still turns the signal.
 const mixed = health(fleet({ tasks: [
   waitingTask("parked", 228_489),
-  task("silent", { paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds } } }),
+  task("silent", { paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } } }),
 ] }));
 equal("an undeclared silence still turns the signal red", mixed.byId.events.tone, "red");
 check("the red verdict comes from the undeclared task alone",
-  mixed.byId.events.value === `oldest ${formatAge(POLICY.eventRedSeconds)}`, mixed.byId.events.value);
+  mixed.byId.events.value === `oldest ${formatAge(QUIET_ALLOWANCE)}`, mixed.byId.events.value);
 check("the declared waits are still accounted for", mixed.byId.events.detail.includes("1 further task"), mixed.byId.events.detail);
 
 equal("an undeclared silence past the amber threshold is amber",
-  health(fleet({ tasks: [waitingTask("parked", 500_000), task("slow", { paths: { status_log: { last_event_age_seconds: POLICY.eventAmberSeconds } } })] })).byId.events.tone, "amber");
+  health(fleet({ tasks: [waitingTask("parked", 500_000), task("slow", { paths: { status_log: { last_event_age_seconds: QUIET_AMBER } } })] })).byId.events.tone, "amber");
 
 // The declaration is a positive claim. Anything short of it - an older snapshot
 // that never carried the field, a null, a string - keeps the strict verdict,
@@ -379,7 +546,7 @@ equal("an undeclared silence past the amber threshold is amber",
 for (const [label, value] of [["absent", undefined], ["null", null], ["a string", "true"], ["false", false]]) {
   const unproven = health(fleet({ tasks: [task("quiet", {
     hints: { open_decisions: [], last_event_declared_wait: value },
-    paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds } },
+    paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
   })] }));
   equal(`an ${label} declaration does not excuse a silent task`, unproven.byId.events.tone, "red");
 }
@@ -490,7 +657,7 @@ const idleMate = health(fleet({ tasks: [task("mate", {
   kind: "secondmate",
   endpoint: { exists: true, status: "alive" },
   card: { column: "secondmate", action: "route_work" },
-  paths: { status_log: { last_event_age_seconds: POLICY.eventRedSeconds * 2 } },
+  paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE * 2 } },
 })] }));
 equal("an idle secondmate never counts as a stalled task", idleMate.byId.events.tone, "green");
 equal("a secondmate answers through its own signal", idleMate.byId.secondmates.tone, "green");

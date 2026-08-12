@@ -1002,7 +1002,10 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find; do
+  # Deliberately without coreutils `timeout`, which is the point of this case.
+  # Everything else the chain genuinely needs belongs here, including the
+  # mktemp/mkdir/rm the fleet snapshot uses for its own private scratch space.
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp mkdir rm uname; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
