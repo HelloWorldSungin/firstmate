@@ -294,10 +294,11 @@ function resolveTrustedProxies() {
 // The installer stamps every generated unit with this server's runtime
 // contract. A service launched by systemd without the stamp is an older unit,
 // not an ordinary command failure: polling it forever only exposes the first
-// denied mktemp while hiding the repair. Stand-alone development servers have
-// no INVOCATION_ID and do not need a systemd scratch grant.
+// denied mktemp while hiding the repair. INVOCATION_ID is inherited by every
+// descendant, so SYSTEMD_EXEC_PID distinguishes the process the manager
+// launched from a stand-alone development server under another service.
 function serviceUnitContractError() {
-  if (!process.env.INVOCATION_ID) return null;
+  if (!process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID !== String(process.pid)) return null;
   const repair = "rerun bin/fm-dashboard-install.sh; it preserves the installed dashboard settings unless an option overrides them";
   if (process.env.FM_DASHBOARD_UNIT_CONTRACT !== SERVICE_UNIT_CONTRACT) {
     return Object.assign(new Error(`the installed firstmate-dashboard.service is out of date and has no current scratch-space contract; ${repair}`), {

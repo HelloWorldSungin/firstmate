@@ -775,14 +775,15 @@ test_timeout_is_single_flight() {
 }
 
 # A stale service unit must be diagnosed before the snapshot command turns its
-# missing scratch grant into an opaque mktemp failure. INVOCATION_ID is the
-# systemd boundary; stand-alone development servers intentionally skip it.
+# missing scratch grant into an opaque mktemp failure. INVOCATION_ID plus a
+# matching SYSTEMD_EXEC_PID is the systemd boundary; both values are inherited,
+# so stand-alone descendants of another unit intentionally skip the diagnosis.
 test_stale_service_unit_is_actionable() {
   local case_root
-  case_root=$(make_runtime stale-unit)
+  case_root=$(make_runtime inherited-systemd-context)
   TEST_PORT=$(free_port)
-  INVOCATION_ID=fixture-invocation \
-    FM_DASHBOARD_UNIT_CONTRACT='' \
+  INVOCATION_ID=fixture-parent-invocation \
+    SYSTEMD_EXEC_PID=1 \
     FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS=1 \
@@ -791,10 +792,25 @@ test_stale_service_unit_is_actionable() {
     node "$case_root/runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   wait_for_http "$case_root"
+  wait_for_expression "$case_root" '.status.phase == "ready"'
+  stop_server
+
+  case_root=$(make_runtime stale-unit)
+  TEST_PORT=$(free_port)
+  INVOCATION_ID=fixture-invocation \
+    FM_HOME="$case_root/home" \
+    FM_DASHBOARD_PORT="$TEST_PORT" \
+    FM_DASHBOARD_TIMEOUT_SECONDS=1 \
+    FM_DASHBOARD_POLL_SECONDS=1 \
+    DASH_TEST_CONTROL="$case_root/control" \
+    sh -c 'SYSTEMD_EXEC_PID=$$; export SYSTEMD_EXEC_PID; exec node "$1"' sh \
+      "$case_root/runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "service_unit_outdated" and (.status.error.message | contains("rerun bin/fm-dashboard-install.sh"))'
   [ ! -e "$case_root/control/executions" ] || fail "the stale unit still launched a snapshot instead of reporting its repair"
   stop_server
-  pass "a stale installed unit reports the preserving repair before polling"
+  pass "a stale installed unit reports the preserving repair without misclassifying inherited systemd context"
 }
 
 test_first_run_failures_are_explicit() {
