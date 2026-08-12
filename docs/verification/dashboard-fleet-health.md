@@ -173,10 +173,13 @@ The 12-record case stays exactly what it was, the concurrency test.
 `the spawn clock comes from the recorded stamp, not the meta file's mtime` fails if the clock the activity signal falls back to stops being published, or if it goes back to ageing `state/<id>.meta` - which it asserts by touching that file and requiring the published age not to move.
 Its dashboard half is the pair asserting that a busy task with no status line and no completed turn colours the strip once its dispatch passes the window and stays green inside it.
 
+
 ## Updated reproduction, 2026-08-12
 
-On 2026-08-12 a trailing completion marker was added to these suites by this change, so the positional `tail` commands recorded above no longer select the same lines.
-The cases below are selected by name from a current rerun.
+The commands recorded above use positional `tail`, which no longer selects the same lines today for two different reasons:
+
+- `tests/fm-fleet-snapshot-view.test.sh`: the transcript was already stale at base commit `b5cf66e` because the suite's final cases had changed, and this change adds a trailing completion marker which shifts the tail again. The two cases below are selected by name from a current rerun.
+- `tests/fm-dashboard-inbox.test.sh`: the transcript was accurate at base; the sole change is the added trailing completion marker, so `tail -1` now returns the marker instead of the last `ok -` line. The case below is selected by name from a current rerun.
 
 ```console
 $ bash tests/fm-fleet-snapshot-view.test.sh | grep -E '^ok - (per-task reads run concurrently|one unreadable task reports unknown)'
