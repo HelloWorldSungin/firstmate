@@ -242,13 +242,24 @@ EOF
   start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":12,"pending":0,"failed":0,"unreadable":0},"documents":[{"status":"captured","captured_at":"2026-08-05T21:07:59Z"}]}'
   local out
   out=$(settled_health) || fail "configured-home health never settled: $out"
-  printf '%s' "$out" | jq -e '
+  # The panel must carry the pin this repo actually records. Deriving it keeps
+  # the assertion true across pin moves instead of rotting into the previous
+  # release's literal, and the shape check below stops an unreadable pin from
+  # satisfying the comparison vacuously with an empty string.
+  local pin
+  # shellcheck disable=SC2016 # Single quotes are required: the pattern's backticks are literal, not substitution.
+  pin=$(grep -oE '`v[0-9][^`]*`' "$ROOT/docs/gbrain.md" | head -1 | tr -d '`')
+  case "$pin" in
+    v[0-9]*) : ;;
+    *) fail "could not read the GBrain pin from docs/gbrain.md (got '$pin')" ;;
+  esac
+  printf '%s' "$out" | jq -e --arg pin "$pin" '
     .schema == "fm-gbrain-health.v1"
       and .status.phase == "ready"
       and .config.query_max_bytes == 1024
       and .config.result_limit_max == 16
       and .health.configured == true
-      and .health.version == "v0.42.69.0"
+      and .health.version == $pin
       and .health.index.state == "ok"
       and .health.retrieval.state == "ok"
       and .health.synthesis.state == "ok"

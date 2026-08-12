@@ -17,7 +17,9 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 
 ## Pinned installation and upgrade
 
-The installed GBrain release is `v0.42.69.0` at commit `3acd511b80bd4d2fe487290a70de75d4cf094730`, which is the first release whose tag contains GBrain's native MiniMax chat-touchpoint change for `MiniMax-M3`.
+The installed GBrain release is `v0.45.0.0` at commit `d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775`.
+The pin moved there from `v0.42.69.0` on 2026-08-12, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records what that upgrade measured, including the capture guarantees it did not change.
+The earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
 The installation uses GBrain's documented `git clone` plus `bun install` fallback because the tested standalone Linux release binaries did not initialize PGLite correctly.
 The supporting Bun runtime is `1.3.14` at `/home/sungin/.local/gbrain/bin/bun`.
 
@@ -89,6 +91,27 @@ If an autopilot unit exists before a future upgrade, leave it unchanged unless a
 A matching filename or generic GBrain-generated unit shape is not ownership proof.
 Do not run `gbrain autopilot --uninstall` on this shared user home because its cleanup targets ignore `GBRAIN_HOME` and sweep user-home launchd, systemd, OpenClaw, crontab, and wrapper artifacts.
 Clean up only an exact artifact with separate proof that this deployment created and still owns it.
+
+Since `v0.42.76.0` every command rejects a flag it does not recognize instead of ignoring it, so step 6 must exercise the wrapper scripts rather than the executable alone.
+An invocation that had been passing a stray or misspelled flag was doing nothing with it and now fails outright.
+
+### A home serving a main brain carries no hosted synthesis credentials
+
+A home that serves its brain to another home must not point `models.think` at a hosted provider or hold that provider's credential.
+The rule constrains hosted synthesis alone: local embedding, local reranking, retrieval, and capture are unaffected, and a home that serves no one keeps its hosted synthesis as configured.
+
+The reason is that the boundary is no longer structural.
+`v0.42.76.0` reclassified `think` from a write-scope operation to `scope: read`.
+Before that change the read-only scope check refused the call outright, so no configuration could cross the boundary; now a holder of a read-only share reaches `think` on the serving home, and the synthesis runs on the serving home's configured model under the serving home's credential.
+No serving option avoids it, because `--surface verbs` still exposes the equivalent `synthesize` verb.
+
+The consequence of breaking the rule is that any holder of a read-only share can cause the serving home's own brain content to be sent to that hosted provider, at the holder's choosing and with no further consent gate.
+Storage stays read-only regardless: writes are still refused and a remote caller still cannot persist a synthesis, and [`../tests/fm-gbrain-readonly-e2e.test.sh`](../tests/fm-gbrain-readonly-e2e.test.sh) proves both directly rather than inferring them from the operation being unreachable.
+What that guard can no longer prove is that main-brain content cannot reach a hosted model, which is exactly the gap this rule fills.
+
+The captain accepted the trade on 2026-08-12 while live exposure was zero: this fleet configured no shared main brain, so no home was serving one and the path was latent rather than in use.
+Treat it as accepted-while-latent, and re-examine it before the first main brain is configured rather than assuming it was accepted under live traffic.
+[verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the measurement behind it.
 
 ### Announce a maintenance window
 

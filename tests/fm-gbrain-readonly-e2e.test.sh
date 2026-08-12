@@ -169,6 +169,24 @@ mcp_call() {  # <tool> <arguments-json> -> response body
       '{jsonrpc: "2.0", method: "tools/call", params: {name: $n, arguments: $a}, id: 1}')"
 }
 
+# The endpoint answers either a bare JSON-RPC body or an SSE frame depending on
+# content negotiation, and the tool result is itself JSON encoded inside a
+# string. Normalize both layers here so assertions can read parsed values
+# instead of pattern-matching escaped JSON through the transport envelope.
+mcp_result() {  # <response-body> -> tool result JSON, empty when unparseable
+  local body="$1" sse
+  sse=$(printf '%s\n' "$body" | sed -n 's/^data: //p' | tail -1)
+  if [ -n "$sse" ]; then body="$sse"; fi
+  printf '%s' "$body" | jq -r '.result.content[0].text // empty' 2>/dev/null
+}
+
+# The sorted slug set of a list_pages response, for proving a call left the
+# page set alone. Shape-tolerant on purpose: it harvests every slug in the
+# payload rather than binding to one envelope key that a release could rename.
+mcp_result_slugs() {  # stdin: response body -> one sorted slug per line
+  mcp_result "$(cat)" | jq -r '[.. | objects | .slug? // empty] | sort | .[]' 2>/dev/null
+}
+
 read_out=$(mcp_call get_page '{"slug":"main-canary"}')
 assert_contains "$read_out" "$CANARY" "the secondmate must be able to read the main brain's content"
 list_out=$(mcp_call list_pages '{}')
@@ -218,13 +236,38 @@ assert_contains "$recall_out" '"citation": "local:sm-canary"' \
   "a local result must arrive citable as local:<slug>"
 pass "the retrieval wrapper reads this home's own corpus and the mounted main corpus, each labelled"
 
-# The wrapper must never be able to widen the share: think is a write-scope
-# operation in GBrain, so it is refused over the read-only client. Proving the
-# refusal at the transport is what keeps "read-only" true for retrieval too.
-think_out=$(mcp_call think '{"question":"what is the canary?"}')
-assert_contains "$think_out" "insufficient_scope" \
-  "hosted synthesis against the mounted main brain must be refused for lack of scope"
-pass "synthesis against the mounted main brain is refused, so the wrapper's think stays local by construction"
+# What a read-only share can and cannot trigger through `think`.
+#
+# GBrain v0.42.76.0 reclassified `think` from a write-scope operation to
+# scope:read, so the transport admits it and this guard can NO LONGER prove
+# that main-brain content cannot reach a hosted model. That boundary is now
+# operational rather than structural: docs/gbrain.md requires a home serving a
+# main brain to carry no hosted synthesis credentials, and nothing here can
+# enforce that for it.
+#
+# What IS still guaranteed is asserted directly rather than inferred from the
+# op being unreachable, because "think returned something" alone would also
+# pass on a genuinely broken read-only share. So the call is made in its most
+# dangerous form - explicitly asking to persist - and the fence is proven from
+# the parsed result AND from the main brain's page set being unchanged.
+pages_before=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
+assert_contains "$pages_before" "main-canary" \
+  "the page-set snapshot must really list pages, or the unchanged-set assertion below is vacuous"
+
+think_out=$(mcp_call think '{"question":"what is the canary?","save":true}')
+assert_not_contains "$think_out" "insufficient_scope" \
+  "think is scope:read since v0.42.76.0, so the transport must admit it rather than refuse it"
+think_json=$(mcp_result "$think_out")
+[ -n "$think_json" ] || fail "the think response could not be parsed: $think_out"
+[ "$(printf '%s' "$think_json" | jq -r '.remote_persisted_blocked')" = true ] \
+  || fail "a remote think that asked to persist must report the persistence blocked: $think_json"
+[ "$(printf '%s' "$think_json" | jq -r '.saved_slug')" = null ] \
+  || fail "a remote think must never report a persisted synthesis page: $think_json"
+
+pages_after=$(mcp_call list_pages '{"limit":500}' | mcp_result_slugs)
+[ "$pages_before" = "$pages_after" ] \
+  || fail "think over a read-only share changed the main brain's page set"$'\n'"before: $pages_before"$'\n'"after:  $pages_after"
+pass "a read-only share admits think but cannot persist through it, and the main brain is unchanged by the call"
 
 # --- the secondmate writes only its OWN brain -------------------------------
 

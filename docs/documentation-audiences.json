@@ -340,6 +340,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/gbrain-memory-verbs.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/gbrain-capture.md",
       "audience": "maintainer-verification"
     },
