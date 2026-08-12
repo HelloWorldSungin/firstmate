@@ -141,7 +141,7 @@ $ bash tests/fm-dashboard-inbox.test.sh | grep -E '^ok - health signals produce'
 ok - health signals produce the documented states and never summarize uncertainty as healthy
 ```
 
-The two cases are selected by name rather than by position: both suites end with a `all <subject> tests passed` marker, and the snapshot suite carries six further cases after the pair quoted here, so a positional `tail` reproduces neither.
+The two cases are selected by name rather than by position: both suites end with a `all <subject> tests passed` marker, and the snapshot suite carries five further cases after the pair quoted here, so a positional `tail` reproduces neither.
 
 The concurrency case asserts against half of the dashboard's 15 s deadline rather than all of it, so the test fails while there is still headroom instead of at the moment the view already breaks.
 It drives 12 task records through a stand-in current-state reader that costs a known second each: 12 s serially against a 7 s ceiling, about 2 s concurrently.
