@@ -116,6 +116,9 @@ init_changed_fixture_repo() {
     chmod +x "$repo/tests/$script"
   done
   : >"$repo/tests/lib.sh"
+  mkdir -p "$repo/tests/fixtures"
+  : >"$repo/tests/fixtures/fm-brief.sha256"
+  printf '# tests/fixtures/fm-brief.sha256\n' >>"$repo/tests/fm-brief.test.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
@@ -153,6 +156,13 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-backend.test.sh" "eventwait test selects backend coverage"
   git -C "$repo" add tests/fm-backend-herdr-eventwait.test.py
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm eventwait-change
+
+  printf '\n' >>"$repo/tests/fixtures/fm-brief.sha256"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-brief.test.sh" \
+    "root-level fixture did not select the family containing its consuming suite"
+  git -C "$repo" add tests/fixtures/fm-brief.sha256
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm root-fixture-change
 
   printf '\n' >>"$repo/bin/fm-supervisor-target-lib.sh"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)

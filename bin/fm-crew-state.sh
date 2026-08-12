@@ -16,10 +16,19 @@
 # and no LLM. Output is one stable, parseable, token-tight line firstmate can read
 # every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|run-step-degraded|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|run-step-degraded|run-attribution|pane|status-log|none> · <detail>
 #
 # Logic, in order:
-#   1. Resolve worktree + backend target + kind from state/<id>.meta.
+#   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship,
+#      branch= in that task record is the authoritative task branch: fm-spawn
+#      copies it from fm-brief's exact firstmate-task-branch marker, while
+#      fm-promote writes it alongside the promotion's exact branch instruction.
+#      The worktree's ambient branch is only observed evidence, never task
+#      identity. A named ambient branch that differs from the recorded branch is
+#      an attribution fault, not permission to inspect that branch's run or fall
+#      back to the status log. Legacy task records have no reliable task branch;
+#      if a run is found through their ambient branch, that run is likewise
+#      surfaced as unattributable rather than guessed from the task id.
 #   2. Matching no-mistakes run for this crew's branch AND attributable code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
@@ -134,6 +143,7 @@ meta_value() {  # <key>
 }
 
 WT=$(meta_value worktree)
+TASK_BRANCH=$(meta_value branch)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 [ -n "$KIND" ] || KIND=ship
@@ -495,9 +505,23 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
   return 0
 }
 
-# CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
-# scratch worktree); with no branch there is no run to attribute to this crew.
-CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+# A detached worktree is normal before a just-spawned ship creates its recorded
+# branch and throughout a scout's scratch phase. A named worktree branch is only
+# observed placement. The task record's branch= is the ship identity used for
+# every run lookup and must agree before the worktree can supply run evidence.
+WORKTREE_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+if [ "$KIND" = ship ] && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \
+   && [ "$WORKTREE_BRANCH" != "$TASK_BRANCH" ]; then
+  runstep_record_clear
+  emit unknown run-attribution "task branch mismatch: recorded $TASK_BRANCH, worktree has $WORKTREE_BRANCH"
+fi
+
+# Legacy metadata did not record branch=. Its ambient branch may be used only to
+# discover whether a run exists that must be surfaced as unattributable. It never
+# becomes task identity, and a completed lookup with no run retains the historical
+# pane/status-log behavior.
+LOOKUP_BRANCH=$TASK_BRANCH
+[ -n "$LOOKUP_BRANCH" ] || LOOKUP_BRANCH=$WORKTREE_BRANCH
 
 # How a run's recorded head <sha> relates to this worktree's HEAD. The shared
 # implementation in bin/fm-nm-run-lib.sh is the one owner of this relationship
@@ -610,9 +634,10 @@ COARSE_STATUS=""
 # genuine absence still falls through to the pane and status-log sources.
 LOOKUP_FAILED=0
 LOOKUP_COMPLETED=0
+RUN_ATTRIBUTION_FAULT=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
-if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
+if [ "$KIND" = ship ] && [ -n "$LOOKUP_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   nm_rc=$?
   # Empty stdout is a failure, not an absence: `axi status` answers a branch with
@@ -624,15 +649,19 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     LOOKUP_FAILED=1
   else
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ]; then
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$LOOKUP_BRANCH" ]; then
       if nm_run_head_matches_worktree; then
-        HAVE_RUN=1
         LOOKUP_COMPLETED=1
+        if [ -n "$TASK_BRANCH" ]; then
+          HAVE_RUN=1
+        else
+          RUN_ATTRIBUTION_FAULT="run on $run_branch is unattributable: task branch not recorded"
+        fi
       elif nm_run_invalidates_record; then
         runstep_record_clear
       fi
     fi
-    if [ "$HAVE_RUN" = 0 ]; then
+    if [ "$HAVE_RUN" = 0 ] && [ -z "$RUN_ATTRIBUTION_FAULT" ]; then
       # The active-or-most-recent run is for another branch, or same branch with
       # a rewritten/diverged head (the CLI is alive and answered; only the
       # attribution missed) - try the coarse fallback.
@@ -646,14 +675,23 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
         LOOKUP_FAILED=1
       else
         LOOKUP_COMPLETED=1
-        COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH" "$runs_out")
+        COARSE_STATUS=$(nm_runs_status_for_branch "$LOOKUP_BRANCH" "$runs_out")
         if [ -n "$COARSE_STATUS" ]; then
-          HAVE_RUN=1
-          RUN_SOURCE=coarse
+          if [ -n "$TASK_BRANCH" ]; then
+            HAVE_RUN=1
+            RUN_SOURCE=coarse
+          else
+            RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
+          fi
         fi
       fi
     fi
   fi
+fi
+
+if [ -n "$RUN_ATTRIBUTION_FAULT" ]; then
+  runstep_record_clear
+  emit unknown run-attribution "$RUN_ATTRIBUTION_FAULT"
 fi
 
 if [ "$LOOKUP_COMPLETED" = 1 ] && [ "$HAVE_RUN" = 0 ]; then
