@@ -3262,7 +3262,7 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 2 ] || fail "preexisting-working swallowed Enter should retry Enter up to the configured count, sent $enter_count Enter(s)"
   read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 2 ] || fail "preexisting-working confirmation should fall back to composer reads, made $read_count read(s)"
+  [ "$read_count" -eq 3 ] || fail "preexisting-working confirmation should fall back to composer reads, made $read_count read(s)"
   pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
 }
 
@@ -4099,7 +4099,20 @@ test_wait_for_working_returns_idle_when_never_busy_but_readable
 test_wait_for_working_returns_unknown_when_never_readable
 test_wait_for_working_treats_blocked_as_submit_active
 test_send_text_submit_detects_landed_send
-test_send_text_submit_detects_swallowed_enter
+test_send_text_submit_busy_queue_is_confirmed_by_structural_composer_and_native_busy() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-busy-queue"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
+  printf '  │ > queued instruction │\n' > "$resp/8.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  out=$( bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_literal(){ :; }; fm_backend_herdr_parse_target(){ FM_BACKEND_HERDR_SESSION=default; FM_BACKEND_HERDR_PANE=w1:p2; }; fm_backend_herdr_send_key(){ :; }; fm_backend_herdr_agent_status_raw(){ printf idle; }; fm_backend_herdr_composer_state(){ printf pending; }; fm_backend_herdr_busy_state(){ printf busy; }; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
+  pass "fm_backend_herdr_send_text_submit: busy target with retained composer text reports queued delivery as empty"
+}
+
+test_send_text_submit_busy_queue_is_confirmed_by_structural_composer_and_native_busy
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
 test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter

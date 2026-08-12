@@ -2739,8 +2739,21 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       unknown) printf 'unknown'; return 0 ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    [ "$i" -lt "$retries" ] || break
   done
+  if [ "$verdict" != unknown ]; then
+    # An active Herdr target can accept Enter for delivery after its current
+    # turn, while retaining the typed text in its composer. Confirm that shape
+    # with the adapter's structural composer read before consulting native busy
+    # state, so an idle pane with genuinely unsubmitted text stays pending.
+    local composer_state busy_state
+    composer_state=$(fm_backend_herdr_composer_state "$target")
+    if [ "$composer_state" = pending ]; then
+      busy_state=$(fm_backend_herdr_busy_state "$target")
+      [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
+    fi
+  fi
+  printf 'pending'; return 0
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
