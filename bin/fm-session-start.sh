@@ -18,7 +18,7 @@
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
-# bootstrap running its detect-only diagnostics without its six mutating
+# bootstrap running its detect-only diagnostics without its nine mutating
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
@@ -29,12 +29,13 @@
 #                       mutating step runs.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
-#                       diagnostics always run. Bootstrap's eight MUTATING
+#                       diagnostics always run. Bootstrap's nine MUTATING
 #                       sweeps (legacy PR-check migration, legacy
-#                       endpoint-binding migration, secondmate convergence,
-#                       secondmate liveness, pending remote handoff retry,
-#                       X-mode artifact writes, fleet sync, token-usage store
-#                       refresh) also run only when locked.
+#                       endpoint-binding migration, proven run-attribution
+#                       transition, secondmate convergence, secondmate
+#                       liveness, pending remote handoff retry, X-mode artifact
+#                       writes, fleet sync, token-usage store refresh) also run
+#                       only when locked.
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
 #                       when locked.
 #   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
@@ -64,11 +65,11 @@
 # The tradeoff this ordering accepts: a refused (read-only) session must not
 # go dark. So on refusal, bootstrap still runs (in FM_BOOTSTRAP_DETECT_ONLY=1
 # mode) for its read-only detect lines - missing tools, gh auth, the
-# worktree-tangle check, the harness override, crew-dispatch validation,
-# tasks-axi and quota-axi tool checks, and tasks-axi availability - none of
-# which mutate shared state and all of which are safe to compute without
-# verified lock ownership.
-# Only projection cleanup, the five bootstrap mutating sweeps, and the
+# worktree-tangle check, legacy run-attribution blindness, the harness
+# override, crew-dispatch validation, tasks-axi and quota-axi tool checks, and
+# tasks-axi availability - none of which mutate shared state and all of which
+# are safe to compute without verified lock ownership.
+# Only projection cleanup, the nine bootstrap mutating sweeps, and the
 # wake-queue drain are skipped.
 # The context and fleet-state digests
 # below are always read-only, so they run unconditionally in both modes.

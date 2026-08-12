@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -58,6 +58,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
   A `gone` reason means the endpoint no longer exists, and a label or identity mismatch means the recorded task identity failed verification.
   No work is at risk and supervision, peeking, and steering are unaffected; the task simply cannot be cleaned up.
   When the recorded endpoint is live again with the expected task identity, the sweep converges it on the next locked session start with no action; otherwise treat retiring the record as a captain decision.
+- `RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup` - the named in-flight task predates durable branch identity and the safe PR-head migration could not prove its branch, so `bin/fm-crew-state.sh` cannot answer whether that task's validation run owns the branch.
+  Treat the task's run state as unreadable rather than absent, and reconstruct any urgent supervision decision from the recorded worktree's git state plus `no-mistakes axi status` before allowing branch edits or commits.
+  Never hand-write `branch=` from the checked-out branch, an `fm/<task-id>` naming match, a run listing, or a work item; those are the same unproven inferences the attribution guard refuses.
+  A future locked startup may converge a GitHub task only when its recorded PR URL and recorded PR-head SHA still match the forge's current PR head, while every other task remains diagnosed until cleanup.
 - `SECONDMATE_SYNC: secondmate <id>: skipped: <reason>` - secondmate convergence left a live home on its existing checkout because the home was dirty, diverged, unsafe, on the wrong branch, missing its placement-specific target commit, unreachable, or otherwise not fast-forwardable, or because inherited local-material propagation failed; bootstrap continued, but inspect the reason because the secondmate's tracked instructions, inherited settings, or shared captain preferences may be stale after a primary update.
 - `SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>` - the session-start liveness sweep could not guarantee that the registered secondmate is running a real agent process.
   Investigate the reason because that secondmate is not guaranteed live.

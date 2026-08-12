@@ -14,6 +14,7 @@
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>",
+#                 "RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup",
 #                 "TANGLE: <remediation>",
 #                 "VAULT_DRIFT: <project>: <vault problem and remedy>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
@@ -91,6 +92,11 @@
 #          that lacks `endpoint_task_id=` and whose recorded endpoint could not
 #          be verified to belong to that task, so cleanup still refuses it;
 #          bin/fm-endpoint-binding-migrate.sh owns that contract.
+#          A RUN_ATTRIBUTION line names one live legacy no-mistakes task whose
+#          run remains unreadable because its metadata has no proven branch.
+#          bin/fm-run-attribution-legacy-transition.sh owns the one safe PR-head
+#          migration proof, the refusal of every inferential source, and the
+#          detect-only diagnostic.
 #          The usage refresh runs a best-effort bin/fm-usage.mjs ingest only
 #          when data/usage.db already exists, matching teardown's opt-in
 #          contract in docs/usage-accounting.md; it is bounded by
@@ -99,10 +105,11 @@
 #          one that timed out, could not be bounded on this host, or ran and
 #          exited non-zero reports itself on a single USAGE_STORE line rather
 #          than degrading silently.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eight MUTATING sweeps
-#          (PR-check migration, endpoint-binding migration, secondmate_sync,
-#          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
-#          fleet_sync, usage_store_refresh)
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the nine MUTATING sweeps
+#          (PR-check migration, endpoint-binding migration, run-attribution
+#          transition, secondmate_sync, secondmate_liveness_sweep,
+#          secondmate_handoff_resume, x_mode_setup, fleet_sync,
+#          usage_store_refresh)
 #          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
@@ -1129,7 +1136,10 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   # binding it verified live, so it is safe to re-run every locked session and
   # is silent once no record needs one.
   "$SCRIPT_DIR/fm-endpoint-binding-migrate.sh" || true
+  "$SCRIPT_DIR/fm-run-attribution-legacy-transition.sh" || true
   startup_memory_budget_setup
+else
+  "$SCRIPT_DIR/fm-run-attribution-legacy-transition.sh" --detect-only || true
 fi
 
 if [ "$BACKEND_VALID" -eq 0 ]; then
