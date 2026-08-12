@@ -2354,6 +2354,46 @@ test_busy_pane_with_unreadable_agent_is_unknown() {
   pass "a busy pane with an unreadable agent read reports unknown"
 }
 
+# Breaks if a liveness token outside the classifier's vocabulary escapes the
+# busy-pane cross-check, which drops the busy verdict and lets the stale status
+# log answer `working` - the exact false reassurance this check exists to stop.
+test_busy_pane_with_unknown_liveness_token_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case busy-bogus-agent)
+  make_repo_on_branch "$d/wt" fm/feat-busy-bogus
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/busy-bogus.meta" "window=fm:fm-busy-bogus" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/busy-bogus.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  FM_FAKE_AGENT_STATE=not-a-liveness-token
+  arm_busy_record "$d/state" busy-bogus
+  out=$(run_crew_state "$d" busy-bogus)
+  assert_contains "$out" "state: unknown" "an unrecognized liveness token does not claim working"
+  assert_contains "$out" "source: pane" "the busy verdict is answered on the pane path, not discarded"
+  assert_contains "$out" "agent liveness unreadable" "an unrecognized token degrades to unreadable"
+  assert_not_contains "$out" "source: status-log" "the stale status log must not answer for a dropped busy verdict"
+  pass "an unrecognized liveness token over a busy pane reports unknown"
+}
+
+# Breaks if an unrecognized liveness token is trusted on the run-step path, where
+# it would leave the plain working verdict the cross-check is meant to question.
+test_working_run_step_with_unknown_liveness_token_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case runstep-bogus-agent)
+  make_repo_on_branch "$d/wt" fm/feat-runstep-bogus
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/runstep-bogus.meta" "window=fm:fm-runstep-bogus" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-runstep-bogus)"
+  FM_FAKE_AGENT_STATE=not-a-liveness-token
+  out=$(run_crew_state "$d" runstep-bogus)
+  assert_contains "$out" "state: unknown" "an unrecognized liveness token does not confirm a working run"
+  assert_contains "$out" "agent liveness unreadable" "an unrecognized token degrades to unreadable"
+  assert_not_contains "$out" "state: abandoned" "an unrecognized token is not a confident death"
+  pass "an unrecognized liveness token over a live run reports unknown"
+}
+
 # Breaks if the worker cross-check is applied to a secondmate, which reads its
 # state from the status log and would then be wrongly downgraded by agent state.
 test_secondmate_not_downgraded_by_worker_state() {
@@ -2416,6 +2456,8 @@ test_abandoned_is_recorded_for_later_degrade
 test_abandoned_degrades_after_later_lookup_failure
 test_busy_pane_with_dead_agent_is_abandoned
 test_busy_pane_with_unreadable_agent_is_unknown
+test_busy_pane_with_unknown_liveness_token_is_unknown
+test_working_run_step_with_unknown_liveness_token_is_unknown
 test_secondmate_not_downgraded_by_worker_state
 test_working_run_step_with_dead_agent_not_absorbed
 test_working_run_step_with_unreadable_agent_not_absorbed

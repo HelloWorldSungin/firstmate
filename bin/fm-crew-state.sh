@@ -256,18 +256,26 @@ crew_busy_verdict() {  # <target>
 # surface is pinned in tests/fm-tmux-agent-liveness.test.sh). Default in tests
 # is `alive` so the existing `working` semantics stay unchanged.
 worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverified
+  local state
   if [ -n "${FM_FAKE_AGENT_STATE:-}" ]; then
-    printf '%s' "$FM_FAKE_AGENT_STATE"
+    state=$FM_FAKE_AGENT_STATE
   elif [ -z "$BACKEND_TARGET" ] || [ -z "$TASK_BACKEND" ]; then
-    printf 'unverified'
+    state=unverified
   else
     case "$TASK_BACKEND" in
       tmux|herdr)
-        fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null || printf 'unreadable'
+        state=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null) || state=unreadable
         ;;
-      *) printf 'unverified' ;;
+      *) state=unverified ;;
     esac
   fi
+  # The vocabulary is closed here, not at the call sites: an empty answer from a
+  # classifier that returned without printing, or a token added to the contract
+  # later, is a read that did not complete and reports `unreadable`.
+  case "$state" in
+    alive|dead|missing|ambiguous|unreadable|unverified) printf '%s' "$state" ;;
+    *) printf 'unreadable' ;;
+  esac
 }
 
 # --- last known run-step record ---------------------------------------------
@@ -983,7 +991,7 @@ if [ "$KIND" != secondmate ]; then
           emit working pane "$busy_detail" ;;
         dead|missing)
           emit abandoned pane "$busy_detail${SEP}worker gone ($WORKER_STATE)" ;;
-        ambiguous|unreadable)
+        *)
           emit unknown pane "$busy_detail${SEP}agent liveness $WORKER_STATE" ;;
       esac
       ;;
