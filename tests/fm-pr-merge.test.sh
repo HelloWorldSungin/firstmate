@@ -921,7 +921,7 @@ test_refresh_failure_warning_names_the_cause() {
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/21 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
-  set +e
+  set -e
 
   expect_code 0 "$rc" "refresh-cause: a failed cache refresh must not fail the merge"
   assert_grep 'the cached PR state could not be refreshed: ' "$case_dir/stderr" \

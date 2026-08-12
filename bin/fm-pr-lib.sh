@@ -93,12 +93,13 @@ FM_PR_POLL_RETIREMENT_REJECTED=
 # A failed forge read explains itself on its own stderr, and a caller that
 # already prints an operator-visible line folds that explanation into it rather
 # than onto a channel every production call site discards. The appended cause
-# stays subordinate to the caller's own wording: 160 characters carries every
-# reason bin/fm-pr-status.sh emits, and the bound keeps a multi-line or
-# pathological stderr from turning one warning line into a wall of text.
-FM_PR_REASON_MAX=${FM_PR_REASON_MAX:-160}
+# stays subordinate to the caller's own wording: 240 chars is the same bound as
+# FM_OUTCOME_TEXT_MAX in bin/fm-outcome-lib.sh and carries every current
+# fm-pr-status stderr line intact while still bounding future pathological
+# output.
+FM_PR_REASON_MAX=${FM_PR_REASON_MAX:-240}
 case "$FM_PR_REASON_MAX" in
-  ''|*[!0-9]*|0) FM_PR_REASON_MAX=160 ;;
+  ''|*[!0-9]*|0) FM_PR_REASON_MAX=240 ;;
 esac
 
 # Reduce a captured stderr to one bounded single-line reason. Empty in, empty

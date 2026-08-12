@@ -880,7 +880,7 @@ TASK_BRANCH_KEEP_REASON=
 # The cause a failed PR-status refresh named on its own stderr. The keep-reason
 # line is the only place an operator sees why a branch was preserved, so that
 # cause is carried here and folded into it instead of being discarded.
-FM_PR_REFRESH_REASON=
+TASK_BRANCH_REFRESH_REASON=
 BRANCH_REAP_TIMEOUT=20
 
 branch_reap_git_remote() {  # <git-args...>
@@ -944,18 +944,18 @@ branch_reap_pr_proof() {  # <branch-head>
     TASK_BRANCH_KEEP_REASON="recorded PR forge is unsupported; merge could not be verified"
     return 1
   fi
-  FM_PR_REFRESH_REASON=
+  TASK_BRANCH_REFRESH_REASON=
   refresh_err_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/.fm-teardown-pr-refresh.XXXXXX") \
     || refresh_err_file=/dev/null
   doc=$(merged_pr_status_doc 2>"$refresh_err_file") || refresh_rc=$?
   if [ "$refresh_rc" -ne 0 ]; then
-    FM_PR_REFRESH_REASON=$(fm_pr_reason_normalize "$(cat "$refresh_err_file" 2>/dev/null)")
+    TASK_BRANCH_REFRESH_REASON=$(fm_pr_reason_normalize "$(cat "$refresh_err_file" 2>/dev/null)")
   fi
   [ "$refresh_err_file" = /dev/null ] || rm -f "$refresh_err_file"
   if [ "$refresh_rc" -ne 0 ]; then
     TASK_BRANCH_KEEP_REASON="recorded PR merge could not be verified"
-    [ -z "$FM_PR_REFRESH_REASON" ] \
-      || TASK_BRANCH_KEEP_REASON="$TASK_BRANCH_KEEP_REASON: $FM_PR_REFRESH_REASON"
+    [ -z "$TASK_BRANCH_REFRESH_REASON" ] \
+      || TASK_BRANCH_KEEP_REASON="$TASK_BRANCH_KEEP_REASON: $TASK_BRANCH_REFRESH_REASON"
     return 1
   fi
   state=$(printf '%s\n' "$doc" | jq -r '.status.state')
