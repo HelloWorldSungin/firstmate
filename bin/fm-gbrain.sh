@@ -57,17 +57,19 @@
 #                may hold a deployment this tool did not create. A revocation
 #                that fails stops the retirement with nothing removed, so it can
 #                be retried. Destructive, so it refuses without --yes.
-#   serving-check  Read-only alarm for the serving-credential rule (docs/gbrain.md):
-#                print one GBRAIN_SERVING_CREDENTIAL line when THIS home both
-#                serves its brain as the main brain and has hosted synthesis
-#                reachable on it, or when a plane the verdict needs cannot be
-#                read; stay silent when the home is clear. A home that serves
-#                nothing is clear whatever its credential plane holds, so a
-#                reading home never raises this alarm. It reads only the config
-#                planes, so it needs no network, no token mint, and no gbrain
-#                binary, which is what makes it safe to run at every session
-#                start. It never exits non-zero: the line itself is the signal,
-#                so a caller that finds nothing stays quiet rather than failing.
+#   serving-check
+#                Read-only alarm for the serving-credential rule that
+#                docs/gbrain.md owns: print one GBRAIN_SERVING_CREDENTIAL line
+#                when THIS home both serves its brain as the main brain and has
+#                hosted synthesis reachable on it, or when a plane the verdict
+#                needs cannot be read; stay silent when the home is clear. A
+#                home that serves nothing is clear whatever its credential plane
+#                holds, so a reading home never raises this alarm. It reads only
+#                the config planes, so it needs no network, no token mint, and
+#                no gbrain binary, which is what makes it safe to run at every
+#                session start. It never exits non-zero: the line itself is the
+#                signal, so a caller that finds nothing stays quiet rather than
+#                failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
