@@ -134,12 +134,14 @@ It is not the path this derivation is about: the saturated-daemon path measured 
 ## Regression coverage
 
 ```console
-$ bash tests/fm-fleet-snapshot-view.test.sh | tail -2
+$ bash tests/fm-fleet-snapshot-view.test.sh | grep -E '^ok - (per-task reads run concurrently|one unreadable task reports unknown)'
 ok - per-task reads run concurrently, so a fleet-sized snapshot stays inside half its budget
 ok - one unreadable task reports unknown with a timeout source and the rest of the snapshot survives
-$ bash tests/fm-dashboard-inbox.test.sh | tail -1
+$ bash tests/fm-dashboard-inbox.test.sh | grep -E '^ok - health signals produce'
 ok - health signals produce the documented states and never summarize uncertainty as healthy
 ```
+
+The two cases are selected by name rather than by position: both suites end with a `all <subject> tests passed` marker, and the snapshot suite carries six further cases after the pair quoted here, so a positional `tail` reproduces neither.
 
 The concurrency case asserts against half of the dashboard's 15 s deadline rather than all of it, so the test fails while there is still headroom instead of at the moment the view already breaks.
 It drives 12 task records through a stand-in current-state reader that costs a known second each: 12 s serially against a 7 s ceiling, about 2 s concurrently.
@@ -147,9 +149,11 @@ Both halves of that arithmetic are asserted, so the case cannot pass by being ch
 Confirming it bites:
 
 ```console
-$ FM_SNAPSHOT_TASK_JOBS=1 bash tests/fm-fleet-snapshot-view.test.sh | tail -1
+$ FM_SNAPSHOT_TASK_JOBS=1 bash tests/fm-fleet-snapshot-view.test.sh 2>&1 | tail -1
 not ok - a 12-task snapshot took 13s, past 7s (half the 15s the dashboard allows it); the per-task reads are summing again
 ```
+
+`fail` reports on stderr and exits there, so this one is merged into the pipe rather than read off stdout; the measured seconds move a little between runs, the ceiling does not.
 
 The activity cases assert that a task quiet for 40 minutes reads green when either the snapshot observed it working or its runtime completed a turn recently.
 Against the module as it shipped, both read amber and the fleet read Degraded, which is the reported defect.

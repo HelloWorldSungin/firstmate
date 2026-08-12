@@ -231,6 +231,8 @@ ok - fenced and inline URLs stay out of the pointer surface, and a template is r
 ok - pointers in code comments are resolved, not only Markdown links
 ok - JSON output reports every pointer, verdict, and reason
 ok - the default scan selects tracked Markdown and reports repo-relative sources
+
+all fm-pointer-check tests passed
 FM_TEST_END 2026-08-11T04:07:52Z tests/fm-pointer-check.test.sh exit=0 duration_ms=561 gate_skip=false
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=579
 FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=561 failed=0
