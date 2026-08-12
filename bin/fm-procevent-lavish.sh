@@ -20,9 +20,10 @@
 #            existed; arm still refuses a file that is not there to poll.
 # retire     Drop the Lavish source. Accepts an artifact path or its source id,
 #            and stays retirable after the artifact is deleted: a path whose file
-#            is gone resolves to its registered id, and an explicit id retires
-#            directly. Retirement never acknowledges a captured result; only
-#            `fm-procevent.sh handled` does.
+#            is gone resolves to its registered id, an explicit id retires
+#            directly, and a repeat retire by that gone path stays idempotent
+#            once a result has been captured for it. Retirement never
+#            acknowledges a captured result; only `fm-procevent.sh handled` does.
 #
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
 # canonical source identity, the argv for the currently published poll command,
@@ -123,13 +124,27 @@ is_lavish_source_id() {  # <arg>
   [[ "${1-}" =~ ^lavish-[0-9a-f]{16}$ ]]
 }
 
+lavish_state_dir() { printf '%s\n' "${FM_STATE_OVERRIDE:-$FM_HOME/state}"; }
+
 # Whether a Lavish source is registered in this home. Retire-by-path uses this
 # to confirm a derived id is real before retiring it, so a path that no longer
 # resolves never silently retires nothing.
 lavish_source_is_registered() {  # <id>
   local reg
-  reg=$(fm_procevent_registry_dir "${FM_STATE_OVERRIDE:-$FM_HOME/state}")
+  reg=$(fm_procevent_registry_dir "$(lavish_state_dir)")
   [ -f "$reg/$1.source" ] && [ ! -L "$reg/$1.source" ]
+}
+
+# Whether this home ever captured a result for a source. A captured result is
+# durable proof the id was a real registration here, which is what lets a retire
+# by a gone path stay idempotent after the registration itself is gone.
+lavish_source_has_results() {  # <id>
+  local inbox result
+  inbox=$(fm_procevent_inbox_dir "$(lavish_state_dir)")
+  for result in "$inbox/$1".*.result; do
+    [ -f "$result" ] && [ ! -L "$result" ] && return 0
+  done
+  return 1
 }
 
 cmd_source_id() {
@@ -145,8 +160,7 @@ cmd_arm() {
   [ -n "$artifact" ] || usage
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
   case "$artifact" in *$'\n'*) die "artifact paths cannot contain newlines" ;; esac
-  real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
-    || die "cannot resolve the artifact path: $artifact"
+  real=$(canonical_artifact_path "$artifact") || die "cannot resolve the artifact path: $artifact"
   [ -f "$real" ] || die "artifact does not exist: $artifact"
   id=$(lavish_id_of_path "$real")
   # The plain blocking form: no --timeout-ms, so completion is a server event.
@@ -163,19 +177,23 @@ cmd_retire() {
     # wake text and `fm-procevent.sh list` surface it when the artifact is gone.
     id=$arg
   else
+    case "$arg" in *$'\n'*) die "artifact paths cannot contain newlines" ;; esac
     if [ ! -e "$arg" ] && [ ! -L "$arg" ]; then gone=1; fi
-    if real=$(canonical_artifact_path "$arg" 2>/dev/null); then
-      id=$(lavish_id_of_path "$real")
-    else
-      id=
-    fi
+    real=$(canonical_artifact_path "$arg" 2>/dev/null) \
+      || die "cannot resolve the artifact path: $arg"
+    id=$(lavish_id_of_path "$real")
     # When the artifact is gone the derived id is only a candidate, so retire it
-    # only when a Lavish source is actually registered for it. A path that still
-    # resolves retires idempotently, matching the runner, so a source that has
-    # already retired on its own stays safely retirable by path.
-    if [ "$gone" = 1 ] && { [ -z "$id" ] || ! lavish_source_is_registered "$id"; }; then
+    # only on evidence that this home really owns that source: a live
+    # registration, or a captured result, which is durable proof the source was
+    # registered here and has since retired. The second case is what keeps a
+    # re-run of the same gone-path retire idempotent - the handler is told to
+    # retire an artifact-missing source, and a repeat wake asks it to do so
+    # again - matching retire by an id and by a path that still resolves.
+    if [ "$gone" = 1 ] && ! lavish_source_is_registered "$id" \
+      && ! lavish_source_has_results "$id"; then
       die "no Lavish source is registered for: $arg
-The artifact is gone. Retire by source id instead - find it with
+The artifact is gone and nothing was ever captured for it in this home, so
+this path matches nothing here. Retire by source id instead - find it with
 'fm-procevent.sh list' or in the wake text 'procevent lavish <id> <seq>'."
     fi
   fi

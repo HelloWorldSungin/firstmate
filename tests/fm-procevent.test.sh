@@ -1070,6 +1070,19 @@ cat > "$LAVISH_ENOENT_BIN/lavish-axi" <<'SH'
 printf 'error: "ENOENT: no such file or directory, realpath %s"\ncode: UNKNOWN\n' "$2"
 SH
 chmod +x "$LAVISH_ENOENT_BIN/lavish-axi"
+# Reconcile until the source has captured at least <count> results. Each round
+# either starts a runner or skips because the previous one still holds the
+# claim, so progress is observed rather than timed; the bound turns a source
+# that stopped firing into a failed assertion instead of a hang.
+reconcile_until_results() {  # <home> <source-id> <count> [tries]
+  local home=$1 id=$2 want=$3 tries=${4:-20}
+  for _ in $(seq 1 "$tries"); do
+    [ "$(count_results "$home" "$id")" -ge "$want" ] && return 0
+    PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$home" reconcile >/dev/null
+    sleep 0.1
+  done
+  [ "$(count_results "$home" "$id")" -ge "$want" ]
+}
 ENOENT_RESULT="$TMP_ROOT/enoent-result"
 printf 'error: "ENOENT: no such file or directory, realpath /gone.html"\ncode: UNKNOWN\n' > "$ENOENT_RESULT"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$ENOENT_RESULT")" artifact-missing \
@@ -1086,27 +1099,35 @@ PE_TRACKED+=("$HMISS|$missing_id")
 PATH="$LAVISH_ENOENT_BIN:$PATH" FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" arm "$MISSING_ART" >/dev/null
 # A deleted artifact keeps producing wakes; only an explicit retire stops it.
 rm -f "$MISSING_ART"
-for _ in $(seq 1 3); do
-  PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$HMISS" reconcile >/dev/null
-  sleep 0.3
-done
-[ "$(count_results "$HMISS" "$missing_id")" -ge 2 ] \
+# A second result proves the source survived the first one instead of retiring
+# on it. Waiting for the count rather than for a fixed delay keeps this honest
+# on a loaded machine, where a round can be skipped by the previous runner.
+reconcile_until_results "$HMISS" "$missing_id" 2 \
   || fail "a deleted artifact did not keep producing results"
 assert_present "$HMISS/state/procevent/$missing_id.source" \
   "a deleted artifact does not retire itself automatically"
 MISSING_CAPTURED=$(first_result "$HMISS" "$missing_id" || true)
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$MISSING_CAPTURED")" artifact-missing \
   "the recurring result from a deleted artifact classifies as artifact-missing"
-sleep 0.4
 # Retire by source id stops the recurring wakes (the wake text carries the id).
+# Retire returns only after the runner it owns is stopped and its claim
+# released, so the count taken after it is a settled baseline.
 out=$(FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" retire "$missing_id")
 assert_contains "$out" "retired: $missing_id" "the adapter retires by source id"
 assert_absent "$HMISS/state/procevent/$missing_id.source" "retire-by-id removes the registration"
+# The handler is told to retire an artifact-missing source, and a repeat wake
+# for the same still-unhandled result asks it to do so again - by the same gone
+# path it armed. That repeat must not fail once the registration is gone.
+out=$(FM_HOME="$HMISS" "$ROOT/bin/fm-procevent-lavish.sh" retire "$MISSING_ART")
+assert_contains "$out" "retired: $missing_id" \
+  "re-retiring by the same gone path after retirement stays idempotent"
 before=$(count_results "$HMISS" "$missing_id")
-PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$HMISS" reconcile >/dev/null
-sleep 0.3
-[ "$(count_results "$HMISS" "$missing_id")" = "$before" ] \
-  || fail "retire-by-id did not stop the recurring source"
+for _ in $(seq 1 10); do
+  PATH="$LAVISH_ENOENT_BIN:$PATH" pe "$HMISS" reconcile >/dev/null
+  sleep 0.1
+  [ "$(count_results "$HMISS" "$missing_id")" = "$before" ] \
+    || fail "retire-by-id did not stop the recurring source"
+done
 ack_out=$(pe "$HMISS" handled "$missing_id" 1)
 assert_contains "$ack_out" "handled: $missing_id 1" \
   "retirement did not implicitly acknowledge the captured result"
