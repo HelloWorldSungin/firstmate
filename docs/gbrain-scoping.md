@@ -113,7 +113,8 @@ Local retrieval never depends on the main brain or on the hosted synthesis provi
 When the main brain is stopped or unreachable, the reading home's own search continues to answer from its own index, `bin/fm-gbrain.sh check` reports the main brain as degraded, and the run still exits 0.
 A search asking for the main corpus alone with `--scope main` has no local half to fall back on, so the same outage fails that run with exit 3 rather than reporting an empty result list as an answer.
 When the MiniMax credential is absent or its endpoint is down, synthesis is unavailable and local search is unaffected, matching the single-brain behavior in [`gbrain.md`](gbrain.md).
-A credential that is present but stored too loosely to use is the one credential-related condition that fails the check outright, because that is a finding rather than an outage.
+A credential that is present but stored too loosely to use fails the check outright instead of degrading it, because that is a finding rather than an outage.
+So does a serving home on which hosted synthesis is reachable, which no outage explains either ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule and the check that enforces it).
 
 ## Rotation, revocation, and retirement
 
