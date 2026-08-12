@@ -15,6 +15,17 @@ TMP_ROOT=$(fm_test_tmproot fm-bearings)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
+# Every busy fixture below models a LIVE worker. fm-crew-state.sh cross-checks
+# worker liveness before it reports a plain `working` verdict (issue #105), and
+# the stub tmux under make_fakebin answers pane reads only - it has no window
+# inventory, so the recovery-grade classifier would read every fixture endpoint
+# as `missing` and this projection suite would be asserting against `abandoned`
+# children it never meant to create. Declaring the liveness the fixtures already
+# assume keeps these tests about the bearings/snapshot PROJECTION; the liveness
+# cross-check itself is owned by tests/fm-crew-state.test.sh, and the real
+# tmux/ps classifier surface by tests/fm-tmux-agent-liveness.test.sh.
+export FM_FAKE_AGENT_STATE=alive
+
 # A fakebin that stubs the local tools the canonical snapshot may reach for, plus a
 # gh/gh-axi that RECORDS every call to $NET_LOG so a test can prove the default path
 # makes no network call. gh returns one fixture open PR keyed to the ship task.
