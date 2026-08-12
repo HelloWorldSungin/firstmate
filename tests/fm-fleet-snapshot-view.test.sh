@@ -1295,6 +1295,107 @@ EOF
   pass "a since date ages from its own local midnight, not UTC midnight"
 }
 
+# --- the per-task read is bounded, and its cost does not sum ----------------
+#
+# The dominant cost of a snapshot is one fm-crew-state.sh call per task record.
+# These two cases pin what that must not be allowed to do, and both need that
+# cost to be a KNOWN quantity, so they run the real snapshot against a bin
+# directory of symlinks to the real scripts with one stand-in current-state
+# reader whose cost the test chooses. A stand-in is the only way to test this:
+# with the real reader, the same suite that passes on a fast machine proves
+# nothing about the fleet that made the reader slow, which is exactly how a
+# snapshot that timed out two runs in three kept a green test suite.
+
+# stub_snapshot_bin <dir> <crew-state-body>: a bin/ whose fm-crew-state.sh is
+# the given script and whose every other entry is the real one.
+stub_snapshot_bin() {  # <dir> <crew-state-body>
+  local dir=$1 body=$2 entry
+  mkdir -p "$dir"
+  for entry in "$ROOT"/bin/*; do
+    ln -sf "$entry" "$dir/$(basename "$entry")"
+  done
+  rm -f "$dir/fm-crew-state.sh"
+  printf '%s\n' "$body" > "$dir/fm-crew-state.sh"
+  chmod +x "$dir/fm-crew-state.sh"
+}
+
+# The budget this asserts against is the dashboard's own snapshot deadline,
+# FM_DASHBOARD_TIMEOUT_SECONDS, whose default bin/fm-dashboard-server.mjs owns.
+# docs/verification/dashboard-fleet-health.md records why the fraction is half
+# of it rather than all of it.
+DASHBOARD_BUDGET_SECONDS=15
+BUDGET_FRACTION_NUMERATOR=1
+BUDGET_FRACTION_DENOMINATOR=2
+
+test_task_reads_do_not_sum_across_the_fleet() {
+  local home stub tasks=12 per_task=1 i started ended elapsed ceiling out
+  home=$(make_home concurrency)
+  stub="$TMP_ROOT/concurrency-bin"
+  # A reader that costs a known second and answers correctly. Serially, twelve
+  # of these cost twelve seconds; concurrently they cost about two.
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+sleep '"$per_task"'
+printf "state: working · source: pane · harness busy (stub)\n"'
+  i=1
+  while [ "$i" -le "$tasks" ]; do
+    fm_write_meta "$home/state/task-$i.meta" \
+      "window=firstmate:fm-task-$i" \
+      "worktree=$home/projects/task-$i" \
+      "project=alpha" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=ship"
+    i=$((i + 1))
+  done
+
+  started=$(date +%s)
+  out=$(FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json)
+  ended=$(date +%s)
+  elapsed=$((ended - started))
+  printf '%s' "$out" | jq -e --argjson n "$tasks" '(.tasks | length) == $n' >/dev/null \
+    || fail "the concurrent read dropped or duplicated a task: $(printf '%s' "$out" | jq -c '[.tasks[].id]')"
+  printf '%s' "$out" | jq -e '[.tasks[] | select(.current_state.state == "working")] | length == 12' >/dev/null \
+    || fail "the concurrent read lost a task's current state"
+
+  ceiling=$((DASHBOARD_BUDGET_SECONDS * BUDGET_FRACTION_NUMERATOR / BUDGET_FRACTION_DENOMINATOR))
+  [ "$elapsed" -le "$ceiling" ] \
+    || fail "a $tasks-task snapshot took ${elapsed}s, past ${ceiling}s (half the ${DASHBOARD_BUDGET_SECONDS}s the dashboard allows it); the per-task reads are summing again"
+  # Serial execution of the same fixture cannot come in under the ceiling, so a
+  # pass here is a statement about concurrency rather than about a fast machine.
+  [ "$((tasks * per_task))" -gt "$ceiling" ] \
+    || fail "fixture is too cheap to distinguish concurrent from serial reads"
+  pass "per-task reads run concurrently, so a fleet-sized snapshot stays inside half its budget"
+}
+
+test_a_task_read_that_times_out_is_unknown_not_absent() {
+  local home stub out
+  home=$(make_home task-timeout)
+  stub="$TMP_ROOT/timeout-bin"
+  # One task's reader hangs; the other answers immediately. The stub's own $1 is
+  # the task id the snapshot passes it, so this body must reach it unexpanded.
+  # shellcheck disable=SC2016
+  stub_snapshot_bin "$stub" '#!/usr/bin/env bash
+case "$1" in
+  wedged-task) sleep 30 ;;
+  *) printf "state: working · source: pane · harness busy (stub)\n" ;;
+esac'
+  fm_write_meta "$home/state/wedged-task.meta" \
+    "window=firstmate:fm-wedged-task" "worktree=$home/projects/wedged" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+  fm_write_meta "$home/state/quick-task.meta" \
+    "window=firstmate:fm-quick-task" "worktree=$home/projects/quick" \
+    "project=alpha" "harness=claude" "kind=ship" "mode=ship"
+
+  out=$(FM_SNAPSHOT_TASK_TIMEOUT=2 FM_HOME="$home" "$stub/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$out" | jq -e '
+    (.tasks | length) == 2
+      and (.tasks[] | select(.id == "wedged-task") | .current_state.state) == "unknown"
+      and (.tasks[] | select(.id == "wedged-task") | .current_state.source) == "timeout"
+      and (.tasks[] | select(.id == "quick-task") | .current_state.state) == "working"
+  ' >/dev/null || fail "a timed-out task read did not degrade to an explicit unknown: $out"
+  pass "one unreadable task reports unknown with a timeout source and the rest of the snapshot survives"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_additive_telemetry_fields
@@ -1318,3 +1419,5 @@ test_since_age_and_declared_wait_projections
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_multiline_unstructured_note_attributed_to_parent
+test_task_reads_do_not_sum_across_the_fleet
+test_a_task_read_that_times_out_is_unknown_not_absent

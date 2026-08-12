@@ -136,6 +136,14 @@
     {
       "source": "assets/dashboard/inbox.js",
       "target": "bin/fm-classify-lib.sh"
+    },
+    {
+      "source": "bin/fm-fleet-snapshot.sh",
+      "target": "docs/verification/dashboard-fleet-health.md"
+    },
+    {
+      "source": "docs/dashboard-inbox-policy.md",
+      "target": "docs/verification/dashboard-fleet-health.md"
     }
   ],
   "surfaces": [
@@ -433,6 +441,10 @@
     },
     {
       "path": "docs/verification/dashboard-service-unit.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/dashboard-fleet-health.md",
       "audience": "maintainer-verification"
     },
     {

@@ -26,9 +26,15 @@
 #     a LOCAL date with no clock time, so the age runs from that day's local
 #     midnight: it is an upper bound at day granularity, null when no readable
 #     date is present.
-#   tasks[]: one row per state/<id>.meta, sorted by id.
+#   tasks[]: one row per state/<id>.meta, sorted by id. The rows are read
+#     concurrently, FM_SNAPSHOT_TASK_JOBS (default 8) at a time, because the
+#     per-task current_state read below dominates this command's cost and grows
+#     with the fleet.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
-#     state, source, detail, and raw line separately.
+#     state, source, detail, and raw line separately. That call is bounded at
+#     FM_SNAPSHOT_TASK_TIMEOUT seconds (default 8); a task whose read did not
+#     finish reports state "unknown" with source "timeout", so one slow task
+#     costs its own row rather than the whole snapshot.
 #     model and effort are the dispatch record from state/<id>.meta - what was
 #     REQUESTED. model_verification is bin/fm-model-verify.sh's verdict on what
 #     actually RAN: {verdict,recorded,actual[],source,detail}. The two are
@@ -41,6 +47,11 @@
 #     current state. Its last_event_at and last_event_age_seconds report WHEN
 #     that event landed, from the log's mtime, so a renderer can age a task
 #     without reparsing the log.
+#     paths.turn_ended ages state/<id>.turn-ended, the harness-neutral marker a
+#     completed turn touches and the same file bin/fm-watch.sh ages to bound how
+#     long a busy pane may go with no completed turn. It stays a wake
+#     notification and an activity timestamp, never current state, and an absent
+#     marker is reported absent rather than as an age.
 #     pr carries the parsed provider/host/path/number identity, the recorded
 #     head, and the normalized review/check/mergeability observation cached by
 #     bin/fm-pr-status.sh, with its age and freshness. This command never calls
@@ -87,8 +98,10 @@
 #     against, highest-priority first. Exactly one column wins per task, and the
 #     rank is its 1-based position in this list.
 #   supervision: {watcher,afk} - the watcher liveness beacon's age against the
-#     shared grace window from bin/fm-supervision-lib.sh, and this home's durable
-#     away-mode flag with its age.
+#     shared grace window from bin/fm-supervision-lib.sh, that library's
+#     quiet_allowance_seconds (how long a live worker may stay quiet before the
+#     quiet is worth inspecting), and this home's durable away-mode flag with
+#     its age.
 #   history: durable completion history (schema fm-outcome-history.v1) built from
 #     data/<id>/outcome.json manifests by bin/fm-outcome-lib.sh, newest first.
 #     A task stays here after teardown removes its volatile records and after its
@@ -140,6 +153,13 @@ FM_SNAPSHOT_REGISTRY_BYTES=${FM_SNAPSHOT_REGISTRY_BYTES:-65536}
 FM_SNAPSHOT_REGISTRY_RECORDS=${FM_SNAPSHOT_REGISTRY_RECORDS:-40}
 FM_SNAPSHOT_REGISTRY_TIMEOUT=${FM_SNAPSHOT_REGISTRY_TIMEOUT:-2}
 FM_SNAPSHOT_HISTORY=${FM_SNAPSHOT_HISTORY:-40}
+# Per-task read bounds. The tasks[] projection is one independent read per
+# state/<id>.meta, so it runs FM_SNAPSHOT_TASK_JOBS of them at a time and bounds
+# each task's current-state call at FM_SNAPSHOT_TASK_TIMEOUT seconds; both
+# defaults are derived from measured cost in
+# docs/verification/dashboard-fleet-health.md.
+FM_SNAPSHOT_TASK_JOBS=${FM_SNAPSHOT_TASK_JOBS:-8}
+FM_SNAPSHOT_TASK_TIMEOUT=${FM_SNAPSHOT_TASK_TIMEOUT:-8}
 validate_positive_bound() {  # <name> <value>
   case "$2" in
     ''|*[!0-9]*|0)
@@ -176,6 +196,8 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_LINES "$FM_SNAPSHOT_REGISTRY_LINES"
 validate_positive_bound FM_SNAPSHOT_REGISTRY_BYTES "$FM_SNAPSHOT_REGISTRY_BYTES"
 validate_positive_bound FM_SNAPSHOT_REGISTRY_RECORDS "$FM_SNAPSHOT_REGISTRY_RECORDS"
 validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIMEOUT"
+validate_positive_bound FM_SNAPSHOT_TASK_JOBS "$FM_SNAPSHOT_TASK_JOBS"
+validate_positive_bound FM_SNAPSHOT_TASK_TIMEOUT "$FM_SNAPSHOT_TASK_TIMEOUT"
 
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
@@ -191,7 +213,7 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 . "$SCRIPT_DIR/fm-outcome-lib.sh"  # durable manifest, work-item, and PR-status contracts
 # shellcheck source=bin/fm-supervision-lib.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-supervision-lib.sh"  # fm_sup_grace_seconds: shared beacon grace window
+. "$SCRIPT_DIR/fm-supervision-lib.sh"  # fm_sup_grace_seconds, fm_sup_busy_turn_max_seconds: shared supervision windows
 # shellcheck source=bin/fm-pr-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-pr-lib.sh"  # fm_pr_url_parse: shared forge identity parsing
@@ -211,6 +233,10 @@ Its invalidity object names the normalized failure kind and affected ids.
 Actionable tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason, hold_kind, and plural blocker fields for downstream
 projections. A captain hold is actionable only when every blocker is Done.
+Per-task reads run FM_SNAPSHOT_TASK_JOBS (default 8) at a time and each task's
+current-state read is bounded by FM_SNAPSHOT_TASK_TIMEOUT (default 8 seconds);
+a task whose read did not finish reports current_state unknown with source
+"timeout" rather than costing the whole snapshot.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Terminal contradiction evidence uses
@@ -234,6 +260,16 @@ case "${1:---json}" in
 esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
+
+# Scratch space for the concurrent per-task readers in task_json_lines. It holds
+# one file per task and never outlives this command; nothing under the
+# operational home is written, which keeps this command read-only.
+SNAPSHOT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") || {
+  echo "fm-fleet-snapshot: could not create a scratch directory" >&2
+  exit 1
+}
+trap 'rm -rf -- "$SNAPSHOT_TMP"' EXIT
+trap 'rm -rf -- "$SNAPSHOT_TMP"; trap - EXIT; exit 143' HUP INT TERM
 
 # jq payload convention, applied by every call site below that binds a JSON
 # document whose size grows with the fleet (backlog, task inventory, secondmate
@@ -293,17 +329,35 @@ model_verify_json() {  # <id>
       detail:"model verification produced no readable answer"}'
 }
 
+# The reconciled current state for one task, bounded.
+#
+# This is the single most expensive read in the snapshot: fm-crew-state.sh asks
+# the no-mistakes daemon for the task's run, reads its worktree, and reads the
+# backend's busy verdict. It bounds its own no-mistakes call, but a saturated
+# daemon still makes the whole call the tail of this command's runtime, so the
+# call gets a deadline here as well. Exceeding it reports an explicit `timeout`
+# source rather than a silent `none`: a reading this command could not take is
+# not the same fact as a task that has no state to read, and a renderer must be
+# able to tell them apart instead of drawing both as nothing.
 crew_state_json() {  # <id>
-  local id=$1 raw rest state source detail sep
+  local id=$1 raw rest state source detail sep rc=0
   raw=$(
-    FM_ROOT_OVERRIDE="$FM_ROOT" \
+    run_timed "$FM_SNAPSHOT_TASK_TIMEOUT" env \
+      FM_ROOT_OVERRIDE="$FM_ROOT" \
       FM_HOME="$FM_HOME" \
       FM_STATE_OVERRIDE="$STATE" \
       FM_DATA_OVERRIDE="$DATA" \
       FM_PROJECTS_OVERRIDE="$PROJECTS" \
       FM_CONFIG_OVERRIDE="$CONFIG" \
-      "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
-  )
+      "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null
+  ) || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    jq -n --arg secs "$FM_SNAPSHOT_TASK_TIMEOUT" \
+      '{state:"unknown",source:"timeout",
+        detail:("the current state could not be read within " + $secs + "s"),
+        raw:""}'
+    return 0
+  fi
   raw=$(printf '%s\n' "$raw" | head -1)
   sep=' · '
   state=unknown
@@ -360,6 +414,34 @@ status_event_json() {  # <status-log>
       last_event:{state:$verb,note:$note,raw:$raw},
       last_event_at:(if $at == "" then null else $at end),
       last_event_age_seconds:(if $age == "" then null else ($age | tonumber) end)}'
+}
+
+# When this task's runtime last completed a turn.
+#
+# state/<id>.turn-ended is the harness-neutral marker every verified harness's
+# turn-end hook touches, and bin/fm-watch.sh already ages exactly this file to
+# bound how long a busy pane may go with no completed turn (busy_turn_over_age).
+# It stays what that owner says it is - a wake NOTIFICATION and an activity
+# timestamp, never current-state truth - and this record carries only its age so
+# a renderer can tell a task that has been quiet from one that has been idle.
+# An absent marker is reported as absent rather than as an age, because a task
+# whose harness has not completed a turn yet and one whose harness never touches
+# the marker are both "no turn observed", and neither is evidence of a stall.
+turn_marker_json() {  # <turn-ended-path>
+  local marker=$1 present=0 at='' age=''
+  if [ -e "$marker" ]; then
+    present=1
+    at=$(fm_outcome_path_iso "$marker")
+    age=$(path_age_seconds "$marker")
+  fi
+  jq -n \
+    --arg path "$marker" \
+    --arg at "$at" \
+    --arg age "$age" \
+    --argjson present "$(bool_json "$present")" \
+    '{path:$path,present:$present,kind:"turn_boundary",
+      last_turn_at:(if $at == "" then null else $at end),
+      last_turn_age_seconds:(if $age == "" then null else ($age | tonumber) end)}'
 }
 
 # The parsed forge identity for a recorded PR URL. Unparseable or absent leaves
@@ -563,313 +645,365 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   ' < "$backlog"
 }
 
-task_json_lines() {
-  local meta id kind harness model effort mode yolo project worktree home projects backend target status_log report_path
+# One task's row of the tasks[] projection, printed as a single JSON object.
+#
+# Every read here is scoped to this one task, which is what lets
+# task_json_lines below run several of them at once.
+task_json_one() {  # <meta-path>
+  local meta=$1
+  local id kind harness model effort mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json model_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw last_event_declared_wait current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
   local pr_head pr_identity pr_status pr_status_path pr_status_at pr_status_age work_items_json
+  local turn_marker turn_json
 
+  id=$(basename "$meta" .meta)
+  kind=$(meta_value "$meta" kind)
+  [ -n "$kind" ] || kind=ship
+  harness=$(meta_value "$meta" harness)
+  model=$(meta_value "$meta" model)
+  effort=$(meta_value "$meta" effort)
+  mode=$(meta_value "$meta" mode)
+  yolo=$(meta_value "$meta" yolo)
+  project=$(meta_value "$meta" project)
+  worktree=$(meta_value "$meta" worktree)
+  home=$(meta_value "$meta" home)
+  projects=$(meta_value "$meta" projects)
+  remote_host=$(meta_value "$meta" remote_host)
+  remote_root=$(meta_value "$meta" remote_root)
+  remote_home_present=null
+  if [ -n "$remote_host" ]; then
+    backend=$(meta_value "$meta" remote_backend)
+    [ -n "$backend" ] || backend=unknown
+    target=$(meta_value "$meta" remote_target)
+  else
+    backend=$(fm_backend_of_meta "$meta")
+    target=$(fm_backend_target_of_meta "$meta")
+  fi
+  status_log="$STATE/$id.status"
+  turn_marker="$STATE/$id.turn-ended"
+  report_path="$DATA/$id/report.md"
+  pr=$(meta_value "$meta" pr)
+  pr_source=meta
+  if [ -z "$pr" ]; then
+    pr_from_status=$(first_pr_url_in_file "$status_log" || true)
+    pr=$pr_from_status
+    pr_source=status_event
+  fi
+  if [ -z "$pr" ]; then
+    pr_source=absent
+  fi
+  pr_head=$(meta_value "$meta" pr_head)
+  fm_outcome_sha_valid "$pr_head" || pr_head=
+  pr_identity=$(pr_identity_json "$pr")
+  # Cached only: this command stays offline, so an unrefreshed PR reports
+  # state "unknown" with source "absent" rather than blocking on a forge.
+  pr_status=$(fm_outcome_pr_status_read "$STATE" "$id" "$pr")
+  pr_status_path=$(fm_outcome_pr_status_path "$STATE" "$id")
+  pr_status_at=$(printf '%s' "$pr_status" | jq -r '.observed_at // ""')
+  if [ -n "$pr_status_at" ]; then
+    pr_status_age=$(path_age_seconds "$pr_status_path")
+  else
+    pr_status_age=
+  fi
+  work_items_json=$(fm_outcome_work_items_read "$DATA" "$id" | jq -c '.references')
+
+  current_json=$(crew_state_json "$id")
+  if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
+    model_json='{"verdict":"not_checked","recorded":null,"actual":[],"source":"none","detail":"not included in bounded secondmate home summaries"}'
+  else
+    model_json=$(model_verify_json "$id")
+  fi
+  event_json=$(status_event_json "$status_log")
+  last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
+  # Whether the newest event DECLARES its own quiet, judged by the same
+  # fm-classify-lib.sh vocabulary the watcher uses so the dashboard and
+  # supervision cannot drift apart on what a declared wait is. A renderer
+  # reading elapsed time alone cannot tell "gone quiet" from "said it would
+  # be quiet"; this is the field that lets it.
+  if status_is_paused_or_captain_held "$last_event_raw"; then
+    last_event_declared_wait=1
+  else
+    last_event_declared_wait=0
+  fi
+  current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
+  current_source=$(printf '%s' "$current_json" | jq -r '.source // ""')
+
+  # Durable keyed open-decision set: fold the WHOLE status stream
+  # (fm-classify-lib.sh's status_open_decisions) so a later unrelated event can
+  # never mask a still-open captain decision. The set is derived purely from the
+  # keyed fold - never from report bodies or decision-like prose - and then
+  # reconciled against the crew LIFECYCLE, which only clears a stale decision the
+  # crew has provably moved past. Two lifecycle signals clear it, neither of which
+  # reads any report content:
+  #   - a live activity read (run-step or busy pane) that is working/done, so a
+  #     crew that resumed past a gate is not still reported as parked; and
+  #   - a TERMINAL done/failed state on a single-owner task (scout or ship), whose
+  #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
+  #     report POINTER, never as a reopened pending decision.
+  # Secondmates are excluded from lifecycle clearing: they are persistent and
+  # multiplex many concerns onto one stream, so activity on one concern must
+  # never clear another concern's keyed decision. A parked/blocked state, or a
+  # non-authoritative status-log/none read on a still-live task, keeps the fold's
+  # open decision surfacing. `run-step-degraded` is deliberately absent from the
+  # live-activity sources: it is a remembered step the reader could not
+  # re-confirm, which is enough to keep a crew provably working for wedge triage
+  # but never enough to clear a captain decision.
+  open_decisions_tsv=$(status_open_decisions "$status_log")
+  if [ "$kind" != secondmate ] && \
+     { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
+         && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
+       || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
+    open_decisions_tsv=""
+  fi
+  open_decisions_json=$(printf '%s' "$open_decisions_tsv" | jq -R -s '
+    [ splits("\n") | select(length > 0)
+      | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
+      | select(. != null) ]')
+  pending_decision=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "needs-decision") then 1 else 0 end')
+  blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
+
+  endpoint_exists=null
+  agent_alive=not_checked
+  if [ -n "$remote_host" ]; then
+    if remote_state=$(run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
+      "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+      remote_rc=0
+    else
+      remote_rc=$?
+    fi
+    if [ "$remote_rc" -eq 0 ]; then
+      remote_home_present=true
+      remote_state=$(printf '%s\n' "$remote_state" | tail -1)
+      case "$remote_state" in
+        alive) endpoint_exists=true; agent_alive=alive ;;
+        dead) endpoint_exists=true; agent_alive=dead ;;
+        missing) endpoint_exists=false; agent_alive=dead ;;
+        *) endpoint_exists=null; agent_alive=unknown ;;
+      esac
+    else
+      endpoint_exists=null
+      agent_alive=unknown
+    fi
+  else
+    if [ -n "$target" ]; then
+      if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+        endpoint_exists=true
+      else
+        endpoint_exists=false
+      fi
+    fi
+    if [ "$kind" = secondmate ] && [ -n "$target" ]; then
+      agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
+    fi
+  fi
+
+  [ -f "$report_path" ] && report_present=1 || report_present=0
+  meta_json=$(path_present_json "$meta")
+  status_json=$event_json
+  turn_json=$(turn_marker_json "$turn_marker")
+  report_json=$(path_present_json "$report_path")
+  if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
+  if [ -n "$home" ] && [ -n "$remote_host" ]; then
+    home_json=$(jq -n --arg path "$home" --argjson present "$remote_home_present" '{path:$path,present:$present}')
+  elif [ -n "$home" ]; then
+    home_json=$(path_present_json "$home")
+  else
+    home_json=$(jq -n '{path:null,present:false}')
+  fi
+
+  jq -n \
+    --arg id "$id" \
+    --arg kind "$kind" \
+    --arg harness "$harness" \
+    --arg model "$model" \
+    --arg effort "$effort" \
+    --arg mode "$mode" \
+    --arg yolo "$yolo" \
+    --arg project "$project" \
+    --arg worktree "$worktree" \
+    --arg home "$home" \
+    --arg projects "$projects" \
+    --arg backend "$backend" \
+    --arg target "$target" \
+    --arg remote_host "$remote_host" \
+    --arg remote_root "$remote_root" \
+    --arg pr "$pr" \
+    --arg pr_source "$pr_source" \
+    --arg pr_head "$pr_head" \
+    --arg pr_status_age "$pr_status_age" \
+    --argjson pr_identity "$pr_identity" \
+    --argjson pr_status "$pr_status" \
+    --argjson work_items "$work_items_json" \
+    --arg agent_alive "$agent_alive" \
+    --arg observed_at "$SNAPSHOT_NOW" \
+    --arg last_event_raw "$last_event_raw" \
+    --argjson current_state "$current_json" \
+    --argjson model_verification "$model_json" \
+    --argjson meta_path "$meta_json" \
+    --argjson status_log "$status_json" \
+    --argjson turn_ended "$turn_json" \
+    --argjson report "$report_json" \
+    --argjson worktree_path "$worktree_json" \
+    --argjson home_path "$home_json" \
+    --argjson endpoint_exists "$endpoint_exists" \
+    --argjson open_decisions "$open_decisions_json" \
+    --argjson pending_decision "$(bool_json "$pending_decision")" \
+    --argjson blocked_event "$(bool_json "$blocked_event")" \
+    --argjson report_present "$(bool_json "$report_present")" \
+    --argjson last_event_declared_wait "$(bool_json "$last_event_declared_wait")" \
+    '
+    # Card precedence: the FIRST matching rung wins, so overlapping signals
+    # resolve to exactly one column. An open decision outranks everything
+    # because it is unanswered work for firstmate or the captain even when a
+    # PR is already open; a blocker outranks a failure because the worker is
+    # still there and asking; a failure outranks an open PR because the PR is
+    # not the live problem; and an open PR outranks done because a task that
+    # reported "PR checks green" has not landed until that PR is merged.
+    def card($kind; $state; $pending; $blocked; $pr_recorded; $pr_merged):
+      if $pending then
+        {rank:1,column:"needs_decision",action:"decide",
+         reason:"an open decision is waiting on firstmate or the captain"}
+      elif $blocked then
+        {rank:2,column:"blocked",action:"unblock",
+         reason:"the worker reported a blocker it cannot clear itself"}
+      elif $state == "parked" then
+        {rank:3,column:"parked",action:"respond_to_gate",
+         reason:"validation is parked at a gate awaiting a response"}
+      elif $state == "failed" then
+        {rank:4,column:"failed",action:"investigate",
+         reason:"the task reported a failure"}
+      elif $pr_recorded and ($pr_merged | not) then
+        {rank:5,column:"review",action:"review_pr",
+         reason:"a pull request is recorded and not confirmed merged"}
+      elif $state == "done" then
+        {rank:6,column:"done",action:"close_out",
+         reason:"the task reported completion with nothing left open"}
+      elif $state == "paused" then
+        {rank:7,column:"waiting",action:"recheck",
+         reason:"a declared external wait expected to clear on its own"}
+      elif $state == "working" then
+        {rank:8,column:"active",action:"supervise",
+         reason:"the worker is working"}
+      elif $kind == "secondmate" then
+        {rank:9,column:"secondmate",action:"route_work",
+         reason:"a persistent secondmate with no higher-priority task signal"}
+      else
+        {rank:10,column:"idle",action:"inspect",
+         reason:"no current signal"}
+      end;
+    {
+      id:$id,
+      kind:$kind,
+      harness:($harness // ""),
+      model:($model // ""),
+      effort:($effort // ""),
+      mode:($mode // ""),
+      yolo:($yolo // ""),
+      project:($project // ""),
+      backend:$backend,
+      remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
+      paths:{
+        meta:$meta_path,
+        status_log:$status_log,
+        turn_ended:$turn_ended,
+        worktree:$worktree_path,
+        home:$home_path,
+        report:$report
+      },
+      secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
+      current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
+      model_verification:($model_verification | del(.id) | . + {observed_at:$observed_at}),
+      endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
+        status:(if $endpoint_exists == false then "absent"
+                elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
+                else "unknown" end),
+        observed_at:$observed_at,freshness:"fresh"},
+      pr:({url:($pr | if . == "" then null else . end),
+           source:$pr_source,
+           head:($pr_head | if . == "" then null else . end),
+           status:$pr_status,
+           status_age_seconds:($pr_status_age | if . == "" then null else tonumber end),
+           status_freshness:(if $pr_status.observed_at == null then "absent" else "cached" end)}
+          + $pr_identity),
+      work_items:$work_items,
+      hints:{
+        pending_decision:$pending_decision,
+        blocked_event:$blocked_event,
+        open_decisions:$open_decisions,
+        scout_report_present:$report_present,
+        last_event_text:$last_event_raw,
+        last_event_declared_wait:$last_event_declared_wait
+      },
+      card:(card($kind;
+                 $current_state.state;
+                 $pending_decision;
+                 $blocked_event;
+                 ($pr != "");
+                 ($pr_status.state == "merged"))
+            + {signals:{pending_decision:$pending_decision,
+                        blocked_event:$blocked_event,
+                        current_state:$current_state.state,
+                        pr_recorded:($pr != ""),
+                        pr_merged:($pr_status.state == "merged")}}),
+      actions:(
+        if $kind == "secondmate" then
+          {send:"bin/fm-send.sh fm-\($id) \u0027<request>\u0027",
+           watch:"read status/doc return channel; do not routinely fm-peek a secondmate for answers",
+           return_channel_note:"Secondmate answers come back through status/doc paths after a marked fm-send request."}
+        else
+          {watch:"bin/fm-peek.sh fm-\($id)",
+           steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
+           return_channel_note:null}
+        end)
+    }'
+}
+
+# The tasks[] projection, sorted by id.
+#
+# Each state/<id>.meta is an independent read, and the dominant cost of this
+# whole command is one bounded fm-crew-state.sh call per task. Run one after
+# another, that cost grows with how much work is in flight - so the fleet view
+# got slowest at exactly the moment it was most wanted, and past the deadline
+# its callers give it. The readers therefore run FM_SNAPSHOT_TASK_JOBS at a
+# time, which turns the command's runtime into roughly the cost of its slowest
+# single task rather than the sum of all of them.
+#
+# Each reader writes its own file rather than a shared stream, so no two tasks'
+# JSON can interleave, and the ordering below comes from the sort rather than
+# from the order the readers happen to finish in. Background readers do not
+# inherit this shell's EXIT trap, so none of them can remove the scratch
+# directory the others are still writing into.
+task_json_lines() {
+  local meta id pid workdir
+  local -a pids=()
+  workdir="$SNAPSHOT_TMP/tasks"
+  mkdir -p "$workdir" || return 1
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     id=$(basename "$meta" .meta)
-    kind=$(meta_value "$meta" kind)
-    [ -n "$kind" ] || kind=ship
-    harness=$(meta_value "$meta" harness)
-    model=$(meta_value "$meta" model)
-    effort=$(meta_value "$meta" effort)
-    mode=$(meta_value "$meta" mode)
-    yolo=$(meta_value "$meta" yolo)
-    project=$(meta_value "$meta" project)
-    worktree=$(meta_value "$meta" worktree)
-    home=$(meta_value "$meta" home)
-    projects=$(meta_value "$meta" projects)
-    remote_host=$(meta_value "$meta" remote_host)
-    remote_root=$(meta_value "$meta" remote_root)
-    remote_home_present=null
-    if [ -n "$remote_host" ]; then
-      backend=$(meta_value "$meta" remote_backend)
-      [ -n "$backend" ] || backend=unknown
-      target=$(meta_value "$meta" remote_target)
-    else
-      backend=$(fm_backend_of_meta "$meta")
-      target=$(fm_backend_target_of_meta "$meta")
-    fi
-    status_log="$STATE/$id.status"
-    report_path="$DATA/$id/report.md"
-    pr=$(meta_value "$meta" pr)
-    pr_source=meta
-    if [ -z "$pr" ]; then
-      pr_from_status=$(first_pr_url_in_file "$status_log" || true)
-      pr=$pr_from_status
-      pr_source=status_event
-    fi
-    if [ -z "$pr" ]; then
-      pr_source=absent
-    fi
-    pr_head=$(meta_value "$meta" pr_head)
-    fm_outcome_sha_valid "$pr_head" || pr_head=
-    pr_identity=$(pr_identity_json "$pr")
-    # Cached only: this command stays offline, so an unrefreshed PR reports
-    # state "unknown" with source "absent" rather than blocking on a forge.
-    pr_status=$(fm_outcome_pr_status_read "$STATE" "$id" "$pr")
-    pr_status_path=$(fm_outcome_pr_status_path "$STATE" "$id")
-    pr_status_at=$(printf '%s' "$pr_status" | jq -r '.observed_at // ""')
-    if [ -n "$pr_status_at" ]; then
-      pr_status_age=$(path_age_seconds "$pr_status_path")
-    else
-      pr_status_age=
-    fi
-    work_items_json=$(fm_outcome_work_items_read "$DATA" "$id" | jq -c '.references')
-
-    current_json=$(crew_state_json "$id")
-    if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
-      model_json='{"verdict":"not_checked","recorded":null,"actual":[],"source":"none","detail":"not included in bounded secondmate home summaries"}'
-    else
-      model_json=$(model_verify_json "$id")
-    fi
-    event_json=$(status_event_json "$status_log")
-    last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
-    # Whether the newest event DECLARES its own quiet, judged by the same
-    # fm-classify-lib.sh vocabulary the watcher uses so the dashboard and
-    # supervision cannot drift apart on what a declared wait is. A renderer
-    # reading elapsed time alone cannot tell "gone quiet" from "said it would
-    # be quiet"; this is the field that lets it.
-    if status_is_paused_or_captain_held "$last_event_raw"; then
-      last_event_declared_wait=1
-    else
-      last_event_declared_wait=0
-    fi
-    current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
-    current_source=$(printf '%s' "$current_json" | jq -r '.source // ""')
-
-    # Durable keyed open-decision set: fold the WHOLE status stream
-    # (fm-classify-lib.sh's status_open_decisions) so a later unrelated event can
-    # never mask a still-open captain decision. The set is derived purely from the
-    # keyed fold - never from report bodies or decision-like prose - and then
-    # reconciled against the crew LIFECYCLE, which only clears a stale decision the
-    # crew has provably moved past. Two lifecycle signals clear it, neither of which
-    # reads any report content:
-    #   - a live activity read (run-step or busy pane) that is working/done, so a
-    #     crew that resumed past a gate is not still reported as parked; and
-    #   - a TERMINAL done/failed state on a single-owner task (scout or ship), whose
-    #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
-    #     report POINTER, never as a reopened pending decision.
-    # Secondmates are excluded from lifecycle clearing: they are persistent and
-    # multiplex many concerns onto one stream, so activity on one concern must
-    # never clear another concern's keyed decision. A parked/blocked state, or a
-    # non-authoritative status-log/none read on a still-live task, keeps the fold's
-    # open decision surfacing. `run-step-degraded` is deliberately absent from the
-    # live-activity sources: it is a remembered step the reader could not
-    # re-confirm, which is enough to keep a crew provably working for wedge triage
-    # but never enough to clear a captain decision.
-    open_decisions_tsv=$(status_open_decisions "$status_log")
-    if [ "$kind" != secondmate ] && \
-       { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
-           && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
-         || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
-      open_decisions_tsv=""
-    fi
-    open_decisions_json=$(printf '%s' "$open_decisions_tsv" | jq -R -s '
-      [ splits("\n") | select(length > 0)
-        | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
-        | select(. != null) ]')
-    pending_decision=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "needs-decision") then 1 else 0 end')
-    blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
-
-    endpoint_exists=null
-    agent_alive=not_checked
-    if [ -n "$remote_host" ]; then
-      if remote_state=$(run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-        "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
-        remote_rc=0
-      else
-        remote_rc=$?
-      fi
-      if [ "$remote_rc" -eq 0 ]; then
-        remote_home_present=true
-        remote_state=$(printf '%s\n' "$remote_state" | tail -1)
-        case "$remote_state" in
-          alive) endpoint_exists=true; agent_alive=alive ;;
-          dead) endpoint_exists=true; agent_alive=dead ;;
-          missing) endpoint_exists=false; agent_alive=dead ;;
-          *) endpoint_exists=null; agent_alive=unknown ;;
-        esac
-      else
-        endpoint_exists=null
-        agent_alive=unknown
-      fi
-    else
-      if [ -n "$target" ]; then
-        if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
-          endpoint_exists=true
-        else
-          endpoint_exists=false
-        fi
-      fi
-      if [ "$kind" = secondmate ] && [ -n "$target" ]; then
-        agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
-      fi
-    fi
-
-    [ -f "$report_path" ] && report_present=1 || report_present=0
-    meta_json=$(path_present_json "$meta")
-    status_json=$event_json
-    report_json=$(path_present_json "$report_path")
-    if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
-    if [ -n "$home" ] && [ -n "$remote_host" ]; then
-      home_json=$(jq -n --arg path "$home" --argjson present "$remote_home_present" '{path:$path,present:$present}')
-    elif [ -n "$home" ]; then
-      home_json=$(path_present_json "$home")
-    else
-      home_json=$(jq -n '{path:null,present:false}')
-    fi
-
-    jq -n \
-      --arg id "$id" \
-      --arg kind "$kind" \
-      --arg harness "$harness" \
-      --arg model "$model" \
-      --arg effort "$effort" \
-      --arg mode "$mode" \
-      --arg yolo "$yolo" \
-      --arg project "$project" \
-      --arg worktree "$worktree" \
-      --arg home "$home" \
-      --arg projects "$projects" \
-      --arg backend "$backend" \
-      --arg target "$target" \
-      --arg remote_host "$remote_host" \
-      --arg remote_root "$remote_root" \
-      --arg pr "$pr" \
-      --arg pr_source "$pr_source" \
-      --arg pr_head "$pr_head" \
-      --arg pr_status_age "$pr_status_age" \
-      --argjson pr_identity "$pr_identity" \
-      --argjson pr_status "$pr_status" \
-      --argjson work_items "$work_items_json" \
-      --arg agent_alive "$agent_alive" \
-      --arg observed_at "$SNAPSHOT_NOW" \
-      --arg last_event_raw "$last_event_raw" \
-      --argjson current_state "$current_json" \
-      --argjson model_verification "$model_json" \
-      --argjson meta_path "$meta_json" \
-      --argjson status_log "$status_json" \
-      --argjson report "$report_json" \
-      --argjson worktree_path "$worktree_json" \
-      --argjson home_path "$home_json" \
-      --argjson endpoint_exists "$endpoint_exists" \
-      --argjson open_decisions "$open_decisions_json" \
-      --argjson pending_decision "$(bool_json "$pending_decision")" \
-      --argjson blocked_event "$(bool_json "$blocked_event")" \
-      --argjson report_present "$(bool_json "$report_present")" \
-      --argjson last_event_declared_wait "$(bool_json "$last_event_declared_wait")" \
-      '
-      # Card precedence: the FIRST matching rung wins, so overlapping signals
-      # resolve to exactly one column. An open decision outranks everything
-      # because it is unanswered work for firstmate or the captain even when a
-      # PR is already open; a blocker outranks a failure because the worker is
-      # still there and asking; a failure outranks an open PR because the PR is
-      # not the live problem; and an open PR outranks done because a task that
-      # reported "PR checks green" has not landed until that PR is merged.
-      def card($kind; $state; $pending; $blocked; $pr_recorded; $pr_merged):
-        if $pending then
-          {rank:1,column:"needs_decision",action:"decide",
-           reason:"an open decision is waiting on firstmate or the captain"}
-        elif $blocked then
-          {rank:2,column:"blocked",action:"unblock",
-           reason:"the worker reported a blocker it cannot clear itself"}
-        elif $state == "parked" then
-          {rank:3,column:"parked",action:"respond_to_gate",
-           reason:"validation is parked at a gate awaiting a response"}
-        elif $state == "failed" then
-          {rank:4,column:"failed",action:"investigate",
-           reason:"the task reported a failure"}
-        elif $pr_recorded and ($pr_merged | not) then
-          {rank:5,column:"review",action:"review_pr",
-           reason:"a pull request is recorded and not confirmed merged"}
-        elif $state == "done" then
-          {rank:6,column:"done",action:"close_out",
-           reason:"the task reported completion with nothing left open"}
-        elif $state == "paused" then
-          {rank:7,column:"waiting",action:"recheck",
-           reason:"a declared external wait expected to clear on its own"}
-        elif $state == "working" then
-          {rank:8,column:"active",action:"supervise",
-           reason:"the worker is working"}
-        elif $kind == "secondmate" then
-          {rank:9,column:"secondmate",action:"route_work",
-           reason:"a persistent secondmate with no higher-priority task signal"}
-        else
-          {rank:10,column:"idle",action:"inspect",
-           reason:"no current signal"}
-        end;
-      {
-        id:$id,
-        kind:$kind,
-        harness:($harness // ""),
-        model:($model // ""),
-        effort:($effort // ""),
-        mode:($mode // ""),
-        yolo:($yolo // ""),
-        project:($project // ""),
-        backend:$backend,
-        remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
-        paths:{
-          meta:$meta_path,
-          status_log:$status_log,
-          worktree:$worktree_path,
-          home:$home_path,
-          report:$report
-        },
-        secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
-        current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
-        model_verification:($model_verification | del(.id) | . + {observed_at:$observed_at}),
-        endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
-          status:(if $endpoint_exists == false then "absent"
-                  elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
-                  else "unknown" end),
-          observed_at:$observed_at,freshness:"fresh"},
-        pr:({url:($pr | if . == "" then null else . end),
-             source:$pr_source,
-             head:($pr_head | if . == "" then null else . end),
-             status:$pr_status,
-             status_age_seconds:($pr_status_age | if . == "" then null else tonumber end),
-             status_freshness:(if $pr_status.observed_at == null then "absent" else "cached" end)}
-            + $pr_identity),
-        work_items:$work_items,
-        hints:{
-          pending_decision:$pending_decision,
-          blocked_event:$blocked_event,
-          open_decisions:$open_decisions,
-          scout_report_present:$report_present,
-          last_event_text:$last_event_raw,
-          last_event_declared_wait:$last_event_declared_wait
-        },
-        card:(card($kind;
-                   $current_state.state;
-                   $pending_decision;
-                   $blocked_event;
-                   ($pr != "");
-                   ($pr_status.state == "merged"))
-              + {signals:{pending_decision:$pending_decision,
-                          blocked_event:$blocked_event,
-                          current_state:$current_state.state,
-                          pr_recorded:($pr != ""),
-                          pr_merged:($pr_status.state == "merged")}}),
-        actions:(
-          if $kind == "secondmate" then
-            {send:"bin/fm-send.sh fm-\($id) \u0027<request>\u0027",
-             watch:"read status/doc return channel; do not routinely fm-peek a secondmate for answers",
-             return_channel_note:"Secondmate answers come back through status/doc paths after a marked fm-send request."}
-          else
-            {watch:"bin/fm-peek.sh fm-\($id)",
-             steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
-             return_channel_note:null}
-          end)
-      }'
-  done | jq -s 'sort_by(.id)'
+    task_json_one "$meta" > "$workdir/$id.json" &
+    pids+=("$!")
+    # Bounded fan-out, oldest first: the window refills as soon as the reader
+    # that has been running longest finishes, so one slow task delays only
+    # itself instead of holding a whole batch at a barrier.
+    while [ "${#pids[@]}" -ge "$FM_SNAPSHOT_TASK_JOBS" ]; do
+      wait "${pids[0]}" 2>/dev/null || true
+      pids=("${pids[@]:1}")
+    done
+  done
+  for pid in "${pids[@]:-}"; do
+    [ -n "$pid" ] || continue
+    wait "$pid" 2>/dev/null || true
+  done
+  # Every row is produced by one closing jq, so a reader that failed leaves an
+  # empty file rather than half an object. If one ever did land truncated, the
+  # slurp below fails and the caller reports a failed snapshot, which is the
+  # right end: a task silently missing from tasks[] reads as a fleet that does
+  # not have it.
+  cat "$workdir"/*.json 2>/dev/null | jq -s 'sort_by(.id)'
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
@@ -1660,12 +1794,17 @@ scout_report_lines() {
 # second staleness rule.
 supervision_json() {
   local beat="$STATE/.last-watcher-beat" afk="$STATE/.afk"
-  local grace beat_at='' beat_age='' afk_at='' afk_age=''
+  local grace quiet beat_at='' beat_age='' afk_at='' afk_age=''
   local beat_present=0 afk_present=0 stale=1
   # bin/fm-supervision-lib.sh owns the grace window; the beacon is stale once its
   # age reaches it, measured against this snapshot's own observation time so the
   # reported age and the reported verdict always agree.
   grace=$(fm_sup_grace_seconds)
+  # The same library owns how long a live worker may stay quiet before that
+  # quiet is worth inspecting. Publishing it here is what lets a renderer judge
+  # a task's activity on supervision's own window instead of a constant of its
+  # own, exactly as grace_seconds already does for the beacon.
+  quiet=$(fm_sup_busy_turn_max_seconds)
   if [ -e "$beat" ]; then
     beat_present=1
     beat_at=$(fm_outcome_path_iso "$beat")
@@ -1688,6 +1827,7 @@ supervision_json() {
     --argjson afk_present "$(bool_json "$afk_present")" \
     --argjson stale "$(bool_json "$stale")" \
     --argjson grace "$grace" \
+    --argjson quiet "$quiet" \
     'def num($v): if $v == "" then null else ($v | tonumber) end;
      def blank($v): if $v == "" then null else $v end;
      (num($beat_age)) as $age
@@ -1696,6 +1836,7 @@ supervision_json() {
                  observed_at:blank($beat_at),
                  age_seconds:$age,
                  grace_seconds:$grace,
+                 quiet_allowance_seconds:$quiet,
                  stale:$stale},
         afk:{path:$afk_path,
              active:$afk_present,

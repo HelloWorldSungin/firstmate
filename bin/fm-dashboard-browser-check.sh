@@ -785,7 +785,7 @@ write_fixture_snapshot() {  # <path>
     }
   ],
   "card_precedence": ["needs_decision","blocked","parked","failed","review","done","waiting","active","secondmate","idle"],
-  "supervision": {"watcher":{"present":true,"age_seconds":3,"stale":false},"afk":{"active":false}}
+  "supervision": {"watcher":{"present":true,"age_seconds":3,"grace_seconds":300,"quiet_allowance_seconds":3600,"stale":false},"afk":{"active":false}}
 }
 JSON
 }

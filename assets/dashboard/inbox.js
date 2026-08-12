@@ -18,11 +18,15 @@ export const POLICY = {
   // A normalized PR observation older than this is no longer evidence of the
   // current state, so it renders as unknown rather than as its last reading.
   prStatusMaxAgeSeconds: 900,
-  // Age of the newest event on a live task before the fleet reads as slow.
-  eventAmberSeconds: 900,
-  eventRedSeconds: 3_600,
   // Fraction of the watcher's own grace window that turns supervision amber.
   watcherAmberFraction: 0.5,
+  // Fraction of supervision's own tolerated-quiet window that turns Task
+  // activity amber. There is deliberately no seconds constant beside it: the
+  // window itself arrives on the snapshot as
+  // `supervision.watcher.quiet_allowance_seconds`, exactly as the grace window
+  // above does, so this module cannot hold a second opinion about how long a
+  // working task may reasonably stay quiet.
+  activityAmberFraction: 0.5,
 };
 
 const PR_ENUMS = {
@@ -495,9 +499,55 @@ function splitDeclaredWaits(live) {
   };
 }
 
-function eventSignal(tasks) {
+// The `current_state.source` values whose verdict is a reading taken NOW.
+// bin/fm-crew-state.sh owns the list: `run-step` is the validation run's own
+// current step, and `pane` is the harness's own busy verdict. Everything else
+// it can answer with is a memory or an absence - `run-step-degraded` replays a
+// remembered step after a lookup failure, `run-attribution` means a run was
+// found but could not be tied to this task, `status-log` is the append-only
+// event log this signal already reads, and `timeout` and `none` are readings
+// that were not taken. None of those is evidence that a task is doing
+// something right now, so none of them excuses quiet.
+const LIVE_STATE_SOURCES = new Set(["run-step", "pane"]);
+
+// Whether the snapshot got a definite answer about this task from one of those
+// sources. A definite answer accounts for the task's quiet whatever the answer
+// was: `working` and `parked` say what it is doing, and `done` and `failed` are
+// conditions the inbox and the board already carry. `unknown` is not an answer.
+function stateReadLive(task) {
+  const state = text(task?.current_state?.state);
+  return LIVE_STATE_SOURCES.has(text(task?.current_state?.source)) && state !== "" && state !== "unknown";
+}
+
+// How long ago this task last did anything the snapshot can see: the newer of
+// its last status append and its last completed turn.
+//
+// The status log alone is a REPORTING cadence, not an activity one. The crew
+// brief instructs workers to append only on phase changes a supervisor would
+// act on, so a healthy task is meant to be silent for long stretches, and
+// ageing that log alone measures obedience. A completed turn is an activity
+// timestamp the runtime produces on its own, whatever the worker chooses to
+// report, so the newer of the two is the honest answer to "when did anything
+// last happen here". A task whose harness leaves no turn marker still ages on
+// its status log exactly as before.
+function activityAge(task) {
+  const ages = [
+    finiteAge(task?.paths?.status_log?.last_event_age_seconds),
+    finiteAge(task?.paths?.turn_ended?.last_turn_age_seconds),
+  ].filter((age) => age !== null);
+  return ages.length ? Math.min(...ages) : null;
+}
+
+function eventSignal(tasks, supervision) {
   const live = liveWorkTasks(tasks);
-  const tooltip = `How long ago the slowest live task that has not declared a wait last reported anything. A task parked on a declared pause or a captain hold is counted separately and never ages into a warning, because its quiet was announced. Secondmates are excluded because an idle one is healthy. Amber past ${formatAge(POLICY.eventAmberSeconds)}, red past ${formatAge(POLICY.eventRedSeconds)}.`;
+  // Supervision's own tolerated-quiet window, not a constant of this module's.
+  // The watcher measures a working task's latest completed turn against it
+  // before treating the quiet as worth inspecting, and the strip asks the same
+  // question, so asking it against a different number is how two surfaces come
+  // to disagree about one fleet.
+  const allowance = finiteAge(supervision?.watcher?.quiet_allowance_seconds);
+  const windowText = allowance === null ? "its" : `the ${formatAge(allowance)}`;
+  const tooltip = `Whether any live task has gone quiet without a live reason. A task the snapshot got a live state reading for - its validation run's own step, or its harness busy this refresh - is not aged on elapsed time, because a long step is meant to be silent. Everything else is aged on the newer of its last report and its last completed turn, against ${windowText} window supervision itself allows before quiet is worth inspecting: amber past half of it, red past all of it. A task parked on a declared pause or a captain hold is counted separately, because its quiet was announced, and secondmates are excluded because an idle one is healthy.`;
   if (!live.length) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
@@ -524,14 +574,79 @@ function eventSignal(tasks) {
   }
 
   const waitingNote = waiting.length ? ` ${waiting.length} further task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here.` : "";
-  const ages = working.map((task) => finiteAge(task?.paths?.status_log?.last_event_age_seconds));
-  const unreadable = working.filter((task, index) => ages[index] === null).map((task) => text(task?.id)).filter(Boolean);
-  if (unreadable.length) {
-    return { id: "events", label: "Task activity", tone: "unknown", value: "unknown", detail: `No readable event age for ${unreadable.join(", ")}.${waitingNote}`, tooltip };
+
+  // Without the window there is no threshold to judge against, and inventing
+  // one here is the defect this signal was built out of. An unjudgeable reading
+  // is unknown, never a pass.
+  if (allowance === null) {
+    return {
+      id: "events",
+      label: "Task activity",
+      tone: "unknown",
+      value: "unknown",
+      detail: `This snapshot carries no tolerated-quiet window, so how long ${working.length} working task${plural(working.length)} may reasonably stay quiet cannot be judged.${waitingNote}`,
+      tooltip,
+    };
   }
-  const oldest = Math.max(...ages);
-  const tone = oldest >= POLICY.eventRedSeconds ? "red" : oldest >= POLICY.eventAmberSeconds ? "amber" : "green";
-  return { id: "events", label: "Task activity", tone, value: `oldest ${formatAge(oldest)}`, detail: `${working.length} live task${plural(working.length)} working; the slowest last reported ${formatAge(oldest)} ago.${waitingNote}`, tooltip };
+
+  // A task the snapshot got a live answer about is accounted for, however long
+  // its log has been quiet. That exemption is bounded exactly as supervision
+  // bounds it: a live reading buys the task the window and no more, so a pane
+  // that renders busy while its foreground call has hung cannot hide behind it.
+  const accounted = working.filter(stateReadLive);
+  const silent = working.filter((task) => !stateReadLive(task));
+  const accountedNote = accounted.length
+    ? ` ${accounted.length} task${plural(accounted.length)} had a live state reading this refresh and ${accounted.length === 1 ? "is" : "are"} not aged here.`
+    : "";
+
+  const silentAges = silent.map(activityAge);
+  const unreadable = silent.filter((task, index) => silentAges[index] === null).map((task) => text(task?.id)).filter(Boolean);
+  if (unreadable.length) {
+    return {
+      id: "events",
+      label: "Task activity",
+      tone: "unknown",
+      value: "unknown",
+      detail: `No live state reading and no readable activity age for ${unreadable.join(", ")}.${accountedNote}${waitingNote}`,
+      tooltip,
+    };
+  }
+
+  const silentOldest = silentAges.length ? Math.max(...silentAges) : null;
+  const accountedAges = accounted.map(activityAge).filter((age) => age !== null);
+  const accountedOldest = accountedAges.length ? Math.max(...accountedAges) : null;
+  const overdue = accountedOldest !== null && accountedOldest >= allowance;
+  const overdueDetail = `the slowest has completed no turn in ${formatAge(accountedOldest)}, past the ${formatAge(allowance)} supervision allows before that is worth inspecting`;
+
+  if (silentOldest === null) {
+    // Every working task answered, so there is no quiet to judge.
+    return {
+      id: "events",
+      label: "Task activity",
+      tone: overdue ? "amber" : "green",
+      value: `${accounted.length} accounted for`,
+      detail: overdue
+        ? `Every working task had a live state reading, but ${overdueDetail}.${waitingNote}`
+        : `Every working task had a live state reading this refresh, so nothing is quiet without a live reason.${waitingNote}`,
+      tooltip,
+    };
+  }
+
+  const tone = silentOldest >= allowance ? "red"
+    : silentOldest >= allowance * POLICY.activityAmberFraction || overdue ? "amber"
+      : "green";
+  const value = accounted.length
+    ? `oldest ${formatAge(silentOldest)} · ${accounted.length} accounted for`
+    : `oldest ${formatAge(silentOldest)}`;
+  const overdueNote = overdue ? ` Among the tasks that did answer, ${overdueDetail}.` : "";
+  return {
+    id: "events",
+    label: "Task activity",
+    tone,
+    value,
+    detail: `${silent.length} working task${plural(silent.length)} had no live state reading; the quietest last did anything ${formatAge(silentOldest)} ago, against the ${formatAge(allowance)} supervision allows.${overdueNote}${accountedNote}${waitingNote}`,
+    tooltip,
+  };
 }
 
 // The snapshot answers two different questions with one field. For a secondmate
@@ -654,7 +769,7 @@ export function buildHealth(snapshot, envelope) {
   const snapshotState = snapshotSignal(envelope);
   const others = [
     watcherSignal(snapshot?.supervision),
-    eventSignal(tasks),
+    eventSignal(tasks, snapshot?.supervision),
     workerSignal(tasks),
     secondmateSignal(tasks),
     inventorySignal(snapshot),

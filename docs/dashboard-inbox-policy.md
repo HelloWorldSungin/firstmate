@@ -107,14 +107,15 @@ The strip carries seven signals plus one overall verdict.
 | --- | --- | --- | --- | --- |
 | Snapshot | last refresh succeeded and is fresh | showing the last known good snapshot | no valid snapshot available | first snapshot has not completed |
 | Supervision | beacon beating inside its grace window | past half the grace window | no beacon, or the snapshot marks it stale | beacon present with an unreadable age |
-| Task activity | slowest live task that has not declared a wait reported within 900s, or every live task declared one | within 3600s | past 3600s | a live task that has not declared a wait has no readable event age |
+| Task activity | every working task was observed working, or the quietest unobserved one last did something inside half the tolerated-quiet window | past half that window | past the whole window | an unobserved working task has no readable activity age, or the snapshot carries no window |
 | Workers | every live task that has not declared a wait has its endpoint, or every live task declared one | - | an endpoint is gone on a task that declared no wait | endpoint presence unreadable on a task that declared no wait |
 | Secondmates | every registered secondmate answers, or none registered | - | any secondmate agent is dead | any secondmate liveness unreadable |
 | Inventory | every in-flight backlog item has a worker record | - | an orphan, or `main_inventory.valid` false | no inventory check reported |
 | Away mode | off | on | - | no away-mode record |
 
-The watcher's grace window is not a dashboard constant: it comes from the snapshot's own `supervision.watcher.grace_seconds`, which [`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) owns.
-A stopped watcher therefore turns red on exactly the threshold supervision itself uses.
+Neither of the two windows on that table is a dashboard constant.
+The watcher's grace window comes from the snapshot's own `supervision.watcher.grace_seconds`, and the tolerated-quiet window from `supervision.watcher.quiet_allowance_seconds` beside it; [`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) owns both.
+A stopped watcher therefore turns red on exactly the threshold supervision itself uses, and a quiet task turns amber on exactly the one supervision itself tolerates.
 
 Away mode is amber rather than red because it is a chosen posture, not a fault.
 It still earns a colour because it changes when escalations arrive.
@@ -126,6 +127,37 @@ For every other task it reports only whether the runtime endpoint is present, so
 Task activity and Workers both read live tasks only, and neither counts a secondmate.
 A secondmate writes a status event only when it is asked to do something, so an idle one is healthy; counting its silence as a stalled task would drive the whole strip to "Attention needed" in a home where nothing is wrong.
 Secondmates report through their own signal instead.
+
+### What Task activity measures
+
+Task activity asks whether any working task has gone quiet without a live reason.
+It used to ask a different question - how long since the slowest task last appended to its status log - and that question has a wrong answer built into it.
+
+The status log is a REPORTING cadence, not an activity one.
+[`bin/fm-brief.sh`](../bin/fm-brief.sh) instructs every worker to append only on phase changes a supervisor would act on and explicitly not to file progress notes, so a healthy worker deep in one long step is INSTRUCTED to say nothing for a long time.
+A signal that ages that log alone measures obedience and reports it as degradation, which is exactly what it did.
+
+Two things answer for a quiet task, and either is enough.
+
+The first is being caught in the act.
+The snapshot's `current_state` is reconciled by [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), and two of the sources it can answer with are readings taken during that refresh: `run-step`, the validation run's own current step, and `pane`, the harness's own busy verdict.
+A task carrying a definite state from either was observed working, and it is not aged at all.
+Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `status-log` is the event log this signal already reads, and `timeout` and `none` are readings that were not taken.
+None of those excuses quiet, because the rule at the top of this page applies here too: not knowing is not the same as knowing it is fine.
+
+The second is a completed turn.
+Everything not observed working is aged on the newer of its last status append and its `paths.turn_ended` marker, which the runtime touches when a turn ends whatever the worker chooses to report.
+That marker is a wake notification and an activity timestamp, never current state; [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns it and already ages this exact file for the same purpose.
+A task whose harness leaves no marker still ages on its status log alone, as before.
+
+The window both are judged against is supervision's, not this page's.
+`bin/fm-watch.sh` lets a busy pane go without a completed turn for `FM_BUSY_TURN_MAX_SECS` before treating it as worth inspecting, and that is the same question this signal asks, so the strip reads the window off the snapshot rather than holding a second opinion.
+Amber is half of it, matching how Supervision treats its own grace window; red is all of it.
+[`docs/verification/dashboard-fleet-health.md`](verification/dashboard-fleet-health.md) records the measurement that checks the published window is above a healthy step rather than inside one, and the 900-second constant this signal used to carry is the reason that check is written down.
+
+The exemption a live reading buys is bounded the same way supervision bounds it.
+A busy worker is excused until its last completed turn reaches the window, not indefinitely, so a pane that renders as busy while its foreground call has hung still colours the strip.
+And a snapshot carrying no window at all reads unknown rather than green: without it there is no threshold to judge against, and picking one here is the defect this signal was rebuilt out of.
 
 ### Declared waits
 
@@ -149,7 +181,7 @@ The declaration is authoritative over the `data/<id>/parked.md` note a park also
 The status declaration is what supervision acts on and what [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh) reconciles into current state, while `parked.md` is an operator note no tracked code reads, writes, or retracts - a resumed task would leave a stale one on disk, and a task parked for the captain's merge word need never have written one.
 
 The check each strict verdict was protecting survives intact.
-A task that has gone quiet without declaring it still drives Task activity on its own age; a worker that vanished without declaring anything still turns Workers red and is named there alone; an unreadable age or endpoint on such a task is still unknown; and a fleet with one silent task and five declared waits still reads on the silent one.
+A task that has gone quiet without declaring it, and that nothing observed working, still drives Task activity on its own age; a worker that vanished without declaring anything still turns Workers red and is named there alone; an unreadable age or endpoint on such a task is still unknown; and a fleet with one silent task and five declared waits still reads on the silent one.
 
 When several workers vanished at once, Workers names every one of them and phrases the qualifier to cover the whole list rather than trailing after it.
 A qualifier that reads as attaching to the last name states the opposite of the truth about every other name, which would undo the one distinction this card exists to draw.
@@ -189,4 +221,5 @@ $ bash tests/fm-dashboard.test.sh
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ```
 
-The third pins the two snapshot fields this policy reads but does not decide: the backlog row's `since_age_seconds` and a task's `hints.last_event_declared_wait`.
+The third pins the snapshot fields this policy reads but does not decide: the backlog row's `since_age_seconds`, a task's `hints.last_event_declared_wait`, and the bounded per-task read behind every one of them.
+[`verification/dashboard-fleet-health.md`](verification/dashboard-fleet-health.md) records the measurements behind the tolerated-quiet window and the snapshot's own read bounds.
