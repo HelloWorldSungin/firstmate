@@ -436,3 +436,28 @@ right-heading:  <|          over  \__/~~-~~~-~
 
 At 3 columns the sprite fell back to a single exact-width row, `<|~`.
 Escape aborted the run leaving `Operation aborted`, no boat, and no stale sprite rows, and the trial exited 0 after deleting its temporary state.
+
+## 2026-08-12 Pi 0.84.1 compatibility verification
+
+Pi 0.84.1 added a Markdown-transformer lookup to delegated `InteractiveMode.addMessageToChat` rendering, so the real-component fixture now supplies that host method.
+Pi 0.83.0 and 0.84.1 can complete `/export` without retaining the success status row long enough for the terminal capture, so the native E2E now waits for the completed HTML document and then validates its rendered tool data and synthetic provenance directly.
+The structural export check still fails on a missing or incomplete HTML document, missing rendered tool data, or missing synthetic provenance.
+The same suite passed against Pi 0.83.0 after the fixture update, preserving compatibility with the release immediately before the new Markdown-transformer call.
+
+```text
+$ pi --version
+0.84.1
+
+$ tests/fm-calm-pi-extension.test.sh
+ok - Pi calm resolves its persistent home independently of Pi's launch directory
+ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
+ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
+ok - missing Pi presentation class exports reach the independent adapter degradation path
+ok - Calm registers none of its 7 built-in tool wrappers at load while calm mode was off, and all 7 synchronously at load while config/calm=on
+ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics
+ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool block at zero height while preserving expansion, history, restart, and Calm-off rendering
+ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+```
