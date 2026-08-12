@@ -456,8 +456,11 @@ function renderNotices(envelope) {
     const notice = element("div", `notice ${envelope.snapshot ? "" : "error"}`.trim());
     const copy = element("div");
     const heading = status.stale ? "Showing the last known good snapshot" : "Fleet snapshot unavailable";
+    const followup = status.error.kind === "service_unit_outdated"
+      ? " Snapshot polling is paused until the service is reinstalled."
+      : " Retrying automatically.";
     copy.append(element("strong", "", heading));
-    copy.append(document.createTextNode(`${status.error.kind}: ${status.error.message}. Retrying automatically.`));
+    copy.append(document.createTextNode(`${status.error.kind}: ${status.error.message}.${followup}`));
     if (status.error.stderr) copy.append(element("code", "", ` ${status.error.stderr}`));
     notice.append(dot(status.stale ? "amber" : "red"), copy);
     replaceChildren(ui.notices, [notice]);
@@ -614,14 +617,16 @@ function renderSecondmates(tasks) {
   }));
 }
 
-function emptyBoard(phase) {
+function emptyBoard(phase, errorKind = null) {
   const panel = element("div", "empty-board");
   panel.append(dot(phase === "first_run" || phase === "unavailable" ? "amber" : "green"));
   panel.append(element("h2", "", phase === "first_run" ? "Waiting for the first snapshot" : phase === "unavailable" ? "Fleet unavailable" : "Fleet is empty"));
   panel.append(element("p", "", phase === "first_run"
     ? "The snapshot command has not completed yet. Tasks will appear here without a page reload."
     : phase === "unavailable"
-      ? "The server cannot produce a valid fleet snapshot yet. Its error is shown above and refreshes continue automatically."
+      ? errorKind === "service_unit_outdated"
+        ? "The server cannot produce a valid fleet snapshot yet. Its error is shown above. Snapshot polling will resume after the service is reinstalled."
+        : "The server cannot produce a valid fleet snapshot yet. Its error is shown above and refreshes continue automatically."
       : "No task metadata is present. The board is read-only and will show work as soon as Firstmate starts it."));
   return panel;
 }
@@ -633,7 +638,7 @@ function renderBoard(snapshot, envelope) {
   const mainTasks = allTasks.filter((task) => task.kind !== "secondmate" && taskMatches(task));
   const precedence = Array.isArray(snapshot?.card_precedence) ? snapshot.card_precedence.filter((column) => column !== "secondmate") : [];
   if (!snapshot || (!allTasks.length && envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good")) {
-    replaceChildren(ui.kanban, [emptyBoard(envelope?.status?.phase)]);
+    replaceChildren(ui.kanban, [emptyBoard(envelope?.status?.phase, envelope?.status?.error?.kind)]);
     return;
   }
   if (!allTasks.length) {

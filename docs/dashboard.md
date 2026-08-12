@@ -35,13 +35,14 @@ To install the persistent service for a permanent checkout while running a newer
 bin/fm-dashboard-install.sh --checkout /path/to/firstmate
 ```
 
-With neither `FM_HOME` nor `--fm-home` set, the operational home follows `--checkout` rather than staying where the installer you ran happens to live.
-Pass `--fm-home` when the fleet home is somewhere else.
+With neither `FM_HOME` nor `--fm-home` set, the operational home follows an explicit `--checkout` rather than staying where the installer you ran happens to live.
+A later run with no checkout or home override preserves the installed home; pass `--fm-home` to replace it independently of the checkout.
 
 ## Runtime behavior
 
 [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header owns the environment configuration names and defaults.
-The server runs the fixed adjacent `fm-fleet-snapshot.sh --json` command with a hard deadline, keeps at most one execution active, coalesces poll and debounced file triggers, and pushes result envelopes to the browser with server-sent events.
+The server runs the fixed adjacent `fm-fleet-snapshot.sh --json` command with a hard deadline, keeps at most one execution active, and pushes result envelopes to the browser with server-sent events.
+A trigger arriving during a snapshot reads the last completed result rather than queueing a catch-up run, and the next periodic poll waits its full interval after completion, so a snapshot slower than its poll interval cannot keep the reader continuously saturated.
 No HTTP input can select a command, argument, or fleet path.
 
 A failed refresh keeps the last valid snapshot visible and labels it stale with bounded error detail.
@@ -181,8 +182,9 @@ Run it after changing anything the page renders, and before believing any claim 
 
 ## Updating the installed service
 
-Re-run the installer with the desired values to replace the environment file and restart the enabled service.
-The environment file carries the service's value for every configuration name [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header documents.
+Re-run the installer to replace the environment file and restart the enabled service.
+With no setting flags, it preserves the installed operational home, bind address, trusted proxies, authentication file, polling, timeout, staleness, history, and report limits; an environment value or option overrides the preserved value, and the first explicit `--trusted-proxy` replaces the installed proxy list.
+The generated unit carries a runtime-contract marker that the server checks under systemd before starting snapshot reads, so code running behind an older unit reports that the installer must be rerun instead of exposing a denied temporary-file operation forever.
 Use ordinary user-level systemd status and journal commands to inspect startup failures.
 
 Updating the code is the other case, and it does not go through the installer.

@@ -430,7 +430,10 @@ function watcherSignal(supervision) {
   const grace = finiteAge(watcher?.grace_seconds);
   const age = finiteAge(watcher?.age_seconds);
   const tooltip = "The supervision watcher touches a liveness beacon every poll. A stopped watcher means wake events are no longer reaching Firstmate.";
-  if (!watcher || watcher.present !== true) {
+  if (!watcher || typeof watcher !== "object") {
+    return { id: "supervision", label: "Supervision", tone: "unknown", value: "unknown", detail: "This snapshot carries no watcher liveness reading.", tooltip };
+  }
+  if (watcher.present !== true) {
     return { id: "supervision", label: "Supervision", tone: "red", value: "not running", detail: "No watcher liveness beacon exists in this home.", tooltip };
   }
   if (age === null) {

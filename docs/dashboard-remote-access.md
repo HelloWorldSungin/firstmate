@@ -76,6 +76,7 @@ bin/fm-dashboard-install.sh --trusted-proxy 192.0.2.10 --address 192.0.2.110
 ```
 
 `--trusted-proxy` is repeatable and takes a numeric address or a CIDR range, never a name.
+A later installer run with no exposure flags preserves the installed address and proxy list, while the first explicit `--trusted-proxy` replaces that installed list so repairing the unit cannot silently retract access or accumulate stale proxies.
 It pins `FM_DASHBOARD_TRUSTED_PROXIES` into the environment file the way every other setting is pinned.
 
 Nothing is trusted until you do this, and that is deliberate:

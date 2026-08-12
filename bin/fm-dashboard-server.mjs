@@ -68,7 +68,7 @@
 // above.
 
 import { spawn } from "node:child_process";
-import { readFileSync as fsReadFileSync, statSync as fsStatSync, watch } from "node:fs";
+import { accessSync as fsAccessSync, constants as fsConstants, readFileSync as fsReadFileSync, statSync as fsStatSync, watch } from "node:fs";
 import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -105,6 +105,8 @@ const TIMELINE_SCHEMA = "fm-dashboard-timeline.v1";
 const INGEST_SCHEMA = "fm-dashboard-ingest.v1";
 const AUTH_SCHEMA = "fm-dashboard-auth.v1";
 const AUTH_DENIAL_SCHEMA = "fm-dashboard-access.v1";
+const SERVICE_UNIT_NAME = "firstmate-dashboard.service";
+const SERVICE_UNIT_CONTRACT = "runtime-scratch-v1";
 const AUTH_REALM = "Firstmate fleet dashboard";
 // The two addresses that reach nothing off this host. Every other bind is an
 // exposure, and exposure is gated on configured credentials.
@@ -290,6 +292,51 @@ function resolveTrustedProxies() {
   return { entries, list };
 }
 
+// The installer stamps every generated unit with this server's runtime
+// contract. A service launched by systemd without the stamp is an older unit,
+// not an ordinary command failure: polling it forever only exposes the first
+// denied mktemp while hiding the repair. INVOCATION_ID is inherited by every
+// descendant. Newer managers identify the process they launched directly;
+// older managers are identified through the service's kernel cgroup.
+function cgroupContainsServiceUnit(cgroup) {
+  return String(cgroup).split(/\r?\n/).some((line) => {
+    const firstColon = line.indexOf(":");
+    const secondColon = line.indexOf(":", firstColon + 1);
+    if (firstColon < 0 || secondColon < 0) return false;
+    return line.slice(secondColon + 1).split("/").includes(SERVICE_UNIT_NAME);
+  });
+}
+
+function isDashboardServiceProcess() {
+  if (!process.env.INVOCATION_ID) return false;
+  if (process.env.SYSTEMD_EXEC_PID) return process.env.SYSTEMD_EXEC_PID === String(process.pid);
+  try {
+    return cgroupContainsServiceUnit(fsReadFileSync("/proc/self/cgroup", "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+function serviceUnitContractError() {
+  if (!isDashboardServiceProcess()) return null;
+  const repair = "rerun bin/fm-dashboard-install.sh; it preserves the installed dashboard settings unless an option overrides them";
+  if (process.env.FM_DASHBOARD_UNIT_CONTRACT !== SERVICE_UNIT_CONTRACT) {
+    return Object.assign(new Error(`the installed firstmate-dashboard.service is out of date and has no current scratch-space contract; ${repair}`), {
+      kind: "service_unit_outdated",
+    });
+  }
+  const scratch = process.env.TMPDIR || "";
+  try {
+    if (!scratch || !fsStatSync(scratch).isDirectory()) throw new Error("not a directory");
+    fsAccessSync(scratch, fsConstants.W_OK);
+  } catch {
+    return Object.assign(new Error(`the installed firstmate-dashboard.service has no writable TMPDIR despite its scratch-space contract; ${repair}`), {
+      kind: "service_unit_outdated",
+    });
+  }
+  return null;
+}
+
 function resolveConfig() {
   const address = process.env.FM_DASHBOARD_ADDRESS || "127.0.0.1";
   // Only numeric addresses. A hostname would make what this process is
@@ -326,6 +373,7 @@ function resolveConfig() {
       || path.join(configRoot, "firstmate", "dashboard-events.json"),
     eventStorePath: resolveEventStorePath(fmHome),
     eventLimits: eventLimitsFromEnv(),
+    serviceUnitError: serviceUnitContractError(),
     port: positiveNumber("FM_DASHBOARD_PORT", 8787, { integer: true, maximum: 65_535 }),
     pollMs: positiveNumber("FM_DASHBOARD_POLL_SECONDS", 5) * 1000,
     timeoutMs: positiveNumber("FM_DASHBOARD_TIMEOUT_SECONDS", 15) * 1000,
@@ -1566,9 +1614,7 @@ class DashboardState {
     this.lastSuccessAt = null;
     this.lastSuccessAtMs = null;
     this.lastAttemptAt = null;
-    this.lastError = null;
     this.refreshing = false;
-    this.pending = false;
     this.watchers = [];
     this.fileTimer = null;
     this.pollTimer = null;
@@ -1577,6 +1623,7 @@ class DashboardState {
     this.stopped = false;
     this.activeChild = null;
     this.durablePending = false;
+    this.lastError = config.serviceUnitError ? errorRecord(config.serviceUnitError, "service_unit_outdated") : null;
   }
 
   envelope() {
@@ -1651,11 +1698,25 @@ class DashboardState {
       this.durablePending = false;
       this.history?.trigger();
     }
-    if (this.refreshing) {
-      this.pending = true;
-      return;
-    }
+    // A trigger that arrives during a read gets the last completed envelope.
+    // It is deliberately not queued: starting again immediately after a slow
+    // read turns a short poll interval into permanent CPU saturation. The next
+    // poll is scheduled from completion, and a later file event may refresh
+    // sooner, so freshness is bounded without overlap or catch-up bursts.
+    if (this.refreshing || this.config.serviceUnitError) return;
+    clearTimeout(this.pollTimer);
+    this.pollTimer = null;
     void this.refresh();
+  }
+
+  schedulePoll() {
+    clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+    if (this.stopped || this.config.serviceUnitError) return;
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      this.trigger("poll");
+    }, this.config.pollMs);
   }
 
   async refresh() {
@@ -1681,10 +1742,7 @@ class DashboardState {
       this.refreshing = false;
       this.scheduleStaleTransition();
       this.broadcast();
-      if (this.pending && !this.stopped) {
-        this.pending = false;
-        queueMicrotask(() => this.trigger("coalesced"));
-      }
+      this.schedulePoll();
     }
   }
 
@@ -1700,7 +1758,6 @@ class DashboardState {
   }
 
   async start() {
-    this.pollTimer = setInterval(() => this.trigger("poll"), this.config.pollMs);
     this.heartbeatTimer = setInterval(() => {
       for (const response of this.clients.set) response.write(`: heartbeat ${Date.now()}\n\n`);
     }, SSE_HEARTBEAT_MS);
@@ -1716,13 +1773,18 @@ class DashboardState {
         // Missing first-run directories are expected; polling remains authoritative.
       }
     }
-    this.trigger("startup");
+    if (this.config.serviceUnitError) {
+      this.lastAttemptAt = nowIso();
+      this.broadcast();
+    } else {
+      this.trigger("startup");
+    }
   }
 
   stop() {
     this.stopped = true;
     killProcessTree(this.activeChild);
-    clearInterval(this.pollTimer);
+    clearTimeout(this.pollTimer);
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.fileTimer);
     clearTimeout(this.staleTimer);
@@ -2261,7 +2323,11 @@ async function main() {
     : ", no trusted proxy (clients are throttled by the address they arrive from)";
   console.log(`fm-dashboard: listening on ${shown.map((a) => `http://${a}:${config.port}`).join(" and ")} - ${access}${trusted}`);
 
-  const shutdown = () => {
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`fm-dashboard: received ${signal}; shutting down cleanly`);
     state.stop();
     history.stop();
     events.stop();
@@ -2275,8 +2341,12 @@ async function main() {
       });
     }
   };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("beforeExit", (code) => {
+    console.error(`fm-dashboard: event loop drained unexpectedly with exit code ${code}; treating the clean exit as a failure`);
+    process.exitCode = 1;
+  });
 }
 
 // Every request handler is an async callback, so a rejection one of them fails
@@ -2345,7 +2415,7 @@ function checkCredentialsMode(argv) {
 // not have would get an HTTP listener where it expected one line of output, and
 // wait for a stdout that never closes. Nothing but a mode flag and its value is
 // accepted, and no argument at all still serves.
-const SERVER_MODES = new Set(["--event-store-path", "--check-credentials", "--check-trusted-proxies", "--hash-password"]);
+const SERVER_MODES = new Set(["--event-store-path", "--check-credentials", "--check-trusted-proxies", "--check-service-unit-cgroup", "--hash-password"]);
 const SERVER_MODE_VALUES = new Set(["--auth-file", "--username"]);
 
 function parseServerMode(argv) {
@@ -2375,7 +2445,8 @@ function parseServerMode(argv) {
 // access to exactly that directory and nothing else, and a single owner of the
 // rule beats two programs deriving it. The second reports whether the stored
 // credentials are usable, the third echoes the trusted-proxy allowlist this
-// server would honour, and the fourth derives a password digest to store.
+// server would honour, the fourth classifies supplied cgroup evidence, and the
+// fifth derives a password digest to store.
 let serverMode = null;
 try {
   serverMode = parseServerMode(process.argv.slice(2));
@@ -2400,6 +2471,8 @@ if (serverMode === "--event-store-path") {
     console.error(`fm-dashboard: ${safeText(error.message)}`);
     process.exit(1);
   }
+} else if (serverMode === "--check-service-unit-cgroup") {
+  console.log(cgroupContainsServiceUnit(fsReadFileSync(0, "utf8")) ? "service" : "other");
 } else if (serverMode === "--hash-password") {
   hashPasswordMode(process.argv).catch((error) => {
     console.error(`fm-dashboard: ${safeText(error.message)}`);

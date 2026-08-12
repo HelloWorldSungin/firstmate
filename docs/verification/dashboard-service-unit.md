@@ -2,10 +2,66 @@
 
 Why this record exists: a systemd unit fails in a way `systemctl status` reports as green.
 A directive systemd read past leaves a service that starts, stays active, and runs on defaults it was never configured with.
-The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, that the installer refuses to report success unless systemd reads them back, and that it refuses to report success over a service that did not stay running.
+The guarantee under test is that `bin/fm-dashboard-install.sh` emits directives systemd actually accepts, preserves installed operator-facing values during a repair, restarts after clean or failed exits, and refuses to report success unless systemd reads the generated contract back and the service stays running.
 
 Refresh with `bin/fm-test-run.sh tests/fm-dashboard-access.test.sh tests/fm-dashboard.test.sh`, which pin the portable half without systemd: the first covers the quoting and path forms systemd accepts, the second the hardening directives the unit must carry and the ones it must not.
 The observations below need a systemd host and are what those portable suites cannot prove.
+
+## The four 2026-08-12 reliability sequences
+
+Date: 2026-08-12.
+These separations record the current causal boundary for each measured defect rather than treating its containment as its diagnosis.
+
+### A clean exit left the service down
+
+Reproduction: the dashboard process terminated with status 0 while the installed unit used `Restart=on-failure`, after which the unit stayed inactive and the dashboard stopped answering HTTP.
+The initiating trigger at the service boundary was the status-0 process termination.
+The masking condition was that the old server logged neither the handled-signal path nor an unexpected event-loop drain, so the successful exit status did not identify what initiated the termination.
+The visible symptom was a cleanly inactive service and an unreachable dashboard until an operator restarted it.
+The initiating cause of that clean exit was not found.
+The available evidence does not distinguish an external stop or handled signal from an unexpected event-loop drain or another explicit exit path.
+The server now names handled signals and converts an unexpected event-loop drain to failure, which makes a recurrence attributable, but neither change retroactively diagnoses the 2026-08-12 exit.
+`Restart=always` independently contains any future clean exit and is not evidence for, or a substitute for, the missing initiating cause.
+
+### A slow snapshot kept the poller continuously busy
+
+Reproduction: a snapshot with a 150 ms deadline ran across the 100 ms poll interval, and a poll arrived before that attempt completed.
+The initiating trigger was the fixed interval firing while a previous snapshot attempt was still in flight.
+The masking condition was a fleet whose snapshots completed inside the interval, because that timing never exercised the pending catch-up path.
+The old `refreshing` guard prevented two snapshot children from running literally at once, but its `pending` bit launched another attempt immediately on completion, so the overlapping schedule appeared serialized while it removed every idle gap.
+The visible symptom was back-to-back snapshot work and sustained CPU rather than one refresh followed by the configured interval.
+A trigger arriving mid-snapshot now queues no catch-up attempt, callers continue to receive the current envelope, and the next routine poll starts one full interval after completion.
+
+### New server code ran under an old unit
+
+Reproduction: a server identified as `firstmate-dashboard.service` and carrying `INVOCATION_ID`, but lacking the generated `runtime-scratch-v1` marker, had no writable `TMPDIR` and previously reached a child command before exposing that mismatch.
+The initiating trigger was deploying current server code without reinstalling the already-loaded unit that predated `RuntimeDirectory=` and `TMPDIR=`.
+The masking condition was that systemd kept the old unit active and commands that did not need a temp file continued to work, so the missing grant appeared only when a snapshot path first needed scratch space.
+The visible symptom was a raw `mktemp` or read-only-filesystem failure instead of an installation diagnosis.
+The server now refuses to start polling under that stale installed contract and reports `rerun bin/fm-dashboard-install.sh` as the repair.
+On systemd versions that provide `SYSTEMD_EXEC_PID`, the server requires it to match its own process id.
+On older versions, the exact `firstmate-dashboard.service` component in `/proc/self/cgroup` supplies the same unit-specific boundary across legacy and unified cgroup formats.
+An inherited `INVOCATION_ID` from an unrelated parent service therefore does not make a stand-alone dashboard process claim the installed-unit contract.
+That repair preserves the installed address and trusted proxies unless explicit environment values or flags replace them.
+
+### Missing snapshot data falsely condemned supervision
+
+Reproduction: rendering an unavailable envelope with a null snapshot supplied no `supervision.watcher` object to the health builder.
+The initiating trigger was the missing fleet snapshot, not a stopped watcher.
+The masking condition was that the old watcher classifier treated an absent watcher record as equivalent to an explicit `{ "present": false }` reading, while red readings survived the unavailable-snapshot demotion.
+The visible symptom was a red supervision value of `not running` even though no watcher observation had been made.
+This false supervision verdict was downstream of the missing snapshot.
+An absent watcher record now reports `unknown`, while an explicit `present: false` record still reports `not running`.
+
+Portable regression command:
+
+```console
+$ bin/fm-test-run.sh tests/fm-dashboard.test.sh tests/fm-dashboard-inbox.test.sh
+...
+all fm-dashboard tests passed
+...
+all fm-dashboard-inbox tests passed
+```
 
 ## Which quoting systemd accepts
 
@@ -227,4 +283,5 @@ Pinning them in one case is deliberate - the grant and the `TMPDIR` are worthles
 `bin/fm-dashboard-install.sh` reads both directives back from `systemctl --user show` before reporting success, for the same reason it reads back the environment file: a unit systemd read past leaves a green service running on defaults it was never configured with.
 
 An already-installed unit does not pick any of this up on its own.
-The generator owns the change, so an existing service takes it by rerunning `bin/fm-dashboard-install.sh` with the same options, which rewrites the unit, reloads, restarts, and verifies the readback.
+The generator owns the change, so an existing service takes it by rerunning `bin/fm-dashboard-install.sh`, which preserves the installed operator-facing settings by default, rewrites the unit, reloads, restarts, and verifies the readback.
+The generated runtime-contract marker also lets current server code identify an older loaded unit before polling and report that same repair instead of surfacing the first command's scratch-space failure.

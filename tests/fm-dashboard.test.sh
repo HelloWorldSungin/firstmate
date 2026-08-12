@@ -106,6 +106,7 @@ make_runtime() {  # <name> [with-command]
 #!/usr/bin/env bash
 set -u
 control=${DASH_TEST_CONTROL:?}
+printf 'run\n' >> "$control/executions"
 if command -v flock >/dev/null 2>&1; then
   exec 9> "$control/execution.lock"
   if ! flock -n 9; then
@@ -571,6 +572,34 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
   if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
   if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
+
+  const staleUnitEnvelope = {
+    schema: "fm-dashboard-envelope.v1",
+    status: {
+      phase: "unavailable",
+      stale: false,
+      error: {
+        kind: "service_unit_outdated",
+        message: "rerun bin/fm-dashboard-install.sh",
+      },
+    },
+    snapshot: null,
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(staleUnitEnvelope) });
+  const staleUnitNotice = selectors.get("#notice-region").textContent;
+  if (!staleUnitNotice.includes("Snapshot polling is paused until the service is reinstalled.")) {
+    throw new Error(`snapshot notice did not explain the stale unit's paused polling: ${staleUnitNotice}`);
+  }
+  if (staleUnitNotice.includes("Retrying automatically.")) {
+    throw new Error(`snapshot notice falsely claimed the stale unit would retry automatically: ${staleUnitNotice}`);
+  }
+  const staleUnitBoard = selectors.get("#kanban").textContent;
+  if (!staleUnitBoard.includes("Snapshot polling will resume after the service is reinstalled.")) {
+    throw new Error(`board did not explain how stale-unit polling resumes: ${staleUnitBoard}`);
+  }
+  if (staleUnitBoard.includes("refreshes continue automatically.")) {
+    throw new Error(`board falsely claimed the stale unit would refresh automatically: ${staleUnitBoard}`);
+  }
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
   pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
@@ -758,16 +787,67 @@ NODE
 }
 
 test_timeout_is_single_flight() {
-  local case_root
+  local case_root runs
   command -v flock >/dev/null 2>&1 || { echo "skip: flock not found"; return; }
   case_root=$(make_runtime timeout)
   printf 'hung\n' > "$case_root/control/mode"
-  start_fixture_server "$case_root" 0.15 0.05
+  start_fixture_server "$case_root" 0.15 0.1
   wait_for_expression "$case_root" '.status.error.kind == "timed_out"'
-  sleep 0.5
+  sleep 0.02
+  runs=$(wc -l < "$case_root/control/executions")
+  [ "$runs" -eq 1 ] || fail "a poll arriving mid-snapshot queued an immediate catch-up run ($runs runs)"
+  sleep 0.25
   [ ! -e "$case_root/control/overlap" ] || fail "snapshot executions overlapped while timeout and poll triggers raced"
   stop_server
-  pass "hung snapshots are hard-killed and coalesced without overlapping executions"
+  pass "a caller arriving mid-snapshot gets the completed result and the next poll waits a full interval"
+}
+
+# A stale service unit must be diagnosed before the snapshot command turns its
+# missing scratch grant into an opaque mktemp failure. INVOCATION_ID plus a
+# matching SYSTEMD_EXEC_PID is the newer-systemd boundary, with exact cgroup
+# membership covering older versions that do not provide that variable.
+test_stale_service_unit_is_actionable() {
+  local case_root classified
+  classified=$(printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = service ] || fail "a unified cgroup did not identify the installed dashboard service"
+  classified=$(printf '5:name=systemd:/user.slice/user-1000.slice/user@1000.service/firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = service ] || fail "a legacy cgroup did not identify the installed dashboard service"
+  classified=$(printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/not-firstmate-dashboard.service\n' \
+    | node "$SERVER" --check-service-unit-cgroup)
+  [ "$classified" = other ] || fail "a different unit was misidentified as the installed dashboard service"
+
+  case_root=$(make_runtime inherited-systemd-context)
+  TEST_PORT=$(free_port)
+  INVOCATION_ID=fixture-parent-invocation \
+    FM_HOME="$case_root/home" \
+    FM_DASHBOARD_PORT="$TEST_PORT" \
+    FM_DASHBOARD_TIMEOUT_SECONDS=1 \
+    FM_DASHBOARD_POLL_SECONDS=1 \
+    DASH_TEST_CONTROL="$case_root/control" \
+    node "$case_root/runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_expression "$case_root" '.status.phase == "ready"'
+  stop_server
+
+  case_root=$(make_runtime stale-unit)
+  TEST_PORT=$(free_port)
+  INVOCATION_ID=fixture-invocation \
+    FM_HOME="$case_root/home" \
+    FM_DASHBOARD_PORT="$TEST_PORT" \
+    FM_DASHBOARD_TIMEOUT_SECONDS=1 \
+    FM_DASHBOARD_POLL_SECONDS=1 \
+    DASH_TEST_CONTROL="$case_root/control" \
+    sh -c 'SYSTEMD_EXEC_PID=$$; export SYSTEMD_EXEC_PID; exec node "$1"' sh \
+      "$case_root/runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "service_unit_outdated" and (.status.error.message | contains("rerun bin/fm-dashboard-install.sh"))'
+  [ ! -e "$case_root/control/executions" ] || fail "the stale unit still launched a snapshot instead of reporting its repair"
+  stop_server
+  pass "old and new systemd identify a stale installed unit without misclassifying inherited context"
 }
 
 test_first_run_failures_are_explicit() {
@@ -861,6 +941,9 @@ test_installer_writes_hardened_user_service() {
   assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_ADDRESS="127.0.0.1"' "installer lost the loopback default"
   assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_POLL_SECONDS="3"' "installer lost the poll interval"
   assert_contains "$(cat "$unit")" 'ProtectHome=read-only' "service does not enforce a read-only home mount"
+  assert_contains "$(cat "$unit")" 'Restart=always' "service does not recover after a clean process exit"
+  assert_contains "$(cat "$unit")" 'Environment=FM_DASHBOARD_UNIT_CONTRACT=runtime-scratch-v1' \
+    "service does not carry the startup contract used to detect an outdated unit"
   assert_contains "$(cat "$unit")" 'WantedBy=default.target' "service is not boot-persistent"
   assert_contains "$out" "Service not started (--no-start)." "installer did not honor its no-start boundary"
 
@@ -906,6 +989,40 @@ test_installer_writes_hardened_user_service() {
 # outside this unit. Each half is what keeps the other from becoming
 # load-bearing, so a future pass that drops one is told what it just changed.
 # docs/verification/dashboard-service-unit.md records the reproductions.
+test_installer_preserves_exposure_configuration() {
+  local case_root env_file password
+  case_root="$TMP_ROOT/install-preserve"
+  mkdir -p "$case_root/config" "$case_root/home"
+  password='fixture-password-strong'
+  printf '%s\n' "$password" | env -u FM_DASHBOARD_ADDRESS -u FM_DASHBOARD_TRUSTED_PROXIES \
+    -u FM_DASHBOARD_AUTH_FILE -u FM_HOME \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+    --allow-worktree --fm-home "$case_root/fleet" --set-password \
+    --address 192.0.2.10 --trusted-proxy 192.0.2.20 --no-start >/dev/null
+  env_file="$case_root/config/firstmate/dashboard.env"
+
+  env -u FM_DASHBOARD_ADDRESS -u FM_DASHBOARD_TRUSTED_PROXIES \
+    -u FM_DASHBOARD_AUTH_FILE -u FM_HOME \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+    --allow-worktree --no-start >/dev/null
+  assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_ADDRESS="192.0.2.10"' \
+    "a repair with no flags reset the installed bind address"
+  assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.20"' \
+    "a repair with no flags cleared the installed trusted proxy"
+
+  env -u FM_DASHBOARD_ADDRESS -u FM_DASHBOARD_TRUSTED_PROXIES \
+    -u FM_DASHBOARD_AUTH_FILE -u FM_HOME \
+    HOME="$case_root/home" XDG_CONFIG_HOME="$case_root/config" "$INSTALLER" \
+    --allow-worktree --address 192.0.2.11 --trusted-proxy 192.0.2.21 --no-start >/dev/null
+  assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_ADDRESS="192.0.2.11"' \
+    "an explicit address did not replace the installed bind"
+  assert_contains "$(cat "$env_file")" 'FM_DASHBOARD_TRUSTED_PROXIES="192.0.2.21"' \
+    "the first explicit trusted proxy did not replace the installed list"
+  assert_not_contains "$(cat "$env_file")" '192.0.2.20,192.0.2.21' \
+    "an explicit trusted proxy appended to stale installed configuration"
+  pass "repair preserves installed exposure settings and explicit flags replace them"
+}
+
 test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory() {
   local case_root unit out directives directives_file probe runtime_dir
   case_root="$TMP_ROOT/install-sqlite-scratch"
@@ -1452,6 +1569,7 @@ test_stale_transition_streams_without_refresh
 test_browser_renders_contract_actions_and_liveness
 test_browser_alerts_only_for_new_inbox_items
 test_timeout_is_single_flight
+test_stale_service_unit_is_actionable
 test_first_run_failures_are_explicit
 test_real_snapshot_makes_zero_fleet_writes
 test_history_survives_teardown_and_backlog_pruning
@@ -1463,6 +1581,7 @@ test_a_failed_usage_read_keeps_the_last_good_one
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service
+test_installer_preserves_exposure_configuration
 test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
