@@ -1,8 +1,8 @@
-// Verified against Pi 0.81.1, 0.82.0, 0.83.0, and 0.84.1, which add the ordinary-user
-// spacer and row together via InteractiveMode.addMessageToChat. This adapter probes that
-// exact method and throws if it is missing; fm-calm.ts catches that and skips only this
-// adapter with a diagnostic instead of blocking Calm or Pi. It changes only that
-// presentation and never message delivery.
+// Pi adds the ordinary-user spacer and row together via InteractiveMode.addMessageToChat;
+// docs/calm-mode-feasibility.md owns which Pi versions that is verified against. This
+// adapter probes that exact method and throws if it is missing; fm-calm.ts catches that
+// and skips only this adapter with a diagnostic instead of blocking Calm or Pi. It
+// changes only that presentation and never message delivery.
 //
 // Pi 0.84 gave UserMessageComponent a 4th Markdown-transformer argument and feeds every
 // stock user row this.getMarkdownTransformers() (the mermaid transformer plus whatever

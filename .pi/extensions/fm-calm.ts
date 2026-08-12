@@ -1,9 +1,11 @@
 // Firstmate's home-persistent Pi transcript presentation toggle.
 //
-// Verified against Pi 0.81.1 and 0.82.0, which expose built-in ToolDefinitions, per-slot
-// renderers, renderShell: "self", session_start replacement reasons, agent_start and
-// agent_settled, ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), setWidget()
-// with a disposable component factory, and setHiddenThinkingLabel().
+// Calm assumes Pi exposes built-in ToolDefinitions, per-slot renderers,
+// renderShell: "self", session_start replacement reasons, agent_start and agent_settled,
+// ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), setWidget() with a
+// disposable component factory, and setHiddenThinkingLabel();
+// docs/calm-mode-feasibility.md owns which Pi versions those assumptions are verified
+// against.
 // ./lib/fm-calm-working-ship.ts owns the animated working presentation this file
 // installs. The focused tests pin those assumptions but never reject a
 // newer Pi solely for its version. The collapsed-thinking, operational-user, and
@@ -420,6 +422,11 @@ export default function (pi: ExtensionAPI) {
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
+      // Pi's extension API exposes no render invalidation without a status side effect,
+      // so restoring Calm rendering here means toggling setToolsExpanded, and each toggle
+      // ends in Pi's showStatus. That status row rewrites Pi's own "Session exported to:
+      // <path>" confirmation in place, so the confirmation never reaches a drawn frame.
+      // docs/calm.md owns that user-visible limitation; changing this redraw changes it.
       setTimeout(() => {
         exportRendering = false;
         setCalmStockExportRendering(false);
