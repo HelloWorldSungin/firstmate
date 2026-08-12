@@ -359,74 +359,115 @@ fm_gbrain_is_main_brain_owner() {  # <home>
 }
 
 # docs/gbrain.md owns the serving-home credential rule and its reason.
-# This function owns the shared mechanical verdict: the actual serving
-# relationship is main_brain_owner in this home's local plane, and the actual
-# hosted credential is think.secret present and readable in this home's
-# credential plane. A missing credential is known absent; an unreadable plane
-# is unknown rather than ok.
+# This function owns the shared mechanical verdict, read from the planes that
+# actually hold each half of the rule:
+#
+#   the serving relationship   main_brain_owner in this home's local plane
+#   hosted synthesis reachable a think.secret credential present and readable in
+#                              this home's credential plane, OR a think.base_url
+#                              that leaves this host
+#
+# The second half matters because the credential a served `think` spends need
+# not sit in the credential plane at all: docs/gbrain.md reads the fleet's key
+# from a file outside every home and injects it into the synthesizing process,
+# so a serving home pointed at a hosted provider breaks the rule with an empty
+# credential plane.
+#
+# The serving relationship is read first and gates everything else. A home that
+# provably serves nothing cannot break a rule that constrains serving homes, so
+# it is ok whatever its credential plane holds, and no further plane is read.
+# Past that gate a plane this process cannot read is unknown, never ok.
 #
 # Sets FM_GBRAIN_SERVING_CREDENTIAL_STATE to ok, serving-with-credential, or
 # unknown, with the reason in FM_GBRAIN_SERVING_CREDENTIAL_DETAIL.
 # Returns 0 in every case so sourcing callers decide how each surface renders
 # the verdict.
-# shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
 FM_GBRAIN_SERVING_CREDENTIAL_STATE=""
-# shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
 FM_GBRAIN_SERVING_CREDENTIAL_DETAIL=""
+
+# The single assignment point for both output globals, so no verdict path can
+# leave one of them stale from an earlier call.
+fm_gbrain_serving_verdict() {  # <state> <detail>
+  # shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
+  FM_GBRAIN_SERVING_CREDENTIAL_STATE=$1
+  # shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
+  FM_GBRAIN_SERVING_CREDENTIAL_DETAIL=$2
+  return 0
+}
+
 fm_gbrain_serving_credential_state() {  # <home>
-  local home=$1 shared local_file secret_name="" serving="" held="" detail="" rc
-  FM_GBRAIN_SERVING_CREDENTIAL_STATE=""
-  FM_GBRAIN_SERVING_CREDENTIAL_DETAIL=""
-  shared=$(fm_gbrain_shared_path "$home")
+  local home=$1 shared local_file secret_name="" held="" refused="" rc
+  local think_url think_host also=""
   local_file=$(fm_gbrain_local_path "$home")
 
-  # Each input comes from a plane this command must be able to read. An
-  # unreadable plane leaves its input unset, which the verdict below turns into
-  # `unknown` rather than treating the gap as a clean bill of health.
-  if fm_gbrain_validate_local "$local_file"; then
-    if fm_gbrain_is_main_brain_owner "$home"; then serving=1; else serving=0; fi
-  else
-    detail=$FM_GBRAIN_ERROR
+  # A home with no home-local plane was never marked an owner, so it serves
+  # nothing. Answering that before anything else keeps a home that has never
+  # configured a brain silent without needing jq or a shared-plane walk.
+  if [ ! -e "$local_file" ]; then
+    fm_gbrain_serving_verdict ok "this home serves no brain"
+    return 0
+  fi
+  # Every plane below is read through jq, and jq's absence is not a malformed
+  # configuration: say which tool is missing rather than blaming the config.
+  if ! command -v jq >/dev/null 2>&1; then
+    fm_gbrain_serving_verdict unknown \
+      "jq is not installed, so neither this home's serving relationship nor its credential plane could be read"
+    return 0
+  fi
+  if ! fm_gbrain_validate_local "$local_file"; then
+    fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"
+    return 0
+  fi
+  if ! fm_gbrain_is_main_brain_owner "$home"; then
+    fm_gbrain_serving_verdict ok "this home serves no brain"
+    return 0
   fi
 
-  if fm_gbrain_validate_shared "$shared"; then
-    secret_name=$(fm_gbrain_json_str "$shared" '.think.secret')
-    if [ -n "$secret_name" ]; then
-      rc=0
-      fm_gbrain_read_secret "$home" "$secret_name" || rc=$?
-      FM_GBRAIN_SECRET=""
-      case $rc in
-        0) held=1 ;;
-        1) held=0 ;;
-        # A present credential this process refuses or cannot read leaves the
-        # credential plane unknown rather than proving the home holds nothing.
-        *) detail="${detail:+$detail; }$FM_GBRAIN_ERROR" ;;
-      esac
-    else
-      held=0
+  shared=$(fm_gbrain_shared_path "$home")
+  if ! fm_gbrain_validate_shared "$shared"; then
+    fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"
+    return 0
+  fi
+  secret_name=$(fm_gbrain_json_str "$shared" '.think.secret')
+  if [ -n "$secret_name" ]; then
+    rc=0
+    fm_gbrain_read_secret "$home" "$secret_name" || rc=$?
+    FM_GBRAIN_SECRET=""
+    case $rc in
+      0) held=1 ;;
+      1) held=0 ;;
+      # A present credential this process refuses or cannot read leaves the
+      # credential plane unknown rather than proving the home holds nothing.
+      *) refused=$FM_GBRAIN_ERROR ;;
+    esac
+  else
+    held=0
+  fi
+
+  if [ "$held" = 1 ]; then
+    fm_gbrain_serving_verdict serving-with-credential \
+      "this home serves its brain as the main brain and holds the hosted synthesis credential '$secret_name'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
+    return 0
+  fi
+
+  think_url=$(fm_gbrain_json_str "$shared" '.think.base_url')
+  if [ -n "$think_url" ]; then
+    think_host=$(fm_gbrain_url_host "$think_url")
+    if [ -n "$think_host" ] && ! fm_gbrain_host_is_loopback "$think_host"; then
+      [ -z "$refused" ] || also=" (its credential plane could not be read either: $refused)"
+      fm_gbrain_serving_verdict serving-with-credential \
+        "this home serves its brain as the main brain and points think at the hosted provider $think_host, which a read-only holder can reach and spend under whatever credential the synthesizing process is given$also - remove think.base_url (and think.secret) before serving"
+      return 0
     fi
-  else
-    detail="${detail:+$detail; }$FM_GBRAIN_ERROR"
   fi
 
-  if [ -z "$serving" ] || [ -z "$held" ]; then
-    FM_GBRAIN_SERVING_CREDENTIAL_STATE=unknown
-    FM_GBRAIN_SERVING_CREDENTIAL_DETAIL="${detail:-could not read the serving relationship or the credential plane}"
+  if [ -z "$held" ]; then
+    fm_gbrain_serving_verdict unknown \
+      "${refused:-the credential plane of this home could not be read}"
     return 0
   fi
-  if [ "$serving" -eq 1 ] && [ "$held" -eq 1 ]; then
-    FM_GBRAIN_SERVING_CREDENTIAL_STATE="serving-with-credential"
-    FM_GBRAIN_SERVING_CREDENTIAL_DETAIL="this home serves its brain as the main brain and holds the hosted synthesis credential '$secret_name'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
-    return 0
-  fi
-  # shellcheck disable=SC2034 # Output global consumed by sourcing callers (fm-gbrain.sh).
-  FM_GBRAIN_SERVING_CREDENTIAL_STATE="ok"
-  if [ "$serving" -eq 1 ]; then
-    FM_GBRAIN_SERVING_CREDENTIAL_DETAIL="this home serves its brain as the main brain and holds no usable hosted synthesis credential"
-  else
-    # shellcheck disable=SC2034 # Output global consumed by sourcing callers (fm-gbrain.sh).
-    FM_GBRAIN_SERVING_CREDENTIAL_DETAIL="this home serves no brain"
-  fi
+  fm_gbrain_serving_verdict ok \
+    "this home serves its brain as the main brain and holds no usable hosted synthesis credential"
   return 0
 }
 

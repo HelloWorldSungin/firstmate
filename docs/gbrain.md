@@ -115,11 +115,13 @@ Treat it as accepted-while-latent, and re-examine it before the first main brain
 [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the measurement behind it.
 
 The rule is checked rather than only stated.
-[`bin/fm-gbrain.sh`](../bin/fm-gbrain.sh) `check` fails a `serving-credential` row when a home serves its brain and holds a usable hosted synthesis credential, so the forbidden configuration exits non-zero instead of passing unnoticed.
+[`bin/fm-gbrain.sh`](../bin/fm-gbrain.sh) `check` fails a `serving-credential` row when a home serves its brain and hosted synthesis is reachable on it, so the forbidden configuration exits non-zero instead of passing unnoticed.
 `grant-read` warns at the moment of creation, because registering the first reading client is the ordinary action that turns a latent credential into a live boundary; registration still completes, since the fix is to remove the credential rather than to block the share, while the command exits non-zero so the required follow-up cannot be missed.
 `serving-check` runs at every session start (via `bin/fm-bootstrap.sh`) and emits a `GBRAIN_SERVING_CREDENTIAL` line when a home is already in the forbidden configuration, so an existing violation cannot sit unnoticed between sessions.
-The verdict keys off the actual serving relationship and the actual credential plane - `main_brain_owner` in the home-local plane and a `think.secret` credential that is present and readable in the credential plane - never a home's name, because deriving it from a name is the defect class this repository keeps relearning.
-An unreadable serving relationship or credential plane is reported as `unknown` and never as a pass, because a check that could not run must not look like one that found nothing.
+The verdict keys off the actual planes and never a home's name, because deriving it from a name is the defect class this repository keeps relearning.
+The serving relationship is `main_brain_owner` in the home-local plane, and it is read first: a home that provably serves nothing is clean whatever its credential plane holds, because the rule constrains serving homes alone.
+Hosted synthesis counts as reachable on a serving home by either route the rule names - a `think.secret` credential that is present and readable in that home's credential plane, or a `think.base_url` that leaves this host - because the credential a served `think` spends can be injected at runtime from the fleet-wide file in [MiniMax credential contract and privacy boundary](#minimax-credential-contract-and-privacy-boundary) rather than from any home's credential plane.
+An unreadable serving relationship, shared plane, or credential plane is reported as `unknown` and never as a pass, on every surface including `grant-read`, because a check that could not run must not look like one that found nothing.
 `bin/fm-gbrain-lib.sh` owns the single verdict every surface shares; [`gbrain-scoping.md`](gbrain-scoping.md) points here for the rule and its enforcement.
 
 ### Announce a maintenance window

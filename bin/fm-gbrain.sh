@@ -33,9 +33,11 @@
 #                exits 0, because local search does not depend on either. A
 #                broken local plane - invalid configuration, or a credential
 #                stored too loosely to use - exits non-zero. A home that serves
-#                its brain while holding a usable hosted synthesis credential
-#                fails the serving-credential row for the same reason, because
-#                that configuration is what the read-only share rule forbids.
+#                its brain while hosted synthesis is reachable on it - a usable
+#                credential in its credential plane, or a think endpoint that
+#                leaves this host - fails the serving-credential row for the
+#                same reason, because that configuration is what the read-only
+#                share rule forbids.
 #   token        Mint a short-lived read-only access token for the main brain.
 #                This is the one command that writes a credential to stdout.
 #   grant-read   Register a read-scoped OAuth client on THIS home's brain and
@@ -57,13 +59,15 @@
 #                be retried. Destructive, so it refuses without --yes.
 #   serving-check  Read-only alarm for the serving-credential rule (docs/gbrain.md):
 #                print one GBRAIN_SERVING_CREDENTIAL line when THIS home both
-#                serves its brain as the main brain and holds a usable hosted
-#                synthesis credential, or when either plane cannot be read; stay
-#                silent when the home is clear. It reads only the config planes,
-#                so it needs no network, no token mint, and no gbrain binary,
-#                which is what makes it safe to run at every session start. It
-#                never exits non-zero: the line itself is the signal, so a
-#                caller that finds nothing stays quiet rather than failing.
+#                serves its brain as the main brain and has hosted synthesis
+#                reachable on it, or when a plane the verdict needs cannot be
+#                read; stay silent when the home is clear. A home that serves
+#                nothing is clear whatever its credential plane holds, so a
+#                reading home never raises this alarm. It reads only the config
+#                planes, so it needs no network, no token mint, and no gbrain
+#                binary, which is what makes it safe to run at every session
+#                start. It never exits non-zero: the line itself is the signal,
+#                so a caller that finds nothing stays quiet rather than failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
@@ -453,18 +457,32 @@ cmd_grant_read() {
     followup=1
   fi
   # docs/gbrain.md owns the rule. Reuse the shared verdict so grant-read warns
-  # exactly when registration creates the forbidden configuration.
+  # exactly when registration creates the forbidden configuration - and, like
+  # every other surface, never reports a verdict it could not reach as a pass.
   fm_gbrain_serving_credential_state "$FM_HOME"
-  if [ "$FM_GBRAIN_SERVING_CREDENTIAL_STATE" = serving-with-credential ]; then
-    printf '\n'
-    printf '  *** WARNING: this home now SERVES its brain and still holds a usable\n'
-    printf '      hosted synthesis credential. Since GBrain v0.42.76.0 a read-only\n'
-    printf '      holder reaches think on the serving home, so the share is read-only\n'
-    printf '      for retrieval but NOT for synthesis: a reader can run synthesis here\n'
-    printf '      under this home model and credential. Remove the credential (and\n'
-    printf '      think.secret) before relying on the share, or do not serve this brain.\n'
-    followup=1
-  fi
+  case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
+    serving-with-credential)
+      printf '\n'
+      printf '  *** WARNING: this home now SERVES its brain and hosted synthesis is\n'
+      printf '      reachable on it. Since GBrain v0.42.76.0 a read-only holder reaches\n'
+      printf '      think on the serving home, so the share is read-only for retrieval\n'
+      printf '      but NOT for synthesis: a reader can run synthesis here under this\n'
+      printf '      home model and credential. Remove the hosted synthesis credential\n'
+      printf '      (and think.secret) before relying on the share, or do not serve\n'
+      printf '      this brain.\n'
+      printf '      %s\n' "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL"
+      followup=1
+      ;;
+    unknown)
+      printf '\n'
+      printf '  *** WARNING: this home now SERVES its brain, and whether hosted\n'
+      printf '      synthesis is reachable on it could not be determined:\n'
+      printf '      %s.\n' "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL"
+      printf '      Resolve that and re-run "fm-gbrain.sh check" before relying on the\n'
+      printf '      share; a verdict this command could not reach is not a clean one.\n'
+      followup=1
+      ;;
+  esac
   if [ -n "$previous" ]; then
     if gbrain_call auth revoke-client "$previous" >/dev/null 2>&1; then
       printf '  rotated    revoked the previous client %s\n' "$previous"
