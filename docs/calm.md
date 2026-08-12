@@ -19,8 +19,9 @@ The session-start nudge remains on its existing non-displayed custom-message pat
 
 Outside Pi's same-name built-in override collision described below, Calm changes presentation only.
 Calm's built-in wrappers preserve Pi's execution behavior, and input delivery, ordering, model context, session storage, diagnostics, and `/export` and `/share` operation remain unchanged.
-One presentation exception is known: Calm redraws the transcript after `/export`, and that redraw overwrites Pi's `Session exported to: <path>` confirmation before it reaches a drawn frame, so the confirmation row is not displayed.
-The exported HTML itself is complete and unaffected, and the redraw runs whenever the Calm extension is loaded rather than only while Calm is on.
+One presentation exception is known: with Calm on, Calm redraws the transcript after `/export`, and that redraw overwrites Pi's `Session exported to: <path>` confirmation before it reaches a drawn frame, so the confirmation row is not displayed.
+The exported HTML itself is complete and unaffected.
+Calm registers that redraw for `/share` as well as `/export` and does not condition it on Calm being on, but only the Calm-on `/export` path is verified; [`calm-mode-feasibility.md`](calm-mode-feasibility.md#2026-08-12-pi-0841-compatibility-verification) owns the tested scope.
 Every hidden Firstmate input remains available to the model and in serialized session data and exported artifacts.
 Legacy operational custom messages remain in session data and Pi's sidebar tree, although the main HTML transcript may omit them.
 Toggling Calm off restores ordinary rendering, and `Ctrl+O` expansion state is preserved.

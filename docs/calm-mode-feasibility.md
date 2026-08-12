@@ -269,6 +269,7 @@ It asserts one persisted and rendered captain answer, exact user-role operationa
 Quoted current markers, ASCII-only labels, ordinary text before a marker, unrelated U+2063 placement, and image-bearing input remain visible in component and native transcript checks.
 `tests/fm-pi-primary-live-e2e.test.sh` also proves the working ship replaces the built-in `Working...` row while Calm is active on the credentialed provider path, and that it clears when the run settles, before continuing its ordinary watcher lifecycle.
 `tests/fm-pi-primary-types.test.sh` performs strict no-emit TypeScript checking against the Pi declaration package named by `FM_PI_PACKAGE_DIR`, defaulting to the globally installed one, so each dated record below names the declaration version its own run covered rather than pinning one version here.
+That check does not currently pass; the [2026-08-12 record](#strict-typecheck-against-the-0841-declarations-run-and-failing) owns the failing output and which part of it belongs to which change.
 
 The relevant commands are:
 
@@ -472,7 +473,9 @@ All three are preserved untouched anyway: the duplicate is harmless, and the two
 
 The fixture now supplies `getMarkdownTransformers`, and - the part the fixture alone did not cover - `CalmOperationalUserMessageComponent` in `.pi/extensions/lib/fm-calm-operational-user-layout.ts` now forwards `this.getMarkdownTransformers?.()` into its `super(...)` call.
 Without that forward the adapter substituted a row that silently dropped every transformer stock Pi applies (Pi's own mermaid transformer plus any a third-party Pi extension registered), which contradicts the adapter's promise to change only spacer-and-row presentation.
-The optional call keeps Pi 0.83.0 working unchanged: that release has neither the host method nor the constructor argument, so the forward resolves to `undefined` and 0.83.0 renders exactly as before.
+The optional call keeps Pi 0.83.0 rendering unchanged at run time: that release has neither the host method nor the constructor argument, so the forward resolves to `undefined` and 0.83.0 renders exactly as before.
+That guarantee is a run-time one only.
+The 4th argument does not exist in 0.83.0's declarations, so the strict typecheck rejects it when `FM_PI_PACKAGE_DIR` names a 0.83.0 package; the Evidence section quotes those errors.
 
 The regression coverage is behavioral, not structural.
 The fixture's host now returns a real marker transformer rather than an empty list, because a baseline built the same wrong way would drop transformers identically and the comparison would stay green.
@@ -505,6 +508,12 @@ Pi's extension API offers no render-invalidation call without a status side effe
 Until then the E2E records the behavior in both directions: it waits for the completed HTML document, fails if Pi's confirmation *does* appear (which would mean the clobber was fixed and this record is stale), and requires the editor to have cleared and Calm's redraw status row to be on screen.
 The structural export check is unchanged and still fails on a missing or incomplete HTML document, missing rendered tool data, or missing synthetic provenance.
 
+Tested scope, stated exactly: the counterfactual above compares Calm loaded and active against `fm-calm.ts` being absent, and the E2E assertion covers `/export` with Calm on.
+Two adjacent paths are exercised in neither direction and are not claimed as covered.
+The extension loaded with Calm off is one: the handler is registered in `session_start` with no Calm-state check and its body tests only the submit keybinding and the command text, so reading the code says the redraw and its clobber still happen, but no run pins that.
+`/share` is the other: the same handler intercepts it, and Pi writes `Share URL: <url>` through `showStatus` only after the upload resolves, so that row plausibly lands after Calm's `setTimeout(..., 0)` toggle and survives - plausibly, because nothing here tests it.
+Deciding whether the E2E should cover either path is deliberately left open rather than settled by this record.
+
 ### Evidence
 
 Component fixtures resolve their Pi through `FM_PI_PACKAGE_DIR`, so the second command below exercises the Calm adapters against Pi 0.83.0's real rendering components; the tmux E2E always drives the installed `pi` binary, which was 0.84.1 for both runs.
@@ -529,3 +538,39 @@ ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool
 ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
 ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
 ```
+
+### Strict typecheck against the 0.84.1 declarations: run, and failing
+
+Every earlier dated section above records `tests/fm-pi-primary-types.test.sh` against the 0.81.1 declaration package, which stayed globally installed through all of those runs; this is the first section whose installed declarations are 0.84.1.
+Run for real, it fails, and the same command pointed at a 0.83.0 package fails with three more errors.
+The test typechecks a temporary copy of the tracked extensions, which is what the paths below name.
+
+```text
+$ tsc --version
+Version 5.9.3
+
+$ tests/fm-pi-primary-types.test.sh
+../../../../../../tmp/fm-pi-primary-types.d4HukR/fm-calm.ts(402,57): error TS2345: Argument of type '(data: string) => void' is not assignable to parameter of type 'TerminalInputHandler'.
+  Type 'void' is not assignable to type '{ consume?: boolean | undefined; data?: string | undefined; } | undefined'.
+# exit 1
+
+$ FM_PI_PACKAGE_DIR=<pi-0.83.0-package> tests/fm-pi-primary-types.test.sh
+../../../../../../tmp/fm-pi-primary-types.TNNkuw/fm-calm.ts(402,57): error TS2345: Argument of type '(data: string) => void' is not assignable to parameter of type 'TerminalInputHandler'.
+  Type 'void' is not assignable to type '{ consume?: boolean | undefined; data?: string | undefined; } | undefined'.
+../../../../../../tmp/fm-pi-primary-types.TNNkuw/lib/fm-calm-operational-user-layout.ts(38,58): error TS2493: Tuple type '[text: string, markdownTheme?: MarkdownTheme | undefined, outputPad?: number | undefined]' of length '3' has no element at index '3'.
+../../../../../../tmp/fm-pi-primary-types.TNNkuw/lib/fm-calm-operational-user-layout.ts(117,56): error TS2493: Tuple type '[text: string, markdownTheme?: MarkdownTheme | undefined, outputPad?: number | undefined]' of length '3' has no element at index '3'.
+../../../../../../tmp/fm-pi-primary-types.TNNkuw/lib/fm-calm-operational-user-layout.ts(120,45): error TS2554: Expected 1-3 arguments, but got 4.
+# exit 1
+```
+
+Two independent facts are in that output, and only the second belongs to this change.
+
+The `fm-calm.ts(402,57)` error is neither Pi drift nor this branch's doing.
+`TerminalInputHandler` is declared `(data: string) => { consume?: boolean; data?: string } | undefined` in Pi 0.81.1, 0.82.0, 0.83.0, and 0.84.1 alike - byte-identical in all four `dist/core/extensions/types.d.ts` - while Calm's submit handler returns nothing.
+`.pi/extensions/fm-calm.ts` is untouched on this branch, and that same single error reproduces from base `b5cf66e` against the same installed 0.84.1 package, and on `tsc` 5.4.5, 5.7.3, and 5.9.3.
+So the earlier `ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.81.1` lines above should not be read as covering the current tree: replaying the 2026-07-23 record's own tree (`1c4d210`) against a freshly installed 0.81.1 package reports this same handler error today.
+Those dated records stand as written; this one records that the check does not pass now, and correcting the handler's return type is left to a separate change.
+
+The three `fm-calm-operational-user-layout.ts` errors are this change's, and appear only against 0.83.0 declarations: the 4th `super(...)` argument added here is 0.84-only, so 0.83.0's 3-element constructor tuple rejects it.
+That is the declaration-level counterpart of the run-time compatibility recorded above, and the reason the 0.83.0 guarantee is stated there as run-time rendering rather than as a clean typecheck.
+Neither error surfaces in an environment without TypeScript: the test prints `skip: tsc not found for Pi extension typecheck` and exits 0, and no `tsc` version is pinned anywhere in this repository.

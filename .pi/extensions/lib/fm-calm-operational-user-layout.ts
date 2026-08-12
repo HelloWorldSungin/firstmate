@@ -9,7 +9,10 @@
 // extensions registered). This adapter forwards that argument through the same host
 // method so the row it substitutes keeps Pi's transformer output; the call is optional so
 // Pi 0.83.0, which has neither the host method nor the constructor argument, still gets
-// its own three-argument behavior.
+// its own three-argument behavior. That 0.83.0 guarantee is a run-time one: this file
+// reads UserMessageConstructorArgs[3], which pre-0.84 declarations do not have, so
+// tests/fm-pi-primary-types.test.sh reports it when FM_PI_PACKAGE_DIR names an older
+// package (docs/calm-mode-feasibility.md quotes the exact errors).
 import type { UserMessageComponent as PiUserMessageComponent } from "@earendil-works/pi-coding-agent";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { calmPresentationHides } from "./fm-calm-visibility.ts";
