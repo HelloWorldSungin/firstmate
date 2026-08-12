@@ -102,6 +102,110 @@ SH
   pass "ShellCheck installer retries a transient download failure"
 }
 
+test_installer_outlasts_a_sustained_download_outage() {
+  # The retry loop's job is to absorb a release-CDN blip, and blips outlast a
+  # couple of seconds: the loop that stopped after three attempts one and two
+  # seconds apart gave up ~3s after the first HTTP 503 and failed a CI lane on
+  # infra noise. Four consecutive failures must therefore still recover, the
+  # waits between them must widen, and each attempt must be time-bounded so a
+  # stalled connection cannot hold the lane until the job timeout.
+  local tmp fakebin destination out waits
+  tmp=$(fm_test_tmproot fm-shellcheck-outage)
+  fakebin=$(fm_fakebin "$tmp")
+  destination="$tmp/bin"
+
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CURL_ARGS"
+count=0
+[ ! -f "$CURL_COUNT" ] || count=$(cat "$CURL_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" > "$CURL_COUNT"
+# 503 then three dead connections: the exact shape CI observed.
+[ "$count" -gt 1 ] || exit 22
+[ "$count" -gt 4 ] || exit 56
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    : > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
+SH
+  cat > "$fakebin/sha256sum" <<'SH'
+#!/usr/bin/env bash
+printf '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  %s\n' "$1"
+SH
+  cat > "$fakebin/tar" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-C" ]; then
+    mkdir -p "$2/shellcheck-v0.11.0"
+    cat > "$2/shellcheck-v0.11.0/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+EOF
+    chmod +x "$2/shellcheck-v0.11.0/shellcheck"
+    exit 0
+  fi
+  shift
+done
+exit 2
+SH
+  # Records the backoff schedule instead of spending it, so the assertion below
+  # pins the widened wait budget without making this test slow.
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$SLEEP_WAITS"
+exit 0
+SH
+  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar" "$fakebin/sleep"
+
+  out=$(CURL_COUNT="$tmp/curl-count" CURL_ARGS="$tmp/curl-args" SLEEP_WAITS="$tmp/sleep-waits" \
+    PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) \
+    || fail "installer gave up on a sustained but transient outage"$'\n'"$out"
+  [ "$(cat "$tmp/curl-count")" -eq 5 ] || fail "installer did not retry through four failed attempts"
+  [ -x "$destination/shellcheck" ] || fail "installer did not install ShellCheck after the outage"
+  assert_contains "$out" "curl exit 22" "installer did not disclose the HTTP failure status"
+  assert_contains "$out" "curl exit 56" "installer did not disclose the dead-connection status"
+  waits=$(paste -sd, "$tmp/sleep-waits")
+  [ "$waits" = "2,4,8,16" ] || fail "backoff schedule was $waits, expected a doubling 2,4,8,16"
+  assert_grep '--max-time' "$tmp/curl-args" "installer left a download attempt unbounded in time"
+  assert_grep '--connect-timeout' "$tmp/curl-args" "installer left a connection attempt unbounded"
+  pass "ShellCheck installer outlasts a sustained transient outage with widening bounded attempts"
+}
+
+test_installer_stops_after_its_attempt_budget() {
+  # The widened budget must still end: a genuinely gone asset has to fail the
+  # lane fast rather than retry forever.
+  local tmp fakebin destination out rc
+  tmp=$(fm_test_tmproot fm-shellcheck-gone)
+  fakebin=$(fm_fakebin "$tmp")
+  destination="$tmp/bin"
+
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$CURL_COUNT" ] || count=$(cat "$CURL_COUNT")
+printf '%s\n' "$((count + 1))" > "$CURL_COUNT"
+exit 22
+SH
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/curl" "$fakebin/sleep"
+
+  rc=0
+  out=$(CURL_COUNT="$tmp/curl-count" PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "installer reported success without downloading anything"
+  [ "$(cat "$tmp/curl-count")" -eq 5 ] || fail "installer did not stop at its attempt budget"
+  assert_contains "$out" "download failed after 5 attempts" "installer did not name its exhausted budget"
+  [ ! -e "$destination/shellcheck" ] || fail "installer installed a binary it never downloaded"
+  pass "ShellCheck installer stops at its attempt budget on a permanent failure"
+}
+
 test_rejects_wrong_shellcheck_version() {
   # Version-independent: a fake shellcheck reporting a different version must be
   # refused before any lint, proving local and CI cannot silently diverge.
@@ -429,6 +533,8 @@ SH
 test_list_files_reports_the_shell_inventory
 test_pins_an_explicit_version
 test_installer_retries_transient_download_failure
+test_installer_outlasts_a_sustained_download_outage
+test_installer_stops_after_its_attempt_budget
 test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
