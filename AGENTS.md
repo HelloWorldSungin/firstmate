@@ -350,6 +350,7 @@ Resume fleet supervision immediately after the decision lands.
 
 Judge validation by the reconciled run-step verdict from `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed or cancelled is failed.
+Those working verdicts are cross-checked against worker liveness, so an `abandoned` verdict means the run is still advancing with no live worker to answer its next gate; load `stuck-crewmate-recovery` rather than waiting it out.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
 The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
 

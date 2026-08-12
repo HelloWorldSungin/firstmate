@@ -225,11 +225,12 @@ reset_fakes() {
   FM_FAKE_RUNS_RC=0
   FM_FAKE_NM_SLEEP=""
   FM_FAKE_NM_CALL_LOG=""
+  FM_FAKE_AGENT_STATE="alive"
   FM_CREW_STATE_DEGRADED_MAX_AGE=""
   FM_CREW_STATE_NM_TIMEOUT=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
-  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG
+  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG FM_FAKE_AGENT_STATE
   export FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT
 }
 
@@ -1418,9 +1419,20 @@ test_dead_window_ignores_stale_status_log() {
 }
 
 # A closed/unreadable pane must NOT mask an authoritative run-step: judge by the
-# run-step, not the shell. The common case is a finished crew whose agent has
-# exited and closed its window (the normal gap between completion and teardown) -
-# it must still report its terminal run-step state (e.g. done), never unknown.
+# run-step, not the shell, so an attributed run is never collapsed to unknown or
+# answered from the stale status log. The common case is a finished crew whose
+# agent has exited and closed its window (the normal gap between completion and
+# teardown) - it must still report its terminal run-step state (e.g. done), which
+# needs no worker and is therefore unchanged by worker liveness.
+#
+# An ACTIVE run-step is where the second invariant applies on top: the run-step
+# stays visible, AND a gone worker is distinguishable from a live one - it
+# reports `abandoned`, not `working`, because a run the daemon keeps advancing
+# with nobody left to drive it is not a healthy validation (issue #105). The
+# pre-#105 `working` shape survives in full only where liveness is unverifiable.
+
+# Breaks if a closed pane masks a terminal run-step (unknown or the stale log),
+# or if the worker cross-check fires on a terminal verdict that needs no worker.
 test_dead_window_still_reports_terminal_run_step() {
   reset_fakes
   local d; d=$(new_case dead-window-done)
@@ -1438,7 +1450,13 @@ test_dead_window_still_reports_terminal_run_step() {
 }
 
 # The same for an active run: an agent pane that crashed mid-validation while the
-# daemon-backed run continues must report the live run-step, not unknown.
+# daemon-backed run continues must still report the live run-step, and must
+# report it as abandoned rather than healthy working. A closed window is exactly
+# the pairing production produces - tmux omits the window, so the recovery-grade
+# classifier answers `missing`.
+#
+# Breaks if a closed pane collapses an attributed active run to unknown (the
+# run-step stops being visible), or if a gone worker reads as plain `working`.
 test_dead_window_still_reports_active_run_step() {
   reset_fakes
   local d; d=$(new_case dead-window-active)
@@ -1447,11 +1465,33 @@ test_dead_window_still_reports_active_run_step() {
   fm_write_meta "$d/state/feat-dead-act.meta" "window=fm:fm-feat-dead-act" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-dead-act)"
   FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_AGENT_STATE=missing
   local out; out=$(run_crew_state "$d" feat-dead-act)
-  assert_contains "$out" "state: working" "closed pane still reports active run-step"
+  assert_contains "$out" "state: abandoned" "closed pane over an active run is abandoned, not healthy"
+  assert_contains "$out" "source: run-step" "closed pane does not mask the active run-step"
+  assert_contains "$out" "worker gone (missing)" "the verdict names the worker that is gone"
+  assert_not_contains "$out" "state: unknown" "closed pane with an active run must never be unknown"
+  assert_not_contains "$out" "state: working" "a gone worker must not read as healthy working"
+  pass "closed pane still reports an active run-step, as abandoned"
+}
+
+# Breaks if a closed pane collapses an attributed active run to unknown on a
+# backend with no recovery classifier, where the pre-#105 answer still holds.
+test_dead_window_active_run_unverified_stays_working() {
+  reset_fakes
+  local d out; d=$(new_case dead-window-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-dead-unver
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-dead-unver.meta" "window=fm:fm-feat-dead-unver" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-dead-unver)"
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_AGENT_STATE=unverified
+  out=$(run_crew_state "$d" feat-dead-unver)
+  assert_contains "$out" "state: working" "an unverifiable worker keeps the pre-#105 run-step answer"
   assert_contains "$out" "source: run-step" "closed pane does not mask the active run-step"
   assert_not_contains "$out" "state: unknown" "closed pane with an active run must never be unknown"
-  pass "closed pane still reports an active run-step"
+  assert_not_contains "$out" "abandoned" "an unverified read is never a confident death"
+  pass "closed pane over an active run stays working when liveness is unverifiable"
 }
 
 test_no_timeout_uses_perl_bound() {
@@ -2083,6 +2123,7 @@ test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
+test_dead_window_active_run_unverified_stays_working
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
@@ -2109,5 +2150,356 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_with_failed_fallback_degrades
+# ---------------------------------------------------------------------------
+# (r) Worker-liveness cross-check (issue #105): a plain `working` verdict must
+# not survive a confidently dead or missing agent, because the shared
+# no-mistakes daemon keeps a run advancing after the worker exits cleanly. A
+# read that cannot complete is `unknown`, never resolved either way. The break
+# condition for each test is the one-line comment at its top.
+
+# Breaks if a `dead` agent no longer downgrades a working run-step to abandoned.
+test_working_run_step_with_dead_agent_is_abandoned() {
+  reset_fakes
+  local d out; d=$(new_case working-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-dead.meta" "window=fm:fm-working-dead" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-dead)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" working-dead)
+  assert_contains "$out" "state: abandoned" "a working run with no live agent is abandoned"
+  assert_contains "$out" "source: run-step" "the verdict stays run-step sourced"
+  assert_contains "$out" "worker gone (dead)" "the detail names the dead worker"
+  assert_not_contains "$out" "state: working" "a dead worker must not read as a healthy working run"
+  pass "a working run-step whose agent is dead reports abandoned"
+}
+
+# Breaks if `missing` is not grouped with `dead` as a recovery-licensing verdict.
+test_working_run_step_with_missing_agent_is_abandoned() {
+  reset_fakes
+  local d out; d=$(new_case working-missing-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-missing
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-missing.meta" "window=fm:fm-working-missing" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-missing)"
+  FM_FAKE_AGENT_STATE=missing
+  out=$(run_crew_state "$d" working-missing)
+  assert_contains "$out" "state: abandoned" "a missing agent under a working run is abandoned"
+  assert_contains "$out" "worker gone (missing)" "the detail names the missing worker"
+  assert_not_contains "$out" "state: working" "a missing worker must not read as working"
+  pass "a working run-step whose agent is missing reports abandoned"
+}
+
+# Breaks if an unreadable liveness read resolves to a definite answer instead of
+# unknown (the defect class: a check returning an answer it had not earned).
+test_working_run_step_with_unreadable_agent_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case working-unreadable-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-unreadable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-unreadable.meta" "window=fm:fm-working-unreadable" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-unreadable)"
+  FM_FAKE_AGENT_STATE=unreadable
+  out=$(run_crew_state "$d" working-unreadable)
+  assert_contains "$out" "state: unknown" "an unreadable liveness read does not claim working"
+  assert_contains "$out" "agent liveness unreadable" "the detail names the unreadable read"
+  assert_not_contains "$out" "state: working" "an unreadable read must not read as working"
+  assert_not_contains "$out" "state: abandoned" "an unreadable read must not be treated as a confident death"
+  pass "an unreadable worker-liveness read downgrades to unknown, not a false reassurance"
+}
+
+# Breaks if an ambiguous liveness read resolves to alive or dead rather than
+# staying unknown.
+test_working_run_step_with_ambiguous_agent_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case working-ambiguous-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-ambiguous
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-ambiguous.meta" "window=fm:fm-working-ambiguous" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-ambiguous)"
+  FM_FAKE_AGENT_STATE=ambiguous
+  out=$(run_crew_state "$d" working-ambiguous)
+  assert_contains "$out" "state: unknown" "an ambiguous liveness read does not claim working"
+  assert_contains "$out" "agent liveness ambiguous" "the detail names the ambiguous read"
+  assert_not_contains "$out" "state: working" "an ambiguous read must not read as working"
+  assert_not_contains "$out" "state: abandoned" "an ambiguous read must not be treated as a confident death"
+  pass "an ambiguous worker-liveness read downgrades to unknown, resolving neither way"
+}
+
+# Breaks if a live agent is wrongly downgraded (a false alarm that would surface
+# healthy validation as a wedge).
+test_working_run_step_with_alive_agent_stays_working() {
+  reset_fakes
+  local d out; d=$(new_case working-alive-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-alive
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-alive.meta" "window=fm:fm-working-alive" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-alive)"
+  FM_FAKE_AGENT_STATE=alive
+  out=$(run_crew_state "$d" working-alive)
+  assert_contains "$out" "state: working" "a live agent keeps a working run healthy"
+  assert_contains "$out" "source: run-step" "the verdict stays run-step sourced"
+  assert_not_contains "$out" "abandoned" "a live agent must never be downgraded"
+  pass "a working run-step with a live agent stays working"
+}
+
+# Breaks if an unverified liveness read (no recovery classifier for this
+# backend) downgrades working - that would add a new unearned check, the very
+# defect class being fixed.
+test_working_run_step_with_unverified_liveness_stays_working() {
+  reset_fakes
+  local d out; d=$(new_case working-unverified-agent)
+  make_repo_on_branch "$d/wt" fm/feat-working-unverified
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/working-unverified.meta" "window=fm:fm-working-unverified" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-working-unverified)"
+  FM_FAKE_AGENT_STATE=unverified
+  out=$(run_crew_state "$d" working-unverified)
+  assert_contains "$out" "state: working" "a backend with no recovery classifier keeps a working run healthy"
+  assert_contains "$out" "source: run-step" "the verdict stays run-step sourced"
+  assert_not_contains "$out" "abandoned" "an unverified read must not be treated as a confident death"
+  assert_not_contains "$out" "agent liveness" "an unverified read must not surface as an unknown either"
+  pass "an unverified worker-liveness read leaves a working verdict unchanged"
+}
+
+# Breaks if the cross-check fires on a terminal `done` verdict (done needs no
+# worker).
+test_terminal_passed_with_dead_agent_stays_done() {
+  reset_fakes
+  local d out; d=$(new_case passed-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-passed-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/passed-dead.meta" "window=fm:fm-passed-dead" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-passed-dead)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" passed-dead)
+  assert_contains "$out" "state: done" "a passed run needs no worker and stays done"
+  assert_not_contains "$out" "abandoned" "a terminal pass must not be worker-downgraded"
+  pass "a terminal passed run stays done even with a dead agent"
+}
+
+# Breaks if the cross-check fires on a terminal `failed` verdict.
+test_terminal_failed_with_dead_agent_stays_failed() {
+  reset_fakes
+  local d out; d=$(new_case failed-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-failed-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/failed-dead.meta" "window=fm:fm-failed-dead" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-failed-dead)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" failed-dead)
+  assert_contains "$out" "state: failed" "a failed run needs no worker and stays failed"
+  assert_not_contains "$out" "abandoned" "a terminal failure must not be worker-downgraded"
+  pass "a terminal failed run stays failed even with a dead agent"
+}
+
+# Breaks if the cross-check fires on a `parked` verdict (parked already surfaces
+# and falls through to the status-log path).
+test_parked_run_with_dead_agent_still_parked() {
+  reset_fakes
+  local d out; d=$(new_case parked-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-parked-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-dead.meta" "window=fm:fm-parked-dead" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-parked-dead)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" parked-dead)
+  assert_contains "$out" "state: parked" "a parked run already surfaces and is not worker-downgraded"
+  assert_not_contains "$out" "abandoned" "a parked run must not be relabelled abandoned"
+  pass "a parked run stays parked even with a dead agent"
+}
+
+# Breaks if `abandoned` is dropped from the run-step record allowlist, so the
+# verdict stops being durable evidence for a later lookup failure.
+test_abandoned_is_recorded_for_later_degrade() {
+  reset_fakes
+  local d out rec; d=$(new_case abandoned-recorded)
+  make_repo_on_branch "$d/wt" fm/feat-aband-rec
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/aband-rec.meta" "window=fm:fm-aband-rec" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-aband-rec)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" aband-rec)
+  assert_contains "$out" "state: abandoned" "the live read surfaces abandoned"
+  rec=$(cat "$d/state/aband-rec.run-step" 2>/dev/null || true)
+  assert_contains "$rec" "abandoned" "abandoned is recorded for a later lookup failure to degrade to"
+  assert_not_contains "$rec" "working" "a stale working record must not survive the dead worker"
+  pass "an abandoned verdict is recorded so a later lookup failure cannot revert it"
+}
+
+# Breaks if a later lookup failure replays a stale `working` or collapses to
+# unknown instead of the recorded abandoned verdict.
+test_abandoned_degrades_after_later_lookup_failure() {
+  reset_fakes
+  local d out; d=$(new_case abandoned-degrade)
+  make_repo_on_branch "$d/wt" fm/feat-aband-deg
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/aband-deg.meta" "window=fm:fm-aband-deg" "worktree=$d/wt" "kind=ship" "harness=claude"
+  # First read: a working run whose worker is gone -> abandoned, recorded.
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-aband-deg)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" aband-deg)
+  assert_contains "$out" "state: abandoned" "first read surfaces the dead worker"
+  # Second read: the lookup now times out. The recorded abandoned verdict must
+  # degrade through, not a stale working or a collapse to unknown.
+  FM_FAKE_NM_RC=124
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" aband-deg
+  out=$(run_crew_state "$d" aband-deg)
+  assert_contains "$out" "state: abandoned" "a later lookup failure replays the actionable verdict"
+  assert_contains "$out" "source: run-step-degraded" "the replay is labelled degraded"
+  assert_not_contains "$out" "state: working" "a stale working answer must not return after the worker died"
+  pass "an abandoned verdict degrades through a later lookup failure instead of reverting"
+}
+
+# Breaks if the busy-pane cross-check is removed, so a stale busy record after a
+# clean worker exit reads as healthy working again.
+test_busy_pane_with_dead_agent_is_abandoned() {
+  reset_fakes
+  local d out; d=$(new_case busy-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-busy-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/busy-dead.meta" "window=fm:fm-busy-dead" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  FM_FAKE_AGENT_STATE=dead
+  arm_busy_record "$d/state" busy-dead
+  out=$(run_crew_state "$d" busy-dead)
+  assert_contains "$out" "state: abandoned" "a busy pane with no live agent is abandoned"
+  assert_contains "$out" "source: pane" "the verdict stays pane sourced"
+  assert_contains "$out" "worker gone (dead)" "the detail names the dead worker"
+  assert_not_contains "$out" "state: working" "a dead worker must not read as working"
+  pass "a busy pane whose agent is gone reports abandoned, not working"
+}
+
+# Breaks if the busy-pane path resolves an unreadable read either way instead of
+# unknown.
+test_busy_pane_with_unreadable_agent_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case busy-unreadable-agent)
+  make_repo_on_branch "$d/wt" fm/feat-busy-unreadable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/busy-unreadable.meta" "window=fm:fm-busy-unreadable" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  FM_FAKE_AGENT_STATE=unreadable
+  arm_busy_record "$d/state" busy-unreadable
+  out=$(run_crew_state "$d" busy-unreadable)
+  assert_contains "$out" "state: unknown" "an unreadable read over a busy pane does not claim working"
+  assert_contains "$out" "agent liveness unreadable" "the detail names the unreadable read"
+  assert_not_contains "$out" "state: working" "an unreadable read must not read as working"
+  assert_not_contains "$out" "state: abandoned" "an unreadable read must not be treated as a confident death"
+  pass "a busy pane with an unreadable agent read reports unknown"
+}
+
+# Breaks if a liveness token outside the classifier's vocabulary escapes the
+# busy-pane cross-check, which drops the busy verdict and lets the stale status
+# log answer `working` - the exact false reassurance this check exists to stop.
+test_busy_pane_with_unknown_liveness_token_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case busy-bogus-agent)
+  make_repo_on_branch "$d/wt" fm/feat-busy-bogus
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/busy-bogus.meta" "window=fm:fm-busy-bogus" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/busy-bogus.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  FM_FAKE_AGENT_STATE=not-a-liveness-token
+  arm_busy_record "$d/state" busy-bogus
+  out=$(run_crew_state "$d" busy-bogus)
+  assert_contains "$out" "state: unknown" "an unrecognized liveness token does not claim working"
+  assert_contains "$out" "source: pane" "the busy verdict is answered on the pane path, not discarded"
+  assert_contains "$out" "agent liveness unreadable" "an unrecognized token degrades to unreadable"
+  assert_not_contains "$out" "source: status-log" "the stale status log must not answer for a dropped busy verdict"
+  pass "an unrecognized liveness token over a busy pane reports unknown"
+}
+
+# Breaks if an unrecognized liveness token is trusted on the run-step path, where
+# it would leave the plain working verdict the cross-check is meant to question.
+test_working_run_step_with_unknown_liveness_token_is_unknown() {
+  reset_fakes
+  local d out; d=$(new_case runstep-bogus-agent)
+  make_repo_on_branch "$d/wt" fm/feat-runstep-bogus
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/runstep-bogus.meta" "window=fm:fm-runstep-bogus" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-runstep-bogus)"
+  FM_FAKE_AGENT_STATE=not-a-liveness-token
+  out=$(run_crew_state "$d" runstep-bogus)
+  assert_contains "$out" "state: unknown" "an unrecognized liveness token does not confirm a working run"
+  assert_contains "$out" "agent liveness unreadable" "an unrecognized token degrades to unreadable"
+  assert_not_contains "$out" "state: abandoned" "an unrecognized token is not a confident death"
+  pass "an unrecognized liveness token over a live run reports unknown"
+}
+
+# Breaks if the worker cross-check is applied to a secondmate, which reads its
+# state from the status log and would then be wrongly downgraded by agent state.
+test_secondmate_not_downgraded_by_worker_state() {
+  reset_fakes
+  local d out; d=$(new_case secondmate-dead-agent)
+  mkdir -p "$d/wt"
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/mate.meta" "window=fm:fm-mate" "worktree=$d/wt" "kind=secondmate" "home=$d/wt"
+  printf 'working: reconciling routed items\n' > "$d/state/mate.status"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" mate)
+  assert_contains "$out" "state: working" "a secondmate reads its state from the status log"
+  assert_contains "$out" "source: status-log" "the secondmate path is untouched by the worker cross-check"
+  assert_not_contains "$out" "abandoned" "a secondmate must not be worker-downgraded"
+  assert_not_contains "$out" "agent liveness" "no worker-liveness detail leaks into a secondmate verdict"
+  pass "a secondmate's status-log state is not downgraded by the worker cross-check"
+}
+
+# Breaks if crew_absorb_class treats an abandoned verdict as `working`, which is
+# the actual incident mechanism: the stale wake would be absorbed instead of
+# surfacing.
+test_working_run_step_with_dead_agent_not_absorbed() {
+  reset_fakes
+  local d; d=$(new_case dead-agent-not-absorbed)
+  make_repo_on_branch "$d/wt" fm/feat-not-absorbed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/not-absorbed.meta" "window=fm:fm-not-absorbed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-not-absorbed)"
+  FM_FAKE_AGENT_STATE=dead
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working not-absorbed \
+    && fail "a crew whose worker is dead under a live run was absorbed as provably working"
+  pass "a dead worker under a live run is not absorbed, so the stale wake surfaces"
+}
+
+# Breaks if an unreadable-liveness unknown verdict is absorbed (resolving an
+# unreadable read to working).
+test_working_run_step_with_unreadable_agent_not_absorbed() {
+  reset_fakes
+  local d; d=$(new_case unreadable-agent-not-absorbed)
+  make_repo_on_branch "$d/wt" fm/feat-unreadable-not-absorbed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unreadable-not-absorbed.meta" "window=fm:fm-unreadable-not-absorbed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-unreadable-not-absorbed)"
+  FM_FAKE_AGENT_STATE=unreadable
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working unreadable-not-absorbed \
+    && fail "a crew whose worker-liveness read is unreadable was absorbed as provably working"
+  pass "an unreadable worker-liveness read is not absorbed, so the stale wake surfaces"
+}
+
+test_working_run_step_with_dead_agent_is_abandoned
+test_working_run_step_with_missing_agent_is_abandoned
+test_working_run_step_with_unreadable_agent_is_unknown
+test_working_run_step_with_ambiguous_agent_is_unknown
+test_working_run_step_with_alive_agent_stays_working
+test_working_run_step_with_unverified_liveness_stays_working
+test_terminal_passed_with_dead_agent_stays_done
+test_terminal_failed_with_dead_agent_stays_failed
+test_parked_run_with_dead_agent_still_parked
+test_abandoned_is_recorded_for_later_degrade
+test_abandoned_degrades_after_later_lookup_failure
+test_busy_pane_with_dead_agent_is_abandoned
+test_busy_pane_with_unreadable_agent_is_unknown
+test_busy_pane_with_unknown_liveness_token_is_unknown
+test_working_run_step_with_unknown_liveness_token_is_unknown
+test_secondmate_not_downgraded_by_worker_state
+test_working_run_step_with_dead_agent_not_absorbed
+test_working_run_step_with_unreadable_agent_not_absorbed
 
 echo "all fm-crew-state tests passed"

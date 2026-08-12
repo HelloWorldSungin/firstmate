@@ -16,7 +16,7 @@
 # and no LLM. Output is one stable, parseable, token-tight line firstmate can read
 # every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|run-step-degraded|run-attribution|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown|abandoned> · source: <run-step|run-step-degraded|run-attribution|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship,
@@ -73,6 +73,25 @@
 #   6. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
+#   7. Worker-liveness cross-check, applied lazily and only to a plain
+#      `working` verdict (run-step and busy-pane alike): the no-mistakes
+#      daemon can keep advancing a run after the worker has exited cleanly,
+#      so a plain `working` is no longer sufficient on its own (issue #105).
+#      The run reaches its next gate and parks forever while the task keeps
+#      reporting healthy validation, because nobody is left to answer the
+#      next gate or read the next synchronous return. Cross-check
+#      fm_backend_agent_state (the recovery-grade classifier the secondmate
+#      liveness sweep reuses) and apply it to both paths. A confident `dead`
+#      or `missing` agent surfaces as the new actionable state `abandoned`
+#      (the run is advancing with nobody driving it); an `ambiguous` or
+#      `unreadable` read downgrades to `unknown` rather than resolving
+#      either way - a liveness read that cannot complete is never `alive`
+#      and never `dead`. An `unverified` backend has no recovery classifier,
+#      so the verdict keeps its current shape there (no new unanswered
+#      check). The check is computed only on a `working` verdict, so
+#      `done`/`failed`/`parked` (which need no worker or already surface)
+#      and secondmates (which read their state from the status log) pay
+#      nothing for it.
 #
 # A run LOOKUP FAILURE is not a run ABSENCE. The bounded no-mistakes call
 # propagates timeout, execution, and no-bounding-mechanism failures so only a
@@ -213,6 +232,52 @@ crew_busy_verdict() {  # <target>
   fm_busy_classify "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$tail40"
 }
 
+# Worker-liveness cross-check (issue #105). A PURE read of the recovery-grade
+# agent classifier (fm_backend_agent_state, the same classifier the secondmate
+# liveness sweep reuses), captured into WORKER_STATE only where a plain
+# `working` verdict is about to be emitted. It runs at most once per
+# invocation because the run-step and busy-pane paths are mutually exclusive
+# (the run-step path emits and exits first), and it is never reached by the
+# paths that do not produce a plain working verdict: a secondmate reads its
+# state from the status log and skips both, a terminal run-step needs no
+# worker, and the bulk session-start digest never calls this script at all (it
+# does its own cheap per-task presence check), so a fleet-wide sweep pays
+# nothing for this cross-check.
+#
+# The verdict's `working` source is no longer sufficient on its own: the
+# no-mistakes daemon keeps advancing a run after the worker has exited cleanly,
+# so a `working · run-step` verdict with a confidently dead or missing agent is
+# the bug being fixed. A liveness read that cannot complete is `unknown`, never
+# `alive` and never `dead`; an unverified backend has no recovery classifier, so
+# the verdict keeps its current shape there (no new unanswered check).
+#
+# FM_FAKE_AGENT_STATE is the test seam: tests set it to drive the verdict
+# without going through the recovery-grade classifier (whose real tmux/ps
+# surface is pinned in tests/fm-tmux-agent-liveness.test.sh). Default in tests
+# is `alive` so the existing `working` semantics stay unchanged.
+worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverified
+  local state
+  if [ -n "${FM_FAKE_AGENT_STATE:-}" ]; then
+    state=$FM_FAKE_AGENT_STATE
+  elif [ -z "$BACKEND_TARGET" ] || [ -z "$TASK_BACKEND" ]; then
+    state=unverified
+  else
+    case "$TASK_BACKEND" in
+      tmux|herdr)
+        state=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null) || state=unreadable
+        ;;
+      *) state=unverified ;;
+    esac
+  fi
+  # The vocabulary is closed here, not at the call sites: an empty answer from a
+  # classifier that returned without printing, or a token added to the contract
+  # later, is a read that did not complete and reports `unreadable`.
+  case "$state" in
+    alive|dead|missing|ambiguous|unreadable|unverified) printf '%s' "$state" ;;
+    *) printf 'unreadable' ;;
+  esac
+}
+
 # --- last known run-step record ---------------------------------------------
 # state/<id>.run-step: one line, "<epoch>\t<state>\t<detail>", atomically
 # replaced on every successful run-derived verdict and read back ONLY when a
@@ -227,7 +292,7 @@ RUNSTEP_RECORD="$STATE/$ID.run-step"
 # read-only or already torn down just leaves the previous record in place.
 runstep_record_write() {  # <state> <detail>
   local tmp flat
-  case "$1" in working|parked|done|failed) ;; *) return 0 ;; esac
+  case "$1" in working|parked|done|failed|abandoned) ;; *) return 0 ;; esac
   [ -d "$STATE" ] || return 0
   flat=$(printf '%s' "${2:-}" | tr '\t\n' '  ')
   tmp="$RUNSTEP_RECORD.$$.tmp"
@@ -255,7 +320,7 @@ runstep_record_read() {
   [ -f "$RUNSTEP_RECORD" ] || return 1
   IFS=$'\t' read -r ts st detail < "$RUNSTEP_RECORD" 2>/dev/null || return 1
   case "${ts:-}" in ''|*[!0-9]*) return 1 ;; esac
-  case "${st:-}" in working|parked|done|failed) ;; *) return 1 ;; esac
+  case "${st:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
   age=$(( now - ts ))
@@ -858,9 +923,36 @@ if [ "$HAVE_RUN" = 1 ]; then
       ;;
   esac
 
+  # Worker-liveness cross-check (issue #105). Run-step alone is no longer
+  # sufficient evidence of a working task: the no-mistakes daemon can keep
+  # advancing a run after the worker has exited cleanly, and the next gate,
+  # the next synchronous tool return, and the next push/pr/ci step all need
+  # a worker that is not there. Apply the liveness cross-check computed once
+  # at the top. Only `working` is downgraded: `done`, `failed`, and `parked`
+  # either do not need a worker or already surface (parked falls through to
+  # the status-log fallback path). A liveness read that cannot complete is
+  # `unknown`, never `alive` and never `dead`; an unverified backend has no
+  # recovery classifier so the verdict keeps its current shape there.
+  if [ "$RUN_STATE" = working ]; then
+    WORKER_STATE=$(worker_liveness_state)
+    case "$WORKER_STATE" in
+      alive|unverified) ;;
+      dead|missing)
+        RUN_STATE="abandoned"
+        RUN_DETAIL="$RUN_DETAIL${SEP}worker gone ($WORKER_STATE)"
+        ;;
+      ambiguous|unreadable)
+        RUN_STATE="unknown"
+        RUN_DETAIL="$RUN_DETAIL${SEP}agent liveness $WORKER_STATE"
+        ;;
+    esac
+  fi
+
   # Remember this verdict so a later lookup that cannot complete degrades to it
   # instead of collapsing to unknown. Recorded from the authoritative run-step
   # path only, so nothing but a genuinely observed run is ever replayed.
+  # `abandoned` is now a recorded state, so a later lookup failure degrades to
+  # the same actionable verdict instead of replaying a stale `working` answer.
   runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi
 
@@ -887,7 +979,22 @@ BUSY_VERDICT=""
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in
-    busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
+    busy)
+      # The harness's own busy record says the worker is processing a turn.
+      # Apply the same worker-liveness cross-check the run-step path uses:
+      # a stale busy record after a clean worker exit is the same false
+      # reassurance issue #105 is fixing, so the same downgrade applies.
+      busy_detail="harness busy (${BUSY_VERDICT#* })"
+      WORKER_STATE=$(worker_liveness_state)
+      case "$WORKER_STATE" in
+        alive|unverified)
+          emit working pane "$busy_detail" ;;
+        dead|missing)
+          emit abandoned pane "$busy_detail${SEP}worker gone ($WORKER_STATE)" ;;
+        *)
+          emit unknown pane "$busy_detail${SEP}agent liveness $WORKER_STATE" ;;
+      esac
+      ;;
     idle) BUSY_STATE=idle ;;
     *)    BUSY_STATE=unknown ;;
   esac
