@@ -38,13 +38,18 @@
 #       exports its named operations and no general authenticated transport
 #   (l) a gitea work item receives the same living comment through the per-host
 #       credential: the token travels argv-free and 0600-enforced, a symlinked
-#       token file is refused rather than followed, an absent token, an empty
-#       one, an unsupported forge, and a refused credential are four different
-#       reported facts, comment discovery survives a host that clamps its page
-#       size below the limit asked for and reports a list it cannot walk instead
-#       of posting a second comment, a dry run renders before any credential is
-#       resolved, every forge failure warns and exits 0, and the github path
+#       token file is refused rather than followed, stray whitespace around a
+#       token is trimmed rather than misreported as a forge refusal, an absent
+#       token, an empty one, an unsupported forge, and a refused credential are
+#       four different reported facts, a dry run renders before any credential
+#       is resolved, every forge failure warns and exits 0, and the github path
 #       never reads a forge token or invokes curl at all
+#   (m) no lookup that could not PROVE there is no status comment ever resolves
+#       itself by creating one: discovery walks past a host that clamps its page
+#       size below the limit asked for, and both a list longer than the walk and
+#       a host that re-serves its first page report the gap and write nothing,
+#       because guessing in the create direction is what accumulates a comment
+#       per milestone
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -457,7 +462,7 @@ SH
   pass "an absent client and a hanging forge both warn without failing the task"
 }
 
-# --- (f) scope: only where a write credential genuinely exists ---------------
+# --- (f) scope: the task's own recorded work item, in its recorded PR target --
 
 test_out_of_scope_work_items_are_reported_and_never_written() {
   local dir out
@@ -667,7 +672,10 @@ case "$path" in
     esac
     # A real Gitea clamps every list to its own api.MAX_RESPONSE_ITEMS, which
     # may be well below the limit asked for; FM_FAKE_GITEA_PAGE_SIZE is how a
-    # test stands in for such an instance.
+    # test stands in for such an instance. FM_FAKE_GITEA_IGNORE_PAGE stands in
+    # for the worse shape: a server that clamps AND ignores the page parameter,
+    # re-serving its first page forever.
+    [ -z "${FM_FAKE_GITEA_IGNORE_PAGE:-}" ] || page=1
     size=${FM_FAKE_GITEA_PAGE_SIZE:-50}
     doc=$(
       for f in "$STORE"/comments/*.body; do
@@ -799,6 +807,25 @@ test_gitea_empty_token_is_reported_as_present_not_absent() {
   pass "a present but empty gitea token is its own reported fact, never 'absent'"
 }
 
+# A token saved with a stray space is a local file typo. Sent verbatim it draws
+# a 401, which this code correctly words as "the forge refused the credential" -
+# and that sends the captain to the token's scopes on the forge for a defect
+# that is one character in a file on their own disk.
+test_gitea_a_token_saved_with_stray_whitespace_still_authenticates() {
+  local dir out
+  dir=$(gitea_case_dir gitea-padded none)
+  mkdir -p "$dir/config/forge-tokens"
+  printf '  %s  \n' "$GITEA_TOKEN_VALUE" > "$dir/config/forge-tokens/gitea.example.com"
+  chmod 600 "$dir/config/forge-tokens/gitea.example.com"
+  out=$(run_gitea_comment "$dir" --milestone dispatched) \
+    || fail "a padded token must not fail the command: $out"
+  assert_contains "$out" "created: $GITEA_ISSUE_URL" \
+    "a token saved with stray whitespace did not reach the forge as a usable credential"
+  assert_grep "Authorization: token $GITEA_TOKEN_VALUE\"" "$dir/curl-stdin" \
+    "the padding travelled into the Authorization header, where the forge would answer 401"
+  pass "a token file's stray leading or trailing whitespace is trimmed, not misreported as a refusal"
+}
+
 test_gitea_loose_token_is_refused_before_any_call() {
   local dir out
   dir=$(gitea_case_dir gitea-loose 644)
@@ -885,6 +912,8 @@ test_github_write_back_ignores_forge_tokens_and_curl() {
   pass "a github work item keeps riding gh alone, with forge tokens never read"
 }
 
+# --- (m) a lookup that cannot prove absence never resolves itself by creating -
+#
 # A forge is free to answer a list with fewer items than the limit asked for:
 # Gitea clamps every response to its own api.MAX_RESPONSE_ITEMS. A walk that
 # treated a short page as the end of the list would fail to find the living
@@ -938,6 +967,44 @@ test_gitea_an_unwalkable_comment_list_is_reported_and_nothing_is_written() {
   [ "$(gitea_log_count "$dir" LIST)" = 10 ] \
     || fail "expected exactly 10 walked pages, got $(gitea_log_count "$dir" LIST)"
   pass "a comment list longer than the walk is reported, never resolved by posting a second comment"
+}
+
+# The third face of the same rule, and the one that hides best. A server that
+# clamps its list AND ignores the page parameter answers page 2 with page 1, so
+# the walk is right back where it started and can never see the end of the list.
+# That is the SAME state as running out of pages - "could not prove absence" -
+# and it must take the same branch: warn and write nothing. Resolving it as
+# "there is no comment yet" would post one on every single milestone, forever.
+test_gitea_a_paginator_that_never_advances_never_produces_a_create() {
+  local dir out rc i
+  dir=$(gitea_case_dir gitea-ignorepage)
+  run_gitea_comment "$dir" --milestone dispatched >/dev/null \
+    || fail "seeding the gitea status comment failed"
+  # Neighbours with lower ids than the seeded status comment, so the clamped
+  # first page holds none of firstmate's own work.
+  mkdir -p "$dir/store/comments"
+  for i in 1 2 3; do
+    printf 'a neighbour comment %s\n' "$i" > "$dir/store/comments/$i.body"
+  done
+  [ "$(comment_count "$dir")" = 4 ] \
+    || fail "expected three neighbours plus one status comment, found $(comment_count "$dir")"
+
+  set +e
+  out=$(FM_FAKE_GITEA_IGNORE_PAGE=1 FM_FAKE_GITEA_PAGE_SIZE=2 \
+    run_gitea_comment "$dir" --milestone landed)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a host that ignores pagination must not fail the command"
+  assert_contains "$out" 'warning:' "a walk that could not advance was silent"
+  assert_contains "$out" 'same first comment' \
+    "the warning did not say the host re-served the page the walk had already seen"
+  [ "$(comment_count "$dir")" = 4 ] \
+    || fail "a host that ignores pagination received a second status comment"
+  [ "$(gitea_log_count "$dir" POST)" = 1 ] \
+    || fail "the walk resolved 'cannot prove absence' by posting: $(gitea_log_count "$dir" POST) creations"
+  assert_contains "$(cat "$(firstmate_comment "$dir")")" '**Status: dispatched**' \
+    "the refused milestone was written to the tracker anyway"
+  pass "a paginator that re-serves its first page is reported, and never resolved by a create"
 }
 
 # A symlink is refused for the same reason a loose mode is: the 0600 check would
@@ -1371,6 +1438,7 @@ test_gitea_first_milestone_creates_one_comment_with_the_host_token
 test_gitea_repeated_milestones_edit_one_comment
 test_gitea_absent_token_reports_no_credential_without_a_call
 test_gitea_empty_token_is_reported_as_present_not_absent
+test_gitea_a_token_saved_with_stray_whitespace_still_authenticates
 test_gitea_loose_token_is_refused_before_any_call
 test_gitea_refused_credential_is_named
 test_gitea_forge_failures_warn_and_exit_zero
@@ -1378,6 +1446,7 @@ test_gitlab_work_item_reports_no_adapter_not_a_credential_gap
 test_github_write_back_ignores_forge_tokens_and_curl
 test_gitea_comment_discovery_survives_a_clamped_page_size
 test_gitea_an_unwalkable_comment_list_is_reported_and_nothing_is_written
+test_gitea_a_paginator_that_never_advances_never_produces_a_create
 test_gitea_symlinked_token_is_refused_before_any_call
 test_gitea_dry_run_renders_without_a_credential_or_a_call
 test_gitea_milestone_fanout_updates_the_comment

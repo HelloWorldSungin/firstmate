@@ -44,6 +44,19 @@
 # An out-of-scope or unsupported work item is reported once rather than
 # retargeted, and the recorded link always stays resolvable.
 #
+# NEVER CREATE ON A GUESS. Creating is the one act here that cannot be taken
+# back: a second status comment can never be edited into the first. So a create
+# happens only where the lookup PROVED there is nothing to edit - it reached the
+# end of the comment list without finding the marker. Every other way the lookup
+# can end is the same epistemic state, "could not prove absence", and every one
+# of them takes the same branch: warn and write nothing. That covers the page cap
+# running out, a host that re-serves a page it already served, a page carrying no
+# readable comment id, and a comment found under an id that cannot be addressed.
+# Refusing costs one milestone on one comment; guessing costs a tracker that
+# accumulates a comment per milestone, which is what this design exists to
+# prevent. This rule governs both forge paths below, not just the one whose
+# server shape suggested it.
+#
 # FAIL OPEN. Write-back is decoration on top of work that already succeeded. An
 # unreachable host, a missing or expired credential, a rate limit, a deleted
 # issue, or a permissions error prints one "warning:" line on stderr and exits 0,
@@ -109,6 +122,12 @@ notice() { printf 'notice: no tracker status comment for this task: %s\n' "$1" >
 # A withheld note is not a withheld milestone: the update still lands, so this
 # says what was dropped rather than reporting the whole write-back as skipped.
 withheld() { printf 'warning: the note was withheld and the milestone recorded without it: %s\n' "$1" >&2; }
+# A comment that was found but cannot be addressed is not an absent one; see the
+# never-create-on-a-guess rule in the header.
+refuse_unaddressable_comment() {
+  warn "$ISSUE_URL already carries firstmate's status comment but $ISSUE_HOST reported it under an id that is not a number, so nothing was written rather than risk a second comment"
+  exit 0
+}
 
 GH_REASON=
 
@@ -421,20 +440,25 @@ if [ "$ISSUE_FORGE" = gitea ]; then
   }
 
   # Find firstmate's own comment by its marker, earliest first, walking pages
-  # oldest-first under a hard cap. Only three things end the walk conclusively:
-  # the marker is found, an empty page proves the list is exhausted, or a server
-  # that ignores pagination re-serves the same first id, which ends the walk
-  # instead of looping. A page shorter than the requested limit proves nothing -
-  # Gitea clamps every list to its own api.MAX_RESPONSE_ITEMS, so a short page is
-  # the normal answer on such an instance - and stopping there would miss an
-  # existing comment and post a second one on every milestone, the exact
-  # accumulation this whole design exists to prevent. For the same reason,
-  # exhausting the cap is not an answer of "there is none": it is reported.
+  # oldest-first under a hard cap. Exactly two things ANSWER the lookup: the
+  # marker is found, or an empty page proves the list is exhausted. A page
+  # shorter than the requested limit proves nothing - Gitea clamps every list to
+  # its own api.MAX_RESPONSE_ITEMS, so a short page is the normal answer on such
+  # an instance - so the walk carries on past it.
+  #
+  # Everything else that stops the walk records WALK_GAP and reaches the refusal
+  # below instead of the create, per the header's never-create-on-a-guess rule.
+  # A server that ignores the page parameter and re-serves its first id is the
+  # case that makes this matter: it is indistinguishable from a list this lookup
+  # cannot see the end of, and treating it as "there is no comment" would post a
+  # second one on every milestone. Exhausting the cap is the same state and has
+  # always been reported; so is a page whose first entry carries no readable id.
   COMMENT_ID=
   : > "$WORKDIR/existing"
   page=1
   prev_first=
-  walk_conclusive=0
+  walk_answered=0
+  WALK_GAP=
   while [ "$page" -le 10 ]; do
     if ! gitea_bound \
       || ! fm_gitea_comments_page "$BOUND" "$TOKEN" "$ISSUE_HOST" "$ISSUE_PATH" "$ISSUE_NUMBER" "$page" "$WORKDIR/page"; then
@@ -449,12 +473,16 @@ if [ "$ISSUE_FORGE" = gitea ]; then
         ;;
     esac
     if [ "$count" -eq 0 ]; then
-      walk_conclusive=1
+      walk_answered=1
       break
     fi
     first=$(jq -r '.[0].id // empty' "$WORKDIR/page" 2>/dev/null) || first=
-    if [ -z "$first" ] || [ "$first" = "$prev_first" ]; then
-      walk_conclusive=1
+    if [ -z "$first" ]; then
+      WALK_GAP="page $page of its comment list came back with no readable comment id"
+      break
+    fi
+    if [ "$first" = "$prev_first" ]; then
+      WALK_GAP="$ISSUE_HOST answered page $page with the same first comment as the page before it, so the walk cannot reach the end of the list"
       break
     fi
     prev_first=$first
@@ -465,17 +493,19 @@ if [ "$ISSUE_FORGE" = gitea ]; then
       jq -r --arg m "$MARKER" \
         '[.[] | select(.body != null and (.body | contains($m))) | .body] | first // empty' \
         "$WORKDIR/page" > "$WORKDIR/existing" 2>/dev/null || : > "$WORKDIR/existing"
-      walk_conclusive=1
+      walk_answered=1
       break
     fi
     page=$((page + 1))
   done
-  if [ "$walk_conclusive" -eq 0 ]; then
-    warn "could not tell whether $ISSUE_URL already carries firstmate's status comment: its comment list is longer than the 10 pages this lookup walks, so nothing was written rather than risk a second comment"
+  if [ "$walk_answered" -eq 0 ]; then
+    [ -n "$WALK_GAP" ] || WALK_GAP="its comment list is longer than the 10 pages this lookup walks"
+    warn "could not tell whether $ISSUE_URL already carries firstmate's status comment: $WALK_GAP, so nothing was written rather than risk a second comment"
     exit 0
   fi
   case "$COMMENT_ID" in
-    ''|*[!0-9]*) COMMENT_ID= ;;
+    '') ;;
+    *[!0-9]*) refuse_unaddressable_comment ;;
   esac
 
   build_timeline "$WORKDIR/existing" "$WORKDIR/timeline"
@@ -536,8 +566,13 @@ else
   warn "could not look up the status comment on $ISSUE_URL: $GH_REASON"
   exit 0
 fi
+# --paginate walks the whole list, so an empty answer here IS proof of absence
+# and may create. An id that is not a number is not: the comment exists and this
+# lookup simply cannot address it, which the header's rule sends to the refusal
+# rather than to a second comment.
 case "$COMMENT_ID" in
-  ''|*[!0-9]*) COMMENT_ID= ;;
+  '') ;;
+  *[!0-9]*) refuse_unaddressable_comment ;;
 esac
 
 : > "$WORKDIR/existing"

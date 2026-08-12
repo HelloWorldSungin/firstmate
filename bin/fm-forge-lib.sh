@@ -121,6 +121,12 @@ fm_forge_token_read() {  # <config-dir> <host>
   [ "$mode" = 600 ] || return 2
   token=$(head -n 1 "$path" 2>/dev/null)
   [ -n "${token//[[:space:]]/}" ] || return 3
+  # Trimmed, not just tested for emptiness. A token saved with a stray leading or
+  # trailing space would otherwise go into the Authorization header verbatim, the
+  # forge would answer 401, and the caller would report a credential the forge
+  # refused - sending the captain to the token's scopes for a local file typo.
+  token=${token#"${token%%[![:space:]]*}"}
+  token=${token%"${token##*[![:space:]]}"}
   printf '%s\n' "$token"
 }
 
