@@ -719,3 +719,4 @@ test_coverage_guard_is_collation_independent
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json
+printf '\nall fm-test-run tests passed\n'

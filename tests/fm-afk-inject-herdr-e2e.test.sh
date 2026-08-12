@@ -531,4 +531,5 @@ echo "all real-herdr afk injection e2e tests passed"
 fm_backend_herdr_kill "$SUPERVISOR_TARGET" 2>/dev/null || true
 fm_backend_herdr_kill "$SESSION:$FAKE_CREW_PANE_ID" 2>/dev/null || true
 cleanup_all
+printf '\nall fm-afk-inject-herdr-e2e tests passed\n'
 trap - EXIT

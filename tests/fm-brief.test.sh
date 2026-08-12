@@ -1143,3 +1143,4 @@ test_brain_instruction_tracks_whether_the_home_has_one
 test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
 test_firstmate_repo_crew_persona_in_a_secondmate_home
+printf '\nall fm-brief tests passed\n'

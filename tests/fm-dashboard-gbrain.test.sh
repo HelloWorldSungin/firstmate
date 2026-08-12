@@ -735,3 +735,4 @@ test_search_refuses_empty_or_short_query
 test_search_refuses_oversized_body
 test_search_refuses_cross_origin_post
 test_search_method_get_returns_405
+printf '\nall fm-dashboard-gbrain tests passed\n'

@@ -105,3 +105,4 @@ test_extra_hermetic_candidates_present
 test_list_exclusions_documents_reasons
 test_family_map_labels_this_contract
 test_parallel_shards_consume_the_proven_set
+printf '\nall fm-test-isolation-proof tests passed\n'

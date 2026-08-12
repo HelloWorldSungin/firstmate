@@ -45,3 +45,4 @@ test_unrelated_path_stays_visible() {
 
 test_config_dir_ignored_as_category
 test_unrelated_path_stays_visible
+printf '\nall fm-gitignore-config tests passed\n'

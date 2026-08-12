@@ -53,3 +53,4 @@ if grep -F 'watcher: started pid=' "$TRANSCRIPT" >/dev/null; then
 fi
 
 printf 'ok - %s live E2E preserved the one-second foreground checkpoint path\n' "$CODEX_VERSION"
+printf '\nall fm-codex-continuity-live-e2e tests passed\n'

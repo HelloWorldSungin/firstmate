@@ -155,3 +155,4 @@ test_stale_pane_transient_persistent_resume() {
 
 test_routine_then_terminal_after_restart
 test_stale_pane_transient_persistent_resume
+printf '\nall fm-wake-daemon-lifecycle-e2e tests passed\n'

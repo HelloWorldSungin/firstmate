@@ -209,3 +209,4 @@ test_existing_agents_md_with_section_reports_unchanged
 test_existing_crlf_agents_md_with_section_stays_unchanged
 test_existing_crlf_agents_md_without_section_preserves_crlf
 test_lowercase_agents_md_refuses_case_fragile_symlink
+printf '\nall fm-ensure-agents-md tests passed\n'

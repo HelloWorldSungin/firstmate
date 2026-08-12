@@ -355,3 +355,4 @@ if printf '%s\n' "$pane" | grep -Fq '$ bin/fm-watch-arm.sh'; then
 fi
 
 printf 'ok - OpenCode %s live E2E covered native Ahoy first/later messages, near misses, and watcher continuity\n' "$OPENCODE_VERSION"
+printf '\nall fm-opencode-primary-live-e2e tests passed\n'

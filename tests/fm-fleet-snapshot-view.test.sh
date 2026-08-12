@@ -1707,3 +1707,4 @@ test_inner_lookup_bound_stays_inside_the_outer_bound
 test_a_task_whose_reader_fails_is_unknown_not_missing
 test_spawn_age_comes_from_the_record_not_the_file
 test_collector_adds_no_per_task_cost
+printf '\nall fm-fleet-snapshot-view tests passed\n'

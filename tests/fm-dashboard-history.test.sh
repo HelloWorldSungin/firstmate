@@ -510,3 +510,4 @@ console.log("dashboard history and report rendering behavior verified");
 NODE
 
 pass "history records, filters, pagination, and the sanitized report renderer behave"
+printf '\nall fm-dashboard-history tests passed\n'

@@ -273,3 +273,4 @@ test_supported_backend_endpoint_records_validate
 test_tmux_empty_target_refuses_without_invocation
 test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup
+printf '\nall fm-teardown-endpoint-safety tests passed\n'

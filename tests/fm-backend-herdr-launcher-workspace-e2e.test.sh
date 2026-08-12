@@ -433,3 +433,4 @@ if ! cleanup_all; then
 fi
 trap - EXIT
 pass "real herdr E2E: isolated lab session removed and default fleet session unchanged"
+printf '\nall fm-backend-herdr-launcher-workspace-e2e tests passed\n'

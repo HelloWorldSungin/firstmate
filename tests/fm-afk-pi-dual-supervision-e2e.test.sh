@@ -228,3 +228,4 @@ pass "away-mode return resumes exactly one extension-owned supervision cycle"
 
 printf 'evidence: pi=%s tmux=%s watcher-turns-during-away=0 daemon-escalations=%s\n' \
   "$(pi --version)" "$(tmux -V)" "$(daemon_escalations)"
+printf '\nall fm-afk-pi-dual-supervision-e2e tests passed\n'

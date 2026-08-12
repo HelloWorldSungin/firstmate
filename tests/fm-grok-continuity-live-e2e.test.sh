@@ -110,3 +110,4 @@ if printf '%s\n' "$pane" | grep -Fq 'bin/fm-watch-arm.sh &'; then
 fi
 
 printf 'ok - %s live E2E preserved tracked background completion and shared ledger classification\n' "$GROK_VERSION"
+printf '\nall fm-grok-continuity-live-e2e tests passed\n'

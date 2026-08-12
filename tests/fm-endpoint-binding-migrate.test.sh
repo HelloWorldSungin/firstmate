@@ -324,3 +324,4 @@ test_concurrent_metadata_change_refuses_publication
 test_missing_state_and_empty_home_are_handled_without_error
 test_records_outside_the_migration_are_left_alone
 test_dry_run_decides_without_writing
+printf '\nall fm-endpoint-binding-migrate tests passed\n'

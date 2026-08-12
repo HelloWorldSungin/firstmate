@@ -954,4 +954,5 @@ unit_flag_write_failure_aborts
 e2e_herdr
 e2e_tmux
 
+[ "$FAILED" -eq 0 ] && printf '\nall fm-afk-launch tests passed\n'
 [ "$FAILED" -eq 0 ] || exit 1

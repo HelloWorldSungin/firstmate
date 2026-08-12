@@ -434,3 +434,4 @@ test_arknode_absent_link_and_stale_vault_at_once
 test_thresholds_are_overridable_and_invalid_values_fall_back
 test_every_registered_project_is_covered
 test_detection_never_writes
+printf '\nall fm-vault-drift tests passed\n'

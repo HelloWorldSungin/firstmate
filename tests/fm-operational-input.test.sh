@@ -158,3 +158,4 @@ test_isolated_legacy_matrix
 test_genuine_near_misses_remain_unclassified
 test_cross_language_adapter_uses_the_owner
 test_invalid_current_encodings_are_rejected
+printf '\nall fm-operational-input tests passed\n'

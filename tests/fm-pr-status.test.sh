@@ -219,3 +219,4 @@ main() {
 }
 
 main "$@"
+printf '\nall fm-pr-status tests passed\n'

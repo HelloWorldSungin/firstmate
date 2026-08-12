@@ -202,4 +202,5 @@ pass "real zellij: list_live discovers a live task tab by fm-<id> name"
 fm_backend_zellij_kill "$SESSION:$PANE_ID2"
 
 cleanup_all
+printf '\nall fm-backend-zellij-smoke tests passed\n'
 trap - EXIT

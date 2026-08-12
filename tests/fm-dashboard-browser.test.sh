@@ -249,3 +249,4 @@ duplicate|duplicate: 2 verdicts were recorded for [the browser console is clean]
 undeclared|undeclared: a verdict was recorded for [the injector's invented observation]
 CASES
 pass "a dropped, duplicated or undeclared observation fails the run by name instead of shrinking the result"
+printf '\nall fm-dashboard-browser tests passed\n'

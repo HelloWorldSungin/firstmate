@@ -295,3 +295,4 @@ pass "resolved return catch-up allows Bearings and a clean idempotent away re-en
 
 printf 'evidence: herdr=%s pi=%s target=%s inject-hex-prefix=%s notifier-count=1\n' \
   "$(herdr --version)" "$(pi --version)" "$PRIMARY_TARGET" "${INJECT_HEX:0:6}"
+printf '\nall fm-afk-pi-herdr-return-e2e tests passed\n'

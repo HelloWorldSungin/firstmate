@@ -146,3 +146,4 @@ test_batch_mode_boundaries
 test_batch_requires_the_shared_delivery_contract
 test_scout_batch_refuses_delivery_flags
 test_projects_path_scoping
+printf '\nall fm-spawn-batch tests passed\n'

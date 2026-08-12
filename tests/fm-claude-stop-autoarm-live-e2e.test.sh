@@ -162,3 +162,4 @@ printf '%s\n' '{"session_id":"live-owner-control"}' \
 wait "$LIVE_OWNER_PID"
 
 printf 'ok - Claude %s live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, and preserved the competing-live-owner boundary\n' "$CLAUDE_VERSION"
+printf '\nall fm-claude-stop-autoarm-live-e2e tests passed\n'

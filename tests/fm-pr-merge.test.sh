@@ -988,3 +988,4 @@ test_invalid_or_multiple_work_items_warn_without_issue_calls
 test_work_item_record_wins_over_legacy_issue_line
 test_refresh_failure_warning_names_the_cause
 test_refresh_reason_is_bounded_to_one_line
+printf '\nall fm-pr-merge tests passed\n'

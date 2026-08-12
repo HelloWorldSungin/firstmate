@@ -393,3 +393,4 @@ test_fact_line_carries_no_vendor_output_or_credential_material
 test_probe_version_change_is_disclosed
 test_probe_version_match_is_recorded
 test_help_succeeds_and_names_the_registered_probes
+printf '\nall fm-vendor-auth-probe tests passed\n'

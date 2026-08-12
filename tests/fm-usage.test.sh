@@ -892,3 +892,4 @@ test_cost_is_an_optional_versioned_estimate
 test_store_carries_no_transcript_content
 test_report_reads_a_read_only_data_directory
 test_an_interrupted_ingest_leaves_a_self_contained_store
+printf '\nall fm-usage tests passed\n'

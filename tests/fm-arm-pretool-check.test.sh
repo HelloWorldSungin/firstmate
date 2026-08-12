@@ -465,3 +465,4 @@ test_claude_mode_stdout_empty_on_deny
 test_default_mode_stdout_has_grok_json_on_deny
 test_allow_is_silent_both_modes
 test_shellcheck_clean
+printf '\nall fm-arm-pretool-check tests passed\n'

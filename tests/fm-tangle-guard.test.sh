@@ -307,3 +307,4 @@ test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction
+printf '\nall fm-tangle-guard tests passed\n'

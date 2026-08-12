@@ -390,3 +390,4 @@ test_read_only_before_writable_does_not_consume_full_banner
 test_read_only_during_episode_observes_without_mutating_marker
 test_healthy_read_only_does_not_clear_marker
 test_read_only_never_mutates_stale_banner_state_files
+printf '\nall fm-guard-stale-banner tests passed\n'

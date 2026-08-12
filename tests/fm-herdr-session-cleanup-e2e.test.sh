@@ -144,3 +144,4 @@ pass 'real named lab cleanup is idempotent and leaves the default fleet session 
 printf 'evidence: herdr=%s protocol=%s default-session-tripwire=armed\n' \
   "$(printf '%s' "$STATUS" | jq -r '.client.version')" \
   "$(printf '%s' "$STATUS" | jq -r '.server.protocol')"
+printf '\nall fm-herdr-session-cleanup-e2e tests passed\n'

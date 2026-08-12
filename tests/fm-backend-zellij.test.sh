@@ -1118,3 +1118,4 @@ test_send_text_submit_send_failed_when_pane_absent
 test_scripts_route_explicit_target_through_meta_backend
 test_scripts_verify_label_for_fm_targets
 test_scripts_reject_fm_target_label_mismatch
+printf '\nall fm-backend-zellij tests passed\n'

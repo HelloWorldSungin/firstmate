@@ -392,3 +392,4 @@ test_fail_open_missing_jq_on_stdin
 test_prefilter_skips_node_without_cd_substring
 test_policy_cli_direct
 test_scripts_are_shellcheck_clean
+printf '\nall fm-cd-pretool-check tests passed\n'

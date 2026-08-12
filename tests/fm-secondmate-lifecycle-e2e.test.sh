@@ -240,3 +240,4 @@ phase_send
 phase_handoff
 phase_recovery
 phase_teardown
+printf '\nall fm-secondmate-lifecycle-e2e tests passed\n'

@@ -219,3 +219,4 @@ padded=$(FM_QUOTA_SIDECAR_DIR="$fresh_dir" FM_QUOTA_SIDECAR_FRESHNESS_SECONDS=01
   || fail "a leading-zero freshness override was rejected"
 [ "$(jq -r '.freshness_seconds' <<<"$padded")" = 10800 ] || fail "a leading-zero override was not read as decimal seconds"
 pass "invalid freshness overrides are rejected at both entry points and leading zeros are decimal"
+printf '\nall fm-quota-sidecar tests passed\n'

@@ -773,3 +773,4 @@ test_history_survives_record_removal
 test_history_refuses_to_report_a_lost_read_as_an_empty_fleet
 test_no_secret_bearing_fields
 test_free_text_is_bounded_and_single_line
+printf '\nall fm-outcome-manifest tests passed\n'

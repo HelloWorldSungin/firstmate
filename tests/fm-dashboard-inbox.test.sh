@@ -702,3 +702,4 @@ pass "missing, stale, and out-of-enumeration provider data render as explicit un
 pass "merged and closed pull requests stay terminal at any observation age"
 pass "inbox items deduplicate overlapping signals, keep full text, and sort oldest evidence first"
 pass "health signals produce the documented states and never summarize uncertainty as healthy"
+printf '\nall fm-dashboard-inbox tests passed\n'

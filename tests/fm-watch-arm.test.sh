@@ -149,3 +149,4 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+printf '\nall fm-watch-arm tests passed\n'

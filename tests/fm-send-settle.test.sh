@@ -144,3 +144,4 @@ test_zero_disables_pause
 test_pause_is_tunable
 test_key_path_never_pauses
 test_claude_escape_records_interrupt_idle
+printf '\nall fm-send-settle tests passed\n'

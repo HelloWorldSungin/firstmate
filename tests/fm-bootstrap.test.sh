@@ -1351,3 +1351,4 @@ test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_backend_mismatch
 test_crew_dispatch_validation
+printf '\nall fm-bootstrap tests passed\n'
