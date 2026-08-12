@@ -43,7 +43,9 @@
 # task, so the worktree's ambient branch is placement, not identity. Both the
 # landed-work refusal and the parked-run abort read the record's own branch=.
 #   (t1) recorded branch, ambient branch's PR merged           -> REFUSE (not this task's PR)
-#   (t2) legacy record with no branch= + unpushed work         -> REFUSE (no identity to judge)
+#   (t2) legacy record with no branch= + no branchless proof   -> REFUSE (nothing left to judge)
+#   (t2a) legacy record with no branch= + recorded pr= merged  -> ALLOW  (pr= reads no branch)
+#   (t2b) legacy record with no branch= + content in default   -> ALLOW  (content reads no branch)
 #   (t3) reallocated worktree hosting another task's live run  -> never aborted
 #   (t4) legacy record + a perfectly matching ambient run      -> never aborted
 #
@@ -1880,11 +1882,51 @@ test_legacy_record_without_branch_refuses_unpushed_work() {
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "landed-legacy-record: a record with no task branch cleared its own teardown"
-  assert_grep "records no task branch to evaluate it against" "$case_dir/stderr" \
-    "landed-legacy-record: teardown did not state why the work could not be attributed"
+  assert_grep "not on any remote and not landed" "$case_dir/stderr" \
+    "landed-legacy-record: the refusal was not the unlanded-work one"
+  assert_grep "no merged PR could be looked up by branch name" "$case_dir/stderr" \
+    "landed-legacy-record: teardown did not state which proof it could not run"
   assert_present "$case_dir/wt" "landed-legacy-record: the worktree was removed"
   assert_present "$case_dir/state/task-x1.meta" "landed-legacy-record: task metadata was erased"
   pass "a legacy record with no task branch refuses unpushed work rather than guessing the branch"
+}
+
+# Fails if the missing branch= short-circuits the landed check instead of just
+# disabling the branch-keyed PR lookup: pr= is read straight from the record.
+test_legacy_record_without_branch_still_lands_on_its_recorded_pr() {
+  local case_dir rc pr_head
+  case_dir=$(make_case legacy-record-recorded-pr)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "legacy-record-recorded-pr: teardown should succeed on a recorded merged PR"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "legacy-record-recorded-pr: teardown refused work its own pr= proves landed"
+  pass "a legacy record with no task branch still lands on the merged PR its record names"
+}
+
+# Fails if the missing branch= short-circuits the landed check: content_in_default
+# takes no branch at all, merge-treeing the default branch against the worktree HEAD.
+test_legacy_record_without_branch_still_lands_on_default_content() {
+  local case_dir rc
+  case_dir=$(make_case legacy-record-content-landed)
+  write_legacy_meta_without_branch "$case_dir" no-mistakes
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "legacy-record-content-landed: teardown should succeed on content already in the default branch"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "legacy-record-content-landed: teardown refused work already squash-merged into the default branch"
+  pass "a legacy record with no task branch still lands on content already in the default branch"
 }
 
 test_squash_merged_branch_deleted_allows() {
@@ -3963,6 +4005,8 @@ test_cleanup_never_deletes_the_worktrees_ambient_branch
 test_no_mistakes_truly_unpushed_refuses
 test_landed_work_is_evaluated_against_the_recorded_task_branch
 test_legacy_record_without_branch_refuses_unpushed_work
+test_legacy_record_without_branch_still_lands_on_its_recorded_pr
+test_legacy_record_without_branch_still_lands_on_default_content
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker

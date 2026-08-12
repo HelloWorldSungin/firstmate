@@ -640,16 +640,17 @@ LOOKUP_COMPLETED=0
 RUN_ATTRIBUTION_FAULT=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
-# A DETACHED worktree skips it too, and that short-circuit is a proof rather
-# than an optimization: a run is opened by no-mistakes from the crew's own
-# worktree with the task branch checked out, and the ship brief creates that
-# branch before any validation step, so a detached HEAD is the window in which
-# the recorded branch is not checked out here and no run of this task's can
-# exist yet. Every run `axi status` would answer from a detached worktree is by
-# construction some other branch's, and the coarse runs-list rows would still
-# have to bind to a HEAD this crew has not moved onto its branch. Skipping costs
-# a just-spawned or never-branched crew two bounded CLI calls per heartbeat and
-# discards no reachable evidence.
+# A DETACHED worktree skips it too. What that proves is narrow but sufficient:
+# the recorded branch is not checked out here, so no run answered from this
+# worktree can bind to it. `axi status` asked from a detached worktree answers
+# for some other branch, and a coarse runs-list row would still have to bind its
+# sha to a HEAD this worktree has not moved onto the recorded branch. It does
+# NOT prove the task has no run at all - a parked task whose pooled worktree was
+# reallocated to a just-spawned, still-detached crew has one - but that run is
+# not reachable from here either, which is why the reallocated case is pinned on
+# the named-branch path (test_reallocated_worktree_branch_surfaces_attribution_
+# fault) rather than separately here. Skipping saves a just-spawned or
+# never-branched crew two bounded CLI calls per heartbeat.
 if [ "$KIND" = ship ] && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
    && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)

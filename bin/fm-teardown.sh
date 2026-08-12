@@ -43,8 +43,9 @@
 # up a merged PR whose head branch matches the task's own recorded branch=, fetching
 # its head via refs/pull/<n>/head when the branch itself was deleted. So a missing
 # pr= never by itself causes a false refusal of landed work. A legacy record with
-# no branch= has no task branch to look one up for and refuses instead of asking
-# about whichever branch the pooled worktree currently hosts.
+# no branch= skips only that branch-keyed lookup - it never asks about whichever
+# branch the pooled worktree currently hosts - and still lands on its recorded pr=
+# or on content already in the default branch.
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
@@ -865,6 +866,10 @@ meta_value() {
   fm_meta_get "$meta" "$key"
 }
 
+# Deliberately not TASK_RECORDED_BRANCH: that is durable task IDENTITY, used to
+# attribute runs and judge unlanded work, while this is the conventional local
+# ref cleanup selects for reaping - scoped to this task's own id, so it can never
+# name another task's branch. The two are separate concerns; do not unify them.
 TASK_BRANCH="fm/$ID"
 TASK_BRANCH_REF="refs/heads/$TASK_BRANCH"
 TASK_BRANCH_REAP_HEAD=
@@ -1627,16 +1632,16 @@ validate_worktree_teardown_safety() {
     echo "Commit them (or get the captain's explicit OK to discard, then --force)." >&2
     return 1
   elif [ -n "$unpushed" ]; then
+    # An empty recorded branch is passed through rather than guessed: the two
+    # proofs that never read a branch - the record's own pr= and the content
+    # already in the default branch - still answer, while pr_number_from_branch
+    # refuses an empty argument, so the branch-keyed PR lookup self-disables.
     branch=$TASK_RECORDED_BRANCH
-    if [ -z "$branch" ]; then
-      echo "REFUSED: worktree $WT has work not on any remote and task $ID records no task branch to evaluate it against." >&2
-      printf 'unpushed commits:\n%s\n' "$unpushed" >&2
-      echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
-      return 1
-    fi
     if ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
+      [ -n "$branch" ] \
+        || echo "task $ID records no task branch, so no merged PR could be looked up by branch name; only its recorded pr= and the default branch's content were consulted." >&2
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
