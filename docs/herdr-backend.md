@@ -302,6 +302,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, and Herdr applies the same distinction through its structural composer read plus native agent state.
   An idle pane with visible composer text remains a pending submission failure.
+  A target already blocked at a permission prompt before the send never receives the conversion either: the dialog owns the keyboard, so retained composer text there is not evidence the Enter was queued.
+  A blocked state reached only as a result of this Enter is still submit-active proof of delivery.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
