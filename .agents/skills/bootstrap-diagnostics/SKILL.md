@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -73,5 +73,13 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `USAGE_STORE: skipped: <detail>` - the bounded token-usage refresh timed out or could not be bounded on this host, so the store is staler than this session, not wrong; nothing is blocked, and the next refresh converges it (`docs/usage-accounting.md` owns the cadence).
 - `USAGE_STORE: failed: bootstrap refresh ran but exited <status> ...` - the collector ran and a stage inside it failed after the collection it had already committed, so the store holds partial work rather than none.
   Run `bin/fm-usage.mjs ingest` directly to see which stage named itself in `failures`; never treat the exit status as "usage is unavailable", because the dashboard reports collection state itself and a missing total is a different claim from a failed refresh.
+- `GBRAIN_SERVING_CREDENTIAL: <detail>` - this home both serves its brain as the main brain and has hosted synthesis reachable on it, which is the configuration the read-only share rule forbids; [`docs/gbrain.md`](../../../docs/gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule, its reason, and its remediation.
+  The boundary is the captain's to authorize, so report it plainly as a finding - a holder of the read-only share can cause this home's own brain content to be sent to a hosted provider, at that holder's choosing - and let the captain decide the remediation the printed detail names.
+  Do not remove the credential yourself; that is a captain decision, and the check exists to surface the configuration, not to apply a remediation to a live home.
+  `bin/fm-gbrain.sh serving-check` owns the line and re-prints it, and `bin/fm-gbrain.sh check` shows the same verdict as a `serving-credential` row.
+  A line whose detail names an unreadable plane, or a missing `jq`, is `unknown` rather than a proven violation: the verdict could not be reached, which is still actionable because it is never reported as clean.
+  A home *proven* to serve no brain never raises this line, but an `unknown` line does not prove the home serves anything either - a missing `jq` or an unreadable home-local plane raises it before the serving relationship has been read at all.
+  Both states print the same `GBRAIN_SERVING_CREDENTIAL:` prefix, so read the state rather than the prose: `bin/fm-gbrain.sh check` answers the same verdict as a `serving-credential` row whose state is `failed` for a proven violation and `unknown` for one this home could not reach.
+  Only a `failed` verdict is the captain-authorized boundary described above; an `unknown` one is an unreadable plane to repair first, after which the verdict is re-read rather than assumed in either direction.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local X-mode poll artifacts (`docs/configuration.md` "X mode (.env)").
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

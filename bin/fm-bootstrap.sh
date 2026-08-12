@@ -23,6 +23,7 @@
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "USAGE_STORE: skipped|failed: <detail>",
+#                 "GBRAIN_SERVING_CREDENTIAL: <why a serving home holds a hosted synthesis credential, or why the verdict could not be reached>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -294,6 +295,12 @@ fleet_sync() {
 vault_drift_check() {
   FM_HOME="$FM_HOME" FM_PROJECTS_OVERRIDE="$PROJECTS" FM_DATA_OVERRIDE="$DATA" \
     "$SCRIPT_DIR/fm-vault-drift.sh" || true
+}
+
+# docs/gbrain.md owns the rule. This read-only check has no fleet-sync
+# dependency and stays silent when the home is clear.
+gbrain_serving_credential_check() {
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-gbrain.sh" serving-check || true
 }
 
 secondmate_sync() {
@@ -1194,6 +1201,9 @@ fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
   vault_drift_check
 fi
+# Run in every session regardless of the lock so an existing violation or an
+# unknown verdict cannot sit unnoticed.
+gbrain_serving_credential_check
 crew=
 [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
 if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != "default" ]; then

@@ -358,6 +358,133 @@ fm_gbrain_is_main_brain_owner() {  # <home>
   [ "$(fm_gbrain_json_str "$(fm_gbrain_local_path "$1")" '.main_brain_owner')" = true ]
 }
 
+# docs/gbrain.md owns the serving-home credential rule and its reason.
+# This function owns the shared mechanical verdict, read from the planes that
+# actually hold each half of the rule:
+#
+#   the serving relationship   main_brain_owner in this home's local plane
+#   hosted synthesis reachable a think.secret credential present and readable in
+#                              this home's credential plane, OR a think.base_url
+#                              that leaves this host
+#
+# The second half matters because the credential a served `think` spends need
+# not sit in the credential plane at all: docs/gbrain.md reads the fleet's key
+# from a file outside every home and injects it into the synthesizing process,
+# so a serving home pointed at a hosted provider breaks the rule with an empty
+# credential plane.
+#
+# The serving relationship is read first and gates everything else. A home that
+# provably serves nothing cannot break a rule that constrains serving homes, so
+# it is ok whatever its credential plane holds, and no further plane is read.
+# Past that gate a plane this process cannot read is unknown, never ok.
+#
+# Firstmate's declared surfaces above are the whole reach by decision, not by
+# oversight: GBrain's own runtime configuration and the fleet-wide runtime key
+# are never read here, so an ok verdict is "no violation in what this reads".
+# The ok detail for a serving home says that in its own words rather than
+# leaving it to the reader, since that is the only ok an operator could mistake
+# for proof. docs/gbrain.md states the limit for operators and names the open
+# remainder; widen this only through that owner rather than by adding a plane
+# here.
+#
+# Sets FM_GBRAIN_SERVING_CREDENTIAL_STATE to ok, serving-with-credential, or
+# unknown, with the reason in FM_GBRAIN_SERVING_CREDENTIAL_DETAIL.
+# Returns 0 in every case so sourcing callers decide how each surface renders
+# the verdict.
+FM_GBRAIN_SERVING_CREDENTIAL_STATE=""
+FM_GBRAIN_SERVING_CREDENTIAL_DETAIL=""
+
+# The single assignment point for both output globals, so no verdict path can
+# leave one of them stale from an earlier call.
+fm_gbrain_serving_verdict() {  # <state> <detail>
+  # shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
+  FM_GBRAIN_SERVING_CREDENTIAL_STATE=$1
+  # shellcheck disable=SC2034 # Output globals consumed by sourcing callers (fm-gbrain.sh).
+  FM_GBRAIN_SERVING_CREDENTIAL_DETAIL=$2
+  return 0
+}
+
+fm_gbrain_serving_credential_state() {  # <home>
+  local home=$1 shared local_file secret_name="" held="" refused="" rc
+  local think_url think_host also=""
+  local_file=$(fm_gbrain_local_path "$home")
+
+  # A home with no home-local plane was never marked an owner, so it serves
+  # nothing. Answering that before anything else keeps a home that has never
+  # configured a brain silent without needing jq or a shared-plane walk.
+  if [ ! -e "$local_file" ]; then
+    fm_gbrain_serving_verdict ok "this home serves no brain"
+    return 0
+  fi
+  # Every plane below is read through jq, and jq's absence is not a malformed
+  # configuration: say which tool is missing rather than blaming the config.
+  if ! command -v jq >/dev/null 2>&1; then
+    fm_gbrain_serving_verdict unknown \
+      "jq is not installed, so neither this home's serving relationship nor its credential plane could be read"
+    return 0
+  fi
+  if ! fm_gbrain_validate_local "$local_file"; then
+    fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"
+    return 0
+  fi
+  if ! fm_gbrain_is_main_brain_owner "$home"; then
+    fm_gbrain_serving_verdict ok "this home serves no brain"
+    return 0
+  fi
+
+  shared=$(fm_gbrain_shared_path "$home")
+  if ! fm_gbrain_validate_shared "$shared"; then
+    fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"
+    return 0
+  fi
+  secret_name=$(fm_gbrain_json_str "$shared" '.think.secret')
+  if [ -n "$secret_name" ]; then
+    rc=0
+    fm_gbrain_read_secret "$home" "$secret_name" || rc=$?
+    FM_GBRAIN_SECRET=""
+    case $rc in
+      0) held=1 ;;
+      1) held=0 ;;
+      # A present credential this process refuses or cannot read leaves the
+      # credential plane unknown rather than proving the home holds nothing.
+      *) refused=$FM_GBRAIN_ERROR ;;
+    esac
+  else
+    held=0
+  fi
+
+  if [ "$held" = 1 ]; then
+    fm_gbrain_serving_verdict serving-with-credential \
+      "this home serves its brain as the main brain and holds the hosted synthesis credential '$secret_name'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
+    return 0
+  fi
+
+  think_url=$(fm_gbrain_json_str "$shared" '.think.base_url')
+  if [ -n "$think_url" ]; then
+    think_host=$(fm_gbrain_url_host "$think_url")
+    if [ -n "$think_host" ] && ! fm_gbrain_host_is_loopback "$think_host"; then
+      [ -z "$refused" ] || also=" (its credential plane could not be read either: $refused)"
+      fm_gbrain_serving_verdict serving-with-credential \
+        "this home serves its brain as the main brain and points think at the hosted provider $think_host, which a read-only holder can reach and spend under whatever credential the synthesizing process is given$also - remove think.base_url (and think.secret) before serving"
+      return 0
+    fi
+  fi
+
+  if [ -z "$held" ]; then
+    fm_gbrain_serving_verdict unknown \
+      "${refused:-the credential plane of this home could not be read}"
+    return 0
+  fi
+  # The clean verdict states its own reach. A serving home is the one case where
+  # ok is a policy claim rather than a fact about a plane, so it must not read as
+  # proof that hosted synthesis is unreachable: the planes below are all this
+  # check sees, and the runtime plane where docs/gbrain.md actually configures
+  # hosted synthesis is outside it (issue 107 owns that remainder).
+  fm_gbrain_serving_verdict ok \
+    "this home serves its brain as the main brain and no violation was found in the Firstmate surfaces this check reads (think.secret and think.base_url in config/$FM_GBRAIN_SHARED_FILE, and the config/$FM_GBRAIN_SECRETS_DIR credential plane); GBrain's own runtime models.think and a credential injected at runtime from /home/sungin/.pi/agent/auth.json are not inspected, so this is not proof that hosted synthesis is unreachable"
+  return 0
+}
+
 # --- credential plane -------------------------------------------------------
 
 fm_gbrain_file_mode() {  # <path>

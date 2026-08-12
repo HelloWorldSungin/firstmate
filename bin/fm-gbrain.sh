@@ -18,6 +18,7 @@
 #   fm-gbrain.sh grant-read <label> --home <target-home> [--replace]
 #   fm-gbrain.sh revoke-read <client-id>
 #   fm-gbrain.sh retire <target-home> [--yes]
+#   fm-gbrain.sh serving-check
 #
 # Commands:
 #   paths        This home's own brain root, GBRAIN_HOME, index, and archive.
@@ -31,7 +32,12 @@
 #                or MiniMax endpoint that is down is reported as degraded and
 #                exits 0, because local search does not depend on either. A
 #                broken local plane - invalid configuration, or a credential
-#                stored too loosely to use - exits non-zero.
+#                stored too loosely to use - exits non-zero. A home that serves
+#                its brain while hosted synthesis is reachable on it - a usable
+#                credential in its credential plane, or a think endpoint that
+#                leaves this host - fails the serving-credential row for the
+#                same reason, because that configuration is what the read-only
+#                share rule forbids.
 #   token        Mint a short-lived read-only access token for the main brain.
 #                This is the one command that writes a credential to stdout.
 #   grant-read   Register a read-scoped OAuth client on THIS home's brain and
@@ -51,6 +57,23 @@
 #                may hold a deployment this tool did not create. A revocation
 #                that fails stops the retirement with nothing removed, so it can
 #                be retried. Destructive, so it refuses without --yes.
+#   serving-check
+#                Read-only alarm for the serving-credential rule that
+#                docs/gbrain.md owns: print one GBRAIN_SERVING_CREDENTIAL line
+#                when THIS home both serves its brain as the main brain and
+#                has hosted synthesis reachable on it, or when a plane the
+#                verdict needs cannot be read; stay silent when it finds
+#                neither. A home that serves nothing is clear whatever its
+#                credential plane holds, so a reading home never raises this
+#                alarm. It reads this home's own Firstmate config planes and
+#                never GBrain's runtime configuration, so silence means no
+#                violation in what it reads rather than proof that hosted
+#                synthesis is unreachable (docs/gbrain.md states that limit).
+#                Reading config alone is also why it needs no network, no
+#                token mint, and no gbrain binary, which makes it safe to run
+#                at every session start. It never exits non-zero: the line
+#                itself is the signal, so a caller that finds nothing stays
+#                quiet rather than failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
@@ -156,8 +179,14 @@ probe_url() {  # <url> -> 0 reachable
   curl -sS -o /dev/null -m "${FM_GBRAIN_TIMEOUT:-10}" "$1" >/dev/null 2>&1
 }
 
+# `hard` is this run's exit status: any finding sets it. `plane_broken` is the
+# narrower question of whether the configuration this run reads from is
+# unusable, which is what makes a downstream row unanswerable rather than
+# merely bad news. They are not the same: a serving-credential violation is a
+# finding over planes that both read fine, so it must not blank a row whose
+# answer this run already knows.
 cmd_check() {
-  local json_mode=0 hard=0 shared local_file url secret_name rc
+  local json_mode=0 hard=0 plane_broken=0 shared local_file url secret_name rc
   [ "${1:-}" = --json ] && json_mode=1
 
   shared=$(fm_gbrain_shared_path "$FM_HOME")
@@ -166,15 +195,15 @@ cmd_check() {
   if fm_gbrain_validate_shared "$shared"; then
     check_row config ok "shared configuration valid"
   else
-    check_row config failed "$FM_GBRAIN_ERROR"; hard=1
+    check_row config failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1
   fi
   if fm_gbrain_validate_local "$local_file"; then
     check_row config-local ok "home-local configuration valid"
   else
-    check_row config-local failed "$FM_GBRAIN_ERROR"; hard=1
+    check_row config-local failed "$FM_GBRAIN_ERROR"; hard=1; plane_broken=1
   fi
 
-  if [ "$hard" -eq 0 ] && fm_gbrain_resolve_paths "$FM_HOME"; then
+  if [ "$plane_broken" -eq 0 ] && fm_gbrain_resolve_paths "$FM_HOME"; then
     if [ -d "$FM_GBRAIN_PGLITE" ]; then
       check_row brain ok "$FM_GBRAIN_PGLITE"
     else
@@ -183,8 +212,11 @@ cmd_check() {
   fi
 
   # A credential that exists but is stored too loosely is a finding, not a
-  # degradation: it is refused rather than used, so the run fails.
-  local plane
+  # degradation: it is refused rather than used, so the run fails. The
+  # configuration planes still read fine, so it is not a broken plane either: it
+  # withholds only the one row whose answer needed that exact credential, which
+  # is why the refused main-brain credential is remembered by name here.
+  local plane refused_main_brain_secret=""
   for plane in think main_brain; do
     secret_name=$(shared_str ".$plane.secret")
     [ -n "$secret_name" ] || continue
@@ -194,9 +226,25 @@ cmd_check() {
     case $rc in
       0) check_row "secret:$secret_name" ok "mode 0600" ;;
       1) check_row "secret:$secret_name" absent "not installed" ;;
-      *) check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1 ;;
+      *)
+        check_row "secret:$secret_name" failed "$FM_GBRAIN_ERROR"; hard=1
+        if [ "$plane" = main_brain ]; then refused_main_brain_secret=$secret_name; fi
+        ;;
     esac
   done
+
+  # docs/gbrain.md owns the rule. A violation is a hard configuration finding;
+  # an unreadable plane is unknown rather than a silent pass. It fails the run
+  # without setting plane_broken: both planes were read, so every row below is
+  # still answerable and the operator reading the violation keeps the context
+  # that tells them which home is serving.
+  fm_gbrain_serving_credential_state "$FM_HOME"
+  case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
+    ok) check_row serving-credential ok "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
+    serving-with-credential)
+      check_row serving-credential failed "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL"; hard=1 ;;
+    unknown) check_row serving-credential unknown "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
+  esac
 
   # Everything below is reachability. Local retrieval does not depend on the
   # main brain or on MiniMax, so neither can turn this run into a failure.
@@ -218,16 +266,20 @@ cmd_check() {
   fi
   # Each row states what this run established and nothing else: the home that
   # owns the main brain reads it directly rather than minting a token to
-  # itself, a home that was never granted a client has no outage to report, and
-  # only a home that holds a client can call an unanswered mint degraded.
+  # itself, a home that was never granted a client has no outage to report, a
+  # mint this run refused to attempt names the credential that blocked it
+  # rather than blaming a brain it never called, and only a home that holds a
+  # usable client can call an unanswered mint degraded.
   url=$(shared_str '.main_brain.mcp_url')
   if [ -n "$url" ]; then
-    if [ "$hard" -ne 0 ]; then
+    if [ "$plane_broken" -ne 0 ]; then
       check_row main-brain skipped "local plane must be fixed first"
     elif fm_gbrain_is_main_brain_owner "$FM_HOME"; then
       check_row main-brain ok "this home owns the main brain at $url and reads its own index directly"
     elif [ -z "$(fm_gbrain_json_str "$local_file" '.client_id')" ]; then
       check_row main-brain absent "this home holds no read-only client for $url; run grant-read from the home that owns it"
+    elif [ -n "$refused_main_brain_secret" ]; then
+      check_row main-brain skipped "secret:$refused_main_brain_secret must be fixed before a read-only token can be minted"
     elif mint_token >/dev/null 2>&1; then
       check_row main-brain ok "read-only token issued for $url"
     else
@@ -266,6 +318,20 @@ cmd_check() {
     done
   fi
   return "$hard"
+}
+
+# --- serving-credential rule alarm ------------------------------------------
+#
+# docs/gbrain.md owns the rule. This read-only entry point prints one diagnostic
+# line for a violation or unknown verdict and stays silent when clear, so
+# bootstrap can run it without network or GBrain process access.
+cmd_serving_check() {
+  fm_gbrain_serving_credential_state "$FM_HOME"
+  case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
+    ok) ;;
+    *) printf 'GBRAIN_SERVING_CREDENTIAL: %s\n' "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
+  esac
+  return 0
 }
 
 # --- granting and revoking the read-only share ------------------------------
@@ -415,6 +481,33 @@ cmd_grant_read() {
       "${FM_GBRAIN_ERROR:-write failed}"
     followup=1
   fi
+  # docs/gbrain.md owns the rule. Reuse the shared verdict so grant-read warns
+  # exactly when registration creates the forbidden configuration - and, like
+  # every other surface, never reports a verdict it could not reach as a pass.
+  fm_gbrain_serving_credential_state "$FM_HOME"
+  case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
+    serving-with-credential)
+      printf '\n'
+      printf '  *** WARNING: this home now SERVES its brain and hosted synthesis is\n'
+      printf '      reachable on it. Since GBrain v0.42.76.0 a read-only holder reaches\n'
+      printf '      think on the serving home, so the share is read-only for retrieval\n'
+      printf '      but NOT for synthesis: a reader can run synthesis here under this\n'
+      printf '      home model and credential. Remove the hosted synthesis credential\n'
+      printf '      (and think.secret) before relying on the share, or do not serve\n'
+      printf '      this brain.\n'
+      printf '      %s\n' "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL"
+      followup=1
+      ;;
+    unknown)
+      printf '\n'
+      printf '  *** WARNING: this home now SERVES its brain, and whether hosted\n'
+      printf '      synthesis is reachable on it could not be determined:\n'
+      printf '      %s.\n' "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL"
+      printf '      Resolve that and re-run "fm-gbrain.sh check" before relying on the\n'
+      printf '      share; a verdict this command could not reach is not a clean one.\n'
+      followup=1
+      ;;
+  esac
   if [ -n "$previous" ]; then
     if gbrain_call auth revoke-client "$previous" >/dev/null 2>&1; then
       printf '  rotated    revoked the previous client %s\n' "$previous"
@@ -518,6 +611,7 @@ main() {
     grant-read) cmd_grant_read "$@" ;;
     revoke-read) cmd_revoke_read "$@" ;;
     retire) cmd_retire "$@" ;;
+    serving-check) cmd_serving_check "$@" ;;
     -h | --help | help | '') usage ;;
     *) die "unknown command: $cmd" ;;
   esac

@@ -590,4 +590,270 @@ assert_present "$override_config/gbrain-secrets/main-brain-client-secret" \
   "retirement must never remove the active home's own credentials"
 pass "a command that names a home acts on that home, whatever config directory the active home is using"
 
+# --- 10. the serving-credential rule is checked, not only stated ------------
+#
+# docs/gbrain.md forbids a home from serving its brain while hosted synthesis is
+# reachable on it, because since GBrain v0.42.76.0 a read-only holder reaches
+# think on the serving home. The verdict keys off the actual serving
+# relationship (main_brain_owner), the actual credential plane (think.secret
+# present and readable), and the actual think endpoint (think.base_url leaving
+# this host), so the cases below pin each input independently.
+# Fail by: dropping the serving-with-credential branch, keying off a home name,
+# proving only "no credential the shared plane names", treating an unreadable
+# plane as clean, alarming on a home that serves nothing, or removing either
+# grant-read warning.
+
+# A home that holds the credential but serves no brain is a latent case: clean,
+# because the boundary is not live yet. Keys off the serving relationship rather
+# than the credential alone, so a check that flagged any credential-holder would
+# fail here.
+latent_home=$(make_home serving-latent)
+install_secret "$latent_home" minimax-key "$MINIMAX_KEY"
+cli "$latent_home" check --json
+expect_code 0 "$CLI_RC" "a home that holds a credential but serves no brain must pass"
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "a non-serving home should read serving-credential as ok, got '$(state_of serving-credential)'"
+cli "$latent_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check must never exit non-zero; the line is the signal"
+[ -z "$CLI_OUT" ] || fail "serving-check must stay silent on a clean home, got: $CLI_OUT"
+pass "a credential-holding home that serves no brain is clean (the latent case)"
+
+# Mark that same home as the main brain owner and the forbidden configuration
+# exists: check must fail the serving-credential row and exit non-zero, and
+# serving-check must announce it. Fail by: removing the violation branch, or by
+# the check no longer treating the violation as a hard failure.
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$latent_home/config/gbrain-local.json"
+cli "$latent_home" check --json
+expect_code 1 "$CLI_RC" "a serving home holding a usable hosted synthesis credential must fail the check"
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "a serving credential-holder should read serving-credential as failed, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "minimax-key" \
+  "the violation must name the credential by its plane name"
+assert_not_contains "$(detail_of serving-credential)" "$MINIMAX_KEY" \
+  "the violation must not leak the credential bytes"
+cli "$latent_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check never exits non-zero; the line is the signal"
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" "serving-check must announce the violation"
+assert_contains "$CLI_OUT" "serves its brain" "the alarm must say the home is serving"
+assert_not_contains "$CLI_OUT" "$MINIMAX_KEY" "the serving-check alarm must not leak the credential bytes"
+pass "a serving home that holds a usable hosted synthesis credential fails the check and raises the alarm"
+
+# Removing the credential clears the violation, pinning the credential plane as
+# a required input rather than serving alone. Fail by: flagging any serving home.
+rm -f "$latent_home/config/gbrain-secrets/minimax-key"
+cli "$latent_home" check --json
+expect_code 0 "$CLI_RC" "a serving home with no usable hosted synthesis credential must pass"
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "a serving home with the credential removed should read ok, got '$(state_of serving-credential)'"
+pass "the violation clears once the credential is gone, so serving alone is not enough"
+
+# That same clean row must state its own reach, because this check reads only
+# Firstmate's declared surfaces while docs/gbrain.md configures hosted synthesis
+# in GBrain's runtime plane: an operator who reads ok as proof would be wrong.
+# Fail by: dropping either disclosure - the surfaces actually read, or the
+# runtime plane and the runtime-injected key that are not read.
+assert_contains "$(detail_of serving-credential)" "gbrain-secrets" \
+  "the clean serving row must name the credential plane it read"
+assert_contains "$(detail_of serving-credential)" "think.secret" \
+  "the clean serving row must name the shared-plane fields it read"
+assert_contains "$(detail_of serving-credential)" "think.base_url" \
+  "the clean serving row must name the endpoint field it read"
+assert_contains "$(detail_of serving-credential)" "models.think" \
+  "the clean serving row must say GBrain's runtime models.think is not inspected"
+assert_contains "$(detail_of serving-credential)" "/home/sungin/.pi/agent/auth.json" \
+  "the clean serving row must say the runtime-injected fleet credential is not inspected"
+assert_contains "$(detail_of serving-credential)" "not proof" \
+  "the clean serving row must not read as proof that hosted synthesis is unreachable"
+# The disclosure belongs to the serving case alone: a home that provably serves
+# nothing answers a different question and must not inherit the caveat.
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "the disclosure assertions must run against the clean serving row"
+pass "a clean serving-credential row states the surfaces it read and the runtime plane it did not"
+
+# A present credential this process refuses to read leaves the credential plane
+# unknown rather than proving it absent. Fail by: collapsing refused credentials
+# into the same clean state as a genuinely missing credential.
+install_secret "$latent_home" minimax-key "$MINIMAX_KEY" 644
+cli "$latent_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a refused credential plane should read serving-credential as unknown, got '$(state_of serving-credential)'"
+cli "$latent_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must raise an unreadable credential plane rather than pass silently"
+assert_contains "$CLI_OUT" "mode 0600" \
+  "the unknown diagnostic must say why the credential plane could not be read"
+pass "a refused credential plane is unknown, never a silent pass"
+
+# A home whose serving relationship cannot be read is unknown, never a pass: an
+# unreadable plane must not look like a check that ran and found nothing. Fail
+# by: defaulting an unreadable plane to ok (which would silence serving-check).
+unknown_home=$(make_home serving-unknown)
+install_secret "$unknown_home" minimax-key "$MINIMAX_KEY"
+printf '%s\n' '{"version":1,"main_brain_owner":' > "$unknown_home/config/gbrain-local.json"
+cli "$unknown_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an unreadable local plane should read serving-credential as unknown, got '$(state_of serving-credential)'"
+cli "$unknown_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must raise unknown rather than pass silently"
+pass "an unreadable serving relationship is unknown, never a silent pass"
+
+# grant-read warns at the moment the forbidden configuration is created:
+# registering the first reading client is the ordinary action that turns a latent
+# credential into a live boundary, so the warning must fire then and must not
+# leak the credential. Fail by: removing the grant-read warning.
+warn_owner=$(make_home serving-warn-owner)
+install_secret "$warn_owner" minimax-key "$MINIMAX_KEY"
+warn_target=$(make_home serving-warn-target)
+cli "$warn_owner" grant-read fm-warn --home "$warn_target"
+expect_code 1 "$CLI_RC" "a grant that creates the forbidden configuration returns a warning, not success"
+assert_contains "$CLI_OUT" "SERVES its brain" "grant-read must warn that the home now serves"
+assert_contains "$CLI_OUT" "hosted synthesis credential" "the warning must name what makes it a boundary"
+assert_not_contains "$CLI_OUT" "$MINIMAX_KEY" "the grant warning must not leak the credential bytes"
+[ "$(jq -r .main_brain_owner "$warn_owner/config/gbrain-local.json")" = true ] \
+  || fail "the granting home must still be recorded as the main brain owner"
+pass "grant-read warns the moment a serving home's credential becomes a live boundary"
+
+# A verdict grant-read could not reach is not a pass either. The credential
+# plane is refused here, so the command has just created a serving relationship
+# over a credential whose state it does not know. Fail by: branching only on the
+# proven violation, which would let an unknown verdict print "granted read-only
+# access" and exit 0 at the one moment the operator is watching.
+unk_owner=$(make_home serving-unknown-owner)
+install_secret "$unk_owner" minimax-key "$MINIMAX_KEY" 644
+unk_target=$(make_home serving-unknown-target)
+cli "$unk_owner" grant-read fm-unknown --home "$unk_target"
+expect_code 1 "$CLI_RC" "a grant whose credential plane could not be read must not report a clean share"
+assert_contains "$CLI_OUT" "could not be determined" \
+  "grant-read must say the verdict could not be reached"
+assert_contains "$CLI_OUT" "mode 0600" "the unknown warning must say which plane could not be read"
+assert_not_contains "$CLI_OUT" "$MINIMAX_KEY" "the unknown warning must not leak the credential bytes"
+pass "grant-read reports an unreachable verdict rather than a clean share"
+
+# The rule constrains serving homes alone, so a home whose serving relationship
+# was read successfully and is false is clean whatever its credential plane
+# holds - `check` still reports the loose credential as its own secret: row.
+# Fail by: reporting unknown whenever any input is unset, which would raise a
+# session-start alarm on every reading home holding a loosely stored credential.
+quiet_home=$(make_home serving-not-owner)
+printf '%s\n' '{"version":1,"main_brain_owner":false}' > "$quiet_home/config/gbrain-local.json"
+install_secret "$quiet_home" minimax-key "$MINIMAX_KEY" 644
+cli "$quiet_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check must never exit non-zero; the line is the signal"
+[ -z "$CLI_OUT" ] \
+  || fail "serving-check must stay silent on a home that serves nothing, got: $CLI_OUT"
+cli "$quiet_home" check --json
+[ "$(state_of serving-credential)" = ok ] \
+  || fail "a home that serves nothing should read serving-credential as ok, got '$(state_of serving-credential)'"
+[ "$(state_of secret:minimax-key)" = failed ] \
+  || fail "check must still report the loose credential in its own row, got '$(state_of secret:minimax-key)'"
+pass "a home that provably serves nothing raises no serving-credential alarm"
+
+# The credential a served think spends need not sit in the credential plane:
+# docs/gbrain.md's fleet-wide MiniMax file is injected into the synthesizing
+# process at runtime. So a serving home pointed at a hosted provider breaks the
+# rule with think.secret absent and an empty credential plane. Fail by: proving
+# only "no credential named by think.secret", which reads such a home as clean.
+hosted_home=$(make_home serving-hosted-think)
+jq '.think = {base_url: "https://api.minimax.invalid/v1", model: "minimax:MiniMax-M3"}' \
+  "$hosted_home/config/gbrain.json" > "$hosted_home/config/gbrain.json.new"
+mv "$hosted_home/config/gbrain.json.new" "$hosted_home/config/gbrain.json"
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$hosted_home/config/gbrain-local.json"
+cli "$hosted_home" check --json
+expect_code 1 "$CLI_RC" "a serving home pointed at a hosted think provider must fail the check"
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "a serving home with a hosted think endpoint should read failed, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "api.minimax.invalid" \
+  "the violation must name the hosted provider the endpoint reaches"
+cli "$hosted_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must announce a serving home pointed at a hosted think provider"
+pass "a serving home pointed at a hosted think provider violates the rule with an empty credential plane"
+
+# The same endpoint on a loopback host is local synthesis, not a hosted
+# provider, so it is not the configuration the rule forbids. Fail by: treating
+# any configured think endpoint as hosted, which would flag every serving home.
+jq '.think = {base_url: "http://127.0.0.1:11435/v1", model: "minimax:MiniMax-M3"}' \
+  "$hosted_home/config/gbrain.json" > "$hosted_home/config/gbrain.json.new"
+mv "$hosted_home/config/gbrain.json.new" "$hosted_home/config/gbrain.json"
+cli "$hosted_home" serving-check
+[ -z "$CLI_OUT" ] \
+  || fail "a serving home whose think endpoint stays on this host must be clean, got: $CLI_OUT"
+pass "the hosted-provider half keys off the endpoint's host, not the presence of a think endpoint"
+
+# The violation must not cost the operator the rest of the report. "local plane
+# must be fixed first" is only true when a plane could not be read; a
+# serving-credential violation is a finding over two planes that both read
+# fine, so the main-brain row stays the factual answer this run established -
+# which is also the row naming the brain the operator is being told they serve.
+# Fail by: gating the main-brain row on the run's exit status rather than on
+# whether the configuration planes are usable, which prints a row that the
+# config-local row two lines above contradicts.
+row_home=$(make_home serving-row-context)
+jq '.think = {base_url: "https://api.minimax.invalid/v1", model: "minimax:MiniMax-M3"}' \
+  "$row_home/config/gbrain.json" > "$row_home/config/gbrain.json.new"
+mv "$row_home/config/gbrain.json.new" "$row_home/config/gbrain.json"
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$row_home/config/gbrain-local.json"
+cli "$row_home" check --json
+expect_code 1 "$CLI_RC" "the serving-credential violation must still fail the run"
+[ "$(state_of config-local)" = ok ] \
+  || fail "this case needs a readable local plane, got '$(state_of config-local)'"
+[ "$(state_of main-brain)" = ok ] \
+  || fail "a serving-credential violation must not blank the main-brain row, got '$(state_of main-brain)'"
+assert_contains "$(detail_of main-brain)" "owns the main brain" \
+  "the main-brain row must keep stating what this run established"
+assert_not_contains "$(detail_of main-brain)" "must be fixed first" \
+  "the report must not point at a local plane the same report calls valid"
+[ "$(state_of brain)" != skipped ] \
+  || fail "a serving-credential violation must not blank the brain row either"
+
+# The skipped row is not gone, it is reserved for the case it describes: a
+# local plane this run genuinely could not read. Fail by: dropping the gate
+# altogether and reporting reachability over configuration that never parsed.
+printf '%s\n' '{"version":1,"main_brain_owner":"yes"}' > "$row_home/config/gbrain-local.json"
+cli "$row_home" check --json
+expect_code 1 "$CLI_RC" "an invalid local plane must fail the run"
+[ "$(state_of config-local)" = failed ] \
+  || fail "this case needs an unreadable local plane, got '$(state_of config-local)'"
+[ "$(state_of main-brain)" = skipped ] \
+  || fail "an unreadable local plane must still skip the main-brain row, got '$(state_of main-brain)'"
+pass "a serving-credential violation fails the run without withholding rows this run could answer"
+
+# The same boundary on the sibling path. A credential stored too loosely is also
+# a finding over configuration planes that both read fine, so it withholds only
+# the row whose answer needed that exact credential: a refused `think`
+# credential is not an input the main-brain row reads. Fail by: treating any
+# refused credential as a broken configuration plane, which prints "local plane
+# must be fixed first" under a config-local row the same report calls ok.
+secret_row_home=$(make_home secret-row-context)
+printf '%s\n' '{"version":1,"client_id":"gbrain_cl_secretrow"}' \
+  > "$secret_row_home/config/gbrain-local.json"
+install_secret "$secret_row_home" minimax-key "$MINIMAX_KEY" 644
+install_secret "$secret_row_home" main-brain-client-secret "$CLIENT_SECRET"
+cli "$secret_row_home" check --json
+expect_code 1 "$CLI_RC" "a credential stored too loosely must still fail the run"
+[ "$(state_of config-local)" = ok ] \
+  || fail "this case needs a readable local plane, got '$(state_of config-local)'"
+[ "$(state_of secret:minimax-key)" = failed ] \
+  || fail "this case needs a refused think credential, got '$(state_of secret:minimax-key)'"
+[ "$(state_of main-brain)" != skipped ] \
+  || fail "a refused think credential must not blank the main-brain row, got '$(detail_of main-brain)'"
+assert_not_contains "$(detail_of main-brain)" "local plane must be fixed" \
+  "the report must not point at a local plane the same report calls valid"
+
+# The main-brain credential IS an input that row needs, so refusing it withholds
+# that one row and names the credential to fix, rather than reporting a mint
+# this run never attempted as an outage at the main brain. Fail by: dropping the
+# gate with the plane_broken one, which reads a refused credential as degraded.
+chmod 644 "$secret_row_home/config/gbrain-secrets/main-brain-client-secret"
+cli "$secret_row_home" check --json
+expect_code 1 "$CLI_RC" "a refused main-brain credential must still fail the run"
+[ "$(state_of main-brain)" = skipped ] \
+  || fail "a refused main-brain credential must skip its own row, got '$(state_of main-brain)'"
+assert_contains "$(detail_of main-brain)" "secret:main-brain-client-secret" \
+  "the skipped row must name the credential that has to be fixed"
+assert_not_contains "$(detail_of main-brain)" "local plane must be fixed" \
+  "a refused credential is not an unreadable configuration plane"
+pass "a refused credential withholds only the row that needed it"
+
 echo "all fm-gbrain-lib tests passed"

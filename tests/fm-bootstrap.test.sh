@@ -1139,6 +1139,80 @@ SH
   pass "bootstrap checks post-sync drift normally and relays it in detect-only sessions"
 }
 
+# The serving-credential rule is a startup diagnostic, not an operator-memory
+# check: every normal and detect-only session must surface an existing violation.
+# Fail by: removing bootstrap's serving-check invocation, weakening it to only
+# one session mode, or letting the detector infer any plane as clean.
+test_bootstrap_relays_gbrain_serving_credential_in_both_modes() {
+  local case_dir home fakebin bash_env out mode expected
+  case_dir="$TMP_ROOT/gbrain-serving-credential"
+  home="$case_dir/home"
+  mkdir -p "$home/config/gbrain-secrets"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  printf '%s\n' \
+    '{"version":1,"think":{"base_url":"https://api.example.invalid/v1","model":"minimax:MiniMax-M3","secret":"hosted-synthesis"}}' \
+    > "$home/config/gbrain.json"
+  printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$home/config/gbrain-local.json"
+  printf '%s\n' 'test-only-hosted-key' > "$home/config/gbrain-secrets/hosted-synthesis"
+  chmod 600 "$home/config/gbrain-secrets/hosted-synthesis"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  expected="GBRAIN_SERVING_CREDENTIAL: this home serves its brain as the main brain and holds the hosted synthesis credential 'hosted-synthesis'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
+
+  for mode in 0 1; do
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+      FM_BOOTSTRAP_DETECT_ONLY="$mode" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+      "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    printf '%s\n' "$out" | grep -Fx "$expected" >/dev/null \
+      || fail "detect-only=$mode: bootstrap must surface the serving-credential violation (got: $out)"
+  done
+
+  # Deleting the credential alone does not clear it: the shared plane still
+  # points think off this host, and the key a served think spends is injected
+  # into the synthesizing process rather than read from the credential plane.
+  # Fail by: proving only "no credential named by think.secret".
+  rm -f "$home/config/gbrain-secrets/hosted-synthesis"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_SERVING_CREDENTIAL: " \
+    "removing the credential file must not clear a serving home still pointed at a hosted think provider"
+  assert_contains "$out" "api.example.invalid" \
+    "the remaining diagnostic must name the hosted provider the think endpoint reaches"
+
+  # jq is not in the universal toolchain, and its absence is a missing tool
+  # rather than a corrupt configuration. Fail by: letting the shared-plane
+  # validator's "not valid JSON" stand in for an interpreter that is not there.
+  bash_env="$case_dir/no-jq.bash"
+  cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = jq ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+jq() {
+  return 127
+}
+SH
+  out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_SERVING_CREDENTIAL: jq is not installed" \
+    "a missing jq must be reported as the missing tool it is"
+  assert_not_contains "$out" "gbrain.json is not valid JSON" \
+    "a missing jq must never be reported as a corrupt configuration"
+
+  # Both halves removed clears it, which is what makes the diagnostic a signal
+  # rather than a permanent fixture of session start.
+  printf '%s\n' '{"version":1}' > "$home/config/gbrain.json"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_SERVING_CREDENTIAL:" \
+    "bootstrap must clear the diagnostic once the serving home has no hosted synthesis at all"
+  pass "bootstrap surfaces a serving-home credential violation in normal and detect-only sessions"
+}
+
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   local case_dir fakebin out expect
   case_dir="$TMP_ROOT/dispatch-active"
@@ -1273,6 +1347,7 @@ test_usage_store_refresh_refuses_to_run_unbounded
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_relays_vault_drift_in_both_modes
+test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_backend_mismatch
 test_crew_dispatch_validation
