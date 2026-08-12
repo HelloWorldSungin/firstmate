@@ -23,7 +23,8 @@ Load `secondmate-provisioning` instead for `kind=secondmate` recovery.
 
 Treat the digest's endpoint result as a presence signal, not proof that the task's work or validation run is gone.
 Read the targeted current state with `bin/fm-crew-state.sh <id>` before deciding to relaunch.
-A no-mistakes run matched to the task's own recorded branch and current code remains authoritative when the endpoint is dead: handle a terminal or parked run through the normal lifecycle, and keep supervising an active run instead of creating a duplicate worker.
+A no-mistakes run matched to the task's own recorded branch and current code remains authoritative when the endpoint is dead: handle a terminal or parked run through the normal lifecycle, and never create a duplicate worker for a run that is still advancing.
+That reader reports `abandoned` rather than `working` for an advancing run whose worker is confidently gone, and that verdict is actionable: the run reaches its next gate with nobody left to answer it, so restore a worker to the same task through the relaunch rules below instead of leaving the run to advance unattended.
 
 When no authoritative run accounts for the task, inspect only its recorded backend and worktree inventory.
 Use `treehouse status` for treehouse-backed tmux, herdr, zellij, or cmux tasks, and use the recorded `orca_worktree_id=` and `terminal=` for Orca tasks.
