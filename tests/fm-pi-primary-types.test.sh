@@ -61,3 +61,4 @@ JSON
 tsc -p "$TMP_ROOT/tsconfig.json" || exit 1
 version=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
 printf 'ok - tracked Pi extensions pass strict no-emit typecheck against Pi %s\n' "$version"
+printf '\nall fm-pi-primary-types tests passed\n'

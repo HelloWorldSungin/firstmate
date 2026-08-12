@@ -1104,3 +1104,4 @@ test_kill_is_best_effort_when_close_workspace_fails
 test_kill_recovers_stale_target_by_label
 test_list_live_filters_by_title_prefix
 test_secondmate_spawn_refuses_cmux_backend
+printf '\nall fm-backend-cmux tests passed\n'

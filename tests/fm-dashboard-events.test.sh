@@ -1385,3 +1385,4 @@ test_a_selected_task_survives_a_broadcast_that_replaces_the_tail
 test_instrument_refuses_a_target_off_this_machine
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
+printf '\nall fm-dashboard-events tests passed\n'

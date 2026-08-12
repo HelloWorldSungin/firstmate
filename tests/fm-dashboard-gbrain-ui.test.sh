@@ -607,3 +607,5 @@ if (failures.length) {
 console.log("dashboard gbraintron panel data verified");
 })();
 NODE
+
+printf '\nall fm-dashboard-gbrain-ui tests passed\n'

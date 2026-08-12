@@ -37,3 +37,4 @@ test_primary_and_secondmate_instruction_generation() {
 }
 
 test_primary_and_secondmate_instruction_generation
+printf '\nall fm-ask-user-authority tests passed\n'

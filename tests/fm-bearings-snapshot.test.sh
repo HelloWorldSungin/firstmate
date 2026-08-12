@@ -2004,3 +2004,4 @@ test_section_caps_and_expansion_flags
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
+printf '\nall fm-bearings-snapshot tests passed\n'

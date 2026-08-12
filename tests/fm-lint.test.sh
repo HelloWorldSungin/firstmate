@@ -436,3 +436,4 @@ test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
 test_seeded_module_boundary_parity
+printf '\nall fm-lint tests passed\n'

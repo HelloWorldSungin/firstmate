@@ -1220,3 +1220,4 @@ test_forge_token_is_used_without_reaching_the_process_arguments
 test_loose_token_permissions_are_refused
 test_forge_tokens_are_not_inheritable_config
 test_config_directory_is_untracked
+printf '\nall fm-issue-linkage tests passed\n'

@@ -217,3 +217,4 @@ run_cell native "$NATIVE_BIN"
 run_cell legacy "$LEGACY_BIN"
 trap - EXIT
 echo "ok - Grok adaptive Stop real-process matrix passed with exact target cleanup and control-window survival"
+printf '\nall fm-grok-stop-live-e2e tests passed\n'

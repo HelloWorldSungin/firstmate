@@ -139,3 +139,4 @@ test_repository_inventory_passes
 test_duplicate_and_setup_classification_fail
 test_required_pointer_fails
 test_local_links_and_no_keyword_heuristic
+printf '\nall fm-documentation-audiences tests passed\n'

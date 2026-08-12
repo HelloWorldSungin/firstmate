@@ -275,3 +275,4 @@ test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_never_silently_returns_empty
 test_cursor_cache_read_failure_refolds_authoritative_status
 test_buried_decision_survives_many_growing_drains_and_resolution_clears_it
+printf '\nall fm-wake-drain-open-decisions-cursor tests passed\n'

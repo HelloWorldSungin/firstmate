@@ -3655,3 +3655,4 @@ test_operational_followup_turn_e2e
 test_hidden_block_geometry_e2e
 test_working_ship_geometry_and_lifecycle
 test_interactive_terminal_e2e
+printf '\nall fm-calm-pi-extension tests passed\n'

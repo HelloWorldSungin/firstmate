@@ -390,3 +390,4 @@ test_missing_evidence_shapes_are_none
 test_unparseable_output_is_none
 test_bounded_read_uses_the_shared_timeout_owner
 test_writes_nothing_and_never_fails_a_read
+printf '\nall fm-run-progress tests passed\n'

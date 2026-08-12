@@ -261,3 +261,4 @@ test_key_path_is_not_marked
 test_marker_is_label_plus_invisible_separator
 test_marker_transformation_is_idempotent
 test_marked_send_preserves_trailing_newlines
+printf '\nall fm-send-secondmate-marker tests passed\n'

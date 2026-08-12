@@ -133,4 +133,5 @@ grep -q 'herdr: agent blocked' "$STATE/.wake-queue" || fail "the stale payload m
 pass "real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition"
 
 cleanup_all
+printf '\nall fm-backend-herdr-eventwait-smoke tests passed\n'
 trap - EXIT

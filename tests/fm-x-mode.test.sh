@@ -2897,3 +2897,4 @@ test_bootstrap_does_not_follow_x_artifact_symlinks
 test_bootstrap_inert_without_token
 test_bootstrap_opt_out_cleanup
 test_bootstrap_opt_out_reports_cleanup_failure
+printf '\nall fm-x-mode tests passed\n'

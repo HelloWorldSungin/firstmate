@@ -1466,3 +1466,4 @@ test_the_merge_path_posts_its_own_milestones
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable
 test_the_shared_contracts_have_exactly_one_owner
 test_the_forge_library_exports_only_its_named_operations
+printf '\nall fm-issue-writeback tests passed\n'

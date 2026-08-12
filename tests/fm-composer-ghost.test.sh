@@ -626,3 +626,4 @@ test_legitimate_empty_routes_remain_empty
 test_non_bordered_composer_uses_compatibility_fallback
 test_non_bordered_interior_edges_are_pending
 test_peek_output_is_escape_free
+printf '\nall fm-composer-ghost tests passed\n'

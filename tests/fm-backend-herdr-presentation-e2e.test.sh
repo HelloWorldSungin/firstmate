@@ -1361,4 +1361,5 @@ LAB_READY=0
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
 cleanup_all
+printf '\nall fm-backend-herdr-presentation-e2e tests passed\n'
 trap - EXIT

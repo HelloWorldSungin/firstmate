@@ -185,3 +185,4 @@ if fm_message_from_firstmate "$GOT"; then
 fi
 printf 'evidence: direct-input received-hex=%s\n' "$(printf '%s' "$GOT" | od -An -tx1 | tr -d ' \n')"
 pass "real Pi/Herdr: direct captain terminal input stays unmarked"
+printf '\nall fm-send-secondmate-marker-herdr-e2e tests passed\n'

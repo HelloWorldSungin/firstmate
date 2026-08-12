@@ -89,3 +89,8 @@ $ git diff --check
 $ for test_script in tests/*.test.sh; do bash "$test_script"; done
 ALL 71 TEST SCRIPTS PASSED
 ```
+
+Annotation, 2026-08-12: the line recorded under `$ bash tests/fm-teardown.test.sh` is that suite's result as this record summarized it on 2026-07-14, not a line the suite printed - it emitted no trailing marker of its own at that date.
+It has since gained the sibling marker, so a rerun today closes with `all fm-teardown tests passed`.
+The four suites transcribed above it gained the same sibling marker in the same change: `fm-decision-hold-lifecycle`, `fm-fleet-snapshot-view`, `fm-bearings-snapshot`, and `fm-brief` each now end with their own `all <subject> tests passed` line.
+The blocks above predate those markers and record none of them.

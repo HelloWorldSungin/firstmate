@@ -979,3 +979,4 @@ test_credentials_already_unusable_at_startup_close_the_dashboard
 test_ingest_keeps_its_own_boundary
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
+printf '\nall fm-dashboard-access tests passed\n'

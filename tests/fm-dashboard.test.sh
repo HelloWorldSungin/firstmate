@@ -1466,3 +1466,4 @@ test_installer_writes_hardened_user_service
 test_unit_grants_scratch_without_hiding_tmp_and_opener_keeps_temps_in_memory
 fm_assert_no_user_event_store_leak "$USER_EVENT_STORE_BEFORE"
 pass "no agent-event store was created outside this suite's own temp space"
+printf '\nall fm-dashboard tests passed\n'

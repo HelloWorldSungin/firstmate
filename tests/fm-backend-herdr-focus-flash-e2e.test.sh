@@ -203,3 +203,4 @@ printf 'evidence: herdr=%s protocol=%s steal_live=%s default-session-tripwire=ar
   "$(printf '%s' "$STATUS" | jq -r '.client.version')" \
   "$(printf '%s' "$STATUS" | jq -r '.client.protocol')" \
   "$STEAL_LIVE"
+printf '\nall fm-backend-herdr-focus-flash-e2e tests passed\n'

@@ -40,6 +40,9 @@ ok - startup surfaces unresolved public commitments only in a relay home that ow
 ok - typed public-followup records carry only public-safe summaries and deliverables
 ```
 
+Annotation, 2026-08-12: the run transcribed above predates the suite's trailing completion marker, so it carries none.
+`tests/fm-public-followup.test.sh` now ends with `printf '\nall fm-public-followup tests passed\n'`, so a clean run closes with `all fm-public-followup tests passed` after the last `ok -` line recorded here.
+
 The first case is the end-to-end proof.
 It reproduces the stranded state first (work bound, no reconciled terminal result, delivery refused with "still waiting on its bound work" and zero posts), then has a secondmate-shaped child report a typed `pr-merged` result, deletes the drained inbox payload, reconciles from disk, and asserts exactly one `connector/followup` call carrying the original `request_id`, a validated `posted` receipt, and a Done obligation.
 

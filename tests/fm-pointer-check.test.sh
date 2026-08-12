@@ -485,3 +485,4 @@ test_examples_and_foreign_hosts_are_not_pointers
 test_code_comment_pointers_resolve
 test_json_output_carries_every_verdict
 test_default_scan_selects_tracked_prose
+printf '\nall fm-pointer-check tests passed\n'

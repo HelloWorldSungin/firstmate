@@ -227,3 +227,4 @@ test_teardown_skips_gracefully_when_dir_missing() {
 test_teardown_removes_tasktmp_dir
 test_teardown_skips_gracefully_without_tasktmp
 test_teardown_skips_gracefully_when_dir_missing
+printf '\nall fm-gotmp tests passed\n'

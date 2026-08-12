@@ -563,3 +563,4 @@ write_set
 
 rm -f "$TMP_ROOT/qc.keep"
 pass "fm-gbrain-eval.sh scores retrieval and synthesis separately, records its provenance, and reports a missed threshold"
+printf '\nall fm-gbrain-eval tests passed\n'

@@ -289,3 +289,4 @@ test_secondmate_home_is_in_scope
 test_stdin_transports_and_output_shapes
 test_malformed_transport_fails_open
 test_missing_jq_stdin_transport_fails_open
+printf '\nall fm-subagent-pretool-check tests passed\n'

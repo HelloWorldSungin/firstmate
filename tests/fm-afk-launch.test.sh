@@ -955,3 +955,4 @@ e2e_herdr
 e2e_tmux
 
 [ "$FAILED" -eq 0 ] || exit 1
+printf '\nall fm-afk-launch tests passed\n'

@@ -209,3 +209,4 @@ test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
+printf '\nall fm-composer-lib tests passed\n'

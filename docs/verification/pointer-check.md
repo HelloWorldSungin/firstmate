@@ -239,3 +239,30 @@ FM_TEST_SLOWEST rank=1 script=tests/fm-pointer-check.test.sh duration_ms=561
 
 The live half of this page - real credential, real private repository, real nonexistent owner, real slashed branch name - is what the stub cannot prove, and is the reason these commands are recorded rather than assumed.
 Re-run them after a change to the resolution ladder or to the `gh` major version.
+
+## Updated reproduction, 2026-08-12
+
+The run transcribed above predates the suite's trailing completion marker, so it carries none.
+`tests/fm-pointer-check.test.sh` now closes with `all fm-pointer-check tests passed`, as shown below.
+
+```console
+$ bin/fm-test-run.sh tests/fm-pointer-check.test.sh
+FM_TEST_BEGIN 2026-08-12T17:04:13Z tests/fm-pointer-check.test.sh family=pure-contract-unit expected_gate_skip=none
+ok - authenticated resolution separates ok, broken, and could-not-verify
+ok - no credential yields could-not-verify, never a broken or working verdict
+ok - a GitHub App installation token is probed as usable, not as unusable
+ok - --require-credential turns a credential-less run into an explicit refusal
+ok - a throttled or forbidden lookup is could-not-verify, never broken
+ok - a probe that establishes nothing falls to unusable, not to authenticated
+ok - a branch name containing a slash resolves, and an undecidable split is not broken
+ok - fenced and inline URLs stay out of the pointer surface, and a template is refused by name
+ok - pointers in code comments are resolved, not only Markdown links
+ok - JSON output reports every pointer, verdict, and reason
+ok - the default scan selects tracked Markdown and reports repo-relative sources
+
+all fm-pointer-check tests passed
+FM_TEST_END 2026-08-12T17:04:14Z tests/fm-pointer-check.test.sh exit=0 duration_ms=567 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=584
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=567 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-pointer-check.test.sh duration_ms=567
+```

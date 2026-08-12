@@ -57,3 +57,4 @@ test_direct_invocation_still_works() {
 
 test_symlink_invocation_resolves_sibling_lib
 test_direct_invocation_still_works
+printf '\nall fm-remote-entrypoint tests passed\n'

@@ -228,4 +228,5 @@ fm_backend_tmux_foreground_comms "$SESSION:no-such-window" >/dev/null \
 pass "tmux liveness: an absent window classifies missing rather than inheriting tmux's active-window fallback"
 
 cleanup_all
+printf '\nall fm-tmux-agent-liveness tests passed\n'
 trap - EXIT

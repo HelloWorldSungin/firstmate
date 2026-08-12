@@ -179,4 +179,5 @@ fm_backend_herdr_kill "$SESSION:$NEW_CREW_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$NEW_SM_PANE_ID"
 
 cleanup_all
+printf '\nall fm-backend-herdr-respawn-idem-e2e tests passed\n'
 trap - EXIT

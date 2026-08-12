@@ -172,3 +172,26 @@ The 12-record case stays exactly what it was, the concurrency test.
 
 `the spawn clock comes from the recorded stamp, not the meta file's mtime` fails if the clock the activity signal falls back to stops being published, or if it goes back to ageing `state/<id>.meta` - which it asserts by touching that file and requiring the published age not to move.
 Its dashboard half is the pair asserting that a busy task with no status line and no completed turn colours the strip once its dispatch passes the window and stays green inside it.
+
+
+## Updated reproduction, 2026-08-12
+
+The commands recorded above use positional `tail`, which no longer selects the same lines today for two different reasons:
+
+- `tests/fm-fleet-snapshot-view.test.sh`: the transcript was already stale at base commit `b5cf66e` because the suite's final cases had changed, and this change adds a trailing completion marker which shifts the tail again. The two cases below are selected by name from a current rerun.
+- `tests/fm-dashboard-inbox.test.sh`: the transcript was accurate at base; the sole change is the added trailing completion marker, so `tail -1` now returns the marker instead of the last `ok -` line. The case below is selected by name from a current rerun.
+
+```console
+$ bash tests/fm-fleet-snapshot-view.test.sh | grep -E '^ok - (per-task reads run concurrently|one unreadable task reports unknown)'
+ok - per-task reads run concurrently, so a fleet-sized snapshot stays inside half its budget
+ok - one unreadable task reports unknown with a timeout source and the rest of the snapshot survives
+$ bash tests/fm-dashboard-inbox.test.sh | grep -E '^ok - health signals produce'
+ok - health signals produce the documented states and never summarize uncertainty as healthy
+```
+
+`fail` reports on stderr and exits there, so the failing-case command merges stderr into the pipe:
+
+```console
+$ FM_SNAPSHOT_TASK_JOBS=1 bash tests/fm-fleet-snapshot-view.test.sh 2>&1 | tail -1
+not ok - a 12-task snapshot took 13s, past 7s (half the 15s the dashboard allows it); the per-task reads are summing again
+```

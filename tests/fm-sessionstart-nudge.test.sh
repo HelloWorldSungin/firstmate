@@ -156,3 +156,4 @@ test_linked_secondmate_primary_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
 test_opencode_plugin_delivers_exact_nudge_once
+printf '\nall fm-sessionstart-nudge tests passed\n'

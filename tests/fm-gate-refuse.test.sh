@@ -369,3 +369,4 @@ test_helper_normal_is_noop
 test_spawn_refuses_and_admits
 test_send_refuses_and_admits
 test_teardown_refuses_and_admits
+printf '\nall fm-gate-refuse tests passed\n'

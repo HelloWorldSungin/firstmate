@@ -249,3 +249,4 @@ test_descendant_guard_admits_only_live_children
 test_cleanup_registry_resists_precreation
 test_fixture_registration_failure_rolls_back_root
 test_orphan_sweep_respects_fixture_ownership
+printf '\nall fm-test-fixture-cleanup tests passed\n'

@@ -246,4 +246,5 @@ pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate'
 fm_backend_herdr_kill "$SESSION:$SM_PANE"
 
 cleanup_all
+printf '\nall fm-backend-herdr-workspace-per-home-e2e tests passed\n'
 trap - EXIT

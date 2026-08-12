@@ -172,3 +172,4 @@ if ! cleanup_all; then
 fi
 trap - EXIT
 pass "real herdr: isolated lab session removed and default fleet session unchanged"
+printf '\nall fm-backend-autodetect-smoke tests passed\n'

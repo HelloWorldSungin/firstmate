@@ -91,3 +91,4 @@ test_quiet_checkpoint_exits_124_cleanly
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment
 test_existing_singleton_watcher_is_not_success
+printf '\nall fm-watch-checkpoint tests passed\n'

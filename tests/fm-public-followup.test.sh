@@ -1300,3 +1300,4 @@ test_exhausted_binding_is_not_retried
 test_relay_poll_stays_inert_and_surfaces_once
 test_session_start_surfaces_only_when_owed
 test_typed_records_exclude_raw_public_material
+printf '\nall fm-public-followup tests passed\n'

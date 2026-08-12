@@ -417,3 +417,4 @@ test_unsupported_capture_schema_is_reported_not_fatal
 test_capture_status_timeout_is_reported_not_fatal
 test_capture_status_may_spend_the_remaining_budget
 test_flags_are_order_independent_and_still_validated
+printf '\nall fm-gbrain-health tests passed\n'
