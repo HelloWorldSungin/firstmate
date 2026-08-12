@@ -2873,7 +2873,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait export_status_wait trailing_export_status boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: pi or tmux not found for Pi calm interactive E2E"
     return 0
@@ -3305,12 +3305,37 @@ JS
   # reaches the terminal (docs/calm-mode-feasibility.md records the counterfactual). This
   # is tracked current behavior, not the behavior Calm wants, so the check runs in both
   # directions and names the record to update when it changes.
-  wait_for_text "$export_snapshot" "Session exported to: $export_file" &&
-    fail "Calm's post-export redraw no longer overwrites Pi's export confirmation; restore the confirmation assertion and refresh docs/calm-mode-feasibility.md"
+  #
+  # The Ctrl+O press earlier in this test already left its own "Tool output: expanded" row
+  # in the transcript, and Calm's post-export toggle ends on the same expansion state, so
+  # it emits a byte-identical string. Matching that string anywhere in the 600-line capture
+  # would therefore still pass with Calm's whole post-export redraw removed. Anchor on
+  # position instead: the only two callers of setToolsExpanded are Ctrl+O and Calm's own
+  # /calm and post-export redraws, and both of the pre-export ones run before the
+  # operational injections append their " Error:" rows. So a status row below the last of
+  # those error rows can only have been written after /export, and which message that
+  # trailing row carries is the discriminating signal.
+  export_status_wait=0
+  trailing_export_status=""
+  while [ "$export_status_wait" -lt 120 ]; do
+    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S -600 >"$export_snapshot"
+    trailing_export_status=$(awk '
+      / Error:/ { last_error = NR }
+      /Tool output:|Session exported to:/ { last_status = NR; last_status_line = $0 }
+      END { if (last_error && last_status > last_error) print last_status_line }
+    ' "$export_snapshot")
+    [ -n "$trailing_export_status" ] && break
+    sleep 0.05
+    export_status_wait=$((export_status_wait + 1))
+  done
+  [ -n "$trailing_export_status" ] \
+    || fail "no status row reached the terminal below the operational rows after /export"
+  assert_not_contains "$(cat "$export_snapshot")" "Session exported to: $export_file" \
+    "Calm's post-export redraw no longer overwrites Pi's export confirmation; restore the confirmation assertion and refresh docs/calm-mode-feasibility.md"
+  assert_contains "$trailing_export_status" "Tool output:" \
+    "Calm's post-export redraw status row never reached the terminal"
   assert_not_contains "$(cat "$export_snapshot")" "/export $export_file" \
     "/export did not leave the editor while calm mode was on"
-  assert_contains "$(cat "$export_snapshot")" "Tool output:" \
-    "Calm's post-export redraw status row never reached the terminal"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);

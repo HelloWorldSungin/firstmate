@@ -461,7 +461,11 @@ The throw is synchronous, in-process, and has no tmux, timer, or terminal involv
 kunchenguid/firstmate PR 1271's three transient active-screen checks were already present on this fork's base, added by commit `8a97167` ("Stabilize locale and Calm regression checks", 2026-07-29), long before this branch.
 They are the three `! grep -Fq` guards - `Thinking...`, `fm_watch_arm_pi`, and `FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status` - inside the first `/calm` redraw wait loop of `test_interactive_terminal_e2e`.
 Nothing in this change transplanted them, and they are not what fixed the failure above: they gate a terminal wait loop, while the deterministic 0.84.1 failure is a synchronous `TypeError` in a node fixture that never starts tmux.
-They are preserved untouched because they still guard the live redraw race they were written for - without them the loop can sample a half-redrawn transcript.
+
+Only two of the three still change the loop's outcome, and the record should not claim otherwise.
+All three were distinct when `8a97167` added them - the loop's first condition was then `! grep -Fq "CALM_E2E_OUTPUT"` - but `71f0b3f` ("fix(pi): gate Calm built-in overrides by activation state", #1724) later replaced that first needle with `Thinking...`.
+As the loop now stands its first condition and the guard `8a97167` added are byte-identical members of the same `&&` conjunction, so removing the added `Thinking...` line alone could not change when the loop breaks; only the `fm_watch_arm_pi` and `FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status` guards independently keep it from sampling a half-redrawn transcript.
+All three are preserved untouched anyway: the duplicate is harmless, and the two load-bearing guards still protect the live redraw race they were written for.
 
 ### Fix: forward Pi's Markdown transformers through the Calm adapter
 
