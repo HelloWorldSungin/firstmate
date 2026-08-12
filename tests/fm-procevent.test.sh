@@ -1089,6 +1089,16 @@ assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$ENOENT_RESULT")
   "an ENOENT on the artifact classifies as artifact-missing, not unknown"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$ENOENT_RESULT" \
   && fail "an artifact-missing result was reported terminal and would auto-retire"
+# An unrelated lavish-axi internal ENOENT (no realpath of the artifact) must
+# NOT classify as artifact-missing - it stays unknown so the handler is not told
+# to retire a live review whose artifact is fine. This fails if the realpath
+# narrowing is ever undone and the match broadens back to any ENOENT.
+UNRELATED_ENOENT="$TMP_ROOT/unrelated-enoent-result"
+printf 'error: "ENOENT: no such file or directory, open /home/user/.lavish/state.json"\ncode: UNKNOWN\n' > "$UNRELATED_ENOENT"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$UNRELATED_ENOENT")" unknown \
+  "an unrelated ENOENT without realpath classifies as unknown, not artifact-missing"
+"$ROOT/bin/fm-procevent-lavish.sh" terminal "$UNRELATED_ENOENT" \
+  && fail "an unrelated ENOENT was reported terminal"
 pass "a deleted artifact classifies distinctly and stays armed (a file can reappear)"
 
 MISSING_ART="$TMP_ROOT/missing-review/deep/contract-review.html"

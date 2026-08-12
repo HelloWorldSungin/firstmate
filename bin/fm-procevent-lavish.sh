@@ -235,7 +235,15 @@ cmd_classify() {
   ' "$file")
   if [ "$error_code" = NOT_FOUND ] || [[ "$error_message" == "No active Lavish Editor session"* ]]; then
     printf 'missing\n'
-  elif [[ "$error_message" == *ENOENT* ]] || [[ "$error_message" == *"no such file or directory"* ]]; then
+  # A deleted artifact shows up as lavish-axi failing to realpath the file, so
+  # the message carries the OS file-not-found signal AND the `realpath` keyword
+  # from that fs.realpath call. Require both: an unrelated lavish-axi internal
+  # ENOENT (its own config/state, say) has no `realpath` and must NOT match,
+  # because the handler is told to retire an artifact-missing source. If a
+  # future lavish-axi rephrases this, it degrades to `unknown` (honest), never
+  # to a wrong retire.
+  elif { [[ "$error_message" == *ENOENT* ]] || [[ "$error_message" == *"no such file or directory"* ]]; } \
+    && [[ "$error_message" == *realpath* ]]; then
     printf 'artifact-missing\n'
   else
     printf 'unknown\n'
