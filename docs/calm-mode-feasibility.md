@@ -587,8 +587,11 @@ Deciding whether the E2E should cover either path is deliberately left open rath
 ### Evidence
 
 Component fixtures resolve their Pi through `FM_PI_PACKAGE_DIR`, so the second command below exercises the Calm adapters against Pi 0.83.0's real rendering components; the tmux E2E always drives the installed `pi` binary, which was 0.84.1 for both runs.
-Both transcripts in this section and the next were produced on the tree as committed at `248b145`, the commit that moved the stock user-row constructor contract into `fm-calm-visibility.ts`, made its trailing parameters optional, and added the host-capture adapter and the legacy-entry guard.
-They are not carried over from the earlier `c532ed7` tree: that tree predates every one of those changes, and the 0.83.0 declaration check is the one that caught the previous round's `TS2493`/`TS2554`, so it was re-run rather than assumed.
+Both transcripts in this section and the next were produced on the tree this record ships in, after the last change to any code either suite covers.
+A commit hash is deliberately not pinned here: naming one is self-invalidating, because any later commit that amends only this file leaves the hash pointing at a tree the transcripts no longer come from.
+The runtime transcript dates itself instead - the `operational-user-row=` and `legacy-synthetic-entry-row=` suffix it carries exists only in a tree that already records the exercised transformer mode, and that recording is the newest change to either suite.
+They are not carried over from the earlier `c532ed7` tree, which predates the stock user-row constructor contract moving into `fm-calm-visibility.ts`, its optional trailing parameters, the host-capture adapter, and the legacy-entry guard.
+The 0.83.0 declaration check is the one that caught the earlier `TS2493`/`TS2554`, so it was re-run against both packages rather than assumed.
 
 ```text
 $ pi --version
