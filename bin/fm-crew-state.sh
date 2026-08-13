@@ -176,11 +176,15 @@ fi
 
 # Last non-empty status line, its physical line number, and the file metadata
 # that bounds that read.
-log_file_state() {
-  stat -c '%Y %s' "$LOG" 2>/dev/null \
-    || stat -f '%m %z' "$LOG" 2>/dev/null \
-    || printf '0 0'
-}
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  log_file_state() {
+    stat -f '%m %z' "$LOG" 2>/dev/null || printf '0 0'
+  }
+else
+  log_file_state() {
+    stat -c '%Y %s' "$LOG" 2>/dev/null || printf '0 0'
+  }
+fi
 log_snapshot() {
   local before after payload attempt=0
   while [ "$attempt" -lt 2 ]; do
