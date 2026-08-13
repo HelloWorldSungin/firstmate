@@ -2378,28 +2378,96 @@ fm_backend_herdr_send_literal() {  # <target> <text>
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
-fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <expected-terminal-id> -> empty|send-failed|unverifiable
-  local out code
+fm_backend_herdr_prompt_receipt_path() {  # <agent> <session-id>
+  local agent=$1 session_id=$2 path found=
+  case "$session_id" in
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$agent" in
+    cursor)
+      for path in "$HOME/.cursor/projects"/*/agent-transcripts/"$session_id"/"$session_id.jsonl"; do
+        [ -f "$path" ] && [ ! -L "$path" ] || continue
+        [ -z "$found" ] || return 1
+        found=$path
+      done
+      ;;
+    agy)
+      path="$HOME/.gemini/antigravity-cli/brain/$session_id/.system_generated/logs/transcript.jsonl"
+      [ -f "$path" ] && [ ! -L "$path" ] || return 1
+      found=$path
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+fm_backend_herdr_prompt_receipt_matches() {  # <agent> <path> <first-line> <text>
+  local agent=$1 path=$2 first_line=$3 text=$4
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  case "$first_line" in ''|*[!0-9]*) return 1 ;; esac
+  case "$agent" in
+    cursor)
+      tail -n "+$first_line" "$path" 2>/dev/null | jq -e -s --arg text "$text" '
+        any(.[];
+          .role == "user"
+          and any(.message.content[]?;
+            .type == "text"
+            and (
+              .text == $text
+              or (.text | contains("<user_query>\n" + $text + "\n</user_query>"))
+            )
+          )
+        )
+      ' >/dev/null 2>&1
+      ;;
+    agy)
+      tail -n "+$first_line" "$path" 2>/dev/null | jq -e -s --arg text "$text" '
+        any(.[];
+          .source == "USER_EXPLICIT"
+          and .type == "USER_INPUT"
+          and .status == "DONE"
+          and (
+            .content == $text
+            or (.content | contains("<USER_REQUEST>\n" + $text + "\n</USER_REQUEST>"))
+          )
+        )
+      ' >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <agent-session-id> -> empty|send-failed|unverifiable
+  local out code receipt_path= receipt_line= prompt_rc=0 i=0
+  local receipt_polls=${FM_HERDR_PROMPT_RECEIPT_POLLS:-100}
+  case "$receipt_polls" in ''|*[!0-9]*) receipt_polls=100 ;; esac
   fm_backend_herdr_parse_target "$1" || { printf 'send-failed'; return 0; }
-  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent prompt "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
-    if printf '%s' "$out" | jq -e \
-      --arg expected_agent "$3" \
-      --arg expected_terminal "$4" \
-      --arg expected_pane "$FM_BACKEND_HERDR_PANE" '
-      .result.type == "agent_prompted"
-      and .result.agent.agent == $expected_agent
-      and .result.agent.terminal_id == $expected_terminal
-      and .result.agent.pane_id == $expected_pane
-      and (
-        .result.agent.agent_status == "idle"
-        or .result.agent.agent_status == "working"
-        or .result.agent.agent_status == "done"
-      )
-    ' >/dev/null 2>&1; then
-      printf 'empty'
+  if receipt_path=$(fm_backend_herdr_prompt_receipt_path "$3" "$4" 2>/dev/null); then
+    if receipt_line=$(wc -l < "$receipt_path"); then
+      receipt_line=$((receipt_line + 1))
     else
-      printf 'unverifiable'
+      receipt_path=
     fi
+  fi
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent prompt "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+    prompt_rc=0
+  else
+    prompt_rc=$?
+  fi
+  if [ -n "$receipt_path" ]; then
+    while [ "$i" -lt "$receipt_polls" ]; do
+      if fm_backend_herdr_prompt_receipt_matches "$3" "$receipt_path" "$receipt_line" "$2"; then
+        printf 'empty'
+        return 0
+      fi
+      i=$((i + 1))
+      [ "$i" -ge "$receipt_polls" ] \
+        || sleep "${FM_HERDR_PROMPT_RECEIPT_INTERVAL:-0.05}"
+    done
+  fi
+  if [ "$prompt_rc" -eq 0 ]; then
+    printf 'unverifiable'
     return 0
   fi
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
@@ -2631,7 +2699,7 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
-fm_backend_herdr_agent_submit_snapshot() {  # <session> <pane> -> <agent>\t<status>\t<terminal-id>
+fm_backend_herdr_agent_submit_snapshot() {  # <session> <pane> -> <agent>\t<status>\t<terminal-id>\t<agent-session-id>
   local out
   out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -r '
@@ -2640,8 +2708,12 @@ fm_backend_herdr_agent_submit_snapshot() {  # <session> <pane> -> <agent>\t<stat
         (.agent | type) == "string" and (.agent | length) > 0
         and (.agent_status | type) == "string" and (.agent_status | length) > 0
         and (.terminal_id | type) == "string" and (.terminal_id | length) > 0
+        and (.agent_session.agent == .agent)
+        and (.agent_session.kind == "id")
+        and (.agent_session.value | type) == "string"
+        and (.agent_session.value | length) > 0
       )
-    | [.agent, .agent_status, .terminal_id]
+    | [.agent, .agent_status, .terminal_id, .agent_session.value]
     | @tsv
   ' 2>/dev/null
 }
@@ -2805,16 +2877,16 @@ EOF
 #     re-invokes this function from scratch with the same text after seeing
 #     an error, which is a human/escalation decision, not an automatic
 #     retry).
-# Cursor and agy use Herdr's atomic agent prompt operation, whose successful
-# response is the native input-acceptance boundary. Other agents retain the
-# send-text, Enter, and transition-confirmation path below.
+# Cursor and agy use Herdr's atomic agent prompt operation and require the
+# exact input to appear in the native session transcript. Other agents retain
+# the send-text, Enter, and transition-confirmation path below.
 # Echoes empty|pending|unknown|send-failed|unverifiable, a subset of the proof-carrying
 # submit vocabulary. Empty means confirmed submitted for every backend; how
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
-  local declared_harness='' enter_sent=0 baseline_agent='' baseline_snapshot='' baseline_terminal='' probe_identity=0
+  local declared_harness='' enter_sent=0 baseline_agent='' baseline_snapshot='' baseline_session='' probe_identity=0
   if [ "$#" -ge 7 ]; then
     declared_harness=$7
     probe_identity=1
@@ -2828,7 +2900,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
           >/dev/null 2>&1 || { printf 'send-failed'; return 0; }
         baseline_snapshot=$(fm_backend_herdr_agent_submit_snapshot \
           "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
-        IFS=$'\t' read -r baseline_agent baseline_raw baseline_terminal <<EOF
+        IFS=$'\t' read -r baseline_agent baseline_raw _ baseline_session <<EOF
 $baseline_snapshot
 EOF
         ;;
@@ -2844,7 +2916,7 @@ EOF
         idle|working|done) : ;;
         *) printf 'send-failed'; return 0 ;;
       esac
-      verdict=$(fm_backend_herdr_prompt_submit "$target" "$text" "$baseline_agent" "$baseline_terminal")
+      verdict=$(fm_backend_herdr_prompt_submit "$target" "$text" "$baseline_agent" "$baseline_session")
       printf '%s' "$verdict"
       return 0
       ;;

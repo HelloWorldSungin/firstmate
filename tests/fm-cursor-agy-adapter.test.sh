@@ -517,6 +517,20 @@ case "$cmd" in
       exit 1
     fi
     [ "${FM_HERDR_FAKE_PROMPT:-ok}" != fail ] || exit 1
+    if [ "${FM_HERDR_FAKE_RECEIPT:-0}" = 1 ]; then
+      case "${FM_HERDR_FAKE_AGENT:-}" in
+        cursor)
+          jq -cn --arg text "${4:-}" \
+            '{role:"user",message:{content:[{type:"text",text:("<user_query>\n" + $text + "\n</user_query>")}]}}' \
+            >> "$HOME/.cursor/projects/fake/agent-transcripts/fm-test-session/fm-test-session.jsonl"
+          ;;
+        agy)
+          jq -cn --arg text "${4:-}" \
+            '{source:"USER_EXPLICIT",type:"USER_INPUT",status:"DONE",content:("<USER_REQUEST>\n" + $text + "\n</USER_REQUEST>")}' \
+            >> "$HOME/.gemini/antigravity-cli/brain/fm-test-session/.system_generated/logs/transcript.jsonl"
+          ;;
+      esac
+    fi
     [ "${FM_HERDR_FAKE_PROMPT_AFTER_WRITE:-ok}" != fail ] || exit 1
     printf '{"result":{"type":"agent_prompted","agent":{"agent":"%s","agent_status":"%s","terminal_id":"%s","pane_id":"%s"}}}\n' \
       "${FM_HERDR_FAKE_PROMPT_AGENT:-${FM_HERDR_FAKE_AGENT:-claude_code}}" \
@@ -541,8 +555,9 @@ case "$cmd" in
       st=$(sed -n "${cnt}p" "$seq_file")
     fi
     st=${st:-idle}
-    printf '{"result":{"agent":{"agent":"%s","agent_status":"%s","terminal_id":"%s","pane_id":"w1:p1"}}}\n' \
-      "${FM_HERDR_FAKE_AGENT:-claude_code}" "$st" "${FM_HERDR_FAKE_TERMINAL:-terminal-1}"
+    printf '{"result":{"agent":{"agent":"%s","agent_status":"%s","terminal_id":"%s","pane_id":"w1:p1","agent_session":{"agent":"%s","kind":"id","source":"fake","value":"fm-test-session"}}}}\n' \
+      "${FM_HERDR_FAKE_AGENT:-claude_code}" "$st" "${FM_HERDR_FAKE_TERMINAL:-terminal-1}" \
+      "${FM_HERDR_FAKE_AGENT:-claude_code}"
     ;;
 esac
 exit 0
@@ -550,6 +565,36 @@ SH
   chmod +x "$fakebin/herdr"
   fm_fake_exit0 "$fakebin" gh-axi gh treehouse
   printf '%s\n' "$fakebin"
+}
+
+prepare_fake_prompt_receipt() {  # <home> <harness>
+  local home=$1 harness=$2 path
+  case "$harness" in
+    cursor) path="$home/.cursor/projects/fake/agent-transcripts/fm-test-session/fm-test-session.jsonl" ;;
+    agy) path="$home/.gemini/antigravity-cli/brain/fm-test-session/.system_generated/logs/transcript.jsonl" ;;
+    *) return 1 ;;
+  esac
+  mkdir -p "${path%/*}"
+  : > "$path"
+}
+
+append_fake_prompt_receipt() {  # <home> <harness> <text>
+  local home=$1 harness=$2 text=$3 path
+  case "$harness" in
+    cursor)
+      path="$home/.cursor/projects/fake/agent-transcripts/fm-test-session/fm-test-session.jsonl"
+      jq -cn --arg text "$text" \
+        '{role:"user",message:{content:[{type:"text",text:("<user_query>\n" + $text + "\n</user_query>")}]}}' \
+        >> "$path"
+      ;;
+    agy)
+      path="$home/.gemini/antigravity-cli/brain/fm-test-session/.system_generated/logs/transcript.jsonl"
+      jq -cn --arg text "$text" \
+        '{source:"USER_EXPLICIT",type:"USER_INPUT",status:"DONE",content:("<USER_REQUEST>\n" + $text + "\n</USER_REQUEST>")}' \
+        >> "$path"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 test_accepted_cursor_and_agy_prompt_is_confirmed() {
@@ -563,12 +608,15 @@ test_accepted_cursor_and_agy_prompt_is_confirmed() {
     "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
+  append_fake_prompt_receipt "$home" "$harness" "steer message" \
+    || fail "could not prepare prior $harness receipt"
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
-    FM_HERDR_FAKE_AGENT="$harness" \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "accepted $harness prompt should be confirmed by the atomic prompt response"
+  expect_code 0 "$rc" "accepted $harness prompt should be confirmed by the native transcript receipt"
   assert_no_grep '^error:|verdict=' "$err" \
     "accepted $harness prompt reported a delivery error"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
@@ -577,7 +625,55 @@ test_accepted_cursor_and_agy_prompt_is_confirmed() {
     "live $harness delivery must not leave separately typed text"
   assert_absent "$case_dir/fake/enter_log" \
     "live $harness delivery must not use an unattributable Enter"
-  pass "an identity-matched $harness atomic prompt confirms landed delivery"
+  pass "a native $harness transcript receipt confirms landed delivery"
+}
+
+test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-no-receipt-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/no-receipt-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
+  append_fake_prompt_receipt "$home" "$harness" "steer message" \
+    || fail "could not prepare prior $harness receipt"
+
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_PROMPT_RECEIPT_POLLS=1 FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 3 "$rc" "a matching cached $harness prompt snapshot without a receipt must remain unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "a matching cached $harness prompt snapshot falsely confirmed delivery"
+  pass "a cached $harness prompt snapshot cannot replace an acceptance receipt"
+}
+
+test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-receipted-error-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/receipted-error-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
+
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_PROMPT_AFTER_WRITE=fail \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 0 "$rc" "a receipted $harness prompt must remain confirmed after a transport failure"
+  assert_no_grep '^error:|verdict=' "$err" \
+    "a receipted $harness prompt reported a delivery error"
+  pass "a native $harness receipt resolves an ambiguous transport outcome"
 }
 
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
@@ -592,7 +688,7 @@ test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_AFTER_WRITE=fail \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -609,12 +705,13 @@ test_metadata_free_cursor_and_agy_send_uses_live_identity() {
   mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
   touch "$home/state/.last-watcher-beat"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
-    FM_HERDR_FAKE_AGENT="$harness" \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 \
     "$ROOT/bin/fm-send.sh" "default:w1:p1" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "metadata-free explicit $harness target should confirm an accepted atomic prompt"
+  expect_code 0 "$rc" "metadata-free explicit $harness target should confirm a transcript-receipted prompt"
   assert_no_grep '^error:|verdict=' "$err" \
     "metadata-free explicit $harness target reported a delivery error"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
@@ -636,7 +733,7 @@ test_identity_mismatch_is_undelivered_and_restores_scout() {
     "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$other" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -662,7 +759,7 @@ test_blocked_cursor_and_agy_send_is_known_undelivered() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "blocked")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -686,7 +783,7 @@ test_rejected_cursor_and_agy_prompt_is_known_undelivered() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_ERROR_CODE="$code" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -710,7 +807,7 @@ test_cursor_and_agy_send_requires_server_prompt_capability() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_CAPABILITY_ERROR_CODE=method_not_found \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -741,7 +838,7 @@ test_cached_prompt_snapshot_is_unverifiable() {
     "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_AGENT="$prompt_agent" \
     FM_HERDR_FAKE_PROMPT_STATUS="$prompt_status" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
@@ -838,7 +935,7 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
     "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT=fail \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
@@ -871,6 +968,10 @@ test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
 test_accepted_cursor_and_agy_prompt_is_confirmed cursor
 test_accepted_cursor_and_agy_prompt_is_confirmed agy
+test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable cursor
+test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable agy
+test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed cursor
+test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed agy
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable cursor
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable agy
 test_metadata_free_cursor_and_agy_send_uses_live_identity cursor

@@ -75,7 +75,7 @@ LAUNCH_TARGET=
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
   local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag
-  local brief_path opinput_path agent st saw_working=0 settled=0 snapshot terminal verdict
+  local brief_path opinput_path agent st saw_working=0 settled=0 snapshot agent_session verdict token token_prompt readback
   LAUNCH_TARGET=
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
@@ -117,21 +117,38 @@ EOF
   [ "$settled" = 1 ] || { echo "$harness never showed a working->idle/done transition on the brief" >&2; return 1; }
   snapshot=$(fm_backend_herdr_agent_submit_snapshot "$ses" "$pane") \
     || { echo "$harness submit snapshot failed" >&2; return 1; }
-  IFS=$'\t' read -r agent _ terminal <<EOF
+  IFS=$'\t' read -r agent _ _ agent_session <<EOF
 $snapshot
 EOF
+  case "$harness" in
+    cursor)
+      token=FIRSTMATE_CURSOR_STEER_ACCEPTED
+      token_prompt="Reply with exactly FIRSTMATE_CURSOR_ followed immediately by STEER_ACCEPTED and nothing else."
+      ;;
+    agy)
+      token=FIRSTMATE_AGY_STEER_ACCEPTED
+      token_prompt="Reply with exactly FIRSTMATE_AGY_ followed immediately by STEER_ACCEPTED and nothing else."
+      ;;
+  esac
   verdict=$(fm_backend_herdr_prompt_submit "$ses:$pane" \
-    "Reply with exactly the single word PONG and nothing else." "$agent" "$terminal")
+    "$token_prompt" "$agent" "$agent_session")
   [ "$verdict" = empty ] \
     || { echo "$harness accepted steer resolved to '$verdict' instead of confirmed delivery" >&2; return 1; }
+  saw_working=0
+  settled=0
   for _ in $(seq 1 60); do
     st=$(fm_backend_agent_status herdr "$ses:$pane" 2>/dev/null)
-    case "$st" in idle|done) break ;; esac
+    [ "$st" = working ] && saw_working=1
+    case "$st" in idle|done) [ "$saw_working" = 1 ] && { settled=1; break; } ;; esac
     sleep 1
   done
-  case "$st" in
-    idle|done) : ;;
-    *) echo "$harness did not settle after its confirmed steer" >&2; return 1 ;;
+  [ "$settled" = 1 ] || { echo "$harness did not start and settle a new turn after its confirmed steer" >&2; return 1; }
+  readback=$(fm_backend_herdr_cli "$ses" agent read "$pane" --source recent-unwrapped --lines 120 2>/dev/null \
+    | jq -r '.result.read.text // empty' 2>/dev/null) \
+    || { echo "$harness post-steer output could not be read" >&2; return 1; }
+  case "$readback" in
+    *"$token"*) : ;;
+    *) echo "$harness post-steer output did not contain $token" >&2; return 1 ;;
   esac
   LAUNCH_TARGET="$ses:$pane"
   return 0
