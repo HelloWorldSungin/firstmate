@@ -261,12 +261,19 @@ brain_root=$(printf '%s' "$paths" | jq -er '.brain_root')
 pglite=$(printf '%s' "$paths" | jq -er '.pglite')
 gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
 archive=$(printf '%s' "$paths" | jq -er '.archive')
-if [ -d "$archive" ]; then
+outbox=$FM_HOME/data/gbrain-outbox
+outbox_record=
+outbox_unreadable=
+if [ -d "$outbox" ]; then
+  outbox_record=$(find "$outbox" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)
+  outbox_unreadable=$(find "$outbox" -maxdepth 1 -type f -name '*.json' ! -readable -print -quit 2>/dev/null)
+fi
+if [ -n "$outbox_record" ] && [ -z "$outbox_unreadable" ]; then
+  durable_source=$outbox
+elif [ -d "$archive/.git" ] && git -C "$archive" rev-parse --verify HEAD >/dev/null 2>&1; then
   durable_source=$archive
-elif [ -d "$FM_HOME/data/gbrain-outbox" ]; then
-  durable_source=$FM_HOME/data/gbrain-outbox
 else
-  printf 'refusing backup: no archive or durable outbox exists\n' >&2
+  printf 'refusing backup: no readable outbox or valid Git archive exists\n' >&2
   exit 1
 fi
 [ -d "$pglite" ] && [ -d "$gbrain_home/.gbrain" ] || exit 1
