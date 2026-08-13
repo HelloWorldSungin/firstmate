@@ -45,7 +45,7 @@ console.log(g.length,q(0.99),q(0.999),g[g.length-1]);
 ```
 
 Firstmate already had an owned answer to this question, and it is above every one of those measurements.
-`FM_BUSY_TURN_MAX_SECS` (3600 s) is how long `bin/fm-watch.sh` lets a busy pane go with no completed turn before routing it to wedge escalation, and [`../configuration.md`](../configuration.md) records that the same hour is what `FM_PAUSE_RESURFACE_SECS` and `FM_RUN_PROGRESS_HOLD_MAX` allow a live-but-quiet endpoint.
+`FM_BUSY_TURN_MAX_SECS` (3600 s) is how long `bin/fm-watch.sh` lets a busy pane go with no turn-boundary wake before routing it to wedge escalation, and [`../configuration.md`](../configuration.md) records that the same hour is what `FM_PAUSE_RESURFACE_SECS` and `FM_RUN_PROGRESS_HOLD_MAX` allow a live-but-quiet endpoint.
 The strip therefore reads that window out of the snapshot instead of carrying a fourth number: `bin/fm-supervision-lib.sh` owns it, `supervision.watcher.quiet_allowance_seconds` publishes it, and the measurements above are the independent check that the window it publishes is above a healthy step rather than inside one.
 
 ## What the snapshot's runtime is spent on
@@ -171,7 +171,7 @@ It fails if per-task work is added back to the collector, whether or not that wo
 The 12-record case stays exactly what it was, the concurrency test.
 
 `the spawn clock comes from the recorded stamp, not the meta file's mtime` fails if the clock the activity signal falls back to stops being published, or if it goes back to ageing `state/<id>.meta` - which it asserts by touching that file and requiring the published age not to move.
-Its dashboard half is the pair asserting that a busy task with no status line and no completed turn colours the strip once its dispatch passes the window and stays green inside it.
+Its dashboard half is the pair asserting that a busy task with no status line and no turn-boundary wake colours the strip once its dispatch passes the window and stays green inside it.
 
 
 ## Updated reproduction, 2026-08-12

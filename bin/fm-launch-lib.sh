@@ -254,8 +254,8 @@ fm_launch_template() {
     # --dangerously-skip-permissions. cursor has NO standalone effort flag: parameterized
     # models accept bracket overrides (e.g. 'claude-opus-4-8[context=1m,effort=high,fast=false]'),
     # but bare models like 'composer-2.5' reject bracketed effort, so the template
-    # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end is the watcher's
-    # debounced native-completion detector (fm-watch.sh maybe_native_turnend), so
+    # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end notification is the watcher's
+    # debounced native-idle detector (fm-watch.sh maybe_native_turnend), so
     # no launch-time turn-end hook is installed.
     # Kimi Code rejects a positional prompt, so it launches bare and receives only
     # an absolute brief pointer after fm-spawn's TUI readiness gate. Its turn-end
@@ -270,7 +270,7 @@ fm_launch_template() {
     # SEPARATE gate that --dangerously-skip-permissions does NOT cover (verified);
     # fm-spawn pre-seeds the exact worktree path into agy's global trustedWorkspaces
     # before launch (bin/fm-agy-trust-lib.sh). --effort accepts only low|medium|high
-    # (agy --help). Turn-end is the watcher's debounced native-completion detector,
+    # (agy --help). Turn-end notification is the watcher's debounced native-idle detector,
     # so no launch-time hook is installed.
     agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
@@ -334,8 +334,9 @@ fm_launch_effort_flag() {
         low|medium|high) printf -- '--effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac
       ;;
-    # cursor has no standalone effort flag: effort is encoded in the parameterized
-    # model string (see fm_launch_template), so it is never rendered here.
+    # cursor has no standalone effort flag. Parameterized models may carry their
+    # own bracket overrides (see fm_launch_template), but no generic effort value
+    # is rendered here.
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.

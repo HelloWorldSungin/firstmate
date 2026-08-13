@@ -796,9 +796,9 @@ fm_backend_busy_state() {  # <backend> <target>
 # fm_backend_agent_status: the RAW native agent-state enum
 # (working|idle|done|blocked|unknown) for <target>, when the backend reports it
 # natively (herdr). Distinct from fm_backend_busy_state, which collapses
-# idle/done/blocked into idle: a caller that must tell a COMPLETED turn (idle or
-# done) apart from a human-wait (blocked) - the cursor/agy native turn-end
-# detector in fm-watch.sh - needs this finer distinction. Non-native backends
+# idle/done/blocked into idle: a caller that must tell a possible turn boundary
+# (idle or done) apart from a human-wait (blocked) - the cursor/agy native-idle
+# wake detector in fm-watch.sh - needs this finer distinction. Non-native backends
 # report unknown.
 fm_backend_agent_status() {  # <backend> <target>
   local backend=$1 target=$2 st

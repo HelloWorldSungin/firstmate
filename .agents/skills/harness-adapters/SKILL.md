@@ -439,7 +439,7 @@ The only cost of `unknown` is that the away-mode escalation injector defers rath
 | cursor launch behavior | Positional prompt stays interactive; workspace trust and command auto-approval are both enabled by the verified template in `bin/fm-launch-lib.sh`. |
 | agy launch behavior | The initial prompt stays interactive and tool use is auto-approved by the verified template in `bin/fm-launch-lib.sh`. |
 | Busy-pane signature | native herdr `agent_status == working` (generic, no screen-scrape). |
-| Turn-end | watcher-side native completion; no hook installed and no repo or new global hook file written. |
+| Turn-end | watcher-side identity-gated, debounced native-idle wake notification; no hook installed and no repo or new global hook file written. |
 | Composer state | `unknown` (safe default; no override). |
 
 agy workspace trust is the one extra launch step.
