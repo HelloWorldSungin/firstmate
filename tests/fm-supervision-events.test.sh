@@ -72,6 +72,7 @@ fm_write_meta "$STATE_DIR/tk0.meta" "window=default:wG:pQ" "backend=herdr" "kind
 printf 'working|0' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
 (
   fm_backend_source herdr
+  # shellcheck disable=SC2329 # Invoked indirectly by maybe_native_turnend.
   fm_backend_herdr_agent_identity_raw() { printf 'cursor\tidle'; }
   maybe_native_turnend default:wG:pQ tk0 default_wG_pQ
   [ ! -e "$STATE_DIR/tk0.turn-ended" ] || fail "the first native idle poll must not publish completion"

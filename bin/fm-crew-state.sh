@@ -958,7 +958,7 @@ fi
 
 # --- fallback: no run attributed to this crew ------------------------------
 if [ "$KIND" = scout ] && [ "$(meta_value decisions_reviewed)" = 1 ]; then
-  emit done completion-attestation "unresolved-decision inventory reviewed"
+  emit "done" completion-attestation "unresolved-decision inventory reviewed"
 fi
 
 # The run-step path above already handled any crew with an attributed run,
