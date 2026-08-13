@@ -65,15 +65,11 @@
 #                verdict needs cannot be read; stay silent when it finds
 #                neither. A home that serves nothing is clear whatever its
 #                credential plane holds, so a reading home never raises this
-#                alarm. It reads this home's own Firstmate config planes and
-#                never GBrain's runtime configuration, so silence means no
-#                violation in what it reads rather than proof that hosted
-#                synthesis is unreachable (docs/gbrain.md states that limit).
-#                Reading config alone is also why it needs no network, no
-#                token mint, and no gbrain binary, which makes it safe to run
-#                at every session start. It never exits non-zero: the line
-#                itself is the signal, so a caller that finds nothing stays
-#                quiet rather than failing.
+#                alarm. It reads this home's own Firstmate config planes,
+#                GBrain's runtime configuration, and the fleet runtime
+#                credential store. It never exits non-zero: the line itself
+#                is the signal, so a caller that finds nothing stays quiet
+#                rather than failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
