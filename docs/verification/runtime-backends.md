@@ -6,6 +6,96 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Design profile lifecycle
+
+The `design-profile` skill owns the operating contract; this section records its reusable verification coverage rather than a second copy of that contract.
+The 2026-08-13 surface audit covered dependency resolution, generated brief output, help wording, branch and delivery metadata, worktree isolation, backend launch, status and run reconciliation, work-item milestones, landing, outcome publication, decision inventory, teardown, recovery, subagent routing, and public completion follow-up.
+The inspected entry points were `.agents/skills/design-profile/SKILL.md`, `bin/fm-design-skills.sh`, `bin/fm-brief.sh`, `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, `bin/fm-crew-state.sh`, `bin/fm-run-progress.sh`, `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-lib.sh`, `bin/fm-outcome-manifest.sh`, `bin/fm-decision-hold.sh`, `bin/fm-teardown.sh`, `bin/fm-subagent-pretool-check.sh`, `.agents/skills/work-item-visibility/SKILL.md`, `.agents/skills/stuck-crewmate-recovery/SKILL.md`, and `.agents/skills/fmx-respond/SKILL.md`.
+The focused regressions below exercise the worker-facing ADR-only wording, tracked-output lifecycle, decision inventory, teardown, and cross-harness launch paths.
+
+### Design delivery wording
+
+The complete rendered definition-of-done text for each row is recorded as an exact behavioral expectation in `assert_design_dod_exact` in `tests/fm-brief.test.sh`.
+
+1. `no-mistakes` refers only to the ADR becoming complete, committed, ready for validation, and shipped through its ADR PR.
+   No sentence authorizes implementation.
+2. `direct-PR` refers only to the ADR becoming complete, committed, and ready for its PR.
+   No sentence authorizes implementation.
+3. `local-only` refers only to the ADR becoming complete, committed, and ready on its local branch.
+   No sentence authorizes implementation.
+
+### Design help wording
+
+`test_design_help_authorizes_no_implementation` in `tests/fm-brief.test.sh` records the `--help` contract.
+
+1. The header documents ship modes and design modes separately.
+2. The design mode rows describe ADR commit or ADR-on-branch delivery only.
+   No sentence authorizes implementation.
+
+### Design compatibility matrix
+
+The fifteen cells below are exercised by `test_design_profile_resolves_on_claude_codex_and_pi` in `tests/fm-spawn-dispatch-profile.test.sh` through schema-selected and configuration-fallback design spawns.
+The model names are representative test strings that verify axis transport; they are not availability claims or profile defaults, because each authenticated harness catalog owns current model availability.
+
+1. Codex dispatch schema: the representative `rules[].use[]` fixture selects `codex`, model `gpt-5.5`, and effort `xhigh`.
+2. Codex `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=codex` resolves through `fm-harness.sh crew` and the design spawn records Codex.
+3. Codex `fm-launch-lib.sh`: both selection paths render the Codex design command through the launch library and its operational-input encoder.
+4. Codex `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `codex`, model `gpt-5.5`, and effort `xhigh`.
+5. Codex `harness-adapters` axes: both rendered commands contain `--model 'gpt-5.5'` and `model_reasoning_effort="xhigh"`.
+6. Pi dispatch schema: the representative `rules[].use[]` fixture selects `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh`.
+7. Pi `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=pi` resolves through `fm-harness.sh crew` and the design spawn records Pi.
+8. Pi `fm-launch-lib.sh`: both selection paths render the Pi design command through the launch library and its operational-input encoder.
+9. Pi `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh`.
+10. Pi `harness-adapters` axes: both rendered commands contain `--model 'anthropic/claude-sonnet-5'` and `--thinking 'xhigh'`.
+11. Claude dispatch schema: the representative `rules[].use[]` fixture selects `claude`, model `claude-sonnet-5`, and effort `xhigh`.
+12. Claude `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=claude` resolves through `fm-harness.sh crew` and the design spawn records Claude.
+13. Claude `fm-launch-lib.sh`: both selection paths render the Claude design command through the launch library and its operational-input encoder.
+14. Claude `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `claude`, model `claude-sonnet-5`, and effort `xhigh`.
+15. Claude `harness-adapters` axes: both rendered commands contain `--model 'claude-sonnet-5'` and `--effort 'xhigh'`.
+
+### Focused delivery and compatibility regression
+
+The 2026-08-13 focused verification command for the three delivery rows and fifteen compatibility cells is:
+
+```sh
+bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
+```
+
+Its bounded completion markers are:
+
+```text
+all fm-brief tests passed
+all fm-spawn-dispatch-profile tests passed
+all fm-documentation-audiences tests passed
+all fm-pointer-check tests passed
+```
+
+### Focused regression
+
+The following focused command was run on 2026-08-13 from the repository root.
+
+```sh
+bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-task-delivery.test.sh tests/fm-spawn-batch.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-crew-state.test.sh tests/fm-run-progress.test.sh tests/fm-issue-linkage.test.sh tests/fm-outcome-manifest.test.sh tests/fm-decision-hold-lifecycle.test.sh tests/fm-teardown.test.sh tests/fm-subagent-pretool-check.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
+```
+
+The bounded output included these suite-completion markers.
+
+```text
+all fm-brief tests passed
+# all fm-task-delivery tests passed
+all fm-spawn-batch tests passed
+all fm-spawn-dispatch-profile tests passed
+all fm-crew-state tests passed
+all fm-run-progress tests passed
+all fm-issue-linkage tests passed
+all fm-outcome-manifest tests passed
+all fm-decision-hold-lifecycle tests passed
+all fm-teardown tests passed
+all fm-subagent-pretool-check tests passed
+all fm-documentation-audiences tests passed
+all fm-pointer-check tests passed
+```
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.

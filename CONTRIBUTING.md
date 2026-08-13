@@ -62,7 +62,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 Tracked changes to firstmate itself - `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and `skills/` - ship through the `no-mistakes` pipeline on a feature branch and require an explicit merge approval.
 Before making any such change, load the agent-only `firstmate-coding-guidelines` skill (`.agents/skills/firstmate-coding-guidelines/SKILL.md`).
 It has the knowledge-placement rules that keep `AGENTS.md` from regrowing after each diet pass.
-`bin/fm-brief.sh` emits that skill's load instruction automatically for ship tasks whose project checkout shares this repository's git object database, and gives ship and scout alike the role fact that this checkout's `AGENTS.md` describes firstmate rather than the worker.
+`bin/fm-brief.sh` emits that skill's load instruction automatically for ship or design tasks whose project checkout shares this repository's git object database, and gives ship, design, and scout workers alike the role fact that this checkout's `AGENTS.md` describes firstmate rather than the worker.
 Reaching that comparison needs the home to say the firstmate checkout is its own root - the registry declaration described in [docs/configuration.md](docs/configuration.md), or a secondmate home's marker - so a home whose `data/projects.md` predates that convention emits nothing and its briefs still need the instruction by hand.
 A crewmate picking up such a brief should load the skill when the task touches shared tracked material.
 When supervising live crewmates, keep firstmate's own long validation or build commands in the background so watcher wakes can still be handled.

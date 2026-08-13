@@ -181,6 +181,21 @@ test_help_includes_entire_header() {
   pass "fm-brief.sh: --help renders the complete header"
 }
 
+test_design_help_authorizes_no_implementation() {
+  local help design_modes
+  help=$("$ROOT/bin/fm-brief.sh" --help)
+  assert_contains "$help" "Design modes deliver only the ADR" \
+    "fm-brief.sh --help omitted the design delivery contract"
+  design_modes=$(printf '%s\n' "$help" | awk '
+    /^Design modes deliver only the ADR:/ { capture=1; next }
+    capture && /^[A-Z]/ { exit }
+    capture { print }
+  ')
+  assert_not_contains "$design_modes" "implement" \
+    "fm-brief.sh --help authorizes implementation for design modes"
+  pass "fm-brief.sh: --help documents ADR-only design delivery"
+}
+
 test_issue_traceability_is_strictly_opt_in() {
   local home plain traced
   home="$TMP_ROOT/issue-traceability-home"
@@ -239,7 +254,7 @@ test_issue_argument_validation_and_delivery_mode_guards() {
     > "$home/scout.stdout" 2> "$home/scout.stderr"
   rc=$?
   expect_code 1 "$rc" "--issue should reject scout briefs"
-  assert_grep 'applies only to ship briefs' "$home/scout.stderr" \
+  assert_grep 'applies only to ship or design briefs' "$home/scout.stderr" \
     "--issue scout refusal did not explain the task-kind guard"
   assert_absent "$home/data/issue-scout/brief.md" \
     "--issue scout refusal wrote a brief"
@@ -367,7 +382,7 @@ test_ship_mode_is_required_and_closed_set() {
     assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
     assert_absent "$home/data/brief-required-$id/brief.md" "$label: refused scaffold still wrote a brief"
   done <<'ROWS'
-missing --mode||ship briefs require --mode
+missing --mode||ship and design briefs require --mode
 empty --mode value|--mode|requires a value
 unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, local-only
 conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's surface
@@ -416,8 +431,8 @@ test_delivery_flags_are_refused_where_they_do_not_apply() {
   done <<'ROWS'
 yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yolo is not a brief input
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
-mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
-mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
+mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship or design briefs
+mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship or design briefs
 ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
@@ -676,14 +691,26 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path() {
   pass "fm-brief.sh: --herdr-lab uses its quoted Firstmate-owned helper path"
 }
 
-test_herdr_lab_omission_is_loud_for_ship_and_scout() {
-  local home id brief
+test_herdr_lab_omission_is_loud_for_tracked_and_report_tasks() {
+  local home plugin registry id brief
   home="$TMP_ROOT/herdr-gate-home"
-  mkdir -p "$home/data"
-  for kind in ship scout; do
+  plugin="$TMP_ROOT/herdr-gate-plugin"
+  registry="$TMP_ROOT/herdr-gate-registry.json"
+  mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+  for kind in ship design scout; do
     id="brief-herdr-gate-$kind"
     if [ "$kind" = scout ]; then
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    elif [ "$kind" = design ]; then
+      FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+        "$ROOT/bin/fm-brief.sh" "$id" firstmate --design --mode no-mistakes >/dev/null 2>&1
     else
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
     fi
@@ -693,7 +720,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
     assert_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
       "$kind brief missing the fail-visible regeneration instruction"
   done
-  pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
+  pass "fm-brief.sh: ship, design, and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
 test_secondmate_no_projects_charter() {
@@ -735,7 +762,7 @@ test_secondmate_no_projects_charter() {
   FM_HOME="$home" FM_SECONDMATE_CHARTER='x' "$ROOT/bin/fm-brief.sh" oops2 --secondmate --no-projects alpha >/dev/null 2>&1; status=$?
   expect_code 1 "$status" "--no-projects combined with a project list must fail"
 
-  # --no-projects applies only to secondmate charters, never a ship/scout brief.
+  # --no-projects applies only to secondmate charters, never an ordinary task brief.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" oops3 somerepo --no-projects >/dev/null 2>&1; status=$?
   expect_code 1 "$status" "--no-projects on a ship brief must fail"
 
@@ -1031,8 +1058,8 @@ test_firstmate_repo_crew_persona_section() {
     git -C "$home/projects/$other" -c user.email=test@example.com -c user.name=test commit -qm init
   done
 
-  # Ship: both facts. Breaks if the guidelines directive stops being ship-only
-  # in the wrong direction and is dropped from ship briefs too.
+  # Ship: both facts. Breaks if the guidelines directive stops being
+  # tracked-output-only in the wrong direction and is dropped from ship briefs too.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" fm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1
   same_repo_brief="$home/data/fm-repo-ship/brief.md"
@@ -1053,7 +1080,7 @@ test_firstmate_repo_crew_persona_section() {
   assert_grep 'You report to FIRSTMATE, not the captain.' "$scout_brief" \
     "firstmate-repo scout brief did not warn against adopting firstmate's captain address"
   assert_no_grep 'firstmate-coding-guidelines' "$scout_brief" \
-    "firstmate-repo scout brief must not carry the ship-only coding-guidelines directive"
+    "firstmate-repo scout brief must not carry the tracked-output coding-guidelines directive"
   assert_no_grep "changes firstmate's shared tracked material" "$scout_brief" \
     "firstmate-repo scout brief must not claim it changes shared tracked material"
 
@@ -1145,6 +1172,169 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
 }
 
+assert_design_dod_exact() {
+  local mode=$1 brief=$2 expected actual
+  case "$mode" in
+    no-mistakes)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=no-mistakes
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.
+A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.
+The ADR is ready for validation only when committed on your branch.
+When the ADR is complete and committed, append `paused: ADR complete and committed, ready to validate` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR.
+
+You drive no-mistakes by responding to its gates, not by applying fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+When starting no-mistakes, make `--intent` preserve all relevant content from this brief's `# Task` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.
+While you sit parked on a backgrounded `axi run` or `axi respond` call, rule 4's park-and-resume pairing applies: append `paused:` before you go idle and `working:` when the call returns.
+
+Two firstmate-specific rules layer on top of that guidance:
+- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
+  Firstmate applies the authority contract in its `AGENTS.md` and obtains any required captain decision.
+  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.
+- Avoid `--yes`: it would silently bypass firstmate's authority check and any required captain escalation.
+
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.
+EOF
+      ;;
+    direct-PR)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=direct-PR
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.
+The ADR is ready only when committed on your branch.
+When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+EOF
+      ;;
+    local-only)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=local-only
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships **local-only**: no remote, no PR, no pipeline.
+The ADR is ready only when committed on your branch `fm/design-firstmate`. Do NOT push, do NOT open a PR, do NOT merge.
+Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+When the ADR is complete and committed, append `done: ready in branch fm/design-firstmate` to the status file and stop.
+The configured merge authority approves the ready branch, then firstmate merges it into local `main` through the guarded fast-forward path.
+EOF
+      ;;
+    *) fail "unknown design DOD mode: $mode" ;;
+  esac
+  expected=${expected%$'\n'}
+  expected=${expected//__ROOT__/$ROOT}
+  actual=$(sed -n '/^# Definition of done$/,$p' "$brief")
+  [ "$actual" = "$expected" ] \
+    || fail "design $mode definition of done changed"$'\n'"expected:"$'\n'"$expected"$'\n'"actual:"$'\n'"$actual"
+  assert_not_contains "$actual" "implement" \
+    "design $mode definition of done authorizes implementation"
+  pass "design DOD $mode: exact rendered text authorizes no implementation"
+}
+
+test_design_brief_is_harness_independent_and_adr_only() {
+  local home plugin registry brief out rc
+  home="$TMP_ROOT/design-home"
+  plugin="$TMP_ROOT/design-plugin"
+  registry="$TMP_ROOT/design-registry.json"
+  mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-task sample --design --mode no-mistakes 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "complete design dependencies should scaffold"
+  assert_contains "$out" "(design, mode=no-mistakes" \
+    "design scaffold did not identify its task shape"
+  brief="$home/data/design-task/brief.md"
+  assert_grep 'This is an interactive DESIGN task' "$brief" \
+    "design brief did not declare the profile"
+  assert_grep 'identical on Claude, Codex, and Pi' "$brief" \
+    "design brief did not carry the harness-independent resolution contract"
+  assert_grep 'fm-design-skills.sh resolve' "$brief" \
+    "design brief did not resolve the installed plugin dependency"
+  assert_grep 'Never install, update, copy, vendor, pin, or modify that plugin' "$brief" \
+    "design brief allowed worker-owned plugin lifecycle"
+  assert_grep 'Use those skills for modeling and interrogation only' "$brief" \
+    "design brief did not constrain the dependency capabilities"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Do not create or update `CONTEXT.md`' "$brief" \
+    "design brief allowed the dependency to create a second tracked deliverable"
+  assert_grep 'Record every resolved term only in the ADR' "$brief" \
+    "design brief did not preserve the ADR as the resolved-term owner"
+  assert_no_grep '# Project memory' "$brief" \
+    "design brief exposed the ship-only project-memory deliverable path"
+  assert_no_grep 'fm-ensure-agents-md.sh' "$brief" \
+    "design brief allowed AGENTS.md creation as a second tracked deliverable"
+  assert_grep 'Do not create or modify any other tracked project file' "$brief" \
+    "design brief did not forbid every non-ADR tracked project change"
+  assert_grep 'confirm the ADR is the only worker-authored tracked project change' "$brief" \
+    "design brief did not require a final ADR-only diff check"
+  assert_grep 'Ask exactly one decision question at a time' "$brief" \
+    "design brief did not preserve the sequential interview"
+  assert_grep 'docs/adr/NNNN-<slug>.md' "$brief" \
+    "design brief did not define the fallback ADR location"
+  assert_grep 'Do not implement the resulting design' "$brief" \
+    "design brief allowed implementation to leak into the ADR task"
+  assert_grep 'Delivery contract: mode=no-mistakes' "$brief" \
+    "design brief did not carry the tracked-output delivery contract"
+
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-linked sample --design --mode direct-PR \
+    --work-item github:https://github.com/acme/widget/issues/42 \
+    --pr-target github:github.com/acme/widget 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a PR-based design brief should accept a resolved work item"
+  assert_grep '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
+    "$home/data/design-linked/brief.md" \
+    "design brief did not carry its work item through the tracked-output contract"
+
+  mkdir -p "$home/projects"
+  ln -sfn "$ROOT" "$home/projects/firstmate"
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-firstmate firstmate --design --mode local-only 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a firstmate-repo design brief should scaffold"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' \
+    "$home/data/design-firstmate/brief.md" \
+    "firstmate-repo design brief did not retain its tracked-output coding guidance"
+  assert_no_grep 'fm-ensure-agents-md.sh' "$home/data/design-firstmate/brief.md" \
+    "firstmate-repo design brief reopened the project-memory deliverable path"
+
+  assert_design_dod_exact no-mistakes "$home/data/design-task/brief.md"
+  assert_design_dod_exact direct-PR "$home/data/design-linked/brief.md"
+  assert_design_dod_exact local-only "$home/data/design-firstmate/brief.md"
+
+  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/missing-registry.json" \
+    "$ROOT/bin/fm-brief.sh" missing-design sample --design --mode no-mistakes 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "missing plugin should refuse design scaffolding"
+  assert_contains "$out" "do not install or copy them from a worker" \
+    "design refusal did not preserve plugin ownership"
+  assert_absent "$home/data/missing-design/brief.md" \
+    "design scaffold wrote a brief despite a missing dependency"
+  pass "fm-brief.sh: design profile is ADR-only and resolves identically across supported harnesses"
+}
+
 # A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
 # registers only the projects it seeds - never firstmate, which is no clone under
 # projects/ - so this home structurally cannot carry the registry declaration
@@ -1192,6 +1382,7 @@ test_firstmate_repo_crew_persona_in_a_secondmate_home() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
+test_design_help_authorizes_no_implementation
 test_issue_traceability_is_strictly_opt_in
 test_issue_argument_validation_and_delivery_mode_guards
 test_no_issue_briefs_match_exact_goldens
@@ -1206,7 +1397,7 @@ test_status_protocol_teaches_blocked_for_firstmate_waits
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
-test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_herdr_lab_omission_is_loud_for_tracked_and_report_tasks
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
@@ -1217,5 +1408,6 @@ test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
 test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
+test_design_brief_is_harness_independent_and_adr_only
 test_firstmate_repo_crew_persona_in_a_secondmate_home
 printf '\nall fm-brief tests passed\n'

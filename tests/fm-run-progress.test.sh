@@ -106,6 +106,16 @@ test_just_started_step_is_progressing() {
   pass "a step that has just started and not logged yet reads as progressing"
 }
 
+test_design_task_run_is_progressing() {
+  local dir out
+  dir=$(make_case design-run)
+  printf '%s\n' 'kind=design' >> "$dir/state/task.meta"
+  out=$(read_progress "$dir" "$(status_toon running 7m9s '7m4s ago: log: validating the ADR')")
+  assert_contains "$out" "progress: progressing" "a design task's validation run was ignored"
+  assert_contains "$out" "test running" "the design task verdict did not name its active step"
+  pass "a design task reports progress from its no-mistakes validation run"
+}
+
 # --- stranded: the shapes that MUST still alarm ------------------------------
 
 test_stranded_step_past_the_bound() {
@@ -375,6 +385,7 @@ test_writes_nothing_and_never_fails_a_read() {
 test_recent_activity_is_progressing
 test_quoted_commas_do_not_shift_fields
 test_just_started_step_is_progressing
+test_design_task_run_is_progressing
 test_stranded_step_past_the_bound
 test_pipeline_quiet_marker_is_stripped_not_trusted
 test_orphaned_step_that_never_logged_is_stranded

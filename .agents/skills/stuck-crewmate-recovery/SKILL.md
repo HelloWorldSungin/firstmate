@@ -18,7 +18,7 @@ The target window's harness is recorded as `harness=` in `state/<id>.meta`.
 
 ## Session-start reconciliation for a dead ordinary direct report
 
-This procedure covers ordinary `kind=ship` and `kind=scout` direct reports.
+This procedure covers ordinary `kind=ship`, `kind=design`, and `kind=scout` direct reports.
 Load `secondmate-provisioning` instead for `kind=secondmate` recovery.
 
 Treat the digest's endpoint result as a presence signal, not proof that the task's work or validation run is gone.

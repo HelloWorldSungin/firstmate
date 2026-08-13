@@ -21,7 +21,7 @@
 # data/captain.md; verification data/cursor-agy-verify/report.md). They are never
 # a primary runtime and never a secondmate launcher, and firstmate refuses them
 # on any non-herdr backend. bin/fm-spawn.sh enforces both gates before launch;
-# the templates below are the ship/scout launch string only. Harness token
+# the templates below are the ship/design/scout launch string only. Harness token
 # `cursor` launches the `cursor-agent` CLI; `agy` launches the `agy` CLI.
 
 # fm_launch_shell_quote: single-quote <text> for safe reuse inside a launch
@@ -244,7 +244,7 @@ fm_launch_template() {
     # crewmate needs; it is the targeted equivalent of claude's
     # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
     # launch command - it is a Stop-event hook installed by fm-spawn (global hook +
-    # per-task pointer), so the template is identical for ship/scout/secondmate.
+    # per-task pointer), so the template is identical for ship/design/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # cursor (Cursor Agent CLI, harness token `cursor`, binary `cursor-agent`):
     # a positional prompt starts the supervised interactive session. --trust

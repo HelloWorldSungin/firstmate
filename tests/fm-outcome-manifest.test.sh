@@ -159,6 +159,21 @@ test_manifest_gbrain_and_overrides() {
   pass "the manifest carries an optional provider receipt and refuses to publish its malformed values"
 }
 
+test_design_manifest_is_valid() {
+  local home id out
+  home=$(make_home design-kind)
+  id=design-a
+  seed_ship_task "$home" "$id"
+  printf '%s\n' 'kind=design' >> "$home/state/$id.meta"
+  printf 'done: ADR ready\n' > "$home/state/$id.status"
+
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "design manifest write failed"
+  out=$(fm "$home" "$MANIFEST" show "$id") || fail "design manifest validation failed"
+  printf '%s' "$out" | jq -e '.kind == "design" and .outcome.state == "done"' >/dev/null \
+    || fail "design kind did not survive durable manifest validation"
+  pass "design is a valid durable outcome manifest kind"
+}
+
 test_secondmate_manifest_title_is_null() {
   local home out
   home=$(make_home secondmate-title)
@@ -758,6 +773,7 @@ test_free_text_is_bounded_and_single_line() {
 
 test_manifest_composition
 test_manifest_gbrain_and_overrides
+test_design_manifest_is_valid
 test_secondmate_manifest_title_is_null
 test_manifest_without_sessions_stays_valid
 test_manifest_requires_metadata_and_allowlist

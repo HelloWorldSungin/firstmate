@@ -106,7 +106,7 @@ state/               volatile runtime signals; gitignored
   <id>.pr-status     cached normalized PR review/check/mergeability observation, refreshed only by bin/fm-pr-status.sh so read-only consumers never call a forge; removed by teardown
   <id>.gbrain        GBrain capture receipt written by bin/fm-gbrain-capture.sh before teardown republishes the manifest; absent means the home has no brain, never an error; removed by teardown
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
-  <id>.meta          written by fm-spawn: window=, endpoint_task_id=, worktree=, branch= only for a ship spawned from a brief carrying the task-branch marker (fm-promote writes it too on the kind= flip; a legacy ship record lacks it until bin/fm-run-attribution-legacy-transition.sh proves one from a matching recorded GitHub PR head and inserts it ahead of the trailing pr= identity block), project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=, optional explicit issue=, and one work_item= line per resolved work-item reference plus the pr_target= that scopes tracker write-back (docs/configuration.md "Project issue trackers"); an optional traceparent= only when trace context is enabled (docs/configuration.md "Trace context propagation"); kind=secondmate also records home= and projects=, plus remote_host=/remote_root=/remote_backend=/remote_herdr_session=/remote_target= for a remote route; a non-default runtime backend records further backend-specific fields (docs/configuration.md "Runtime backend"; bin/fm-backend.sh, section 8); fm-pr-check, including through fm-pr-merge, records one canonical pr= and the forge's pr_head= when available (GitHub pull requests and GitLab merge requests; docs/gitlab-merge-watch.md); fm-x-link appends x_request=, x_request_ts=, x_followups=, and optional x_platform=/x_reply_max_chars= for an X-mode-originated task (section 14)
+  <id>.meta          written by fm-spawn: window=, endpoint_task_id=, worktree=, branch= only for a ship or design task spawned from a brief carrying the task-branch marker (fm-promote writes it too on the kind= flip; a legacy ship record lacks it until bin/fm-run-attribution-legacy-transition.sh proves one from a matching recorded GitHub PR head and inserts it ahead of the trailing pr= identity block), project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=, optional explicit issue=, and one work_item= line per resolved work-item reference plus the pr_target= that scopes tracker write-back (docs/configuration.md "Project issue trackers"); an optional traceparent= only when trace context is enabled (docs/configuration.md "Trace context propagation"); kind=secondmate also records home= and projects=, plus remote_host=/remote_root=/remote_backend=/remote_herdr_session=/remote_target= for a remote route; a non-default runtime backend records further backend-specific fields (docs/configuration.md "Runtime backend"; bin/fm-backend.sh, section 8); fm-pr-check, including through fm-pr-merge, records one canonical pr= and the forge's pr_head= when available (GitHub pull requests and GitLab merge requests; docs/gitlab-merge-watch.md); fm-x-link appends x_request=, x_request_ts=, x_followups=, and optional x_platform=/x_reply_max_chars= for an X-mode-originated task (section 14)
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's presentation projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified X shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
@@ -272,15 +272,16 @@ Do not build wrappers, control planes, policy layers, custom verifiers, or autom
 Before commissioning an investigation, consult existing reports and established evidence, including this home's brain through `bin/fm-recall.sh search`.
 Classify the deliverable:
 
-- **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
-- **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
+- **Ship** is the default and produces an authorized project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
+- **Design** runs an interactive decision interview whose only tracked project change is an ADR; load `design-profile` before scaffolding, dispatching, answering, completing, or cleaning up one.
+- **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge deliverable or unresolved uncertainty could materially change whether or what to build.
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
-Resolve every ship task's concrete delivery mode and yolo posture at intake, and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.
+Resolve every ship or design task's concrete delivery mode and yolo posture at intake, and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
@@ -297,7 +298,7 @@ Write the task-specific brief under section 11 before spawning.
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
-After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
+After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship, design, or scout work as under way.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
 Steer a worker with short single-line messages through fail-closed `fm-send`; put long instructions in a file.
@@ -331,7 +332,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 
 ### Validate
 
-For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
+For a no-mistakes ship or design task, trigger validation on the same worker after its implementation or ADR commit, using the harness invocation owned by `harness-adapters`.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 Once validation starts, prefer routing new requirements to follow-up work rather than expanding the current task, unless a new requirement completely invalidates the work being validated; however, the smallest downstream changes needed to keep already accepted product or engineering behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within the current task even when they touch files not named at intake, and corrections required to satisfy already accepted intent are not new requirements.
@@ -356,19 +357,24 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 
 ### PR ready, landing, and teardown
 
-For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
+For PR-based ship and design tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
 
-Tear down a ship task only after landing is confirmed.
+Tear down a ship or design task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work, or for a completion manifest that could not be published, is a stop-and-investigate result, never an obstacle to bypass.
 Never force teardown without explicit discard authority.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 
 A secondmate is persistent and an empty queue is healthy.
 Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.
+
+### Design outcome
+
+A completed design task leaves a tracked ADR and no implementation.
+Load `design-profile` before treating the ADR as complete; it owns the interview, dependency boundary, harness-independent skill resolution, decision inventory, delivery, and cleanup contract.
 
 ### Scout outcome and promotion
 
@@ -411,7 +417,7 @@ A forced repair must use the home-scoped owner path emitted by supervision instr
 
 Guard warnings do not replace the contract.
 Queued wakes must be drained before other action, stale liveness must be repaired through the emitted protocol, and the worktree-tangle warning must be resolved without touching unlanded work.
-The spawn assertion and generated ship brief must both enforce that project work starts in an isolated disposable worktree, never the primary checkout.
+The spawn assertion and generated ship or design brief must both enforce that project work starts in an isolated disposable worktree, never the primary checkout.
 Harness-aware turn-end guards are structural backstops, not permission to omit the live cycle.
 
 ### Away-mode stub
@@ -501,9 +507,9 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
-Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
-If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
-If PR-based ship work is sourced from a work item, scaffold it with `--work-item <forge>:<url>` for each resolved reference and the `--pr-target` the scaffold requires beside it, so the brief, task metadata, and guarded merge path carry that explicit tracker identity; the older `--issue <number>` covers only a same-repository GitHub issue and cannot express a mirrored project.
+Every ship or design brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
+If a ship or design task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
+If PR-based ship or design work is sourced from a work item, scaffold it with `--work-item <forge>:<url>` for each resolved reference and the `--pr-target` the scaffold requires beside it, so the brief, task metadata, and guarded merge path carry that explicit tracker identity; the older `--issue <number>` covers only a same-repository GitHub issue and cannot express a mirrored project.
 Never infer issue identity from task or PR prose, a git remote, or the repository a PR happens to land in.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
@@ -525,6 +531,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `GBRAIN_SERVING_CREDENTIAL:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
+- `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota evidence.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
@@ -533,7 +540,7 @@ These skills are not captain-invocable; load them only at their precise triggers
   Cloning or registering a project is add intake and uses the same trigger.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `work-item-visibility` - load at intake before scaffolding a PR-based ship brief that carries a work item, and before posting any milestone the lifecycle scripts do not post themselves.
+- `work-item-visibility` - load at intake before scaffolding a PR-based ship or design brief that carries a work item, and before posting any milestone the lifecycle scripts do not post themselves.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `process-event-sources` - load before arming a long-polling source, and on any `procevent <adapter> <source-id> <sequence>` check wake.
   Never run a registered source's blocking command yourself in a conversational turn.

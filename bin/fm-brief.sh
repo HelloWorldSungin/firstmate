@@ -7,6 +7,7 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --design --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --work-item records a resolved work item that lives in the MANAGED PROJECT's
@@ -39,6 +40,11 @@
 #   Either way fm-spawn.sh copies the explicit markers into task metadata, where
 #   bin/fm-issue-comment.sh reads the recorded PR target to decide whether it may
 #   write firstmate's own living status comment to that tracker.
+#   --design writes the interactive design contract: the worker reads the
+#   installed mattpocock grilling and domain-modeling skills, asks one
+#   evidence-first question at a time through firstmate, and produces a tracked
+#   ADR through the selected delivery mode. The plugin is read in place and is
+#   never installed, updated, copied, vendored, pinned, or modified here.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -58,32 +64,38 @@
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 #   When the resolved project checkout shares FM_ROOT's git object database,
-#   ship and scout scaffolds also emit firstmate-repo crew role guidance so a
+#   ship, design, and scout scaffolds also emit firstmate-repo crew role guidance so a
 #   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
-#   briefs additionally require the firstmate-coding-guidelines skill, which a
+#   and design briefs additionally require the firstmate-coding-guidelines skill, which a
 #   report-only scout has no tracked material to need. Firstmate's own checkout
 #   is the home root rather than a clone under projects/, so a name is resolved
 #   against the home only when its data/projects.md line declares that layout,
 #   or when this home is a marked secondmate home, which cannot carry that line.
 #   See bin/fm-brief-repo-lib.sh.
-# For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
+# For ship and design tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:
+# Ship modes deliver an authorized implementation:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
+# Design modes deliver only the ADR:
+#   no-mistakes  ADR commit -> /no-mistakes pipeline -> PR -> configured merge authority
+#   direct-PR    ADR commit -> push + open PR via gh-axi (no pipeline) -> configured merge authority
+#   local-only   ADR on branch, stop and report "ready in branch" (no push/PR);
+#                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
-# The generated ship brief records the chosen mode as a fixed machine-readable
+# The generated ship or design brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
-# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# to launch a ship or design task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
-# It also records the exact ship branch in a firstmate-task-branch marker.
+# It also records the exact tracked-output branch in a firstmate-task-branch marker.
 # bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
 # own branch durable before the worker creates it instead of reconstructing it later
 # from the task id or from whichever branch the pooled worktree currently hosts.
-# Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Ship and design briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -91,17 +103,19 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act. Ship briefs teach both with worked examples,
-# including blocked for the no-mistakes validation-trigger handoff. Ship and
-# scout briefs also require a readable current state after "resolved:". Ship
-# briefs pair the pause verb with "working:" around backgrounded pipeline calls.
-# Under no-mistakes, "done:" means the PR is open with checks green, so the
+# blocked when firstmate must act. Ship and design briefs teach both with worked examples,
+# and ship briefs use blocked for the no-mistakes validation-trigger handoff.
+# Ship, design, and scout briefs also require a readable current state after "resolved:".
+# Ship and design briefs pair the pause verb with "working:" around backgrounded pipeline calls.
+# For a no-mistakes ship, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
+# Design tasks instead use ADR-specific no-mistakes handoff wording in the generated brief.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Design tasks omit it because their sole tracked project deliverable is the ADR.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -184,6 +198,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout ;;
+    --design) KIND=design ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
@@ -204,19 +219,23 @@ for a in "$@"; do
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
+
 if [ "$ISSUE_SET" -eq 1 ]; then
   case "$ISSUE" in
     ''|*[!0-9]*) echo "error: --issue requires a positive GitHub issue number" >&2; exit 1 ;;
   esac
   [ "$ISSUE" -gt 0 ] || { echo "error: --issue requires a positive GitHub issue number" >&2; exit 1; }
-  [ "$KIND" = ship ] || { echo "error: --issue applies only to ship briefs" >&2; exit 1; }
+  tracked_output_kind || { echo "error: --issue applies only to ship or design briefs" >&2; exit 1; }
 fi
 
 # A resolved work item is validated here but never resolved here: only the
 # fully qualified "<forge>:<url>" form is accepted, so this script needs no
 # registry, no network, and no forge guess. Anything looser is intake's job.
 if [ "${#WORK_ITEMS[@]}" -gt 0 ]; then
-  [ "$KIND" = ship ] || { echo "error: --work-item applies only to ship briefs" >&2; exit 1; }
+  tracked_output_kind || { echo "error: --work-item applies only to ship or design briefs" >&2; exit 1; }
   [ "$ISSUE_SET" -eq 0 ] || {
     echo "error: --issue and --work-item are mutually exclusive; --work-item states the tracker explicitly, which is what --issue cannot do" >&2
     exit 1
@@ -254,11 +273,11 @@ elif [ "$PR_TARGET_SET" -eq 1 ]; then
   exit 1
 fi
 
-# Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
+# Tracked-output delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   [ "$MODE_SET" -eq 1 ] || {
-    echo "error: ship briefs require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
+    echo "error: ship and design briefs require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
     exit 1
   }
   case "$MODE" in
@@ -269,14 +288,14 @@ if [ "$KIND" = ship ]; then
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
-  echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  echo "error: --mode applies only to ship or design briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
 ID=${POS[0]}
 
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
-  echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  echo "error: --herdr-lab applies only to crewmate ship, design, or scout briefs" >&2
   exit 1
 fi
 
@@ -287,6 +306,12 @@ fi
 
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+if [ "$KIND" = design ]; then
+  "$FM_ROOT/bin/fm-design-skills.sh" check >/dev/null || {
+    echo "error: --design requires the captain-installed mattpocock grilling and domain-modeling skills; do not install or copy them from a worker" >&2
+    exit 1
+  }
+fi
 mkdir -p "$DATA/$ID"
 
 shell_quote() {
@@ -406,7 +431,7 @@ REPO=${POS[1]}
 #
 # The role fact holds for every firstmate-repo task, so both scaffolds carry it:
 # a scout inherits the persona just as readily and simply has no PR to leak it
-# into. The coding-guidelines directive is ship-only, because telling a scout it
+# into. The coding-guidelines directive is tracked-output-only, because telling a scout it
 # is changing shared tracked material would put a false statement in its brief -
 # a scout's only deliverable is a report (see the scout Rules below).
 FIRSTMATE_REPO_CREW_SECTION=
@@ -587,7 +612,7 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
-# Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
+# Tracked-output task: shape Setup / Rule 1 / Definition of done by this task's explicit
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
@@ -601,16 +626,125 @@ if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
   exit 1
 fi
 
+DESIGN_SECTION=
+DESIGN_DOD=
+IFS= read -r -d '' DECISION_RULE <<'EOF' || true
+6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
+   append `needs-decision: {summary of options}` and stop. Firstmate will apply the configured authority and reply with the decision.
+   When firstmate replies or a blocker clears and you resume, append `resolved: {how it was decided or unblocked}` (add the same `[key=<slug>]` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+EOF
+DECISION_RULE=${DECISION_RULE%$'\n'}
+OUTPUT_KIND=ship
+if [ "$KIND" = design ]; then
+  OUTPUT_KIND=design
+  IFS= read -r -d '' DESIGN_SECTION <<EOF || true
+# Design profile
+This is an interactive DESIGN task whose only tracked project deliverable is one architectural decision record.
+Do not implement the resulting design or make unrelated project changes.
+Do not create or modify any other tracked project file, including \`AGENTS.md\` or \`CLAUDE.md\`.
+
+Read and follow \`$FM_ROOT/.agents/skills/design-profile/SKILL.md\` before beginning the interview.
+Run \`$FM_ROOT/bin/fm-design-skills.sh resolve\`, then use your read tool to load the exact \`grilling\` and \`domain_modeling\` skill paths in its JSON output.
+This direct file-resolution contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling.
+If resolution fails or either file cannot be read, append \`blocked: required mattpocock design skills are unavailable; the captain must refresh them with /plugin\` and stop.
+Never install, update, copy, vendor, pin, or modify that plugin from this task.
+Use those skills for modeling and interrogation only.
+Do not create or update \`CONTEXT.md\`, even if a dependency instructs you to do so.
+Record every resolved term only in the ADR so it remains the sole tracked project deliverable.
+
+Investigate factual questions from repository evidence before asking for a decision.
+Ask exactly one decision question at a time, with one stable key, the evidence, and your recommended answer.
+Append \`needs-decision [key=<stable-slug>]: {one question} Recommendation: {answer and evidence}\`, then stop and wait.
+Never batch questions, answer on behalf of firstmate, or proceed while the current key is unresolved.
+When an answer arrives, append \`resolved [key=<same-stable-slug>]: {decision returned by firstmate}\` and \`working: continuing the design interview\` in the same breath, then capture the decision in the ADR.
+State the converged decision back to firstmate before drafting the ADR.
+
+Use an existing project ADR convention when one exists.
+Otherwise use \`docs/adr/NNNN-<slug>.md\`, incrementing the highest existing number.
+The ADR must stand alone with context, decision, rationale, relevant alternatives, and non-obvious consequences.
+EOF
+  DESIGN_SECTION=${DESIGN_SECTION%$'\n'}
+  IFS= read -r -d '' DESIGN_DOD <<EOF || true
+Before reporting the ADR ready, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+EOF
+  DESIGN_DOD=${DESIGN_DOD%$'\n'}
+  IFS= read -r -d '' DECISION_RULE <<'EOF' || true
+6. Every design question follows the one-at-a-time Design profile contract above.
+   Firstmate owns the answer or escalation.
+   Use the same stable key on the `needs-decision` event and the `resolved` event that closes it, and do not continue while that key is unanswered.
+EOF
+  DECISION_RULE=${DECISION_RULE%$'\n'}
+fi
+
+TRACKED_SECTIONS=$HERDR_SECTION
+DOD_DIRECT='Delivery contract: mode=direct-PR'
+DOD_LOCAL='Delivery contract: mode=local-only'
+DOD_NO_MISTAKES='Delivery contract: mode=no-mistakes'
+DOD_DIRECT_INTRO='This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.'
+DOD_DIRECT_COMPLETE='The task is complete only when committed on your branch.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+DOD_DIRECT_HANDOFF='When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
+DOD_LOCAL_INTRO='This task ships **local-only**: no remote, no PR, no pipeline.'
+DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
+DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+DOD_NO_MISTAKES_INTRO='This project ships **no-mistakes**: `done:` means the PR is open with its checks green.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+DOD_NO_MISTAKES_LOCAL='A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
+DOD_NO_MISTAKES_COMPLETE='The task is complete only when committed on your branch.'
+DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
+DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by implementing fixes.'
+DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
+PROJECT_MEMORY_SECTION=
+if [ "$KIND" = ship ]; then
+  IFS= read -r -d '' PROJECT_MEMORY_SECTION <<EOF || true
+# Project memory
+If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
+Record only project knowledge useful to almost every future session.
+For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
+If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
+Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+EOF
+fi
+if [ -n "$DESIGN_SECTION" ]; then
+  printf -v TRACKED_SECTIONS '%s\n\n%s' "$HERDR_SECTION" "$DESIGN_SECTION"
+  printf -v DOD_DIRECT '%s\n%s' "$DOD_DIRECT" "$DESIGN_DOD"
+  printf -v DOD_LOCAL '%s\n%s' "$DOD_LOCAL" "$DESIGN_DOD"
+  printf -v DOD_NO_MISTAKES '%s\n%s' "$DOD_NO_MISTAKES" "$DESIGN_DOD"
+  DOD_DIRECT_INTRO='This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.'
+  DOD_DIRECT_COMPLETE='The ADR is ready only when committed on your branch.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  DOD_DIRECT_HANDOFF='When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
+  DOD_LOCAL_INTRO='This ADR ships **local-only**: no remote, no PR, no pipeline.'
+  DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
+  DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  DOD_NO_MISTAKES_INTRO='This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  DOD_NO_MISTAKES_LOCAL='A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
+  DOD_NO_MISTAKES_COMPLETE='The ADR is ready for validation only when committed on your branch.'
+  DOD_NO_MISTAKES_HANDOFF="When the ADR is complete and committed, append \`$PAUSED_VERB: ADR complete and committed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR."
+  DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by applying fixes.'
+  DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.'
+fi
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=direct-PR
-This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+$DOD_DIRECT
+$DOD_DIRECT_INTRO
+$DOD_DIRECT_COMPLETE
+$DOD_DIRECT_HANDOFF
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -619,11 +753,11 @@ EOF
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=local-only
-This task ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
+$DOD_LOCAL
+$DOD_LOCAL_INTRO
+$DOD_LOCAL_COMPLETE
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+$DOD_LOCAL_HANDOFF
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -633,22 +767,22 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=no-mistakes
-This project ships **no-mistakes**: \`done:\` means the PR is open with its checks green.
-A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one \`done:\` line and it is the last one, \`done: PR {url} checks green\`.
-The task is complete only when committed on your branch.
-When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode.
+$DOD_NO_MISTAKES
+$DOD_NO_MISTAKES_INTRO
+$DOD_NO_MISTAKES_LOCAL
+$DOD_NO_MISTAKES_COMPLETE
+$DOD_NO_MISTAKES_HANDOFF
 
-You drive no-mistakes by responding to its gates, not by implementing fixes.
+$DOD_NO_MISTAKES_DRIVE
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+$DOD_NO_MISTAKES_ACTIVE
 While you sit parked on a backgrounded \`axi run\` or \`axi respond\` call, rule 4's park-and-resume pairing applies: append \`$PAUSED_VERB:\` before you go idle and \`working:\` when the call returns.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+$DOD_NO_MISTAKES_ASK
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
@@ -668,7 +802,7 @@ ${FIRSTMATE_REPO_CREW_SECTION}# Task
 {TASK}
 
 <!-- firstmate-task-branch=fm/$ID -->
-$ISSUE_SECTION$HERDR_SECTION
+$ISSUE_SECTION$TRACKED_SECTIONS
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -709,9 +843,7 @@ $RULE1
    \`needs-decision:\` stays standing and firstmate reads you as still waiting on a decision it
    already answered.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+$DECISION_RULE
    \`resolved:\` carries NO state, so it must never be your last line: append the next state line
    (normally \`working:\`) in the same breath. A trailing \`resolved:\` makes you read as no state at
    all - invisible to firstmate and indistinguishable from a dead worker, which is worse than stale.
@@ -719,13 +851,6 @@ $RULE1
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-${BRAIN_SECTION}# Project memory
-If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
-Record only project knowledge useful to almost every future session.
-For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
-If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
-Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
-
-$DOD
+${BRAIN_SECTION}${PROJECT_MEMORY_SECTION}$DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF ($OUTPUT_KIND, mode=$MODE; replace {TASK})"

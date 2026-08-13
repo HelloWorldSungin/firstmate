@@ -1577,6 +1577,23 @@ test_scout_skips_run_lookup() {
   pass "scout skips the run lookup"
 }
 
+test_design_reads_its_validation_run() {
+  reset_fakes
+  local d; d=$(new_case design)
+  make_repo_on_branch "$d/wt" fm/design-j
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/design-j.meta" "window=fm:fm-design-j" "worktree=$d/wt" \
+    "branch=fm/design-j" "kind=design" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/design-j)"
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" design-j)
+  assert_contains "$out" "source: run-step" \
+    "design task did not reconcile its no-mistakes run"
+  assert_contains "$out" "state: working" \
+    "design task did not report its active validation state"
+  pass "design task reads the tracked-output validation run"
+}
+
 # (j) torn-down worktree and missing meta are graceful (unknown/none, exit 0)
 test_torn_down_worktree() {
   reset_fakes
@@ -2157,6 +2174,7 @@ test_dead_window_still_reports_active_run_step
 test_dead_window_active_run_unverified_stays_working
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
+test_design_reads_its_validation_run
 test_torn_down_worktree
 test_missing_meta
 test_provably_working_via_runs_list_fallback

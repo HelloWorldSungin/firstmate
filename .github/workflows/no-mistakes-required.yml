@@ -47,6 +47,10 @@ jobs:
             echo
             echo "    $marker"
             echo
+            echo "After restoring that section, advance the branch through no-mistakes so the"
+            echo "candidate head receives a clean compliance run. Failed runs remain attached"
+            echo "to the head that produced them."
+            echo
             echo "See CONTRIBUTING.md for setup and the full workflow."
             echo
             echo "PR author: ${PR_AUTHOR}"

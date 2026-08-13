@@ -2,7 +2,7 @@
 name: work-item-visibility
 description: >-
   Agent-only procedure for keeping a work item's tracker and the captain's project board true while its task runs.
-  Use at intake before scaffolding a PR-based ship brief that carries a work item, and at every milestone the lifecycle scripts do not post themselves.
+  Use at intake before scaffolding a PR-based ship or design brief that carries a work item, and at every milestone the lifecycle scripts do not post themselves.
 user-invocable: false
 metadata:
   internal: true
@@ -19,7 +19,7 @@ Script headers own exact flags and mechanics; read them rather than reproducing 
 
 ## At intake
 
-A PR-based ship brief that carries a work item also needs its PR target.
+A PR-based ship or design brief that carries a work item also needs its PR target.
 Resolve the reference with `bin/fm-issue-ref.sh` as always, then pass `--pr-target <forge>:<host>/<path>` to `bin/fm-brief.sh` naming the repository this task's PR opens against.
 `bin/fm-brief.sh` refuses `--work-item` without it, because that is the one input that decides whether the worker owes the issue a substantive delivery summary or only a link.
 For a project whose tracker and code are the same repository, the PR target is that repository's own tracker identity, which is exactly what the registry already declares.

@@ -305,6 +305,23 @@ EOF
   pass "non-forced scout teardown always requires durable inventory verification"
 }
 
+test_design_teardown_requires_inventory_verification() {
+  local home id
+  home=$(make_home design-teardown)
+  id=sample-adr-design
+  mkdir -p "$home/data/$id"
+  write_origin_meta "$home" "$id" design
+  if run_teardown "$home" "$id" > "$home/design-teardown.out" 2> "$home/design-teardown.err"; then
+    fail "design teardown skipped decision inventory verification"
+  fi
+  assert_grep 'design task sample-adr-design has not passed the unresolved-decision completion gate' \
+    "$home/design-teardown.err" \
+    "design teardown did not identify its decision-inventory refusal"
+  assert_present "$home/state/$id.meta" \
+    "refused design teardown removed metadata"
+  pass "non-forced design teardown requires durable inventory verification"
+}
+
 test_origin_slug_validation_precedes_path_construction() {
   local home escaped
   home=$(make_home origin-validation)
@@ -553,6 +570,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
+test_design_teardown_requires_inventory_verification
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

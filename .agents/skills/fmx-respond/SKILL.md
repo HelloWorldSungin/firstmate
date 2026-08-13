@@ -48,7 +48,7 @@ A polite "aye, will do" with no actual work behind it is the exact bug this guar
 How the reply lands depends on whether the work finishes during this turn:
 
 - **Work that completes now** (filing a backlog item, answering from fleet state) already has its outcome, so post **one** reply reporting what was done - exactly as before.
-- **Work that spawns a real, longer-running job** (dispatching a crewmate, a scout investigation, a ship task) cannot report an outcome yet, so it follows **acknowledge first -> act -> follow up on completion**:
+- **Work that spawns a real, longer-running job** (dispatching a crewmate, a scout investigation, a design task, a ship task) cannot report an outcome yet, so it follows **acknowledge first -> act -> follow up on completion**:
   1. **Acknowledge first.** Post an immediate, public-safe reply that you have the captain's order and are on it (the normal answer endpoint, via `bin/fm-x-reply.sh`). This is the legitimate, work-backed version of "aye, will do": it is paired with actually starting the work in the same turn, never a promise left empty.
   2. **Act.** Dispatch the work through the normal lifecycle right away.
   3. **Link it for the follow-up, before clearing the inbox.** Associate the spawned task with this mention so completion follow-ups can be posted later: `bin/fm-x-link.sh <task-id> <request_id>` (records the request id, a timestamp, a follow-up counter, and reply platform/budget context).

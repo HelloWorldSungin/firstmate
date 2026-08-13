@@ -2,8 +2,8 @@
 # Behavior tests for the explicit per-task delivery contract (AGENTS.md section 7)
 # across bin/fm-spawn.sh, bin/fm-promote.sh, and bin/fm-project-mode.sh.
 #
-# A ship task's delivery mode and yolo posture are firstmate's decision at intake,
-# so the tools refuse to guess: the spawn and a scout promotion require both flags,
+# A ship or design task's delivery mode and yolo posture are firstmate's decision at intake,
+# so the tools refuse to guess: their spawns and a scout promotion require both flags,
 # validate them against a closed set, and the spawn additionally refuses to launch
 # when the brief it is about to hand the worker records a different mode. Scout
 # spawns carry no delivery posture at all. The registry keeps only the captain's
@@ -78,14 +78,36 @@ EOF
     assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
     assert_absent "$home/state/delivery-required-$n.meta" "$label: refused spawn wrote task metadata"
   done <<'ROWS'
-missing both flags||ship spawns require --mode
-missing --yolo|--mode no-mistakes|ship spawns require --yolo
-missing --mode|--yolo off|ship spawns require --mode
+missing both flags||ship and design spawns require --mode
+missing --yolo|--mode no-mistakes|ship and design spawns require --yolo
+missing --mode|--yolo off|ship and design spawns require --mode
 unknown mode|--mode nope --yolo off|must be one of no-mistakes, direct-PR, local-only
 unknown yolo|--mode no-mistakes --yolo maybe|--yolo must be on or off
 conditional policy as a task mode|--mode no-mistakes-prod-only --yolo off|classify this task's surface
 ROWS
   pass "fm-spawn: a ship spawn requires a valid explicit mode and yolo before anything is created"
+}
+
+test_design_spawn_requires_a_valid_delivery_contract() {
+  local rec home proj fakebin out status
+  rec=$(make_home design-required)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" delivery-design-required no-mistakes
+
+  out=$(run_spawn "$home" "$fakebin" delivery-design-required "$proj" claude --design --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a design spawn without --mode should exit non-zero"
+  assert_contains "$out" "ship and design spawns require --mode" \
+    "design spawn did not share the tracked-output mode requirement"
+
+  out=$(run_spawn "$home" "$fakebin" delivery-design-required "$proj" claude --design --mode no-mistakes)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a design spawn without --yolo should exit non-zero"
+  assert_contains "$out" "ship and design spawns require --yolo" \
+    "design spawn did not share the tracked-output yolo requirement"
+  pass "fm-spawn: a design spawn shares the explicit tracked-output delivery contract"
 }
 
 # A scout has no merge to govern and a secondmate's posture is fixed, so the flags
@@ -101,18 +123,18 @@ EOF
   out=$(run_spawn "$home" "$fakebin" delivery-scout-a1 "$proj" claude --scout --mode direct-PR)
   status=$?
   [ "$status" -ne 0 ] || fail "a scout spawn carrying --mode should exit non-zero"
-  assert_contains "$out" "--mode applies only to ship spawns" "scout spawn did not refuse --mode"
+  assert_contains "$out" "--mode applies only to ship or design spawns" "scout spawn did not refuse --mode"
 
   out=$(run_spawn "$home" "$fakebin" delivery-scout-a1 "$proj" claude --scout --yolo on)
   status=$?
   [ "$status" -ne 0 ] || fail "a scout spawn carrying --yolo should exit non-zero"
-  assert_contains "$out" "--yolo applies only to ship spawns" "scout spawn did not refuse --yolo"
+  assert_contains "$out" "--yolo applies only to ship or design spawns" "scout spawn did not refuse --yolo"
 
   out=$(run_spawn "$home" "$fakebin" delivery-sm-a2 "$home" --secondmate --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "a secondmate spawn carrying delivery flags should exit non-zero"
-  assert_contains "$out" "applies only to ship spawns" "secondmate spawn did not refuse the delivery flags"
-  pass "fm-spawn: scout and secondmate spawns refuse ship delivery flags"
+  assert_contains "$out" "applies only to ship or design spawns" "secondmate spawn did not refuse the delivery flags"
+  pass "fm-spawn: scout and secondmate spawns refuse tracked-output delivery flags"
 }
 
 # The brief is what the worker actually follows, so a spawn whose explicit mode
@@ -274,6 +296,7 @@ EOF
 }
 
 test_ship_spawn_requires_a_valid_delivery_contract
+test_design_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry

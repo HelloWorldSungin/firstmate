@@ -19,7 +19,7 @@
 #   state: <working|parked|done|blocked|paused|failed|unknown|abandoned> · source: <run-step|run-step-degraded|run-attribution|completion-attestation|pane|status-log|none> · <detail>
 #
 # Logic, in order:
-#   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship,
+#   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship or design task,
 #      branch= in that task record is the authoritative task branch: fm-spawn
 #      copies it from fm-brief's exact firstmate-task-branch marker, while
 #      fm-promote writes it alongside the promotion's exact branch instruction.
@@ -166,6 +166,9 @@ TASK_BRANCH=$(meta_value branch)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 [ -n "$KIND" ] || KIND=ship
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
 
 # A torn-down (or never-created) worktree has no current state to read.
 if [ -z "$WT" ] || [ ! -d "$WT" ]; then
@@ -570,12 +573,12 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
   return 0
 }
 
-# A detached worktree is normal before a just-spawned ship creates its recorded
+# A detached worktree is normal before a just-spawned ship or design worker creates its recorded
 # branch and throughout a scout's scratch phase. A named worktree branch is only
-# observed placement. The task record's branch= is the ship identity used for
+# observed placement. The task record's branch= is the tracked-output identity used for
 # every run lookup and must agree before the worktree can supply run evidence.
 WORKTREE_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-if [ "$KIND" = ship ] && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \
+if tracked_output_kind && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \
    && [ "$WORKTREE_BRANCH" != "$TASK_BRANCH" ]; then
   runstep_record_clear
   emit unknown run-attribution "task branch mismatch: recorded $TASK_BRANCH, worktree has $WORKTREE_BRANCH"
@@ -716,7 +719,7 @@ RUN_ATTRIBUTION_FAULT=""
 # the named-branch path (test_reallocated_worktree_branch_surfaces_attribution_
 # fault) rather than separately here. Skipping saves a just-spawned or
 # never-branched crew two bounded CLI calls per heartbeat.
-if [ "$KIND" = ship ] && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
+if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
    && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   nm_rc=$?

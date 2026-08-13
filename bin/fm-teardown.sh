@@ -2,10 +2,10 @@
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
 # publish the durable outcome manifest, clear volatile state, refresh the
-# project's clone for PR-based ship tasks, then print a backlog-refresh reminder
-# for ship and scout teardowns (a secondmate teardown prints none, since
+# project's clone for PR-based ship or design tasks, then print a backlog-refresh reminder
+# for ship, design, and scout teardowns (a secondmate teardown prints none, since
 # secondmates are not backlog items).
-# Ordinary ship cleanup also reaps exactly refs/heads/fm/<task-id>, never the
+# Ordinary tracked-output cleanup also reaps exactly refs/heads/fm/<task-id>, never the
 # worktree's ambient branch, and only when the branch's current head is either
 # contained in the default branch - freshly fetched from origin, or the local
 # default branch that firstmate's approved merge lands on for a local-only or
@@ -32,7 +32,7 @@
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
-# normal ship task whose commits are not so reachable - when its PR is merged and
+# normal tracked-output task whose commits are not so reachable - when its PR is merged and
 # GitHub reports a PR head that contains the current local work, or its content is
 # already present in the up-to-date default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
@@ -125,7 +125,7 @@
 # refusal above has already passed, and BEFORE any worktree return, branch
 # delete, or backend kill below - a still-active run or a leaked process may
 # own live work in that worktree):
-#   Fix 1 - conclude the task's own no-mistakes run. A ship task's worktree can
+#   Fix 1 - conclude the task's own no-mistakes run. A tracked-output task's worktree can
 #     be torn down while its no-mistakes pipeline run is still PARKED at a gate
 #     (awaiting_approval/fix_review/any awaiting_agent field), with no worker
 #     left to ever answer it - the run then sits there holding a fleet slot
@@ -559,7 +559,7 @@ worker_left_nothing_to_preserve() {
   [ -n "$wt" ] && [ -d "$wt" ] || return 1
   git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 1
   # A branch at HEAD means the worker got as far as creating one, which the
-  # ship brief makes its first action.
+  # tracked-output brief makes its first action.
   ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1 || return 1
   task_ref="refs/heads/fm/$ID"
   git -C "$wt" check-ref-format "$task_ref" >/dev/null 2>&1 || return 1
@@ -693,6 +693,9 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 # The worktree's ambient branch is where the pool happens to have placed a
@@ -997,7 +1000,7 @@ prepare_task_branch_reap() {
   TASK_BRANCH_REAP_PRESERVING_REF=
   TASK_BRANCH_REAP_PR_REF=
   TASK_BRANCH_KEEP_REASON=
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   head=$(branch_head "$TASK_BRANCH_REF") || return 0
   TASK_BRANCH_REAP_HEAD=$head
   branch_reap_default_proof "$head" && return 0
@@ -1020,7 +1023,7 @@ detach_task_branch_for_cleanup() {
 
 reap_task_branch() {
   local current remote_head
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   [ -n "$TASK_BRANCH_REAP_HEAD" ] || return 0
   if [ -z "$TASK_BRANCH_REAP_PROOF" ]; then
     echo "teardown: kept local branch $TASK_BRANCH: ${TASK_BRANCH_KEEP_REASON:-merge is unproven}" >&2
@@ -1715,7 +1718,7 @@ task_status_is_own_parked_run() {  # <worktree> <axi-status-output>
 task_run_is_own_parked_run() {  # <worktree>
   local wt=$1 out
   # Accepted best-effort residual: query failures stay fail-open because making
-  # no-mistakes availability a prerequisite would block ship tasks with no run.
+  # no-mistakes availability a prerequisite would block tracked-output tasks with no run.
   out=$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" axi status)
   task_status_is_own_parked_run "$wt" "$out"
 }
@@ -1740,13 +1743,13 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 
 # Abort THIS task's own parked no-mistakes run before the worker that would
 # have answered its gate is removed, so no run is left orphaned holding a
-# fleet slot. Only KIND=ship drives a no-mistakes validation of its own
-# worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
+# fleet slot. Only tracked-output tasks drive a no-mistakes validation of their
+# own worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
 # a run not attributed to this task's recorded branch and this exact head is
 # left completely alone, and said to be, since nobody will conclude it here.
 conclude_task_no_mistakes_run() {  # <worktree>
   local wt=$1 out run_id
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
   if ! task_run_is_own_parked_run "$wt"; then
@@ -2711,6 +2714,15 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+if [ "$KIND" = design ] && [ "$FORCE" != "--force" ]; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
+    echo "REFUSED: design task $ID has not passed the unresolved-decision completion gate." >&2
+    echo "Inventory its ADR and design interview through bin/fm-decision-hold.sh before teardown." >&2
+    exit 1
+  fi
+fi
+
 # A public commitment is not kept until its final reply lands in the ORIGINAL
 # thread, and this cleanup removes the task records that make the promise
 # reconcilable. Refuse while this home still owes a public reply for exactly this
@@ -2735,7 +2747,7 @@ fi
 
 if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
-    echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
+    echo "REFUSED: Orca tracked-output task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot verify dirty or unlanded work; restore the worktree path or get explicit OK to discard, then --force." >&2
     exit 1
   fi

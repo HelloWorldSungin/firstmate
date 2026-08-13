@@ -86,6 +86,12 @@ enable_dispatch_profile() {
     > "$home/config/crew-dispatch.json"
 }
 
+enable_design_dispatch_profile() {
+  local home=$1
+  printf '%s\n' '{"rules":[{"when":"interactive design interview","use":[{"harness":"codex","model":"gpt-5.5","effort":"xhigh"},{"harness":"pi","model":"anthropic/claude-sonnet-5","effort":"xhigh"},{"harness":"claude","model":"claude-sonnet-5","effort":"xhigh"}]}]}' \
+    > "$home/config/crew-dispatch.json"
+}
+
 make_seeded_secondmate_home() {
   local home=$1 id=$2
   mkdir -p "$home/bin" "$home/data"
@@ -134,7 +140,7 @@ assert_meta_profile() {
 
 test_no_profile_keeps_claude_profile_defaults() {
   local rec id out status expected launch runtime_home
-  id=profile-off-z1
+  id='profile-off-z1'
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
   runtime_home="$CASE_DIR/runtime-home"
@@ -157,7 +163,7 @@ test_no_profile_keeps_claude_profile_defaults() {
 
 test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
   local rec id out status launch home_real
-  id=profile-relative-paths-z1b
+  id='profile-relative-paths-z1b'
   rec=$(make_spawn_case profile-relative-paths pi "$id")
   read_case_record "$rec"
   home_real=$(cd "$HOME_DIR" && pwd -P)
@@ -186,8 +192,8 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
 
 test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
   local rec relative_id absolute_id out status launch home_real linked_home
-  relative_id=profile-relative-home-defaults-z1c
-  absolute_id=profile-absolute-home-defaults-z1d
+  relative_id='profile-relative-home-defaults-z1c'
+  absolute_id='profile-absolute-home-defaults-z1d'
   rec=$(make_spawn_case profile-home-defaults pi "$relative_id" "$absolute_id")
   read_case_record "$rec"
   home_real=$(cd "$HOME_DIR" && pwd -P)
@@ -235,7 +241,7 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
 
 test_absolute_override_spelling_is_preserved_in_launch_paths() {
   local rec id out status launch linked_home
-  id=profile-absolute-paths-z1c
+  id='profile-absolute-paths-z1c'
   rec=$(make_spawn_case profile-absolute-paths pi "$id")
   read_case_record "$rec"
   linked_home="$CASE_DIR/home-link"
@@ -263,7 +269,7 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
 
 test_unresolvable_relative_overrides_fail_loudly() {
   local rec id out status
-  id=profile-unresolvable-paths-z1d
+  id='profile-unresolvable-paths-z1d'
   rec=$(make_spawn_case profile-unresolvable-paths pi "$id")
   read_case_record "$rec"
 
@@ -304,7 +310,7 @@ test_unresolvable_relative_overrides_fail_loudly() {
 
 test_active_dispatch_profile_requires_explicit_harness_for_ship() {
   local rec id out status
-  id=profile-required-ship-z11
+  id='profile-required-ship-z11'
   rec=$(make_spawn_case profile-required-ship claude "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -320,7 +326,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_ship() {
 
 test_active_dispatch_profile_requires_explicit_harness_for_scout() {
   local rec id out status
-  id=profile-required-scout-z12
+  id='profile-required-scout-z12'
   rec=$(make_spawn_case profile-required-scout claude "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -336,7 +342,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout() {
 
 test_active_dispatch_profile_allows_explicit_harness() {
   local rec id out status launch
-  id=profile-explicit-z13
+  id='profile-explicit-z13'
   rec=$(make_spawn_case profile-explicit claude "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -355,7 +361,7 @@ test_active_dispatch_profile_allows_explicit_harness() {
 
 test_active_dispatch_profile_allows_positional_harness() {
   local rec id out status
-  id=profile-positional-z14
+  id='profile-positional-z14'
   rec=$(make_spawn_case profile-positional claude "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -371,7 +377,7 @@ test_active_dispatch_profile_allows_positional_harness() {
 
 test_active_dispatch_profile_allows_raw_launch_command() {
   local rec id out status launch
-  id=profile-raw-z15
+  id='profile-raw-z15'
   rec=$(make_spawn_case profile-raw claude "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -389,7 +395,7 @@ test_active_dispatch_profile_allows_raw_launch_command() {
 
 test_claude_threads_model_and_effort() {
   local rec id out status launch
-  id=profile-claude-z2
+  id='profile-claude-z2'
   rec=$(make_spawn_case profile-claude claude "$id")
   read_case_record "$rec"
 
@@ -405,7 +411,7 @@ test_claude_threads_model_and_effort() {
 
 test_claude_records_pre_dispatch_transcript_identities() {
   local rec id out status cfg dir
-  id=profile-claude-watermark-z2b
+  id='profile-claude-watermark-z2b'
   rec=$(make_spawn_case profile-claude-watermark claude "$id")
   read_case_record "$rec"
   cfg="$CASE_DIR/claude-config"
@@ -428,7 +434,7 @@ test_claude_records_pre_dispatch_transcript_identities() {
 
 test_claude_watermark_failure_preserves_recoverable_metadata() {
   local rec id out status cfg dir real_find
-  id=profile-claude-watermark-failure-z2c
+  id='profile-claude-watermark-failure-z2c'
   rec=$(make_spawn_case profile-claude-watermark-failure claude "$id")
   read_case_record "$rec"
   cfg="$CASE_DIR/claude-config"
@@ -464,7 +470,7 @@ SH
 
 test_claude_newline_physical_store_refuses_before_launch() {
   local rec id out status target link meta_text
-  id=profile-claude-newline-store-z2d
+  id='profile-claude-newline-store-z2d'
   rec=$(make_spawn_case profile-claude-newline-store claude "$id")
   read_case_record "$rec"
   target="$CASE_DIR/physical"$'\n'"store"
@@ -487,7 +493,7 @@ test_claude_newline_physical_store_refuses_before_launch() {
 
 test_codex_threads_model_and_effort() {
   local rec id out status launch
-  id=profile-codex-z3
+  id='profile-codex-z3'
   rec=$(make_spawn_case profile-codex codex "$id")
   read_case_record "$rec"
 
@@ -503,7 +509,7 @@ test_codex_threads_model_and_effort() {
 
 test_codex_omits_invalid_max_effort() {
   local rec id out status launch
-  id=profile-codex-max-z4
+  id='profile-codex-max-z4'
   rec=$(make_spawn_case profile-codex-max codex "$id")
   read_case_record "$rec"
 
@@ -520,7 +526,7 @@ test_codex_omits_invalid_max_effort() {
 
 test_grok_threads_model_and_reasoning_effort() {
   local rec id out status launch
-  id=profile-grok-z5
+  id='profile-grok-z5'
   rec=$(make_spawn_case profile-grok grok "$id")
   read_case_record "$rec"
 
@@ -537,7 +543,7 @@ test_grok_threads_model_and_reasoning_effort() {
 
 test_grok_omits_invalid_max_reasoning_effort() {
   local rec id out status launch
-  id=profile-grok-max-z6
+  id='profile-grok-max-z6'
   rec=$(make_spawn_case profile-grok-max grok "$id")
   read_case_record "$rec"
 
@@ -555,7 +561,7 @@ test_grok_omits_invalid_max_reasoning_effort() {
 
 test_grok_omits_invalid_xhigh_reasoning_effort() {
   local rec id out status launch
-  id=profile-grok-xhigh-z6b
+  id='profile-grok-xhigh-z6b'
   rec=$(make_spawn_case profile-grok-xhigh grok "$id")
   read_case_record "$rec"
 
@@ -574,7 +580,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
 
 test_opencode_threads_model_and_ignores_effort_axis() {
   local rec id out status launch
-  id=profile-opencode-z7
+  id='profile-opencode-z7'
   rec=$(make_spawn_case profile-opencode opencode "$id")
   read_case_record "$rec"
 
@@ -593,7 +599,7 @@ test_opencode_threads_model_and_ignores_effort_axis() {
 
 test_pi_threads_model_and_max_effort() {
   local rec id out status launch
-  id=profile-pi-z8
+  id='profile-pi-z8'
   rec=$(make_spawn_case profile-pi pi "$id")
   read_case_record "$rec"
 
@@ -614,7 +620,7 @@ test_pi_threads_model_and_max_effort() {
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   local rec id out status launch
-  id=profile-pi-signed-z8b
+  id='profile-pi-signed-z8b'
   rec=$(make_spawn_case profile-pi-signed pi-signed "$id")
   read_case_record "$rec"
 
@@ -647,7 +653,7 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
 
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
   local rec id out status
-  id=profile-pi-signed-missing-z8c
+  id='profile-pi-signed-missing-z8c'
   rec=$(make_spawn_case profile-pi-signed-missing pi-signed "$id")
   read_case_record "$rec"
   rm -f "$FAKEBIN_DIR/pi-signed"
@@ -670,7 +676,7 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
 
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   local rec id sm out status launch
-  id=profile-pi-signed-secondmate-z8d
+  id='profile-pi-signed-secondmate-z8d'
   rec=$(make_spawn_case profile-pi-signed-secondmate codex "$id")
   read_case_record "$rec"
   printf '%s\n' pi-signed > "$HOME_DIR/config/secondmate-harness"
@@ -692,8 +698,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
 
 test_batch_forwards_shared_profile_flags() {
   local rec id1 id2 out status
-  id1=profile-batch-a-z9
-  id2=profile-batch-b-z10
+  id1='profile-batch-a-z9'
+  id2='profile-batch-b-z10'
   rec=$(make_spawn_case profile-batch claude "$id1" "$id2")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -711,7 +717,7 @@ test_batch_forwards_shared_profile_flags() {
 
 test_claude_forwards_firstmate_config_dir_when_set() {
   local rec id out status launch canonical_root relative_cfg cfg daemon_cfg resolved_config recorded_store
-  id=profile-claude-cfgdir-z17
+  id='profile-claude-cfgdir-z17'
   rec=$(make_spawn_case profile-claude-cfgdir claude "$id")
   read_case_record "$rec"
   canonical_root="$CASE_DIR/canonical-root"
@@ -746,7 +752,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
 
 test_claude_default_uses_home_config_and_records_evidence_store() {
   local rec id out status launch runtime_home resolved_config recorded_store
-  id=profile-claude-nocfgdir-z18
+  id='profile-claude-nocfgdir-z18'
   rec=$(make_spawn_case profile-claude-nocfgdir claude "$id")
   read_case_record "$rec"
   runtime_home="$CASE_DIR/runtime-home"
@@ -775,7 +781,7 @@ test_claude_default_uses_home_config_and_records_evidence_store() {
 
 test_non_claude_harness_ignores_config_dir() {
   local rec id out status launch
-  id=profile-codex-nocfgdir-z19
+  id='profile-codex-nocfgdir-z19'
   rec=$(make_spawn_case profile-codex-nocfgdir codex "$id")
   read_case_record "$rec"
 
@@ -789,9 +795,132 @@ test_non_claude_harness_ignores_config_dir() {
   pass "non-claude harnesses do not receive the claude CLAUDE_CONFIG_DIR prefix"
 }
 
+test_design_profile_resolves_on_claude_codex_and_pi() {
+  local plugin registry harness model effort rec id out status profile schema_launch schema_meta
+  local fallback_id fallback_launch resolved binary model_flag effort_flag tracker_log
+  plugin="$TMP_ROOT/design-plugin"
+  registry="$TMP_ROOT/design-registry.json"
+  mkdir -p "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  for harness in codex pi claude; do
+    case "$harness" in
+      codex)
+        model=gpt-5.5
+        binary='codex '
+        effort_flag='model_reasoning_effort="xhigh"'
+        ;;
+      pi)
+        model=anthropic/claude-sonnet-5
+        binary='pi '
+        effort_flag="--thinking 'xhigh'"
+        ;;
+      claude)
+        model=claude-sonnet-5
+        binary='claude '
+        effort_flag="--effort 'xhigh'"
+        ;;
+    esac
+    effort=xhigh
+    model_flag="--model '$model'"
+
+    id="design-schema-$harness-z20"
+    rec=$(make_spawn_case "design-schema-$harness" claude "$id")
+    read_case_record "$rec"
+    enable_design_dispatch_profile "$HOME_DIR"
+    profile=$(jq -r --arg harness "$harness" \
+      '.rules[] | select(.when == "interactive design interview") | .use[] | select(.harness == $harness) | [.harness,.model,.effort] | @tsv' \
+      "$HOME_DIR/config/crew-dispatch.json")
+    [ "$profile" = "$harness"$'\t'"$model"$'\t'"$effort" ] \
+      || fail "design dispatch schema did not resolve $harness/$model/$effort: $profile"
+    if [ "$harness" = codex ]; then
+      printf '%s\n' \
+        '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
+        '<!-- firstmate-pr-target=github:github.com/acme/widget -->' \
+        >> "$HOME_DIR/data/$id/brief.md"
+      tracker_log="$CASE_DIR/tracker.log"
+      cat > "$FAKEBIN_DIR/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tracker_log"
+exit 1
+EOF
+      chmod +x "$FAKEBIN_DIR/gh"
+    fi
+    out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+      run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR" --design --harness "$harness" --model "$model" --effort "$effort" \
+      --mode no-mistakes --yolo off)
+    status=$?
+    expect_code 0 "$status" "design profile should spawn on $harness"
+    assert_contains "$out" "spawned $id harness=$harness kind=design" \
+      "design spawn did not retain kind=design on $harness"
+    schema_launch=$(cat "$LAUNCH_LOG")
+    schema_meta="$HOME_DIR/state/$id.meta"
+    pass "design matrix $harness 1/5: dispatch schema selects $harness/$model/$effort"
+    if [ "$harness" = codex ]; then
+      assert_grep 'work_item=declared|github|https://github.com/acme/widget/issues/42' \
+        "$HOME_DIR/state/$id.meta" \
+        "design spawn did not record its work item"
+      assert_present "$tracker_log" \
+        "design spawn did not attempt the tracked-output dispatch milestone"
+    fi
+
+    fallback_id="design-fallback-$harness-z21"
+    rec=$(make_spawn_case "design-fallback-$harness" "$harness" "$fallback_id")
+    read_case_record "$rec"
+    resolved=$(FM_CONFIG_OVERRIDE="$HOME_DIR/config" "$ROOT/bin/fm-harness.sh" crew)
+    [ "$resolved" = "$harness" ] \
+      || fail "fm-harness.sh crew resolved $resolved instead of $harness"
+    out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+      run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$fallback_id" "$PROJ_DIR" --design --model "$model" --effort "$effort" \
+      --mode no-mistakes --yolo off)
+    status=$?
+    expect_code 0 "$status" "design profile fallback should spawn on $harness"
+    assert_contains "$out" "spawned $fallback_id harness=$harness kind=design" \
+      "design fallback spawn did not retain kind=design on $harness"
+    fallback_launch=$(cat "$LAUNCH_LOG")
+    pass "design matrix $harness 2/5: fm-harness.sh fallback resolves $harness"
+
+    assert_contains "$schema_launch" "$binary" \
+      "schema-selected design launch did not use the $harness template"
+    assert_contains "$fallback_launch" "$binary" \
+      "fallback-selected design launch did not use the $harness template"
+    assert_contains "$schema_launch" "encode launch-brief" \
+      "schema-selected design launch bypassed fm-launch-lib.sh construction"
+    assert_contains "$fallback_launch" "encode launch-brief" \
+      "fallback-selected design launch bypassed fm-launch-lib.sh construction"
+    pass "design matrix $harness 3/5: fm-launch-lib.sh constructs both commands"
+
+    assert_meta_profile "$HOME_DIR/state/$fallback_id.meta" "$harness" "$model" "$effort"
+    assert_meta_profile "$schema_meta" "$harness" "$model" "$effort"
+    assert_grep 'kind=design' "$schema_meta" \
+      "schema-selected design metadata did not retain kind=design on $harness"
+    assert_grep 'kind=design' "$HOME_DIR/state/$fallback_id.meta" \
+      "fallback-selected design metadata did not retain kind=design on $harness"
+    pass "design matrix $harness 4/5: fm-spawn.sh validates design and records all axes"
+
+    assert_contains "$schema_launch" "$model_flag" \
+      "schema-selected $harness launch omitted representative model $model"
+    assert_contains "$fallback_launch" "$model_flag" \
+      "fallback-selected $harness launch omitted representative model $model"
+    assert_contains "$schema_launch" "$effort_flag" \
+      "schema-selected $harness launch omitted representative effort $effort"
+    assert_contains "$fallback_launch" "$effort_flag" \
+      "fallback-selected $harness launch omitted representative effort $effort"
+    pass "design matrix $harness 5/5: harness-adapters axes render $model/$effort"
+  done
+}
+
 test_active_dispatch_profile_does_not_block_secondmate_launch() {
   local rec id sm out status
-  id=profile-secondmate-z16
+  id='profile-secondmate-z16'
   rec=$(make_spawn_case profile-secondmate codex "$id")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
@@ -835,6 +964,7 @@ test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
 test_claude_default_uses_home_config_and_records_evidence_store
 test_non_claude_harness_ignores_config_dir
+test_design_profile_resolves_on_claude_codex_and_pi
 test_active_dispatch_profile_does_not_block_secondmate_launch
 
-echo "# all fm-spawn-dispatch-profile tests passed"
+printf '\nall fm-spawn-dispatch-profile tests passed\n'
