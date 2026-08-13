@@ -129,7 +129,7 @@ LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (nm_runs_status_for_branch, below) scans. Generous enough to still find a
+# (nm_runs_row_for_branch, below) scans. Generous enough to still find a
 # branch's own run on a busy multi-crew fleet without listing the entire
 # history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
@@ -178,10 +178,11 @@ fi
 
 # --- status log ------------------------------------------------------------
 
-# Last non-empty status line, and its leading verb (the word before the colon).
-log_last_line() {
+# Last non-empty status line and its physical line number from one file read.
+log_snapshot() {
   [ -f "$LOG" ] || return 1
-  grep -v '^[[:space:]]*$' "$LOG" 2>/dev/null | tail -1
+  awk 'NF { position = NR; line = $0 } END { if (position) printf "%s\t%s", position, line }' \
+    "$LOG" 2>/dev/null
 }
 # Map a status-log verb onto a canonical state for the fallback path. `paused` is
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
@@ -203,7 +204,17 @@ map_log_state() {  # <line>
   esac
 }
 
-LOG_LINE=$(log_last_line || true)
+LOG_SNAPSHOT=$(log_snapshot || true)
+case "$LOG_SNAPSHOT" in
+  *$'\t'*)
+    LOG_POSITION=${LOG_SNAPSHOT%%$'\t'*}
+    LOG_LINE=${LOG_SNAPSHOT#*$'\t'}
+    ;;
+  *)
+    LOG_POSITION=0
+    LOG_LINE=""
+    ;;
+esac
 LOG_VERB=$(status_line_verb "$LOG_LINE")
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
@@ -284,7 +295,7 @@ worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverifi
 
 # --- last known run-step record ---------------------------------------------
 # state/<id>.run-step: one line,
-# "<epoch>\t<state>\t<detail>\t<run-id>\t<status-event-count>", atomically
+# "<epoch>\t<state>\t<detail>\t<run-identity>\t<status-position>\tv2", atomically
 # replaced on every successful run-derived verdict. It orders a later declared
 # wait against that verdict and lets a lookup FAILURE answer
 # "still validating, lookup unavailable" instead of "unknown", without ever
@@ -295,23 +306,14 @@ RUNSTEP_RECORD="$STATE/$ID.run-step"
 
 # Record a run-derived verdict. Never fails the read: a state dir that is
 # read-only or already torn down just leaves the previous record in place.
-status_event_count() {
-  local count
-  [ -f "$LOG" ] || { printf '0'; return; }
-  count=$(grep -c -v '^[[:space:]]*$' "$LOG" 2>/dev/null || true)
-  case "$count" in ''|*[!0-9]*) count=0 ;; esac
-  printf '%s' "$count"
-}
-
-runstep_record_write() {  # <state> <detail> [run-id]
-  local tmp flat event_count
+runstep_record_write() {  # <state> <detail> [run-identity]
+  local tmp flat
   case "$1" in working|parked|done|failed|abandoned) ;; *) return 0 ;; esac
   [ -d "$STATE" ] || return 0
   flat=$(printf '%s' "${2:-}" | tr '\t\n' '  ')
-  event_count=$(status_event_count)
   tmp="$RUNSTEP_RECORD.$$.tmp"
-  if printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$(date +%s)" "$1" "$flat" "${3:-}" "$event_count" > "$tmp" 2>/dev/null; then
+  if printf '%s\t%s\t%s\t%s\t%s\tv2\n' \
+    "$(date +%s)" "$1" "$flat" "${3:-}" "$LOG_POSITION" > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$RUNSTEP_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null
@@ -323,7 +325,7 @@ runstep_record_clear() {
   rm -f "$RUNSTEP_RECORD" 2>/dev/null || true
 }
 
-runstep_record_emit() {  # <state> <source> <detail> [run-id]
+runstep_record_emit() {  # <state> <source> <detail> [run-identity]
   runstep_record_write "$1" "${3:-}" "${4:-}"
   emit "$1" "$2" "${3:-}"
 }
@@ -331,18 +333,17 @@ runstep_record_emit() {  # <state> <source> <detail> [run-id]
 # Print "<state>\t<detail>\t<age-seconds>" for a record still inside the
 # freshness bound; return 1 for a missing, malformed, or expired record.
 runstep_record_read() {
-  local ts st detail _record_run_id record_event_count current_event_count now age
+  local ts st detail _record_run_identity record_position record_version now age
   [ -f "$RUNSTEP_RECORD" ] || return 1
-  IFS=$'\t' read -r ts st detail _record_run_id record_event_count < "$RUNSTEP_RECORD" 2>/dev/null || return 1
+  IFS=$'\t' read -r ts st detail _record_run_identity record_position record_version \
+    < "$RUNSTEP_RECORD" 2>/dev/null || return 1
   case "${ts:-}" in ''|*[!0-9]*) return 1 ;; esac
   case "${st:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
   if { [ "$st" = "done" ] || [ "$st" = failed ]; } \
     && status_is_paused_or_captain_held "$LOG_LINE"; then
-    case "${record_event_count:-}" in ''|*[!0-9]*) ;; *)
-      current_event_count=$(status_event_count)
-      [ "$current_event_count" -le "$record_event_count" ] || return 1
-      ;;
-    esac
+    [ "$record_version" = v2 ] || return 1
+    case "${record_position:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$LOG_POSITION" -le "$record_position" ] || return 1
   fi
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
@@ -564,14 +565,14 @@ nm_ci_checks_state() {
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
 # is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
+# matching row's status word and head, or empty
 # when the branch has no attributable run in the listing.
 #
 # A PURE PARSER over a listing the caller already captured. The call itself is
 # made by the caller so a listing that could not be fetched is classified as a
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
-nm_runs_status_for_branch() {  # <branch> <runs-listing>
+nm_runs_row_for_branch() {  # <branch> <runs-listing>
   local branch=$1 out=${2:-} row st rest br sha
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
@@ -586,7 +587,7 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
       nm_head_attributable "$sha" 0 0 || continue
-      printf '%s' "$st"
+      printf '%s\t%s' "$st" "$sha"
       return 0
     fi
   done <<< "$out"
@@ -661,6 +662,14 @@ nm_head_attributable() {  # <sha> <authoring:0|1> <branch-scoped-live:0|1>
   fm_nm_head_attributable "$WT" "$1" "${2:-0}" "${3:-0}"
 }
 
+run_identity_for_head() {  # <sha>
+  local head=$1 canonical
+  case "$head" in ''|*[!0-9a-fA-F]*) canonical=$head ;;
+    *) canonical=$(git -C "$WT" rev-parse --verify "$head^{commit}" 2>/dev/null) || canonical=$head ;;
+  esac
+  printf '%s:%s' "$LOOKUP_BRANCH" "$canonical"
+}
+
 # 1 when the `axi status` run in $RUN_OUT is in an actively-executing step and so
 # able to author pipeline fix commits; 0 for a parked, terminal, or unrecognized
 # run. A run parked at a gate reports a plain `running` status in some shapes, so
@@ -718,6 +727,7 @@ HAVE_RUN=0
 # run-step block below skips the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+COARSE_HEAD=""
 # LOOKUP_FAILED=1 means a bounded no-mistakes call could not COMPLETE - it timed
 # out under a saturated daemon, errored, or could not be bounded at all. That is
 # emphatically NOT the same as a completed lookup that found no run for this
@@ -778,7 +788,8 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
         LOOKUP_FAILED=1
       else
         LOOKUP_COMPLETED=1
-        COARSE_STATUS=$(nm_runs_status_for_branch "$LOOKUP_BRANCH" "$runs_out")
+        COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
+        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
             HAVE_RUN=1
@@ -809,8 +820,9 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
-  RUN_ID=""
+  RUN_IDENTITY=""
   if [ "$RUN_SOURCE" = coarse ]; then
+    RUN_IDENTITY=$(run_identity_for_head "$COARSE_HEAD")
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
     # gets full detail once `axi status` reports its own branch again (e.g.
@@ -826,7 +838,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
-    RUN_ID=$(strip_quotes "$(nm_field id)")
+    RUN_IDENTITY=$(run_identity_for_head "$(strip_quotes "$(nm_field head)")")
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
     outcome=$(strip_quotes "$(nm_field outcome)")
@@ -897,7 +909,7 @@ if [ "$HAVE_RUN" = 1 ]; then
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_ID"
+      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_IDENTITY"
     fi
     [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
     if [ "$RUN_STATUS" = fixing ]; then
@@ -908,7 +920,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       CI_LOG_STATE=not-ready
     fi
     if [ "$CI_LOG_STATE" != not-ready ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_ID"
+      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_IDENTITY"
     fi
   fi
 
@@ -924,17 +936,16 @@ if [ "$HAVE_RUN" = 1 ]; then
       && [ "$(nm_step_status ci)" = completed ]
   }
   declared_wait_follows_terminal_record() {
-    local ts record_state _detail record_run_id record_event_count current_event_count
-    [ -n "$RUN_ID" ] || return 1
-    [ -f "$RUNSTEP_RECORD" ] || return 1
-    IFS=$'\t' read -r ts record_state _detail record_run_id record_event_count \
-      < "$RUNSTEP_RECORD" 2>/dev/null || return 1
-    case "${ts:-}" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$record_state" = "$RUN_STATE" ] || return 1
-    [ "$record_run_id" = "$RUN_ID" ] || return 1
-    case "${record_event_count:-}" in ''|*[!0-9]*) return 1 ;; esac
-    current_event_count=$(status_event_count)
-    [ "$current_event_count" -gt "$record_event_count" ]
+    local ts _record_state _detail record_run_identity record_position record_version
+    [ -n "$RUN_IDENTITY" ] || return 0
+    [ -f "$RUNSTEP_RECORD" ] || return 0
+    IFS=$'\t' read -r ts _record_state _detail record_run_identity record_position record_version \
+      < "$RUNSTEP_RECORD" 2>/dev/null || return 0
+    case "${ts:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$record_version" = v2 ] || return 0
+    [ "$record_run_identity" = "$RUN_IDENTITY" ] || return 0
+    case "${record_position:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$LOG_POSITION" -gt "$record_position" ]
   }
   if { [ "$RUN_STATE" = "done" ] || [ "$RUN_STATE" = failed ]; } \
     && status_is_paused_or_captain_held "$LOG_LINE" \
@@ -988,7 +999,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # path only, so nothing but a genuinely observed run is ever replayed.
   # `abandoned` is now a recorded state, so a later lookup failure degrades to
   # the same actionable verdict instead of replaying a stale `working` answer.
-  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL" "$RUN_ID"
+  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL" "$RUN_IDENTITY"
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------

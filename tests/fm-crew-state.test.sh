@@ -99,6 +99,8 @@ set -u
 # Every invocation is recorded when FM_FAKE_NM_CALL_LOG is set, so a test can
 # assert that a lookup was made - or provably was not.
 [ -z "${FM_FAKE_NM_CALL_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_NM_CALL_LOG"
+[ -z "${FM_FAKE_NM_APPEND_FILE:-}" ] || [ "${1:-} ${2:-}" != "axi status" ] \
+  || printf '%s\n' "${FM_FAKE_NM_APPEND_LINE:-}" >> "$FM_FAKE_NM_APPEND_FILE"
 # A lookup that cannot COMPLETE, as opposed to one that completes and finds no
 # run. FM_FAKE_NM_SLEEP outlasts the helper's own bound so the REAL timeout
 # wrapper kills the call; FM_FAKE_NM_RC returns a timeout's exit status directly
@@ -173,7 +175,7 @@ SH
 make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
   local dir=$1 tb="$1/notimeoutbin" tool real
   mkdir -p "$tb"
-  for tool in bash git grep sed head cut tail dirname perl; do
+  for tool in awk bash git grep sed head cut tail dirname perl; do
     real=$(command -v "$tool" || true)
     [ -n "$real" ] || fail "missing tool for no-timeout path: $tool"
     ln -s "$real" "$tb/$tool"
@@ -225,12 +227,15 @@ reset_fakes() {
   FM_FAKE_RUNS_RC=0
   FM_FAKE_NM_SLEEP=""
   FM_FAKE_NM_CALL_LOG=""
+  FM_FAKE_NM_APPEND_FILE=""
+  FM_FAKE_NM_APPEND_LINE=""
   FM_FAKE_AGENT_STATE="alive"
   FM_CREW_STATE_DEGRADED_MAX_AGE=""
   FM_CREW_STATE_NM_TIMEOUT=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
-  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG FM_FAKE_AGENT_STATE
+  export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG FM_FAKE_NM_APPEND_FILE
+  export FM_FAKE_NM_APPEND_LINE FM_FAKE_AGENT_STATE
   export FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT
 }
 
@@ -1063,6 +1068,61 @@ test_forge_skipped_pass_under_declared_pause_reports_the_wait() {
   pass "a declared wait over a locally-passed, forge-unobserved run reports the wait, not done"
 }
 
+test_terminal_run_with_park_before_first_read_reports_the_wait() {
+  reset_fakes
+  local d out; d=$(new_case terminal-park-first-read)
+  make_repo_on_branch "$d/wt" fm/feat-terminal-park-first
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/terminal-park-first.meta" "window=fm:fm-terminal-park-first" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'paused: pipeline finished, awaiting deployment window\n' > "$d/state/terminal-park-first.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-park-first)"
+  out=$(run_crew_state "$d" terminal-park-first)
+  assert_contains "$out" "state: paused" "a terminal run honors the park on its first state read"
+  assert_contains "$out" "awaiting deployment window" "the first-read park keeps its reason"
+  out=$(run_crew_state "$d" terminal-park-first)
+  assert_contains "$out" "state: paused" "the first-read park remains current"
+  pass "a park present on the first terminal read takes effect"
+}
+
+test_terminal_run_with_legacy_record_reports_the_wait() {
+  reset_fakes
+  local d out now; d=$(new_case terminal-park-legacy-record)
+  make_repo_on_branch "$d/wt" fm/feat-terminal-park-legacy
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/terminal-park-legacy.meta" "window=fm:fm-terminal-park-legacy" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: awaiting hardware validation\n' > "$d/state/terminal-park-legacy.status"
+  now=$(date +%s)
+  printf '%s\tworking\tvalidating\n' "$now" > "$d/state/terminal-park-legacy.run-step"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-terminal-park-legacy)"
+  out=$(run_crew_state "$d" terminal-park-legacy)
+  assert_contains "$out" "state: paused" "a legacy record cannot absorb the first terminal park"
+  assert_contains "$out" "hardware validation" "the legacy-record park keeps its reason"
+  pass "legacy run-step records preserve a terminal park"
+}
+
+test_park_appended_during_lookup_is_seen_next_read() {
+  reset_fakes
+  local d out; d=$(new_case terminal-park-during-lookup)
+  make_repo_on_branch "$d/wt" fm/feat-terminal-park-race
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/terminal-park-race.meta" "window=fm:fm-terminal-park-race" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'done: local pipeline finished\n' > "$d/state/terminal-park-race.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-park-race)"
+  FM_FAKE_NM_APPEND_FILE="$d/state/terminal-park-race.status"
+  FM_FAKE_NM_APPEND_LINE="paused: appended while terminal status was loading"
+  out=$(run_crew_state "$d" terminal-park-race)
+  assert_contains "$out" "state: done" "the initial snapshot excludes a concurrent later park"
+  FM_FAKE_NM_APPEND_FILE=""
+  FM_FAKE_NM_APPEND_LINE=""
+  out=$(run_crew_state "$d" terminal-park-race)
+  assert_contains "$out" "state: paused" "the next snapshot sees the concurrently appended park"
+  assert_contains "$out" "appended while terminal status was loading" "the concurrent park keeps its reason"
+  pass "a park appended during lookup is not absorbed into its terminal boundary"
+}
+
 # Disconfirming pair for the case above: the same finished run with NO declared
 # wait stays done, so a crew that simply went quiet is still a wedge suspect and
 # nothing about wedge detection is weakened by honoring a declared wait.
@@ -1292,6 +1352,56 @@ EOF
   assert_contains "$out" "state: working" "most recent (running) row wins over an older completed row"
   assert_contains "$out" "source: run-step" "most-recent-row resolution -> run-step source"
   pass "cross-branch attribution picks the branch's most recent row"
+}
+
+test_coarse_terminal_run_with_park_reports_the_wait() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-terminal-park)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-terminal-park
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarse-terminal-park.meta" "window=fm:fm-coarse-terminal-park" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: awaiting release approval\n' > "$d/state/coarse-terminal-park.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-07-02 22:10
+  completed  fm/feat-coarse-terminal-park ${short}  2026-07-02 22:05
+EOF
+)"
+  out=$(run_crew_state "$d" coarse-terminal-park)
+  assert_contains "$out" "state: paused" "a coarse terminal run honors its declared park"
+  assert_contains "$out" "awaiting release approval" "the coarse terminal park keeps its reason"
+  out=$(run_crew_state "$d" coarse-terminal-park)
+  assert_contains "$out" "state: paused" "the coarse terminal park remains current"
+  pass "coarse terminal evidence participates in park precedence"
+}
+
+test_full_and_coarse_paths_share_run_identity() {
+  reset_fakes
+  local d short out; d=$(new_case full-coarse-run-identity)
+  make_repo_on_branch "$d/wt" fm/feat-full-coarse-identity
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/full-coarse-identity.meta" "window=fm:fm-full-coarse-identity" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: stale hold before validation resumed\n' > "$d/state/full-coarse-identity.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-full-coarse-identity)"
+  out=$(run_crew_state "$d" full-coarse-identity)
+  assert_contains "$out" "state: working" "the full active run outranks the stale hold"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-07-02 22:10
+  cancelled  fm/feat-full-coarse-identity ${short}  2026-07-02 22:05
+EOF
+)"
+  out=$(run_crew_state "$d" full-coarse-identity)
+  assert_contains "$out" "state: failed" "coarse cancellation retains the full run's ordering boundary"
+  assert_not_contains "$out" "state: paused" "the coarse path cannot revive the stale hold"
+  printf 'paused: new wait after cancellation\n' >> "$d/state/full-coarse-identity.status"
+  out=$(run_crew_state "$d" full-coarse-identity)
+  assert_contains "$out" "state: paused" "a later park still wins across the full-to-coarse transition"
+  pass "full and coarse evidence share one stable run identity"
 }
 
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
@@ -2336,6 +2446,9 @@ test_terminal_passed_forge_skipped_claims_no_merge
 test_terminal_passed_ci_skipped_claims_no_merge
 test_terminal_passed_forge_observed_keeps_merge_claim
 test_forge_skipped_pass_under_declared_pause_reports_the_wait
+test_terminal_run_with_park_before_first_read_reports_the_wait
+test_terminal_run_with_legacy_record_reports_the_wait
+test_park_appended_during_lookup_is_seen_next_read
 test_forge_skipped_pass_without_declared_pause_stays_done
 test_captain_held_over_forge_skipped_pass_reports_the_wait
 test_captain_held_over_checks_green_terminal_reports_the_wait
@@ -2347,6 +2460,8 @@ test_stale_declared_wait_before_resumed_run_stays_failed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
+test_coarse_terminal_run_with_park_reports_the_wait
+test_full_and_coarse_paths_share_run_identity
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
