@@ -2718,14 +2718,49 @@ EOF
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
-  local enter_sent=0 saw_submit_idle=0
+  local enter_sent=0 baseline_agent baseline_pair settle_reads=0 settled_idle=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  baseline_pair=$(fm_backend_herdr_agent_identity_raw \
+    "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+  case "$baseline_pair" in
+    *$'\t'*)
+      baseline_agent=${baseline_pair%%$'\t'*}
+      baseline_raw=${baseline_pair#*$'\t'}
+      ;;
+    *) baseline_agent=; baseline_raw= ;;
+  esac
   baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
-  [ "$baseline" = idle ] && saw_submit_idle=1
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  case "$baseline_agent" in
+    cursor|agy)
+      i=0
+      while [ "$settled_idle" -eq 0 ]; do
+        case "$baseline_agent:$baseline_raw" in
+          cursor:idle|cursor:done|agy:idle|agy:done)
+            i=$((i + 1))
+            [ "$i" -ge 2 ] && { settled_idle=1; break; }
+            ;;
+          *) i=0 ;;
+        esac
+        [ "$settle_reads" -lt "$retries" ] || { printf 'unverifiable'; return 0; }
+        sleep "${FM_POLL:-15}"
+        baseline_pair=$(fm_backend_herdr_agent_identity_raw \
+          "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+        case "$baseline_pair" in
+          *$'\t'*)
+            baseline_agent=${baseline_pair%%$'\t'*}
+            baseline_raw=${baseline_pair#*$'\t'}
+            ;;
+          *) baseline_agent=; baseline_raw= ;;
+        esac
+        settle_reads=$((settle_reads + 1))
+      done
+      baseline=idle
+      ;;
+  esac
+  i=0
   while :; do
     if ! fm_backend_herdr_send_key "$target" Enter; then
       i=$((i + 1))
@@ -2739,20 +2774,14 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
-      if [ "$verdict" = unknown ] && [ "$baseline_raw" != blocked ]; then
-        local cur_raw cur_bs
-        cur_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
-        cur_bs=$(fm_backend_herdr_classify_submit_agent_status "$cur_raw")
-        case "$cur_bs" in
-          idle) saw_submit_idle=1 ;;
-          busy) [ "$saw_submit_idle" -eq 1 ] && verdict=busy ;;
-        esac
-      fi
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
-      unknown) : ;;
+      unknown)
+        [ "$baseline" != idle ] || { printf 'unverifiable'; return 0; }
+        break
+        ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || break
@@ -2785,7 +2814,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     if [ "$composer_state" = pending ] && [ "$busy_state" = busy ]; then
       printf 'empty'; return 0
     elif [ "$composer_state" = unknown ] && [ "$busy_state" = busy ] \
-      && [ "$saw_submit_idle" -eq 1 ]; then
+      && [ "$settled_idle" -eq 1 ]; then
       printf 'empty'; return 0
     elif [ "$composer_state" = unknown ]; then
       printf 'unverifiable'; return 0

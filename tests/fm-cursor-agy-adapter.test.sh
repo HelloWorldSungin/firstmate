@@ -443,6 +443,7 @@ case "$cmd" in
   *"status"*) printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
   *"pane get"*) printf '{"result":{"pane":{"pane_id":"w1:p1"}}}\n' ;;
   *"pane send-keys"*)
+    printf 'enter\n' >> "$dir/enter_log"
     [ "${FM_HERDR_FAKE_ENTER:-ok}" != fail ] || exit 1
     exit 0
     ;;
@@ -475,9 +476,30 @@ SH
 
 test_send_text_submit_lands_on_cursor_and_agy() {
   local harness=$1 case_dir home proj wt fakebin err rc
-  # Counterfactual: If send_text_submit could not prove a new turn through a
-  # post-Enter idle-to-working transition, this test would fail.
+  # Counterfactual: If send_text_submit could not prove a new turn after a
+  # settled idle-to-working transition, this test would fail.
   case_dir="$TMP_ROOT/send-land-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working" "idle" "idle" "working")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 0 "$rc" "ordinary steer to live $harness worker should succeed when native turn starts"
+  assert_no_grep "error:" "$err" "successful steer to live $harness worker should produce no error diagnostic"
+  pass "ordinary steer to a live $harness worker that lands does not report failure"
+}
+
+test_transient_idle_does_not_confirm_cursor_and_agy_send() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-idle-blip-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
   mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
   fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
@@ -491,9 +513,10 @@ test_send_text_submit_lands_on_cursor_and_agy() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "ordinary steer to live $harness worker should succeed when native turn starts"
-  assert_no_grep "error:" "$err" "successful steer to live $harness worker should produce no error diagnostic"
-  pass "ordinary steer to a live $harness worker that lands does not report failure"
+  expect_code 3 "$rc" "transient idle on $harness should be unverifiable"
+  assert_absent "$case_dir/fake/enter_log" \
+    "transient idle on $harness must not trigger an attributable Enter"
+  pass "a transient idle never confirms a $harness steer"
 }
 
 test_unchanged_working_does_not_confirm_cursor_and_agy_send() {
@@ -528,7 +551,7 @@ test_failed_enter_reports_cursor_and_agy_send_failure() {
   fm_write_meta "$home/state/lane-$harness.meta" \
     "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
-  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle")
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_ENTER=fail \
@@ -538,6 +561,28 @@ test_failed_enter_reports_cursor_and_agy_send_failure() {
   assert_contains "$(cat "$err")" "send failed" \
     "failed Enter on $harness should surface a send failure"
   pass "a failed Enter reports a $harness steer as undelivered"
+}
+
+test_unreadable_after_enter_does_not_retry_cursor_and_agy_send() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-unreadable-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle" "unknown" "unknown")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 \
+    FM_BACKEND_HERDR_SUBMIT_POLLS=2 FM_SEND_SETTLE=0 FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 3 "$rc" "lost visibility after Enter on $harness should be unverifiable"
+  [ "$(wc -l < "$case_dir/fake/enter_log")" -eq 1 ] \
+    || fail "lost visibility after Enter on $harness sent another Enter"
+  pass "lost visibility stops $harness Enter retries"
 }
 
 test_genuinely_undelivered_steer_on_composer_supported_harness() {
@@ -675,10 +720,14 @@ test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
 test_send_text_submit_lands_on_cursor_and_agy cursor
 test_send_text_submit_lands_on_cursor_and_agy agy
+test_transient_idle_does_not_confirm_cursor_and_agy_send cursor
+test_transient_idle_does_not_confirm_cursor_and_agy_send agy
 test_unchanged_working_does_not_confirm_cursor_and_agy_send cursor
 test_unchanged_working_does_not_confirm_cursor_and_agy_send agy
 test_failed_enter_reports_cursor_and_agy_send_failure cursor
 test_failed_enter_reports_cursor_and_agy_send_failure agy
+test_unreadable_after_enter_does_not_retry_cursor_and_agy_send cursor
+test_unreadable_after_enter_does_not_retry_cursor_and_agy_send agy
 test_genuinely_undelivered_steer_on_composer_supported_harness
 test_send_into_dead_shell_is_never_confirmed cursor
 test_send_into_dead_shell_is_never_confirmed agy
