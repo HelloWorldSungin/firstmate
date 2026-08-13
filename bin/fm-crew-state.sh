@@ -30,7 +30,7 @@
 #      if a run is found through their ambient branch, that run is likewise
 #      surfaced as unattributable rather than guessed from the task id.
 #   2. Matching no-mistakes run for this crew's branch AND attributable code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
+#      active or terminal (from `axi status`, or the coarse AXI home runs
 #      fallback)? Branch name alone is not enough: a historical run on a reused
 #      branch whose head was rewritten or diverged must not be attributed.
 #      A run matches when its head equals the worktree HEAD, or the worktree HEAD
@@ -128,12 +128,6 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (nm_runs_row_for_branch, below) scans. Generous enough to still find a
-# branch's own run on a busy multi-crew fleet without listing the entire
-# history every call.
-FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
-case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 # How long a recorded run-step stays usable as the degraded answer after the run
 # lookup starts failing. This is the bound that keeps the degrade from becoming a
 # worse bug than the one it fixes: a permanently broken no-mistakes daemon would
@@ -306,14 +300,16 @@ RUNSTEP_RECORD="$STATE/$ID.run-step"
 
 # Record a run-derived verdict. Never fails the read: a state dir that is
 # read-only or already torn down just leaves the previous record in place.
-runstep_record_write() {  # <state> <detail> [run-id] [run-alias] [merge-observed]
-  local tmp flat
+runstep_record_write() {  # <state> <detail> [run-id] [run-alias] [merge-observed] [status-position]
+  local tmp flat record_position
   case "$1" in working|parked|done|failed|abandoned) ;; *) return 0 ;; esac
   [ -d "$STATE" ] || return 0
   flat=$(printf '%s' "${2:-}" | tr '\t\n' '  ')
+  record_position=${6:-$LOG_POSITION}
+  case "$record_position" in ''|*[!0-9]*) return 0 ;; esac
   tmp="$RUNSTEP_RECORD.$$.tmp"
   if printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tv3\n' \
-    "$(date +%s)" "$1" "$flat" "${3:--}" "${4:--}" "$LOG_POSITION" \
+    "$(date +%s)" "$1" "$flat" "${3:--}" "${4:--}" "$record_position" \
     "${5:-0}" > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$RUNSTEP_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
@@ -371,7 +367,10 @@ runstep_record_read() {
     && status_is_paused_or_captain_held "$LOG_LINE"; then
     [ "$RECORD_VERSION" = v3 ] || return 1
     case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$LOG_POSITION" -le "$RECORD_POSITION" ] || return 1
+    if [ "$RECORD_STATE" != "done" ] \
+      || [ "$RECORD_MERGE_OBSERVED" != 1 ]; then
+      [ "$LOG_POSITION" -le "$RECORD_POSITION" ] || return 1
+    fi
   fi
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
@@ -573,49 +572,36 @@ nm_ci_checks_state() {
 # validating crews on the same underlying repo). A crew whose branch genuinely
 # has no run yet therefore sees another branch's answer here.
 #
-# This fallback used to shell out to `no-mistakes axi` (bare, no subcommand)
-# expecting a `runs[N]{id,branch,status,...}:` TOON table and re-query the
-# matched id via `axi status --run <id>`. Verified against the real installed
-# CLI (v1.32.2): the `axi` surface exposes only abort/logs/respond/run/status -
-# there is no runs-listing subcommand under `axi` at all, so that table never
-# appears and the lookup was silently dead code; whenever the bare `axi
-# status` answer was not this crew's own branch, attribution always failed and
-# the caller fell straight through to the pane/log fallback below. (The
-# PRIMARY cause of the 2026-07 herdr false-surface incidents turned out to be
-# a separate bug in bin/fm-watch.sh's stale_is_terminal precedence - see that
-# file's history - but this cross-branch path was independently confirmed
-# dead code and is worth having actually work.)
-#
-# The real run-listing command is the top-level `no-mistakes runs` (verified:
-# `no-mistakes --help` lists it separately from `axi`). It is plain, human-
-# oriented text - no run id, no JSON/TOON, newest-first, columns
-# "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
-# spaces (verified: no quoting, so splitting on the first two whitespace runs
-# is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word and head, or empty
-# when the branch has no attributable run in the listing.
+# The bare `no-mistakes axi` home view carries its recent runs as a newest-first
+# `runs[N]{id,branch,status,head,pr}:` table.
 #
 # A PURE PARSER over a listing the caller already captured. The call itself is
 # made by the caller so a listing that could not be fetched is classified as a
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
 nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha
+  local branch=$1 out=${2:-} row st rest br sha run_id in_runs=0
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
     [ -n "$row" ] || continue
-    st=${row%% *}
-    rest=${row#* }
-    rest=$(trim "$rest")
-    br=${rest%% *}
-    rest=${rest#* }
-    rest=$(trim "$rest")
-    sha=${rest%% *}
+    if [[ "$row" =~ ^runs\[[0-9]+\]\{id,branch,status,head,pr\}:$ ]]; then
+      in_runs=1
+      continue
+    fi
+    [ "$in_runs" = 1 ] || continue
+    case "$row" in *,*,*,*,*) ;; *) continue ;; esac
+    run_id=$(strip_quotes "$(trim "${row%%,*}")")
+    rest=${row#*,}
+    br=$(strip_quotes "$(trim "${rest%%,*}")")
+    rest=${rest#*,}
+    st=$(strip_quotes "$(trim "${rest%%,*}")")
+    rest=${rest#*,}
+    sha=$(strip_quotes "$(trim "${rest%%,*}")")
     if [ "$br" = "$branch" ]; then
+      [ -n "$run_id" ] || continue
       nm_head_attributable "$sha" 0 0 || continue
-      printf '%s\t%s' "$st" "$sha"
+      printf '%s\t%s\t%s' "$st" "$sha" "$run_id"
       return 0
     fi
   done <<< "$out"
@@ -756,6 +742,7 @@ HAVE_RUN=0
 RUN_SOURCE=full
 COARSE_STATUS=""
 COARSE_HEAD=""
+COARSE_RUN_ID="-"
 # LOOKUP_FAILED=1 means a bounded no-mistakes call could not COMPLETE - it timed
 # out under a saturated daemon, errored, or could not be bounded at all. That is
 # emphatically NOT the same as a completed lookup that found no run for this
@@ -810,14 +797,14 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
       # for no better answer.
-      runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+      runs_out=$(nm_run axi)
       runs_rc=$?
       if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
         LOOKUP_FAILED=1
       else
         LOOKUP_COMPLETED=1
         COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
-        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
+        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD COARSE_RUN_ID <<< "$COARSE_ROW"
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
             HAVE_RUN=1
@@ -852,6 +839,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   RUN_ALIAS="-"
   MERGE_OBSERVED=0
   if [ "$RUN_SOURCE" = coarse ]; then
+    RUN_ID=$COARSE_RUN_ID
     RUN_ALIAS=$(run_identity_for_head "$COARSE_HEAD")
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -869,8 +857,8 @@ if [ "$HAVE_RUN" = 1 ]; then
     esac
     runstep_record_load || true
     if [ "$RECORD_VERSION" = v3 ] \
-      && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ]; then
-      [ -n "$RECORD_RUN_ID" ] && RUN_ID=$RECORD_RUN_ID
+      && [ "$RUN_ID" != "-" ] \
+      && [ "$RECORD_RUN_ID" = "$RUN_ID" ]; then
       if [ "$RUN_STATE" = "done" ] \
         && [ "$RECORD_MERGE_OBSERVED" = 1 ]; then
         MERGE_OBSERVED=1
@@ -985,9 +973,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     [ "$RECORD_VERSION" = v3 ] || return 0
     case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 0 ;; esac
     if [ "$RUN_ID" != "-" ] && [ "$RECORD_RUN_ID" != "-" ]; then
-      [ "$RECORD_RUN_ID" = "$RUN_ID" ] || return 1
+      [ "$RECORD_RUN_ID" = "$RUN_ID" ] || return 0
     else
-      [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] || return 1
+      [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] || return 0
     fi
     [ "$LOG_POSITION" -gt "$RECORD_POSITION" ]
   }
@@ -995,6 +983,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     && status_is_paused_or_captain_held "$LOG_LINE" \
     && declared_wait_follows_terminal_record \
     && ! terminal_done_is_observed_merge; then
+    WAIT_BOUNDARY_POSITION=$(( LOG_POSITION > 0 ? LOG_POSITION - 1 : 0 ))
+    runstep_record_write "$RUN_STATE" "$RUN_DETAIL" \
+      "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED" "$WAIT_BOUNDARY_POSITION"
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}$RUN_DETAIL"
   fi
 
