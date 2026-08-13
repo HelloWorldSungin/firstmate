@@ -721,10 +721,10 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
   esac
 }
 
-# fm_backend_send_text_submit: type text once, then submit and verify,
-# retrying only the submission (never retyping). Echoes the backend's
+# fm_backend_send_text_submit: submit text once and verify, retrying only a
+# backend's separate submission action (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
-fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
+fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness]
   local backend=$1
   shift
   fm_backend_source "$backend" || return 1
@@ -811,6 +811,28 @@ fm_backend_agent_status() {  # <backend> <target>
       printf '%s' "$st"
       ;;
     *) printf 'unknown' ;;
+  esac
+}
+
+fm_backend_agent_identity_busy_state() {  # <backend> <target> -> <identity>\t<busy-state>
+  local backend=$1 target=$2 pair identity raw state
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    herdr)
+      fm_backend_herdr_parse_target "$target" || return 1
+      pair=$(fm_backend_herdr_agent_identity_raw \
+        "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null) || return 1
+      case "$pair" in
+        *$'\t'*)
+          identity=${pair%%$'\t'*}
+          raw=${pair#*$'\t'}
+          state=$(fm_backend_herdr_classify_agent_status "$raw")
+          printf '%s\t%s' "$identity" "$state"
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
   esac
 }
 

@@ -263,7 +263,7 @@ fm_busy_grok_tail_busy() {
 # if available, else reports unknown capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
-  local out rc r_state r_source native
+  local out rc r_state r_source native= native_identity= native_sample= native_identity_required=0
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -288,7 +288,7 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       return 0
     fi
     case "$backend:$harness" in
-      herdr:cursor*|herdr:agy*) : ;;
+      herdr:cursor|herdr:agy) native_identity_required=1 ;;
       *) printf 'unknown source-mismatch'; return 0 ;;
     esac
   else
@@ -299,8 +299,23 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
         ;;
     esac
   fi
+  if [ "$native_identity_required" -eq 1 ]; then
+    if command -v fm_backend_agent_identity_busy_state >/dev/null 2>&1; then
+      native_sample=$(fm_backend_agent_identity_busy_state "$backend" "$target" 2>/dev/null || true)
+    fi
+    case "$native_sample" in
+      *$'\t'*)
+        native_identity=${native_sample%%$'\t'*}
+        native=${native_sample#*$'\t'}
+        ;;
+    esac
+    if [ "$native_identity" != "$harness" ]; then
+      printf 'unknown source-mismatch'
+      return 0
+    fi
+  fi
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
-    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+    [ -n "$native" ] || native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
       printf 'busy herdr-native'
       return 0

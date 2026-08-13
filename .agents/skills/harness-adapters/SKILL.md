@@ -431,8 +431,10 @@ Composer classification stays `unknown` for both (the safe default) and no overr
 cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
 A generic bare-glyph "empty" rule must NOT be added: agy's prompt glyph is literally `>`, identical to a dead bash shell, so a generic rule would be a dead-shell send hazard - any future override must be native-identity-gated exactly like the Pi gate.
 The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole.
-Send confirmation and crew-state classification both consult native `agent_status` on Herdr: a live steer lands when native `agent_status` transitions to `working`, and `bin/fm-crew-state.sh` reports `working` for a live working worker (`busy herdr-native`).
-When a steer cannot be verified because the composer state is `unknown` and native `agent_status` stays non-working, `bin/fm-send.sh` reports `verdict=unverifiable` and exits with status 3, distinguishing unverifiable delivery from an unconfirmed submit failure (exit 1).
+Send confirmation uses Herdr's atomic `agent prompt` operation for a live native cursor or agy identity, so command success is attributable input acceptance without composer or status-transition inference.
+Supplied task metadata must match that live native identity, while a metadata-free explicit Herdr pane is accepted when its live identity is cursor or agy.
+An atomic prompt error reports `verdict=unverifiable` with status 3 because acceptance is unknown, while an identity mismatch is known undelivered and exits 1.
+Crew-state classification accepts `busy herdr-native` for an untrusted cursor or agy record only when one native sample reports both a matching live identity and working status.
 
 | Fact | Value |
 |---|---|

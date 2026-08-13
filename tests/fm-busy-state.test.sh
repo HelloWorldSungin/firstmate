@@ -325,6 +325,30 @@ test_herdr_native_busy_only() {
   pass "herdr's native busy verdict never masks a trusted or invalid converted-harness record"
 }
 
+test_cursor_agy_native_busy_requires_live_identity() {
+  local state out harness other id
+  state=$(new_state_dir herdr-cursor-agy-identity)
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_busy_state() { printf 'busy'; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_agent_identity_busy_state() { printf '%s\tbusy' "$FAKE_AGENT_IDENTITY"; }
+  for harness in cursor agy; do
+    case "$harness" in cursor) other=agy ;; *) other=cursor ;; esac
+    id="t-$harness"
+    "$EV" arm "$state" "$id" >/dev/null
+    FAKE_AGENT_IDENTITY=$harness
+    out=$(fm_busy_classify herdr s:p "$harness" "$id" "$state")
+    [ "$out" = "busy herdr-native" ] \
+      || fail "matching live $harness identity did not override source mismatch, got '$out'"
+    FAKE_AGENT_IDENTITY=$other
+    out=$(fm_busy_classify herdr s:p "$harness" "$id" "$state")
+    [ "$out" = "unknown source-mismatch" ] \
+      || fail "mismatched live identity was masked by native busy for $harness, got '$out'"
+  done
+  unset -f fm_backend_busy_state fm_backend_agent_identity_busy_state
+  pass "cursor and agy native busy requires matching live identity"
+}
+
 # The record parser runs inside sourcing callers (the watcher, the daemon, the
 # crew-state reader), so it must not disturb their shell: no clobbered
 # positional parameters and no changed glob setting.
@@ -385,6 +409,7 @@ test_codex_unverified_gate
 test_kimi_unverified_gate
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
+test_cursor_agy_native_busy_requires_live_identity
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

@@ -2340,6 +2340,11 @@ fm_backend_herdr_send_literal() {  # <target> <text>
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
+fm_backend_herdr_prompt_submit() {  # <target> <text>
+  fm_backend_herdr_parse_target "$1" || return 1
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent prompt "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+}
+
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
 # Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
 # herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
@@ -2712,18 +2717,20 @@ EOF
 #     re-invokes this function from scratch with the same text after seeing
 #     an error, which is a human/escalation decision, not an automatic
 #     retry).
-# Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
+# Cursor and agy use Herdr's atomic agent prompt operation, whose successful
+# response is the native input-acceptance boundary. Other agents retain the
+# send-text, Enter, and transition-confirmation path below.
+# Echoes empty|pending|unknown|send-failed|unverifiable, a subset of the proof-carrying
 # submit vocabulary. Empty means confirmed submitted for every backend; how
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
-  local declared_harness=${7:-} enter_sent=0 baseline_agent baseline_pair settle_reads=0 settled_idle=0 cursor_agy=0
+  local declared_harness=${7:-} enter_sent=0 baseline_agent= baseline_pair=
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
-  confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   case "$declared_harness" in
-    cursor|agy)
-      cursor_agy=1
+    ''|cursor|agy)
+      fm_backend_herdr_target_ready "$target" || { printf 'send-failed'; return 0; }
       baseline_pair=$(fm_backend_herdr_agent_identity_raw \
         "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
       case "$baseline_pair" in
@@ -2733,42 +2740,31 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
           ;;
         *) baseline_agent=; baseline_raw= ;;
       esac
-      i=0
-      while [ "$settled_idle" -eq 0 ]; do
-        case "$declared_harness:$baseline_agent:$baseline_raw" in
-          cursor:cursor:idle|cursor:cursor:done|agy:agy:idle|agy:agy:done)
-            i=$((i + 1))
-            [ "$i" -ge 2 ] && { settled_idle=1; break; }
-            ;;
-          *) i=0 ;;
-        esac
-        [ "$settle_reads" -lt "$retries" ] || { printf 'pending'; return 0; }
-        sleep "$FM_BACKEND_HERDR_SUBMIT_IDLE_SLEEP"
-        baseline_pair=$(fm_backend_herdr_agent_identity_raw \
-          "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
-        case "$baseline_pair" in
-          *$'\t'*)
-            baseline_agent=${baseline_pair%%$'\t'*}
-            baseline_raw=${baseline_pair#*$'\t'}
-            ;;
-          *) baseline_agent=; baseline_raw= ;;
-        esac
-        settle_reads=$((settle_reads + 1))
-      done
-      baseline=idle
-      ;;
-    *)
-      fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
-      sleep "$settle"
-      baseline_raw=$(fm_backend_herdr_agent_status_raw \
-        "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
-      baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
       ;;
   esac
-  if [ "$cursor_agy" -eq 1 ]; then
-    fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
-    sleep "$settle"
-  fi
+  case "$baseline_agent" in
+    cursor|agy)
+      case "$declared_harness" in
+        ''|"$baseline_agent") : ;;
+        *) printf 'send-failed'; return 0 ;;
+      esac
+      if fm_backend_herdr_prompt_submit "$target" "$text"; then
+        printf 'empty'
+      else
+        printf 'unverifiable'
+      fi
+      return 0
+      ;;
+  esac
+  case "$declared_harness" in
+    cursor|agy) printf 'send-failed'; return 0 ;;
+  esac
+  confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
+  sleep "$settle"
+  baseline_raw=$(fm_backend_herdr_agent_status_raw \
+    "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
   i=0
   while :; do
     if ! fm_backend_herdr_send_key "$target" Enter; then
@@ -2787,14 +2783,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
-      unknown)
-        if [ "$cursor_agy" -eq 1 ]; then
-          printf 'unverifiable'
-        else
-          printf 'unknown'
-        fi
-        return 0
-        ;;
+      unknown) printf 'unknown'; return 0 ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || break
@@ -2829,18 +2818,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
         ;;
       unknown)
-        if [ "$cursor_agy" -eq 1 ]; then
-          busy_state=$(fm_backend_herdr_classify_submit_agent_status \
-            "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-          [ "$busy_state" = busy ] && [ "$settled_idle" -eq 1 ] \
-            && { printf 'empty'; return 0; }
-          printf 'unverifiable'; return 0
-        fi
         ;;
     esac
-  elif [ "$cursor_agy" -eq 1 ] \
-    && [ "$(fm_backend_herdr_composer_state "$target")" = unknown ]; then
-    printf 'unverifiable'; return 0
   fi
   printf 'pending'; return 0
 }
@@ -3037,7 +3016,6 @@ fm_backend_herdr_busy_state() {  # <target>
 # call-count assertions).
 FM_BACKEND_HERDR_SUBMIT_POLLS=${FM_BACKEND_HERDR_SUBMIT_POLLS:-6}
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=${FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP:-0.6}
-FM_BACKEND_HERDR_SUBMIT_IDLE_SLEEP=${FM_BACKEND_HERDR_SUBMIT_IDLE_SLEEP:-$FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP}
 
 fm_backend_herdr_submit_confirm_budget() {  # <caller-budget-seconds>
   awk -v b="${1:-0}" -v m="$FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP" 'BEGIN {
