@@ -166,6 +166,9 @@ TASK_BRANCH=$(meta_value branch)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 [ -n "$KIND" ] || KIND=ship
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
 
 # A torn-down (or never-created) worktree has no current state to read.
 if [ -z "$WT" ] || [ ! -d "$WT" ]; then
@@ -575,7 +578,7 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
 # observed placement. The task record's branch= is the ship identity used for
 # every run lookup and must agree before the worktree can supply run evidence.
 WORKTREE_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-if [ "$KIND" = ship ] && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \
+if tracked_output_kind && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \
    && [ "$WORKTREE_BRANCH" != "$TASK_BRANCH" ]; then
   runstep_record_clear
   emit unknown run-attribution "task branch mismatch: recorded $TASK_BRANCH, worktree has $WORKTREE_BRANCH"
@@ -716,7 +719,7 @@ RUN_ATTRIBUTION_FAULT=""
 # the named-branch path (test_reallocated_worktree_branch_surfaces_attribution_
 # fault) rather than separately here. Skipping saves a just-spawned or
 # never-branched crew two bounded CLI calls per heartbeat.
-if [ "$KIND" = ship ] && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
+if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
    && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
   nm_rc=$?

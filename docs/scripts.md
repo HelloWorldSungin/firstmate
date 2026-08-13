@@ -31,7 +31,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-decision-hold.sh`    | Create, verify, complete, and resolve durable captain-held decisions                 |
-| `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs, with opt-in work-item traceability |
+| `fm-design-skills.sh`    | Resolve and verify the captain-installed mattpocock grilling and domain-modeling skills without changing the plugin |
+| `fm-brief.sh`            | Scaffold ship or interactive ADR design briefs with explicit `--mode`, plus scout, secondmate-charter, and Herdr-lab briefs, with opt-in work-item traceability |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
@@ -53,7 +54,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
-| `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
+| `fm-spawn.sh`            | Spawn ship, design, or scout crewmates, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
 | `fm-launch-lib.sh`       | Construct verified per-harness launch commands and raw-launch cursor/agy guard shims |
 | `fm-agy-trust-lib.sh`    | Manage ownership-aware agy workspace trust for spawn, rollback, and teardown         |
 | `fm-backend.sh`          | Runtime-backend selection, meta helpers, selector resolution, and operation dispatch |
@@ -132,7 +133,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-outcome-manifest.sh` | Write, read, and list the durable completion manifest teardown publishes before cleanup |
 | `fm-work-item.sh`        | Maintain a task's durable forge- and host-agnostic work-item reference store          |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, reap that one task's branch once its merge is proven, require completed scout deliverables, retire secondmate homes |
+| `fm-teardown.sh`         | Fail-closed teardown: return landed ship or design worktrees, reap that one task's branch once its merge is proven, require design decision inventory or completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared X-mode config, relay, and reply-threading helpers                             |

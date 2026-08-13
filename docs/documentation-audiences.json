@@ -176,6 +176,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/design-profile/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/firstmate-codexapp/SKILL.md",
       "audience": "agent-runtime"
     },

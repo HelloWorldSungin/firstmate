@@ -2,10 +2,11 @@
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --design --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
-#   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
+#   and design spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
 #   the mode up. A ship spawn additionally reads the brief's recorded
@@ -38,7 +39,7 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
+#   terminal, so ship/design/scout Orca spawns do not run treehouse get; cmux is a
 #   session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
@@ -112,9 +113,10 @@
 #   secondmate receives the primary's read-only shared captain-preference file
 #   (fm-config-inherit-lib.sh). A successful launch clears pending inherited
 #   config reread generations because the new agent reads the converged files.
-#   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
-#   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
-#   provisioned firstmate home; the default is kind=ship.
+#   --design records kind=design in the task's meta (interactive ADR deliverable;
+#   see the design-profile skill); --scout records kind=scout (report deliverable,
+#   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
+#   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
 #   For a ship brief scaffolded with fm-brief.sh --work-item, spawn validates
 #   every repeatable firstmate-work-item marker and records one fully qualified
 #   work_item= line per marker in task meta. The legacy --issue path still
@@ -158,7 +160,7 @@
 # herdr-native agent state (bin/fm-transition-lib.sh, fm_transition_native_completion).
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|design|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
@@ -285,6 +287,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout ;;
+    --design) KIND=design ;;
     --secondmate) KIND=secondmate ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
@@ -304,6 +307,9 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
@@ -329,17 +335,17 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
-# Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
+# Delivery contract (AGENTS.md section 7). A tracked-output task's mode and yolo are
 # firstmate's per-task decision, so they are required and closed-set validated
 # here rather than resolved from the project registry. Scouts deliver a report
 # and record no delivery posture; secondmate spawns hardcode theirs.
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   [ "$MODE_SET" -eq 1 ] || {
-    echo "error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
+    echo "error: ship and design spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
     exit 1
   }
   [ "$YOLO_SET" -eq 1 ] || {
-    echo "error: ship spawns require --yolo <on|off>; it is this task's routine approval authority, not a project lookup" >&2
+    echo "error: ship and design spawns require --yolo <on|off>; it is this task's routine approval authority, not a project lookup" >&2
     exit 1
   }
   case "$MODE" in
@@ -813,6 +819,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       continue
     elif [ "$KIND" = scout ]; then
       if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+    elif [ "$KIND" = design ]; then
+      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --design; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     else
       if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     fi
@@ -919,7 +927,7 @@ esac
 
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence;
 # data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
-# gates before any backend or worktree work: they can supervise a ship/scout
+# gates before any backend or worktree work: they can supervise a ship/design/scout
 # crewmate only, never a secondmate, and only on the herdr backend, whose native
 # agent-state gives liveness plus the debounced turn-end completion the watcher
 # derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
@@ -1198,6 +1206,12 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+if [ "$KIND" = design ]; then
+  "$FM_ROOT/bin/fm-design-skills.sh" check >/dev/null || {
+    echo "error: design spawn requires the captain-installed mattpocock grilling and domain-modeling skills; do not install or copy them from a worker" >&2
+    exit 1
+  }
+fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
@@ -1212,7 +1226,7 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   if [ -z "$BRIEF_MODE" ]; then
@@ -1237,7 +1251,7 @@ BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
 BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 
 TASK_BRANCH=
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   TASK_BRANCH_MARKER_COUNT=$(grep -c '^<!-- firstmate-task-branch=' "$BRIEF_REAL" 2>/dev/null || true)
   case "$TASK_BRANCH_MARKER_COUNT" in
     0)
@@ -1262,7 +1276,7 @@ if [ "$KIND" = ship ]; then
 fi
 
 ISSUE=
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   ISSUE_MARKER_COUNT=$(grep -c '^<!-- firstmate-task-issue=' "$BRIEF_REAL" 2>/dev/null || true)
   case "$ISSUE_MARKER_COUNT" in
     0) ;;
@@ -1294,7 +1308,7 @@ WORK_ITEM_RECORDS=()
 # link-only, whatever credentials happen to exist (bin/fm-issue-comment.sh;
 # docs/configuration.md "Project issue trackers").
 PR_TARGET=
-if [ "$KIND" = ship ]; then
+if tracked_output_kind; then
   PR_TARGET_MARKER_COUNT=$(grep -c '^<!-- firstmate-pr-target=' "$BRIEF_REAL" 2>/dev/null || true)
   case "$PR_TARGET_MARKER_COUNT" in
     0) ;;
@@ -1364,7 +1378,7 @@ if [ "$KIND" = ship ]; then
 fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
-# /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
+# /private/tmp) when it came from the ship/design/scout branch's logical `pwd` above.
 # Every backend's own current-path read (tmux's pane_current_path, herdr's
 # foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
 # report the OS-level, physically-resolved cwd, so comparing it against a
@@ -2409,7 +2423,7 @@ fi
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
-# and harness - ship, scout, and secondmate - gets it before launch. Skipped
+# and harness - ship, design, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
 if [ -n "$SPAWN_TRACEPARENT" ]; then
   if spawn_send_text_line "$T" "export TRACEPARENT=$SPAWN_TRACEPARENT"; then
@@ -2475,7 +2489,7 @@ echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW
 # deliberately AFTER the spawned line: the worker is already running, so a slow
 # forge must not be able to make a dispatch that succeeded read as one that did
 # not. bin/fm-work-item-milestone.sh additionally bounds the whole fan-out.
-if [ "$KIND" = ship ] && [ "${#WORK_ITEM_RECORDS[@]}" -gt 0 ]; then
+if tracked_output_kind && [ "${#WORK_ITEM_RECORDS[@]}" -gt 0 ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$FM_ROOT/bin/fm-work-item-milestone.sh" "$ID" --milestone dispatched || true
 fi

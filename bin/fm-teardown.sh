@@ -693,6 +693,9 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+tracked_output_kind() {
+  [ "$KIND" = ship ] || [ "$KIND" = design ]
+}
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 # The worktree's ambient branch is where the pool happens to have placed a
@@ -997,7 +1000,7 @@ prepare_task_branch_reap() {
   TASK_BRANCH_REAP_PRESERVING_REF=
   TASK_BRANCH_REAP_PR_REF=
   TASK_BRANCH_KEEP_REASON=
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   head=$(branch_head "$TASK_BRANCH_REF") || return 0
   TASK_BRANCH_REAP_HEAD=$head
   branch_reap_default_proof "$head" && return 0
@@ -1020,7 +1023,7 @@ detach_task_branch_for_cleanup() {
 
 reap_task_branch() {
   local current remote_head
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   [ -n "$TASK_BRANCH_REAP_HEAD" ] || return 0
   if [ -z "$TASK_BRANCH_REAP_PROOF" ]; then
     echo "teardown: kept local branch $TASK_BRANCH: ${TASK_BRANCH_KEEP_REASON:-merge is unproven}" >&2
@@ -1740,13 +1743,13 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 
 # Abort THIS task's own parked no-mistakes run before the worker that would
 # have answered its gate is removed, so no run is left orphaned holding a
-# fleet slot. Only KIND=ship drives a no-mistakes validation of its own
-# worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
+# fleet slot. Only tracked-output tasks drive a no-mistakes validation of their
+# own worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
 # a run not attributed to this task's recorded branch and this exact head is
 # left completely alone, and said to be, since nobody will conclude it here.
 conclude_task_no_mistakes_run() {  # <worktree>
   local wt=$1 out run_id
-  [ "$KIND" = ship ] || return 0
+  tracked_output_kind || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
   if ! task_run_is_own_parked_run "$wt"; then
@@ -2707,6 +2710,15 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
       FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
     echo "REFUSED: scout task $ID has not passed the unresolved-decision completion gate." >&2
     echo "Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown." >&2
+    exit 1
+  fi
+fi
+
+if [ "$KIND" = design ] && [ "$FORCE" != "--force" ]; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
+    echo "REFUSED: design task $ID has not passed the unresolved-decision completion gate." >&2
+    echo "Inventory its ADR and design interview through bin/fm-decision-hold.sh before teardown." >&2
     exit 1
   fi
 fi

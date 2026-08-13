@@ -789,6 +789,46 @@ test_non_claude_harness_ignores_config_dir() {
   pass "non-claude harnesses do not receive the claude CLAUDE_CONFIG_DIR prefix"
 }
 
+test_design_profile_resolves_on_claude_codex_and_pi() {
+  local plugin registry harness rec id out status launch expected
+  plugin="$TMP_ROOT/design-plugin"
+  registry="$TMP_ROOT/design-registry.json"
+  mkdir -p "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  for harness in claude codex pi; do
+    id="design-$harness-z20"
+    rec=$(make_spawn_case "design-$harness" "$harness" "$id")
+    read_case_record "$rec"
+    out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+      run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR" --design --harness "$harness" --effort xhigh \
+      --mode no-mistakes --yolo off)
+    status=$?
+    expect_code 0 "$status" "design profile should spawn on $harness"
+    assert_contains "$out" "spawned $id harness=$harness kind=design" \
+      "design spawn did not retain kind=design on $harness"
+    assert_grep 'kind=design' "$HOME_DIR/state/$id.meta" \
+      "design metadata did not retain its task kind on $harness"
+    assert_meta_profile "$HOME_DIR/state/$id.meta" "$harness" default xhigh
+    launch=$(cat "$LAUNCH_LOG")
+    case "$harness" in
+      claude) expected="--effort 'xhigh'" ;;
+      codex) expected="model_reasoning_effort=\"xhigh\"" ;;
+      pi) expected="--thinking 'xhigh'" ;;
+    esac
+    assert_contains "$launch" "$expected" \
+      "design profile did not render the verified xhigh effort axis on $harness"
+  done
+  pass "design profile resolves through the verified Claude, Codex, and Pi launch contracts"
+}
+
 test_active_dispatch_profile_does_not_block_secondmate_launch() {
   local rec id sm out status
   id=profile-secondmate-z16
@@ -835,6 +875,7 @@ test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
 test_claude_default_uses_home_config_and_records_evidence_store
 test_non_claude_harness_ignores_config_dir
+test_design_profile_resolves_on_claude_codex_and_pi
 test_active_dispatch_profile_does_not_block_secondmate_launch
 
-echo "# all fm-spawn-dispatch-profile tests passed"
+printf '\nall fm-spawn-dispatch-profile tests passed\n'

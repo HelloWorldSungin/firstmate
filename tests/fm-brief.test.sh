@@ -239,7 +239,7 @@ test_issue_argument_validation_and_delivery_mode_guards() {
     > "$home/scout.stdout" 2> "$home/scout.stderr"
   rc=$?
   expect_code 1 "$rc" "--issue should reject scout briefs"
-  assert_grep 'applies only to ship briefs' "$home/scout.stderr" \
+  assert_grep 'applies only to ship or design briefs' "$home/scout.stderr" \
     "--issue scout refusal did not explain the task-kind guard"
   assert_absent "$home/data/issue-scout/brief.md" \
     "--issue scout refusal wrote a brief"
@@ -367,7 +367,7 @@ test_ship_mode_is_required_and_closed_set() {
     assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
     assert_absent "$home/data/brief-required-$id/brief.md" "$label: refused scaffold still wrote a brief"
   done <<'ROWS'
-missing --mode||ship briefs require --mode
+missing --mode||ship and design briefs require --mode
 empty --mode value|--mode|requires a value
 unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, local-only
 conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's surface
@@ -416,8 +416,8 @@ test_delivery_flags_are_refused_where_they_do_not_apply() {
   done <<'ROWS'
 yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yolo is not a brief input
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
-mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
-mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
+mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship or design briefs
+mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship or design briefs
 ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
@@ -1145,6 +1145,57 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
 }
 
+# A design scaffold resolves the installed plugin as a capability dependency,
+# then emits one harness-independent contract for Claude, Codex, and Pi.
+test_design_brief_is_harness_independent_and_adr_only() {
+  local home plugin registry brief out rc
+  home="$TMP_ROOT/design-home"
+  plugin="$TMP_ROOT/design-plugin"
+  registry="$TMP_ROOT/design-registry.json"
+  mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-task sample --design --mode no-mistakes 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "complete design dependencies should scaffold"
+  assert_contains "$out" "(design, mode=no-mistakes" \
+    "design scaffold did not identify its task shape"
+  brief="$home/data/design-task/brief.md"
+  assert_grep 'This is an interactive DESIGN task' "$brief" \
+    "design brief did not declare the profile"
+  assert_grep 'identical on Claude, Codex, and Pi' "$brief" \
+    "design brief did not carry the harness-independent resolution contract"
+  assert_grep 'fm-design-skills.sh resolve' "$brief" \
+    "design brief did not resolve the installed plugin dependency"
+  assert_grep 'Never install, update, copy, vendor, pin, or modify that plugin' "$brief" \
+    "design brief allowed worker-owned plugin lifecycle"
+  assert_grep 'Ask exactly one decision question at a time' "$brief" \
+    "design brief did not preserve the sequential interview"
+  assert_grep 'docs/adr/NNNN-<slug>.md' "$brief" \
+    "design brief did not define the fallback ADR location"
+  assert_grep 'Do not implement the resulting design' "$brief" \
+    "design brief allowed implementation to leak into the ADR task"
+  assert_grep 'Delivery contract: mode=no-mistakes' "$brief" \
+    "design brief did not carry the tracked-output delivery contract"
+
+  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/missing-registry.json" \
+    "$ROOT/bin/fm-brief.sh" missing-design sample --design --mode no-mistakes 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "missing plugin should refuse design scaffolding"
+  assert_contains "$out" "do not install or copy them from a worker" \
+    "design refusal did not preserve plugin ownership"
+  assert_absent "$home/data/missing-design/brief.md" \
+    "design scaffold wrote a brief despite a missing dependency"
+  pass "fm-brief.sh: design profile is ADR-only and resolves identically across supported harnesses"
+}
+
 # A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
 # registers only the projects it seeds - never firstmate, which is no clone under
 # projects/ - so this home structurally cannot carry the registry declaration
@@ -1217,5 +1268,6 @@ test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
 test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
+test_design_brief_is_harness_independent_and_adr_only
 test_firstmate_repo_crew_persona_in_a_secondmate_home
 printf '\nall fm-brief tests passed\n'

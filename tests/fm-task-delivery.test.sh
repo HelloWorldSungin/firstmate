@@ -78,9 +78,9 @@ EOF
     assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
     assert_absent "$home/state/delivery-required-$n.meta" "$label: refused spawn wrote task metadata"
   done <<'ROWS'
-missing both flags||ship spawns require --mode
-missing --yolo|--mode no-mistakes|ship spawns require --yolo
-missing --mode|--yolo off|ship spawns require --mode
+missing both flags||ship and design spawns require --mode
+missing --yolo|--mode no-mistakes|ship and design spawns require --yolo
+missing --mode|--yolo off|ship and design spawns require --mode
 unknown mode|--mode nope --yolo off|must be one of no-mistakes, direct-PR, local-only
 unknown yolo|--mode no-mistakes --yolo maybe|--yolo must be on or off
 conditional policy as a task mode|--mode no-mistakes-prod-only --yolo off|classify this task's surface
