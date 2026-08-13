@@ -196,6 +196,34 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+# Would fail if the queued-wakes branch printed a bare warning again: this send
+# trips only that warning (healthy auto-arm beacon, pending queue), so the
+# continue line cannot come from the watcher-down banner. A silent successful
+# send plus a bare warning is the incident this pins. Exit 0 plus the tmux log
+# prove the advisory guard did not stop delivery.
+test_queued_wake_warning_does_not_block_send() {
+  local dir fb home err log rc got
+  dir="$TMP_ROOT/queued-wake-send"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home queuedwakesend); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-wake.meta" "window=sess:fm-lane-wake" "kind=ship" "harness=codex"
+  touch "$home/state/.last-watcher-beat"
+  printf 'signal: %s/state/lane-wake.status\n' "$home" > "$home/state/.wake-queue"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_SEND_SETTLE=0 FM_SUPERVISION_MODEL=autoarm FM_GUARD_GRACE=999 \
+    "$SEND" lane-wake "steer once" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "queued-wakes warning must stay advisory; the send must still succeed"
+  got=$(cat "$log")
+  assert_contains "$got" "target=sess:fm-lane-wake literal=1 arg=steer once" "queued-wakes warning stopped the send from typing"
+  assert_contains "$got" "target=sess:fm-lane-wake literal=0 arg=Enter" "queued-wakes warning stopped the send from submitting"
+  assert_contains "$(cat "$err")" "queued wakes pending - drain them" "send did not surface the queued-wakes warning"
+  assert_not_contains "$(cat "$err")" "WATCHER DOWN" \
+    "this send must trip only queued wakes so the continue line cannot come from the watcher banner"
+  assert_contains "$(cat "$err")" "requested message WILL still be sent" \
+    "queued-wakes send warning omitted the caller-supplied continue line; a revert to a bare warning would fail here"
+  pass "fm-send strict: queued-wakes warning carries continue line and still delivers"
+}
+
 test_scout_text_send_reopens_completion_gate() {
   local dir fb home err log meta rc reviewed
   dir="$TMP_ROOT/scout-reopen"; mkdir -p "$dir"
@@ -255,5 +283,6 @@ test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
+test_queued_wake_warning_does_not_block_send
 test_scout_text_send_reopens_completion_gate
 printf '\nall fm-send-strict tests passed\n'

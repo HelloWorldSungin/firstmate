@@ -18,12 +18,14 @@
 # watcher process vs a genuinely stale beacon). The full banner is emitted once
 # per distinct down-episode in this FM_HOME (keyed to the failing condition, not
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
-# later guarded commands in the same episode print a one-line reminder instead.
+# later guarded commands in the same episode print a concise reminder instead.
 # Episode state lives only under state/.guard-watcher-stale-banner (volatile,
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
 # suppressed by that dedup. Normal wake handling (watcher briefly down between a
 # wake and the next supervision resume) stays inside the grace window and stays
 # silent. Always exits 0: the guard warns, it never blocks.
+# Every operator-visible alarm prints CONTINUE_LINE so an advisory warning is
+# not read as a refusal; FM_GUARD_CONTINUE_LINE overrides the default wording.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,6 +142,7 @@ if [ -n "$tangle_branch" ]; then
       printf '●      git -C %s checkout %s\n' "$FM_ROOT" "$tangle_default"
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
+    printf '●  %s\n' "$CONTINUE_LINE"
     printf '●%s\n' "$trule"
   } >&2
 fi
@@ -167,7 +170,7 @@ fi
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
-# calls in the same episode get a one-line reminder only.
+# calls in the same episode get a concise reminder plus CONTINUE_LINE only.
 if [ "$watcher_healthy" = false ]; then
   episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
   episode_key=${episode_key%$'\n'}
@@ -218,6 +221,7 @@ if [ "$watcher_healthy" = false ]; then
   else
     printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
       "$beacon_desc" "$GRACE" >&2
+    printf '%s\n' "$CONTINUE_LINE" >&2
   fi
 else
   # Healthy again while work is still in flight: end the episode so a later
@@ -234,5 +238,6 @@ if "$queue_pending"; then
   else
     echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
   fi
+  printf '%s\n' "$CONTINUE_LINE" >&2
 fi
 exit 0
