@@ -293,7 +293,7 @@ test_dead_endpoint_overrides() {
 }
 
 test_herdr_native_busy_only() {
-  local state out
+  local state out gen old_gen
   state=$(new_state_dir herdr-native)
   # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
   fm_backend_busy_state() { printf '%s' "$FAKE_NATIVE"; }
@@ -304,14 +304,25 @@ test_herdr_native_busy_only() {
   out=$(fm_busy_classify herdr s:p claude t1 "$state")
   [ "$out" = "unknown missing" ] || fail "native idle must NOT classify idle, got '$out'"
   # A valid record outranks the native verdict.
-  local gen
   gen=$("$EV" arm "$state" t1)
   "$EV" apply "$state" t1 idle --gen "$gen" --source claude-hook --event stop
   FAKE_NATIVE=busy
   out=$(fm_busy_classify herdr s:p claude t1 "$state")
   [ "$out" = "idle claude-hook" ] || fail "the adapter record must outrank herdr's native verdict, got '$out'"
+  printf 'garbage\n' > "$state/t1.busy-state"
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "unknown malformed" ] || fail "native busy masked malformed record as '$out'"
+  old_gen=$gen
+  "$EV" arm "$state" t1 >/dev/null
+  printf '%s\n' "$old_gen" > "$state/t1.busy-gen"
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "unknown gen-mismatch" ] || fail "native busy masked stale record as '$out'"
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source pi-ext --event agent-start
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "unknown source-mismatch" ] || fail "native busy masked cross-adapter record as '$out'"
   unset -f fm_backend_busy_state
-  pass "herdr's native verdict is trusted for busy only, and records outrank it"
+  pass "herdr's native busy verdict never masks a trusted or invalid converted-harness record"
 }
 
 # The record parser runs inside sourcing callers (the watcher, the daemon, the

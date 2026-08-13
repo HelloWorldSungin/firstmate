@@ -2718,14 +2718,21 @@ EOF
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
+  local enter_sent=0 saw_submit_idle=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   baseline_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
   baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
+  [ "$baseline" = idle ] && saw_submit_idle=1
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   while :; do
-    fm_backend_herdr_send_key "$target" Enter || true
+    if ! fm_backend_herdr_send_key "$target" Enter; then
+      i=$((i + 1))
+      [ "$i" -lt "$retries" ] || break
+      continue
+    fi
+    enter_sent=1
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
@@ -2736,21 +2743,21 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         local cur_raw cur_bs
         cur_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
         cur_bs=$(fm_backend_herdr_classify_submit_agent_status "$cur_raw")
-        if [ "$cur_bs" = busy ]; then
-          verdict=busy
-        fi
+        case "$cur_bs" in
+          idle) saw_submit_idle=1 ;;
+          busy) [ "$saw_submit_idle" -eq 1 ] && verdict=busy ;;
+        esac
       fi
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
-      unknown)
-        break
-        ;;
+      unknown) : ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || break
   done
+  [ "$enter_sent" -eq 1 ] || { printf 'send-failed'; return 0; }
   # An active Herdr target can accept Enter for delivery after its current
   # turn, while retaining the typed text in its composer. Confirm that shape
   # with the adapter's structural composer read before consulting native
@@ -2777,7 +2784,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
     if [ "$composer_state" = pending ] && [ "$busy_state" = busy ]; then
       printf 'empty'; return 0
-    elif [ "$composer_state" = unknown ] && [ "$busy_state" = busy ]; then
+    elif [ "$composer_state" = unknown ] && [ "$busy_state" = busy ] \
+      && [ "$saw_submit_idle" -eq 1 ]; then
       printf 'empty'; return 0
     elif [ "$composer_state" = unknown ]; then
       printf 'unverifiable'; return 0

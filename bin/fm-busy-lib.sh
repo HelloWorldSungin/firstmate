@@ -287,11 +287,18 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       printf '%s %s' "$r_state" "$r_source"
       return 0
     fi
+    case "$backend:$harness" in
+      herdr:cursor*|herdr:agy*) : ;;
+      *) printf 'unknown source-mismatch'; return 0 ;;
+    esac
+  else
+    case "$out" in
+      malformed|gen-mismatch)
+        printf 'unknown %s' "$out"
+        return 0
+        ;;
+    esac
   fi
-  # No valid, trusted record exists for this harness. A native herdr busy
-  # verdict is semantic enough to trust for BUSY (streaming means a turn is
-  # running); native idle is narrower than turn state (a long foreground tool
-  # call reads idle) and stays unknown here.
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
@@ -303,12 +310,6 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
     printf 'unknown source-mismatch'
     return 0
   fi
-  case "$out" in
-    malformed|gen-mismatch)
-      printf 'unknown %s' "$out"
-      return 0
-      ;;
-  esac
   case "$harness" in
     grok*)
       if [ -z "$tail40" ]; then
