@@ -109,6 +109,31 @@ EOF
   pass "$harness is refused on a non-herdr backend (herdr-only)"
 }
 
+test_cursor_and_agy_require_atomic_prompt_version() {
+  local harness=$1 id home proj fakebin out status
+  id="prompt-version-$harness-z2"
+  IFS='|' read -r home proj fakebin <<EOF
+$(setup_home "prompt-version-$harness" "$id")
+EOF
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "status --json") printf '%s\n' '{"client":{"version":"0.7.4","protocol":16},"server":{"running":false}}' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/herdr"
+  out=$(run_spawn "$home" "$fakebin" "$id" "$proj" \
+    --backend herdr --mode no-mistakes --yolo off "$harness")
+  status=$?
+  expect_code 1 "$status" "$harness spawn on Herdr 0.7.4 should be refused"
+  assert_contains "$out" "require Herdr 0.7.5 or newer" \
+    "$harness version refusal should name the atomic prompt floor"
+  assert_absent "$home/state/$id.meta" \
+    "$harness version refusal must happen before task metadata is written"
+  pass "$harness requires Herdr 0.7.5 or newer before launch"
+}
+
 test_raw_command_bypass_refused() {
   # B1: the raw launch-command escape hatch must not slip a cursor/agy launch past
   # the crew-only/herdr-only gates. A raw command that RESOLVES to cursor-agent or
@@ -451,6 +476,11 @@ case "$cmd" in
   *"pane send-text"*) printf 'send-text\n' >> "$dir/send_text_log"; exit 0 ;;
   *"agent prompt"*)
     printf 'prompt\n' >> "$dir/prompt_log"
+    if [ -n "${FM_HERDR_FAKE_PROMPT_ERROR_CODE:-}" ]; then
+      printf '{"error":{"code":"%s","message":"rejected"}}\n' \
+        "$FM_HERDR_FAKE_PROMPT_ERROR_CODE" >&2
+      exit 1
+    fi
     [ "${FM_HERDR_FAKE_PROMPT:-ok}" != fail ] || exit 1
     exit 0
     ;;
@@ -553,6 +583,54 @@ test_identity_mismatch_is_undelivered_and_restores_scout() {
   pass "a metadata/native identity mismatch is known undelivered and restores scout completion"
 }
 
+test_blocked_cursor_and_agy_send_is_known_undelivered() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-blocked-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "blocked")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 1 "$rc" "blocked $harness target should be known undelivered"
+  assert_contains "$(cat "$err")" "send failed" \
+    "blocked $harness target should surface a known send failure"
+  assert_absent "$case_dir/fake/prompt_log" \
+    "blocked $harness target must not receive an atomic prompt"
+  pass "a pre-existing blocked $harness target is known undelivered"
+}
+
+test_rejected_cursor_and_agy_prompt_is_known_undelivered() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-rejected-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_ERROR_CODE=agent_not_found \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 1 "$rc" "agent_not_found prompt rejection on $harness should be known undelivered"
+  assert_contains "$(cat "$err")" "send failed" \
+    "agent_not_found prompt rejection on $harness should surface a known send failure"
+  [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
+    || fail "rejected $harness prompt should be attempted exactly once"
+  pass "a deterministic $harness prompt rejection is known undelivered"
+}
+
 test_genuinely_undelivered_steer_on_composer_supported_harness() {
   local case_dir home proj wt fakebin err rc
   # Counterfactual: If a swallowed steer on a composer-supported harness was falsely
@@ -623,7 +701,7 @@ test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state() {
 }
 
 test_unverifiable_send_reports_distinct_wording_and_exit_code() {
-  local harness=$1 case_dir home proj wt fakebin err rc
+  local harness=$1 case_dir home proj wt fakebin err rc reviewed
   # Counterfactual: If an unverifiable send on cursor/agy reported standard exit 1
   # delivery unconfirmed instead of exit 3 unverifiable, this test would fail.
   case_dir="$TMP_ROOT/unverifiable-$harness"
@@ -633,7 +711,8 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
   touch "$home/state/.last-watcher-beat"
   fm_write_meta "$home/state/lane-$harness.meta" \
     "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
-    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+    "harness=$harness" "kind=scout" "decisions_reviewed=1" "mode=local-only" "yolo=off" \
+    "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
@@ -647,6 +726,8 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
     "unverifiable send on $harness should state verdict=unverifiable"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
     || fail "unverifiable $harness send retried the atomic prompt"
+  reviewed=$(grep '^decisions_reviewed=' "$home/state/lane-$harness.meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 0 ] || fail "unverifiable $harness scout send restored stale completion"
   pass "unverifiable send on $harness is reported distinctly in wording and exit code"
 }
 
@@ -654,6 +735,8 @@ test_crew_only_refuses_secondmate cursor
 test_crew_only_refuses_secondmate agy
 test_herdr_only_refuses_non_herdr_backend cursor
 test_herdr_only_refuses_non_herdr_backend agy
+test_cursor_and_agy_require_atomic_prompt_version cursor
+test_cursor_and_agy_require_atomic_prompt_version agy
 test_raw_command_bypass_refused
 test_raw_spawn_installs_exec_time_guard
 test_teardown_removes_owned_agy_trust
@@ -667,6 +750,10 @@ test_metadata_free_cursor_and_agy_send_uses_live_identity cursor
 test_metadata_free_cursor_and_agy_send_uses_live_identity agy
 test_identity_mismatch_is_undelivered_and_restores_scout cursor
 test_identity_mismatch_is_undelivered_and_restores_scout agy
+test_blocked_cursor_and_agy_send_is_known_undelivered cursor
+test_blocked_cursor_and_agy_send_is_known_undelivered agy
+test_rejected_cursor_and_agy_prompt_is_known_undelivered cursor
+test_rejected_cursor_and_agy_prompt_is_known_undelivered agy
 test_genuinely_undelivered_steer_on_composer_supported_harness
 test_live_cursor_and_agy_tasks_read_working_in_crew_state cursor
 test_live_cursor_and_agy_tasks_read_working_in_crew_state agy

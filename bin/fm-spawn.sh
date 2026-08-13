@@ -943,6 +943,7 @@ case "$HARNESS" in
       echo "error: harness '$HARNESS' is supported only on the herdr backend (resolved backend '$BACKEND'); herdr provides the native agent-state signals cursor/agy need. Select the herdr backend or use a verified crew harness." >&2
       exit 1
     fi
+    fm_backend_herdr_agent_prompt_version_check || exit 1
     ;;
 esac
 

@@ -40,7 +40,7 @@ done
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-agy-trust-lib.sh"
 fm_backend_source herdr || { echo "skip: herdr backend could not be sourced"; exit 0; }
-fm_backend_herdr_version_check >/dev/null 2>&1 || { echo "skip: installed herdr fails the adapter version gate"; exit 0; }
+fm_backend_herdr_agent_prompt_version_check >/dev/null 2>&1 || { echo "skip: installed herdr lacks cursor/agy atomic prompt delivery"; exit 0; }
 
 SESSION=$("$LAB" name cursor-agy-smoke) || { echo "skip: could not derive a lab session name"; exit 0; }
 WORK=

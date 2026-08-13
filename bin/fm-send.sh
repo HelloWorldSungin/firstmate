@@ -382,9 +382,8 @@ else
       ;;
     unverifiable)
       if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+        fm_pending_reply_mark_delivery_unknown "$STATE" "$PENDING_REPLY_CORR" || true
       fi
-      fm_send_restore_scout_completion || true
       echo "error: text delivery unverifiable on $T (verdict=unverifiable; tried $RESOLUTION_TRIED)" >&2
       exit 3
       ;;

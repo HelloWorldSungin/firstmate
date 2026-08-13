@@ -431,9 +431,11 @@ Composer classification stays `unknown` for both (the safe default) and no overr
 cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
 A generic bare-glyph "empty" rule must NOT be added: agy's prompt glyph is literally `>`, identical to a dead bash shell, so a generic rule would be a dead-shell send hazard - any future override must be native-identity-gated exactly like the Pi gate.
 The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole.
-Send confirmation uses Herdr's atomic `agent prompt` operation for a live native cursor or agy identity, so command success is attributable input acceptance without composer or status-transition inference.
+Cursor and agy require Herdr 0.7.5 or newer because that release added the atomic `agent prompt` operation used for send confirmation.
+Send confirmation uses that operation for a live native cursor or agy identity, so command success is attributable input acceptance without composer or status-transition inference.
 Supplied task metadata must match that live native identity, while a metadata-free explicit Herdr pane is accepted when its live identity is cursor or agy.
-An atomic prompt error reports `verdict=unverifiable` with status 3 because acceptance is unknown, while an identity mismatch is known undelivered and exits 1.
+A pre-existing blocked target, identity mismatch, or machine-readable rejection is known undelivered and exits 1 without claiming acceptance.
+An untyped transport failure reports `verdict=unverifiable` with status 3 and leaves scout completion reopened because acceptance is unknown.
 Crew-state classification accepts `busy herdr-native` for an untrusted cursor or agy record only when one native sample reports both a matching live identity and working status.
 
 | Fact | Value |

@@ -86,6 +86,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
+FM_BACKEND_HERDR_MIN_AGENT_PROMPT_VERSION=0.7.5
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
 # 0.7.3). Below this, or with the events surface absent from `herdr api schema`,
@@ -222,6 +223,30 @@ fm_backend_herdr_version_check() {
     return 1
   fi
   return 0
+}
+
+fm_backend_herdr_agent_prompt_version_check() {
+  fm_backend_herdr_tool_check || return 1
+  local status version major minor patch rest valid=1
+  status=$(herdr status --json 2>/dev/null) || { echo "error: 'herdr status --json' failed; is herdr installed correctly?" >&2; return 1; }
+  version=$(printf '%s' "$status" | jq -r '.client.version // empty' 2>/dev/null)
+  major=${version%%.*}
+  rest=${version#*.}
+  minor=${rest%%.*}
+  patch=${rest#*.}
+  patch=${patch%%[!0-9]*}
+  case "$major" in ''|*[!0-9]*) valid=0 ;; esac
+  case "$minor" in ''|*[!0-9]*) valid=0 ;; esac
+  case "$patch" in ''|*[!0-9]*) valid=0 ;; esac
+  if [ "$valid" -eq 1 ] && {
+    [ "$major" -gt 0 ] \
+      || { [ "$major" -eq 0 ] && [ "$minor" -gt 7 ]; } \
+      || { [ "$major" -eq 0 ] && [ "$minor" -eq 7 ] && [ "$patch" -ge 5 ]; }
+  }; then
+    return 0
+  fi
+  echo "error: cursor and agy require Herdr $FM_BACKEND_HERDR_MIN_AGENT_PROMPT_VERSION or newer for atomic prompt delivery (found ${version:-unknown}); update Herdr before launching this harness" >&2
+  return 1
 }
 
 # fm_backend_herdr_session: resolve which named herdr session this normal
@@ -2340,9 +2365,27 @@ fm_backend_herdr_send_literal() {  # <target> <text>
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
-fm_backend_herdr_prompt_submit() {  # <target> <text>
-  fm_backend_herdr_parse_target "$1" || return 1
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent prompt "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+fm_backend_herdr_prompt_submit() {  # <target> <text> -> empty|send-failed|unverifiable
+  local out code
+  fm_backend_herdr_parse_target "$1" || { printf 'send-failed'; return 0; }
+  if out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent prompt "$FM_BACKEND_HERDR_PANE" "$2" 2>&1); then
+    printf 'empty'
+    return 0
+  fi
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
+  case "$code" in
+    agent_not_found|agent_not_running|pane_not_found|protocol_mismatch|server_not_running|invalid_params|invalid_request|method_not_found|unsupported)
+      printf 'send-failed'
+      ;;
+    *)
+      case "$out" in
+        *"unrecognized subcommand"*|*"unknown subcommand"*|*"unexpected argument"*|*"required arguments were not provided"*|*"Usage:"*)
+          printf 'send-failed'
+          ;;
+        *) printf 'unverifiable' ;;
+      esac
+      ;;
+  esac
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
@@ -2726,33 +2769,37 @@ EOF
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline baseline_raw confirm_sleep
-  local declared_harness=${7:-} enter_sent=0 baseline_agent= baseline_pair=
+  local declared_harness='' enter_sent=0 baseline_agent='' baseline_pair='' probe_identity=0
+  if [ "$#" -ge 7 ]; then
+    declared_harness=$7
+    probe_identity=1
+  fi
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
-  case "$declared_harness" in
-    ''|cursor|agy)
-      fm_backend_herdr_target_ready "$target" || { printf 'send-failed'; return 0; }
-      baseline_pair=$(fm_backend_herdr_agent_identity_raw \
-        "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
-      case "$baseline_pair" in
-        *$'\t'*)
-          baseline_agent=${baseline_pair%%$'\t'*}
-          baseline_raw=${baseline_pair#*$'\t'}
-          ;;
-        *) baseline_agent=; baseline_raw= ;;
-      esac
-      ;;
-  esac
+  if [ "$probe_identity" -eq 1 ]; then
+    case "$declared_harness" in
+      ''|cursor|agy)
+        fm_backend_herdr_target_ready "$target" || { printf 'send-failed'; return 0; }
+        baseline_pair=$(fm_backend_herdr_agent_identity_raw \
+          "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+        case "$baseline_pair" in
+          *$'\t'*)
+            baseline_agent=${baseline_pair%%$'\t'*}
+            baseline_raw=${baseline_pair#*$'\t'}
+            ;;
+          *) baseline_agent=; baseline_raw= ;;
+        esac
+        ;;
+    esac
+  fi
   case "$baseline_agent" in
     cursor|agy)
       case "$declared_harness" in
         ''|"$baseline_agent") : ;;
         *) printf 'send-failed'; return 0 ;;
       esac
-      if fm_backend_herdr_prompt_submit "$target" "$text"; then
-        printf 'empty'
-      else
-        printf 'unverifiable'
-      fi
+      [ "$baseline_raw" != blocked ] || { printf 'send-failed'; return 0; }
+      verdict=$(fm_backend_herdr_prompt_submit "$target" "$text")
+      printf '%s' "$verdict"
       return 0
       ;;
   esac

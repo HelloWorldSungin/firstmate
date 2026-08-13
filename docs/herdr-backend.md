@@ -12,6 +12,7 @@ Pick Herdr when you want native busy, idle, and blocked state and accept the exp
 Prerequisites:
 
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
+- Herdr 0.7.5 or newer for cursor and agy workers, which require atomic `agent prompt` delivery.
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
 - `python3` only for optional protocol-16 presentation-space ordering and native event subscription.
@@ -195,8 +196,9 @@ Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the envir
 An environment variable alone is not reliable when another Herdr server is running.
 
 Literal text and Enter are separate operations for ordinary steers on composer-verifiable harnesses.
-Cursor and agy instead use Herdr's atomic `agent prompt` operation after the live native identity matches any supplied harness metadata.
-A successful atomic prompt is attributable input acceptance, an identity mismatch is known undelivered, and a prompt error is unverifiable because acceptance is unknown.
+Cursor and agy instead use Herdr's atomic `agent prompt` operation after the live native identity matches any supplied harness metadata and the target is not already blocked.
+A successful atomic prompt is attributable input acceptance, while an identity mismatch, a pre-existing blocked state, or a deterministic Herdr rejection is known undelivered.
+A transport failure without a machine-readable rejection is unverifiable because acceptance is unknown.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
 Enter, Escape, and Ctrl-C are supported.
 Slash and dollar-prefixed input uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
