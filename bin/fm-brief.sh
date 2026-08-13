@@ -91,11 +91,12 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act. Ship and scout briefs also require a readable
-# current state after "resolved:". Ship briefs pair the pause verb with
-# "working:" around backgrounded pipeline calls. Under no-mistakes, "done:"
-# means the PR is open with checks green, so the implementation handoff before
-# validation is a declared wait rather than a second "done:".
+# blocked when firstmate must act. Ship briefs teach both with worked examples,
+# including blocked for the no-mistakes validation-trigger handoff. Ship and
+# scout briefs also require a readable current state after "resolved:". Ship
+# briefs pair the pause verb with "working:" around backgrounded pipeline calls.
+# Under no-mistakes, "done:" means the PR is open with checks green, so the
+# implementation handoff before validation uses blocked:, not the pause verb.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -636,7 +637,7 @@ Delivery contract: mode=no-mistakes
 This project ships **no-mistakes**: \`done:\` means the PR is open with its checks green.
 A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one \`done:\` line and it is the last one, \`done: PR {url} checks green\`.
 The task is complete only when committed on your branch.
-When you believe implementation is complete, append \`$PAUSED_VERB: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -692,14 +693,21 @@ $RULE1
    Your LATEST line is your entire visible state, so never leave a stale or stateless one standing.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
    turn after it; continue the same stage until a stopping point defined under Definition of done.
-   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
-   a scheduled window, a backgrounded call you are parked on): firstmate then leaves your idle pane
-   alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   Choose the verb by what clears the wait, not by whether you are idle.
+   \`$PAUSED_VERB:\` is for a bounded external wait expected to clear on its own - an upstream release,
+   a rate-limit reset, a scheduled window, or a backgrounded call you are parked on - for example
+   \`$PAUSED_VERB: rate limit resets at 06:00 UTC\`.
+   Firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of treating
+   it as a possible wedge.
+   \`blocked:\` is when firstmate must act before you can continue - for example
+   \`blocked: implemented and committed, ready to validate\` when implementation is done and you
+   need firstmate's validation trigger, or \`blocked: needs firstmate to steer past repeated failure\`.
+   Wrong-verb cost: \`blocked:\` on a self-clearing wait is a cheap extra wake; \`$PAUSED_VERB:\` on a
+   wait that needs firstmate can idle you for an hour under away mode before anyone rechecks.
    Park-and-resume pairing: whenever you background a pipeline call and go idle, append
    \`$PAUSED_VERB:\` BEFORE going idle and \`working:\` as soon as it returns - otherwise a spent
    \`needs-decision:\` stays standing and firstmate reads you as still waiting on a decision it
-   already answered. Use \`blocked:\` when you are stuck and need help.
+   already answered.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.

@@ -387,8 +387,8 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "firstmate will then instruct you to run /no-mistakes" "$brief" \
-    "explicit no-mistakes brief did not render the pipeline definition of done"
+  assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
+    "explicit no-mistakes brief did not render the blocked: validation handoff"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only >/dev/null 2>&1 \
@@ -481,8 +481,10 @@ test_status_protocol_closes_reporting_gaps() {
   assert_no_grep 'append `done: {summary}`' "$brief" \
     "no-mistakes DOD still tells the worker to report done before the pipeline runs"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-  assert_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
-    "no-mistakes DOD lost the declared-wait handoff before validation"
+  assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
+    "no-mistakes DOD must use blocked: for the validation-trigger handoff"
+  assert_no_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
+    "no-mistakes DOD still teaches paused: for the validation-trigger handoff"
 
   # Gap 2: park-and-resume around a backgrounded pipeline call.
   assert_grep 'Park-and-resume pairing: whenever you background a pipeline call and go idle' "$brief" \
@@ -513,6 +515,54 @@ test_status_protocol_closes_reporting_gaps() {
       "$generated: contract must state the invisibility consequence of a trailing resolved:"
   done
   pass "fm-brief.sh: status protocol closes the done:/park/resolved: reporting gaps"
+}
+
+# Issue #110: the generated brief must teach blocked: for waits that need firstmate,
+# with a worked example close enough to the no-mistakes validation handoff that a
+# worker can choose the right verb without reading AGENTS.md. This fails if the DOD
+# reverts to paused: for that handoff, if the status protocol drops the blocked:
+# validation-trigger example, if it stops distinguishing self-clearing waits from
+# firstmate-action waits, or if it removes the external-wait paused: example.
+test_status_protocol_teaches_blocked_for_firstmate_waits() {
+  local home id brief
+  home="$TMP_ROOT/blocked-verb-home"
+  mkdir -p "$home/data"
+  id="brief-blocked-verb-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+
+  # DOD handoff must name blocked:, not the pause verb.
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
+    "no-mistakes DOD must prescribe blocked: for the validation handoff"
+  assert_no_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
+    "no-mistakes DOD still prescribes paused: for the validation handoff"
+  assert_grep 'firstmate must trigger validation' "$brief" \
+    "no-mistakes DOD must explain why the validation handoff is blocked:, not paused:"
+
+  # Status protocol must carry paired worked examples and the discriminator rule.
+  assert_grep 'Choose the verb by what clears the wait, not by whether you are idle.' "$brief" \
+    "status protocol lost the discriminator rule"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`blocked: implemented and committed, ready to validate` when implementation is done and you' "$brief" \
+    "status protocol lost the blocked: validation-trigger worked example"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`paused: rate limit resets at 06:00 UTC`' "$brief" \
+    "status protocol lost the paused: external-wait worked example"
+  assert_grep 'Wrong-verb cost:' "$brief" \
+    "status protocol lost the wrong-verb cost asymmetry note"
+  assert_grep 'can idle you for an hour under away mode' "$brief" \
+    "status protocol must state the away-mode idle cost of misusing the pause verb"
+
+  # Park-and-resume for backgrounded pipeline calls stays on the pause verb.
+  assert_grep 'Park-and-resume pairing: whenever you background a pipeline call and go idle' "$brief" \
+    "status protocol lost the park-and-resume rule"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`paused:` BEFORE going idle and `working:` as soon as it returns' "$brief" \
+    "status protocol must keep paused:/working: park-and-resume pairing"
+
+  pass "fm-brief.sh: status protocol teaches blocked: for firstmate-action waits"
 }
 
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
@@ -853,9 +903,21 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     brief="$home/data/$id/brief.md"
     assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
       "$kind brief did not render the configured pause verb in its states list"
-    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'Use `awaiting: {why}`' "$brief" \
-      "$kind brief did not instruct the configured pause status"
+    case "$kind" in
+      ship)
+        # Ship brief teaches the pause verb through the discriminator and worked examples.
+        # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+        assert_grep '`awaiting: rate limit resets at 06:00 UTC`' "$brief" \
+          "$kind brief did not instruct the configured pause status in its worked example"
+        assert_grep '`awaiting:` is for a bounded external wait expected to clear on its own' "$brief" \
+          "$kind brief did not define the configured pause verb in the discriminator"
+        ;;
+      *)
+        # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+        assert_grep 'Use `awaiting: {why}`' "$brief" \
+          "$kind brief did not instruct the configured pause status"
+        ;;
+    esac
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_no_grep '`paused: {why}`' "$brief" \
       "$kind brief still instructs the default paused status"
@@ -1128,6 +1190,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_status_protocol_closes_reporting_gaps
+test_status_protocol_teaches_blocked_for_firstmate_waits
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
