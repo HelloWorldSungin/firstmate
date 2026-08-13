@@ -61,6 +61,8 @@ cleanup() {
 trap cleanup EXIT
 "$LAB" provision "$SESSION" >/dev/null 2>&1 || { echo "skip: could not provision the isolated Herdr lab session"; trap - EXIT; exit 0; }
 export HERDR_SESSION="$SESSION"
+fm_backend_herdr_agent_prompt_capability_check "$SESSION" >/dev/null 2>&1 \
+  || { echo "skip: isolated Herdr server lacks cursor/agy atomic prompt delivery"; exit 0; }
 
 WORK=$(mktemp -d)
 printf 'Reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"

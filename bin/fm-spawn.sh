@@ -944,6 +944,7 @@ case "$HARNESS" in
       exit 1
     fi
     fm_backend_herdr_agent_prompt_version_check || exit 1
+    fm_backend_herdr_agent_prompt_capability_check "$(fm_backend_herdr_session)" || exit 1
     ;;
 esac
 
