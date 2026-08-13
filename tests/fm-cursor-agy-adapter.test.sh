@@ -551,7 +551,7 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-test_send_text_submit_lands_on_cursor_and_agy() {
+test_accepted_cursor_and_agy_prompt_is_unverifiable() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-land-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -567,15 +567,18 @@ test_send_text_submit_lands_on_cursor_and_agy() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "ordinary steer to live $harness worker should succeed when Herdr accepts it"
-  assert_no_grep "error:" "$err" "successful steer to live $harness worker should produce no error diagnostic"
+  expect_code 3 "$rc" "accepted $harness prompt without a write-boundary state assertion should be unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "accepted $harness prompt should retain an honest non-success verdict"
+  assert_no_grep "send failed" "$err" \
+    "accepted $harness prompt must not be reported as known undelivered"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
     || fail "live $harness delivery did not use exactly one atomic prompt"
   assert_absent "$case_dir/fake/send_text_log" \
     "live $harness delivery must not leave separately typed text"
   assert_absent "$case_dir/fake/enter_log" \
     "live $harness delivery must not use an unattributable Enter"
-  pass "ordinary steer to a live $harness worker that lands does not report failure"
+  pass "an accepted $harness prompt without atomic UI-state proof is unverifiable"
 }
 
 test_metadata_free_cursor_and_agy_send_uses_live_identity() {
@@ -590,7 +593,9 @@ test_metadata_free_cursor_and_agy_send_uses_live_identity() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "default:w1:p1" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "metadata-free explicit $harness target should use its live identity"
+  expect_code 3 "$rc" "metadata-free explicit $harness target should use its live identity and remain unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "metadata-free explicit $harness target should retain the write-boundary uncertainty"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
     || fail "metadata-free explicit $harness target did not receive one atomic prompt"
   pass "a metadata-free explicit $harness target uses its live Herdr identity"
@@ -696,7 +701,7 @@ test_cursor_and_agy_send_requires_server_prompt_capability() {
   pass "a send verifies atomic prompt support on the target's named Herdr server"
 }
 
-test_changed_prompt_snapshot_is_unverifiable() {
+test_cached_prompt_snapshot_is_unverifiable() {
   local harness=$1 variant=$2 prompt_agent prompt_status case_dir home proj wt fakebin err rc reviewed
   case_dir="$TMP_ROOT/send-snapshot-$harness-$variant"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -725,7 +730,7 @@ test_changed_prompt_snapshot_is_unverifiable() {
     "$variant prompt-boundary snapshot on $harness should retain an honest non-success verdict"
   reviewed=$(grep '^decisions_reviewed=' "$home/state/lane-$harness.meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 0 ] || fail "$variant unverifiable $harness send restored stale completion"
-  pass "a $variant prompt-boundary snapshot cannot falsely confirm $harness delivery"
+  pass "a cached $variant prompt snapshot cannot falsely confirm $harness delivery"
 }
 
 test_genuinely_undelivered_steer_on_composer_supported_harness() {
@@ -843,8 +848,8 @@ test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
 test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
-test_send_text_submit_lands_on_cursor_and_agy cursor
-test_send_text_submit_lands_on_cursor_and_agy agy
+test_accepted_cursor_and_agy_prompt_is_unverifiable cursor
+test_accepted_cursor_and_agy_prompt_is_unverifiable agy
 test_metadata_free_cursor_and_agy_send_uses_live_identity cursor
 test_metadata_free_cursor_and_agy_send_uses_live_identity agy
 test_identity_mismatch_is_undelivered_and_restores_scout cursor
@@ -859,10 +864,10 @@ test_rejected_cursor_and_agy_prompt_is_known_undelivered agy agent_not_ready
 test_rejected_cursor_and_agy_prompt_is_known_undelivered agy agent_prompt_failed
 test_cursor_and_agy_send_requires_server_prompt_capability cursor
 test_cursor_and_agy_send_requires_server_prompt_capability agy
-test_changed_prompt_snapshot_is_unverifiable cursor blocked
-test_changed_prompt_snapshot_is_unverifiable cursor replacement
-test_changed_prompt_snapshot_is_unverifiable agy blocked
-test_changed_prompt_snapshot_is_unverifiable agy replacement
+test_cached_prompt_snapshot_is_unverifiable cursor blocked
+test_cached_prompt_snapshot_is_unverifiable cursor replacement
+test_cached_prompt_snapshot_is_unverifiable agy blocked
+test_cached_prompt_snapshot_is_unverifiable agy replacement
 test_genuinely_undelivered_steer_on_composer_supported_harness
 test_live_cursor_and_agy_tasks_read_working_in_crew_state cursor
 test_live_cursor_and_agy_tasks_read_working_in_crew_state agy
