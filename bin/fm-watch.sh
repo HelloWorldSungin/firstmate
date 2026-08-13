@@ -273,9 +273,9 @@ window_label() {
 # transition policy deliberately DEFERS their native idle/done (it blips between
 # tool calls for the general fleet). So the poll loop reads their NATIVE agent
 # state and, via the debounced native-identity-gated decision in
-# fm-transition-lib.sh, publishes the task's semantic idle record and touches
-# state/<id>.turn-ended on a settled turn-end - the exact completion signal every
-# other harness's hook writes, which scan_signals already turns into a wake.
+# fm-transition-lib.sh, touches state/<id>.turn-ended as a wake notification,
+# which scan_signals already turns into a wake without treating it as current
+# state.
 # Gated strictly to a cursor/agy herdr
 # crew window, so every other task's behavior is byte-unchanged. The per-pane
 # ".nativeturnend-<key>" file carries the debounce state ("<status>|<signaled>");
@@ -304,22 +304,9 @@ maybe_native_turnend() {  # <window> <task> <key>
   prev=$(cat "$sfile" 2>/dev/null || true)
   if newstate=$(fm_transition_native_completion \
     "$harness" "$native_identity" "$status" "$prev"); then
-    fm_native_busy_publish "$task" idle turn-completed \
-      || triage_log "native busy-state publish failed ($harness $status): $w"
     tf="$STATE/$task.turn-ended"
     : > "$tf" 2>/dev/null || touch "$tf" 2>/dev/null || true
     triage_log "native turn-end ($harness $status): $w"
-  elif [ "$newstate" != "$prev" ]; then
-    case "$status" in
-      working)
-        fm_native_busy_publish "$task" busy agent-working \
-          || triage_log "native busy-state publish failed ($harness working): $w"
-        ;;
-      blocked)
-        fm_native_busy_publish "$task" unknown agent-blocked \
-          || triage_log "native busy-state publish failed ($harness blocked): $w"
-        ;;
-    esac
   fi
   printf '%s' "$newstate" > "$sfile" 2>/dev/null || true
   return 0

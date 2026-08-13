@@ -356,26 +356,6 @@ test_boolean_view_never_promotes_unknown() {
   pass "the boolean view reports busy only on an exact busy verdict"
 }
 
-test_herdr_native_cursor_agy_records() {
-  local state out gen
-  state=$(new_state_dir herdr-cursor-agy)
-  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
-  fm_backend_busy_state() { printf '%s' "$FAKE_NATIVE"; }
-  FAKE_NATIVE=idle
-  out=$(fm_busy_classify herdr s:p cursor t1 "$state")
-  [ "$out" = "unknown missing" ] || fail "cursor raw native idle must stay unknown, got '$out'"
-  out=$(fm_busy_classify herdr s:p agy t1 "$state")
-  [ "$out" = "unknown missing" ] || fail "agy raw native idle must stay unknown, got '$out'"
-  gen=$("$EV" arm "$state" t1)
-  "$EV" apply "$state" t1 idle --gen "$gen" --source herdr-native --event turn-completed
-  out=$(fm_busy_classify herdr s:p cursor t1 "$state")
-  [ "$out" = "idle herdr-native" ] || fail "cursor identity-gated completion record must classify idle, got '$out'"
-  out=$(fm_busy_classify herdr s:p agy t1 "$state")
-  [ "$out" = "idle herdr-native" ] || fail "agy identity-gated completion record must classify idle, got '$out'"
-  unset -f fm_backend_busy_state
-  pass "cursor and agy trust recorded native completion, never collapsed raw idle"
-}
-
 test_arm_seeds_busy_spawn
 test_apply_advances_seq_and_source
 test_apply_current_gen_reset
@@ -394,7 +374,6 @@ test_codex_unverified_gate
 test_kimi_unverified_gate
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
-test_herdr_native_cursor_agy_records
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

@@ -34,13 +34,12 @@
 #   codex-hook, codex-appserver  reserved: Codex, gated by
 #                    fm_busy_codex_semantic_source
 #   kimi-wire, kimi-hook  reserved: standalone Kimi, gated by fm_busy_kimi_verified
-#   herdr-native      Cursor/Agy identity-gated native transitions
 # Firstmate-owned sources accepted for every converted adapter:
 #   fm-spawn         the launch-brief turn seeded at spawn
 #   fm-interrupt     a firstmate-controlled interruption of the worker
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, grok-regex, missing, malformed,
+#   endpoint-gone, herdr-native, grok-regex, missing, malformed,
 #   gen-mismatch, source-mismatch, kimi-unverified, codex-unverified,
 #   capture-failed, no-target
 #
@@ -178,7 +177,6 @@ fm_busy_sources_for_harness() {  # <harness>
       fm_busy_kimi_verified || { printf ''; return 0; }
       adapter='kimi-wire kimi-hook'
       ;;
-    cursor*|agy*) adapter=herdr-native ;;
     *) printf ''; return 0 ;;
   esac
   printf '%s fm-spawn fm-interrupt fm-recovery' "$adapter"

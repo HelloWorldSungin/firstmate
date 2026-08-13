@@ -28,13 +28,6 @@ WATCH_DELIVERY_KEEP_LINES=${FM_WATCH_DELIVERY_KEEP_LINES:-64}
 case "$WATCH_DELIVERY_MAX_BYTES" in ''|*[!0-9]*|0) WATCH_DELIVERY_MAX_BYTES=65536 ;; esac
 case "$WATCH_DELIVERY_KEEP_LINES" in ''|*[!0-9]*|0) WATCH_DELIVERY_KEEP_LINES=64 ;; esac
 
-fm_native_busy_publish() {  # <task> <busy|idle|unknown> <event>
-  local task=$1 state=$2 event=$3
-  [ -f "$STATE/$task.busy-gen" ] || return 0
-  "$FM_PUSH_TRANSITION_LIB_DIR/fm-busy-event.sh" apply "$STATE" "$task" "$state" \
-    --current-gen --source herdr-native --event "$event" 2>/dev/null
-}
-
 watch_delivery_clean_identity() {
   printf '%s' "$1" | tr '\t\r\n' '   '
 }
@@ -158,7 +151,7 @@ mark_surfaced() {  # <status-file>
 }
 
 fm_backend_observe_transition() {  # <backend> <session> <record>
-  local backend=$1 session=$2 record=$3 pane_id status identity window task meta harness key sfile prev newstate
+  local backend=$1 session=$2 record=$3 pane_id status identity window meta harness key sfile prev newstate
   [ "$backend" = herdr ] || return 0
   status=$(fm_transition_to_status "$record")
   case "$status" in
@@ -169,8 +162,6 @@ fm_backend_observe_transition() {  # <backend> <session> <record>
   identity=$(fm_transition_agent "$record")
   [ -n "$pane_id" ] || return 0
   window="$session:$pane_id"
-  task=$(window_to_task "$window" "$STATE")
-  [ -n "$task" ] || return 0
   meta=$(fm_backend_meta_for_window "$window" "$STATE" 2>/dev/null || true)
   [ -n "$meta" ] || return 0
   harness=$(fm_meta_get "$meta" harness)
@@ -185,16 +176,6 @@ fm_backend_observe_transition() {  # <backend> <session> <record>
   newstate=$(fm_transition_native_completion \
     "$harness" "$identity" "$status" "$prev" || true)
   printf '%s' "$newstate" > "$sfile" 2>/dev/null || true
-  case "$status" in
-    working)
-      fm_native_busy_publish "$task" busy agent-working \
-        || triage_log "native busy-state publish failed ($harness working): $window"
-      ;;
-    blocked)
-      fm_native_busy_publish "$task" unknown agent-blocked \
-        || triage_log "native busy-state publish failed ($harness blocked): $window"
-      ;;
-  esac
 }
 
 # Act on a fresh actionable transition from a push-capable backend.
