@@ -30,7 +30,7 @@
 #      if a run is found through their ambient branch, that run is likewise
 #      surfaced as unattributable rather than guessed from the task id.
 #   2. Matching no-mistakes run for this crew's branch AND attributable code identity,
-#      active or terminal (from `axi status`, or the coarse AXI home runs
+#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
 #      branch whose head was rewritten or diverged must not be attributed.
 #      A run matches when its head equals the worktree HEAD, or the worktree HEAD
@@ -128,6 +128,8 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
+FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
+case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 # How long a recorded run-step stays usable as the degraded answer after the run
 # lookup starts failing. This is the bound that keeps the degrade from becoming a
 # worse bug than the one it fixes: a permanently broken no-mistakes daemon would
@@ -572,15 +574,12 @@ nm_ci_checks_state() {
 # validating crews on the same underlying repo). A crew whose branch genuinely
 # has no run yet therefore sees another branch's answer here.
 #
-# The bare `no-mistakes axi` home view carries its recent runs as a newest-first
-# `runs[N]{id,branch,status,head,pr}:` table.
-#
 # A PURE PARSER over a listing the caller already captured. The call itself is
 # made by the caller so a listing that could not be fetched is classified as a
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
 nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha run_id in_runs=0
+  local branch=$1 out=${2:-} row st rest br sha run_id date_part time_part in_runs=0
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -589,15 +588,32 @@ nm_runs_row_for_branch() {  # <branch> <runs-listing>
       in_runs=1
       continue
     fi
-    [ "$in_runs" = 1 ] || continue
-    case "$row" in *,*,*,*,*) ;; *) continue ;; esac
-    run_id=$(strip_quotes "$(trim "${row%%,*}")")
-    rest=${row#*,}
-    br=$(strip_quotes "$(trim "${rest%%,*}")")
-    rest=${rest#*,}
-    st=$(strip_quotes "$(trim "${rest%%,*}")")
-    rest=${rest#*,}
-    sha=$(strip_quotes "$(trim "${rest%%,*}")")
+    if [ "$in_runs" = 1 ]; then
+      case "$row" in *,*,*,*,*) ;; *) continue ;; esac
+      run_id=$(strip_quotes "$(trim "${row%%,*}")")
+      rest=${row#*,}
+      br=$(strip_quotes "$(trim "${rest%%,*}")")
+      rest=${rest#*,}
+      st=$(strip_quotes "$(trim "${rest%%,*}")")
+      rest=${rest#*,}
+      sha=$(strip_quotes "$(trim "${rest%%,*}")")
+    else
+      st=${row%% *}
+      rest=${row#* }
+      rest=$(trim "$rest")
+      br=${rest%% *}
+      rest=${rest#* }
+      rest=$(trim "$rest")
+      sha=${rest%% *}
+      rest=${rest#* }
+      rest=$(trim "$rest")
+      date_part=${rest%% *}
+      rest=${rest#* }
+      rest=$(trim "$rest")
+      time_part=${rest%% *}
+      [ -n "$date_part" ] && [ -n "$time_part" ] || continue
+      run_id="coarse:$br:$sha:$date_part:$time_part"
+    fi
     if [ "$br" = "$branch" ]; then
       [ -n "$run_id" ] || continue
       nm_head_attributable "$sha" 0 0 || continue
@@ -797,7 +813,7 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
       # for no better answer.
-      runs_out=$(nm_run axi)
+      runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
       runs_rc=$?
       if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
         LOOKUP_FAILED=1
@@ -805,6 +821,18 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
         LOOKUP_COMPLETED=1
         COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
         IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD COARSE_RUN_ID <<< "$COARSE_ROW"
+        if [ "$COARSE_STATUS" != running ] \
+          && [[ "$COARSE_RUN_ID" = coarse:* ]]; then
+          home_out=$(nm_run axi) || true
+          home_row=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$home_out")
+          IFS=$'\t' read -r home_status home_head home_run_id <<< "$home_row"
+          if [ "$home_status" = "$COARSE_STATUS" ] \
+            && [ "$home_head" = "$COARSE_HEAD" ] \
+            && [[ "$home_run_id" != coarse:* ]] \
+            && [ -n "$home_run_id" ]; then
+            COARSE_RUN_ID=$home_run_id
+          fi
+        fi
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
             HAVE_RUN=1
@@ -973,7 +1001,16 @@ if [ "$HAVE_RUN" = 1 ]; then
     [ "$RECORD_VERSION" = v3 ] || return 0
     case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 0 ;; esac
     if [ "$RUN_ID" != "-" ] && [ "$RECORD_RUN_ID" != "-" ]; then
-      [ "$RECORD_RUN_ID" = "$RUN_ID" ] || return 0
+      if [ "$RECORD_RUN_ID" != "$RUN_ID" ]; then
+        if [ "$RECORD_STATE" = working ] \
+          && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] \
+          && { [[ "$RECORD_RUN_ID" = coarse:* ]] \
+            || [[ "$RUN_ID" = coarse:* ]]; }; then
+          [ "$LOG_POSITION" -gt "$RECORD_POSITION" ]
+          return
+        fi
+        return 0
+      fi
     else
       [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] || return 0
     fi

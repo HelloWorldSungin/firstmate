@@ -85,8 +85,8 @@ fm_write_meta() {
 
 # A fakebin with a fake `no-mistakes` (serves the env-driven run output) and a
 # fake `tmux` (serves a busy or idle pane). The fake no-mistakes mirrors the real
-# command surface the helper uses: `axi status`, `axi status --run <id>`, and
-# the bare `axi` home view whose recent-runs table serves FM_FAKE_RUNS_LIST.
+# command surface the helper uses: `axi status`, `axi status --run <id>`, the
+# bare `axi` home view, and `runs --limit N`.
 make_fakebin() {  # <dir> -> echoes fakebin path
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -110,7 +110,7 @@ case "${1:-}" in
     case "${1:-}" in
       '')
         [ "${FM_FAKE_RUNS_RC:-0}" = 0 ] || exit "${FM_FAKE_RUNS_RC}"
-        printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+        printf '%s\n' "${FM_FAKE_AXI_HOME:-}" ;;
       status)
         shift
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
@@ -119,6 +119,9 @@ case "${1:-}" in
         printf '%s\n' "${FM_FAKE_CI_LOGS:-}" ;;
     esac
     ;;
+  runs)
+    [ "${FM_FAKE_RUNS_RC:-0}" = 0 ] || exit "${FM_FAKE_RUNS_RC}"
+    printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
 esac
 exit 0
 SH
@@ -212,6 +215,7 @@ arm_idle_record() {  # <state-dir> <id>
 reset_fakes() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_AXI_STATUS_RUN=""
+  FM_FAKE_AXI_HOME=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=0
   FM_FAKE_BUSY_TEXT=
@@ -229,11 +233,12 @@ reset_fakes() {
   FM_FAKE_AGENT_STATE="alive"
   FM_CREW_STATE_DEGRADED_MAX_AGE=""
   FM_CREW_STATE_NM_TIMEOUT=""
-  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
+  FM_CREW_STATE_RUNS_LIMIT=""
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_AXI_HOME FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG FM_FAKE_NM_APPEND_FILE
   export FM_FAKE_NM_APPEND_LINE FM_FAKE_AGENT_STATE
-  export FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT
+  export FM_CREW_STATE_DEGRADED_MAX_AGE FM_CREW_STATE_NM_TIMEOUT FM_CREW_STATE_RUNS_LIMIT
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -628,8 +633,7 @@ test_detached_worktree_skips_the_run_lookup() {
   printf 'blocked: worktree isolation is not verified\n' > "$d/state/detached-task.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/some-other-task)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
-  01DETACHED,fm/detached-task,running,${FM_FAKE_RUN_HEAD},
+running fm/detached-task ${FM_FAKE_RUN_HEAD} 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -1326,8 +1330,12 @@ test_prior_run_park_does_not_mask_same_head_rerun_failure() {
   assert_contains "$out" "state: done" "the first run establishes its terminal boundary"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+completed fm/feat-same-head-rerun ${short} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_AXI_HOME="$(cat <<EOF
+runs[1]{id,branch,status,head,pr}:
   01RUN-A,fm/feat-same-head-rerun,completed,${short},
 EOF
 )"
@@ -1383,7 +1391,7 @@ test_terminal_failed() {
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
-# falls back to the AXI home runs table to learn whether THIS branch has an
+# falls back to the bounded runs list to learn whether THIS branch has an
 # active run of its own.
 test_cross_branch_attribution_via_runs_list() {
   reset_fakes
@@ -1395,15 +1403,49 @@ test_cross_branch_attribution_via_runs_list() {
   # The repo-wide active/most-recent run belongs to a different crew's branch.
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01CREW,fm/feat-f,running,${short},
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+running fm/feat-f ${short} 2026-08-13 12:00
 EOF
 )"
   local out; out=$(run_crew_state "$d" feat-f)
   assert_contains "$out" "state: working" "this branch's own run attributed via the runs list"
   assert_contains "$out" "source: run-step" "runs-list-resolved run -> run-step source"
   pass "cross-branch run is attributed via the real runs list"
+}
+
+test_cross_branch_attribution_honors_configured_runs_limit() {
+  reset_fakes
+  local d short out; d=$(new_case crossbranch-configured-limit)
+  make_repo_on_branch "$d/wt" fm/feat-deep-run
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-deep-run.meta" "window=fm:fm-feat-deep-run" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: stale hold before validation resumed\n' > "$d/state/feat-deep-run.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+running fm/newer-01 aaaaaaa 2026-08-13 12:10
+running fm/newer-02 aaaaaaa 2026-08-13 12:09
+running fm/newer-03 aaaaaaa 2026-08-13 12:08
+running fm/newer-04 aaaaaaa 2026-08-13 12:07
+running fm/newer-05 aaaaaaa 2026-08-13 12:06
+running fm/newer-06 aaaaaaa 2026-08-13 12:05
+running fm/newer-07 aaaaaaa 2026-08-13 12:04
+running fm/newer-08 aaaaaaa 2026-08-13 12:03
+running fm/newer-09 aaaaaaa 2026-08-13 12:02
+running fm/newer-10 aaaaaaa 2026-08-13 12:01
+running fm/feat-deep-run ${short} 2026-08-13 12:00
+EOF
+)"
+  FM_CREW_STATE_RUNS_LIMIT=12
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
+  out=$(run_crew_state "$d" feat-deep-run)
+  assert_contains "$out" "state: working" "an active run beyond the home window remains authoritative"
+  assert_contains "$out" "source: run-step" "the deep runs-list match remains run-step sourced"
+  grep -Fxq 'runs --limit 12' "$FM_FAKE_NM_CALL_LOG" \
+    || fail "the configured runs-list limit was not used: $(cat "$FM_FAKE_NM_CALL_LOG")"
+  pass "cross-branch attribution honors the configured runs-list limit"
 }
 
 # The runs list is newest-first; a branch with an OLDER completed run must not
@@ -1417,10 +1459,9 @@ test_cross_branch_attribution_picks_most_recent_row() {
   fm_write_meta "$d/state/feat-fq.meta" "window=fm:fm-feat-fq" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[3]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01NEW,fm/feat-fq,running,${short},
-  01OLD,fm/feat-fq,completed,bbbbbbb,https://github.com/o/r/pull/1
+running fm/other-crew aaaaaaa 2026-08-13 12:02
+running fm/feat-fq ${short} 2026-08-13 12:01
+completed fm/feat-fq bbbbbbb 2026-08-13 12:00 https://github.com/o/r/pull/1
 EOF
 )"
   local out; out=$(run_crew_state "$d" feat-fq)
@@ -1440,9 +1481,8 @@ test_coarse_terminal_run_with_park_reports_the_wait() {
   printf 'captain-held: awaiting release approval\n' > "$d/state/coarse-terminal-park.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01PARK,fm/feat-coarse-terminal-park,completed,${short},
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+completed fm/feat-coarse-terminal-park ${short} 2026-08-13 12:00
 EOF
 )"
   out=$(run_crew_state "$d" coarse-terminal-park)
@@ -1467,8 +1507,12 @@ test_full_and_coarse_paths_share_run_identity() {
   assert_contains "$out" "state: working" "the full active run outranks the stale hold"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+cancelled fm/feat-full-coarse-identity ${short} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_AXI_HOME="$(cat <<EOF
+runs[1]{id,branch,status,head,pr}:
   01RUN,fm/feat-full-coarse-identity,cancelled,${short},
 EOF
 )"
@@ -1496,8 +1540,12 @@ test_coarse_completed_preserves_observed_merge() {
   printf 'captain-held: stale hold appended after merge\n' >> "$d/state/coarse-observed-merge.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+completed fm/feat-coarse-observed-merge ${short} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_AXI_HOME="$(cat <<EOF
+runs[1]{id,branch,status,head,pr}:
   01MERGED,fm/feat-coarse-observed-merge,completed,${short},
 EOF
 )"
@@ -1522,8 +1570,12 @@ test_coarse_rerun_does_not_inherit_prior_merge_evidence() {
   printf 'captain-held: second run awaiting release approval\n' >> "$d/state/coarse-rerun-merge.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+completed fm/feat-coarse-rerun-merge ${short} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_AXI_HOME="$(cat <<EOF
+runs[1]{id,branch,status,head,pr}:
   01RUN-B,fm/feat-coarse-rerun-merge,completed,${short},
 EOF
 )"
@@ -1543,9 +1595,8 @@ test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
   printf 'done: PR https://github.com/o/r/pull/4 checks green\n' > "$d/state/feat-coarseready.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01READY,fm/feat-coarseready,running,${short},
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+running fm/feat-coarseready ${short} 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
@@ -1567,8 +1618,7 @@ test_other_branch_run_ignored() {
   printf 'done: implemented, ready to validate\n' > "$d/state/feat-g.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/some-other)"
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
-runs[1]{id,branch,status,head,pr}:
-  01OTHER,fm/some-other,running,aaaaaaa,
+running fm/some-other aaaaaaa 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2062,9 +2112,8 @@ test_provably_working_via_runs_list_fallback() {
   fm_write_meta "$d/state/feat-provable.meta" "window=fm:fm-feat-provable" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01PROVABLE,fm/feat-provable,running,${short},
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+running fm/feat-provable ${short} 2026-08-13 12:00
 EOF
 )"
   PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-provable \
@@ -2083,8 +2132,7 @@ test_not_provably_working_when_stopped() {
   # only remaining signal is the pane, which is idle.
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
-runs[1]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2324,8 +2372,7 @@ test_completed_lookup_without_run_does_not_degrade() {
   # the bare status answer and the runs list.
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
-runs[1]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
+running fm/other-crew aaaaaaa 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2451,8 +2498,7 @@ test_runs_list_unresolvable_head_still_rejected() {
   printf 'working: stage 2 implementation in progress\n' > "$d/state/coarseunres.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
-  01UNRESOLVED,fm/feat-coarseunres,running,${UNRESOLVABLE_HEAD},
+running fm/feat-coarseunres ${UNRESOLVABLE_HEAD} 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2495,9 +2541,8 @@ test_coarse_running_row_behind_tip_does_not_attribute() {
   fm_write_meta "$d/state/coarsebehind.meta" "window=fm:fm-coarsebehind" "worktree=$d/wt" "kind=ship" "harness=claude"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[2]{id,branch,status,head,pr}:
-  01OTHER,fm/other-crew,running,aaaaaaa,
-  01BEHIND,fm/feat-coarse-behind,running,${base_short},
+running fm/other-crew aaaaaaa 2026-08-13 12:01
+running fm/feat-coarse-behind ${base_short} 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2544,8 +2589,7 @@ test_terminal_run_behind_advanced_tip_still_invalidates() {
   printf 'working: stage 2 implementation in progress\n' > "$d/state/terminalbehind.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
-  01TERMINAL,fm/feat-terminal-behind,completed,${base_short},
+completed fm/feat-terminal-behind ${base_short} 2026-08-13 12:00
 EOF
 )"
   FM_FAKE_BUSY=0
@@ -2599,6 +2643,7 @@ test_prior_run_park_does_not_mask_same_head_rerun_failure
 test_terminal_rerun_parked_before_first_read_reports_the_wait
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
+test_cross_branch_attribution_honors_configured_runs_limit
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_terminal_run_with_park_reports_the_wait
 test_full_and_coarse_paths_share_run_identity
