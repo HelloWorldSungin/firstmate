@@ -105,6 +105,8 @@ test_repeated_same_episode_prints_reminder_only() {
     || fail "second stale call repeated the full banner: $out2"
   assert_contains "$out2" "full banner already printed this episode" \
     "second stale call did not print the concise reminder"
+  assert_contains "$out2" "WILL still run" \
+    "same-episode reminder omitted the continue line; a revert to a bare reminder would fail here"
   marker="$(case_home "$dir")/state/.guard-watcher-stale-banner"
   assert_present "$marker" "stale banner marker was not written under the owning home"
   lines=$(awk 'END { print NR + 0 }' "$marker")
@@ -215,6 +217,62 @@ test_queued_wake_warning_stays_independent() {
   assert_contains "$out2" "queued wakes pending" \
     "queued wake warning must not be suppressed by stale-banner deduplication"
   pass "fm-guard stale banner: queued-wake warning remains independent"
+}
+
+# Isolation: healthy auto-arm beacon, so the watcher-down banner cannot supply
+# the continue line. This fails if the queued-wakes branch reverts to a bare
+# warning while still printing "queued wakes pending".
+test_queued_wake_warning_carries_continue_line() {
+  local dir home out rc
+  dir=$(make_guard_case queued-wake-continue)
+  home=$(case_home "$dir")
+  touch "$home/state/.last-watcher-beat"
+  printf 'signal: %s/state/task.status\n' "$home" > "$home/state/.wake-queue"
+  rc=0
+  out=$(
+    FM_ROOT_OVERRIDE="$(case_root "$dir")" \
+      FM_HOME="$home" \
+      FM_GUARD_GRACE=999 \
+      FM_SUPERVISION_MODEL=autoarm \
+      FM_GUARD_CONTINUE_LINE='CALLER CONTINUE LINE: the guarded operation WILL still run.' \
+      "$ROOT/bin/fm-guard.sh" 2>&1
+  ) || rc=$?
+  expect_code 0 "$rc" "queued-wakes warning must stay advisory and still exit 0"
+  assert_contains "$out" "queued wakes pending - drain them" \
+    "queued-wakes warning missing from the isolated wake-pending case"
+  assert_not_contains "$out" "WATCHER DOWN" \
+    "this case must trip only queued wakes so the continue line cannot come from the watcher banner"
+  assert_contains "$out" "CALLER CONTINUE LINE: the guarded operation WILL still run." \
+    "queued-wakes warning omitted the caller-supplied continue line; a revert to a bare warning would fail here"
+  pass "fm-guard: queued-wakes warning carries the caller-supplied continue line"
+}
+
+# Same isolation as the writable case: the read-only "left untouched" wording is
+# even easier to misread as "nothing happened" without the continue line.
+test_queued_wake_read_only_warning_carries_continue_line() {
+  local dir home out rc
+  dir=$(make_guard_case queued-wake-continue-ro)
+  home=$(case_home "$dir")
+  touch "$home/state/.last-watcher-beat"
+  printf 'signal: %s/state/task.status\n' "$home" > "$home/state/.wake-queue"
+  rc=0
+  out=$(
+    FM_ROOT_OVERRIDE="$(case_root "$dir")" \
+      FM_HOME="$home" \
+      FM_GUARD_GRACE=999 \
+      FM_SUPERVISION_MODEL=autoarm \
+      FM_GUARD_READ_ONLY=1 \
+      FM_GUARD_CONTINUE_LINE='CALLER CONTINUE LINE: the guarded operation WILL still run.' \
+      "$ROOT/bin/fm-guard.sh" 2>&1
+  ) || rc=$?
+  expect_code 0 "$rc" "read-only queued-wakes warning must stay advisory and still exit 0"
+  assert_contains "$out" "left untouched because this session lacks verified fleet-lock ownership" \
+    "read-only queued-wakes warning missing from the isolated wake-pending case"
+  assert_not_contains "$out" "WATCHER DOWN" \
+    "this case must trip only queued wakes so the continue line cannot come from the watcher banner"
+  assert_contains "$out" "CALLER CONTINUE LINE: the guarded operation WILL still run." \
+    "read-only queued-wakes warning omitted the caller-supplied continue line; a revert to a bare warning would fail here"
+  pass "fm-guard: read-only queued-wakes warning carries the caller-supplied continue line"
 }
 
 test_read_only_before_writable_does_not_consume_full_banner() {
@@ -386,6 +444,8 @@ test_healthy_recovery_rearms_next_stale_episode
 test_concurrent_same_episode_prints_one_full_banner
 test_home_isolation
 test_queued_wake_warning_stays_independent
+test_queued_wake_warning_carries_continue_line
+test_queued_wake_read_only_warning_carries_continue_line
 test_read_only_before_writable_does_not_consume_full_banner
 test_read_only_during_episode_observes_without_mutating_marker
 test_healthy_read_only_does_not_clear_marker

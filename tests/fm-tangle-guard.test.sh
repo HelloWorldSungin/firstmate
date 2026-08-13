@@ -83,9 +83,11 @@ test_guard_banner() {
   assert_contains "$out" "WORKTREE TANGLE" "guard did not alarm on a feature branch in the primary"
   assert_contains "$out" "fm/tangle-aa1" "guard banner did not name the offending branch"
   assert_contains "$out" "checkout main" "guard banner did not print the restore remediation"
+  assert_contains "$out" "WILL still run" "tangle banner omitted the continue line; a revert to a bare tangle alarm would fail here"
   out=$(FM_GUARD_READ_ONLY=1 run_guard "$repo")
   assert_contains "$out" "WORKTREE TANGLE" "read-only guard did not keep the tangle alarm"
   assert_contains "$out" "read-only session must leave restore work" "read-only guard did not explain restore ownership"
+  assert_contains "$out" "WILL still run" "read-only tangle banner omitted the continue line"
   assert_not_contains "$out" "checkout main" "read-only guard printed a state-changing restore command"
   pass "fm-guard: bordered tangle banner fires only for a feature branch and suppresses repair commands in read-only mode"
 }
