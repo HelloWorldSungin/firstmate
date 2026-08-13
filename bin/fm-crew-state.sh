@@ -54,9 +54,11 @@
 #      A terminal pass whose own `ci` step SKIPPED never observed the forge at
 #      all (ci is the step that watches a PR to merged or closed, and no-mistakes
 #      skips it on a provider it does not recognize), so it reports the local
-#      pipeline passing rather than naming a merge, and a declared external wait
-#      standing over such a run is reported as that wait - the run finished
-#      locally, the PR is open, and nobody has acted on it yet.
+#      pipeline passing rather than naming a merge. A declared pause or
+#      captain-held line recorded after any terminal run-step verdict (done or
+#      failed) is newer information than that verdict and is reported as that
+#      wait, except a forge-observed merge (outcome=passed with ci completed),
+#      where the wait is deterministically stale and done stays authoritative.
 #      See nm_forge_outcome_unobserved for why the verdict refuses to claim a
 #      forge outcome rather than going and reading one.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
@@ -893,20 +895,21 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  # A terminal LOCAL pass reports that the crew's pipeline finished. It is not
-  # evidence about what the crew is waiting for now, because the run never looked
-  # at the forge: the PR it pushed is open, and whoever must act on it has not.
-  # So a declared external wait standing over such a run does NOT contradict it -
-  # the two agree, and the wait is the crew's actual current state. Reporting
-  # `done` here instead is what let a correctly declared, still-true wait keep
-  # reading as a finished task, so the watcher classified it as neither working
-  # nor paused and surfaced it as a possible wedge over and over.
-  #
-  # Narrow on purpose. A run that DID observe the forge and passed means the PR
-  # merged, so any wait over it is genuinely over and stale - that case keeps
-  # reporting done. And a wait is honored only where the crew declared one; a
-  # crew that simply went quiet still reports done and stays a wedge suspect.
-  if [ "$RUN_STATE" = "done" ] && [ "$FORGE_UNOBSERVED" = 1 ] && status_is_paused "$LOG_LINE"; then
+  # Terminal run-step verdicts describe the pipeline's last observed gate
+  # outcome, not what the crew is waiting on now. A declared pause or
+  # captain-held line recorded after that terminal state is newer information -
+  # the finish is exactly what prompted the park. Honor it unless the run
+  # genuinely observed a forge merge (outcome=passed with ci completed), where
+  # any wait over it is deterministically stale.
+  terminal_done_is_observed_merge() {
+    [ "$RUN_STATE" = "done" ] \
+      && [ "$FORGE_UNOBSERVED" = 0 ] \
+      && case "$RUN_DETAIL" in *merged/closed*) return 0 ;; esac
+    return 1
+  }
+  if { [ "$RUN_STATE" = "done" ] || [ "$RUN_STATE" = failed ]; } \
+    && status_is_paused_or_captain_held "$LOG_LINE" \
+    && ! terminal_done_is_observed_merge; then
     runstep_record_clear
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}$RUN_DETAIL"
   fi
