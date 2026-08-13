@@ -674,7 +674,6 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
-HARNESS=$(fm_meta_get "$META" harness)
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
@@ -1134,17 +1133,6 @@ remove_kimi_turnend_auth() {
   case "$token" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   hooks_dir="$HOME/.kimi-code/fm-turn-end.d"
   rm -f "$hooks_dir/$token"
-}
-
-remove_submit_ack_wiring() {  # <harness> <worktree> <state-dir> <task-id>
-  case "$1" in
-    cursor|agy)
-      "$SCRIPT_DIR/fm-submit-ack-hook.sh" remove "$1" "$2" "$3" "$4" || {
-        echo "error: could not remove $1 prompt-acceptance wiring for $4" >&2
-        return 1
-      }
-      ;;
-  esac
 }
 
 retire_busy_state() {
@@ -2557,7 +2545,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_harness child_orca_worktree_id child_return_rc child_busy_gen child_nativeturnend_key child_model_output
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_nativeturnend_key child_model_output
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2575,7 +2563,6 @@ cleanup_firstmate_home_children() {
     child_wt=$(meta_value "$child_meta" worktree)
     child_proj=$(meta_value "$child_meta" project)
     child_kind=$(meta_value "$child_meta" kind)
-    child_harness=$(meta_value "$child_meta" harness)
     [ -n "$child_kind" ] || child_kind=ship
     child_backend=$(fm_backend_of_meta "$child_meta")
     if [ "$child_backend" = orca ]; then
@@ -2618,7 +2605,6 @@ cleanup_firstmate_home_children() {
       fi
     else
       remove_owned_agy_trust "$sub_state" "$child_id" "secondmate child $child_id" || return 1
-      remove_submit_ack_wiring "$child_harness" "$child_wt" "$sub_state" "$child_id" || return 1
       if [ "$child_backend" = orca ]; then
         if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
           validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
@@ -2873,8 +2859,6 @@ if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
 fi
 
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
-remove_submit_ack_wiring "$HARNESS" "$WT" "$STATE" "$ID" || exit 1
-
 # Detach only this task's conventional branch before removing its worktree.
 # The exact branch is reaped afterwards, when the merge proof prepared above
 # still agrees and no worktree can need it.

@@ -724,7 +724,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
 # fm_backend_send_text_submit: submit text once and verify, retrying only a
 # backend's separate submission action (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
-fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness] [state-dir] [task-id]
+fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label] [expected-harness]
   local backend=$1
   shift
   fm_backend_source "$backend" || return 1

@@ -330,13 +330,11 @@ setup_teardown_case() {
 }
 
 test_teardown_removes_owned_agy_trust() {
-  local id home wt fakebin settings out order_log plugin
+  local id home wt fakebin settings out order_log
   id=agy-teardown-z3
   IFS='|' read -r home wt fakebin settings <<EOF
 $(setup_teardown_case agy-teardown "$id" agy yes)
 EOF
-  plugin=$("$ROOT/bin/fm-submit-ack-hook.sh" install agy "$wt" "$home/state" "$id") \
-    || fail "agy teardown fixture could not install prompt-acceptance wiring"
   order_log="$home/treehouse-order.log"
   out=$(FM_TEST_TREEHOUSE_LOG="$order_log" FM_TEST_AGY_TRUST_ABSENT_PATH="$wt" \
     run_teardown "$home" "$fakebin" "$settings" "$id") \
@@ -344,7 +342,6 @@ EOF
   [ "$(jq -c '.trustedWorkspaces' "$settings")" = '["/home/cap"]' ] \
     || fail "agy teardown did not drop the firstmate-owned worktree path (got $(jq -c '.trustedWorkspaces' "$settings"))"
   assert_absent "$home/state/$id.agy-trust" "teardown should remove the ownership marker after a successful trust removal"
-  assert_absent "$plugin" "teardown should remove task-local agy prompt-acceptance wiring"
   assert_absent "$home/state/$id.meta" "teardown should remove the task meta"
   assert_present "$order_log" "teardown did not return the worktree after removing owned trust"
   pass "agy teardown removes firstmate-owned trust before returning the worktree lease"
@@ -520,19 +517,7 @@ case "$cmd" in
       exit 1
     fi
     [ "${FM_HERDR_FAKE_PROMPT:-ok}" != fail ] || exit 1
-    if [ -n "${FM_HERDR_FAKE_ACK_HOOK:-}" ]; then
-      case "${FM_HERDR_FAKE_ACK_HARNESS:-}" in
-        cursor)
-          jq -n --arg prompt "${FM_HERDR_FAKE_ACK_TEXT:-${4:-}}" '{prompt:$prompt}' \
-            | "$FM_HERDR_FAKE_ACK_HOOK" event cursor "$FM_HERDR_FAKE_ACK_STATE" "$FM_HERDR_FAKE_ACK_ID" >/dev/null
-          ;;
-        agy)
-          jq -n --arg prompt "${FM_HERDR_FAKE_ACK_TEXT:-${4:-}}" '{lastUserInput:$prompt}' \
-            | "$FM_HERDR_FAKE_ACK_HOOK" event agy "$FM_HERDR_FAKE_ACK_STATE" "$FM_HERDR_FAKE_ACK_ID" >/dev/null
-          ;;
-      esac
-    fi
-    [ "${FM_HERDR_FAKE_PROMPT_AFTER_ACK:-ok}" != fail ] || exit 1
+    [ "${FM_HERDR_FAKE_PROMPT_AFTER_WRITE:-ok}" != fail ] || exit 1
     printf '{"result":{"type":"agent_prompted","agent":{"agent":"%s","agent_status":"%s","terminal_id":"%s","pane_id":"%s"}}}\n' \
       "${FM_HERDR_FAKE_PROMPT_AGENT:-${FM_HERDR_FAKE_AGENT:-claude_code}}" \
       "${FM_HERDR_FAKE_PROMPT_STATUS:-working}" \
@@ -567,38 +552,6 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-test_submit_ack_wiring_install_and_remove() {
-  local harness=$1 case_dir wt state plugin hooks command
-  case_dir="$TMP_ROOT/submit-ack-wiring-$harness"
-  wt="$case_dir/wt"
-  state="$case_dir/state"
-  mkdir -p "$wt" "$state"
-  plugin=$("$ROOT/bin/fm-submit-ack-hook.sh" install "$harness" "$wt" "$state" "lane-$harness") \
-    || fail "$harness prompt-acceptance wiring did not install"
-  case "$harness" in
-    cursor)
-      hooks="$plugin/hooks/hooks.json"
-      [ "$plugin" = "$state/lane-$harness.cursor-submit-ack-plugin" ] \
-        || fail "cursor prompt-acceptance plugin used the wrong state path"
-      [ "$(jq -r '.hooks // empty' "$plugin/.cursor-plugin/plugin.json")" = "./hooks/hooks.json" ] \
-        || fail "cursor prompt-acceptance manifest did not register its hook configuration"
-      command=$(jq -r '.hooks.beforeSubmitPrompt[0].command // empty' "$hooks")
-      ;;
-    agy)
-      hooks="$plugin/hooks.json"
-      [ "$plugin" = "$wt/.agents/plugins/fm-submit-ack-lane-$harness" ] \
-        || fail "agy prompt-acceptance plugin used the wrong worktree path"
-      command=$(jq -r '.["fm-submit-ack-lane-agy"].PreInvocation[0].command // empty' "$hooks")
-      ;;
-  esac
-  assert_contains "$command" "fm-submit-ack-hook.sh' event $harness" \
-    "$harness prompt-acceptance plugin did not wire its harness event"
-  "$ROOT/bin/fm-submit-ack-hook.sh" remove "$harness" "$wt" "$state" "lane-$harness" \
-    || fail "$harness prompt-acceptance wiring did not remove cleanly"
-  assert_absent "$plugin" "$harness prompt-acceptance plugin survived removal"
-  pass "$harness prompt-acceptance wiring installs and removes task-locally"
-}
-
 test_accepted_cursor_and_agy_prompt_is_confirmed() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-land-$harness"
@@ -612,12 +565,10 @@ test_accepted_cursor_and_agy_prompt_is_confirmed() {
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
-    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_ACK_HOOK="$ROOT/bin/fm-submit-ack-hook.sh" \
-    FM_HERDR_FAKE_ACK_HARNESS="$harness" FM_HERDR_FAKE_ACK_STATE="$home/state" \
-    FM_HERDR_FAKE_ACK_ID="lane-$harness" \
+    FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "accepted $harness prompt should be confirmed by its exact harness acknowledgment"
+  expect_code 0 "$rc" "accepted $harness prompt should be confirmed by the atomic prompt response"
   assert_no_grep '^error:|verdict=' "$err" \
     "accepted $harness prompt reported a delivery error"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
@@ -626,39 +577,10 @@ test_accepted_cursor_and_agy_prompt_is_confirmed() {
     "live $harness delivery must not leave separately typed text"
   assert_absent "$case_dir/fake/enter_log" \
     "live $harness delivery must not use an unattributable Enter"
-  assert_absent "$home/state/lane-$harness.submit-pending" \
-    "confirmed $harness delivery left its pending prompt behind"
-  assert_absent "$home/state/lane-$harness.submit-ack" \
-    "confirmed $harness delivery left its acknowledgment behind"
-  pass "an exact $harness prompt-acceptance event confirms landed delivery"
+  pass "an identity-matched $harness atomic prompt confirms landed delivery"
 }
 
-test_mismatched_cursor_and_agy_prompt_ack_is_unverifiable() {
-  local harness=$1 case_dir home proj wt fakebin err rc
-  case_dir="$TMP_ROOT/send-wrong-ack-$harness"
-  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
-  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
-  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
-  touch "$home/state/.last-watcher-beat"
-  fm_write_meta "$home/state/lane-$harness.meta" \
-    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
-    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
-  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
-
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
-    FM_HERDR_PROMPT_ACK_POLLS=1 FM_HERDR_FAKE_AGENT="$harness" \
-    FM_HERDR_FAKE_ACK_HOOK="$ROOT/bin/fm-submit-ack-hook.sh" \
-    FM_HERDR_FAKE_ACK_HARNESS="$harness" FM_HERDR_FAKE_ACK_STATE="$home/state" \
-    FM_HERDR_FAKE_ACK_ID="lane-$harness" FM_HERDR_FAKE_ACK_TEXT="different message" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
-  rc=$?
-  expect_code 3 "$rc" "a mismatched $harness acceptance event must remain unverifiable"
-  assert_contains "$(cat "$err")" "verdict=unverifiable" \
-    "a mismatched $harness acceptance event did not retain uncertainty"
-  pass "a mismatched $harness acceptance event cannot confirm delivery"
-}
-
-test_landed_cursor_and_agy_prompt_survives_transport_error() {
+test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-acked-error-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -671,15 +593,13 @@ test_landed_cursor_and_agy_prompt_survives_transport_error() {
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
-    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_ACK_HOOK="$ROOT/bin/fm-submit-ack-hook.sh" \
-    FM_HERDR_FAKE_ACK_HARNESS="$harness" FM_HERDR_FAKE_ACK_STATE="$home/state" \
-    FM_HERDR_FAKE_ACK_ID="lane-$harness" FM_HERDR_FAKE_PROMPT_AFTER_ACK=fail \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_AFTER_WRITE=fail \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 0 "$rc" "an accepted $harness prompt must outrank a later transport error"
-  assert_no_grep '^error:|verdict=' "$err" \
-    "accepted $harness prompt reported a transport error"
-  pass "an accepted $harness prompt survives a later transport error"
+  expect_code 3 "$rc" "an untyped $harness transport failure must remain unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "an untyped $harness transport failure did not retain uncertainty"
+  pass "an ambiguous $harness prompt failure remains unverifiable"
 }
 
 test_metadata_free_cursor_and_agy_send_uses_live_identity() {
@@ -694,12 +614,12 @@ test_metadata_free_cursor_and_agy_send_uses_live_identity() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "default:w1:p1" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 3 "$rc" "metadata-free explicit $harness target should use its live identity and remain unverifiable"
-  assert_contains "$(cat "$err")" "verdict=unverifiable" \
-    "metadata-free explicit $harness target should retain the write-boundary uncertainty"
+  expect_code 0 "$rc" "metadata-free explicit $harness target should confirm an accepted atomic prompt"
+  assert_no_grep '^error:|verdict=' "$err" \
+    "metadata-free explicit $harness target reported a delivery error"
   [ "$(wc -l < "$case_dir/fake/prompt_log")" -eq 1 ] \
     || fail "metadata-free explicit $harness target did not receive one atomic prompt"
-  pass "a metadata-free explicit $harness target uses its live Herdr identity"
+  pass "a metadata-free explicit $harness target confirms delivery from its live identity"
 }
 
 test_identity_mismatch_is_undelivered_and_restores_scout() {
@@ -949,14 +869,10 @@ test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
 test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
-test_submit_ack_wiring_install_and_remove cursor
-test_submit_ack_wiring_install_and_remove agy
 test_accepted_cursor_and_agy_prompt_is_confirmed cursor
 test_accepted_cursor_and_agy_prompt_is_confirmed agy
-test_mismatched_cursor_and_agy_prompt_ack_is_unverifiable cursor
-test_mismatched_cursor_and_agy_prompt_ack_is_unverifiable agy
-test_landed_cursor_and_agy_prompt_survives_transport_error cursor
-test_landed_cursor_and_agy_prompt_survives_transport_error agy
+test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable cursor
+test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable agy
 test_metadata_free_cursor_and_agy_send_uses_live_identity cursor
 test_metadata_free_cursor_and_agy_send_uses_live_identity agy
 test_identity_mismatch_is_undelivered_and_restores_scout cursor

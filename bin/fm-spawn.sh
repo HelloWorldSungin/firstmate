@@ -156,8 +156,8 @@
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
-# cursor/agy install prompt-acceptance hooks while the watcher derives their
-# completion from herdr-native agent state (bin/fm-transition-lib.sh).
+# cursor/agy install no hook at all: the watcher derives their completion from
+# herdr-native agent state (bin/fm-transition-lib.sh, fm_transition_native_completion).
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # On success prints: spawned <id> harness=<name> kind=<ship|design|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
@@ -666,8 +666,6 @@ CONFIG_INHERIT_LOCK_HELD=0
 # trap rolls that entry (and its ownership marker) back, so a global trust grant
 # never survives a launch that never happened. Cleared once the spawn commits.
 AGY_TRUST_ROLLBACK_PATH=
-CURSOR_SUBMIT_ACK_PLUGIN=
-AGY_SUBMIT_ACK_PLUGIN=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -688,14 +686,6 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
-  if [ "$status" -ne 0 ] && [ -n "${CURSOR_SUBMIT_ACK_PLUGIN:-}" ]; then
-    "$FM_ROOT/bin/fm-submit-ack-hook.sh" remove cursor "${WT:-}" "$STATE_REAL" "$ID" 2>/dev/null || true
-    CURSOR_SUBMIT_ACK_PLUGIN=
-  fi
-  if [ "$status" -ne 0 ] && [ -n "${AGY_SUBMIT_ACK_PLUGIN:-}" ]; then
-    "$FM_ROOT/bin/fm-submit-ack-hook.sh" remove agy "${WT:-}" "$STATE_REAL" "$ID" 2>/dev/null || true
-    AGY_SUBMIT_ACK_PLUGIN=
-  fi
   # Roll back a NEW agy workspace-trust grant if the spawn is aborting: firstmate
   # created it for a launch that is not happening, so remove the shared global
   # entry it owns (and the ownership marker). Only fires on failure and only for a
@@ -2209,16 +2199,17 @@ EOF
       exclude_path '.fm-kimi-turnend'
       ;;
     cursor*)
-      CURSOR_SUBMIT_ACK_PLUGIN=$(
-        "$FM_ROOT/bin/fm-submit-ack-hook.sh" install cursor "$WT" "$STATE_REAL" "$ID"
-      ) || {
-        echo "error: could not install cursor prompt-acceptance wiring for $ID" >&2
-        exit 1
-      }
+      # cursor (crew-only, herdr-only): turn-end notification is the watcher's
+      # debounced native-idle detector (fm-watch.sh maybe_native_turnend), so NO
+      # launch-time hook is installed and NO repo hook file (.cursor/hooks.json) is
+      # ever written. cursor's launch-time --trust already covers its workspace
+      # trust modal, so unlike agy there is nothing to seed here.
+      :
       ;;
     agy*)
       # agy (crew-only, herdr-only): turn-end notification is the watcher's
-      # debounced native-idle detector. Workspace trust remains a separate per-
+      # debounced native-idle detector (no hook, no repo .agents/hooks.json write). What agy
+      # DOES need is workspace trust: an interactive launch gates on a per-
       # workspace trust modal that --dangerously-skip-permissions does not cover,
       # and trust is an EXACT-path entry in agy's SHARED global settings. Pre-seed
       # the exact worktree path before launch (bin/fm-agy-trust-lib.sh). Fail
@@ -2244,13 +2235,6 @@ EOF
         AGY_TRUST_ROLLBACK_PATH=$WT
         printf '%s' "$WT" > "$STATE/$ID.agy-trust"
       fi
-      AGY_SUBMIT_ACK_PLUGIN=$(
-        "$FM_ROOT/bin/fm-submit-ack-hook.sh" install agy "$WT" "$STATE_REAL" "$ID"
-      ) || {
-        echo "error: could not install agy prompt-acceptance wiring for $ID" >&2
-        exit 1
-      }
-      exclude_path ".agents/plugins/fm-submit-ack-$ID/"
       ;;
   esac
 fi
@@ -2382,17 +2366,13 @@ sq_turnend=$(fm_launch_shell_quote "$TURNEND")
 sq_piext=$(fm_launch_shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
-sq_cursor_plugin=
-if [ "$HARNESS" = cursor ]; then
-  sq_cursor_plugin="--plugin-dir $(fm_launch_shell_quote "$CURSOR_SUBMIT_ACK_PLUGIN") "
-fi
 # #909's canonical operational-input encoder path, threaded into every template.
 sq_opinput=$(fm_launch_shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
 EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
 LAUNCH=$(fm_launch_render \
   "$LAUNCH" "$MODELFLAG" "$EFFORTFLAG" "$sq_brief" "$sq_turnend" \
-  "$sq_piext" "$sq_piturnend" "$sq_piwatch" "$sq_cursor_plugin" "$sq_opinput" \
+  "$sq_piext" "$sq_piturnend" "$sq_piwatch" "$sq_opinput" \
   "$RAW_LAUNCH") || {
   echo "error: could not render launch command for harness '$HARNESS'" >&2
   exit 1

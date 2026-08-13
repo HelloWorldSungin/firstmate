@@ -197,8 +197,8 @@ An environment variable alone is not reliable when another Herdr server is runni
 
 Literal text and Enter are separate operations for ordinary steers on composer-verifiable harnesses.
 Cursor and agy instead use Herdr's atomic `agent prompt` operation after a zero-text probe proves that operation exists on the named session server and the live native identity matches any supplied harness metadata.
-Each spawned task carries a prompt-acceptance hook that acknowledges only the exact text currently pending in Firstmate state, so a matching Cursor `beforeSubmitPrompt` or agy `PreInvocation` event confirms delivery without trusting Herdr's cached UI state.
-A successful Herdr write without that matching harness acknowledgment remains `unverifiable` with status 3.
+A successful response proves that Herdr accepted the atomic prompt for the same live agent, terminal, and pane in a non-blocked state and confirms delivery.
+A malformed or identity-mismatched success response remains `unverifiable` with status 3.
 An identity mismatch, a pre-existing blocked state, or a deterministic Herdr rejection is known undelivered.
 A transport failure without a machine-readable rejection is unverifiable because acceptance is unknown.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
