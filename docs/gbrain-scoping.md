@@ -115,7 +115,7 @@ When the main brain is stopped or unreachable, the reading home's own search con
 A search asking for the main corpus alone with `--scope main` has no local half to fall back on, so the same outage fails that run with exit 3 rather than reporting an empty result list as an answer.
 When the MiniMax credential is absent or its endpoint is down, synthesis is unavailable and local search is unaffected, matching the single-brain behavior in [`gbrain.md`](gbrain.md).
 A credential that is present but stored too loosely to use fails the check outright instead of degrading it, because that is a finding rather than an outage.
-So does a serving home whose own declared configuration makes hosted synthesis reachable, which no outage explains either ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule, the surfaces the check reads, and the ones it does not).
+So does a serving home in the forbidden hosted-synthesis configuration, which no outage explains either ([`gbrain.md`](gbrain.md#a-home-serving-a-main-brain-carries-no-hosted-synthesis-credentials) owns that rule and its enforcement).
 
 ## Rotation, revocation, and retirement
 

@@ -27,6 +27,9 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
+# Keep bootstrap cases independent of the operator's real runtime credential
+# store. Individual serving-credential cases can override this fixture path.
+export FM_TEST_PI_AUTH_FILE="$TMP_ROOT/absent-auth.json"
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,

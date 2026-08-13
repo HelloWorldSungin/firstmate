@@ -34,10 +34,11 @@
 #                broken local plane - invalid configuration, or a credential
 #                stored too loosely to use - exits non-zero. A home that serves
 #                its brain while hosted synthesis is reachable on it - a usable
-#                credential in its credential plane, or a think endpoint that
-#                leaves this host - fails the serving-credential row for the
-#                same reason, because that configuration is what the read-only
-#                share rule forbids.
+#                credential in its declared or fleet runtime credential plane,
+#                or a declared or runtime think endpoint that leaves this host -
+#                fails the serving-credential row for the same reason, because
+#                that configuration is what the read-only share rule forbids.
+#                An unreadable required plane reports that row as unknown.
 #   token        Mint a short-lived read-only access token for the main brain.
 #                This is the one command that writes a credential to stdout.
 #   grant-read   Register a read-scoped OAuth client on THIS home's brain and
@@ -181,8 +182,8 @@ probe_url() {  # <url> -> 0 reachable
 # `hard` is this run's exit status: any finding sets it. `plane_broken` is the
 # narrower question of whether the configuration this run reads from is
 # unusable, which is what makes a downstream row unanswerable rather than
-# merely bad news. They are not the same: a serving-credential violation is a
-# finding over planes that both read fine, so it must not blank a row whose
+# merely bad news. They are not the same: a proven serving-credential violation
+# is a finding over readable required planes, so it must not blank a row whose
 # answer this run already knows.
 cmd_check() {
   local json_mode=0 hard=0 plane_broken=0 shared local_file url secret_name rc
@@ -233,10 +234,10 @@ cmd_check() {
   done
 
   # docs/gbrain.md owns the rule. A violation is a hard configuration finding;
-  # an unreadable plane is unknown rather than a silent pass. It fails the run
-  # without setting plane_broken: both planes were read, so every row below is
-  # still answerable and the operator reading the violation keeps the context
-  # that tells them which home is serving.
+  # an unreadable plane is unknown rather than a silent pass. A proven violation
+  # fails the run without setting plane_broken: the shared and home-local planes
+  # used by the rows below still read, so the operator keeps the context that
+  # tells them which home is serving.
   fm_gbrain_serving_credential_state "$FM_HOME"
   case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
     ok) check_row serving-credential ok "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
@@ -323,7 +324,7 @@ cmd_check() {
 #
 # docs/gbrain.md owns the rule. This read-only entry point prints one diagnostic
 # line for a violation or unknown verdict and stays silent when clear, so
-# bootstrap can run it without network or GBrain process access.
+# bootstrap can run it synchronously with bounded GBrain runtime-config reads.
 cmd_serving_check() {
   fm_gbrain_serving_credential_state "$FM_HOME"
   case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in

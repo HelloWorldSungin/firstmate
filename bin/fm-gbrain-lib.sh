@@ -421,11 +421,11 @@ fm_gbrain_is_main_brain_owner() {  # <home>
 # it is ok whatever its credential plane holds, and no further plane is read.
 # Past that gate a plane this process cannot read is unknown, never ok.
 #
-# GBrain's runtime models.think and provider_base_urls.* values are read under
-# the resolved GBRAIN_HOME, and the fleet runtime credential is read from
-# $HOME/.pi/agent/auth.json. The runtime calls are bounded because this verdict
-# runs synchronously during session startup. Past the serving gate, a plane that
-# cannot be read is unknown, never ok.
+# GBrain's runtime models.think and its matching provider_base_urls.<provider>
+# value are read under the resolved GBRAIN_HOME, and the fleet runtime
+# credential is read from $HOME/.pi/agent/auth.json. The runtime calls are
+# bounded because this verdict runs synchronously during session startup. Past
+# the serving gate, a plane that cannot be read is unknown, never ok.
 #
 # Sets FM_GBRAIN_SERVING_CREDENTIAL_STATE to ok, serving-with-credential, or
 # unknown, with the reason in FM_GBRAIN_SERVING_CREDENTIAL_DETAIL.
@@ -495,8 +495,9 @@ fm_gbrain_serving_credential_state() {  # <home>
     1) fm_gbrain_serving_verdict ok "this home serves no brain"; return 0 ;;
     *) fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"; return 0 ;;
   esac
-  # Every plane below is read through jq, and jq's absence is not a malformed
-  # configuration: say which tool is missing rather than blaming the config.
+  # The declared JSON planes and runtime credential store rely on jq, and jq's
+  # absence is not a malformed configuration: say which tool is missing rather
+  # than blaming the config.
   if ! command -v jq >/dev/null 2>&1; then
     fm_gbrain_serving_verdict unknown \
       "jq is not installed, so neither this home's serving relationship nor its credential plane could be read"
