@@ -775,7 +775,7 @@ pass "provider configuration failures are unknown rather than absent"
 runtime_hang_home=$(make_home serving-runtime-hang)
 printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$runtime_hang_home/config/gbrain-local.json"
 touch "$runtime_hang_home/data/gbrain/runtime/mock_config_hang"
-FM_GBRAIN_TIMEOUT=1 cli "$runtime_hang_home" check --json
+FM_GBRAIN_TIMEOUT=1 FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$runtime_hang_home" check --json
 [ "$(state_of serving-credential)" = unknown ] \
   || fail "a timed-out runtime query must yield unknown, got '$(state_of serving-credential)'"
 assert_contains "$(detail_of serving-credential)" "timed out after 1s" \
@@ -790,6 +790,55 @@ FM_TEST_PI_AUTH_FILE="$dangling_auth" cli "$credential_only_home" check --json
 assert_contains "$(detail_of serving-credential)" "regular file with mode 0600" \
   "a dangling runtime auth symlink must be refused explicitly"
 pass "dangling runtime credential symlinks yield unknown"
+
+denied_auth_dir="$TMP_ROOT/denied-auth"
+mkdir -p "$denied_auth_dir"
+chmod 000 "$denied_auth_dir"
+[ ! -x "$denied_auth_dir" ] \
+  || fail "the denied-auth fixture remains traversable for uid $(id -u)"
+FM_TEST_PI_AUTH_FILE="$denied_auth_dir/auth.json" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an auth store behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "not a traversable directory" \
+  "an inaccessible auth store must name its denied traversal"
+chmod 700 "$denied_auth_dir"
+pass "an inaccessible runtime credential store yields unknown"
+
+denied_local_home=$(make_home serving-denied-local)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_local_home/config/gbrain-local.json"
+chmod 000 "$denied_local_home/config"
+cli "$denied_local_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a local plane behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_local_home/config"
+pass "an inaccessible serving relationship yields unknown"
+
+denied_secret_home=$(make_home serving-denied-secret)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_secret_home/config/gbrain-local.json"
+install_secret "$denied_secret_home" minimax-key "$MINIMAX_KEY"
+chmod 000 "$denied_secret_home/config/gbrain-secrets"
+cli "$denied_secret_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a declared credential behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_secret_home/config/gbrain-secrets"
+pass "an inaccessible declared credential yields unknown"
+
+denied_runtime_home=$(make_home serving-denied-runtime)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_runtime_home/config/gbrain-local.json"
+chmod 000 "$denied_runtime_home/data/gbrain/runtime"
+cli "$denied_runtime_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a runtime directory behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_runtime_home/data/gbrain/runtime"
+pass "an inaccessible GBrain runtime directory yields unknown"
+
+absent_runtime_home=$(make_home serving-absent-runtime)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$absent_runtime_home/config/gbrain-local.json"
+rmdir "$absent_runtime_home/data/gbrain/pglite"
+cli "$absent_runtime_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an absent runtime directory must yield unknown, got '$(state_of serving-credential)'"
+pass "an absent GBrain runtime directory yields unknown"
 
 # An unreadable or absent runtime plane must yield unknown, never clean and never failed.
 # Fail by: defaulting an unreadable runtime plane to clean/ok or failed.

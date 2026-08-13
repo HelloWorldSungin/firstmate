@@ -187,13 +187,50 @@ fm_gbrain_json_str() {  # <file> <jq-path>
   jq -r "$2 // empty" "$1" 2>/dev/null || true
 }
 
+fm_gbrain_path_state() {  # <path>
+  local path=$1 parent next
+  if [ -L "$path" ] || [ -e "$path" ]; then
+    return 0
+  fi
+  parent=${path%/*}
+  if [ "$parent" = "$path" ]; then
+    parent=.
+  elif [ -z "$parent" ]; then
+    parent=/
+  fi
+  while :; do
+    if [ -L "$parent" ] || [ -e "$parent" ]; then
+      if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
+        fm_gbrain_fail "could not inspect $path: $parent is not a traversable directory"
+        return 2
+      fi
+    fi
+    case $parent in
+      / | .) break ;;
+    esac
+    next=${parent%/*}
+    if [ "$next" = "$parent" ]; then
+      next=.
+    elif [ -z "$next" ]; then
+      next=/
+    fi
+    parent=$next
+  done
+  return 1
+}
+
 # Validate config/gbrain.json. Sets FM_GBRAIN_ERROR and returns 1 on the first
 # problem, naming the exact field, because a half-understood credential config
 # is worse than a refused one.
 fm_gbrain_validate_shared() {  # <file>
-  local file=$1 path value host
+  local file=$1 path value host rc=0
   FM_GBRAIN_ERROR=""
-  [ -e "$file" ] || return 0
+  fm_gbrain_path_state "$file" || rc=$?
+  case $rc in
+    0) ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
   if [ -L "$file" ] || [ ! -f "$file" ]; then
     fm_gbrain_fail "$FM_GBRAIN_SHARED_FILE must be a regular file"
     return 1
@@ -300,9 +337,14 @@ EOF
 }
 
 fm_gbrain_validate_local() {  # <file>
-  local file=$1 path value
+  local file=$1 path value rc=0
   FM_GBRAIN_ERROR=""
-  [ -e "$file" ] || return 0
+  fm_gbrain_path_state "$file" || rc=$?
+  case $rc in
+    0) ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
   if [ -L "$file" ] || [ ! -f "$file" ]; then
     fm_gbrain_fail "$FM_GBRAIN_LOCAL_FILE must be a regular file"
     return 1
@@ -433,24 +475,26 @@ fm_gbrain_runtime_config_get() {  # <gbrain-home> <gbrain-bin> <key>
 }
 
 fm_gbrain_serving_credential_state() {  # <home>
-  local home=$1 shared local_file secret_name="" held="" refused="" rc
-  local think_url think_host also=""
+  local home=$1 shared local_file secret_name="" held="" refused="" rc=0
+  local think_url think_host violation=""
   local gbrain_bin="${FM_GBRAIN_BIN:-gbrain}"
   local runtime_model="" runtime_unreadable=""
   local runtime_provider="" runtime_provider_url="" runtime_provider_host=""
   local runtime_minimax_held=0 runtime_cred_refused=""
   local pi_auth_file="${FM_TEST_PI_AUTH_FILE:-${HOME:-/home/sungin}/.pi/agent/auth.json}"
-  local pi_auth_mode
+  local pi_auth_mode pi_auth_state=0
 
   local_file=$(fm_gbrain_local_path "$home")
 
   # A home with no home-local plane was never marked an owner, so it serves
   # nothing. Answering that before anything else keeps a home that has never
   # configured a brain silent without needing jq or a shared-plane walk.
-  if [ ! -e "$local_file" ]; then
-    fm_gbrain_serving_verdict ok "this home serves no brain"
-    return 0
-  fi
+  fm_gbrain_path_state "$local_file" || rc=$?
+  case $rc in
+    0) ;;
+    1) fm_gbrain_serving_verdict ok "this home serves no brain"; return 0 ;;
+    *) fm_gbrain_serving_verdict unknown "$FM_GBRAIN_ERROR"; return 0 ;;
+  esac
   # Every plane below is read through jq, and jq's absence is not a malformed
   # configuration: say which tool is missing rather than blaming the config.
   if ! command -v jq >/dev/null 2>&1; then
@@ -489,19 +533,14 @@ fm_gbrain_serving_credential_state() {  # <home>
   fi
 
   if [ "$held" = 1 ]; then
-    fm_gbrain_serving_verdict serving-with-credential \
-      "this home serves its brain as the main brain and holds the hosted synthesis credential '$secret_name'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
-    return 0
+    violation="this home serves its brain as the main brain and holds the hosted synthesis credential '$secret_name'; a read-only holder can reach think on it - remove the credential (and think.secret) before serving"
   fi
 
   think_url=$(fm_gbrain_json_str "$shared" '.think.base_url')
   if [ -n "$think_url" ]; then
     think_host=$(fm_gbrain_url_host "$think_url")
     if [ -n "$think_host" ] && ! fm_gbrain_host_is_loopback "$think_host"; then
-      [ -z "$refused" ] || also=" (its credential plane could not be read either: $refused)"
-      fm_gbrain_serving_verdict serving-with-credential \
-        "this home serves its brain as the main brain and points think at the hosted provider $think_host, which a read-only holder can reach and spend under whatever credential the synthesizing process is given$also - remove think.base_url (and think.secret) before serving"
-      return 0
+      [ -n "$violation" ] || violation="this home serves its brain as the main brain and points think at the hosted provider $think_host, which a read-only holder can reach and spend under whatever credential the synthesizing process is given - remove think.base_url (and think.secret) before serving"
     fi
   fi
 
@@ -510,8 +549,10 @@ fm_gbrain_serving_credential_state() {  # <home>
   fm_gbrain_resolve_paths "$home" || rc=$?
   if [ "$rc" -ne 0 ]; then
     runtime_unreadable="$FM_GBRAIN_ERROR"
-  elif [ ! -d "$FM_GBRAIN_HOME_DIR" ] || [ ! -d "$FM_GBRAIN_PGLITE" ]; then
+  elif ! fm_gbrain_path_state "$FM_GBRAIN_HOME_DIR" || [ ! -d "$FM_GBRAIN_HOME_DIR" ] || [ ! -x "$FM_GBRAIN_HOME_DIR" ]; then
     runtime_unreadable="the runtime plane of this home could not be read (no index or runtime directory at ${FM_GBRAIN_HOME_DIR:-$home/$FM_GBRAIN_DEFAULT_SUBDIR/runtime})"
+  elif ! fm_gbrain_path_state "$FM_GBRAIN_PGLITE" || [ ! -d "$FM_GBRAIN_PGLITE" ] || [ ! -x "$FM_GBRAIN_PGLITE" ]; then
+    runtime_unreadable="the runtime plane of this home could not be read (no index or runtime directory at $FM_GBRAIN_PGLITE)"
   elif ! command -v "$gbrain_bin" >/dev/null 2>&1; then
     runtime_unreadable="gbrain binary is not installed ($gbrain_bin), so GBrain's runtime configuration under $FM_GBRAIN_HOME_DIR could not be read"
   else
@@ -524,9 +565,12 @@ fm_gbrain_serving_credential_state() {  # <home>
   fi
 
   # Inspect fleet runtime credential store (pi auth.json)
-  if [ -L "$pi_auth_file" ]; then
+  fm_gbrain_path_state "$pi_auth_file" || pi_auth_state=$?
+  if [ "$pi_auth_state" -eq 2 ]; then
+    runtime_cred_refused=$FM_GBRAIN_ERROR
+  elif [ "$pi_auth_state" -eq 0 ] && [ -L "$pi_auth_file" ]; then
     runtime_cred_refused="refusing $pi_auth_file: it must be a regular file with mode 0600"
-  elif [ -e "$pi_auth_file" ]; then
+  elif [ "$pi_auth_state" -eq 0 ]; then
     if [ ! -f "$pi_auth_file" ]; then
       runtime_cred_refused="refusing $pi_auth_file: it must be a regular file with mode 0600"
     else
@@ -555,22 +599,17 @@ fm_gbrain_serving_credential_state() {  # <home>
         runtime_provider_host=$(fm_gbrain_url_host "$runtime_provider_url")
       fi
       if [ -n "$runtime_provider_host" ] && ! fm_gbrain_host_is_loopback "$runtime_provider_host"; then
-        fm_gbrain_serving_verdict serving-with-credential \
-          "this home serves its brain as the main brain and points models.think at the hosted provider $runtime_model ($runtime_provider_host), which a read-only holder can reach and spend under whatever credential the synthesizing process is given - remove the runtime think configuration before serving"
-        return 0
+        [ -n "$violation" ] || violation="this home serves its brain as the main brain and points models.think at the hosted provider $runtime_model ($runtime_provider_host), which a read-only holder can reach and spend under whatever credential the synthesizing process is given - remove the runtime think configuration before serving"
       fi
     fi
   fi
 
   if [ "$runtime_minimax_held" -eq 1 ]; then
     if [ -n "$runtime_model" ]; then
-      fm_gbrain_serving_verdict serving-with-credential \
-        "this home serves its brain as the main brain, holds a hosted provider credential in $pi_auth_file, and has models.think '$runtime_model' configured; a read-only holder can reach think on it - remove the runtime credential before serving"
+      [ -n "$violation" ] || violation="this home serves its brain as the main brain, holds a hosted provider credential in $pi_auth_file, and has models.think '$runtime_model' configured; a read-only holder can reach think on it - remove the runtime credential before serving"
     else
-      fm_gbrain_serving_verdict serving-with-credential \
-        "this home serves its brain as the main brain and holds a hosted provider credential in $pi_auth_file; a read-only holder can reach think on it - remove the runtime credential before serving"
+      [ -n "$violation" ] || violation="this home serves its brain as the main brain and holds a hosted provider credential in $pi_auth_file; a read-only holder can reach think on it - remove the runtime credential before serving"
     fi
-    return 0
   fi
 
   if [ -n "$runtime_unreadable" ]; then
@@ -583,9 +622,19 @@ fm_gbrain_serving_credential_state() {  # <home>
     return 0
   fi
 
+  if [ -n "$refused" ]; then
+    fm_gbrain_serving_verdict unknown "$refused"
+    return 0
+  fi
+
+  if [ -n "$violation" ]; then
+    fm_gbrain_serving_verdict serving-with-credential "$violation"
+    return 0
+  fi
+
   if [ -z "$held" ]; then
     fm_gbrain_serving_verdict unknown \
-      "${refused:-the credential plane of this home could not be read}"
+      "the credential plane of this home could not be read"
     return 0
   fi
 
@@ -616,7 +665,7 @@ fm_gbrain_file_mode() {  # <path>
 FM_GBRAIN_SECRET=""
 
 fm_gbrain_read_secret() {  # <home> <name>
-  local home=$1 name=$2 path mode
+  local home=$1 name=$2 path mode rc=0
   FM_GBRAIN_ERROR=""
   FM_GBRAIN_SECRET=""
   if ! fm_gbrain_is_secret_name "$name"; then
@@ -624,7 +673,12 @@ fm_gbrain_read_secret() {  # <home> <name>
     return 2
   fi
   path=$(fm_gbrain_secret_path "$home" "$name")
-  [ -e "$path" ] || return 1
+  fm_gbrain_path_state "$path" || rc=$?
+  case $rc in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
   if [ -L "$path" ] || [ ! -f "$path" ]; then
     fm_gbrain_fail "refusing config/$FM_GBRAIN_SECRETS_DIR/$name: it must be a regular file with mode 0600"
     return 2
