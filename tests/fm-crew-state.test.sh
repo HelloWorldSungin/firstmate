@@ -452,6 +452,29 @@ outcome: passed
 EOF
 }
 
+run_passed_ci_incomplete() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,10
+    rebase,completed,0,478
+    review,completed,0,100
+    test,completed,0,100
+    document,completed,0,100
+    lint,completed,0,100
+    push,completed,0,100
+    pr,completed,0,100
+    ci,running,0,100
+outcome: passed
+EOF
+}
+
 run_failed() {  # <branch>
   cat <<EOF
 run:
@@ -1017,14 +1040,16 @@ test_terminal_passed_forge_observed_keeps_merge_claim() {
 # wedge indefinitely.
 test_forge_skipped_pass_under_declared_pause_reports_the_wait() {
   reset_fakes
-  local d; d=$(new_case passed-forge-skipped-paused)
+  local d out; d=$(new_case passed-forge-skipped-paused)
   make_repo_on_branch "$d/wt" fm/feat-gitea-paused
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-gitea-paused.meta" "window=fm:fm-feat-gitea-paused" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://gitea.example.invalid/o/r/pulls/33\n' > "$d/state/feat-gitea-paused.status"
-  printf 'paused: awaiting the merge decision on PR 33\n' >> "$d/state/feat-gitea-paused.status"
   FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-gitea-paused)"
-  local out; out=$(run_crew_state "$d" feat-gitea-paused)
+  out=$(run_crew_state "$d" feat-gitea-paused)
+  assert_contains "$out" "state: done" "the run must reach its terminal verdict before the later wait"
+  printf 'paused: awaiting the merge decision on PR 33\n' >> "$d/state/feat-gitea-paused.status"
+  out=$(run_crew_state "$d" feat-gitea-paused)
   assert_contains "$out" "state: paused" "a declared wait over an unobserved-forge pass is the current state"
   assert_contains "$out" "awaiting the merge decision" "the declared wait's own reason is carried"
   assert_contains "$out" "local pipeline passed" "the finished local pipeline stays visible in the verdict"
@@ -1033,8 +1058,8 @@ test_forge_skipped_pass_under_declared_pause_reports_the_wait() {
     PATH="$d/fakebin:$PATH" bash -c '. "$1/bin/fm-classify-lib.sh"; crew_absorb_class feat-gitea-paused' _ "$ROOT")
   [ "$crew_absorb_class_out" = paused ] \
     || fail "the watcher's absorb classifier read '$crew_absorb_class_out', not the declared pause"
-  [ ! -e "$d/state/feat-gitea-paused.run-step" ] \
-    || fail "a paused verdict must not leave a done run-step record to replay later"
+  out=$(run_crew_state "$d" feat-gitea-paused)
+  assert_contains "$out" "state: paused" "the same declared wait remains current on later reads"
   pass "a declared wait over a locally-passed, forge-unobserved run reports the wait, not done"
 }
 
@@ -1059,13 +1084,16 @@ test_forge_skipped_pass_without_declared_pause_stays_done() {
 # verdict would otherwise mask the declared wait.
 test_captain_held_over_forge_skipped_pass_reports_the_wait() {
   reset_fakes
-  local d; d=$(new_case passed-forge-skipped-captain-held)
+  local d out; d=$(new_case passed-forge-skipped-captain-held)
   make_repo_on_branch "$d/wt" fm/feat-gitea-held
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-gitea-held.meta" "window=fm:fm-feat-gitea-held" "worktree=$d/wt" "kind=ship"
-  printf 'captain-held: PR open awaiting hardware validation before merge\n' > "$d/state/feat-gitea-held.status"
+  printf 'done: local pipeline passed\n' > "$d/state/feat-gitea-held.status"
   FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-gitea-held)"
-  local out; out=$(run_crew_state "$d" feat-gitea-held)
+  out=$(run_crew_state "$d" feat-gitea-held)
+  assert_contains "$out" "state: done" "the local pass is observed before the captain hold"
+  printf 'captain-held: PR open awaiting hardware validation before merge\n' >> "$d/state/feat-gitea-held.status"
+  out=$(run_crew_state "$d" feat-gitea-held)
   assert_contains "$out" "state: paused" "captain-held over a terminal pass is reported as paused"
   assert_contains "$out" "hardware validation" "the captain-held reason is carried"
   assert_contains "$out" "local pipeline passed" "the finished local pipeline stays visible"
@@ -1077,15 +1105,17 @@ test_captain_held_over_forge_skipped_pass_reports_the_wait() {
 # as done when the crew declared a captain-held wait after finishing.
 test_captain_held_over_checks_green_terminal_reports_the_wait() {
   reset_fakes
-  local d; d=$(new_case ci-green-captain-held)
+  local d out; d=$(new_case ci-green-captain-held)
   make_repo_on_branch "$d/wt" fm/feat-cigreen-held
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-cigreen-held.meta" "window=fm:fm-feat-cigreen-held" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://github.com/o/r/pull/9 checks green\n' > "$d/state/feat-cigreen-held.status"
-  printf 'captain-held: PR green awaiting captain merge approval\n' >> "$d/state/feat-cigreen-held.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cigreen-held)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
-  local out; out=$(run_crew_state "$d" feat-cigreen-held)
+  out=$(run_crew_state "$d" feat-cigreen-held)
+  assert_contains "$out" "state: done" "checks-green is observed before the captain hold"
+  printf 'captain-held: PR green awaiting captain merge approval\n' >> "$d/state/feat-cigreen-held.status"
+  out=$(run_crew_state "$d" feat-cigreen-held)
   assert_contains "$out" "state: paused" "captain-held over checks-green terminal is paused"
   assert_contains "$out" "merge approval" "the captain-held reason is carried"
   assert_contains "$out" "checks green" "the checks-green terminal detail stays visible"
@@ -1096,13 +1126,16 @@ test_captain_held_over_checks_green_terminal_reports_the_wait() {
 # Breaks if a cancelled terminal run still outranks a later captain-held park.
 test_captain_held_over_cancelled_run_reports_the_wait() {
   reset_fakes
-  local d; d=$(new_case cancelled-captain-held)
+  local d out; d=$(new_case cancelled-captain-held)
   make_repo_on_branch "$d/wt" fm/feat-cancel-held
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-cancel-held.meta" "window=fm:fm-feat-cancel-held" "worktree=$d/wt" "kind=ship"
-  printf 'captain-held: run cancelled during handoff, awaiting captain decision\n' > "$d/state/feat-cancel-held.status"
+  printf 'failed: run cancelled during handoff\n' > "$d/state/feat-cancel-held.status"
   FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel-held)"
-  local out; out=$(run_crew_state "$d" feat-cancel-held)
+  out=$(run_crew_state "$d" feat-cancel-held)
+  assert_contains "$out" "state: failed" "the cancellation is observed before the captain hold"
+  printf 'captain-held: run cancelled during handoff, awaiting captain decision\n' >> "$d/state/feat-cancel-held.status"
+  out=$(run_crew_state "$d" feat-cancel-held)
   assert_contains "$out" "state: paused" "captain-held over cancelled run is paused"
   assert_contains "$out" "awaiting captain decision" "the captain-held reason is carried"
   assert_contains "$out" "run cancelled" "the cancelled run detail stays visible"
@@ -1110,17 +1143,47 @@ test_captain_held_over_cancelled_run_reports_the_wait() {
   pass "captain-held over a cancelled terminal run reports the wait"
 }
 
+test_pass_without_completed_ci_does_not_suppress_later_wait() {
+  reset_fakes
+  local shape d id branch out
+  for shape in absent incomplete; do
+    d=$(new_case "passed-ci-$shape-held")
+    id="feat-ci-$shape-held"
+    branch="fm/$id"
+    make_repo_on_branch "$d/wt" "$branch"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/$id.meta" "window=fm:fm-$id" "worktree=$d/wt" "kind=ship"
+    printf 'done: local pipeline passed\n' > "$d/state/$id.status"
+    case "$shape" in
+      absent) FM_FAKE_AXI_STATUS="$(run_passed "$branch")" ;;
+      incomplete) FM_FAKE_AXI_STATUS="$(run_passed_ci_incomplete "$branch")" ;;
+    esac
+    out=$(run_crew_state "$d" "$id")
+    assert_contains "$out" "state: done" "$shape ci evidence still reaches a local terminal pass"
+    assert_contains "$out" "forge state not observed" "$shape ci evidence does not prove a forge outcome"
+    assert_not_contains "$out" "merged/closed" "$shape ci evidence does not claim a merge"
+    printf 'captain-held: awaiting the confirmed forge outcome\n' >> "$d/state/$id.status"
+    out=$(run_crew_state "$d" "$id")
+    assert_contains "$out" "state: paused" "$shape ci evidence cannot suppress a later captain hold"
+    assert_not_contains "$out" "state: done" "$shape ci evidence cannot keep the later hold done"
+  done
+  pass "only a completed ci step suppresses a later declared wait"
+}
+
 # Breaks if honoring declared waits over terminal runs inverts too far and masks
 # a forge-observed merge where the wait is genuinely stale.
 test_captain_held_over_observed_merge_stays_done() {
   reset_fakes
-  local d; d=$(new_case passed-forge-observed-held)
+  local d out; d=$(new_case passed-forge-observed-held)
   make_repo_on_branch "$d/wt" fm/feat-gh-held
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-gh-held.meta" "window=fm:fm-feat-gh-held" "worktree=$d/wt" "kind=ship"
-  printf 'captain-held: stale hold after merge\n' > "$d/state/feat-gh-held.status"
+  printf 'done: merged\n' > "$d/state/feat-gh-held.status"
   FM_FAKE_AXI_STATUS="$(run_passed_forge_observed fm/feat-gh-held)"
-  local out; out=$(run_crew_state "$d" feat-gh-held)
+  out=$(run_crew_state "$d" feat-gh-held)
+  assert_contains "$out" "state: done" "the observed merge reaches its terminal verdict"
+  printf 'captain-held: stale hold after merge\n' >> "$d/state/feat-gh-held.status"
+  out=$(run_crew_state "$d" feat-gh-held)
   assert_contains "$out" "state: done" "forge-observed merge stays done"
   assert_contains "$out" "PR merged/closed" "the merge detail is preserved"
   assert_not_contains "$out" "state: paused" "stale captain-held must not mask observed merge"
@@ -1143,6 +1206,25 @@ test_declared_wait_over_active_run_stays_run_step() {
   assert_contains "$out" "validating" "the run-step detail names validation"
   assert_not_contains "$out" "state: paused" "captain-held must not override an advancing run"
   pass "declared wait does not override a still-advancing run"
+}
+
+test_stale_declared_wait_before_resumed_run_stays_failed() {
+  reset_fakes
+  local d out; d=$(new_case stale-held-before-cancel)
+  make_repo_on_branch "$d/wt" fm/feat-stale-held
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-stale-held.meta" "window=fm:fm-feat-stale-held" "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: stale hold from before validation resumed\n' > "$d/state/feat-stale-held.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-stale-held)"
+  out=$(run_crew_state "$d" feat-stale-held)
+  assert_contains "$out" "state: working" "the resumed run first outranks the old hold"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-stale-held)"
+  out=$(run_crew_state "$d" feat-stale-held)
+  assert_contains "$out" "state: failed" "the later cancellation outranks the older hold"
+  assert_not_contains "$out" "state: paused" "the stale hold cannot mask the later cancellation"
+  out=$(run_crew_state "$d" feat-stale-held)
+  assert_contains "$out" "state: failed" "the later cancellation remains authoritative"
+  pass "a stale hold before a resumed run cannot mask its later cancellation"
 }
 
 test_terminal_failed() {
@@ -2258,8 +2340,10 @@ test_forge_skipped_pass_without_declared_pause_stays_done
 test_captain_held_over_forge_skipped_pass_reports_the_wait
 test_captain_held_over_checks_green_terminal_reports_the_wait
 test_captain_held_over_cancelled_run_reports_the_wait
+test_pass_without_completed_ci_does_not_suppress_later_wait
 test_captain_held_over_observed_merge_stays_done
 test_declared_wait_over_active_run_stays_run_step
+test_stale_declared_wait_before_resumed_run_stays_failed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
