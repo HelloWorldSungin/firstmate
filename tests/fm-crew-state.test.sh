@@ -383,10 +383,11 @@ EOF
 # does not recognize the forge provider, so it SKIPS the pr and ci steps and the
 # pipeline reaches outcome=passed having never opened a PR through the forge,
 # read a check, or observed a merge. Every other step really did complete.
-run_passed_forge_skipped() {  # <branch>
+run_passed_forge_skipped() {  # <branch> [run-id]
+  local run_id=${2:-01RUN}
   cat <<EOF
 run:
-  id: "01RUN"
+  id: "$run_id"
   branch: $1
   status: completed
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
@@ -434,10 +435,11 @@ EOF
 
 # The same terminal pass on a forge the pipeline DOES drive end to end: pr and ci
 # ran, so outcome=passed genuinely means the PR merged or closed.
-run_passed_forge_observed() {  # <branch>
+run_passed_forge_observed() {  # <branch> [run-id]
+  local run_id=${2:-01RUN}
   cat <<EOF
 run:
-  id: "01RUN"
+  id: "$run_id"
   branch: $1
   status: completed
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
@@ -493,10 +495,11 @@ outcome: failed
 EOF
 }
 
-run_cancelled() {  # <branch>
+run_cancelled() {  # <branch> [run-id]
+  local run_id=${2:-01RUN}
   cat <<EOF
 run:
-  id: "01RUN"
+  id: "$run_id"
   branch: $1
   status: cancelled
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
@@ -1287,6 +1290,35 @@ test_stale_declared_wait_before_resumed_run_stays_failed() {
   pass "a stale hold before a resumed run cannot mask its later cancellation"
 }
 
+test_prior_run_park_does_not_mask_same_head_rerun_failure() {
+  reset_fakes
+  local d short out; d=$(new_case same-head-rerun-stale-park)
+  make_repo_on_branch "$d/wt" fm/feat-same-head-rerun
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/same-head-rerun.meta" "window=fm:fm-same-head-rerun" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'done: first run finished locally\n' > "$d/state/same-head-rerun.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-same-head-rerun 01RUN-A)"
+  out=$(run_crew_state "$d" same-head-rerun)
+  assert_contains "$out" "state: done" "the first run establishes its terminal boundary"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-07-02 22:10
+  completed  fm/feat-same-head-rerun ${short}  2026-07-02 22:05
+EOF
+)"
+  out=$(run_crew_state "$d" same-head-rerun)
+  assert_contains "$out" "state: done" "coarse evidence retains the first run generation"
+  printf 'captain-held: stale hold belonging to the first run\n' >> "$d/state/same-head-rerun.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-same-head-rerun 01RUN-B)"
+  FM_FAKE_RUNS_LIST=""
+  out=$(run_crew_state "$d" same-head-rerun)
+  assert_contains "$out" "state: failed" "a new run on the same head outranks the prior run's hold"
+  assert_not_contains "$out" "state: paused" "the prior generation's hold cannot mask the rerun failure"
+  pass "same-head reruns use distinct run generations"
+}
+
 test_terminal_failed() {
   reset_fakes
   local d; d=$(new_case failed)
@@ -1402,6 +1434,31 @@ EOF
   out=$(run_crew_state "$d" full-coarse-identity)
   assert_contains "$out" "state: paused" "a later park still wins across the full-to-coarse transition"
   pass "full and coarse evidence share one stable run identity"
+}
+
+test_coarse_completed_preserves_observed_merge() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-observed-merge)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-observed-merge
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarse-observed-merge.meta" "window=fm:fm-coarse-observed-merge" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'done: merged\n' > "$d/state/coarse-observed-merge.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_observed fm/feat-coarse-observed-merge 01MERGED)"
+  out=$(run_crew_state "$d" coarse-observed-merge)
+  assert_contains "$out" "state: done" "the full run records its observed merge"
+  printf 'captain-held: stale hold appended after merge\n' >> "$d/state/coarse-observed-merge.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-07-02 22:10
+  completed  fm/feat-coarse-observed-merge ${short}  2026-07-02 22:05
+EOF
+)"
+  out=$(run_crew_state "$d" coarse-observed-merge)
+  assert_contains "$out" "state: done" "coarse completion retains full-status merge evidence"
+  assert_not_contains "$out" "state: paused" "a stale hold cannot mask an observed merge on the coarse path"
+  pass "coarse completion preserves observed merge evidence"
 }
 
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
@@ -2457,11 +2514,13 @@ test_pass_without_completed_ci_does_not_suppress_later_wait
 test_captain_held_over_observed_merge_stays_done
 test_declared_wait_over_active_run_stays_run_step
 test_stale_declared_wait_before_resumed_run_stays_failed
+test_prior_run_park_does_not_mask_same_head_rerun_failure
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_terminal_run_with_park_reports_the_wait
 test_full_and_coarse_paths_share_run_identity
+test_coarse_completed_preserves_observed_merge
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane

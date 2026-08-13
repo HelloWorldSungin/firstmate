@@ -295,7 +295,7 @@ worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverifi
 
 # --- last known run-step record ---------------------------------------------
 # state/<id>.run-step: one line,
-# "<epoch>\t<state>\t<detail>\t<run-identity>\t<status-position>\tv2", atomically
+# "<epoch>\t<state>\t<detail>\t<run-id>\t<run-alias>\t<status-position>\t<merge-observed>\tv3", atomically
 # replaced on every successful run-derived verdict. It orders a later declared
 # wait against that verdict and lets a lookup FAILURE answer
 # "still validating, lookup unavailable" instead of "unknown", without ever
@@ -306,14 +306,15 @@ RUNSTEP_RECORD="$STATE/$ID.run-step"
 
 # Record a run-derived verdict. Never fails the read: a state dir that is
 # read-only or already torn down just leaves the previous record in place.
-runstep_record_write() {  # <state> <detail> [run-identity]
+runstep_record_write() {  # <state> <detail> [run-id] [run-alias] [merge-observed]
   local tmp flat
   case "$1" in working|parked|done|failed|abandoned) ;; *) return 0 ;; esac
   [ -d "$STATE" ] || return 0
   flat=$(printf '%s' "${2:-}" | tr '\t\n' '  ')
   tmp="$RUNSTEP_RECORD.$$.tmp"
-  if printf '%s\t%s\t%s\t%s\t%s\tv2\n' \
-    "$(date +%s)" "$1" "$flat" "${3:-}" "$LOG_POSITION" > "$tmp" 2>/dev/null; then
+  if printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tv3\n' \
+    "$(date +%s)" "$1" "$flat" "${3:--}" "${4:--}" "$LOG_POSITION" \
+    "${5:-0}" > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$RUNSTEP_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null
@@ -325,32 +326,59 @@ runstep_record_clear() {
   rm -f "$RUNSTEP_RECORD" 2>/dev/null || true
 }
 
-runstep_record_emit() {  # <state> <source> <detail> [run-identity]
-  runstep_record_write "$1" "${3:-}" "${4:-}"
+runstep_record_emit() {  # <state> <source> <detail> [run-id] [run-alias] [merge-observed]
+  runstep_record_write "$1" "${3:-}" "${4:--}" "${5:--}" "${6:-0}"
   emit "$1" "$2" "${3:-}"
+}
+
+runstep_record_load() {
+  local f1 f2 f3 f4 f5 f6 f7 f8
+  RECORD_TS=""
+  RECORD_STATE=""
+  RECORD_DETAIL=""
+  RECORD_RUN_ID=""
+  RECORD_RUN_ALIAS=""
+  RECORD_POSITION=""
+  RECORD_MERGE_OBSERVED=0
+  RECORD_VERSION=""
+  [ -f "$RUNSTEP_RECORD" ] || return 1
+  IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8 < "$RUNSTEP_RECORD" 2>/dev/null || return 1
+  RECORD_TS=$f1
+  RECORD_STATE=$f2
+  RECORD_DETAIL=$f3
+  if [ "$f8" = v3 ]; then
+    RECORD_RUN_ID=$f4
+    RECORD_RUN_ALIAS=$f5
+    RECORD_POSITION=$f6
+    RECORD_MERGE_OBSERVED=$f7
+    RECORD_VERSION=$f8
+  elif [ "$f6" = v2 ]; then
+    RECORD_RUN_ALIAS=$f4
+    RECORD_POSITION=$f5
+    RECORD_VERSION=$f6
+  fi
+  return 0
 }
 
 # Print "<state>\t<detail>\t<age-seconds>" for a record still inside the
 # freshness bound; return 1 for a missing, malformed, or expired record.
 runstep_record_read() {
-  local ts st detail _record_run_identity record_position record_version now age
-  [ -f "$RUNSTEP_RECORD" ] || return 1
-  IFS=$'\t' read -r ts st detail _record_run_identity record_position record_version \
-    < "$RUNSTEP_RECORD" 2>/dev/null || return 1
-  case "${ts:-}" in ''|*[!0-9]*) return 1 ;; esac
-  case "${st:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
-  if { [ "$st" = "done" ] || [ "$st" = failed ]; } \
+  local now age
+  runstep_record_load || return 1
+  case "${RECORD_TS:-}" in ''|*[!0-9]*) return 1 ;; esac
+  case "${RECORD_STATE:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
+  if { [ "$RECORD_STATE" = "done" ] || [ "$RECORD_STATE" = failed ]; } \
     && status_is_paused_or_captain_held "$LOG_LINE"; then
-    [ "$record_version" = v2 ] || return 1
-    case "${record_position:-}" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$LOG_POSITION" -le "$record_position" ] || return 1
+    [ "$RECORD_VERSION" = v3 ] || return 1
+    case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$LOG_POSITION" -le "$RECORD_POSITION" ] || return 1
   fi
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
-  age=$(( now - ts ))
+  age=$(( now - RECORD_TS ))
   [ "$age" -ge 0 ] || return 1
   [ "$age" -lt "$FM_CREW_STATE_DEGRADED_MAX_AGE" ] || return 1
-  printf '%s\t%s\t%s' "$st" "${detail:-}" "$age"
+  printf '%s\t%s\t%s' "$RECORD_STATE" "${RECORD_DETAIL:-}" "$age"
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -820,9 +848,11 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
-  RUN_IDENTITY=""
+  RUN_ID="-"
+  RUN_ALIAS="-"
+  MERGE_OBSERVED=0
   if [ "$RUN_SOURCE" = coarse ]; then
-    RUN_IDENTITY=$(run_identity_for_head "$COARSE_HEAD")
+    RUN_ALIAS=$(run_identity_for_head "$COARSE_HEAD")
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
     # gets full detail once `axi status` reports its own branch again (e.g.
@@ -837,8 +867,19 @@ if [ "$HAVE_RUN" = 1 ]; then
       cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
+    runstep_record_load || true
+    if [ "$RECORD_VERSION" = v3 ] \
+      && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ]; then
+      [ -n "$RECORD_RUN_ID" ] && RUN_ID=$RECORD_RUN_ID
+      if [ "$RUN_STATE" = "done" ] \
+        && [ "$RECORD_MERGE_OBSERVED" = 1 ]; then
+        MERGE_OBSERVED=1
+      fi
+    fi
   else
-    RUN_IDENTITY=$(run_identity_for_head "$(strip_quotes "$(nm_field head)")")
+    RUN_ID=$(strip_quotes "$(nm_field id)")
+    [ -n "$RUN_ID" ] || RUN_ID="-"
+    RUN_ALIAS=$(run_identity_for_head "$(strip_quotes "$(nm_field head)")")
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
     outcome=$(strip_quotes "$(nm_field outcome)")
@@ -852,6 +893,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         passed)
           RUN_STATE="done"
           if [ "$(nm_step_status ci)" = completed ]; then
+            MERGE_OBSERVED=1
             RUN_DETAIL="run passed: PR merged/closed"
           elif nm_ci_step_skipped; then
             RUN_DETAIL="local pipeline passed (ci step skipped - forge state not observed)"
@@ -909,7 +951,9 @@ if [ "$HAVE_RUN" = 1 ]; then
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_IDENTITY"
+      runstep_record_emit "done" status-log \
+        "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" \
+        "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
     fi
     [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
     if [ "$RUN_STATUS" = fixing ]; then
@@ -920,7 +964,9 @@ if [ "$HAVE_RUN" = 1 ]; then
       CI_LOG_STATE=not-ready
     fi
     if [ "$CI_LOG_STATE" != not-ready ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" "$RUN_IDENTITY"
+      runstep_record_emit "done" status-log \
+        "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" \
+        "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
     fi
   fi
 
@@ -931,21 +977,19 @@ if [ "$HAVE_RUN" = 1 ]; then
   # genuinely observed a forge merge (outcome=passed with ci completed), where
   # any wait over it is deterministically stale.
   terminal_done_is_observed_merge() {
-    [ "$RUN_STATE" = "done" ] \
-      && [ "${outcome:-}" = passed ] \
-      && [ "$(nm_step_status ci)" = completed ]
+    [ "$RUN_STATE" = "done" ] && [ "$MERGE_OBSERVED" = 1 ]
   }
   declared_wait_follows_terminal_record() {
-    local ts _record_state _detail record_run_identity record_position record_version
-    [ -n "$RUN_IDENTITY" ] || return 0
-    [ -f "$RUNSTEP_RECORD" ] || return 0
-    IFS=$'\t' read -r ts _record_state _detail record_run_identity record_position record_version \
-      < "$RUNSTEP_RECORD" 2>/dev/null || return 0
-    case "${ts:-}" in ''|*[!0-9]*) return 0 ;; esac
-    [ "$record_version" = v2 ] || return 0
-    [ "$record_run_identity" = "$RUN_IDENTITY" ] || return 0
-    case "${record_position:-}" in ''|*[!0-9]*) return 0 ;; esac
-    [ "$LOG_POSITION" -gt "$record_position" ]
+    runstep_record_load || return 0
+    case "${RECORD_TS:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$RECORD_VERSION" = v3 ] || return 0
+    case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$RUN_ID" != "-" ] && [ "$RECORD_RUN_ID" != "-" ]; then
+      [ "$RECORD_RUN_ID" = "$RUN_ID" ] || return 1
+    else
+      [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] || return 1
+    fi
+    [ "$LOG_POSITION" -gt "$RECORD_POSITION" ]
   }
   if { [ "$RUN_STATE" = "done" ] || [ "$RUN_STATE" = failed ]; } \
     && status_is_paused_or_captain_held "$LOG_LINE" \
@@ -999,7 +1043,8 @@ if [ "$HAVE_RUN" = 1 ]; then
   # path only, so nothing but a genuinely observed run is ever replayed.
   # `abandoned` is now a recorded state, so a later lookup failure degrades to
   # the same actionable verdict instead of replaying a stale `working` answer.
-  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL" "$RUN_IDENTITY"
+  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL" \
+    "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------
