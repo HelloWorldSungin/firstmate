@@ -33,6 +33,7 @@ sleep() { printf 'SLEEP\n' >> "$SLEEP_LOG"; }
 
 reset_state() {
   rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status "$STATE_DIR"/.wake-queue \
+    "$STATE_DIR"/*.busy-gen "$STATE_DIR"/*.busy-state \
     "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log \
     "$STATE_DIR"/.herdr-escalated-* "$STATE_DIR"/.nativeturnend-* \
     "$TMP"/panes "$TMP"/wtcalls "$TMP"/wtcalled 2>/dev/null || true
@@ -49,10 +50,13 @@ mkrec() {  # <pane_id> <status> [agent]
 
 reset_state
 fm_write_meta "$STATE_DIR/tk0.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship" "harness=cursor"
+"$ROOT/bin/fm-busy-event.sh" arm "$STATE_DIR" tk0 >/dev/null
 printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
 fm_backend_observe_transition herdr default "$(mkrec wG:pQ working cursor)"
 [ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "working|0" ] \
   || fail "a matching working push edge must re-arm a cursor native completion"
+[ "$(fm_busy_classify herdr default:wG:pQ cursor tk0 "$STATE_DIR")" = "busy herdr-native" ] \
+  || fail "a matching working push edge must publish cursor busy state"
 FIRST=$(fm_transition_native_completion cursor cursor idle 'working|0'); FIRST_RC=$?
 SECOND=$(fm_transition_native_completion cursor cursor idle "$FIRST"); SECOND_RC=$?
 [ "$FIRST_RC:$FIRST" = "1:idle|0" ] || fail "the first idle poll after a short pushed turn must debounce"
@@ -61,11 +65,31 @@ printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
 fm_backend_observe_transition herdr default "$(mkrec wG:pQ blocked cursor)"
 [ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "blocked|0" ] \
   || fail "a matching blocked push edge must re-arm a cursor native completion"
+[ "$(fm_busy_classify herdr default:wG:pQ cursor tk0 "$STATE_DIR")" = "unknown herdr-native" ] \
+  || fail "a matching blocked push edge must clear stale cursor busy state"
 printf 'idle|1' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
 fm_backend_observe_transition herdr default "$(mkrec wG:pQ working claude)"
 [ "$(cat "$STATE_DIR/.nativeturnend-default_wG_pQ")" = "idle|1" ] \
   || fail "a mismatched native identity must not re-arm cursor completion"
 pass "matching working push edges re-arm short cursor/agy turns without weakening idle/done defer"
+
+reset_state
+fm_write_meta "$STATE_DIR/tk0.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship" "harness=cursor"
+"$ROOT/bin/fm-busy-event.sh" arm "$STATE_DIR" tk0 >/dev/null
+printf 'working|0' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
+(
+  fm_backend_source herdr
+  fm_backend_herdr_agent_identity_raw() { printf 'cursor\tidle'; }
+  maybe_native_turnend default:wG:pQ tk0 default_wG_pQ
+  [ ! -e "$STATE_DIR/tk0.turn-ended" ] || fail "the first native idle poll must not publish completion"
+  [ "$(fm_busy_classify herdr default:wG:pQ cursor tk0 "$STATE_DIR")" = "busy fm-spawn" ] \
+    || fail "the first native idle poll must not clear busy state"
+  maybe_native_turnend default:wG:pQ tk0 default_wG_pQ
+)
+[ -e "$STATE_DIR/tk0.turn-ended" ] || fail "the settled native completion did not publish turn-ended"
+[ "$(fm_busy_classify herdr default:wG:pQ cursor tk0 "$STATE_DIR")" = "idle herdr-native" ] \
+  || fail "the settled native completion did not publish identity-gated idle state"
+pass "settled cursor native completion publishes semantic idle before turn-ended"
 
 # --- handle_push_transition: enqueue + wake for a non-paused blocked crew -----
 

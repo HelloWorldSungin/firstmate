@@ -34,12 +34,13 @@
 #   codex-hook, codex-appserver  reserved: Codex, gated by
 #                    fm_busy_codex_semantic_source
 #   kimi-wire, kimi-hook  reserved: standalone Kimi, gated by fm_busy_kimi_verified
+#   herdr-native      Cursor/Agy identity-gated native transitions
 # Firstmate-owned sources accepted for every converted adapter:
 #   fm-spawn         the launch-brief turn seeded at spawn
 #   fm-interrupt     a firstmate-controlled interruption of the worker
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, missing, malformed,
+#   endpoint-gone, grok-regex, missing, malformed,
 #   gen-mismatch, source-mismatch, kimi-unverified, codex-unverified,
 #   capture-failed, no-target
 #
@@ -299,20 +300,13 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   esac
   # No record at all. A native herdr busy verdict is semantic enough to trust
   # for BUSY (streaming means a turn is running); native idle is narrower
-  # than turn state for converted adapters with hooks and stays unknown there,
-  # but cursor/agy install no hooks and trust herdr-native idle directly.
+  # than turn state (a long foreground tool call reads idle) and stays
+  # unknown here.
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
       printf 'busy herdr-native'
       return 0
-    elif [ "$native" = idle ]; then
-      case "$harness" in
-        cursor*|agy*)
-          printf 'idle herdr-native'
-          return 0
-          ;;
-      esac
     fi
   fi
   case "$harness" in

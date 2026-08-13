@@ -424,7 +424,7 @@ The raw-launch-command escape hatch must never be used for `cursor-agent`/`agy`;
 On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
 So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
 
-cursor and agy install no turn-end hook or status writer; the watcher instead converts their herdr-native completion into the shared `state/<id>.turn-ended` signal without relaxing the event-stream policy.
+cursor and agy install no turn-end hook or status writer; the watcher instead converts their identity-gated, debounced herdr-native transitions into semantic busy-state records and their completion into the shared `state/<id>.turn-ended` signal without relaxing the event-stream policy.
 `bin/fm-transition-lib.sh`'s `fm_transition_native_completion` comment owns the native-identity gate, debounce state machine, and re-arm behavior, while `bin/fm-watch.sh` owns its poll-loop integration.
 No repo `.cursor/hooks.json` / `.agents/hooks.json` is ever written, and no new shared global hook file is added.
 A global benign `stop`/`Stop` hook (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`, whose payloads were verified to carry the worktree in `workspace_roots[0]` / `workspacePaths[0]`) is a viable alternative, but the native poll detector is preferred because it needs no shared global-file mutation.

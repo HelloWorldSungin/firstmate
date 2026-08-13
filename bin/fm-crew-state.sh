@@ -108,13 +108,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-if [ -n "${FM_DATA_OVERRIDE:-}" ]; then
-  DATA="$FM_DATA_OVERRIDE"
-elif [ -n "${FM_STATE_OVERRIDE:-}" ]; then
-  DATA="${FM_STATE_OVERRIDE%/state}/data"
-else
-  DATA="$FM_HOME/data"
-fi
 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
@@ -1046,13 +1039,8 @@ fi
 if [ -n "$LOG_VERB" ]; then
   LOG_STATE=$(map_log_state "$LOG_LINE")
   if [ "$LOG_STATE" != unknown ]; then
-    if [ "$KIND" = scout ] && [ "$LOG_STATE" = working ] && [ -f "$DATA/$ID/report.md" ]; then
-      LOG_STATE="done"
-    fi
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi
-elif [ "$KIND" = scout ] && [ -f "$DATA/$ID/report.md" ]; then
-  emit "done" status-log "report completed"
 fi
 
 emit unknown none "no current-state source available"

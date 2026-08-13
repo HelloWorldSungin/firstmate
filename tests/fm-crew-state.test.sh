@@ -207,6 +207,13 @@ arm_idle_record() {  # <state-dir> <id>
     --source claude-hook --event stop
 }
 
+arm_herdr_native_idle_record() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" idle --gen "$gen" \
+    --source herdr-native --event turn-completed
+}
+
 # Clear the fake-driver vars and (re-)mark them exported, so the per-test plain
 # assignments below stay exported into the fakes without an `export VAR=$(...)`
 # command-substitution assignment (SC2155).
@@ -1308,6 +1315,7 @@ test_finished_cursor_scout_on_herdr_reads_done_from_status_log() {
   FM_FAKE_TMUX_MISSING=1
   FM_FAKE_HERDR_AGENT_STATUS=idle
   FM_FAKE_HERDR_BUSY=0
+  arm_herdr_native_idle_record "$d/state" cursor-scout-done
   local out; out=$(run_crew_state "$d" cursor-scout-done)
   assert_contains "$out" "state: done" "finished cursor scout with done status log must read state: done"
   assert_contains "$out" "source: status-log" "finished cursor scout must read from status log"
@@ -1315,7 +1323,7 @@ test_finished_cursor_scout_on_herdr_reads_done_from_status_log() {
   pass "a finished cursor scout on herdr reads done from its status log"
 }
 
-test_finished_cursor_scout_with_report_and_working_status_log_reads_done() {
+test_cursor_scout_report_does_not_override_working_status_log() {
   command -v jq >/dev/null 2>&1 || { pass "cursor scout report reading skipped without jq"; return; }
   reset_fakes
   local d; d=$(new_case cursor-scout-report)
@@ -1331,10 +1339,16 @@ test_finished_cursor_scout_with_report_and_working_status_log_reads_done() {
   FM_FAKE_TMUX_MISSING=1
   FM_FAKE_HERDR_AGENT_STATUS=idle
   FM_FAKE_HERDR_BUSY=0
+  arm_herdr_native_idle_record "$d/state" cursor-scout-report
   local out; out=$(run_crew_state "$d" cursor-scout-report)
-  assert_contains "$out" "state: done" "idle scout with report present must read state: done"
-  assert_contains "$out" "source: status-log" "idle scout with report present must use status-log source"
-  pass "an idle scout on herdr with report present reads done even if status log ended at working"
+  assert_contains "$out" "state: working" "an incremental report must not make a working scout done"
+  assert_contains "$out" "source: status-log" "the explicit working event must remain authoritative"
+  assert_not_contains "$out" "state: done" "report existence must not attest scout completion"
+  : > "$d/state/cursor-scout-report.status"
+  out=$(run_crew_state "$d" cursor-scout-report)
+  assert_contains "$out" "state: unknown" "a report without a terminal event must stay unknown"
+  assert_not_contains "$out" "state: done" "report existence alone must not attest scout completion"
+  pass "a scout report cannot override an explicit working status"
 }
 
 
@@ -2546,6 +2560,6 @@ test_secondmate_not_downgraded_by_worker_state
 test_working_run_step_with_dead_agent_not_absorbed
 test_working_run_step_with_unreadable_agent_not_absorbed
 test_finished_cursor_scout_on_herdr_reads_done_from_status_log
-test_finished_cursor_scout_with_report_and_working_status_log_reads_done
+test_cursor_scout_report_does_not_override_working_status_log
 
 echo "all fm-crew-state tests passed"
