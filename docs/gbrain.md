@@ -17,10 +17,13 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 
 ## Pinned installation and upgrade
 
-The installed GBrain release is `v0.45.0.0` at commit `d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775`.
-The pin moved there from `v0.42.69.0` on 2026-08-12, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records what that upgrade measured, including the capture guarantees it did not change.
-The earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
-The installation uses GBrain's documented `git clone` plus `bun install` fallback because the tested standalone Linux release binaries did not initialize PGLite correctly.
+The installed GBrain release is `v0.45.9.0` at commit `1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5`.
+The pin moved there from `v0.45.0.0` on 2026-08-13, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the live upgrade evidence, the new boundary-retrieval verbs, and the unchanged privacy controls.
+The earlier pin moved from `v0.42.69.0` on 2026-08-12, and the same verification record preserves what that upgrade measured, including the capture guarantees it did not change.
+That earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
+The installation remains on GBrain's documented `git clone` plus pinned `bun install` fallback so a version upgrade does not also change the packaging path used for migration and rollback.
+The old `v0.42.71.0` and `v0.42.72.1` standalone Linux binaries failed fresh PGLite initialization, while the `v0.45.9.0` standalone binary passed fresh isolated initialization with this deployment's embedding shape.
+That fresh initialization does not prove an in-place production upgrade through the standalone packaging, so adopting it requires a separate isolated-copy migration and the full gate below.
 The supporting Bun runtime is `1.3.14` at `/home/sungin/.local/gbrain/bin/bun`.
 
 The executable is `/home/sungin/.local/gbrain/bin/gbrain`.
@@ -29,7 +32,7 @@ For a clean source installation with the pinned Bun binary already present, run:
 ```sh
 mkdir -p /home/sungin/.local/gbrain/{bin,bun-global,cache}
 git clone https://github.com/garrytan/gbrain.git /home/sungin/.local/gbrain/src
-git -C /home/sungin/.local/gbrain/src checkout --detach d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775
+git -C /home/sungin/.local/gbrain/src checkout --detach 1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5
 cd /home/sungin/.local/gbrain/src
 BUN_INSTALL=/home/sungin/.local/gbrain/bun-global \
   /home/sungin/.local/gbrain/bin/bun install \
@@ -60,15 +63,15 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
-4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.
+4. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
 7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
    A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
 
-Rolling back is checking out the pinned commit again, reinstalling from the same lockfile, and restoring the step-4 backup.
-Restore its archive, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
+Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-4 backup recorded there.
+Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
 To upgrade deliberately, select a newer verified GBrain tag, then run:
 
@@ -249,15 +252,35 @@ Stop every `gbrain serve` process before copying PGLite because it is a single-w
 A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#gbrain)).
 So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
 Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
-Back up the archive, PGLite directory, and runtime configuration together to an on-box directory:
+Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory:
 
 ```sh
-backup_dir=/home/sungin/.local/share/gbrain/backups/$(date -u +%Y%m%dT%H%M%SZ)
+FM_HOME=/home/sungin/firstmate
+paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
+brain_root=$(printf '%s' "$paths" | jq -er '.brain_root')
+pglite=$(printf '%s' "$paths" | jq -er '.pglite')
+gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
+archive=$(printf '%s' "$paths" | jq -er '.archive')
+outbox=$FM_HOME/data/gbrain-outbox
+outbox_record=
+outbox_unreadable=
+if [ -d "$outbox" ]; then
+  outbox_record=$(find "$outbox" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null)
+  outbox_unreadable=$(find "$outbox" -maxdepth 1 -type f -name '*.json' ! -readable -print -quit 2>/dev/null)
+fi
+if [ -n "$outbox_record" ] && [ -z "$outbox_unreadable" ]; then
+  durable_source=$outbox
+elif [ -d "$archive/.git" ] && git -C "$archive" rev-parse --verify HEAD >/dev/null 2>&1; then
+  durable_source=$archive
+else
+  printf 'refusing backup: no readable outbox or valid Git archive exists\n' >&2
+  exit 1
+fi
+[ -d "$pglite" ] && [ -d "$gbrain_home/.gbrain" ] || exit 1
+backup_dir=$brain_root/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup_dir"
-cp -a /home/sungin/.local/share/gbrain/archive \
-  /home/sungin/.local/share/gbrain/pglite \
-  /home/sungin/.local/share/gbrain/runtime/.gbrain \
-  "$backup_dir"/
+cp -a "$durable_source" "$pglite" "$gbrain_home/.gbrain" "$backup_dir"/ || exit 1
+printf '%s\n' "$backup_dir"
 ```
 
 ### What a home can actually rebuild from

@@ -75,7 +75,9 @@ PORT=$(pick_port) || { echo "skip: no free loopback port for the test brain"; ex
 
 MAIN_HOME="$TMP_ROOT/main"
 SM_HOME="$TMP_ROOT/secondmate"
-mkdir -p "$MAIN_HOME/config" "$MAIN_HOME/data" "$SM_HOME/config" "$SM_HOME/data"
+READER_TWO_HOME="$TMP_ROOT/reader-two"
+mkdir -p "$MAIN_HOME/config" "$MAIN_HOME/data" "$SM_HOME/config" "$SM_HOME/data" \
+  "$READER_TWO_HOME/config" "$READER_TWO_HOME/data"
 
 SHARED=$(jq -n \
   --arg embed "$EMBED_URL" --arg model "$EMBED_MODEL" --argjson dims "$EMBED_DIMS" \
@@ -92,6 +94,7 @@ printf '%s\n' "$SHARED" > "$MAIN_HOME/config/gbrain.json"
 # The secondmate receives the shared plane exactly as inheritance would deliver
 # it: byte-identical, and still resolving to its own brain.
 cp "$MAIN_HOME/config/gbrain.json" "$SM_HOME/config/gbrain.json"
+cp "$MAIN_HOME/config/gbrain.json" "$READER_TWO_HOME/config/gbrain.json"
 
 home_env() {  # <home> <var>
   FM_HOME="$1" bash "$CLI" paths --json | jq -r ".$2"
@@ -121,6 +124,14 @@ put_page "$MAIN_GBRAIN_HOME" main-canary "The main brain holds $CANARY." \
   || fail "could not seed the main brain"
 put_page "$SM_GBRAIN_HOME" sm-canary "This secondmate's own brain holds $SM_CANARY." \
   || fail "could not seed the secondmate brain"
+WORLD_FACT='WORLD-CONTEXT-PACK-SENTINEL is visible remotely.'
+PRIVATE_FACT='PRIVATE-CONTEXT-PACK-SENTINEL must remain local.'
+GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$WORLD_FACT" \
+  --provenance 'live read-only E2E' --entity main-canary --kind commitment \
+  --visibility world >/dev/null 2>&1 || fail "could not seed the world-visible fact"
+GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$PRIVATE_FACT" \
+  --provenance 'live read-only E2E' --entity main-canary --kind commitment \
+  --visibility private >/dev/null 2>&1 || fail "could not seed the private fact"
 pass "two real, separately initialized brains exist, one per home"
 
 # --- grant the read-only share ----------------------------------------------
@@ -137,6 +148,25 @@ CLIENT_SECRET=$(head -n 1 "$secret_file")
 CLIENT_ID=$(jq -r .client_id "$SM_HOME/config/gbrain-local.json")
 assert_not_contains "$grant_out" "$CLIENT_SECRET" "grant-read printed the credential it installed"
 pass "grant-read installed a read-only credential at mode 0600 without printing it"
+
+grant_two_out=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+  bash "$CLI" grant-read fm-e2e-read-two --home "$READER_TWO_HOME" 2>&1) \
+  || fail "second grant-read failed: $grant_two_out"
+secret_file_two="$READER_TWO_HOME/config/gbrain-secrets/main-brain-client-secret"
+assert_present "$secret_file_two" "the second reader must receive its own credential"
+CLIENT_SECRET_TWO=$(head -n 1 "$secret_file_two")
+CLIENT_ID_TWO=$(jq -r .client_id "$READER_TWO_HOME/config/gbrain-local.json")
+[ "$CLIENT_ID" != "$CLIENT_ID_TWO" ] || fail "the two readers received one OAuth client id"
+assert_not_contains "$grant_two_out" "$CLIENT_SECRET_TWO" "the second grant printed its credential"
+pass "a second remote reader received a distinct read-only OAuth client"
+
+writer_out=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth register-client \
+  fm-e2e-writer --scopes write --grant-types client_credentials 2>&1) \
+  || fail "writer registration failed: $writer_out"
+WRITER_ID=$(printf '%s\n' "$writer_out" | awk '/Client ID:/{print $NF}')
+WRITER_SECRET=$(printf '%s\n' "$writer_out" | awk '/Client Secret:/{print $NF}')
+[ -n "$WRITER_ID" ] && [ -n "$WRITER_SECRET" ] \
+  || fail "the disposable writer registration returned no credentials"
 
 # The registration must actually be read-scoped in GBrain's own records.
 scopes=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth list 2>/dev/null || true)
@@ -173,15 +203,29 @@ done
 TOKEN=$(FM_HOME="$SM_HOME" bash "$CLI" token) \
   || fail "the secondmate could not obtain a read-only token"
 [ -n "$TOKEN" ] || fail "the secondmate received an empty token"
-pass "the secondmate obtained a read-only access token for the main brain"
+TOKEN_TWO=$(FM_HOME="$READER_TWO_HOME" bash "$CLI" token) \
+  || fail "the second remote reader could not obtain a read-only token"
+[ -n "$TOKEN_TWO" ] || fail "the second remote reader received an empty token"
+WRITER_TOKEN=$(curl -sS -m 30 -X POST "http://127.0.0.1:$PORT/token" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode "client_id=$WRITER_ID" \
+  --data-urlencode "client_secret=$WRITER_SECRET" \
+  --data-urlencode 'scope=write' | jq -er '.access_token') \
+  || fail "the disposable writer could not obtain an access token"
+pass "both remote readers obtained read-only access tokens for the main brain"
 
-mcp_call() {  # <tool> <arguments-json> -> response body
+mcp_call_with_token() {  # <token> <tool> <arguments-json> -> response body
   curl -sS -m 30 -X POST "http://127.0.0.1:$PORT/mcp" \
-    -H "Authorization: Bearer $TOKEN" \
+    -H "Authorization: Bearer $1" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
-    -d "$(jq -cn --arg n "$1" --argjson a "$2" \
+    -d "$(jq -cn --arg n "$2" --argjson a "$3" \
       '{jsonrpc: "2.0", method: "tools/call", params: {name: $n, arguments: $a}, id: 1}')"
+}
+
+mcp_call() {  # <tool> <arguments-json> -> response body
+  mcp_call_with_token "$TOKEN" "$1" "$2"
 }
 
 # The endpoint answers either a bare JSON-RPC body or an SSE frame depending on
@@ -201,6 +245,71 @@ mcp_result() {  # <response-body> -> tool result JSON, empty when unparseable
 mcp_result_slugs() {  # stdin: response body -> one sorted slug per line
   mcp_result "$(cat)" | jq -r '[.. | objects | .slug? // empty] | sort | .[]' 2>/dev/null
 }
+
+pack_out=$(mcp_call context_pack \
+  '{"entities":"main-canary","include_private":true,"budget_tokens":1000}')
+pack_json=$(mcp_result "$pack_out")
+[ -n "$pack_json" ] || fail "the remote context_pack response could not be parsed: $pack_out"
+assert_contains "$pack_json" "$WORLD_FACT" \
+  "remote context_pack must retain the world-visible fact"
+assert_not_contains "$pack_json" "$PRIVATE_FACT" \
+  "remote context_pack must ignore include_private and exclude the private fact"
+pack_observed=$(printf '%s' "$pack_json" | jq -c --arg private "$PRIVATE_FACT" '
+  . as $pack | {
+    include_private_requested: true,
+    cards: [.cards[].slug],
+    facts: [.facts[].fact],
+    open_threads: [.open_threads[].text],
+    private_present: ($pack | tostring | contains($private))
+  }') || fail "could not summarize the remote context_pack result"
+printf 'observed remote context_pack: %s\n' "$pack_observed"
+pass "remote context_pack stays world-only when include_private is requested"
+
+DELTA_SESSION='fm-shared-delta-session'
+delta_args=$(jq -cn --arg session "$DELTA_SESSION" '{session_id:$session,budget_tokens:1000}')
+client_one_established=$(mcp_result "$(mcp_call_with_token "$TOKEN" delta "$delta_args")")
+client_two_established=$(mcp_result "$(mcp_call_with_token "$TOKEN_TWO" delta "$delta_args")")
+for observed in "$client_one_established" "$client_two_established"; do
+  [ -n "$observed" ] || fail "a remote delta response could not be parsed"
+done
+[ "$(printf '%s' "$client_one_established" | jq -c '[.pages[].slug]')" = '[]' ] \
+  || fail "the first OAuth client did not establish an empty cursor"
+[ "$(printf '%s' "$client_two_established" | jq -c '[.pages[].slug]')" = '[]' ] \
+  || fail "the second OAuth client did not establish an empty cursor"
+
+write_out=$(mcp_result "$(mcp_call_with_token "$WRITER_TOKEN" put_page \
+  '{"slug":"isolated-delta-canary","content":"---\ntype: note\n---\n\nA new page created after both remote cursors exist.\n"}')")
+[ -n "$write_out" ] || fail "the public MCP write response could not be parsed"
+assert_contains "$write_out" 'isolated-delta-canary' \
+  "the public MCP writer did not create the delta marker"
+
+client_one_after_write=$(mcp_result "$(mcp_call_with_token "$TOKEN" delta "$delta_args")")
+client_two_after_client_one=$(mcp_result "$(mcp_call_with_token "$TOKEN_TWO" delta "$delta_args")")
+client_one_followup=$(mcp_result "$(mcp_call_with_token "$TOKEN" delta "$delta_args")")
+client_two_followup=$(mcp_result "$(mcp_call_with_token "$TOKEN_TWO" delta "$delta_args")")
+for observed in "$client_one_after_write" "$client_two_after_client_one" "$client_one_followup" "$client_two_followup"; do
+  [ -n "$observed" ] || fail "a remote delta response could not be parsed"
+done
+client_one_after_write_slugs=$(printf '%s' "$client_one_after_write" | jq -c '[.pages[].slug]')
+client_two_after_client_one_slugs=$(printf '%s' "$client_two_after_client_one" | jq -c '[.pages[].slug]')
+client_one_followup_slugs=$(printf '%s' "$client_one_followup" | jq -c '[.pages[].slug]')
+client_two_followup_slugs=$(printf '%s' "$client_two_followup" | jq -c '[.pages[].slug]')
+[ "$client_one_after_write_slugs" = '["isolated-delta-canary"]' ] \
+  || fail "the first OAuth client did not receive the new page: $client_one_after_write_slugs"
+[ "$client_two_after_client_one_slugs" = '["isolated-delta-canary"]' ] \
+  || fail "the first OAuth client's advancement consumed the second client's delta: $client_two_after_client_one_slugs"
+[ "$client_one_followup_slugs" = '[]' ] \
+  || fail "the first OAuth client's cursor did not advance: $client_one_followup_slugs"
+[ "$client_two_followup_slugs" = '[]' ] \
+  || fail "the second OAuth client's cursor did not advance: $client_two_followup_slugs"
+delta_observed=$(jq -cn --arg session "$DELTA_SESSION" \
+  --argjson client_one_after_write "$client_one_after_write_slugs" \
+  --argjson client_two_after_client_one "$client_two_after_client_one_slugs" \
+  --argjson client_one_followup "$client_one_followup_slugs" \
+  --argjson client_two_followup "$client_two_followup_slugs" \
+  '{session_id:$session,client_one_after_write:$client_one_after_write,client_two_after_client_one:$client_two_after_client_one,client_one_followup:$client_one_followup,client_two_followup:$client_two_followup}')
+printf 'observed remote delta cursors: %s\n' "$delta_observed"
+pass "distinct OAuth clients keep isolated cursors for one delta session id"
 
 read_out=$(mcp_call get_page '{"slug":"main-canary"}')
 assert_contains "$read_out" "$CANARY" "the secondmate must be able to read the main brain's content"
@@ -344,6 +453,7 @@ pass "with the main brain offline the secondmate's local search still works and 
 artifacts="$TMP_ROOT/artifacts.txt"
 {
   printf '%s\n' "$grant_out"
+  printf '%s\n' "$grant_two_out"
   FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config
   FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config --json
   FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" env
@@ -353,7 +463,12 @@ artifacts="$TMP_ROOT/artifacts.txt"
 } > "$artifacts" 2>&1
 assert_no_grep "$CLIENT_SECRET" "$artifacts" \
   "the real client secret appeared in a generated artifact or the server log"
+assert_no_grep "$CLIENT_SECRET_TWO" "$artifacts" \
+  "the second real client secret appeared in a generated artifact or the server log"
+assert_no_grep "$WRITER_SECRET" "$artifacts" \
+  "the disposable writer secret appeared in a generated artifact or the server log"
 assert_grep "$CLIENT_ID" "$artifacts" "the client id should still be recorded"
+assert_grep "$CLIENT_ID_TWO" "$artifacts" "the second client id should still be recorded"
 pass "no generated artifact or server log contains the real client secret"
 
 echo "all fm-gbrain-readonly-e2e tests passed"

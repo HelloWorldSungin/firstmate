@@ -241,7 +241,7 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 ## Brain scoping (config/gbrain.json, config/gbrain-local.json, config/gbrain-secrets/)
 
 Each Firstmate home owns exactly one GBrain brain and writes only that brain.
-The brain lives at `$FM_HOME/data/gbrain/`, with `runtime/` as its `GBRAIN_HOME`, `pglite/` as its index, and `archive/` as its markdown archive.
+The brain's default location and directory layout are owned by [`gbrain-scoping.md`](gbrain-scoping.md#one-brain-per-home), and [`gbrain.md`](gbrain.md#what-a-home-can-actually-rebuild-from) owns whether its durable document source is an archive or the capture outbox.
 The location is derived from the home path, so two homes never collide by omission; a home already running a GBrain deployment elsewhere points at it with `brain_root` in `config/gbrain-local.json`.
 
 The configuration is split across three local, gitignored planes because they must propagate differently.
