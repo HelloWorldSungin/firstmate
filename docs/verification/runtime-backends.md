@@ -17,6 +17,7 @@ The status labels distinguish boundaries corrected during the 2026-08-13 audit f
 - Already compliant: `bin/fm-design-skills.sh` only resolves and reads the captain-installed grilling and domain-modeling skills, and never installs, updates, copies, vendors, pins, or modifies the plugin.
 - Corrected: `bin/fm-brief.sh` limits the installed skills to modeling and interrogation, records resolved terms only in the ADR, forbids every other worker-authored tracked project change, and requires the final branch-diff inspection.
 - Corrected: `bin/fm-brief.sh` emits the project-memory and `fm-ensure-agents-md.sh` path for ship briefs only, so design briefs cannot create or update a project instruction file.
+- Corrected: `bin/fm-brief.sh --help` documents ship and design delivery separately, and the design mode rows describe ADR delivery only.
 - Already compliant: the optional `bin/fm-brief.sh` brain section is read-only retrieval from prior fleet knowledge and creates no project output.
 - Already compliant: Herdr declarations, work-item comments, PR-body traceability, and delivery metadata are runtime or external lifecycle records rather than additional tracked project deliverables.
 - Already compliant: `.agents/skills/decision-hold-lifecycle/SKILL.md`, `bin/fm-decision-hold.sh`, and the design definition of done inventory unresolved choices without creating another project deliverable.
@@ -55,6 +56,14 @@ The complete rendered definition-of-done text for each row is recorded as an exa
 2. `direct-PR` refers only to the ADR becoming complete, committed, and ready for its PR.
    No sentence authorizes implementation.
 3. `local-only` refers only to the ADR becoming complete, committed, and ready on its local branch.
+   No sentence authorizes implementation.
+
+### Design help wording
+
+`test_design_help_authorizes_no_implementation` in `tests/fm-brief.test.sh` records the `--help` contract.
+
+1. The header documents ship modes and design modes separately.
+2. The design mode rows describe ADR commit or ADR-on-branch delivery only.
    No sentence authorizes implementation.
 
 ### Design compatibility matrix

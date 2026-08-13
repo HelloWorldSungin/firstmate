@@ -181,6 +181,21 @@ test_help_includes_entire_header() {
   pass "fm-brief.sh: --help renders the complete header"
 }
 
+test_design_help_authorizes_no_implementation() {
+  local help design_modes
+  help=$("$ROOT/bin/fm-brief.sh" --help)
+  assert_contains "$help" "Design modes deliver only the ADR" \
+    "fm-brief.sh --help omitted the design delivery contract"
+  design_modes=$(printf '%s\n' "$help" | awk '
+    /^Design modes deliver only the ADR:/ { capture=1; next }
+    capture && /^[A-Z]/ { exit }
+    capture { print }
+  ')
+  assert_not_contains "$design_modes" "implement" \
+    "fm-brief.sh --help authorizes implementation for design modes"
+  pass "fm-brief.sh: --help documents ADR-only design delivery"
+}
+
 test_issue_traceability_is_strictly_opt_in() {
   local home plain traced
   home="$TMP_ROOT/issue-traceability-home"
@@ -1365,6 +1380,7 @@ test_firstmate_repo_crew_persona_in_a_secondmate_home() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
+test_design_help_authorizes_no_implementation
 test_issue_traceability_is_strictly_opt_in
 test_issue_argument_validation_and_delivery_mode_guards
 test_no_issue_briefs_match_exact_goldens

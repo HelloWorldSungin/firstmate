@@ -75,9 +75,15 @@
 # For ship and design tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:
+# Ship modes deliver an authorized implementation:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
+#                the configured merge authority approves, firstmate merges to local main
+# Design modes deliver only the ADR:
+#   no-mistakes  ADR commit -> /no-mistakes pipeline -> PR -> configured merge authority
+#   direct-PR    ADR commit -> push + open PR via gh-axi (no pipeline) -> configured merge authority
+#   local-only   ADR on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
@@ -103,6 +109,7 @@
 # briefs pair the pause verb with "working:" around backgrounded pipeline calls.
 # Under no-mistakes, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
+# Design tasks use ADR-specific no-mistakes handoff wording in the generated brief.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
