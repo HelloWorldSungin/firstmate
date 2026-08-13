@@ -30,6 +30,9 @@ Never substitute copied skill text or run an installer from a worker.
 
 The worker brief tells every harness to read the resolved skill files directly.
 This avoids depending on harness-specific command spelling while preserving one exact installed dependency for Claude, Codex, and Pi.
+Those dependencies supply modeling and interrogation capabilities only.
+The profile's ADR-only contract takes precedence over any dependency direction to create or update `CONTEXT.md`.
+Every resolved term is recorded only in the ADR, which remains the sole tracked project deliverable.
 
 ## Dispatch
 
@@ -61,7 +64,7 @@ When the interview has converged, require the worker to state the resulting deci
 Use an existing project ADR convention when one exists.
 Otherwise the worker uses `docs/adr/NNNN-<slug>.md`, incrementing the highest existing number.
 The ADR must stand alone with context, decision, rationale, relevant alternatives, and non-obvious consequences.
-The task changes no product code and does not implement the selected design.
+The task changes no product code, creates no `CONTEXT.md`, and does not implement the selected design.
 
 Before the ADR is ready, load `decision-hold-lifecycle` and inventory every unresolved captain choice surfaced by the interview or ADR.
 The task follows its selected delivery path exactly like another tracked documentation change.

@@ -1176,6 +1176,12 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design brief did not resolve the installed plugin dependency"
   assert_grep 'Never install, update, copy, vendor, pin, or modify that plugin' "$brief" \
     "design brief allowed worker-owned plugin lifecycle"
+  assert_grep 'Use those skills for modeling and interrogation only' "$brief" \
+    "design brief did not constrain the dependency capabilities"
+  assert_grep 'Do not create or update `CONTEXT.md`' "$brief" \
+    "design brief allowed the dependency to create a second tracked deliverable"
+  assert_grep 'Record every resolved term only in the ADR' "$brief" \
+    "design brief did not preserve the ADR as the resolved-term owner"
   assert_grep 'Ask exactly one decision question at a time' "$brief" \
     "design brief did not preserve the sequential interview"
   assert_grep 'docs/adr/NNNN-<slug>.md' "$brief" \

@@ -639,6 +639,9 @@ Run \`$FM_ROOT/bin/fm-design-skills.sh resolve\`, then use your read tool to loa
 This direct file-resolution contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling.
 If resolution fails or either file cannot be read, append \`blocked: required mattpocock design skills are unavailable; the captain must refresh them with /plugin\` and stop.
 Never install, update, copy, vendor, pin, or modify that plugin from this task.
+Use those skills for modeling and interrogation only.
+Do not create or update \`CONTEXT.md\`, even if a dependency instructs you to do so.
+Record every resolved term only in the ADR so it remains the sole tracked project deliverable.
 
 Investigate factual questions from repository evidence before asking for a decision.
 Ask exactly one decision question at a time, with one stable key, the evidence, and your recommended answer.

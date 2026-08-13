@@ -924,7 +924,7 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
       and (.home | fm_clean_string($path_max)) and (.home | length > 0)
       and (.title | fm_nullable_clean($text_max))
       and (.project | fm_nullable_path)
-      and (.kind | IN("ship","scout","secondmate"))
+      and (.kind | IN("ship","design","scout","secondmate"))
       # mode, like project/harness/model, is provenance copied verbatim from
       # task metadata rather than a value this contract generates, so it is
       # bounded by type and length instead of a closed vocabulary. Delivery

@@ -110,10 +110,13 @@ WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 [ -n "$KIND" ] || KIND=ship
 
-# Only a ship task drives a no-mistakes validation of its own worktree; a scout
-# or secondmate has no run to be progressing, and asking costs a bounded call
-# for a guaranteed answer.
-[ "$KIND" = ship ] || emit none "kind=$KIND runs no validation"
+# Only a ship or design task drives a no-mistakes validation of its own
+# worktree; a scout or secondmate has no run to be progressing, and asking
+# costs a bounded call for a guaranteed answer.
+case "$KIND" in
+  ship|design) ;;
+  *) emit none "kind=$KIND runs no validation" ;;
+esac
 [ -n "$WT" ] && [ -d "$WT" ] || emit none "worktree gone (torn down?)"
 command -v no-mistakes >/dev/null 2>&1 || emit none "no-mistakes not installed"
 
