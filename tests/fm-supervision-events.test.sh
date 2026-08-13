@@ -67,6 +67,22 @@ fm_backend_observe_transition herdr default "$(mkrec wG:pQ working claude)"
   || fail "a mismatched native identity must not re-arm cursor completion"
 pass "matching working push edges re-arm short cursor/agy turns without weakening idle/done defer"
 
+reset_state
+fm_write_meta "$STATE_DIR/tk0.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship" "harness=cursor"
+printf 'working|0' > "$STATE_DIR/.nativeturnend-default_wG_pQ"
+(
+  fm_backend_source herdr
+  # shellcheck disable=SC2329 # Invoked indirectly by maybe_native_turnend.
+  fm_backend_herdr_agent_identity_raw() { printf 'cursor\tidle'; }
+  maybe_native_turnend default:wG:pQ tk0 default_wG_pQ
+  [ ! -e "$STATE_DIR/tk0.turn-ended" ] || fail "the first native idle poll must not publish completion"
+  [ ! -e "$STATE_DIR/tk0.busy-state" ] || fail "the first native idle poll must not publish semantic state"
+  maybe_native_turnend default:wG:pQ tk0 default_wG_pQ
+)
+[ -e "$STATE_DIR/tk0.turn-ended" ] || fail "the settled native completion did not publish turn-ended"
+[ ! -e "$STATE_DIR/tk0.busy-state" ] || fail "settled native idle must remain notification-only"
+pass "settled cursor native idle publishes only the turn-ended notification"
+
 # --- handle_push_transition: enqueue + wake for a non-paused blocked crew -----
 
 reset_state

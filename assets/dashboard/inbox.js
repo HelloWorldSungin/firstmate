@@ -525,13 +525,13 @@ function stateReadLive(task) {
 }
 
 // How long ago this task last did anything the snapshot can see, from three
-// clocks in order: its last status append, its last completed turn, and - only
+// clocks in order: its last status append, its last turn-boundary wake, and - only
 // when neither of those exists - how long ago it was dispatched.
 //
 // The status log alone is a REPORTING cadence, not an activity one. The crew
 // brief instructs workers to append only on phase changes a supervisor would
 // act on, so a healthy task is meant to be silent for long stretches, and
-// ageing that log alone measures obedience. A completed turn is an activity
+// ageing that log alone measures obedience. A turn-boundary wake is an activity
 // timestamp the runtime produces on its own, whatever the worker chooses to
 // report, so the newer of the two is the honest answer to "when did anything
 // last happen here". A task whose harness leaves no turn marker still ages on
@@ -540,8 +540,8 @@ function stateReadLive(task) {
 // The dispatch time is last because it is not an activity timestamp at all: it
 // is when the task STARTED, which only bounds a task that has not yet produced
 // either real clock. Supervision bounds the same case the same way, so a task
-// that has reported nothing and completed nothing still has a clock and the
-// exemption a live reading buys stays bounded for it too. Without it a worker
+// that has reported nothing and emitted no turn-boundary wake still has a clock
+// and the exemption a live reading buys stays bounded for it too. Without it a worker
 // that hung inside its very first tool call could never colour the strip,
 // however long it hung.
 //
@@ -554,7 +554,7 @@ function stateReadLive(task) {
 //
 // `bin/fm-watch.sh`'s `busy_turn_over_age` does age the meta FILE, and that is
 // correct for what it asks: it bounds how long a BUSY PANE may go with no
-// completed turn, it owns that choice, and it must not be changed to match this.
+// turn-boundary wake, it owns that choice, and it must not be changed to match this.
 function activityAge(task) {
   const reported = [
     finiteAge(task?.paths?.status_log?.last_event_age_seconds),
@@ -567,7 +567,7 @@ function activityAge(task) {
 function eventSignal(tasks, supervision) {
   const live = liveWorkTasks(tasks);
   // Supervision's own tolerated-quiet window, not a constant of this module's.
-  // The watcher measures a working task's latest completed turn against it
+  // The watcher measures a working task's latest turn-boundary wake against it
   // before treating the quiet as worth inspecting, and the strip asks the same
   // question, so asking it against a different number is how two surfaces come
   // to disagree about one fleet.

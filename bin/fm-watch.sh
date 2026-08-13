@@ -50,9 +50,9 @@
 #                          closer look instead of another routine supervision
 #                          resume. Unless afk is active. A genuinely busy pane
 #                          (window_is_busy true) is exempt from the above, but
-#                          only up to BUSY_TURN_MAX_SECS with no completed turn
+#                          only up to BUSY_TURN_MAX_SECS with no turn-boundary wake
 #                          (state/<id>.turn-ended, or the spawn record before any
-#                          turn completes); past that bound busy_turn_over_age
+#                          such wake arrives); past that bound busy_turn_over_age
 #                          routes it through the same wedge timer, so it surfaces
 #                          with the identical "stale: ..." reason, escalation
 #                          count, and demand-deep-inspection marker, for human
@@ -164,15 +164,15 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
-# may go with no completed turn: once its task's
-# state/<id>.turn-ended marker (or, before any turn has completed, the task's
+# may go with no turn-boundary wake: once its task's
+# state/<id>.turn-ended marker (or, before any such wake arrives, the task's
 # spawn record) is this old, busy_turn_over_age routes the pane through the
 # same STALE_ESCALATE_SECS-paced wedge_timer_check used for a provably-working
 # non-busy stale, so it escalates via the existing stale reason, escalation
 # counter, and demand-deep-inspection marker for human inspection only - never
-# an automatic interrupt, signal, or restart. A completed turn touches
+# an automatic interrupt, signal, or restart. A turn-boundary wake touches
 # turn-ended and resets the age. Set generously above any legitimate interval
-# between completed turns, including long tool calls, builds, or test runs.
+# between such wakes, including long tool calls, builds, or test runs.
 # bin/fm-supervision-lib.sh owns the window and its FM_BUSY_TURN_MAX_SECS
 # override, because the dashboard's Task activity signal reads the same one out
 # of the fleet snapshot rather than inventing a second tolerance for quiet.
@@ -273,9 +273,10 @@ window_label() {
 # transition policy deliberately DEFERS their native idle/done (it blips between
 # tool calls for the general fleet). So the poll loop reads their NATIVE agent
 # state and, via the debounced native-identity-gated decision in
-# fm-transition-lib.sh, touches the task's state/<id>.turn-ended on a settled
-# turn-end - the exact completion signal every other harness's hook writes, which
-# scan_signals already turns into a wake. Gated strictly to a cursor/agy herdr
+# fm-transition-lib.sh, touches state/<id>.turn-ended as a wake notification,
+# which scan_signals already turns into a wake without treating it as current
+# state.
+# Gated strictly to a cursor/agy herdr
 # crew window, so every other task's behavior is byte-unchanged. The per-pane
 # ".nativeturnend-<key>" file carries the debounce state ("<status>|<signaled>");
 # fm-teardown removes it with the rest of the task's watcher state.
@@ -357,7 +358,7 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 #     cadence in this file already uses.
 #   * One hour is deliberately the SAME scale firstmate already accepts
 #     elsewhere for a live-but-quiet endpoint: BUSY_TURN_MAX_SECS is 3600 (how
-#     long a busy pane may go with no completed turn) and FM_PAUSE_RESURFACE_SECS
+#     long a busy pane may go with no turn-boundary wake) and FM_PAUSE_RESURFACE_SECS
 #     is 3600 (how long a declared wait stays quiet before a recheck). Reusing
 #     that hour keeps ONE fleet-wide answer to "how long may a live endpoint
 #     stay silent before somebody looks" instead of inventing a third.
@@ -423,7 +424,7 @@ wedge_run_progress() {  # <window>
 # This is also the escalation point for a busy pane past BUSY_TURN_MAX_SECS, and
 # the hold applies there DELIBERATELY: that bound exists to catch a hung
 # FOREGROUND call, and a crew driving `no-mistakes axi run` in the foreground is
-# exactly such a call - busy for the whole pipeline with no completed turn. It
+# exactly such a call - busy for the whole pipeline with no turn-boundary wake. It
 # is the same healthy worker as the stale case; whether its pane reads busy or
 # stale is only an artifact of whether its harness backgrounded the pipeline
 # call, so holding for one and not the other would be arbitrary. The cap matters
@@ -487,11 +488,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
-# busy_turn_over_age: 0 iff <task>'s latest completed-turn marker is at least
+# busy_turn_over_age: 0 iff <task>'s latest turn-boundary wake marker is at least
 # BUSY_TURN_MAX_SECS old. Ages the per-task turn-ended marker, the harness-neutral
-# signal every verified harness's turn-end hook touches; before any turn has
-# completed, ages the task's spawn record instead so a fresh task still gets a
-# bound. The caller checks that the pane is busy and routes a crossed bound
+# wake written by a verified turn-end producer or the cursor/agy native-idle
+# detector; before any such wake arrives, ages the task's spawn record so a
+# fresh task gets a bound. The caller checks that the pane is busy and routes a crossed bound
 # through the existing wedge_timer_check, never anything that touches the
 # worker itself.
 busy_turn_over_age() {  # <task>
@@ -1184,7 +1185,7 @@ EOF
     key=${key//\//_}
     key=${key//./_}
     # cursor/agy native turn-end: runs before the capture-and-hash backstop below
-    # (and before the secondmate skip) so a completed cursor/agy turn wakes
+    # (and before the secondmate skip) so a settled cursor/agy native-idle edge wakes
     # firstmate from its NATIVE idle/done state even when the content hash never
     # settles. A no-op for every non-cursor/agy window.
     maybe_native_turnend "$w" "$task" "$key"
@@ -1335,7 +1336,7 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
-        # unless a genuinely busy pane has gone too long with no completed turn -
+        # unless a genuinely busy pane has gone too long with no turn-boundary wake -
         # then route it through the same wedge timer instead of erasing it.
         if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
           wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" "$whf"

@@ -16,7 +16,7 @@
 # and no LLM. Output is one stable, parseable, token-tight line firstmate can read
 # every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown|abandoned> · source: <run-step|run-step-degraded|run-attribution|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown|abandoned> · source: <run-step|run-step-degraded|run-attribution|completion-attestation|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship,
@@ -957,6 +957,10 @@ if [ "$HAVE_RUN" = 1 ]; then
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------
+if [ "$KIND" = scout ] && [ "$(meta_value decisions_reviewed)" = 1 ]; then
+  emit "done" completion-attestation "unresolved-decision inventory reviewed"
+fi
+
 # The run-step path above already handled any crew with an attributed run,
 # regardless of pane liveness, so a finished-but-pane-closed crew never reaches
 # here. Down here either the lookup completed and found no run, or it could not

@@ -62,13 +62,13 @@
 #     state/<id>.meta, so it reports how long ago the task was DISPATCHED. It is
 #     read from that recorded value and never from the meta file's mtime, which
 #     firstmate's own later writes to the record reset; it is what lets a
-#     renderer bound a task that has neither reported nor completed anything.
+#     renderer bound a task that has neither reported nor emitted a turn-boundary wake.
 #     Null when no readable stamp is present.
-#     paths.turn_ended ages state/<id>.turn-ended, the harness-neutral marker a
-#     completed turn touches and the same file bin/fm-watch.sh ages to bound how
-#     long a busy pane may go with no completed turn. It stays a wake
-#     notification and an activity timestamp, never current state, and an absent
-#     marker is reported absent rather than as an age.
+#     paths.turn_ended ages state/<id>.turn-ended, the harness-neutral
+#     turn-boundary wake marker and the same file bin/fm-watch.sh ages to bound
+#     how long a busy pane may go with no such wake. It stays a notification and
+#     an activity timestamp, never current state or terminal attestation, and an
+#     absent marker is reported absent rather than as an age.
 #     pr carries the parsed provider/host/path/number identity, the recorded
 #     head, and the normalized review/check/mergeability observation cached by
 #     bin/fm-pr-status.sh, with its age and freshness. This command never calls
@@ -469,7 +469,7 @@ path_age_seconds() {  # <path>
 #
 # bin/fm-watch.sh's busy_turn_over_age does age the meta FILE, and that is not
 # the same use and must not be changed to match this: it is bounding how long a
-# BUSY PANE may go with no completed turn, it owns that choice, and a file
+# BUSY PANE may go with no turn-boundary wake, it owns that choice, and a file
 # touched by an operator action is a defensible floor for that question.
 #
 # The clock-skew convention is path_age_seconds' above: never negative, 0 for a
@@ -508,17 +508,18 @@ status_event_json() {  # <status-log>
       last_event_age_seconds:(if $age == "" then null else ($age | tonumber) end)}'
 }
 
-# When this task's runtime last completed a turn.
+# When this task's runtime last emitted a turn-boundary wake.
 #
-# state/<id>.turn-ended is the harness-neutral marker every verified harness's
-# turn-end hook touches, and bin/fm-watch.sh already ages exactly this file to
-# bound how long a busy pane may go with no completed turn (busy_turn_over_age).
-# It stays what that owner says it is - a wake NOTIFICATION and an activity
-# timestamp, never current-state truth - and this record carries only its age so
+# state/<id>.turn-ended is the harness-neutral marker written by verified
+# turn-end producers and cursor/agy's debounced native-idle detector, and
+# bin/fm-watch.sh already ages exactly this file to bound how long a busy pane
+# may go with no turn-boundary wake (busy_turn_over_age). It stays what that
+# owner says it is - a wake NOTIFICATION and an activity timestamp, never
+# current-state truth or terminal attestation - and this record carries only its age so
 # a renderer can tell a task that has been quiet from one that has been idle.
 # An absent marker is reported as absent rather than as an age, because a task
-# whose harness has not completed a turn yet and one whose harness never touches
-# the marker are both "no turn observed", and neither is evidence of a stall.
+# whose runtime has emitted no turn-boundary wake and one whose harness never
+# touches the marker have the same projection, and neither is evidence of a stall.
 turn_marker_json() {  # <turn-ended-path>
   local marker=$1 present=0 at='' age=''
   if [ -e "$marker" ]; then

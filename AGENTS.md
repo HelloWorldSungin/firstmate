@@ -98,7 +98,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
-  <id>.turn-ended    task completion signal; harness-adapters routes each producer contract to its authoritative implementation
+  <id>.turn-ended    turn-boundary wake notification, never current-state truth; harness-adapters routes each producer contract to its authoritative implementation
   <id>.run-step      last observed no-mistakes run step; private cache owned by bin/fm-crew-state.sh and removed by teardown
   <id>.agy-trust     agy trust cleanup marker; exact lifecycle lives in bin/fm-agy-trust-lib.sh
   <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown

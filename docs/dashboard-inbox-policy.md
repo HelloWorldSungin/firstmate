@@ -142,15 +142,15 @@ Two things answer for a quiet task, and either is enough.
 The first is being caught in the act.
 The snapshot's `current_state` is reconciled by [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), and two of the sources it can answer with are readings taken during that refresh: `run-step`, the validation run's own current step, and `pane`, the harness's own busy verdict.
 A task carrying a definite state from either was observed working, so ordinary quiet does not colour it; the one bound that still applies to it is below.
-Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `status-log` is the event log this signal already reads, and `timeout`, `not-attempted`, `row-unavailable` and `none` are readings that were not taken.
+Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `completion-attestation` is the scout's durable decision-inventory result, `status-log` is the event log this signal already reads, and `timeout`, `not-attempted`, `row-unavailable` and `none` are readings that were not taken.
 None of those excuses quiet, because the rule at the top of this page applies here too: not knowing is not the same as knowing it is fine.
 
-The second is a completed turn.
-Everything not observed working is aged on the newer of its last status append and its `paths.turn_ended` marker, which the runtime touches when a turn ends whatever the worker chooses to report.
-That marker is a wake notification and an activity timestamp, never current state; [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns it and already ages this exact file for the same purpose.
+The second is a turn-boundary wake.
+Everything not observed working is aged on the newer of its last status append and its `paths.turn_ended` marker, which a verified turn-end producer or cursor/agy's identity-gated, debounced native-idle detector touches whatever the worker chooses to report.
+That marker is a wake notification and an activity timestamp, never current state or terminal attestation; [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns it and already ages this exact file for the same purpose.
 A task whose harness leaves no marker still ages on its status log alone, as before.
 
-A task that has neither yet - no status line and no completed turn - is aged on `spawn_age_seconds`, how long ago it was dispatched.
+A task that has neither yet - no status line and no turn-boundary wake - is aged on `spawn_age_seconds`, how long ago it was dispatched.
 That is not a third activity clock and is used only as a last resort, because a dispatch time is not an activity time.
 It is here so that a task which has done nothing observable since it started still gets a bound rather than an exemption without end.
 A task with no readable clock at all stays unknown, never green.
@@ -161,13 +161,13 @@ Firstmate rewrites that file in the course of its own work - recording a PR, fli
 `bin/fm-watch.sh` does age the meta file for its own busy-pane bound, which is a different question it owns and answers correctly.
 
 The window both are judged against is supervision's, not this page's.
-`bin/fm-watch.sh` lets a busy pane go without a completed turn for `FM_BUSY_TURN_MAX_SECS` before treating it as worth inspecting, and that is the same question this signal asks, so the strip reads the window off the snapshot rather than holding a second opinion.
+`bin/fm-watch.sh` lets a busy pane go without a turn-boundary wake for `FM_BUSY_TURN_MAX_SECS` before treating it as worth inspecting, and that is the same question this signal asks, so the strip reads the window off the snapshot rather than holding a second opinion.
 Amber is half of it, matching how Supervision treats its own grace window; red is all of it.
 [`docs/verification/dashboard-fleet-health.md`](verification/dashboard-fleet-health.md) records the measurement that checks the published window is above a healthy step rather than inside one, and the 900-second constant this signal used to carry is the reason that check is written down.
 
 The exemption a live reading buys is bounded the same way supervision bounds it.
-A busy worker is excused until the newest clock it has reaches the window, not indefinitely, so a pane that renders as busy while its foreground call has hung still colours the strip - including a job that hung inside its first tool call and so has no status line and no completed turn to age at all.
-The sentence the strip shows when that happens says the task has recorded no activity rather than naming a turn boundary, because the figure behind it is whichever clock was newest and attributing a status-log timestamp to a completed turn is the same conflation this signal was rebuilt to remove.
+A busy worker is excused until the newest clock it has reaches the window, not indefinitely, so a pane that renders as busy while its foreground call has hung still colours the strip - including a job that hung inside its first tool call and so has no status line and no turn-boundary wake to age at all.
+The sentence the strip shows when that happens says the task has recorded no activity rather than naming a turn boundary, because the figure behind it is whichever clock was newest and attributing a status-log timestamp to a turn-boundary wake is the same conflation this signal was rebuilt to remove.
 And a snapshot carrying no window at all reads unknown rather than green: without it there is no threshold to judge against, and picking one here is the defect this signal was rebuilt out of.
 
 ### Declared waits

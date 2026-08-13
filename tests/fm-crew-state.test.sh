@@ -1294,6 +1294,37 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle() {
   pass "an idle record with idle agent_status stays not-busy (no regression for a human-blocked agent)"
 }
 
+test_cursor_scout_completion_attestation_resolves_unknown_idle() {
+  command -v jq >/dev/null 2>&1 || { pass "cursor scout completion attestation skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case cursor-scout-completion)
+  make_repo_on_branch "$d/wt" fm/scout-2
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/data/cursor-scout-completion"
+  printf '# Scout Report\nAll findings captured.\n' > "$d/data/cursor-scout-completion/report.md"
+  fm_write_meta "$d/state/cursor-scout-completion.meta" "window=default:w1:p6" "worktree=$d/wt" "kind=scout" \
+    "backend=herdr" "harness=cursor"
+  printf 'working: setup complete\n' > "$d/state/cursor-scout-completion.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_BUSY=0
+  FM_FAKE_HERDR_AGENT_STATUS=idle
+  local out; out=$(run_crew_state "$d" cursor-scout-completion)
+  assert_contains "$out" "state: unknown" "native idle without completion attestation must stay unknown"
+  assert_not_contains "$out" "state: done" "report existence must not attest scout completion"
+  printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$d/state/cursor-scout-completion.meta"
+  out=$(run_crew_state "$d" cursor-scout-completion)
+  assert_contains "$out" "state: done" "the scout completion gate must resolve unknown native idle"
+  assert_contains "$out" "source: completion-attestation" "completed scout must name its durable attestation"
+  FM_FAKE_HERDR_MISSING=1
+  out=$(run_crew_state "$d" cursor-scout-completion)
+  assert_contains "$out" "state: done" "durable scout completion must survive a closed endpoint"
+  assert_contains "$out" "source: completion-attestation" "closed completed scout must retain its durable source"
+  pass "a scout completion attestation resolves unknown native idle durably"
+}
+
+
 # (g) no run + idle pane -> the status-log verb, as-is
 test_no_run_idle_pane_uses_log() {
   reset_fakes
@@ -2501,5 +2532,6 @@ test_working_run_step_with_unknown_liveness_token_is_unknown
 test_secondmate_not_downgraded_by_worker_state
 test_working_run_step_with_dead_agent_not_absorbed
 test_working_run_step_with_unreadable_agent_not_absorbed
+test_cursor_scout_completion_attestation_resolves_unknown_idle
 
 echo "all fm-crew-state tests passed"

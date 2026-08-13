@@ -108,18 +108,19 @@ fm_transition_policy() {  # <to_status> -> actionable|absorb|defer|fallback
 # WHY THIS EXISTS: those CLIs install no turn-end hook and write no status file,
 # and the shared policy above correctly DEFERS `idle`/`done` because for the
 # general fleet those states blip transiently between tool calls. But cursor and
-# agy signal a completed turn ONLY through their native `idle`/`done` state, and
-# the content-hash stale backstop is unreliable for a repainting CLI. So the
-# watcher's poll loop runs this decision per cursor/agy herdr window and, when it
-# says signal, touches the task's `state/<id>.turn-ended` - the same completion
-# signal every other harness's hook writes, handled by the existing scan/wake
-# path with no change to the shared policy or the event stream.
+# agy expose a possible turn boundary only through their native `idle`/`done`
+# state, and the content-hash stale backstop is unreliable for a repainting CLI.
+# So the watcher's poll loop runs this decision per cursor/agy herdr window and,
+# when it says signal, touches the task's `state/<id>.turn-ended` wake
+# notification, handled by the existing scan/wake path with no change to the
+# shared policy or the event stream.
 #
 # It is NOT a blanket "idle/done is actionable" rule (the very firehose the policy
 # avoids): it is gated to cursor/agy AND debounced. A signal fires only on the
 # SECOND consecutive settled `idle`/`done` poll (so an idle shorter than a poll
 # interval - a real inter-tool blip - never signals), and only ONCE per idle
-# period; a `working` or `blocked` edge re-arms it for the next turn.
+# period; a `working` or `blocked` edge re-arms it for the next turn. This
+# debounce is notification policy, never a current-state or terminal attestation.
 #
 # Pure and side-effect-free so it is unit-testable: given the expected harness,
 # the live native identity and status read together, and the PREVIOUS recorded
@@ -158,7 +159,7 @@ fm_transition_native_completion() {  # <expected_harness> <native_identity> <sta
             printf '%s|1' "$status"
             return 1
           fi
-          # Second consecutive settled poll: a real turn-end, signal once.
+          # Second consecutive settled poll: signal the possible boundary once.
           printf '%s|1' "$status"
           return 0
           ;;

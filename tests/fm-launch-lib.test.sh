@@ -93,10 +93,9 @@ test_unknown_harness_returns_nonzero() {
 # --- fm_launch_model_flag ----------------------------------------------------
 
 test_cursor_model_passthrough() {
-  # cursor encodes effort inside a parameterized model string; --model must carry
-  # it through verbatim (quoted whole, brackets and = intact).
-  assert_eq "$(fm_launch_model_flag cursor 'composer-2.5[effort=high]')" \
-    "--model 'composer-2.5[effort=high]' " \
+  # cursor passes parameterized model strings through verbatim (quoted whole, brackets and = intact).
+  assert_eq "$(fm_launch_model_flag cursor 'claude-opus-4-8[context=1m,effort=high,fast=false]')" \
+    "--model 'claude-opus-4-8[context=1m,effort=high,fast=false]' " \
     "cursor --model must pass the parameterized model string through unmodified"
   pass "cursor --model passes a parameterized model string through verbatim"
 }

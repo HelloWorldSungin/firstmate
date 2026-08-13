@@ -14,6 +14,8 @@ It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
+For a scout with no attributable validation run, `bin/fm-crew-state.sh` treats that flag as the durable completion attestation, so Herdr-native idle can remain notification-only rather than serving as current-state truth.
+A tracked text follow-up through `bin/fm-send.sh` appends `decisions_reviewed=0` before dispatch, preserves a newer `1` written by a fast completed review, restores the prior completion only when delivery definitely failed, and leaves completion reopened when delivery is unconfirmed because the message may have landed.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
 It accepts `--none` as an explicit semantic inventory result, not as inferred absence.
 It verifies every listed identity against tasks-axi before recording completion.

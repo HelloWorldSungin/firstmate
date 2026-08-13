@@ -134,7 +134,7 @@ The supported launch-profile flags below are summarized as verified selection ax
 | pi / pi-signed | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-27 on Pi and pi-signed 0.82.0. Both expose the same accepted thinking levels and completed the same model-qualified max-thinking smoke. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
-| cursor | `--model <model>` | none as a separate axis | Crew-only and herdr-only, verified on cursor-agent 2026.07.20. Effort is encoded in the parameterized model string, such as `composer-2.5[effort=high]`, which reaches `--model` verbatim. |
+| cursor | `--model <model>` | none as a separate axis | Crew-only and herdr-only, verified on cursor-agent 2026.08.11. Generic effort axis is absent. Parameterized models accept quoted bracket overrides (e.g. `claude-opus-4-8[context=1m,effort=high,fast=false]`), but bare models like `composer-2.5` reject bracketed effort. |
 | agy | `--model <model>` | `--effort <low\|medium\|high>` | Crew-only and herdr-only (see the agy section). Verified on agy 1.1.5, whose `--help` advertises only these three levels; `xhigh` and `max` are omitted. |
 
 The concrete `harness` field owns adapter identity independently of the model provider: `harness=pi` with `model=xai/grok-*` is Pi using xAI, not `harness=grok`, and does not require Grok CLI login; `harness=grok` remains the standalone Grok Build CLI adapter.
@@ -424,7 +424,7 @@ The raw-launch-command escape hatch must never be used for `cursor-agent`/`agy`;
 On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
 So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
 
-cursor and agy install no turn-end hook or status writer; the watcher instead converts their herdr-native completion into the shared `state/<id>.turn-ended` signal without relaxing the event-stream policy.
+cursor and agy install no turn-end hook or status writer; the watcher instead converts their identity-gated, debounced herdr-native idle into the shared `state/<id>.turn-ended` wake notification without treating it as current-state truth or relaxing the event-stream policy.
 `bin/fm-transition-lib.sh`'s `fm_transition_native_completion` comment owns the native-identity gate, debounce state machine, and re-arm behavior, while `bin/fm-watch.sh` owns its poll-loop integration.
 No repo `.cursor/hooks.json` / `.agents/hooks.json` is ever written, and no new shared global hook file is added.
 A global benign `stop`/`Stop` hook (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`, whose payloads were verified to carry the worktree in `workspace_roots[0]` / `workspacePaths[0]`) is a viable alternative, but the native poll detector is preferred because it needs no shared global-file mutation.
@@ -439,7 +439,7 @@ The only cost of `unknown` is that the away-mode escalation injector defers rath
 | cursor launch behavior | Positional prompt stays interactive; workspace trust and command auto-approval are both enabled by the verified template in `bin/fm-launch-lib.sh`. |
 | agy launch behavior | The initial prompt stays interactive and tool use is auto-approved by the verified template in `bin/fm-launch-lib.sh`. |
 | Busy-pane signature | native herdr `agent_status == working` (generic, no screen-scrape). |
-| Turn-end | watcher-side native completion; no hook installed and no repo or new global hook file written. |
+| Turn-end | watcher-side identity-gated, debounced native-idle wake notification; no hook installed and no repo or new global hook file written. |
 | Composer state | `unknown` (safe default; no override). |
 
 agy workspace trust is the one extra launch step.

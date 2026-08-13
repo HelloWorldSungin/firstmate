@@ -138,14 +138,14 @@ Also per task: `hints.last_event_declared_wait`, a boolean saying whether the ne
 [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) owns that vocabulary and `status_is_paused_or_captain_held` decides it, the same call the supervision watcher makes, so a renderer never reimplements the token list and the two surfaces cannot disagree about what a declared wait is.
 A consumer that has not adopted the field reads it as absent and keeps its previous behavior, whether that verdict is an elapsed time or an endpoint-presence reading.
 
-Also per task: `paths.turn_ended`, the age of `state/<id>.turn-ended` - the harness-neutral marker a completed turn touches.
-[`bin/fm-watch.sh`](../bin/fm-watch.sh) owns that marker and already ages this exact file to bound how long a busy pane may go with no completed turn, so it stays what that owner says it is: a wake notification and an activity timestamp, never current state.
+Also per task: `paths.turn_ended`, the age of `state/<id>.turn-ended` - the harness-neutral turn-boundary wake marker written either by a verified turn-end producer or by cursor/agy's identity-gated, debounced Herdr-native idle detector.
+[`bin/fm-watch.sh`](../bin/fm-watch.sh) owns that marker and already ages this exact file to bound how long a busy pane may go with no turn-boundary wake, so it stays what that owner says it is: a wake notification and an activity timestamp, never current state or terminal attestation.
 It exists here because the status log is a REPORTING cadence rather than an activity one - the crew brief instructs workers to append only on phase changes - so a surface that wants to know when a task last DID anything needs a clock the worker does not choose.
-An absent marker reports `present: false` with a null age, because a harness that has completed no turn yet and one that never touches the marker are both "no turn observed", and neither is evidence of a stall.
+An absent marker reports `present: false` with a null age, because a harness with no observed turn-boundary wake and one that never touches the marker have the same projection, and neither is evidence of a stall.
 
 Also per task: `spawn_age_seconds`, how long ago the task was DISPATCHED.
 It ages the `spawned_at` epoch [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) stamps into `state/<id>.meta` at dispatch, and it is null when no readable stamp is present.
-It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor completed anything, so such a task still has a bound instead of an exemption without end.
+It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor emitted a turn-boundary wake, so such a task still has a bound instead of an exemption without end.
 A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
 
 It is deliberately the recorded VALUE and not the age of the `state/<id>.meta` file, because those two mean different things.
@@ -154,7 +154,7 @@ Its mtime therefore means "when anything last touched this record", and using it
 Every one of those writers preserves the `spawned_at` line, so the stamped epoch stays what it says it is.
 
 [`bin/fm-watch.sh`](../bin/fm-watch.sh)'s `busy_turn_over_age` does age the meta FILE, and that is a different question with a different correct answer.
-It bounds how long a BUSY PANE may go with no completed turn, it owns that choice, and a file an operator action touched is a defensible floor for it.
+It bounds how long a BUSY PANE may go with no turn-boundary wake, it owns that choice, and a file an operator action touched is a defensible floor for it.
 It is not wrong and must not be changed to match this field.
 
 Also per task: two further `current_state.source` values the snapshot can produce for itself, beside the existing `timeout`.

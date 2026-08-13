@@ -921,7 +921,7 @@ esac
 # data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
 # gates before any backend or worktree work: they can supervise a ship/scout
 # crewmate only, never a secondmate, and only on the herdr backend, whose native
-# agent-state gives liveness plus the debounced turn-end completion the watcher
+# agent-state gives liveness plus the debounced turn-boundary wake the watcher
 # derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
 # and is documented out-of-scope in the harness-adapters skill. Refuse loudly
 # rather than launch an unsupervisable crewmate.
@@ -2183,16 +2183,16 @@ EOF
       exclude_path '.fm-kimi-turnend'
       ;;
     cursor*)
-      # cursor (crew-only, herdr-only): turn-end is the watcher's debounced
-      # native-completion detector (fm-watch.sh maybe_native_turnend), so NO
+      # cursor (crew-only, herdr-only): turn-end notification is the watcher's
+      # debounced native-idle detector (fm-watch.sh maybe_native_turnend), so NO
       # launch-time hook is installed and NO repo hook file (.cursor/hooks.json) is
       # ever written. cursor's launch-time --trust already covers its workspace
       # trust modal, so unlike agy there is nothing to seed here.
       :
       ;;
     agy*)
-      # agy (crew-only, herdr-only): turn-end is the watcher's debounced native
-      # completion detector (no hook, no repo .agents/hooks.json write). What agy
+      # agy (crew-only, herdr-only): turn-end notification is the watcher's
+      # debounced native-idle detector (no hook, no repo .agents/hooks.json write). What agy
       # DOES need is workspace trust: an interactive launch gates on a per-
       # workspace trust modal that --dangerously-skip-permissions does not cover,
       # and trust is an EXACT-path entry in agy's SHARED global settings. Pre-seed
