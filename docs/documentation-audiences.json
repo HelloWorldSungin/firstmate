@@ -110,6 +110,10 @@
       "target": "docs/verification/trace-context.md"
     },
     {
+      "source": ".agents/skills/design-profile/SKILL.md",
+      "target": "docs/verification/runtime-backends.md"
+    },
+    {
       "source": "CONTRIBUTING.md",
       "target": "docs/one-owner.md"
     },

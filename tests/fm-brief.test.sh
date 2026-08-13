@@ -676,14 +676,26 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path() {
   pass "fm-brief.sh: --herdr-lab uses its quoted Firstmate-owned helper path"
 }
 
-test_herdr_lab_omission_is_loud_for_ship_and_scout() {
-  local home id brief
+test_herdr_lab_omission_is_loud_for_tracked_and_report_tasks() {
+  local home plugin registry id brief
   home="$TMP_ROOT/herdr-gate-home"
-  mkdir -p "$home/data"
-  for kind in ship scout; do
+  plugin="$TMP_ROOT/herdr-gate-plugin"
+  registry="$TMP_ROOT/herdr-gate-registry.json"
+  mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+  for kind in ship design scout; do
     id="brief-herdr-gate-$kind"
     if [ "$kind" = scout ]; then
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    elif [ "$kind" = design ]; then
+      FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+        "$ROOT/bin/fm-brief.sh" "$id" firstmate --design --mode no-mistakes >/dev/null 2>&1
     else
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
     fi
@@ -693,7 +705,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
     assert_grep "regenerate the brief with \`--herdr-lab\` before dispatch" "$brief" \
       "$kind brief missing the fail-visible regeneration instruction"
   done
-  pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
+  pass "fm-brief.sh: ship, design, and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
 test_secondmate_no_projects_charter() {
@@ -735,7 +747,7 @@ test_secondmate_no_projects_charter() {
   FM_HOME="$home" FM_SECONDMATE_CHARTER='x' "$ROOT/bin/fm-brief.sh" oops2 --secondmate --no-projects alpha >/dev/null 2>&1; status=$?
   expect_code 1 "$status" "--no-projects combined with a project list must fail"
 
-  # --no-projects applies only to secondmate charters, never a ship/scout brief.
+  # --no-projects applies only to secondmate charters, never an ordinary task brief.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" oops3 somerepo --no-projects >/dev/null 2>&1; status=$?
   expect_code 1 "$status" "--no-projects on a ship brief must fail"
 
@@ -1031,8 +1043,8 @@ test_firstmate_repo_crew_persona_section() {
     git -C "$home/projects/$other" -c user.email=test@example.com -c user.name=test commit -qm init
   done
 
-  # Ship: both facts. Breaks if the guidelines directive stops being ship-only
-  # in the wrong direction and is dropped from ship briefs too.
+  # Ship: both facts. Breaks if the guidelines directive stops being
+  # tracked-output-only in the wrong direction and is dropped from ship briefs too.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" fm-repo-ship firstmate --mode no-mistakes >/dev/null 2>&1
   same_repo_brief="$home/data/fm-repo-ship/brief.md"
@@ -1053,7 +1065,7 @@ test_firstmate_repo_crew_persona_section() {
   assert_grep 'You report to FIRSTMATE, not the captain.' "$scout_brief" \
     "firstmate-repo scout brief did not warn against adopting firstmate's captain address"
   assert_no_grep 'firstmate-coding-guidelines' "$scout_brief" \
-    "firstmate-repo scout brief must not carry the ship-only coding-guidelines directive"
+    "firstmate-repo scout brief must not carry the tracked-output coding-guidelines directive"
   assert_no_grep "changes firstmate's shared tracked material" "$scout_brief" \
     "firstmate-repo scout brief must not claim it changes shared tracked material"
 
@@ -1182,6 +1194,14 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design brief allowed the dependency to create a second tracked deliverable"
   assert_grep 'Record every resolved term only in the ADR' "$brief" \
     "design brief did not preserve the ADR as the resolved-term owner"
+  assert_no_grep '# Project memory' "$brief" \
+    "design brief exposed the ship-only project-memory deliverable path"
+  assert_no_grep 'fm-ensure-agents-md.sh' "$brief" \
+    "design brief allowed AGENTS.md creation as a second tracked deliverable"
+  assert_grep 'Do not create or modify any other tracked project file' "$brief" \
+    "design brief did not forbid every non-ADR tracked project change"
+  assert_grep 'confirm the ADR is the only worker-authored tracked project change' "$brief" \
+    "design brief did not require a final ADR-only diff check"
   assert_grep 'Ask exactly one decision question at a time' "$brief" \
     "design brief did not preserve the sequential interview"
   assert_grep 'docs/adr/NNNN-<slug>.md' "$brief" \
@@ -1190,6 +1210,28 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design brief allowed implementation to leak into the ADR task"
   assert_grep 'Delivery contract: mode=no-mistakes' "$brief" \
     "design brief did not carry the tracked-output delivery contract"
+
+  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-linked sample --design --mode direct-PR \
+    --work-item github:https://github.com/acme/widget/issues/42 \
+    --pr-target github:github.com/acme/widget 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a PR-based design brief should accept a resolved work item"
+  assert_grep '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
+    "$home/data/design-linked/brief.md" \
+    "design brief did not carry its work item through the tracked-output contract"
+
+  mkdir -p "$home/projects"
+  ln -sfn "$ROOT" "$home/projects/firstmate"
+  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-firstmate firstmate --design --mode local-only 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a firstmate-repo design brief should scaffold"
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' \
+    "$home/data/design-firstmate/brief.md" \
+    "firstmate-repo design brief did not retain its tracked-output coding guidance"
+  assert_no_grep 'fm-ensure-agents-md.sh' "$home/data/design-firstmate/brief.md" \
+    "firstmate-repo design brief reopened the project-memory deliverable path"
 
   out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/missing-registry.json" \
     "$ROOT/bin/fm-brief.sh" missing-design sample --design --mode no-mistakes 2>&1)
@@ -1263,7 +1305,7 @@ test_status_protocol_teaches_blocked_for_firstmate_waits
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
-test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_herdr_lab_omission_is_loud_for_tracked_and_report_tasks
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract

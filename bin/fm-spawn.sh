@@ -9,7 +9,7 @@
 #   and design spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
-#   the mode up. A ship spawn additionally reads the brief's recorded
+#   the mode up. A ship or design spawn additionally reads the brief's recorded
 #   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
 #   instructions and the recorded task delivery cannot drift apart; a brief
 #   scaffolded before that line existed warns once and launches on the flag. When
@@ -17,7 +17,7 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
-#   A generated ship brief also carries one exact firstmate-task-branch marker.
+#   A generated ship or design brief also carries one exact firstmate-task-branch marker.
 #   Spawn validates and copies that value to branch= in state/<id>.meta before
 #   the worker creates it, so current-state reconciliation has durable task
 #   identity independent of the pooled worktree's later ambient branch.
@@ -117,7 +117,7 @@
 #   see the design-profile skill); --scout records kind=scout (report deliverable,
 #   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
 #   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
-#   For a ship brief scaffolded with fm-brief.sh --work-item, spawn validates
+#   For a ship or design brief scaffolded with fm-brief.sh --work-item, spawn validates
 #   every repeatable firstmate-work-item marker and records one fully qualified
 #   work_item= line per marker in task meta. The legacy --issue path still
 #   records issue=<number>; when the project declares a tracker, spawn also
@@ -161,7 +161,7 @@
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # On success prints: spawned <id> harness=<name> kind=<ship|design|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
-# A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
+# A ship or design task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
 # When the home session's frozen trace-context decision is enabled (see
@@ -361,11 +361,11 @@ if tracked_output_kind; then
   esac
 else
   [ "$MODE_SET" -eq 0 ] || {
-    echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+    echo "error: --mode applies only to ship or design spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
     exit 1
   }
   [ "$YOLO_SET" -eq 0 ] || {
-    echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+    echo "error: --yolo applies only to ship or design spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
     exit 1
   }
 fi
@@ -1223,14 +1223,14 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 }
 
 # Brief/spawn delivery agreement, checked before any endpoint exists.
-# fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
+# fm-brief.sh records a ship or design brief's mode as a fixed "Delivery contract: mode=<mode>"
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
 if tracked_output_kind; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   if [ -z "$BRIEF_MODE" ]; then
-    echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
+    echo "warning: $BRIEF records no delivery contract line (scaffolded before tracked-output briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
     exit 1
@@ -2238,7 +2238,7 @@ EOF
 fi
 
 # Delivery posture recorded in meta so fm-teardown's safety check and the
-# validate/merge stages can branch on it. A ship task carries the explicit
+# validate/merge stages can branch on it. A ship or design task carries the explicit
 # per-task decision validated above; a secondmate's posture is fixed; a scout
 # records none at all, because its deliverable is a report rather than a merge
 # (fm-teardown.sh defaults an absent mode to no-mistakes, and fm-promote.sh

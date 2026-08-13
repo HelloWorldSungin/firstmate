@@ -136,9 +136,9 @@ test_scout_batch_refuses_delivery_flags() {
   out=$(run_spawn nope-batch-scout-z12=projects/none-a --scout --mode direct-PR --yolo on)
   status=$?
   [ "$status" -ne 0 ] || fail "a scout batch carrying delivery flags should exit non-zero"
-  printf '%s\n' "$out" | grep -F 'applies only to ship spawns' >/dev/null \
+  printf '%s\n' "$out" | grep -F 'applies only to ship or design spawns' >/dev/null \
     || fail "scout batch did not refuse the delivery flags"
-  pass "scout batch refuses ship delivery flags instead of ignoring them"
+  pass "scout batch refuses tracked-output delivery flags instead of ignoring them"
 }
 
 test_batch_dispatches_every_pair

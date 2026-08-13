@@ -2,10 +2,10 @@
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
 # publish the durable outcome manifest, clear volatile state, refresh the
-# project's clone for PR-based ship tasks, then print a backlog-refresh reminder
-# for ship and scout teardowns (a secondmate teardown prints none, since
+# project's clone for PR-based ship or design tasks, then print a backlog-refresh reminder
+# for ship, design, and scout teardowns (a secondmate teardown prints none, since
 # secondmates are not backlog items).
-# Ordinary ship cleanup also reaps exactly refs/heads/fm/<task-id>, never the
+# Ordinary tracked-output cleanup also reaps exactly refs/heads/fm/<task-id>, never the
 # worktree's ambient branch, and only when the branch's current head is either
 # contained in the default branch - freshly fetched from origin, or the local
 # default branch that firstmate's approved merge lands on for a local-only or
@@ -32,7 +32,7 @@
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
-# normal ship task whose commits are not so reachable - when its PR is merged and
+# normal tracked-output task whose commits are not so reachable - when its PR is merged and
 # GitHub reports a PR head that contains the current local work, or its content is
 # already present in the up-to-date default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
@@ -125,7 +125,7 @@
 # refusal above has already passed, and BEFORE any worktree return, branch
 # delete, or backend kill below - a still-active run or a leaked process may
 # own live work in that worktree):
-#   Fix 1 - conclude the task's own no-mistakes run. A ship task's worktree can
+#   Fix 1 - conclude the task's own no-mistakes run. A tracked-output task's worktree can
 #     be torn down while its no-mistakes pipeline run is still PARKED at a gate
 #     (awaiting_approval/fix_review/any awaiting_agent field), with no worker
 #     left to ever answer it - the run then sits there holding a fleet slot
@@ -559,7 +559,7 @@ worker_left_nothing_to_preserve() {
   [ -n "$wt" ] && [ -d "$wt" ] || return 1
   git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 1
   # A branch at HEAD means the worker got as far as creating one, which the
-  # ship brief makes its first action.
+  # tracked-output brief makes its first action.
   ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1 || return 1
   task_ref="refs/heads/fm/$ID"
   git -C "$wt" check-ref-format "$task_ref" >/dev/null 2>&1 || return 1
@@ -1718,7 +1718,7 @@ task_status_is_own_parked_run() {  # <worktree> <axi-status-output>
 task_run_is_own_parked_run() {  # <worktree>
   local wt=$1 out
   # Accepted best-effort residual: query failures stay fail-open because making
-  # no-mistakes availability a prerequisite would block ship tasks with no run.
+  # no-mistakes availability a prerequisite would block tracked-output tasks with no run.
   out=$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" axi status)
   task_status_is_own_parked_run "$wt" "$out"
 }
@@ -2747,7 +2747,7 @@ fi
 
 if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
-    echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
+    echo "REFUSED: Orca tracked-output task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot verify dirty or unlanded work; restore the worktree path or get explicit OK to discard, then --force." >&2
     exit 1
   fi

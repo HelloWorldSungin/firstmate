@@ -3,7 +3,7 @@
 #
 # The check refuses to tear down a worktree whose work has not LANDED, because
 # treehouse return hard-resets the worktree. "Landed" means reachable from a remote
-# OR - for a normal ship task whose commits are not so reachable - its PR is merged
+# OR - for a normal tracked-output task whose commits are not so reachable - its PR is merged
 # and GitHub reports a PR head that contains the current local work, or its content
 # is already in the up-to-date default branch.
 #
@@ -225,13 +225,17 @@ if [ "${1:-}" = mv ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
   exit 0
 fi
+if [ "${1:-}" = hold ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi hold <id> --kind captain'
+  exit 0
+fi
 exit 0
 SH
   chmod +x "$case_dir/fakebin/tasks-axi"
 }
 
 # Write a meta file for the task. Args: case_dir mode kind
-# A ship record carries the durable branch= fm-spawn copies from its brief's
+# A ship or design record carries the durable branch= fm-spawn copies from its brief's
 # exact task-branch marker, which is the branch make_case checks the worktree
 # out on. That record - never the worktree's ambient branch - is what teardown
 # attributes runs and unlanded work to.
@@ -245,7 +249,9 @@ write_meta() {
     "kind=$kind" \
     "mode=$mode" \
     "model=default"
-  [ "$kind" != ship ] || printf 'branch=fm/task-x1\n' >> "$case_dir/state/task-x1.meta"
+  case "$kind" in
+    ship|design) printf 'branch=fm/task-x1\n' >> "$case_dir/state/task-x1.meta" ;;
+  esac
 }
 
 # A ship record from before the task-branch marker existed: it names a worktree
@@ -3282,6 +3288,31 @@ test_teardown_publishes_outcome_manifest_before_removing_records() {
   pass "teardown publishes the durable outcome manifest and then removes the volatile records"
 }
 
+test_design_teardown_publishes_manifest_and_removes_records() {
+  local case_dir rc manifest
+  case_dir=$(make_case design-manifest-publish)
+  write_meta "$case_dir" local-only design
+  add_compatible_tasks_axi "$case_dir"
+  printf '%s\n' 'decisions_reviewed=1' 'decision_keys=' >> "$case_dir/state/task-x1.meta"
+  printf 'done: ADR ready in branch\n' > "$case_dir/state/task-x1.status"
+  wt_commit "$case_dir" "record the design decision"
+  add_fork_with_pushed_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "design-manifest-publish: teardown should succeed on a reviewed landed ADR"
+
+  manifest="$case_dir/data/task-x1/outcome.json"
+  assert_present "$manifest" "design teardown did not publish its durable outcome manifest"
+  assert_absent "$case_dir/state/task-x1.meta" "design teardown left volatile task metadata behind"
+  jq -e '.kind == "design" and .outcome.state == "done" and .outcome.forced == false' \
+    "$manifest" >/dev/null \
+    || fail "design teardown published an invalid outcome manifest: $(cat "$manifest")"
+  pass "design teardown preserves normal manifest publication and volatile-record cleanup"
+}
+
 test_forced_teardown_records_a_discarded_outcome() {
   local case_dir rc manifest
   case_dir=$(make_case manifest-forced)
@@ -3969,6 +4000,7 @@ EOF
 
 test_local_only_fork_remote_allows
 test_teardown_publishes_outcome_manifest_before_removing_records
+test_design_teardown_publishes_manifest_and_removes_records
 test_forced_teardown_records_a_discarded_outcome
 test_teardown_refuses_when_the_manifest_cannot_be_published
 test_terminal_model_verdict_blocks_cleanup_then_allows_match

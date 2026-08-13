@@ -64,7 +64,8 @@ When the interview has converged, require the worker to state the resulting deci
 Use an existing project ADR convention when one exists.
 Otherwise the worker uses `docs/adr/NNNN-<slug>.md`, incrementing the highest existing number.
 The ADR must stand alone with context, decision, rationale, relevant alternatives, and non-obvious consequences.
-The task changes no product code, creates no `CONTEXT.md`, and does not implement the selected design.
+The task authors no tracked project change except the ADR, including no product code, `CONTEXT.md`, `AGENTS.md`, or `CLAUDE.md`, and does not implement the selected design.
+Before delivery, require the worker to inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 
 Before the ADR is ready, load `decision-hold-lifecycle` and inventory every unresolved captain choice surfaced by the interview or ADR.
 The task follows its selected delivery path exactly like another tracked documentation change.
@@ -74,3 +75,4 @@ Under local-only, the worker stops on a clean ready branch.
 
 Clean up only after the ADR has landed and the decision inventory verifies.
 `fm-teardown.sh` enforces the decision inventory for `kind=design` in addition to the normal landed-work checks.
+[`docs/verification/runtime-backends.md`](../../../docs/verification/runtime-backends.md#design-profile-lifecycle) records the cross-surface ADR-only and tracked-output lifecycle audit plus its regression entry points.

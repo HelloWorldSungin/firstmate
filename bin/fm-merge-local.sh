@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Perform the approved local merge for a local-only ship task: fast-forward the
+# Perform the approved local merge for a local-only ship or design task: fast-forward the
 # project's default branch to the crewmate's fm/<id> branch.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied

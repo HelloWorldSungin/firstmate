@@ -790,7 +790,7 @@ test_non_claude_harness_ignores_config_dir() {
 }
 
 test_design_profile_resolves_on_claude_codex_and_pi() {
-  local plugin registry harness rec id out status launch expected
+  local plugin registry harness rec id out status launch expected tracker_log
   plugin="$TMP_ROOT/design-plugin"
   registry="$TMP_ROOT/design-registry.json"
   mkdir -p "$plugin/skills/productivity/grilling" \
@@ -806,6 +806,19 @@ test_design_profile_resolves_on_claude_codex_and_pi() {
     id="design-$harness-z20"
     rec=$(make_spawn_case "design-$harness" "$harness" "$id")
     read_case_record "$rec"
+    if [ "$harness" = codex ]; then
+      printf '%s\n' \
+        '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
+        '<!-- firstmate-pr-target=github:github.com/acme/widget -->' \
+        >> "$HOME_DIR/data/$id/brief.md"
+      tracker_log="$CASE_DIR/tracker.log"
+      cat > "$FAKEBIN_DIR/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tracker_log"
+exit 1
+EOF
+      chmod +x "$FAKEBIN_DIR/gh"
+    fi
     out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
       run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
       "$id" "$PROJ_DIR" --design --harness "$harness" --effort xhigh \
@@ -825,6 +838,13 @@ test_design_profile_resolves_on_claude_codex_and_pi() {
     esac
     assert_contains "$launch" "$expected" \
       "design profile did not render the verified xhigh effort axis on $harness"
+    if [ "$harness" = codex ]; then
+      assert_grep 'work_item=declared|github|https://github.com/acme/widget/issues/42' \
+        "$HOME_DIR/state/$id.meta" \
+        "design spawn did not record its work item"
+      assert_present "$tracker_log" \
+        "design spawn did not attempt the tracked-output dispatch milestone"
+    fi
   done
   pass "design profile resolves through the verified Claude, Codex, and Pi launch contracts"
 }

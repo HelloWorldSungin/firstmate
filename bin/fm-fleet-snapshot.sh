@@ -856,7 +856,7 @@ task_json_one() {  # <meta-path> [degraded]
   # reads any report content:
   #   - a live activity read (run-step or busy pane) that is working/done, so a
   #     crew that resumed past a gate is not still reported as parked; and
-  #   - a TERMINAL done/failed state on a single-owner task (scout or ship), whose
+  #   - a TERMINAL done/failed state on a single-owner task (scout, design, or ship), whose
   #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
   #     report POINTER, never as a reopened pending decision.
   # Secondmates are excluded from lifecycle clearing: they are persistent and

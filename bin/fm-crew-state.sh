@@ -19,7 +19,7 @@
 #   state: <working|parked|done|blocked|paused|failed|unknown|abandoned> · source: <run-step|run-step-degraded|run-attribution|pane|status-log|none> · <detail>
 #
 # Logic, in order:
-#   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship,
+#   1. Resolve worktree + backend target + kind from state/<id>.meta. For a ship or design task,
 #      branch= in that task record is the authoritative task branch: fm-spawn
 #      copies it from fm-brief's exact firstmate-task-branch marker, while
 #      fm-promote writes it alongside the promotion's exact branch instruction.
@@ -573,9 +573,9 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
   return 0
 }
 
-# A detached worktree is normal before a just-spawned ship creates its recorded
+# A detached worktree is normal before a just-spawned ship or design worker creates its recorded
 # branch and throughout a scout's scratch phase. A named worktree branch is only
-# observed placement. The task record's branch= is the ship identity used for
+# observed placement. The task record's branch= is the tracked-output identity used for
 # every run lookup and must agree before the worktree can supply run evidence.
 WORKTREE_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 if tracked_output_kind && [ -n "$TASK_BRANCH" ] && [ -n "$WORKTREE_BRANCH" ] \

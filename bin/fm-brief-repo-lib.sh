@@ -2,7 +2,7 @@
 # fm-brief-repo-lib.sh - detect when a crewmate task's project checkout is the
 # firstmate repository itself.
 #
-# fm-brief.sh uses this to emit role-confusion guidance for ship and scout
+# fm-brief.sh uses this to emit role-confusion guidance for ship, design, and scout
 # scaffolds only. The REPO name argument is not authoritative; two projects can
 # share a display name or a clone can be misnamed. Instead, resolve the name to
 # a project directory and compare that checkout's git-common-dir against

@@ -64,9 +64,9 @@
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 #   When the resolved project checkout shares FM_ROOT's git object database,
-#   ship and scout scaffolds also emit firstmate-repo crew role guidance so a
+#   ship, design, and scout scaffolds also emit firstmate-repo crew role guidance so a
 #   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
-#   briefs additionally require the firstmate-coding-guidelines skill, which a
+#   and design briefs additionally require the firstmate-coding-guidelines skill, which a
 #   report-only scout has no tracked material to need. Firstmate's own checkout
 #   is the home root rather than a clone under projects/, so a name is resolved
 #   against the home only when its data/projects.md line declares that layout,
@@ -83,7 +83,7 @@
 # the three concrete modes at intake before calling this script.
 # The generated ship or design brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
-# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# to launch a ship or design task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # It also records the exact ship branch in a firstmate-task-branch marker.
 # bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
@@ -103,11 +103,12 @@
 # briefs pair the pause verb with "working:" around backgrounded pipeline calls.
 # Under no-mistakes, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
-# Ship and design tasks include a project-memory section so durable project-intrinsic
+# Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Design tasks omit it because their sole tracked project deliverable is the ADR.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -423,7 +424,7 @@ REPO=${POS[1]}
 #
 # The role fact holds for every firstmate-repo task, so both scaffolds carry it:
 # a scout inherits the persona just as readily and simply has no PR to leak it
-# into. The coding-guidelines directive is ship-only, because telling a scout it
+# into. The coding-guidelines directive is tracked-output-only, because telling a scout it
 # is changing shared tracked material would put a false statement in its brief -
 # a scout's only deliverable is a report (see the scout Rules below).
 FIRSTMATE_REPO_CREW_SECTION=
@@ -633,6 +634,7 @@ if [ "$KIND" = design ]; then
 # Design profile
 This is an interactive DESIGN task whose only tracked project deliverable is one architectural decision record.
 Do not implement the resulting design or make unrelated project changes.
+Do not create or modify any other tracked project file, including \`AGENTS.md\` or \`CLAUDE.md\`.
 
 Read and follow \`$FM_ROOT/.agents/skills/design-profile/SKILL.md\` before beginning the interview.
 Run \`$FM_ROOT/bin/fm-design-skills.sh resolve\`, then use your read tool to load the exact \`grilling\` and \`domain_modeling\` skill paths in its JSON output.
@@ -657,6 +659,7 @@ EOF
   DESIGN_SECTION=${DESIGN_SECTION%$'\n'}
   IFS= read -r -d '' DESIGN_DOD <<EOF || true
 Before reporting the ADR ready, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 The final status summary must name the ADR path and concisely state the decisions taken.
 EOF
   DESIGN_DOD=${DESIGN_DOD%$'\n'}
@@ -672,6 +675,18 @@ TRACKED_SECTIONS=$HERDR_SECTION
 DOD_DIRECT='Delivery contract: mode=direct-PR'
 DOD_LOCAL='Delivery contract: mode=local-only'
 DOD_NO_MISTAKES='Delivery contract: mode=no-mistakes'
+PROJECT_MEMORY_SECTION=
+if [ "$KIND" = ship ]; then
+  IFS= read -r -d '' PROJECT_MEMORY_SECTION <<EOF || true
+# Project memory
+If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
+Record only project knowledge useful to almost every future session.
+For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
+If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
+Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+EOF
+fi
 if [ -n "$DESIGN_SECTION" ]; then
   printf -v TRACKED_SECTIONS '%s\n\n%s' "$HERDR_SECTION" "$DESIGN_SECTION"
   printf -v DOD_DIRECT '%s\n%s' "$DOD_DIRECT" "$DESIGN_DOD"
@@ -795,13 +810,6 @@ $DECISION_RULE
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-${BRAIN_SECTION}# Project memory
-If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
-Record only project knowledge useful to almost every future session.
-For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
-If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
-Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
-
-$DOD
+${BRAIN_SECTION}${PROJECT_MEMORY_SECTION}$DOD
 EOF
 echo "scaffolded: $BRIEF ($OUTPUT_KIND, mode=$MODE; replace {TASK})"

@@ -6,6 +6,72 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Design profile lifecycle
+
+This section enumerates the Firstmate surfaces that preserve the design profile's ADR-only project output and its normal tracked-output lifecycle.
+The status labels distinguish boundaries corrected during the 2026-08-13 audit from boundaries that already complied when inspected.
+
+### ADR-only project output
+
+- Corrected: `.agents/skills/design-profile/SKILL.md` owns the sole-ADR rule, excludes product code, `CONTEXT.md`, `AGENTS.md`, and `CLAUDE.md`, and requires a final branch-diff inspection.
+- Already compliant: `bin/fm-design-skills.sh` only resolves and reads the captain-installed grilling and domain-modeling skills, and never installs, updates, copies, vendors, pins, or modifies the plugin.
+- Corrected: `bin/fm-brief.sh` limits the installed skills to modeling and interrogation, records resolved terms only in the ADR, forbids every other worker-authored tracked project change, and requires the final branch-diff inspection.
+- Corrected: `bin/fm-brief.sh` emits the project-memory and `fm-ensure-agents-md.sh` path for ship briefs only, so design briefs cannot create or update a project instruction file.
+- Already compliant: the optional `bin/fm-brief.sh` brain section is read-only retrieval from prior fleet knowledge and creates no project output.
+- Already compliant: Herdr declarations, work-item comments, PR-body traceability, and delivery metadata are runtime or external lifecycle records rather than additional tracked project deliverables.
+- Already compliant: `.agents/skills/decision-hold-lifecycle/SKILL.md`, `bin/fm-decision-hold.sh`, and the design definition of done inventory unresolved choices without creating another project deliverable.
+- Already compliant: `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-manifest.sh`, and `bin/fm-teardown.sh` land, archive, and clean the ADR without authoring another project file.
+
+### Normal tracked-output lifecycle
+
+- Corrected: `AGENTS.md` includes design in the post-spawn backlog under-way handoff, while its intake taxonomy, mode, yolo, validation, ready, landing, teardown, and skill triggers already included design.
+- Already compliant: `bin/fm-brief.sh` applies issue and work-item linkage, explicit delivery mode, branch identity, isolation, status, decision, and delivery definitions to ship and design through one tracked-output predicate.
+- Already compliant: `bin/fm-spawn.sh` applies mode and yolo validation, brief agreement, batch dispatch, isolated worktree creation, metadata, branch identity, work-item dispatch milestones, and backend launch to ship and design through one tracked-output predicate.
+- Already compliant: `docs/examples/crew-dispatch.json`, `bin/fm-harness.sh`, `bin/fm-launch-lib.sh`, and `bin/fm-spawn.sh` carry Claude, Codex, and Pi through the current harness, model, and effort axes.
+- Already compliant: `bin/fm-crew-state.sh` reconciles design validation runs, branch attribution, pipeline ownership, current state, and worker liveness exactly as for ship.
+- Already compliant: `bin/fm-run-progress.sh`, `bin/fm-watch.sh`, and `bin/fm-supervise-daemon.sh` admit design run progress and apply the same ordinary direct-report supervision as ship and scout.
+- Already compliant: `.agents/skills/work-item-visibility/SKILL.md`, `bin/fm-work-item-milestone.sh`, `bin/fm-issue-comment.sh`, and `bin/fm-project-board.sh` carry design through dispatched, queued, implemented, validated, blocked, stopped, and landed tracker states.
+- Already compliant: `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, and `bin/fm-merge-local.sh` are metadata-driven and impose no ship-only kind gate on design landing.
+- Already compliant: `bin/fm-outcome-lib.sh` admits `kind=design`, and `bin/fm-outcome-manifest.sh` preserves that kind in durable completion history.
+- Already compliant: `bin/fm-teardown.sh` applies landed-work, dirty-worktree, branch reaping, parked-run conclusion, process reaping, manifest publication, fleet sync, backlog reminder, and volatile-record cleanup to design through the tracked-output path.
+- Already compliant: design adds its decision-inventory teardown gate without weakening the adjacent ship landed-work gate, scout report gate, or secondmate retirement path.
+- Corrected: `bin/fm-subagent-pretool-check.sh` and `docs/subagent-guard.md` route authorized design work through the same brief-and-spawn entry points as ship.
+- Corrected: `.agents/skills/fmx-respond/SKILL.md` names design as a longer-running dispatched job that receives completion follow-up handling.
+- Corrected: `docs/configuration.md`, `docs/architecture.md`, and script headers describe design on the already-shared backend, local landing, current-state, and teardown paths.
+- Already compliant: `.agents/skills/stuck-crewmate-recovery/SKILL.md` and the `AGENTS.md` `design-profile` and `work-item-visibility` triggers include design in recovery, completion, cleanup, and tracker supervision.
+
+### Adjacent task kinds
+
+- Already compliant: ship retains project-memory delivery, explicit mode and yolo, implementation delivery, and the full landed-work cleanup path.
+- Already compliant: scout retains its report-only output, no delivery posture, promotion-only transition to ship, decision inventory, and report-required cleanup.
+- Already compliant: secondmate retains its fixed posture, persistent-home registry, child-work refusal, and dedicated retirement cleanup rather than entering tracked-output predicates.
+
+### Focused regression
+
+The following focused command was run on 2026-08-13 from the repository root.
+
+```sh
+bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-task-delivery.test.sh tests/fm-spawn-batch.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-crew-state.test.sh tests/fm-run-progress.test.sh tests/fm-issue-linkage.test.sh tests/fm-outcome-manifest.test.sh tests/fm-decision-hold-lifecycle.test.sh tests/fm-teardown.test.sh tests/fm-subagent-pretool-check.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
+```
+
+The bounded output included these suite-completion markers.
+
+```text
+all fm-brief tests passed
+# all fm-task-delivery tests passed
+all fm-spawn-batch tests passed
+all fm-spawn-dispatch-profile tests passed
+all fm-crew-state tests passed
+all fm-run-progress tests passed
+all fm-issue-linkage tests passed
+all fm-outcome-manifest tests passed
+all fm-decision-hold-lifecycle tests passed
+all fm-teardown tests passed
+all fm-subagent-pretool-check tests passed
+all fm-documentation-audiences tests passed
+all fm-pointer-check tests passed
+```
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.
