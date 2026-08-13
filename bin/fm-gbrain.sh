@@ -74,8 +74,9 @@
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
-#   FM_GBRAIN_TIMEOUT  seconds allowed per HTTP call this script makes - the
-#                      token mint and each reachability probe (default: 10)
+#   FM_GBRAIN_TIMEOUT  seconds allowed per external call this script makes - a
+#                      runtime config read, token mint, or reachability probe
+#                      (default: 10)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +85,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 GBRAIN_BIN="${FM_GBRAIN_BIN:-gbrain}"
 

@@ -26,6 +26,12 @@ if [ "${1:-}" = "config" ] && [ "${2:-}" = "get" ]; then
   if [ -f "$home_dir/mock_think_model" ] && [ "$key" = "models.think" ]; then
     cat "$home_dir/mock_think_model"
     exit 0
+  elif [ -f "$home_dir/mock_provider_failure" ] && [ "${key#provider_base_urls.}" != "$key" ]; then
+    echo "runtime configuration is locked"
+    exit 2
+  elif [ -f "$home_dir/mock_config_hang" ]; then
+    sleep 5
+    exit 0
   elif [ -f "$home_dir/mock_initialized" ]; then
     echo "Config key not found: $key"
     exit 1
@@ -38,6 +44,7 @@ exit 1
 EOF
 chmod +x "$MOCK_GBRAIN"
 export FM_GBRAIN_BIN="$MOCK_GBRAIN"
+export FM_TEST_PI_AUTH_FILE="$TMP_ROOT/absent-auth.json"
 
 # Credential values the tests plant and then hunt for. Any generated artifact
 # containing these bytes has leaked one.
@@ -466,6 +473,12 @@ case "${1:-} ${2:-}" in
     if [ -f "$home_dir/mock_think_model" ] && [ "$key" = "models.think" ]; then
       cat "$home_dir/mock_think_model"
       exit 0
+    elif [ -f "$home_dir/mock_provider_failure" ] && [ "${key#provider_base_urls.}" != "$key" ]; then
+      echo "runtime configuration is locked"
+      exit 2
+    elif [ -f "$home_dir/mock_config_hang" ]; then
+      sleep 5
+      exit 0
     elif [ -f "$home_dir/mock_initialized" ]; then
       echo "Config key not found: $key"
       exit 1
@@ -716,7 +729,7 @@ SYNTHETIC_KEY="synth-minimax-key-9999"
 printf '{"minimax":{"key":"%s"}}' "$SYNTHETIC_KEY" > "$synth_auth"
 chmod 600 "$synth_auth"
 
-FM_GBRAIN_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
 expect_code 1 "$CLI_RC" "a serving home with runtime models.think and auth.json key present must fail the check"
 [ "$(state_of serving-credential)" = failed ] \
   || fail "an operator-path violation should read serving-credential as failed, got '$(state_of serving-credential)'"
@@ -725,13 +738,58 @@ assert_contains "$(detail_of serving-credential)" "models.think 'minimax:MiniMax
 assert_not_contains "$(detail_of serving-credential)" "$SYNTHETIC_KEY" \
   "the violation must not leak synthetic credential bytes"
 
-FM_GBRAIN_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" serving-check
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" serving-check
 expect_code 0 "$CLI_RC" "serving-check never exits non-zero; the line is the signal"
 assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
   "serving-check must announce the operator path runtime violation"
 assert_not_contains "$CLI_OUT" "$SYNTHETIC_KEY" \
   "serving-check must not leak synthetic credential bytes"
 pass "a home configured through the documented operator path with hosted think and credential present is detected"
+
+credential_only_home=$(make_home serving-runtime-credential-only)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$credential_only_home/config/gbrain-local.json"
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "a serving home holding a runtime credential must fail without models.think, got '$(state_of serving-credential)'"
+assert_not_contains "$CLI_OUT" "$SYNTHETIC_KEY" \
+  "credential-only detection must not leak synthetic credential bytes"
+pass "a runtime credential is detected independently of models.think"
+
+TRACE_OUT=$(FM_HOME="$credential_only_home" FM_TEST_PI_AUTH_FILE="$synth_auth" FM_GBRAIN_BIN="$MOCK_GBRAIN" \
+  FM_GBRAIN_TIMEOUT=2 bash -x "$CLI" serving-check 2>&1)
+assert_not_contains "$TRACE_OUT" "$SYNTHETIC_KEY" \
+  "shell tracing must not materialize runtime credential bytes"
+pass "runtime credential presence checks do not leak values under shell tracing"
+
+provider_failure_home=$(make_home serving-provider-failure)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$provider_failure_home/config/gbrain-local.json"
+printf '%s\n' 'minimax:MiniMax-M3' > "$provider_failure_home/data/gbrain/runtime/mock_think_model"
+touch "$provider_failure_home/data/gbrain/runtime/mock_provider_failure"
+cli "$provider_failure_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a provider_base_urls query failure must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "runtime configuration is locked" \
+  "a provider query failure must preserve its non-absence cause"
+pass "provider configuration failures are unknown rather than absent"
+
+runtime_hang_home=$(make_home serving-runtime-hang)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$runtime_hang_home/config/gbrain-local.json"
+touch "$runtime_hang_home/data/gbrain/runtime/mock_config_hang"
+FM_GBRAIN_TIMEOUT=1 cli "$runtime_hang_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a timed-out runtime query must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "timed out after 1s" \
+  "a timed-out runtime query must name its bound"
+pass "runtime configuration reads are bounded and timeouts yield unknown"
+
+dangling_auth="$TMP_ROOT/dangling-auth.json"
+ln -s "$TMP_ROOT/missing-auth-target.json" "$dangling_auth"
+FM_TEST_PI_AUTH_FILE="$dangling_auth" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a dangling runtime auth symlink must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "regular file with mode 0600" \
+  "a dangling runtime auth symlink must be refused explicitly"
+pass "dangling runtime credential symlinks yield unknown"
 
 # An unreadable or absent runtime plane must yield unknown, never clean and never failed.
 # Fail by: defaulting an unreadable runtime plane to clean/ok or failed.
@@ -754,7 +812,7 @@ pass "an unreadable or absent runtime plane yields unknown, never clean"
 # yields unknown, never clean.
 # Fail by: ignoring auth.json permissions or treating a loose auth.json file as clean.
 chmod 644 "$synth_auth"
-FM_GBRAIN_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
 [ "$(state_of serving-credential)" = unknown ] \
   || fail "a loosely-permissioned auth.json file should yield unknown, got '$(state_of serving-credential)'"
 assert_contains "$(detail_of serving-credential)" "mode 0600" \
