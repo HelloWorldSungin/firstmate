@@ -1,7 +1,7 @@
-# GBrain memory verbs and the v0.45.0.0 upgrade: measured behaviour
+# GBrain memory verbs and pin upgrades: measured behaviour
 
-Dated empirical evidence for what GBrain `v0.45.0.0` provides to Firstmate's captured corpus, and for the upgrade that installed it.
-It exists because the `v0.43.0.0` and `v0.45.0.0` release notes read as though they retire several of the capture guarantees Firstmate still owns, and the measurements below show which of those readings survive contact with the binary.
+Dated empirical evidence for what pinned GBrain releases provide to Firstmate's captured corpus, and for the upgrades that installed them.
+It exists because release notes can read as though they retire several of the capture guarantees Firstmate still owns, and the measurements below show which of those readings survive contact with the binary.
 The installation and upgrade procedure itself is owned by [`../gbrain.md`](../gbrain.md); the delivery-side receipt proof is owned by [gbrain-capture.md](gbrain-capture.md); the retrieval quality numbers are owned by [gbrain-eval.md](gbrain-eval.md).
 
 ## Environment
@@ -175,6 +175,86 @@ With no hosted credential on the serving home the call degrades rather than expo
 
 `gbrain eval suspected-contradictions` is the closest native relative of the currency gates, but it judges sampled query pairs with an LLM through the configured model, which is hosted on this fleet.
 Running it would send brain excerpts off the host, so it is recorded here and deliberately not run.
+
+## The 2026-08-13 upgrade to `v0.45.9.0`
+
+The live source installation moved from `v0.45.0.0` at `d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775` to `v0.45.9.0` at `1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5` with Bun `1.3.14`.
+The upgrade used the existing source checkout and pinned Bun path, and the pre-upgrade copy retained the PGLite index, runtime configuration, and capture outbox together.
+No archive existed for this home, so its outbox remained the durable document source.
+
+The installed runtime and schema reported:
+
+```text
+$ git -C /home/sungin/.local/gbrain/src rev-parse HEAD
+1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5
+$ /home/sungin/.local/gbrain/bin/gbrain --version
+gbrain 0.45.9.0
+$ /home/sungin/.local/gbrain/bin/bun --version
+1.3.14
+connection                  ok  Connected, 197 pages
+schema_version              ok  Version 126 (latest: 126)
+embeddings                  ok  100% coverage, 0 missing
+embedding_provider          ok  ollama:snowflake-arctic-embed2:568m, 1024 dims, DB aligned
+embedding_width_consistency ok  Schema width (1024d) matches gateway embedding_dimensions
+reranker_health             ok  No rerank failures in last 7 days
+```
+
+The explicit `apply-migrations --yes --non-interactive --no-autopilot-install` command first reported `All migrations up to date`.
+The immediately following `doctor --json` invocation detected schema 125, applied only migration 126 for `session_context_state`, and then reported schema 126 current.
+No reindex, re-embedding, bootstrap, or autopilot installation ran.
+
+The release evaluation itself had been captured after its 199-record intake snapshot, so the live baseline was already 200 archived records before this upgrade began.
+The four capture counts were identical before and after the upgrade:
+
+```text
+archived   200
+pending    0
+failed     0
+unreadable 0
+```
+
+Local recall after the upgrade returned the known evaluation record as a scored first result:
+
+```text
+local:firstmate/firstmate-bc8432f7/task/fm-gbrain-release-evaluation  score=0.8827
+```
+
+The new zero-LLM boundary retrieval commands both ran against the live corpus.
+A known-record `context-pack` call returned one card within its budget:
+
+```json
+{"protocol_version":1,"cards":1,"budget_tokens":1000,"budget_used":33,"dropped_count":0,"degraded_reason":null}
+```
+
+A stateless `delta` call returned the six pages changed since `2026-08-13T00:00:00Z` and an advancing keyset:
+
+```json
+{"protocol_version":1,"pages":6,"has_more":false,"next_cursor":{"since":"2026-08-13T03:40:03.840Z","slug":"firstmate/firstmate-bc8432f7/task/fm-gbrain-release-evaluation"},"budget_tokens":1000,"budget_used":241,"dropped_count":0}
+```
+
+The source release's disposable PGLite MCP test independently exercised `context_pack`, stateless `delta`, and two session-cursor calls that did not redeliver the page.
+It completed with `8 pass`, `0 fail`, and `50 expect() calls`.
+
+The forty-question local retrieval evaluation was like-for-like across the pin move:
+
+```text
+search_top1  92.5% -> 92.5%  (0%)
+search_topk  95% -> 95%  (0%)
+search_mrr   93.8% -> 93.8%  (0%)
+```
+
+The corpus stayed at 197 active documents, 993 chunks, 993 embedded chunks, and revision `sha256:b83b7f2663be04dd7383b91e83d4b1bacaed313560bdec0f6df5d06f8024c027` for both runs.
+The local wrapper suite completed with every case passing.
+The opt-in real read-only sharing suite also completed with every case passing, including refusal of every remote write, credential-free degradation of remote synthesis, unchanged served pages, and no leaked client secret.
+
+No hosted synthesis was invoked against the live corpus during the upgrade.
+The rule and authorization boundary remain owned by [`../gbrain.md`](../gbrain.md), while the new boundary verbs completed locally without a hosted-provider call.
+No `dream.<phase>.enabled` or `cycle.<phase>.enabled` key was configured for any phase, and no dream or autopilot process, unit, timer, or cron entry existed after the migration.
+The only GBrain units remained the local embedding and reranker services, and the runtime integration hooks directory contained no hook file.
+Dreaming therefore remained disabled, and the upgrade added no scheduler, persistence hook, or outbound data path.
+
+The `mounts --mcp-url` implementation remained absent at the pinned source commit.
+The current source still labels HTTP MCP mounts and OAuth as not yet shipped, so [`../gbrain-scoping.md`](../gbrain-scoping.md) required no correction.
 
 ## Maintaining this file
 

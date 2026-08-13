@@ -17,10 +17,13 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 
 ## Pinned installation and upgrade
 
-The installed GBrain release is `v0.45.0.0` at commit `d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775`.
-The pin moved there from `v0.42.69.0` on 2026-08-12, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records what that upgrade measured, including the capture guarantees it did not change.
-The earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
-The installation uses GBrain's documented `git clone` plus `bun install` fallback because the tested standalone Linux release binaries did not initialize PGLite correctly.
+The installed GBrain release is `v0.45.9.0` at commit `1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5`.
+The pin moved there from `v0.45.0.0` on 2026-08-13, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the live upgrade evidence, the new boundary-retrieval verbs, and the unchanged privacy controls.
+The earlier pin moved from `v0.42.69.0` on 2026-08-12, and the same verification record preserves what that upgrade measured, including the capture guarantees it did not change.
+That earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
+The installation remains on GBrain's documented `git clone` plus pinned `bun install` fallback so a version upgrade does not also change the packaging path used for migration and rollback.
+The old `v0.42.71.0` and `v0.42.72.1` standalone Linux binaries failed fresh PGLite initialization, while the `v0.45.9.0` standalone binary passed fresh isolated initialization with this deployment's embedding shape.
+That fresh initialization does not prove an in-place production upgrade through the standalone packaging, so adopting it requires a separate isolated-copy migration and the full gate below.
 The supporting Bun runtime is `1.3.14` at `/home/sungin/.local/gbrain/bin/bun`.
 
 The executable is `/home/sungin/.local/gbrain/bin/gbrain`.
@@ -29,7 +32,7 @@ For a clean source installation with the pinned Bun binary already present, run:
 ```sh
 mkdir -p /home/sungin/.local/gbrain/{bin,bun-global,cache}
 git clone https://github.com/garrytan/gbrain.git /home/sungin/.local/gbrain/src
-git -C /home/sungin/.local/gbrain/src checkout --detach d35c9c9e441e6cfc86dd5e84b0b168c6b18ee775
+git -C /home/sungin/.local/gbrain/src checkout --detach 1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5
 cd /home/sungin/.local/gbrain/src
 BUN_INSTALL=/home/sungin/.local/gbrain/bun-global \
   /home/sungin/.local/gbrain/bin/bun install \
@@ -67,8 +70,8 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
 7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
    A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
 
-Rolling back is checking out the pinned commit again, reinstalling from the same lockfile, and restoring the step-4 backup.
-Restore its archive, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
+Rolling back is checking out the pre-upgrade commit recorded with the step-4 backup, reinstalling from that commit's lockfile, and restoring the same backup.
+Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
 To upgrade deliberately, select a newer verified GBrain tag, then run:
 
