@@ -174,11 +174,48 @@ fi
 
 # --- status log ------------------------------------------------------------
 
-# Last non-empty status line and its physical line number from one file read.
+# Last non-empty status line, its physical line number, and the file metadata
+# that bounds that read.
+log_file_state() {
+  stat -c '%Y %s' "$LOG" 2>/dev/null \
+    || stat -f '%m %z' "$LOG" 2>/dev/null \
+    || printf '0 0'
+}
 log_snapshot() {
-  [ -f "$LOG" ] || return 1
-  awk 'NF { position = NR; line = $0 } END { if (position) printf "%s\t%s", position, line }' \
-    "$LOG" 2>/dev/null
+  local before after payload attempt=0
+  while [ "$attempt" -lt 2 ]; do
+    before=$(log_file_state)
+    payload=$(awk 'NF { position = NR; line = $0 } END { printf "%s\t%s", position + 0, line }' \
+      "$LOG" 2>/dev/null || true)
+    after=$(log_file_state)
+    if [ "$before" = "$after" ]; then
+      printf '%s\t%s\t%s' "${before%% *}" "${before#* }" "$payload"
+      return 0
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+  return 1
+}
+apply_log_snapshot() {  # <snapshot>
+  local snapshot=${1:-} rest
+  LOG_MTIME=0
+  LOG_POSITION=0
+  LOG_LINE=""
+  case "$snapshot" in
+    *$'\t'*$'\t'*$'\t'*)
+      LOG_MTIME=${snapshot%%$'\t'*}
+      rest=${snapshot#*$'\t'}
+      rest=${rest#*$'\t'}
+      LOG_POSITION=${rest%%$'\t'*}
+      LOG_LINE=${rest#*$'\t'}
+      ;;
+  esac
+  LOG_VERB=$(status_line_verb "$LOG_LINE")
+}
+refresh_log_snapshot() {
+  local snapshot
+  snapshot=$(log_snapshot) || return 0
+  apply_log_snapshot "$snapshot"
 }
 # Map a status-log verb onto a canonical state for the fallback path. `paused` is
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
@@ -200,21 +237,8 @@ map_log_state() {  # <line>
   esac
 }
 
-LOG_MTIME=$(stat -c %Y "$LOG" 2>/dev/null \
-  || stat -f %m "$LOG" 2>/dev/null \
-  || true)
 LOG_SNAPSHOT=$(log_snapshot || true)
-case "$LOG_SNAPSHOT" in
-  *$'\t'*)
-    LOG_POSITION=${LOG_SNAPSHOT%%$'\t'*}
-    LOG_LINE=${LOG_SNAPSHOT#*$'\t'}
-    ;;
-  *)
-    LOG_POSITION=0
-    LOG_LINE=""
-    ;;
-esac
-LOG_VERB=$(status_line_verb "$LOG_LINE")
+apply_log_snapshot "$LOG_SNAPSHOT"
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
@@ -582,38 +606,21 @@ nm_ci_checks_state() {
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
 nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha run_id in_runs=0
+  local branch=$1 out=${2:-} row st rest br sha
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
     [ -n "$row" ] || continue
-    if [[ "$row" =~ ^runs\[[0-9]+\]\{id,branch,status,head,pr\}:$ ]]; then
-      in_runs=1
-      continue
-    fi
-    if [ "$in_runs" = 1 ]; then
-      case "$row" in *,*,*,*,*) ;; *) continue ;; esac
-      run_id=$(strip_quotes "$(trim "${row%%,*}")")
-      rest=${row#*,}
-      br=$(strip_quotes "$(trim "${rest%%,*}")")
-      rest=${rest#*,}
-      st=$(strip_quotes "$(trim "${rest%%,*}")")
-      rest=${rest#*,}
-      sha=$(strip_quotes "$(trim "${rest%%,*}")")
-    else
-      st=${row%% *}
-      rest=${row#* }
-      rest=$(trim "$rest")
-      br=${rest%% *}
-      rest=${rest#* }
-      rest=$(trim "$rest")
-      sha=${rest%% *}
-      run_id="-"
-    fi
+    st=${row%% *}
+    rest=${row#* }
+    rest=$(trim "$rest")
+    br=${rest%% *}
+    rest=${rest#* }
+    rest=$(trim "$rest")
+    sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
-      [ -n "$run_id" ] || continue
       nm_head_attributable "$sha" 0 0 || continue
-      printf '%s\t%s\t%s' "$st" "$sha" "$run_id"
+      printf '%s\t%s' "$st" "$sha"
       return 0
     fi
   done <<< "$out"
@@ -773,7 +780,6 @@ HAVE_RUN=0
 RUN_SOURCE=full
 COARSE_STATUS=""
 COARSE_HEAD=""
-COARSE_RUN_ID="-"
 # LOOKUP_FAILED=1 means a bounded no-mistakes call could not COMPLETE - it timed
 # out under a saturated daemon, errored, or could not be bounded at all. That is
 # emphatically NOT the same as a completed lookup that found no run for this
@@ -835,12 +841,7 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
       else
         LOOKUP_COMPLETED=1
         COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
-        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD COARSE_RUN_ID <<< "$COARSE_ROW"
-        if [ "$COARSE_STATUS" != running ] && [ "$COARSE_RUN_ID" = "-" ]; then
-          LOOKUP_COMPLETED=0
-          LOOKUP_FAILED=1
-          COARSE_STATUS=""
-        fi
+        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
             HAVE_RUN=1
@@ -875,7 +876,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   RUN_ALIAS="-"
   MERGE_OBSERVED=0
   if [ "$RUN_SOURCE" = coarse ]; then
-    RUN_ID=$COARSE_RUN_ID
+    RUN_ID="-"
     RUN_ALIAS=$(run_identity_for_head "$COARSE_HEAD")
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -893,8 +894,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     esac
     runstep_record_load || true
     if [ "$RECORD_VERSION" = v3 ] \
-      && [ "$RUN_ID" != "-" ] \
-      && [ "$RECORD_RUN_ID" = "$RUN_ID" ]; then
+      && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ]; then
       if [ "$RUN_STATE" = "done" ] \
         && [ "$RECORD_MERGE_OBSERVED" = 1 ]; then
         MERGE_OBSERVED=1
@@ -972,6 +972,8 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
     fi
   fi
+
+  refresh_log_snapshot
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
