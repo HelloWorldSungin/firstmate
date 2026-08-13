@@ -387,6 +387,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
     "explicit no-mistakes brief did not render the blocked: validation handoff"
 
@@ -483,6 +484,7 @@ test_status_protocol_closes_reporting_gaps() {
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
     "no-mistakes DOD must use blocked: for the validation-trigger handoff"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_no_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
     "no-mistakes DOD still teaches paused: for the validation-trigger handoff"
 
@@ -536,6 +538,7 @@ test_status_protocol_teaches_blocked_for_firstmate_waits() {
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'append `blocked: implemented and committed, ready to validate`' "$brief" \
     "no-mistakes DOD must prescribe blocked: for the validation handoff"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_no_grep 'append `paused: implemented and committed, ready to validate`' "$brief" \
     "no-mistakes DOD still prescribes paused: for the validation handoff"
   assert_grep 'firstmate must trigger validation' "$brief" \
@@ -917,6 +920,7 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
         # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
         assert_grep '`awaiting: rate limit resets at 06:00 UTC`' "$brief" \
           "$kind brief did not instruct the configured pause status in its worked example"
+        # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
         assert_grep '`awaiting:` is for a bounded external wait expected to clear on its own' "$brief" \
           "$kind brief did not define the configured pause verb in the discriminator"
         ;;
