@@ -479,6 +479,7 @@ SH
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >> "$(dirname "$0")/../sleep_log"
+[ "${FM_HERDR_FAKE_REAL_SLEEP:-0}" != 1 ] || exec /bin/sleep "$1"
 exit 0
 SH
   chmod +x "$fakebin/sleep"
@@ -511,6 +512,16 @@ case "$cmd" in
   *"pane send-text"*) printf 'send-text\n' >> "$dir/send_text_log"; exit 0 ;;
   *"agent prompt"*)
     printf 'prompt\n' >> "$dir/prompt_log"
+    if [ "${FM_HERDR_FAKE_CONCURRENT:-0}" = 1 ]; then
+      if mkdir "$dir/prompt-once" 2>/dev/null; then
+        : > "$dir/prompt-active"
+        /bin/sleep 0.2
+      else
+        [ ! -f "$dir/prompt-active" ] || : > "$dir/prompt-overlap"
+        printf '{"error":{"code":"agent_not_ready","message":"rejected"}}\n' >&2
+        exit 1
+      fi
+    fi
     if [ -n "${FM_HERDR_FAKE_PROMPT_ERROR_CODE:-}" ]; then
       printf '{"error":{"code":"%s","message":"rejected"}}\n' \
         "$FM_HERDR_FAKE_PROMPT_ERROR_CODE" >&2
@@ -531,6 +542,7 @@ case "$cmd" in
           ;;
       esac
     fi
+    rm -f "$dir/prompt-active"
     [ "${FM_HERDR_FAKE_PROMPT_AFTER_WRITE:-ok}" != fail ] || exit 1
     printf '{"result":{"type":"agent_prompted","agent":{"agent":"%s","agent_status":"%s","terminal_id":"%s","pane_id":"%s"}}}\n' \
       "${FM_HERDR_FAKE_PROMPT_AGENT:-${FM_HERDR_FAKE_AGENT:-claude_code}}" \
@@ -547,6 +559,19 @@ case "$cmd" in
     fi
     ;;
   *"agent get"*)
+    if [ "${FM_HERDR_FAKE_CONCURRENT:-0}" = 1 ]; then
+      case "${FM_HERDR_FAKE_SEND_ID:-}" in
+        A) other=B ;;
+        B) other=A ;;
+        *) exit 91 ;;
+      esac
+      : > "$dir/agent-get-${FM_HERDR_FAKE_SEND_ID}"
+      for _ in {1..100}; do
+        [ ! -f "$dir/agent-get-$other" ] || break
+        /bin/sleep 0.01
+      done
+      [ -f "$dir/agent-get-$other" ] || exit 92
+    fi
     cnt=$(cat "$counter_file" 2>/dev/null || echo 0)
     cnt=$((cnt + 1))
     echo "$cnt" > "$counter_file"
@@ -674,6 +699,43 @@ test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed() {
   assert_no_grep '^error:|verdict=' "$err" \
     "a receipted $harness prompt reported a delivery error"
   pass "a native $harness receipt resolves an ambiguous transport outcome"
+}
+
+test_concurrent_identical_cursor_and_agy_sends_are_attributed() {
+  local harness=$1 case_dir home proj wt fakebin pid_a pid_b rc_a=0 rc_b=0 codes
+  case_dir="$TMP_ROOT/send-concurrent-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config" "$case_dir/locks"
+  chmod 700 "$case_dir/locks"
+  fm_git_worktree "$proj" "$wt" "fm/concurrent-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
+
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_PROMPT_LOCK_NAMESPACE="$case_dir/locks" FM_HERDR_FAKE_REAL_SLEEP=1 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_CONCURRENT=1 \
+    FM_HERDR_FAKE_SEND_ID=A \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "same steer" >"$case_dir/a.out" 2>"$case_dir/a.err" &
+  pid_a=$!
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_PROMPT_LOCK_NAMESPACE="$case_dir/locks" FM_HERDR_FAKE_REAL_SLEEP=1 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_CONCURRENT=1 \
+    FM_HERDR_FAKE_SEND_ID=B \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "same steer" >"$case_dir/b.out" 2>"$case_dir/b.err" &
+  pid_b=$!
+  wait "$pid_a" || rc_a=$?
+  wait "$pid_b" || rc_b=$?
+
+  codes=$(printf '%s\n%s\n' "$rc_a" "$rc_b" | sort -n | tr '\n' ' ')
+  [ "$codes" = "0 1 " ] \
+    || fail "concurrent identical $harness sends resolved to exit codes $rc_a and $rc_b"
+  assert_absent "$case_dir/fake/prompt-overlap" \
+    "concurrent identical $harness prompts crossed the receipt attribution boundary"
+  pass "concurrent identical $harness sends retain separate delivery verdicts"
 }
 
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
@@ -972,6 +1034,8 @@ test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable cursor
 test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable agy
 test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed cursor
 test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed agy
+test_concurrent_identical_cursor_and_agy_sends_are_attributed cursor
+test_concurrent_identical_cursor_and_agy_sends_are_attributed agy
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable cursor
 test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable agy
 test_metadata_free_cursor_and_agy_send_uses_live_identity cursor

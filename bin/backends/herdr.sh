@@ -2438,8 +2438,52 @@ fm_backend_herdr_prompt_receipt_matches() {  # <agent> <path> <first-line> <text
   esac
 }
 
-fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <agent-session-id> -> empty|send-failed|unverifiable
-  local out code receipt_path= receipt_line= prompt_rc=0 i=0
+fm_backend_herdr_prompt_lock_path() {
+  local target=$1 agent=$2 agent_session=$3 hash dir
+  case "$agent" in cursor|agy) ;; *) return 1 ;; esac
+  case "$agent_session" in
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  fm_backend_herdr_parse_target "$target" || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    hash=$(printf '%s\0%s\0%s\0%s' \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$agent" "$agent_session" \
+      | shasum -a 256 2>/dev/null | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    hash=$(printf '%s\0%s\0%s\0%s' \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$agent" "$agent_session" \
+      | sha256sum 2>/dev/null | awk '{print $1}')
+  else
+    return 1
+  fi
+  [ -n "$hash" ] || return 1
+  dir=${FM_HERDR_PROMPT_LOCK_NAMESPACE:-$(fm_backend_herdr_presentation_lock_namespace)}
+  [ -n "$dir" ] || return 1
+  if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+    if ! mkdir -m 700 "$dir" 2>/dev/null; then
+      fm_backend_herdr_presentation_lock_namespace_valid "$dir" || return 1
+    fi
+  fi
+  fm_backend_herdr_presentation_lock_namespace_valid "$dir" || return 1
+  printf '%s/prompt-%s.lock' "$dir" "${hash:0:32}"
+}
+
+fm_backend_herdr_prompt_failure_is_deterministic() {
+  local out=$1 code
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
+  case "$code" in
+    agent_not_found|agent_not_running|agent_not_ready|agent_prompt_failed|empty_agent_prompt|pane_not_found|protocol_mismatch|server_not_running|invalid_params|invalid_request|method_not_found|unsupported)
+      return 0
+      ;;
+  esac
+  case "$out" in
+    *"unrecognized subcommand"*|*"unknown subcommand"*|*"unexpected argument"*|*"required arguments were not provided"*|*"Usage:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_herdr_prompt_submit_serialized() {
+  local out receipt_path='' receipt_line='' prompt_rc=0 i=0
   local receipt_polls=${FM_HERDR_PROMPT_RECEIPT_POLLS:-100}
   case "$receipt_polls" in ''|*[!0-9]*) receipt_polls=100 ;; esac
   fm_backend_herdr_parse_target "$1" || { printf 'send-failed'; return 0; }
@@ -2454,6 +2498,10 @@ fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <agent-se
     prompt_rc=0
   else
     prompt_rc=$?
+  fi
+  if [ "$prompt_rc" -ne 0 ] && fm_backend_herdr_prompt_failure_is_deterministic "$out"; then
+    printf 'send-failed'
+    return 0
   fi
   if [ -n "$receipt_path" ]; then
     while [ "$i" -lt "$receipt_polls" ]; do
@@ -2470,20 +2518,31 @@ fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <agent-se
     printf 'unverifiable'
     return 0
   fi
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)
-  case "$code" in
-    agent_not_found|agent_not_running|agent_not_ready|agent_prompt_failed|empty_agent_prompt|pane_not_found|protocol_mismatch|server_not_running|invalid_params|invalid_request|method_not_found|unsupported)
-      printf 'send-failed'
-      ;;
-    *)
-      case "$out" in
-        *"unrecognized subcommand"*|*"unknown subcommand"*|*"unexpected argument"*|*"required arguments were not provided"*|*"Usage:"*)
-          printf 'send-failed'
-          ;;
-        *) printf 'unverifiable' ;;
-      esac
-      ;;
-  esac
+  printf 'unverifiable'
+}
+
+fm_backend_herdr_prompt_submit() {  # <target> <text> <expected-agent> <agent-session-id> -> empty|send-failed|unverifiable
+  local lock_path lock_polls attempt=0 verdict
+  lock_polls=${FM_HERDR_PROMPT_LOCK_POLLS:-100}
+  case "$lock_polls" in ''|*[!0-9]*) lock_polls=100 ;; esac
+  lock_path=$(fm_backend_herdr_prompt_lock_path "$1" "$3" "$4") \
+    || { printf 'send-failed'; return 0; }
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh" \
+      || { printf 'send-failed'; return 0; }
+  fi
+  while [ "$attempt" -lt "$lock_polls" ]; do
+    if fm_lock_try_acquire "$lock_path"; then
+      verdict=$(fm_backend_herdr_prompt_submit_serialized "$@")
+      fm_lock_release "$lock_path" || true
+      printf '%s' "$verdict"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge "$lock_polls" ] || sleep 0.1
+  done
+  printf 'send-failed'
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
