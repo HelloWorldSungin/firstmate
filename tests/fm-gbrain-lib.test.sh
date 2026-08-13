@@ -16,6 +16,36 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 TMP_ROOT=$(fm_test_tmproot fm-gbrain-lib)
 CLI="$ROOT/bin/fm-gbrain.sh"
 
+MOCK_GBRAIN="$TMP_ROOT/bin/gbrain"
+mkdir -p "$TMP_ROOT/bin"
+cat << 'EOF' > "$MOCK_GBRAIN"
+#!/usr/bin/env bash
+home_dir="${GBRAIN_HOME:-}"
+if [ "${1:-}" = "config" ] && [ "${2:-}" = "get" ]; then
+  key="${3:-}"
+  if [ -f "$home_dir/mock_think_model" ] && [ "$key" = "models.think" ]; then
+    cat "$home_dir/mock_think_model"
+    exit 0
+  elif [ -f "$home_dir/mock_provider_failure" ] && [ "${key#provider_base_urls.}" != "$key" ]; then
+    echo "runtime configuration is locked"
+    exit 2
+  elif [ -f "$home_dir/mock_config_hang" ]; then
+    sleep 5
+    exit 0
+  elif [ -f "$home_dir/mock_initialized" ]; then
+    echo "Config key not found: $key"
+    exit 1
+  else
+    echo "No brain configured. Run: gbrain init"
+    exit 1
+  fi
+fi
+exit 1
+EOF
+chmod +x "$MOCK_GBRAIN"
+export FM_GBRAIN_BIN="$MOCK_GBRAIN"
+export FM_TEST_PI_AUTH_FILE="$TMP_ROOT/absent-auth.json"
+
 # Credential values the tests plant and then hunt for. Any generated artifact
 # containing these bytes has leaked one.
 CLIENT_SECRET='gbrain_cs_testonlytestonlytestonlytestonly0000'
@@ -44,7 +74,8 @@ SHARED_JSON='{
 
 make_home() {  # <name> -> prints home path
   local home="$TMP_ROOT/$1"
-  mkdir -p "$home/config" "$home/data"
+  mkdir -p "$home/config" "$home/data" "$home/data/gbrain/runtime" "$home/data/gbrain/pglite"
+  touch "$home/data/gbrain/runtime/mock_initialized"
   printf '%s\n' "$SHARED_JSON" > "$home/config/gbrain.json"
   printf '%s\n' "$home"
 }
@@ -436,6 +467,26 @@ case "${1:-} ${2:-}" in
     [ -z "${FAKE_GBRAIN_REVOKE_FAILS:-}" ] || fake_gbrain_refuse "$FAKE_GBRAIN_REVOKE_FAILS"
     echo "revoked ${3:-}"
     ;;
+  "config get")
+    home_dir="${GBRAIN_HOME:-}"
+    key="${3:-}"
+    if [ -f "$home_dir/mock_think_model" ] && [ "$key" = "models.think" ]; then
+      cat "$home_dir/mock_think_model"
+      exit 0
+    elif [ -f "$home_dir/mock_provider_failure" ] && [ "${key#provider_base_urls.}" != "$key" ]; then
+      echo "runtime configuration is locked"
+      exit 2
+    elif [ -f "$home_dir/mock_config_hang" ]; then
+      sleep 5
+      exit 0
+    elif [ -f "$home_dir/mock_initialized" ]; then
+      echo "Config key not found: $key"
+      exit 1
+    else
+      echo "No brain configured. Run: gbrain init"
+      exit 1
+    fi
+    ;;
   *) echo "unexpected gbrain call: $*" >&2; exit 2 ;;
 esac
 SH
@@ -647,11 +698,8 @@ expect_code 0 "$CLI_RC" "a serving home with no usable hosted synthesis credenti
   || fail "a serving home with the credential removed should read ok, got '$(state_of serving-credential)'"
 pass "the violation clears once the credential is gone, so serving alone is not enough"
 
-# That same clean row must state its own reach, because this check reads only
-# Firstmate's declared surfaces while docs/gbrain.md configures hosted synthesis
-# in GBrain's runtime plane: an operator who reads ok as proof would be wrong.
-# Fail by: dropping either disclosure - the surfaces actually read, or the
-# runtime plane and the runtime-injected key that are not read.
+# That same clean row must state its own reach, naming the declared and runtime
+# surfaces inspected. Fail by: dropping any surface disclosure.
 assert_contains "$(detail_of serving-credential)" "gbrain-secrets" \
   "the clean serving row must name the credential plane it read"
 assert_contains "$(detail_of serving-credential)" "think.secret" \
@@ -659,16 +707,168 @@ assert_contains "$(detail_of serving-credential)" "think.secret" \
 assert_contains "$(detail_of serving-credential)" "think.base_url" \
   "the clean serving row must name the endpoint field it read"
 assert_contains "$(detail_of serving-credential)" "models.think" \
-  "the clean serving row must say GBrain's runtime models.think is not inspected"
-assert_contains "$(detail_of serving-credential)" "/home/sungin/.pi/agent/auth.json" \
-  "the clean serving row must say the runtime-injected fleet credential is not inspected"
-assert_contains "$(detail_of serving-credential)" "not proof" \
-  "the clean serving row must not read as proof that hosted synthesis is unreachable"
+  "the clean serving row must name the GBrain runtime models.think surface it inspected"
+assert_contains "$(detail_of serving-credential)" "auth.json" \
+  "the clean serving row must name the runtime credential store surface it inspected"
 # The disclosure belongs to the serving case alone: a home that provably serves
 # nothing answers a different question and must not inherit the caveat.
 [ "$(state_of serving-credential)" = ok ] \
   || fail "the disclosure assertions must run against the clean serving row"
-pass "a clean serving-credential row states the surfaces it read and the runtime plane it did not"
+pass "a clean serving-credential row states the surfaces it read across declared and runtime planes"
+
+# Documented operator path violation: a home serving its brain with models.think
+# set to minimax:MiniMax-M3 under GBrain runtime config and a hosted provider key
+# present in pi auth.json must fail the check.
+# Fail by: failing to inspect GBrain runtime models.think or the runtime auth.json,
+# or leaking credential bytes.
+op_path_home=$(make_home serving-operator-path)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$op_path_home/config/gbrain-local.json"
+echo "minimax:MiniMax-M3" > "$op_path_home/data/gbrain/runtime/mock_think_model"
+synth_auth="$TMP_ROOT/synthetic-auth.json"
+SYNTHETIC_KEY="synth-minimax-key-9999"
+printf '{"minimax":{"key":"%s"}}' "$SYNTHETIC_KEY" > "$synth_auth"
+chmod 600 "$synth_auth"
+
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
+expect_code 1 "$CLI_RC" "a serving home with runtime models.think and auth.json key present must fail the check"
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "an operator-path violation should read serving-credential as failed, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "models.think 'minimax:MiniMax-M3'" \
+  "the violation must name the runtime model choice"
+assert_not_contains "$(detail_of serving-credential)" "$SYNTHETIC_KEY" \
+  "the violation must not leak synthetic credential bytes"
+
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" serving-check
+expect_code 0 "$CLI_RC" "serving-check never exits non-zero; the line is the signal"
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must announce the operator path runtime violation"
+assert_not_contains "$CLI_OUT" "$SYNTHETIC_KEY" \
+  "serving-check must not leak synthetic credential bytes"
+pass "a home configured through the documented operator path with hosted think and credential present is detected"
+
+credential_only_home=$(make_home serving-runtime-credential-only)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$credential_only_home/config/gbrain-local.json"
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = failed ] \
+  || fail "a serving home holding a runtime credential must fail without models.think, got '$(state_of serving-credential)'"
+assert_not_contains "$CLI_OUT" "$SYNTHETIC_KEY" \
+  "credential-only detection must not leak synthetic credential bytes"
+pass "a runtime credential is detected independently of models.think"
+
+TRACE_OUT=$(FM_HOME="$credential_only_home" FM_TEST_PI_AUTH_FILE="$synth_auth" FM_GBRAIN_BIN="$MOCK_GBRAIN" \
+  FM_GBRAIN_TIMEOUT=2 bash -x "$CLI" serving-check 2>&1)
+assert_not_contains "$TRACE_OUT" "$SYNTHETIC_KEY" \
+  "shell tracing must not materialize runtime credential bytes"
+pass "runtime credential presence checks do not leak values under shell tracing"
+
+provider_failure_home=$(make_home serving-provider-failure)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$provider_failure_home/config/gbrain-local.json"
+printf '%s\n' 'minimax:MiniMax-M3' > "$provider_failure_home/data/gbrain/runtime/mock_think_model"
+touch "$provider_failure_home/data/gbrain/runtime/mock_provider_failure"
+cli "$provider_failure_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a provider_base_urls query failure must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "runtime configuration is locked" \
+  "a provider query failure must preserve its non-absence cause"
+pass "provider configuration failures are unknown rather than absent"
+
+runtime_hang_home=$(make_home serving-runtime-hang)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$runtime_hang_home/config/gbrain-local.json"
+touch "$runtime_hang_home/data/gbrain/runtime/mock_config_hang"
+FM_GBRAIN_TIMEOUT=1 FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$runtime_hang_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a timed-out runtime query must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "timed out after 1s" \
+  "a timed-out runtime query must name its bound"
+pass "runtime configuration reads are bounded and timeouts yield unknown"
+
+dangling_auth="$TMP_ROOT/dangling-auth.json"
+ln -s "$TMP_ROOT/missing-auth-target.json" "$dangling_auth"
+FM_TEST_PI_AUTH_FILE="$dangling_auth" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a dangling runtime auth symlink must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "regular file with mode 0600" \
+  "a dangling runtime auth symlink must be refused explicitly"
+pass "dangling runtime credential symlinks yield unknown"
+
+denied_auth_dir="$TMP_ROOT/denied-auth"
+mkdir -p "$denied_auth_dir"
+chmod 000 "$denied_auth_dir"
+[ ! -x "$denied_auth_dir" ] \
+  || fail "the denied-auth fixture remains traversable for uid $(id -u)"
+FM_TEST_PI_AUTH_FILE="$denied_auth_dir/auth.json" cli "$credential_only_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an auth store behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "not a traversable directory" \
+  "an inaccessible auth store must name its denied traversal"
+chmod 700 "$denied_auth_dir"
+pass "an inaccessible runtime credential store yields unknown"
+
+denied_local_home=$(make_home serving-denied-local)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_local_home/config/gbrain-local.json"
+chmod 000 "$denied_local_home/config"
+cli "$denied_local_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a local plane behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_local_home/config"
+pass "an inaccessible serving relationship yields unknown"
+
+denied_secret_home=$(make_home serving-denied-secret)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_secret_home/config/gbrain-local.json"
+install_secret "$denied_secret_home" minimax-key "$MINIMAX_KEY"
+chmod 000 "$denied_secret_home/config/gbrain-secrets"
+cli "$denied_secret_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a declared credential behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_secret_home/config/gbrain-secrets"
+pass "an inaccessible declared credential yields unknown"
+
+denied_runtime_home=$(make_home serving-denied-runtime)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$denied_runtime_home/config/gbrain-local.json"
+chmod 000 "$denied_runtime_home/data/gbrain/runtime"
+cli "$denied_runtime_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a runtime directory behind denied traversal must yield unknown, got '$(state_of serving-credential)'"
+chmod 700 "$denied_runtime_home/data/gbrain/runtime"
+pass "an inaccessible GBrain runtime directory yields unknown"
+
+absent_runtime_home=$(make_home serving-absent-runtime)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$absent_runtime_home/config/gbrain-local.json"
+rmdir "$absent_runtime_home/data/gbrain/pglite"
+cli "$absent_runtime_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an absent runtime directory must yield unknown, got '$(state_of serving-credential)'"
+pass "an absent GBrain runtime directory yields unknown"
+
+# An unreadable or absent runtime plane must yield unknown, never clean and never failed.
+# Fail by: defaulting an unreadable runtime plane to clean/ok or failed.
+unreadable_rt_home=$(make_home serving-unreadable-rt)
+printf '%s\n' '{"version":1,"main_brain_owner":true}' > "$unreadable_rt_home/config/gbrain-local.json"
+rm -f "$unreadable_rt_home/data/gbrain/runtime/mock_initialized"
+
+cli "$unreadable_rt_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "an unreadable/absent runtime plane must yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "could not be read" \
+  "the unknown detail must state that the runtime plane could not be read"
+
+cli "$unreadable_rt_home" serving-check
+assert_contains "$CLI_OUT" "GBRAIN_SERVING_CREDENTIAL:" \
+  "serving-check must raise an unreadable runtime plane as an alarm"
+pass "an unreadable or absent runtime plane yields unknown, never clean"
+
+# An unreadable or loosely permissions-restricted runtime credential store (mode 0644)
+# yields unknown, never clean.
+# Fail by: ignoring auth.json permissions or treating a loose auth.json file as clean.
+chmod 644 "$synth_auth"
+FM_TEST_PI_AUTH_FILE="$synth_auth" cli "$op_path_home" check --json
+[ "$(state_of serving-credential)" = unknown ] \
+  || fail "a loosely-permissioned auth.json file should yield unknown, got '$(state_of serving-credential)'"
+assert_contains "$(detail_of serving-credential)" "mode 0600" \
+  "the unknown detail must state the mode 0600 requirement for auth.json"
+assert_not_contains "$(detail_of serving-credential)" "$SYNTHETIC_KEY" \
+  "the unknown detail must not leak synthetic credential bytes"
+chmod 600 "$synth_auth"
 
 # A present credential this process refuses to read leaves the credential plane
 # unknown rather than proving it absent. Fail by: collapsing refused credentials

@@ -27,6 +27,9 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
+# Keep bootstrap cases independent of the operator's real runtime credential
+# store. Individual serving-credential cases can override this fixture path.
+export FM_TEST_PI_AUTH_FILE="$TMP_ROOT/absent-auth.json"
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
@@ -74,6 +77,25 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/treehouse"
+  cat > "$fakebin/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = config ] && [ "${2:-}" = get ]; then
+  home_dir="${GBRAIN_HOME:-}"
+  key="${3:-}"
+  if [ -f "$home_dir/mock_think_model" ] && [ "$key" = "models.think" ]; then
+    cat "$home_dir/mock_think_model"
+    exit 0
+  elif [ -f "$home_dir/mock_initialized" ]; then
+    echo "Config key not found: $key"
+    exit 1
+  else
+    echo "No brain configured. Run: gbrain init"
+    exit 1
+  fi
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gbrain"
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
@@ -1147,7 +1169,8 @@ test_bootstrap_relays_gbrain_serving_credential_in_both_modes() {
   local case_dir home fakebin bash_env out mode expected
   case_dir="$TMP_ROOT/gbrain-serving-credential"
   home="$case_dir/home"
-  mkdir -p "$home/config/gbrain-secrets"
+  mkdir -p "$home/config/gbrain-secrets" "$home/data/gbrain/runtime" "$home/data/gbrain/pglite"
+  touch "$home/data/gbrain/runtime/mock_initialized"
   printf '%s\n' manual > "$home/config/backlog-backend"
   printf '%s\n' \
     '{"version":1,"think":{"base_url":"https://api.example.invalid/v1","model":"minimax:MiniMax-M3","secret":"hosted-synthesis"}}' \

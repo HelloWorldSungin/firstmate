@@ -34,10 +34,11 @@
 #                broken local plane - invalid configuration, or a credential
 #                stored too loosely to use - exits non-zero. A home that serves
 #                its brain while hosted synthesis is reachable on it - a usable
-#                credential in its credential plane, or a think endpoint that
-#                leaves this host - fails the serving-credential row for the
-#                same reason, because that configuration is what the read-only
-#                share rule forbids.
+#                credential in its declared or fleet runtime credential plane,
+#                or a declared or runtime think endpoint that leaves this host -
+#                fails the serving-credential row for the same reason, because
+#                that configuration is what the read-only share rule forbids.
+#                An unreadable required plane reports that row as unknown.
 #   token        Mint a short-lived read-only access token for the main brain.
 #                This is the one command that writes a credential to stdout.
 #   grant-read   Register a read-scoped OAuth client on THIS home's brain and
@@ -65,21 +66,18 @@
 #                verdict needs cannot be read; stay silent when it finds
 #                neither. A home that serves nothing is clear whatever its
 #                credential plane holds, so a reading home never raises this
-#                alarm. It reads this home's own Firstmate config planes and
-#                never GBrain's runtime configuration, so silence means no
-#                violation in what it reads rather than proof that hosted
-#                synthesis is unreachable (docs/gbrain.md states that limit).
-#                Reading config alone is also why it needs no network, no
-#                token mint, and no gbrain binary, which makes it safe to run
-#                at every session start. It never exits non-zero: the line
-#                itself is the signal, so a caller that finds nothing stays
-#                quiet rather than failing.
+#                alarm. It reads this home's own Firstmate config planes,
+#                GBrain's runtime configuration, and the fleet runtime
+#                credential store. It never exits non-zero: the line itself
+#                is the signal, so a caller that finds nothing stays quiet
+#                rather than failing.
 #
 # Environment:
 #   FM_HOME            active firstmate home (default: this code root)
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
-#   FM_GBRAIN_TIMEOUT  seconds allowed per HTTP call this script makes - the
-#                      token mint and each reachability probe (default: 10)
+#   FM_GBRAIN_TIMEOUT  seconds allowed per external call this script makes - a
+#                      runtime config read, token mint, or reachability probe
+#                      (default: 10)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,6 +86,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 GBRAIN_BIN="${FM_GBRAIN_BIN:-gbrain}"
 
@@ -182,8 +182,8 @@ probe_url() {  # <url> -> 0 reachable
 # `hard` is this run's exit status: any finding sets it. `plane_broken` is the
 # narrower question of whether the configuration this run reads from is
 # unusable, which is what makes a downstream row unanswerable rather than
-# merely bad news. They are not the same: a serving-credential violation is a
-# finding over planes that both read fine, so it must not blank a row whose
+# merely bad news. They are not the same: a proven serving-credential violation
+# is a finding over readable required planes, so it must not blank a row whose
 # answer this run already knows.
 cmd_check() {
   local json_mode=0 hard=0 plane_broken=0 shared local_file url secret_name rc
@@ -234,10 +234,10 @@ cmd_check() {
   done
 
   # docs/gbrain.md owns the rule. A violation is a hard configuration finding;
-  # an unreadable plane is unknown rather than a silent pass. It fails the run
-  # without setting plane_broken: both planes were read, so every row below is
-  # still answerable and the operator reading the violation keeps the context
-  # that tells them which home is serving.
+  # an unreadable plane is unknown rather than a silent pass. A proven violation
+  # fails the run without setting plane_broken: the shared and home-local planes
+  # used by the rows below still read, so the operator keeps the context that
+  # tells them which home is serving.
   fm_gbrain_serving_credential_state "$FM_HOME"
   case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in
     ok) check_row serving-credential ok "$FM_GBRAIN_SERVING_CREDENTIAL_DETAIL" ;;
@@ -324,7 +324,7 @@ cmd_check() {
 #
 # docs/gbrain.md owns the rule. This read-only entry point prints one diagnostic
 # line for a violation or unknown verdict and stays silent when clear, so
-# bootstrap can run it without network or GBrain process access.
+# bootstrap can run it synchronously with bounded GBrain runtime-config reads.
 cmd_serving_check() {
   fm_gbrain_serving_credential_state "$FM_HOME"
   case $FM_GBRAIN_SERVING_CREDENTIAL_STATE in

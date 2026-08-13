@@ -23,7 +23,7 @@
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "USAGE_STORE: skipped|failed: <detail>",
-#                 "GBRAIN_SERVING_CREDENTIAL: <why a serving home holds a hosted synthesis credential, or why the verdict could not be reached>",
+#                 "GBRAIN_SERVING_CREDENTIAL: <why hosted synthesis is reachable on a serving home, or why the verdict could not be reached>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
