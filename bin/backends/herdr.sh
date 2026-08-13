@@ -2955,8 +2955,6 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     case "$declared_harness" in
       ''|cursor|agy)
         fm_backend_herdr_target_ready "$target" || { printf 'send-failed'; return 0; }
-        fm_backend_herdr_agent_prompt_capability_check "$FM_BACKEND_HERDR_SESSION" \
-          >/dev/null 2>&1 || { printf 'send-failed'; return 0; }
         baseline_snapshot=$(fm_backend_herdr_agent_submit_snapshot \
           "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
         IFS=$'\t' read -r baseline_agent baseline_raw _ baseline_session <<EOF
@@ -2975,6 +2973,8 @@ EOF
         idle|working|done) : ;;
         *) printf 'send-failed'; return 0 ;;
       esac
+      fm_backend_herdr_agent_prompt_capability_check "$FM_BACKEND_HERDR_SESSION" \
+        >/dev/null 2>&1 || { printf 'send-failed'; return 0; }
       verdict=$(fm_backend_herdr_prompt_submit "$target" "$text" "$baseline_agent" "$baseline_session")
       printf '%s' "$verdict"
       return 0
