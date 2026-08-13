@@ -27,7 +27,7 @@ The status labels distinguish boundaries corrected during the 2026-08-13 audit f
 - Corrected: `AGENTS.md` includes design in the post-spawn backlog under-way handoff, while its intake taxonomy, mode, yolo, validation, ready, landing, teardown, and skill triggers already included design.
 - Already compliant: `bin/fm-brief.sh` applies issue and work-item linkage, explicit delivery mode, branch identity, isolation, status, decision, and delivery definitions to ship and design through one tracked-output predicate.
 - Already compliant: `bin/fm-spawn.sh` applies mode and yolo validation, brief agreement, batch dispatch, isolated worktree creation, metadata, branch identity, work-item dispatch milestones, and backend launch to ship and design through one tracked-output predicate.
-- Already compliant: `docs/examples/crew-dispatch.json`, `bin/fm-harness.sh`, `bin/fm-launch-lib.sh`, and `bin/fm-spawn.sh` carry Claude, Codex, and Pi through the current harness, model, and effort axes.
+- Verified below: the design compatibility matrix carries Codex, Pi, and Claude through the dispatch schema, `fm-harness.sh`, `fm-launch-lib.sh`, `fm-spawn.sh`, and the `harness-adapters` model and effort axes.
 - Already compliant: `bin/fm-crew-state.sh` reconciles design validation runs, branch attribution, pipeline ownership, current state, and worker liveness exactly as for ship.
 - Already compliant: `bin/fm-run-progress.sh`, `bin/fm-watch.sh`, and `bin/fm-supervise-daemon.sh` admit design run progress and apply the same ordinary direct-report supervision as ship and scout.
 - Already compliant: `.agents/skills/work-item-visibility/SKILL.md`, `bin/fm-work-item-milestone.sh`, `bin/fm-issue-comment.sh`, and `bin/fm-project-board.sh` carry design through dispatched, queued, implemented, validated, blocked, stopped, and landed tracker states.
@@ -45,6 +45,54 @@ The status labels distinguish boundaries corrected during the 2026-08-13 audit f
 - Already compliant: ship retains project-memory delivery, explicit mode and yolo, implementation delivery, and the full landed-work cleanup path.
 - Already compliant: scout retains its report-only output, no delivery posture, promotion-only transition to ship, decision inventory, and report-required cleanup.
 - Already compliant: secondmate retains its fixed posture, persistent-home registry, child-work refusal, and dedicated retirement cleanup rather than entering tracked-output predicates.
+
+### Design delivery wording
+
+The complete rendered definition-of-done text for each row is recorded as an exact behavioral expectation in `assert_design_dod_exact` in `tests/fm-brief.test.sh`.
+
+1. `no-mistakes` refers only to the ADR becoming complete, committed, ready for validation, and shipped through its ADR PR.
+   No sentence authorizes implementation.
+2. `direct-PR` refers only to the ADR becoming complete, committed, and ready for its PR.
+   No sentence authorizes implementation.
+3. `local-only` refers only to the ADR becoming complete, committed, and ready on its local branch.
+   No sentence authorizes implementation.
+
+### Design compatibility matrix
+
+The fifteen cells below are exercised by `test_design_profile_resolves_on_claude_codex_and_pi` in `tests/fm-spawn-dispatch-profile.test.sh` through schema-selected and configuration-fallback design spawns.
+
+1. Codex dispatch schema: the active design profile selects `codex`, model `gpt-5.5`, and effort `xhigh` from the current `rules[].use[]` shape.
+2. Codex `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=codex` resolves through `fm-harness.sh crew` and the design spawn records Codex.
+3. Codex `fm-launch-lib.sh`: both selection paths render the Codex design command through the launch library and its operational-input encoder.
+4. Codex `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `codex`, model `gpt-5.5`, and effort `xhigh`.
+5. Codex `harness-adapters` axes: both rendered commands contain `--model 'gpt-5.5'` and `model_reasoning_effort="xhigh"`.
+6. Pi dispatch schema: the active design profile selects `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh` from the current `rules[].use[]` shape.
+7. Pi `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=pi` resolves through `fm-harness.sh crew` and the design spawn records Pi.
+8. Pi `fm-launch-lib.sh`: both selection paths render the Pi design command through the launch library and its operational-input encoder.
+9. Pi `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh`.
+10. Pi `harness-adapters` axes: both rendered commands contain `--model 'anthropic/claude-sonnet-5'` and `--thinking 'xhigh'`.
+11. Claude dispatch schema: the active design profile selects `claude`, model `claude-sonnet-5`, and effort `xhigh` from the current `rules[].use[]` shape.
+12. Claude `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=claude` resolves through `fm-harness.sh crew` and the design spawn records Claude.
+13. Claude `fm-launch-lib.sh`: both selection paths render the Claude design command through the launch library and its operational-input encoder.
+14. Claude `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `claude`, model `claude-sonnet-5`, and effort `xhigh`.
+15. Claude `harness-adapters` axes: both rendered commands contain `--model 'claude-sonnet-5'` and `--effort 'xhigh'`.
+
+### Focused delivery and compatibility regression
+
+The 2026-08-13 focused verification command for the three delivery rows and fifteen compatibility cells is:
+
+```sh
+bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
+```
+
+Its bounded completion markers are:
+
+```text
+all fm-brief tests passed
+all fm-spawn-dispatch-profile tests passed
+all fm-documentation-audiences tests passed
+all fm-pointer-check tests passed
+```
 
 ### Focused regression
 

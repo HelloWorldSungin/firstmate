@@ -86,6 +86,12 @@ enable_dispatch_profile() {
     > "$home/config/crew-dispatch.json"
 }
 
+enable_design_dispatch_profile() {
+  local home=$1
+  printf '%s\n' '{"rules":[{"when":"interactive design interview","use":[{"harness":"codex","model":"gpt-5.5","effort":"xhigh"},{"harness":"pi","model":"anthropic/claude-sonnet-5","effort":"xhigh"},{"harness":"claude","model":"claude-sonnet-5","effort":"xhigh"}]}]}' \
+    > "$home/config/crew-dispatch.json"
+}
+
 make_seeded_secondmate_home() {
   local home=$1 id=$2
   mkdir -p "$home/bin" "$home/data"
@@ -790,7 +796,8 @@ test_non_claude_harness_ignores_config_dir() {
 }
 
 test_design_profile_resolves_on_claude_codex_and_pi() {
-  local plugin registry harness rec id out status launch expected tracker_log
+  local plugin registry harness model effort rec id out status profile schema_launch schema_meta
+  local fallback_id fallback_launch resolved binary model_flag effort_flag tracker_log
   plugin="$TMP_ROOT/design-plugin"
   registry="$TMP_ROOT/design-registry.json"
   mkdir -p "$plugin/skills/productivity/grilling" \
@@ -802,10 +809,36 @@ test_design_profile_resolves_on_claude_codex_and_pi() {
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
     ]}}' > "$registry"
 
-  for harness in claude codex pi; do
-    id="design-$harness-z20"
-    rec=$(make_spawn_case "design-$harness" "$harness" "$id")
+  for harness in codex pi claude; do
+    case "$harness" in
+      codex)
+        model=gpt-5.5
+        binary='codex '
+        effort_flag='model_reasoning_effort="xhigh"'
+        ;;
+      pi)
+        model=anthropic/claude-sonnet-5
+        binary='pi '
+        effort_flag="--thinking 'xhigh'"
+        ;;
+      claude)
+        model=claude-sonnet-5
+        binary='claude '
+        effort_flag="--effort 'xhigh'"
+        ;;
+    esac
+    effort=xhigh
+    model_flag="--model '$model'"
+
+    id="design-schema-$harness-z20"
+    rec=$(make_spawn_case "design-schema-$harness" claude "$id")
     read_case_record "$rec"
+    enable_design_dispatch_profile "$HOME_DIR"
+    profile=$(jq -r --arg harness "$harness" \
+      '.rules[] | select(.when == "interactive design interview") | .use[] | select(.harness == $harness) | [.harness,.model,.effort] | @tsv' \
+      "$HOME_DIR/config/crew-dispatch.json")
+    [ "$profile" = "$harness"$'\t'"$model"$'\t'"$effort" ] \
+      || fail "design dispatch schema did not resolve $harness/$model/$effort: $profile"
     if [ "$harness" = codex ]; then
       printf '%s\n' \
         '<!-- firstmate-work-item=github:https://github.com/acme/widget/issues/42 -->' \
@@ -821,23 +854,15 @@ EOF
     fi
     out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
       run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-      "$id" "$PROJ_DIR" --design --harness "$harness" --effort xhigh \
+      "$id" "$PROJ_DIR" --design --harness "$harness" --model "$model" --effort "$effort" \
       --mode no-mistakes --yolo off)
     status=$?
     expect_code 0 "$status" "design profile should spawn on $harness"
     assert_contains "$out" "spawned $id harness=$harness kind=design" \
       "design spawn did not retain kind=design on $harness"
-    assert_grep 'kind=design' "$HOME_DIR/state/$id.meta" \
-      "design metadata did not retain its task kind on $harness"
-    assert_meta_profile "$HOME_DIR/state/$id.meta" "$harness" default xhigh
-    launch=$(cat "$LAUNCH_LOG")
-    case "$harness" in
-      claude) expected="--effort 'xhigh'" ;;
-      codex) expected="model_reasoning_effort=\"xhigh\"" ;;
-      pi) expected="--thinking 'xhigh'" ;;
-    esac
-    assert_contains "$launch" "$expected" \
-      "design profile did not render the verified xhigh effort axis on $harness"
+    schema_launch=$(cat "$LAUNCH_LOG")
+    schema_meta="$HOME_DIR/state/$id.meta"
+    pass "design matrix $harness 1/5: dispatch schema selects $harness/$model/$effort"
     if [ "$harness" = codex ]; then
       assert_grep 'work_item=declared|github|https://github.com/acme/widget/issues/42' \
         "$HOME_DIR/state/$id.meta" \
@@ -845,8 +870,52 @@ EOF
       assert_present "$tracker_log" \
         "design spawn did not attempt the tracked-output dispatch milestone"
     fi
+
+    fallback_id="design-fallback-$harness-z21"
+    rec=$(make_spawn_case "design-fallback-$harness" "$harness" "$fallback_id")
+    read_case_record "$rec"
+    resolved=$(FM_CONFIG_OVERRIDE="$HOME_DIR/config" "$ROOT/bin/fm-harness.sh" crew)
+    [ "$resolved" = "$harness" ] \
+      || fail "fm-harness.sh crew resolved $resolved instead of $harness"
+    out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+      run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$fallback_id" "$PROJ_DIR" --design --model "$model" --effort "$effort" \
+      --mode no-mistakes --yolo off)
+    status=$?
+    expect_code 0 "$status" "design profile fallback should spawn on $harness"
+    assert_contains "$out" "spawned $fallback_id harness=$harness kind=design" \
+      "design fallback spawn did not retain kind=design on $harness"
+    fallback_launch=$(cat "$LAUNCH_LOG")
+    pass "design matrix $harness 2/5: fm-harness.sh fallback resolves $harness"
+
+    assert_contains "$schema_launch" "$binary" \
+      "schema-selected design launch did not use the $harness template"
+    assert_contains "$fallback_launch" "$binary" \
+      "fallback-selected design launch did not use the $harness template"
+    assert_contains "$schema_launch" "encode launch-brief" \
+      "schema-selected design launch bypassed fm-launch-lib.sh construction"
+    assert_contains "$fallback_launch" "encode launch-brief" \
+      "fallback-selected design launch bypassed fm-launch-lib.sh construction"
+    pass "design matrix $harness 3/5: fm-launch-lib.sh constructs both commands"
+
+    assert_meta_profile "$HOME_DIR/state/$fallback_id.meta" "$harness" "$model" "$effort"
+    assert_meta_profile "$schema_meta" "$harness" "$model" "$effort"
+    assert_grep 'kind=design' "$schema_meta" \
+      "schema-selected design metadata did not retain kind=design on $harness"
+    assert_grep 'kind=design' "$HOME_DIR/state/$fallback_id.meta" \
+      "fallback-selected design metadata did not retain kind=design on $harness"
+    pass "design matrix $harness 4/5: fm-spawn.sh validates design and records all axes"
+
+    assert_contains "$schema_launch" "$model_flag" \
+      "schema-selected $harness launch omitted representative model $model"
+    assert_contains "$fallback_launch" "$model_flag" \
+      "fallback-selected $harness launch omitted representative model $model"
+    assert_contains "$schema_launch" "$effort_flag" \
+      "schema-selected $harness launch omitted representative effort $effort"
+    assert_contains "$fallback_launch" "$effort_flag" \
+      "fallback-selected $harness launch omitted representative effort $effort"
+    pass "design matrix $harness 5/5: harness-adapters axes render $model/$effort"
   done
-  pass "design profile resolves through the verified Claude, Codex, and Pi launch contracts"
 }
 
 test_active_dispatch_profile_does_not_block_secondmate_launch() {

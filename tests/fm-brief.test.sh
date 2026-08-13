@@ -1157,8 +1157,75 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   pass "fm-brief.sh: the home-root candidate needs a home-root registry declaration, not merely registration"
 }
 
-# A design scaffold resolves the installed plugin as a capability dependency,
-# then emits one harness-independent contract for Claude, Codex, and Pi.
+assert_design_dod_exact() {
+  local mode=$1 brief=$2 expected actual
+  case "$mode" in
+    no-mistakes)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=no-mistakes
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.
+A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.
+The ADR is ready for validation only when committed on your branch.
+When the ADR is complete and committed, append `paused: ADR complete and committed, ready to validate` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR.
+
+You drive no-mistakes by responding to its gates, not by applying fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+When starting no-mistakes, make `--intent` preserve all relevant content from this brief's `# Task` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.
+While you sit parked on a backgrounded `axi run` or `axi respond` call, rule 4's park-and-resume pairing applies: append `paused:` before you go idle and `working:` when the call returns.
+
+Two firstmate-specific rules layer on top of that guidance:
+- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
+  Firstmate applies the authority contract in its `AGENTS.md` and obtains any required captain decision.
+  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.
+- Avoid `--yes`: it would silently bypass firstmate's authority check and any required captain escalation.
+
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.
+EOF
+      ;;
+    direct-PR)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=direct-PR
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.
+The ADR is ready only when committed on your branch.
+When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+EOF
+      ;;
+    local-only)
+      IFS= read -r -d '' expected <<'EOF' || true
+# Definition of done
+Delivery contract: mode=local-only
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
+The final status summary must name the ADR path and concisely state the decisions taken.
+This ADR ships **local-only**: no remote, no PR, no pipeline.
+The ADR is ready only when committed on your branch `fm/design-firstmate`. Do NOT push, do NOT open a PR, do NOT merge.
+Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+When the ADR is complete and committed, append `done: ready in branch fm/design-firstmate` to the status file and stop.
+The configured merge authority approves the ready branch, then firstmate merges it into local `main` through the guarded fast-forward path.
+EOF
+      ;;
+    *) fail "unknown design DOD mode: $mode" ;;
+  esac
+  expected=${expected%$'\n'}
+  expected=${expected//__ROOT__/$ROOT}
+  actual=$(sed -n '/^# Definition of done$/,$p' "$brief")
+  [ "$actual" = "$expected" ] \
+    || fail "design $mode definition of done changed"$'\n'"expected:"$'\n'"$expected"$'\n'"actual:"$'\n'"$actual"
+  assert_not_contains "$actual" "implement" \
+    "design $mode definition of done authorizes implementation"
+  pass "design DOD $mode: exact rendered text authorizes no implementation"
+}
+
 test_design_brief_is_harness_independent_and_adr_only() {
   local home plugin registry brief out rc
   home="$TMP_ROOT/design-home"
@@ -1173,7 +1240,8 @@ test_design_brief_is_harness_independent_and_adr_only() {
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
     ]}}' > "$registry"
 
-  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
     "$ROOT/bin/fm-brief.sh" design-task sample --design --mode no-mistakes 2>&1)
   rc=$?
   expect_code 0 "$rc" "complete design dependencies should scaffold"
@@ -1211,7 +1279,8 @@ test_design_brief_is_harness_independent_and_adr_only() {
   assert_grep 'Delivery contract: mode=no-mistakes' "$brief" \
     "design brief did not carry the tracked-output delivery contract"
 
-  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
     "$ROOT/bin/fm-brief.sh" design-linked sample --design --mode direct-PR \
     --work-item github:https://github.com/acme/widget/issues/42 \
     --pr-target github:github.com/acme/widget 2>&1)
@@ -1223,7 +1292,8 @@ test_design_brief_is_harness_independent_and_adr_only() {
 
   mkdir -p "$home/projects"
   ln -sfn "$ROOT" "$home/projects/firstmate"
-  out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+  out=$(FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
     "$ROOT/bin/fm-brief.sh" design-firstmate firstmate --design --mode local-only 2>&1)
   rc=$?
   expect_code 0 "$rc" "a firstmate-repo design brief should scaffold"
@@ -1232,6 +1302,10 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "firstmate-repo design brief did not retain its tracked-output coding guidance"
   assert_no_grep 'fm-ensure-agents-md.sh' "$home/data/design-firstmate/brief.md" \
     "firstmate-repo design brief reopened the project-memory deliverable path"
+
+  assert_design_dod_exact no-mistakes "$home/data/design-task/brief.md"
+  assert_design_dod_exact direct-PR "$home/data/design-linked/brief.md"
+  assert_design_dod_exact local-only "$home/data/design-firstmate/brief.md"
 
   out=$(FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/missing-registry.json" \
     "$ROOT/bin/fm-brief.sh" missing-design sample --design --mode no-mistakes 2>&1)

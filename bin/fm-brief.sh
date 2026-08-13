@@ -675,6 +675,19 @@ TRACKED_SECTIONS=$HERDR_SECTION
 DOD_DIRECT='Delivery contract: mode=direct-PR'
 DOD_LOCAL='Delivery contract: mode=local-only'
 DOD_NO_MISTAKES='Delivery contract: mode=no-mistakes'
+DOD_DIRECT_INTRO='This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.'
+DOD_DIRECT_COMPLETE='The task is complete only when committed on your branch.'
+DOD_DIRECT_HANDOFF='When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
+DOD_LOCAL_INTRO='This task ships **local-only**: no remote, no PR, no pipeline.'
+DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
+DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+DOD_NO_MISTAKES_INTRO='This project ships **no-mistakes**: `done:` means the PR is open with its checks green.'
+DOD_NO_MISTAKES_LOCAL='A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
+DOD_NO_MISTAKES_COMPLETE='The task is complete only when committed on your branch.'
+DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
+DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by implementing fixes.'
+DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
+DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
 PROJECT_MEMORY_SECTION=
 if [ "$KIND" = ship ]; then
   IFS= read -r -d '' PROJECT_MEMORY_SECTION <<EOF || true
@@ -692,6 +705,19 @@ if [ -n "$DESIGN_SECTION" ]; then
   printf -v DOD_DIRECT '%s\n%s' "$DOD_DIRECT" "$DESIGN_DOD"
   printf -v DOD_LOCAL '%s\n%s' "$DOD_LOCAL" "$DESIGN_DOD"
   printf -v DOD_NO_MISTAKES '%s\n%s' "$DOD_NO_MISTAKES" "$DESIGN_DOD"
+  DOD_DIRECT_INTRO='This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.'
+  DOD_DIRECT_COMPLETE='The ADR is ready only when committed on your branch.'
+  DOD_DIRECT_HANDOFF='When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
+  DOD_LOCAL_INTRO='This ADR ships **local-only**: no remote, no PR, no pipeline.'
+  DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
+  DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+  DOD_NO_MISTAKES_INTRO='This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.'
+  DOD_NO_MISTAKES_LOCAL='A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
+  DOD_NO_MISTAKES_COMPLETE='The ADR is ready for validation only when committed on your branch.'
+  DOD_NO_MISTAKES_HANDOFF="When the ADR is complete and committed, append \`$PAUSED_VERB: ADR complete and committed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR."
+  DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by applying fixes.'
+  DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.'
+  DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.'
 fi
 
 case "$MODE" in
@@ -701,9 +727,9 @@ case "$MODE" in
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 $DOD_DIRECT
-This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+$DOD_DIRECT_INTRO
+$DOD_DIRECT_COMPLETE
+$DOD_DIRECT_HANDOFF
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -713,10 +739,10 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 $DOD_LOCAL
-This task ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
+$DOD_LOCAL_INTRO
+$DOD_LOCAL_COMPLETE
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+$DOD_LOCAL_HANDOFF
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -727,21 +753,21 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 $DOD_NO_MISTAKES
-This project ships **no-mistakes**: \`done:\` means the PR is open with its checks green.
-A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one \`done:\` line and it is the last one, \`done: PR {url} checks green\`.
-The task is complete only when committed on your branch.
-When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode.
+$DOD_NO_MISTAKES_INTRO
+$DOD_NO_MISTAKES_LOCAL
+$DOD_NO_MISTAKES_COMPLETE
+$DOD_NO_MISTAKES_HANDOFF
 
-You drive no-mistakes by responding to its gates, not by implementing fixes.
+$DOD_NO_MISTAKES_DRIVE
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+$DOD_NO_MISTAKES_ACTIVE
 While you sit parked on a backgrounded \`axi run\` or \`axi respond\` call, rule 4's park-and-resume pairing applies: append \`$PAUSED_VERB:\` before you go idle and \`working:\` when the call returns.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+$DOD_NO_MISTAKES_ASK
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
