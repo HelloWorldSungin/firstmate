@@ -106,15 +106,27 @@ fm_send_record_interrupt() {  # <key>
 
 fm_send_reopen_scout_completion() {
   local id
-  [ -n "$TARGET_SELECTOR" ] || return 0
   [ -n "$TARGET_META" ] || return 0
   [ "$(fm_meta_get "$TARGET_META" kind)" = scout ] || return 0
   [ "$(fm_meta_get "$TARGET_META" decisions_reviewed)" = 1 ] || return 0
   id=$(fm_send_id_from_meta "$TARGET_META")
   if ! printf 'decisions_reviewed=0\n' >> "$TARGET_META"; then
-    echo "error: text was delivered to $T, but scout completion could not be reopened for $id. Do not resend." >&2
+    echo "error: text not sent to $T because scout completion could not be reopened for $id" >&2
     return 1
   fi
+  SCOUT_COMPLETION_REOPENED=1
+}
+
+fm_send_restore_scout_completion() {
+  local id
+  [ "$SCOUT_COMPLETION_REOPENED" = 1 ] || return 0
+  [ "$(fm_meta_get "$TARGET_META" decisions_reviewed)" = 0 ] || return 0
+  id=$(fm_send_id_from_meta "$TARGET_META")
+  if ! printf 'decisions_reviewed=1\n' >> "$TARGET_META"; then
+    echo "error: scout completion could not be restored for $id after text was not delivered" >&2
+    return 1
+  fi
+  SCOUT_COMPLETION_REOPENED=0
 }
 
 fm_send_meta_for_key_value() {  # <state-dir> <key> <value>
@@ -255,6 +267,7 @@ MARK_FROM_FIRSTMATE=0
 PENDING_REPLY_CORR=
 PENDING_REPLY_CREATED=0
 TARGET_TASK_ID=
+SCOUT_COMPLETION_REOPENED=0
 if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
   MARK_FROM_FIRSTMATE=1
   TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
@@ -327,6 +340,7 @@ else
   esac
   retries=${FM_SEND_RETRIES:-3}
   sleep_s=${FM_SEND_SLEEP:-0.4}
+  fm_send_reopen_scout_completion || exit 1
   # Type once, submit, verify. Only exact empty confirms delivery; every other
   # verdict preserves the loud refusal boundary.
   send_rc=0
@@ -351,6 +365,7 @@ else
     if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
       fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
     fi
+    fm_send_restore_scout_completion || true
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
@@ -361,6 +376,7 @@ else
       if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
         fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
       fi
+      fm_send_restore_scout_completion || true
       echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
@@ -387,7 +403,6 @@ else
       exit 1
     fi
   fi
-  fm_send_reopen_scout_completion || exit 1
   # Submit landed with exact empty. Confirmation only proves the text was
   # accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the

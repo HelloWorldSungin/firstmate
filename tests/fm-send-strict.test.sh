@@ -31,7 +31,13 @@ case "${1:-}" in
         *) break ;;
       esac
     done
+    if [ -n "${FM_FAKE_TMUX_SEND_FAIL_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_SEND_FAIL_TARGET" ]; then
+      exit 1
+    fi
     printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
+    if [ -n "${FM_FAKE_TMUX_COMPLETE_META:-}" ] && [ "${1:-}" = Enter ]; then
+      printf 'decisions_reviewed=1\n' >> "$FM_FAKE_TMUX_COMPLETE_META"
+    fi
     exit 0 ;;
   display-message)
     target=
@@ -207,17 +213,38 @@ test_scout_text_send_reopens_completion_gate() {
 
   printf 'decisions_reviewed=1\n' >> "$meta"
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" sess:fm-scout-followup "check through explicit endpoint" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "metadata-resolved explicit scout follow-up should be delivered"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 0 ] || fail "metadata-resolved explicit scout follow-up did not reopen completion gate"
+
+  printf 'decisions_reviewed=1\n' >> "$meta"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_COMPLETE_META="$meta" FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup "finish immediately" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "fast scout follow-up should be delivered"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 1 ] || fail "send completion reset overwrote a newer scout completion"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
     "$SEND" scout-followup --key Enter >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "key-only scout control should succeed"
   reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 1 ] || fail "key-only scout control reopened completion gate"
 
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_DEAD_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
+    FM_FAKE_TMUX_SEND_FAIL_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
     "$SEND" scout-followup "message that cannot land" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "failed scout follow-up should return nonzero"
   reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 1 ] || fail "failed scout follow-up reopened completion gate"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_DEAD_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup "message with unknown delivery" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "unconfirmed scout follow-up should return nonzero"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 0 ] || fail "unconfirmed scout follow-up restored stale completion"
   pass "fm-send strict: confirmed scout follow-ups reopen completion review"
 }
 
