@@ -285,9 +285,22 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
     r_source=${out%% *}
     if fm_busy_source_trusted "$harness" "$r_source"; then
       printf '%s %s' "$r_state" "$r_source"
-    else
-      printf 'unknown source-mismatch'
+      return 0
     fi
+  fi
+  # No valid, trusted record exists for this harness. A native herdr busy
+  # verdict is semantic enough to trust for BUSY (streaming means a turn is
+  # running); native idle is narrower than turn state (a long foreground tool
+  # call reads idle) and stays unknown here.
+  if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
+    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+    if [ "$native" = busy ]; then
+      printf 'busy herdr-native'
+      return 0
+    fi
+  fi
+  if [ "$rc" = 0 ]; then
+    printf 'unknown source-mismatch'
     return 0
   fi
   case "$out" in
@@ -296,17 +309,6 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       return 0
       ;;
   esac
-  # No record at all. A native herdr busy verdict is semantic enough to trust
-  # for BUSY (streaming means a turn is running); native idle is narrower
-  # than turn state (a long foreground tool call reads idle) and stays
-  # unknown here.
-  if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
-    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
-    if [ "$native" = busy ]; then
-      printf 'busy herdr-native'
-      return 0
-    fi
-  fi
   case "$harness" in
     grok*)
       if [ -z "$tail40" ]; then

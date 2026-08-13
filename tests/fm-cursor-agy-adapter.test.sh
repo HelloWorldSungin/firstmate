@@ -406,6 +406,213 @@ EOF
   pass "a non-agy teardown leaves the agy workspace-trust file untouched"
 }
 
+# --- send and crew-state signals for cursor and agy --------------------------
+
+make_herdr_signal_fakebin() {  # <dir> <agent-status-sequence...> -> fakebin dir
+  local dir=$1 fakebin seq_file
+  shift
+  fakebin=$(fm_fakebin "$dir")
+  seq_file="$dir/agent_get_seq"
+  rm -f "$seq_file"
+  for st in "$@"; do
+    printf '%s\n' "$st" >> "$seq_file"
+  done
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/sleep"
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+cmd=""
+for a in "$@"; do
+  case "$a" in
+    status|pane|agent|get|read|capture|send-keys|send-text) cmd="$cmd $a" ;;
+  esac
+done
+dir=$(dirname "$0")/..
+seq_file="$dir/agent_get_seq"
+counter_file="$dir/agent_get_counter"
+case "$cmd" in
+  *"status"*) printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
+  *"pane get"*) printf '{"result":{"pane":{"pane_id":"w1:p1"}}}\n' ;;
+  *"pane send-keys"*|*"pane send-text"*) exit 0 ;;
+  *"pane read"*|*"pane capture"*)
+    if [ -n "${FM_HERDR_FAKE_COMPOSER:-}" ]; then
+      printf '%s\n' "${FM_HERDR_FAKE_COMPOSER}"
+    else
+      printf '› \n'
+    fi
+    ;;
+  *"agent get"*)
+    cnt=$(cat "$counter_file" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    echo "$cnt" > "$counter_file"
+    st=""
+    if [ -f "$seq_file" ]; then
+      st=$(sed -n "${cnt}p" "$seq_file")
+    fi
+    st=${st:-idle}
+    printf '{"result":{"agent":{"agent":"%s","agent_status":"%s"}}}\n' "${FM_HERDR_FAKE_AGENT:-claude_code}" "$st"
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/herdr"
+  fm_fake_exit0 "$fakebin" gh-axi gh treehouse
+  printf '%s\n' "$fakebin"
+}
+
+test_send_text_submit_lands_on_cursor_and_agy() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  # Counterfactual: If send_text_submit collapsed unknown composer verdict to failure
+  # when native agent_status is working, this test would fail.
+  case_dir="$TMP_ROOT/send-land-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "working" "working")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 0 "$rc" "ordinary steer to live $harness worker should succeed when native turn starts"
+  assert_no_grep "error:" "$err" "successful steer to live $harness worker should produce no error diagnostic"
+  pass "ordinary steer to a live $harness worker that lands does not report failure"
+}
+
+test_genuinely_undelivered_steer_on_composer_supported_harness() {
+  local case_dir home proj wt fakebin err rc
+  # Counterfactual: If a swallowed steer on a composer-supported harness was falsely
+  # confirmed as delivered, this test would fail.
+  case_dir="$TMP_ROOT/send-undelivered-claude"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-claude"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-claude.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=claude" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle" "idle")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="claude_code" FM_HERDR_FAKE_COMPOSER='│ › unsubmitted text │' \
+    "$ROOT/bin/fm-send.sh" "fm-lane-claude" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 1 "$rc" "genuinely undelivered steer on claude should report failure"
+  assert_contains "$(cat "$err")" "delivery unconfirmed; verdict=pending" \
+    "undelivered steer on composer-supported harness should report verdict=pending"
+  pass "a genuinely undelivered steer on a composer-supported harness is reported as failure"
+}
+
+test_send_into_dead_shell_is_never_confirmed() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  # Counterfactual: If a send into a dead shell without native agent activity was
+  # confirmed as empty/success, this test would fail.
+  case_dir="$TMP_ROOT/send-dead-shell-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle" "idle")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_COMPOSER='$ ' \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "send into dead shell on $harness must not exit 0"
+  expect_code 3 "$rc" "send into dead shell on $harness should exit code 3 (unverifiable)"
+  assert_contains "$(cat "$err")" "text delivery unverifiable on" \
+    "send into dead shell on $harness should state delivery unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "send into dead shell on $harness should state verdict=unverifiable"
+  pass "a send into a dead shell on $harness is never confirmed"
+}
+
+test_live_cursor_and_agy_tasks_read_working_in_crew_state() {
+  local harness=$1 case_dir home proj wt fakebin out
+  # Counterfactual: If fm_busy_classify returned unknown source-mismatch for a live
+  # working cursor/agy worker, this test would fail.
+  case_dir="$TMP_ROOT/crew-state-working-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/task-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/task-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj" "branch=fm/task-$harness"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-crew-state.sh" "task-$harness")
+  assert_contains "$out" "state: working" "live $harness worker should read state: working"
+  assert_contains "$out" "source: pane" "live $harness worker should have source: pane"
+  assert_contains "$out" "herdr-native" "live $harness worker detail should cite herdr-native"
+  pass "a live, actively working $harness task reads as working from bin/fm-crew-state.sh"
+}
+
+test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state() {
+  local harness=$1 case_dir home proj wt fakebin out
+  # Counterfactual: If an idle cursor/agy task without a turn-end hook was falsely
+  # read as working or idle instead of unknown, this test would fail.
+  case_dir="$TMP_ROOT/crew-state-idle-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/task-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/task-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj" "branch=fm/task-$harness"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle")
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_HERDR_FAKE_AGENT="$harness" \
+    "$ROOT/bin/fm-crew-state.sh" "task-$harness")
+  assert_contains "$out" "state: unknown" "idle $harness worker should read state: unknown"
+  pass "a $harness task whose state genuinely cannot be read still reads unknown"
+}
+
+test_unverifiable_send_reports_distinct_wording_and_exit_code() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  # Counterfactual: If an unverifiable send on cursor/agy reported standard exit 1
+  # delivery unconfirmed instead of exit 3 unverifiable, this test would fail.
+  case_dir="$TMP_ROOT/unverifiable-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/lane-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle" "idle")
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_COMPOSER='$ ' \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 3 "$rc" "unverifiable send on $harness should exit code 3"
+  assert_contains "$(cat "$err")" "text delivery unverifiable on" \
+    "unverifiable send on $harness should state text delivery unverifiable"
+  assert_contains "$(cat "$err")" "verdict=unverifiable" \
+    "unverifiable send on $harness should state verdict=unverifiable"
+  pass "unverifiable send on $harness is reported distinctly in wording and exit code"
+}
+
 test_crew_only_refuses_secondmate cursor
 test_crew_only_refuses_secondmate agy
 test_herdr_only_refuses_non_herdr_backend cursor
@@ -417,5 +624,16 @@ test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
 test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
+test_send_text_submit_lands_on_cursor_and_agy cursor
+test_send_text_submit_lands_on_cursor_and_agy agy
+test_genuinely_undelivered_steer_on_composer_supported_harness
+test_send_into_dead_shell_is_never_confirmed cursor
+test_send_into_dead_shell_is_never_confirmed agy
+test_live_cursor_and_agy_tasks_read_working_in_crew_state cursor
+test_live_cursor_and_agy_tasks_read_working_in_crew_state agy
+test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state cursor
+test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state agy
+test_unverifiable_send_reports_distinct_wording_and_exit_code cursor
+test_unverifiable_send_reports_distinct_wording_and_exit_code agy
 
 echo "# all fm-cursor-agy-adapter tests passed"

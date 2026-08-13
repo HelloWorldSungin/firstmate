@@ -2732,11 +2732,21 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$verdict" = unknown ] && [ "$baseline_raw" != blocked ]; then
+        local cur_raw cur_bs
+        cur_raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+        cur_bs=$(fm_backend_herdr_classify_submit_agent_status "$cur_raw")
+        if [ "$cur_bs" = busy ]; then
+          verdict=busy
+        fi
+      fi
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
-      unknown) printf 'unknown'; return 0 ;;
+      unknown)
+        break
+        ;;
     esac
     i=$((i + 1))
     [ "$i" -lt "$retries" ] || break
@@ -2763,11 +2773,17 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   local composer_state busy_state
   if [ "$baseline_raw" != blocked ]; then
     composer_state=$(fm_backend_herdr_composer_state "$target")
-    if [ "$composer_state" = pending ]; then
-      busy_state=$(fm_backend_herdr_classify_submit_agent_status \
-        "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-      [ "$busy_state" = busy ] && { printf 'empty'; return 0; }
+    busy_state=$(fm_backend_herdr_classify_submit_agent_status \
+      "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+    if [ "$composer_state" = pending ] && [ "$busy_state" = busy ]; then
+      printf 'empty'; return 0
+    elif [ "$composer_state" = unknown ] && [ "$busy_state" = busy ]; then
+      printf 'empty'; return 0
+    elif [ "$composer_state" = unknown ]; then
+      printf 'unverifiable'; return 0
     fi
+  elif [ "$(fm_backend_herdr_composer_state "$target")" = unknown ]; then
+    printf 'unverifiable'; return 0
   fi
   printf 'pending'; return 0
 }
