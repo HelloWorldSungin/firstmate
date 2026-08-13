@@ -540,8 +540,8 @@ function stateReadLive(task) {
 // The dispatch time is last because it is not an activity timestamp at all: it
 // is when the task STARTED, which only bounds a task that has not yet produced
 // either real clock. Supervision bounds the same case the same way, so a task
-// that has reported nothing and completed nothing still has a clock and the
-// exemption a live reading buys stays bounded for it too. Without it a worker
+// that has reported nothing and emitted no turn-boundary wake still has a clock
+// and the exemption a live reading buys stays bounded for it too. Without it a worker
 // that hung inside its very first tool call could never colour the strip,
 // however long it hung.
 //

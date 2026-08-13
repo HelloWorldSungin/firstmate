@@ -145,7 +145,7 @@ An absent marker reports `present: false` with a null age, because a harness wit
 
 Also per task: `spawn_age_seconds`, how long ago the task was DISPATCHED.
 It ages the `spawned_at` epoch [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) stamps into `state/<id>.meta` at dispatch, and it is null when no readable stamp is present.
-It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor completed anything, so such a task still has a bound instead of an exemption without end.
+It is published for one reason: it is the clock a renderer falls back to when a task has neither reported nor emitted a turn-boundary wake, so such a task still has a bound instead of an exemption without end.
 A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
 
 It is deliberately the recorded VALUE and not the age of the `state/<id>.meta` file, because those two mean different things.

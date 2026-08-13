@@ -921,7 +921,7 @@ esac
 # data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
 # gates before any backend or worktree work: they can supervise a ship/scout
 # crewmate only, never a secondmate, and only on the herdr backend, whose native
-# agent-state gives liveness plus the debounced turn-end completion the watcher
+# agent-state gives liveness plus the debounced turn-boundary wake the watcher
 # derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
 # and is documented out-of-scope in the harness-adapters skill. Refuse loudly
 # rather than launch an unsupervisable crewmate.

@@ -488,11 +488,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
-# busy_turn_over_age: 0 iff <task>'s latest completed-turn marker is at least
+# busy_turn_over_age: 0 iff <task>'s latest turn-boundary wake marker is at least
 # BUSY_TURN_MAX_SECS old. Ages the per-task turn-ended marker, the harness-neutral
-# signal every verified harness's turn-end hook touches; before any turn has
-# completed, ages the task's spawn record instead so a fresh task still gets a
-# bound. The caller checks that the pane is busy and routes a crossed bound
+# wake written by a verified turn-end producer or the cursor/agy native-idle
+# detector; before any such wake arrives, ages the task's spawn record so a
+# fresh task gets a bound. The caller checks that the pane is busy and routes a crossed bound
 # through the existing wedge_timer_check, never anything that touches the
 # worker itself.
 busy_turn_over_age() {  # <task>
@@ -1185,7 +1185,7 @@ EOF
     key=${key//\//_}
     key=${key//./_}
     # cursor/agy native turn-end: runs before the capture-and-hash backstop below
-    # (and before the secondmate skip) so a completed cursor/agy turn wakes
+    # (and before the secondmate skip) so a settled cursor/agy native-idle edge wakes
     # firstmate from its NATIVE idle/done state even when the content hash never
     # settles. A no-op for every non-cursor/agy window.
     maybe_native_turnend "$w" "$task" "$key"
