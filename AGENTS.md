@@ -99,7 +99,7 @@ projects/            cloned repos; gitignored; read-only except under hard rule 
 state/               volatile runtime signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
   <id>.turn-ended    turn-boundary wake notification, never current-state truth; harness-adapters routes each producer contract to its authoritative implementation
-  <id>.run-step      last observed no-mistakes run step; private cache owned by bin/fm-crew-state.sh and removed by teardown
+  <id>.run-step      last observed no-mistakes run step and status-log ordering boundary; private record owned by bin/fm-crew-state.sh and removed by teardown
   <id>.agy-trust     agy trust cleanup marker; exact lifecycle lives in bin/fm-agy-trust-lib.sh
   <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown
   <id>.kimi-turnend-token   firstmate-owned Kimi hook registry token for the task; removed by teardown
@@ -350,7 +350,7 @@ Require the matching `resolved` event, forbid `--yes`, and require the worker to
 Resume fleet supervision immediately after the decision lands.
 
 Judge validation by the reconciled run-step verdict from `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
-Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed or cancelled is failed.
+Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; terminal outcomes remain done or failed unless the reconciler reports a newer declared wait under the precedence rule in [`docs/architecture.md`](docs/architecture.md).
 Those working verdicts are cross-checked against worker liveness, so an `abandoned` verdict means the run is still advancing with no live worker to answer its next gate; load `stuck-crewmate-recovery` rather than waiting it out.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
 The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
