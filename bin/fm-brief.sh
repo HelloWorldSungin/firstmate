@@ -684,16 +684,20 @@ DOD_LOCAL='Delivery contract: mode=local-only'
 DOD_NO_MISTAKES='Delivery contract: mode=no-mistakes'
 DOD_DIRECT_INTRO='This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.'
 DOD_DIRECT_COMPLETE='The task is complete only when committed on your branch.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_DIRECT_HANDOFF='When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
 DOD_LOCAL_INTRO='This task ships **local-only**: no remote, no PR, no pipeline.'
 DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
 DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_INTRO='This project ships **no-mistakes**: `done:` means the PR is open with its checks green.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_LOCAL='A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
 DOD_NO_MISTAKES_COMPLETE='The task is complete only when committed on your branch.'
 DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
 DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by implementing fixes.'
 DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
 PROJECT_MEMORY_SECTION=
 if [ "$KIND" = ship ]; then
@@ -714,16 +718,20 @@ if [ -n "$DESIGN_SECTION" ]; then
   printf -v DOD_NO_MISTAKES '%s\n%s' "$DOD_NO_MISTAKES" "$DESIGN_DOD"
   DOD_DIRECT_INTRO='This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.'
   DOD_DIRECT_COMPLETE='The ADR is ready only when committed on your branch.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_DIRECT_HANDOFF='When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
   DOD_LOCAL_INTRO='This ADR ships **local-only**: no remote, no PR, no pipeline.'
   DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
   DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_NO_MISTAKES_INTRO='This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_NO_MISTAKES_LOCAL='A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
   DOD_NO_MISTAKES_COMPLETE='The ADR is ready for validation only when committed on your branch.'
   DOD_NO_MISTAKES_HANDOFF="When the ADR is complete and committed, append \`$PAUSED_VERB: ADR complete and committed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR."
   DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by applying fixes.'
   DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.'
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.'
 fi
 

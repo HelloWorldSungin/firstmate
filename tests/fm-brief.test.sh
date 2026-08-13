@@ -1273,6 +1273,7 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design brief allowed worker-owned plugin lifecycle"
   assert_grep 'Use those skills for modeling and interrogation only' "$brief" \
     "design brief did not constrain the dependency capabilities"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   assert_grep 'Do not create or update `CONTEXT.md`' "$brief" \
     "design brief allowed the dependency to create a second tracked deliverable"
   assert_grep 'Record every resolved term only in the ADR' "$brief" \
@@ -1312,6 +1313,7 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "$ROOT/bin/fm-brief.sh" design-firstmate firstmate --design --mode local-only 2>&1)
   rc=$?
   expect_code 0 "$rc" "a firstmate-repo design brief should scaffold"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   assert_grep 'Load the `firstmate-coding-guidelines` skill first.' \
     "$home/data/design-firstmate/brief.md" \
     "firstmate-repo design brief did not retain its tracked-output coding guidance"
