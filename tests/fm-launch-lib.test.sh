@@ -28,7 +28,7 @@ test_render_substitutes_operational_input() {
   local rendered
   rendered=$(fm_launch_render \
     'cursor-agent __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
-    "--model 'composer' " "" "'/tmp/brief.md'" "" "" "" "" \
+    "--model 'composer' " "" "'/tmp/brief.md'" "" "" "" "" "" \
     "'/opt/firstmate/bin/fm-operational-input.sh'")
   assert_eq "$rendered" \
     'cursor-agent --model '\''composer'\'' "$('\''/opt/firstmate/bin/fm-operational-input.sh'\'' encode launch-brief < '\''/tmp/brief.md'\'')"' \
@@ -39,7 +39,7 @@ test_render_substitutes_operational_input() {
 test_render_rejects_unknown_placeholder() {
   local output
   if output=$(fm_launch_render \
-    'cursor-agent __FUTURE_PLACEHOLDER__' "" "" "" "" "" "" "" "" 2>&1); then
+    'cursor-agent __FUTURE_PLACEHOLDER__' "" "" "" "" "" "" "" "" "" 2>&1); then
     fail "launch rendering must reject an unknown placeholder"
   fi
   assert_contains "$output" "__FUTURE_PLACEHOLDER__" \
@@ -51,7 +51,7 @@ test_render_rejects_unknown_placeholder() {
 
 test_cursor_template() {
   assert_eq "$(fm_launch_template cursor ship)" \
-    'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'cursor-agent __CURSORPLUGIN__--trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "cursor ship template must launch cursor-agent with --trust --force and no effort placeholder"
   # kind is irrelevant for cursor (crew-only, no secondmate variant).
   assert_eq "$(fm_launch_template cursor scout)" "$(fm_launch_template cursor ship)" \

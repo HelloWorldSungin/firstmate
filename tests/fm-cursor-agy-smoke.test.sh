@@ -65,6 +65,7 @@ fm_backend_herdr_agent_prompt_capability_check "$SESSION" >/dev/null 2>&1 \
   || { echo "skip: isolated Herdr server lacks cursor/agy atomic prompt delivery"; exit 0; }
 
 WORK=$(mktemp -d)
+mkdir -p "$WORK/state"
 printf 'Reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"
 
 LAUNCH_TARGET=
@@ -75,8 +76,14 @@ LAUNCH_TARGET=
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
   local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag
-  local brief_path opinput_path agent st saw_working=0 settled=0
+  local brief_path opinput_path agent st saw_working=0 settled=0 task_id plugin cursor_plugin= verdict
   LAUNCH_TARGET=
+  task_id="smoke-$harness"
+  plugin=$("$ROOT/bin/fm-submit-ack-hook.sh" install "$harness" "$WORK" "$WORK/state" "$task_id") \
+    || { echo "prompt-acceptance plugin install failed" >&2; return 1; }
+  if [ "$harness" = cursor ]; then
+    cursor_plugin="--plugin-dir $(fm_launch_shell_quote "$plugin") "
+  fi
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
   seeded=${raw#*$'\t'}
@@ -92,7 +99,7 @@ EOF
   brief_path=$(fm_launch_shell_quote "$WORK/brief.md")
   opinput_path=$(fm_launch_shell_quote "$ROOT/bin/fm-operational-input.sh")
   launch=$(fm_launch_render \
-    "$launch" "" "$effortflag" "$brief_path" "" "" "" "" "$opinput_path") \
+    "$launch" "" "$effortflag" "$brief_path" "" "" "" "" "$cursor_plugin" "$opinput_path") \
     || { echo "template render failed" >&2; return 1; }
   fm_backend_herdr_send_literal "$ses:$pane" "$launch" || { echo "send failed" >&2; return 1; }
   sleep 0.3
@@ -115,6 +122,19 @@ EOF
     sleep 1
   done
   [ "$settled" = 1 ] || { echo "$harness never showed a working->idle/done transition on the brief" >&2; return 1; }
+  verdict=$(fm_backend_herdr_prompt_submit "$ses:$pane" \
+    "Reply with exactly the single word PONG and nothing else." "$WORK/state" "$task_id")
+  [ "$verdict" = empty ] \
+    || { echo "$harness accepted steer resolved to '$verdict' instead of confirmed delivery" >&2; return 1; }
+  for _ in $(seq 1 60); do
+    st=$(fm_backend_agent_status herdr "$ses:$pane" 2>/dev/null)
+    case "$st" in idle|done) break ;; esac
+    sleep 1
+  done
+  case "$st" in
+    idle|done) : ;;
+    *) echo "$harness did not settle after its confirmed steer" >&2; return 1 ;;
+  esac
   LAUNCH_TARGET="$ses:$pane"
   return 0
 }
@@ -155,7 +175,7 @@ prove_completion_wake() {  # <target> <harness>
 
 # cursor: --trust --force, positional brief, effort encoded in the model string.
 if launch_and_detect cursor default; then
-  pass "cursor launches via its fm-spawn template, herdr natively detects it (alive), and it works then settles"
+  pass "cursor launches with task-local acceptance wiring, is detected alive, and confirms a landed steer"
 else
   fail "cursor did not launch, register, and settle as a native herdr agent"
 fi
@@ -174,7 +194,7 @@ AGY_TRUST_CREATED=1
 jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTINGS" >/dev/null 2>&1 \
   || fail "agy workspace-trust seed did not record the exact worktree path"
 if launch_and_detect agy high; then
-  pass "agy launches via its fm-spawn template (trust pre-seeded), herdr natively detects it, and it works then settles"
+  pass "agy launches with trust and task-local acceptance wiring, is detected alive, and confirms a landed steer"
 else
   fail "agy did not launch, register, and settle as a native herdr agent"
 fi

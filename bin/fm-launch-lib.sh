@@ -13,9 +13,9 @@
 # quirks, verified versions) lives in the harness-adapters skill; this file owns
 # only the exact launch string. fm_launch_render below is the one owner that
 # substitutes placeholders (__MODELFLAG__, __EFFORTFLAG__, __BRIEF__,
-# __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, and __OPINPUT__ - the
-# canonical operational-input encoder that every template pipes the brief
-# through, #909) after a template is chosen.
+# __TURNEND__, __PIEXT__, __PITURNEND__, __PIWATCH__, __CURSORPLUGIN__, and
+# __OPINPUT__ - the canonical operational-input encoder that every template
+# pipes the brief through, #909) after a template is chosen.
 #
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence,
 # data/captain.md; verification data/cursor-agy-verify/report.md). They are never
@@ -37,11 +37,11 @@ fm_launch_shell_quote() {
 # the raw-command escape hatch, whose input is not a verified template. Every
 # template caller fails loudly if a future placeholder is added without also
 # being rendered here.
-fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> [<allow-unresolved>]
+fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <cursor-plugin> <op-input> [<allow-unresolved>]
   local launch model_flag effort_flag brief turnend pi_ext pi_turnend pi_watch
-  local op_input allow_unresolved leftover
-  if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
-    printf 'firstmate: fm_launch_render expected 9 or 10 arguments, got %s\n' "$#" >&2
+  local cursor_plugin op_input allow_unresolved leftover
+  if [ "$#" -lt 10 ] || [ "$#" -gt 11 ]; then
+    printf 'firstmate: fm_launch_render expected 10 or 11 arguments, got %s\n' "$#" >&2
     return 1
   fi
   launch=$1
@@ -52,8 +52,9 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   pi_ext=$6
   pi_turnend=$7
   pi_watch=$8
-  op_input=$9
-  allow_unresolved=${10:-0}
+  cursor_plugin=$9
+  op_input=${10}
+  allow_unresolved=${11:-0}
 
   launch=${launch//__MODELFLAG__/$model_flag}
   launch=${launch//__EFFORTFLAG__/$effort_flag}
@@ -62,6 +63,7 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   launch=${launch//__PIEXT__/$pi_ext}
   launch=${launch//__PITURNEND__/$pi_turnend}
   launch=${launch//__PIWATCH__/$pi_watch}
+  launch=${launch//__CURSORPLUGIN__/$cursor_plugin}
   launch=${launch//__OPINPUT__/$op_input}
 
   if [ "$allow_unresolved" != 1 ] && [[ $launch =~ __[A-Z][A-Z0-9_]*__ ]]; then
@@ -263,7 +265,7 @@ fm_launch_template() {
     # token, so no launch placeholder belongs here. __KIMIBIN__ is resolved by
     # fm-spawn before rendering, because the binary lookup is spawn-time state.
     kimi) printf '%s' '__KIMIBIN__ __MODELFLAG__--auto' ;;
-    cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    cursor) printf '%s' 'cursor-agent __CURSORPLUGIN__--trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
     # --dangerously-skip-permissions auto-approves tool use. Workspace trust is a
