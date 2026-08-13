@@ -545,8 +545,16 @@ test_status_protocol_teaches_blocked_for_firstmate_waits() {
   assert_grep 'Choose the verb by what clears the wait, not by whether you are idle.' "$brief" \
     "status protocol lost the discriminator rule"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`paused:` is for a bounded external wait expected to clear on its own' "$brief" \
+    "status protocol lost the paused: self-clearing-wait definition"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`blocked:` is when firstmate must act before you can continue' "$brief" \
+    "status protocol lost the blocked: firstmate-action definition"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep '`blocked: implemented and committed, ready to validate` when implementation is done and you' "$brief" \
     "status protocol lost the blocked: validation-trigger worked example"
+  assert_grep "need firstmate's validation trigger" "$brief" \
+    "status protocol lost the validation-trigger continuation"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep '`paused: rate limit resets at 06:00 UTC`' "$brief" \
     "status protocol lost the paused: external-wait worked example"
