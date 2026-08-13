@@ -63,14 +63,14 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
-4. **Back up.** Take the backup below with no writer running, and keep it until the upgraded brain has passed step 6.
+4. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
 7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
    A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
 
-Rolling back is checking out the pre-upgrade commit recorded with the step-4 backup, reinstalling from that commit's lockfile, and restoring the same backup.
+Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-4 backup recorded there.
 Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
 To upgrade deliberately, select a newer verified GBrain tag, then run:
@@ -279,7 +279,8 @@ fi
 [ -d "$pglite" ] && [ -d "$gbrain_home/.gbrain" ] || exit 1
 backup_dir=$brain_root/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup_dir"
-cp -a "$durable_source" "$pglite" "$gbrain_home/.gbrain" "$backup_dir"/
+cp -a "$durable_source" "$pglite" "$gbrain_home/.gbrain" "$backup_dir"/ || exit 1
+printf '%s\n' "$backup_dir"
 ```
 
 ### What a home can actually rebuild from

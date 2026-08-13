@@ -246,7 +246,7 @@ search_mrr   93.8% -> 93.8%  (0%)
 The corpus stayed at 197 active documents, 993 chunks, 993 embedded chunks, and revision `sha256:b83b7f2663be04dd7383b91e83d4b1bacaed313560bdec0f6df5d06f8024c027` for both runs.
 The local wrapper suite completed with every case passing.
 The opt-in real read-only sharing suite also completed with every case passing, including refusal of every remote write, credential-free degradation of remote synthesis, unchanged served pages, and no leaked client secret.
-The same suite used only disposable brains and two distinct disposable OAuth clients to verify the new remote privacy and cursor guarantees through the public HTTP MCP interface.
+The same suite used only disposable brains and two distinct disposable read-scoped OAuth clients to verify the new remote privacy and cursor guarantees through the public HTTP MCP interface.
 It requested `context_pack` with `include_private=true` after seeding world and private commitment sentinels, and the remote response retained the world sentinel in both fact-bearing arms while omitting the private sentinel everywhere.
 It established the same `session_id` independently for both OAuth clients, created a new page through a separate write-scoped HTTP MCP client, and then showed that each read client received the page once even though client one advanced before client two read it.
 The exact command and relevant observed output were:

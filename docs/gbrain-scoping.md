@@ -6,7 +6,8 @@ This operator reference owns how a Firstmate home scopes its own brain and how t
 ## One brain per home
 
 Every Firstmate home owns exactly one brain and writes only that brain.
-A home's brain lives under `$FM_HOME/data/gbrain/`, with the runtime configuration in `runtime/`, the index in `pglite/`, and the markdown archive in `archive/`.
+A home's brain lives under `$FM_HOME/data/gbrain/`, with the runtime configuration in `runtime/`, the index in `pglite/`, and an `archive/` directory only when that brain is archive-fed.
+[`gbrain.md`](gbrain.md#what-a-home-can-actually-rebuild-from) owns whether the durable document source is that archive or the capture outbox.
 `GBRAIN_HOME` is that `runtime/` directory, so every GBrain call a home makes resolves that home's own configuration and index.
 
 The location is derived from the home path rather than configured, which is what makes two homes impossible to collide by omission: a home that has never been configured still resolves a private brain.

@@ -1,7 +1,7 @@
 # GBrain local retrieval and MiniMax verification
 
 This record captures active evidence for the installation and operator contract in [`gbrain.md`](../gbrain.md).
-The evidence was refreshed on 2026-08-04.
+The initial evidence was refreshed on 2026-08-04, and later observations carry their own dates below.
 
 ## Version and installation evidence
 
@@ -19,6 +19,9 @@ The v0.42.71.0 and v0.42.72.1 standalone Linux binaries both failed the end-user
 Each printed `Extension bundle not found: file:///$bunfs/vector.tar.gz` and `Extension bundle not found: file:///$bunfs/pg_trgm.tar.gz`.
 The v0.42.69.0 release has no standalone binary asset.
 The pinned source installation is therefore the verified functional installation path.
+
+On 2026-08-13, the `v0.45.9.0` standalone Linux binary passed fresh isolated PGLite initialization with `ollama:snowflake-arctic-embed2:568m` at 1024 dimensions.
+That result supersedes the earlier packaging failure as a current limitation, but it does not verify an in-place production migration or its rollback, so the live deployment remains on the existing source-checkout installation path owned by [`gbrain.md`](../gbrain.md#pinned-installation-and-upgrade).
 
 ## Local retrieval configuration and health
 
