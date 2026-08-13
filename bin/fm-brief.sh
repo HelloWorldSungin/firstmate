@@ -91,7 +91,7 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship or design task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
-# It also records the exact ship branch in a firstmate-task-branch marker.
+# It also records the exact tracked-output branch in a firstmate-task-branch marker.
 # bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
 # own branch durable before the worker creates it instead of reconstructing it later
 # from the task id or from whichever branch the pooled worktree currently hosts.
@@ -103,13 +103,13 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act. Ship briefs teach both with worked examples,
-# including blocked for the no-mistakes validation-trigger handoff. Ship and
-# scout briefs also require a readable current state after "resolved:". Ship
-# briefs pair the pause verb with "working:" around backgrounded pipeline calls.
-# Under no-mistakes, "done:" means the PR is open with checks green, so the
+# blocked when firstmate must act. Ship and design briefs teach both with worked examples,
+# and ship briefs use blocked for the no-mistakes validation-trigger handoff.
+# Ship, design, and scout briefs also require a readable current state after "resolved:".
+# Ship and design briefs pair the pause verb with "working:" around backgrounded pipeline calls.
+# For a no-mistakes ship, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
-# Design tasks use ADR-specific no-mistakes handoff wording in the generated brief.
+# Design tasks instead use ADR-specific no-mistakes handoff wording in the generated brief.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers

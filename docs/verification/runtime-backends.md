@@ -8,44 +8,10 @@ Exact task chronology, branch names, temporary homes, local paths, process ids, 
 
 ## Design profile lifecycle
 
-This section enumerates the Firstmate surfaces that preserve the design profile's ADR-only project output and its normal tracked-output lifecycle.
-The status labels distinguish boundaries corrected during the 2026-08-13 audit from boundaries that already complied when inspected.
-
-### ADR-only project output
-
-- Corrected: `.agents/skills/design-profile/SKILL.md` owns the sole-ADR rule, excludes product code, `CONTEXT.md`, `AGENTS.md`, and `CLAUDE.md`, and requires a final branch-diff inspection.
-- Already compliant: `bin/fm-design-skills.sh` only resolves and reads the captain-installed grilling and domain-modeling skills, and never installs, updates, copies, vendors, pins, or modifies the plugin.
-- Corrected: `bin/fm-brief.sh` limits the installed skills to modeling and interrogation, records resolved terms only in the ADR, forbids every other worker-authored tracked project change, and requires the final branch-diff inspection.
-- Corrected: `bin/fm-brief.sh` emits the project-memory and `fm-ensure-agents-md.sh` path for ship briefs only, so design briefs cannot create or update a project instruction file.
-- Corrected: `bin/fm-brief.sh --help` documents ship and design delivery separately, and the design mode rows describe ADR delivery only.
-- Already compliant: the optional `bin/fm-brief.sh` brain section is read-only retrieval from prior fleet knowledge and creates no project output.
-- Already compliant: Herdr declarations, work-item comments, PR-body traceability, and delivery metadata are runtime or external lifecycle records rather than additional tracked project deliverables.
-- Already compliant: `.agents/skills/decision-hold-lifecycle/SKILL.md`, `bin/fm-decision-hold.sh`, and the design definition of done inventory unresolved choices without creating another project deliverable.
-- Already compliant: `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-manifest.sh`, and `bin/fm-teardown.sh` land, archive, and clean the ADR without authoring another project file.
-
-### Normal tracked-output lifecycle
-
-- Corrected: `AGENTS.md` includes design in the post-spawn backlog under-way handoff, while its intake taxonomy, mode, yolo, validation, ready, landing, teardown, and skill triggers already included design.
-- Already compliant: `bin/fm-brief.sh` applies issue and work-item linkage, explicit delivery mode, branch identity, isolation, status, decision, and delivery definitions to ship and design through one tracked-output predicate.
-- Already compliant: `bin/fm-spawn.sh` applies mode and yolo validation, brief agreement, batch dispatch, isolated worktree creation, metadata, branch identity, work-item dispatch milestones, and backend launch to ship and design through one tracked-output predicate.
-- Verified below: the design compatibility matrix carries Codex, Pi, and Claude through the dispatch schema, `fm-harness.sh`, `fm-launch-lib.sh`, `fm-spawn.sh`, and the `harness-adapters` model and effort axes.
-- Already compliant: `bin/fm-crew-state.sh` reconciles design validation runs, branch attribution, pipeline ownership, current state, and worker liveness exactly as for ship.
-- Already compliant: `bin/fm-run-progress.sh`, `bin/fm-watch.sh`, and `bin/fm-supervise-daemon.sh` admit design run progress and apply the same ordinary direct-report supervision as ship and scout.
-- Already compliant: `.agents/skills/work-item-visibility/SKILL.md`, `bin/fm-work-item-milestone.sh`, `bin/fm-issue-comment.sh`, and `bin/fm-project-board.sh` carry design through dispatched, queued, implemented, validated, blocked, stopped, and landed tracker states.
-- Already compliant: `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, and `bin/fm-merge-local.sh` are metadata-driven and impose no ship-only kind gate on design landing.
-- Already compliant: `bin/fm-outcome-lib.sh` admits `kind=design`, and `bin/fm-outcome-manifest.sh` preserves that kind in durable completion history.
-- Already compliant: `bin/fm-teardown.sh` applies landed-work, dirty-worktree, branch reaping, parked-run conclusion, process reaping, manifest publication, fleet sync, backlog reminder, and volatile-record cleanup to design through the tracked-output path.
-- Already compliant: design adds its decision-inventory teardown gate without weakening the adjacent ship landed-work gate, scout report gate, or secondmate retirement path.
-- Corrected: `bin/fm-subagent-pretool-check.sh` and `docs/subagent-guard.md` route authorized design work through the same brief-and-spawn entry points as ship.
-- Corrected: `.agents/skills/fmx-respond/SKILL.md` names design as a longer-running dispatched job that receives completion follow-up handling.
-- Corrected: `docs/configuration.md`, `docs/architecture.md`, and script headers describe design on the already-shared backend, local landing, current-state, and teardown paths.
-- Already compliant: `.agents/skills/stuck-crewmate-recovery/SKILL.md` and the `AGENTS.md` `design-profile` and `work-item-visibility` triggers include design in recovery, completion, cleanup, and tracker supervision.
-
-### Adjacent task kinds
-
-- Already compliant: ship retains project-memory delivery, explicit mode and yolo, implementation delivery, and the full landed-work cleanup path.
-- Already compliant: scout retains its report-only output, no delivery posture, promotion-only transition to ship, decision inventory, and report-required cleanup.
-- Already compliant: secondmate retains its fixed posture, persistent-home registry, child-work refusal, and dedicated retirement cleanup rather than entering tracked-output predicates.
+The `design-profile` skill owns the operating contract; this section records its reusable verification coverage rather than a second copy of that contract.
+The 2026-08-13 surface audit covered dependency resolution, generated brief output, help wording, branch and delivery metadata, worktree isolation, backend launch, status and run reconciliation, work-item milestones, landing, outcome publication, decision inventory, teardown, recovery, subagent routing, and public completion follow-up.
+The inspected entry points were `.agents/skills/design-profile/SKILL.md`, `bin/fm-design-skills.sh`, `bin/fm-brief.sh`, `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, `bin/fm-crew-state.sh`, `bin/fm-run-progress.sh`, `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-lib.sh`, `bin/fm-outcome-manifest.sh`, `bin/fm-decision-hold.sh`, `bin/fm-teardown.sh`, `bin/fm-subagent-pretool-check.sh`, `.agents/skills/work-item-visibility/SKILL.md`, `.agents/skills/stuck-crewmate-recovery/SKILL.md`, and `.agents/skills/fmx-respond/SKILL.md`.
+The focused regressions below exercise the worker-facing ADR-only wording, tracked-output lifecycle, decision inventory, teardown, and cross-harness launch paths.
 
 ### Design delivery wording
 
@@ -69,18 +35,19 @@ The complete rendered definition-of-done text for each row is recorded as an exa
 ### Design compatibility matrix
 
 The fifteen cells below are exercised by `test_design_profile_resolves_on_claude_codex_and_pi` in `tests/fm-spawn-dispatch-profile.test.sh` through schema-selected and configuration-fallback design spawns.
+The model names are representative test strings that verify axis transport; they are not availability claims or profile defaults, because each authenticated harness catalog owns current model availability.
 
-1. Codex dispatch schema: the active design profile selects `codex`, model `gpt-5.5`, and effort `xhigh` from the current `rules[].use[]` shape.
+1. Codex dispatch schema: the representative `rules[].use[]` fixture selects `codex`, model `gpt-5.5`, and effort `xhigh`.
 2. Codex `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=codex` resolves through `fm-harness.sh crew` and the design spawn records Codex.
 3. Codex `fm-launch-lib.sh`: both selection paths render the Codex design command through the launch library and its operational-input encoder.
 4. Codex `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `codex`, model `gpt-5.5`, and effort `xhigh`.
 5. Codex `harness-adapters` axes: both rendered commands contain `--model 'gpt-5.5'` and `model_reasoning_effort="xhigh"`.
-6. Pi dispatch schema: the active design profile selects `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh` from the current `rules[].use[]` shape.
+6. Pi dispatch schema: the representative `rules[].use[]` fixture selects `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh`.
 7. Pi `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=pi` resolves through `fm-harness.sh crew` and the design spawn records Pi.
 8. Pi `fm-launch-lib.sh`: both selection paths render the Pi design command through the launch library and its operational-input encoder.
 9. Pi `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `pi`, model `anthropic/claude-sonnet-5`, and effort `xhigh`.
 10. Pi `harness-adapters` axes: both rendered commands contain `--model 'anthropic/claude-sonnet-5'` and `--thinking 'xhigh'`.
-11. Claude dispatch schema: the active design profile selects `claude`, model `claude-sonnet-5`, and effort `xhigh` from the current `rules[].use[]` shape.
+11. Claude dispatch schema: the representative `rules[].use[]` fixture selects `claude`, model `claude-sonnet-5`, and effort `xhigh`.
 12. Claude `fm-harness.sh` fallback: without an active dispatch profile, `config/crew-harness=claude` resolves through `fm-harness.sh crew` and the design spawn records Claude.
 13. Claude `fm-launch-lib.sh`: both selection paths render the Claude design command through the launch library and its operational-input encoder.
 14. Claude `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `claude`, model `claude-sonnet-5`, and effort `xhigh`.

@@ -127,21 +127,21 @@
 #   a legacy bare number records the tracker it resolved against, which is the
 #   only thing a bare number can have meant. bin/fm-issue-comment.sh reads that
 #   line to decide whether firstmate may write back to the work item's tracker.
-#   After a successful ship launch with a recorded work item, the dispatch
+#   After a successful ship or design launch with a recorded work item, the dispatch
 #   milestone is posted through bin/fm-work-item-milestone.sh, best effort.
 #   Brief prose, git remotes, and PR bodies are never searched to infer identity.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
-#   Ship/scout spawns refuse to launch unless the resolved task path is a real
+#   Ship/design/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
-#     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
+#     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--design|--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
-#   applies to every pair. A ship batch therefore carries one delivery contract, and each
+#   source of truth; shared --design/--scout/--harness/--model/--effort/--backend/--mode/--yolo
+#   applies to every pair. A ship or design batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
-#   If config/crew-dispatch.json exists, shared --harness is required for crewmate
-#   and scout batches. The loop lives here, in bash, so callers never hand-write a
+#   If config/crew-dispatch.json exists, shared --harness is required for ship,
+#   design, and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in bin/fm-launch-lib.sh (fm_launch_template); placeholders replaced before launch:
