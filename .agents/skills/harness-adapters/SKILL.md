@@ -421,18 +421,18 @@ The raw-launch-command escape hatch must never be used for `cursor-agent`/`agy`;
 `bin/fm-launch-lib.sh`'s `fm_launch_raw_restricted_harness` and `fm_launch_write_raw_guard` comments own the early classifier, exec-time PATH-shim invariant, accepted same-user removal residual, and security-boundary rationale.
 `tests/fm-launch-lib.test.sh` covers each bypass class, and `tests/fm-cursor-agy-adapter.test.sh` covers real-spawn guard installation.
 
-On herdr, agent-state, liveness, and send-safety are GENERIC and need no adapter code, because herdr's native `agent get` reports a real `agent_status` for both CLIs.
-So `fm_backend_herdr_agent_alive` and `fm_backend_herdr_classify_agent_status` (busy signature = native `agent_status == working`, not a screen-scrape) work unchanged.
+On Herdr, native `agent get` supplies cursor and agy identity, liveness, and working status without a screen scrape.
+`bin/fm-busy-lib.sh` owns the identity-gated busy-state contract.
 
 cursor and agy install no turn-end hook or status writer; the watcher instead converts their identity-gated, debounced herdr-native idle into the shared `state/<id>.turn-ended` wake notification without treating it as current-state truth or relaxing the event-stream policy.
 `bin/fm-transition-lib.sh`'s `fm_transition_native_completion` comment owns the native-identity gate, debounce state machine, and re-arm behavior, while `bin/fm-watch.sh` owns its poll-loop integration.
 No repo `.cursor/hooks.json` / `.agents/hooks.json` is ever written, and no new shared global hook file is added.
-A global benign `stop`/`Stop` hook (`~/.cursor/hooks.json`, `~/.gemini/config/hooks.json`, whose payloads were verified to carry the worktree in `workspace_roots[0]` / `workspacePaths[0]`) is a viable alternative, but the native poll detector is preferred because it needs no shared global-file mutation.
-
 Composer classification stays `unknown` for both (the safe default) and no override is added.
 cursor's live composer uses the prompt glyph `→` (U+2192), which is not a recognized bare AGENT glyph, and agy's is Pi's "separated" shape but native identity reports `agy`, not `pi`, so the Pi separated-shape gate in `bin/backends/herdr.sh` correctly rejects it.
 A generic bare-glyph "empty" rule must NOT be added: agy's prompt glyph is literally `>`, identical to a dead bash shell, so a generic rule would be a dead-shell send hazard - any future override must be native-identity-gated exactly like the Pi gate.
-The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole; send confirmation rides native agent-state, so a steer is never confirmed into a dead pane.
+The only cost of `unknown` is that the away-mode escalation injector defers rather than injects into a cursor/agy pane, which is a minor functional gap, never a safety hole.
+[`docs/herdr-backend.md`](../../../docs/herdr-backend.md#current-transport-behavior) owns cursor/agy prerequisites and atomic-prompt delivery semantics.
+Treat `verdict=unverifiable` as possibly accepted and do not blindly resend it.
 
 | Fact | Value |
 |---|---|

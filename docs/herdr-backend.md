@@ -12,6 +12,7 @@ Pick Herdr when you want native busy, idle, and blocked state and accept the exp
 Prerequisites:
 
 - Herdr protocol 14 or newer, installed from [herdr.dev](https://herdr.dev).
+- Herdr 0.7.5 or newer for cursor and agy workers, which require atomic `agent prompt` delivery.
 - `jq` for JSON responses.
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
 - `python3` only for optional protocol-16 presentation-space ordering and native event subscription.
@@ -26,6 +27,7 @@ A tmux pane nested inside Herdr resolves to tmux because the innermost multiplex
 An auto-detected Herdr spawn prints an opt-out notice.
 
 Spawn stops before creating a Herdr container or acquiring a task worktree when `herdr`, `jq`, or the protocol floor is unavailable.
+Cursor and agy apply their additional client-version and named-server capability gates at the same pre-container boundary.
 No separate first-run provisioning is required.
 
 The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`.
@@ -194,7 +196,14 @@ The adapter starts and polls a named server before workspace, tab, pane, or agen
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
 
-Literal text and Enter are separate operations for ordinary steers.
+Literal text and Enter are separate operations for ordinary steers on composer-verifiable harnesses.
+Cursor and agy instead use Herdr's atomic `agent prompt` operation after a zero-text probe proves that operation exists on the named session server and the live native identity matches any supplied harness metadata.
+A successful response proves only that Herdr queued terminal input.
+Delivery is confirmed when the same native agent session appends the exact input as an accepted user message in its transcript.
+A missing receipt remains `unverifiable` even when the transport reports success or returns an unreadable success payload.
+An identity mismatch, a pre-existing blocked state, or a deterministic Herdr rejection is known undelivered.
+A transport failure without a machine-readable rejection is unverifiable because acceptance is unknown.
+`bin/fm-send.sh` owns the distinct exit statuses for known-undelivered and unverifiable results.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
 Enter, Escape, and Ctrl-C are supported.
 Slash and dollar-prefixed input uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
@@ -212,6 +221,7 @@ This generous floor is required for small composer and peek reads.
 
 Herdr's native agent state can read idle while a harness waits on its own long foreground tool.
 The shared crew-state path therefore accepts a native `busy` as evidence of activity but never a native `idle` as evidence that a worker has stopped; the task's own semantic busy state (`bin/fm-busy-lib.sh`) decides that.
+For cursor and agy, positive native activity that overrides their hookless record is accepted only from one sample whose identity matches the recorded harness and whose status is working.
 A human-blocked permission dialog has no busy banner and still surfaces.
 
 ## Composer and injection safety
@@ -322,6 +332,9 @@ tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
+tests/fm-busy-state.test.sh
+tests/fm-cursor-agy-adapter.test.sh
+tests/fm-cursor-agy-smoke.test.sh
 ```
 
 Real Herdr tests use the named lab helper and default-session tripwire.

@@ -52,7 +52,10 @@
 #      (generation state is sufficient for busy, not for idle), then the
 #      Grok-only temporary regex fallback classifies a grok task from its
 #      rendered tail, then unknown missing
-#   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#   5. an untrusted cursor/agy record on Herdr may classify busy only when one
+#      native sample reports both the matching identity and working status
+#   6. every other malformed, stale, or untrusted record -> unknown, never a
+#      fallback
 # The Grok arm is the ONLY rendered-text classification that survives the
 # redesign, because Grok's structured lifecycle was not credited-live-verified
 # in the approved audit; it is scoped to harness=grok and can never classify
@@ -263,7 +266,7 @@ fm_busy_grok_tail_busy() {
 # if available, else reports unknown capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
-  local out rc r_state r_source native
+  local out rc r_state r_source native='' native_identity='' native_sample='' native_identity_required=0
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -285,27 +288,45 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
     r_source=${out%% *}
     if fm_busy_source_trusted "$harness" "$r_source"; then
       printf '%s %s' "$r_state" "$r_source"
-    else
-      printf 'unknown source-mismatch'
-    fi
-    return 0
-  fi
-  case "$out" in
-    malformed|gen-mismatch)
-      printf 'unknown %s' "$out"
       return 0
-      ;;
-  esac
-  # No record at all. A native herdr busy verdict is semantic enough to trust
-  # for BUSY (streaming means a turn is running); native idle is narrower
-  # than turn state (a long foreground tool call reads idle) and stays
-  # unknown here.
+    fi
+    case "$backend:$harness" in
+      herdr:cursor|herdr:agy) native_identity_required=1 ;;
+      *) printf 'unknown source-mismatch'; return 0 ;;
+    esac
+  else
+    case "$out" in
+      malformed|gen-mismatch)
+        printf 'unknown %s' "$out"
+        return 0
+        ;;
+    esac
+  fi
+  if [ "$native_identity_required" -eq 1 ]; then
+    if command -v fm_backend_agent_identity_busy_state >/dev/null 2>&1; then
+      native_sample=$(fm_backend_agent_identity_busy_state "$backend" "$target" 2>/dev/null || true)
+    fi
+    case "$native_sample" in
+      *$'\t'*)
+        native_identity=${native_sample%%$'\t'*}
+        native=${native_sample#*$'\t'}
+        ;;
+    esac
+    if [ "$native_identity" != "$harness" ]; then
+      printf 'unknown source-mismatch'
+      return 0
+    fi
+  fi
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
-    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+    [ -n "$native" ] || native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
       printf 'busy herdr-native'
       return 0
     fi
+  fi
+  if [ "$rc" = 0 ]; then
+    printf 'unknown source-mismatch'
+    return 0
   fi
   case "$harness" in
     grok*)

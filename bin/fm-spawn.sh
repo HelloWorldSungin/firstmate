@@ -927,7 +927,7 @@ esac
 
 # cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence;
 # data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
-# gates before any backend or worktree work: they can supervise a ship/design/scout
+# gates before any container or worktree work: they can supervise a ship/design/scout
 # crewmate only, never a secondmate, and only on the herdr backend, whose native
 # agent-state gives liveness plus the debounced turn-boundary wake the watcher
 # derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
@@ -943,6 +943,8 @@ case "$HARNESS" in
       echo "error: harness '$HARNESS' is supported only on the herdr backend (resolved backend '$BACKEND'); herdr provides the native agent-state signals cursor/agy need. Select the herdr backend or use a verified crew harness." >&2
       exit 1
     fi
+    fm_backend_herdr_agent_prompt_version_check || exit 1
+    fm_backend_herdr_agent_prompt_capability_check "$(fm_backend_herdr_session)" || exit 1
     ;;
 esac
 

@@ -2859,7 +2859,6 @@ if [ "$NO_VERDICT_CLEANUP_CANDIDATE" -eq 1 ]; then
 fi
 
 remove_owned_agy_trust "$STATE" "$ID" "task $ID" || exit 1
-
 # Detach only this task's conventional branch before removing its worktree.
 # The exact branch is reaped afterwards, when the merge proof prepared above
 # still agrees and no worktree can need it.

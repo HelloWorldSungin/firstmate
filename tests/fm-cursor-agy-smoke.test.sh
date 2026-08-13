@@ -40,7 +40,7 @@ done
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-agy-trust-lib.sh"
 fm_backend_source herdr || { echo "skip: herdr backend could not be sourced"; exit 0; }
-fm_backend_herdr_version_check >/dev/null 2>&1 || { echo "skip: installed herdr fails the adapter version gate"; exit 0; }
+fm_backend_herdr_agent_prompt_version_check >/dev/null 2>&1 || { echo "skip: installed herdr lacks cursor/agy atomic prompt delivery"; exit 0; }
 
 SESSION=$("$LAB" name cursor-agy-smoke) || { echo "skip: could not derive a lab session name"; exit 0; }
 WORK=
@@ -61,6 +61,8 @@ cleanup() {
 trap cleanup EXIT
 "$LAB" provision "$SESSION" >/dev/null 2>&1 || { echo "skip: could not provision the isolated Herdr lab session"; trap - EXIT; exit 0; }
 export HERDR_SESSION="$SESSION"
+fm_backend_herdr_agent_prompt_capability_check "$SESSION" >/dev/null 2>&1 \
+  || { echo "skip: isolated Herdr server lacks cursor/agy atomic prompt delivery"; exit 0; }
 
 WORK=$(mktemp -d)
 printf 'Reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"
@@ -73,7 +75,7 @@ LAUNCH_TARGET=
 # work and settle (a working -> idle/done transition on the delivered brief).
 launch_and_detect() {  # <harness> <effort>
   local harness=$1 effort=$2 raw container seeded ses pane ids launch effortflag
-  local brief_path opinput_path agent st saw_working=0 settled=0
+  local brief_path opinput_path agent st saw_working=0 settled=0 snapshot agent_session verdict token token_prompt readback
   LAUNCH_TARGET=
   raw=$(fm_backend_herdr_container_ensure "$WORK") || { echo "container_ensure failed" >&2; return 1; }
   container=${raw%%$'\t'*}
@@ -113,6 +115,41 @@ EOF
     sleep 1
   done
   [ "$settled" = 1 ] || { echo "$harness never showed a working->idle/done transition on the brief" >&2; return 1; }
+  snapshot=$(fm_backend_herdr_agent_submit_snapshot "$ses" "$pane") \
+    || { echo "$harness submit snapshot failed" >&2; return 1; }
+  IFS=$'\t' read -r agent _ _ agent_session <<EOF
+$snapshot
+EOF
+  case "$harness" in
+    cursor)
+      token=FIRSTMATE_CURSOR_STEER_ACCEPTED
+      token_prompt="Reply with exactly FIRSTMATE_CURSOR_ followed immediately by STEER_ACCEPTED and nothing else."
+      ;;
+    agy)
+      token=FIRSTMATE_AGY_STEER_ACCEPTED
+      token_prompt="Reply with exactly FIRSTMATE_AGY_ followed immediately by STEER_ACCEPTED and nothing else."
+      ;;
+  esac
+  verdict=$(fm_backend_herdr_prompt_submit "$ses:$pane" \
+    "$token_prompt" "$agent" "$agent_session")
+  [ "$verdict" = empty ] \
+    || { echo "$harness accepted steer resolved to '$verdict' instead of confirmed delivery" >&2; return 1; }
+  saw_working=0
+  settled=0
+  for _ in $(seq 1 60); do
+    st=$(fm_backend_agent_status herdr "$ses:$pane" 2>/dev/null)
+    [ "$st" = working ] && saw_working=1
+    case "$st" in idle|done) [ "$saw_working" = 1 ] && { settled=1; break; } ;; esac
+    sleep 1
+  done
+  [ "$settled" = 1 ] || { echo "$harness did not start and settle a new turn after its confirmed steer" >&2; return 1; }
+  readback=$(fm_backend_herdr_cli "$ses" agent read "$pane" --source recent-unwrapped --lines 120 2>/dev/null \
+    | jq -r '.result.read.text // empty' 2>/dev/null) \
+    || { echo "$harness post-steer output could not be read" >&2; return 1; }
+  case "$readback" in
+    *"$token"*) : ;;
+    *) echo "$harness post-steer output did not contain $token" >&2; return 1 ;;
+  esac
   LAUNCH_TARGET="$ses:$pane"
   return 0
 }
@@ -153,7 +190,7 @@ prove_completion_wake() {  # <target> <harness>
 
 # cursor: --trust --force, positional brief, effort encoded in the model string.
 if launch_and_detect cursor default; then
-  pass "cursor launches via its fm-spawn template, herdr natively detects it (alive), and it works then settles"
+  pass "cursor launches, is detected alive, and confirms a landed atomic steer"
 else
   fail "cursor did not launch, register, and settle as a native herdr agent"
 fi
@@ -172,7 +209,7 @@ AGY_TRUST_CREATED=1
 jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTINGS" >/dev/null 2>&1 \
   || fail "agy workspace-trust seed did not record the exact worktree path"
 if launch_and_detect agy high; then
-  pass "agy launches via its fm-spawn template (trust pre-seeded), herdr natively detects it, and it works then settles"
+  pass "agy launches with trust, is detected alive, and confirms a landed atomic steer"
 else
   fail "agy did not launch, register, and settle as a native herdr agent"
 fi
