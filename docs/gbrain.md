@@ -252,15 +252,27 @@ Stop every `gbrain serve` process before copying PGLite because it is a single-w
 A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#gbrain)).
 So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
 Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
-Back up the archive, PGLite directory, and runtime configuration together to an on-box directory:
+Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory:
 
 ```sh
-backup_dir=/home/sungin/.local/share/gbrain/backups/$(date -u +%Y%m%dT%H%M%SZ)
+FM_HOME=/home/sungin/firstmate
+paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
+brain_root=$(printf '%s' "$paths" | jq -er '.brain_root')
+pglite=$(printf '%s' "$paths" | jq -er '.pglite')
+gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
+archive=$(printf '%s' "$paths" | jq -er '.archive')
+if [ -d "$archive" ]; then
+  durable_source=$archive
+elif [ -d "$FM_HOME/data/gbrain-outbox" ]; then
+  durable_source=$FM_HOME/data/gbrain-outbox
+else
+  printf 'refusing backup: no archive or durable outbox exists\n' >&2
+  exit 1
+fi
+[ -d "$pglite" ] && [ -d "$gbrain_home/.gbrain" ] || exit 1
+backup_dir=$brain_root/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup_dir"
-cp -a /home/sungin/.local/share/gbrain/archive \
-  /home/sungin/.local/share/gbrain/pglite \
-  /home/sungin/.local/share/gbrain/runtime/.gbrain \
-  "$backup_dir"/
+cp -a "$durable_source" "$pglite" "$gbrain_home/.gbrain" "$backup_dir"/
 ```
 
 ### What a home can actually rebuild from

@@ -246,6 +246,20 @@ search_mrr   93.8% -> 93.8%  (0%)
 The corpus stayed at 197 active documents, 993 chunks, 993 embedded chunks, and revision `sha256:b83b7f2663be04dd7383b91e83d4b1bacaed313560bdec0f6df5d06f8024c027` for both runs.
 The local wrapper suite completed with every case passing.
 The opt-in real read-only sharing suite also completed with every case passing, including refusal of every remote write, credential-free degradation of remote synthesis, unchanged served pages, and no leaked client secret.
+The same suite used only disposable brains and two distinct disposable OAuth clients to verify the new remote privacy and cursor guarantees through the public HTTP MCP interface.
+It requested `context_pack` with `include_private=true` after seeding world and private commitment sentinels, and the remote response retained the world sentinel in both fact-bearing arms while omitting the private sentinel everywhere.
+It then used the same `session_id` from both OAuth clients, and each client independently received the same initial page delta once before its own follow-up returned no pages.
+The exact command and relevant observed output were:
+
+```text
+$ mkdir -p .review-tmp
+$ TMPDIR=$PWD/.review-tmp FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=/home/sungin/.local/gbrain/bin/gbrain tests/fm-gbrain-readonly-e2e.test.sh
+observed remote context_pack: {"include_private_requested":true,"cards":["main-canary"],"facts":["WORLD-CONTEXT-PACK-SENTINEL is visible remotely."],"open_threads":["WORLD-CONTEXT-PACK-SENTINEL is visible remotely."],"private_present":false}
+ok - remote context_pack stays world-only when include_private is requested
+observed remote delta cursors: {"session_id":"fm-shared-delta-session","client_one_first":["main-canary","delta-canary"],"client_one_second":[],"client_two_first":["main-canary","delta-canary"],"client_two_second":[]}
+ok - distinct OAuth clients keep isolated cursors for one delta session id
+all fm-gbrain-readonly-e2e tests passed
+```
 
 No hosted synthesis was invoked against the live corpus during the upgrade.
 The rule and authorization boundary remain owned by [`../gbrain.md`](../gbrain.md), while the new boundary verbs completed locally without a hosted-provider call.
