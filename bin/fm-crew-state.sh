@@ -51,13 +51,14 @@
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating.
-#      A terminal pass whose own `ci` step SKIPPED never observed the forge at
-#      all (ci is the step that watches a PR to merged or closed, and no-mistakes
-#      skips it on a provider it does not recognize), so it reports the local
-#      pipeline passing rather than naming a merge, and a declared external wait
-#      standing over such a run is reported as that wait - the run finished
-#      locally, the PR is open, and nobody has acted on it yet.
-#      See nm_forge_outcome_unobserved for why the verdict refuses to claim a
+#      Only a terminal pass whose own `ci` step completed observed the forge.
+#      A skipped, absent, or incomplete ci step therefore reports the local
+#      pipeline passing rather than naming a merge. A declared pause or
+#      captain-held line recorded after any terminal run-step verdict (done or
+#      failed) is newer information than that verdict and is reported as that
+#      wait, except a forge-observed merge (outcome=passed with ci completed),
+#      where the wait is deterministically stale and done stays authoritative.
+#      See nm_ci_step_skipped for why the explicit skipped verdict refuses to claim a
 #      forge outcome rather than going and reading one.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
@@ -99,8 +100,8 @@
 # no run falls through to the pane and log sources.
 #
 # Writes exactly one thing: state/<id>.run-step, the last known run-step record
-# that makes that degrade possible (runstep_record_write below is the only
-# writer). Every other read is side-effect free. Always exits 0 on a successful
+# and its status-log position (runstep_record_write below is the only writer).
+# Every other read is side-effect free. Always exits 0 on a successful
 # read regardless of state; exit 2 only on a usage error (no id).
 set -u
 
@@ -127,10 +128,6 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (nm_runs_status_for_branch, below) scans. Generous enough to still find a
-# branch's own run on a busy multi-crew fleet without listing the entire
-# history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 # How long a recorded run-step stays usable as the degraded answer after the run
@@ -177,10 +174,52 @@ fi
 
 # --- status log ------------------------------------------------------------
 
-# Last non-empty status line, and its leading verb (the word before the colon).
-log_last_line() {
-  [ -f "$LOG" ] || return 1
-  grep -v '^[[:space:]]*$' "$LOG" 2>/dev/null | tail -1
+# Last non-empty status line, its physical line number, and the file metadata
+# that bounds that read.
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  log_file_state() {
+    stat -f '%m %z' "$LOG" 2>/dev/null || printf '0 0'
+  }
+else
+  log_file_state() {
+    stat -c '%Y %s' "$LOG" 2>/dev/null || printf '0 0'
+  }
+fi
+log_snapshot() {
+  local before after payload attempt=0
+  while [ "$attempt" -lt 2 ]; do
+    before=$(log_file_state)
+    payload=$(awk 'NF { position = NR; line = $0 } END { printf "%s\t%s", position + 0, line }' \
+      "$LOG" 2>/dev/null || true)
+    after=$(log_file_state)
+    if [ "$before" = "$after" ]; then
+      printf '%s\t%s\t%s' "${before%% *}" "${before#* }" "$payload"
+      return 0
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+  return 1
+}
+apply_log_snapshot() {  # <snapshot>
+  local snapshot=${1:-} rest
+  LOG_MTIME=0
+  LOG_POSITION=0
+  LOG_LINE=""
+  case "$snapshot" in
+    *$'\t'*$'\t'*$'\t'*)
+      LOG_MTIME=${snapshot%%$'\t'*}
+      rest=${snapshot#*$'\t'}
+      rest=${rest#*$'\t'}
+      LOG_POSITION=${rest%%$'\t'*}
+      LOG_LINE=${rest#*$'\t'}
+      ;;
+  esac
+  LOG_VERB=$(status_line_verb "$LOG_LINE")
+}
+refresh_log_snapshot() {
+  local snapshot
+  snapshot=$(log_snapshot) || return 0
+  apply_log_snapshot "$snapshot"
 }
 # Map a status-log verb onto a canonical state for the fallback path. `paused` is
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
@@ -202,8 +241,8 @@ map_log_state() {  # <line>
   esac
 }
 
-LOG_LINE=$(log_last_line || true)
-LOG_VERB=$(status_line_verb "$LOG_LINE")
+LOG_SNAPSHOT=$(log_snapshot || true)
+apply_log_snapshot "$LOG_SNAPSHOT"
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
@@ -282,9 +321,10 @@ worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverifi
 }
 
 # --- last known run-step record ---------------------------------------------
-# state/<id>.run-step: one line, "<epoch>\t<state>\t<detail>", atomically
-# replaced on every successful run-derived verdict and read back ONLY when a
-# later lookup could not complete. It is what lets a lookup FAILURE answer
+# state/<id>.run-step: one line,
+# "<epoch>\t<state>\t<detail>\t<run-id>\t<run-alias>\t<status-position>\t<merge-observed>\tv3", atomically
+# replaced on every successful run-derived verdict. It orders a later declared
+# wait against that verdict and lets a lookup FAILURE answer
 # "still validating, lookup unavailable" instead of "unknown", without ever
 # inventing evidence: nothing is degraded for a crew that was never seen
 # validating in the first place, so a crew that genuinely stopped before any run
@@ -293,13 +333,17 @@ RUNSTEP_RECORD="$STATE/$ID.run-step"
 
 # Record a run-derived verdict. Never fails the read: a state dir that is
 # read-only or already torn down just leaves the previous record in place.
-runstep_record_write() {  # <state> <detail>
-  local tmp flat
+runstep_record_write() {  # <state> <detail> [run-id] [run-alias] [merge-observed] [status-position]
+  local tmp flat record_position
   case "$1" in working|parked|done|failed|abandoned) ;; *) return 0 ;; esac
   [ -d "$STATE" ] || return 0
   flat=$(printf '%s' "${2:-}" | tr '\t\n' '  ')
+  record_position=${6:-$LOG_POSITION}
+  case "$record_position" in ''|*[!0-9]*) return 0 ;; esac
   tmp="$RUNSTEP_RECORD.$$.tmp"
-  if printf '%s\t%s\t%s\n' "$(date +%s)" "$1" "$flat" > "$tmp" 2>/dev/null; then
+  if printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tv3\n' \
+    "$(date +%s)" "$1" "$flat" "${3:--}" "${4:--}" "$record_position" \
+    "${5:-0}" > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$RUNSTEP_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null
@@ -311,25 +355,62 @@ runstep_record_clear() {
   rm -f "$RUNSTEP_RECORD" 2>/dev/null || true
 }
 
-runstep_record_emit() {  # <state> <source> <detail>
-  runstep_record_write "$1" "${3:-}"
+runstep_record_emit() {  # <state> <source> <detail> [run-id] [run-alias] [merge-observed]
+  runstep_record_write "$1" "${3:-}" "${4:--}" "${5:--}" "${6:-0}"
   emit "$1" "$2" "${3:-}"
+}
+
+runstep_record_load() {
+  local f1 f2 f3 f4 f5 f6 f7 f8
+  RECORD_TS=""
+  RECORD_STATE=""
+  RECORD_DETAIL=""
+  RECORD_RUN_ID=""
+  RECORD_RUN_ALIAS=""
+  RECORD_POSITION=""
+  RECORD_MERGE_OBSERVED=0
+  RECORD_VERSION=""
+  [ -f "$RUNSTEP_RECORD" ] || return 1
+  IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8 < "$RUNSTEP_RECORD" 2>/dev/null || return 1
+  RECORD_TS=$f1
+  RECORD_STATE=$f2
+  RECORD_DETAIL=$f3
+  if [ "$f8" = v3 ]; then
+    RECORD_RUN_ID=$f4
+    RECORD_RUN_ALIAS=$f5
+    RECORD_POSITION=$f6
+    RECORD_MERGE_OBSERVED=$f7
+    RECORD_VERSION=$f8
+  elif [ "$f6" = v2 ]; then
+    RECORD_RUN_ALIAS=$f4
+    RECORD_POSITION=$f5
+    RECORD_VERSION=$f6
+  fi
+  return 0
 }
 
 # Print "<state>\t<detail>\t<age-seconds>" for a record still inside the
 # freshness bound; return 1 for a missing, malformed, or expired record.
 runstep_record_read() {
-  local ts st detail now age
-  [ -f "$RUNSTEP_RECORD" ] || return 1
-  IFS=$'\t' read -r ts st detail < "$RUNSTEP_RECORD" 2>/dev/null || return 1
-  case "${ts:-}" in ''|*[!0-9]*) return 1 ;; esac
-  case "${st:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
+  local now age
+  runstep_record_load || return 1
+  case "${RECORD_TS:-}" in ''|*[!0-9]*) return 1 ;; esac
+  case "${RECORD_STATE:-}" in working|parked|done|failed|abandoned) ;; *) return 1 ;; esac
+  if { [ "$RECORD_STATE" = "done" ] || [ "$RECORD_STATE" = failed ]; } \
+    && status_is_paused_or_captain_held "$LOG_LINE"; then
+    [ "$RECORD_VERSION" = v3 ] || return 1
+    case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$RECORD_STATE" != "done" ] \
+      || [ "$RECORD_MERGE_OBSERVED" != 1 ]; then
+      [ "$LOG_POSITION" -le "$RECORD_POSITION" ] || return 1
+    fi
+  fi
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
-  age=$(( now - ts ))
+  age=$(( now - RECORD_TS ))
   [ "$age" -ge 0 ] || return 1
   [ "$age" -lt "$FM_CREW_STATE_DEGRADED_MAX_AGE" ] || return 1
-  printf '%s\t%s\t%s' "$st" "${detail:-}" "$age"
+  printf '%s\t%s\t%s' "$RECORD_STATE" "${RECORD_DETAIL:-}" "$age"
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -425,7 +506,7 @@ nm_step_status() {  # <step-name>
   strip_quotes "$(trim "${rest%%,*}")"
 }
 
-# 0 when this run reached its terminal result WITHOUT ever observing the forge.
+# 0 when the ci step was explicitly skipped, proving the run never observed the forge.
 # no-mistakes SKIPS the `pr` and `ci` steps on a project whose forge provider it
 # does not recognize - any non-GitHub forge, a self-hosted Gitea for example - so
 # the pipeline legitimately reaches outcome=passed on purely LOCAL evidence:
@@ -457,7 +538,7 @@ nm_step_status() {  # <step-name>
 # claiming what was never checked is the whole correction; where the forge HAS
 # been observed - the GitHub path, where the ci step actually runs - the
 # merged/closed label is unchanged and still earned.
-nm_forge_outcome_unobserved() {
+nm_ci_step_skipped() {
   [ "$(nm_step_status ci)" = skipped ]
 }
 
@@ -524,34 +605,11 @@ nm_ci_checks_state() {
 # validating crews on the same underlying repo). A crew whose branch genuinely
 # has no run yet therefore sees another branch's answer here.
 #
-# This fallback used to shell out to `no-mistakes axi` (bare, no subcommand)
-# expecting a `runs[N]{id,branch,status,...}:` TOON table and re-query the
-# matched id via `axi status --run <id>`. Verified against the real installed
-# CLI (v1.32.2): the `axi` surface exposes only abort/logs/respond/run/status -
-# there is no runs-listing subcommand under `axi` at all, so that table never
-# appears and the lookup was silently dead code; whenever the bare `axi
-# status` answer was not this crew's own branch, attribution always failed and
-# the caller fell straight through to the pane/log fallback below. (The
-# PRIMARY cause of the 2026-07 herdr false-surface incidents turned out to be
-# a separate bug in bin/fm-watch.sh's stale_is_terminal precedence - see that
-# file's history - but this cross-branch path was independently confirmed
-# dead code and is worth having actually work.)
-#
-# The real run-listing command is the top-level `no-mistakes runs` (verified:
-# `no-mistakes --help` lists it separately from `axi`). It is plain, human-
-# oriented text - no run id, no JSON/TOON, newest-first, columns
-# "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
-# spaces (verified: no quoting, so splitting on the first two whitespace runs
-# is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no attributable run in the listing.
-#
 # A PURE PARSER over a listing the caller already captured. The call itself is
 # made by the caller so a listing that could not be fetched is classified as a
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
-nm_runs_status_for_branch() {  # <branch> <runs-listing>
+nm_runs_row_for_branch() {  # <branch> <runs-listing>
   local branch=$1 out=${2:-} row st rest br sha
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
@@ -566,7 +624,7 @@ nm_runs_status_for_branch() {  # <branch> <runs-listing>
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
       nm_head_attributable "$sha" 0 0 || continue
-      printf '%s' "$st"
+      printf '%s\t%s' "$st" "$sha"
       return 0
     fi
   done <<< "$out"
@@ -641,6 +699,33 @@ nm_head_attributable() {  # <sha> <authoring:0|1> <branch-scoped-live:0|1>
   fm_nm_head_attributable "$WT" "$1" "${2:-0}" "${3:-0}"
 }
 
+run_identity_for_head() {  # <sha>
+  local head=$1 canonical
+  case "$head" in ''|*[!0-9a-fA-F]*) canonical=$head ;;
+    *) canonical=$(git -C "$WT" rev-parse --verify "$head^{commit}" 2>/dev/null) || canonical=$head ;;
+  esac
+  printf '%s:%s' "$LOOKUP_BRANCH" "$canonical"
+}
+
+run_started_after_log_line() {  # <run-id>
+  local run_id=${1:-}
+  case "$LOG_MTIME" in ''|*[!0-9]*) return 1 ;; esac
+  awk -v run_id="$run_id" -v log_mtime="$LOG_MTIME" '
+    BEGIN {
+      alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+      if (length(run_id) != 26) exit 1
+      value = 0
+      for (i = 1; i <= 10; i++) {
+        digit = index(alphabet, toupper(substr(run_id, i, 1))) - 1
+        if (digit < 0) exit 1
+        value = value * 32 + digit
+      }
+      if (int(value / 1000) >= log_mtime) exit 0
+      exit 1
+    }
+  '
+}
+
 # 1 when the `axi status` run in $RUN_OUT is in an actively-executing step and so
 # able to author pipeline fix commits; 0 for a parked, terminal, or unrecognized
 # run. A run parked at a gate reports a plain `running` status in some shapes, so
@@ -698,6 +783,7 @@ HAVE_RUN=0
 # run-step block below skips the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+COARSE_HEAD=""
 # LOOKUP_FAILED=1 means a bounded no-mistakes call could not COMPLETE - it timed
 # out under a saturated daemon, errored, or could not be bounded at all. That is
 # emphatically NOT the same as a completed lookup that found no run for this
@@ -758,7 +844,8 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
         LOOKUP_FAILED=1
       else
         LOOKUP_COMPLETED=1
-        COARSE_STATUS=$(nm_runs_status_for_branch "$LOOKUP_BRANCH" "$runs_out")
+        COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
+        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
             HAVE_RUN=1
@@ -789,11 +876,12 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
-  # 1 only for a terminal pass whose own steps prove the forge was never looked
-  # at. Set inside the full-status path alone: on the coarse path $RUN_OUT holds
-  # ANOTHER branch's run, so its steps say nothing about this crew's.
-  FORGE_UNOBSERVED=0
+  RUN_ID="-"
+  RUN_ALIAS="-"
+  MERGE_OBSERVED=0
   if [ "$RUN_SOURCE" = coarse ]; then
+    RUN_ID="-"
+    RUN_ALIAS=$(run_identity_for_head "$COARSE_HEAD")
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
     # gets full detail once `axi status` reports its own branch again (e.g.
@@ -808,7 +896,18 @@ if [ "$HAVE_RUN" = 1 ]; then
       cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
+    runstep_record_load || true
+    if [ "$RECORD_VERSION" = v3 ] \
+      && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ]; then
+      if [ "$RUN_STATE" = "done" ] \
+        && [ "$RECORD_MERGE_OBSERVED" = 1 ]; then
+        MERGE_OBSERVED=1
+      fi
+    fi
   else
+    RUN_ID=$(strip_quotes "$(nm_field id)")
+    [ -n "$RUN_ID" ] || RUN_ID="-"
+    RUN_ALIAS=$(run_identity_for_head "$(strip_quotes "$(nm_field head)")")
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
     outcome=$(strip_quotes "$(nm_field outcome)")
@@ -821,11 +920,13 @@ if [ "$HAVE_RUN" = 1 ]; then
       case "$outcome" in
         passed)
           RUN_STATE="done"
-          if nm_forge_outcome_unobserved; then
-            FORGE_UNOBSERVED=1
+          if [ "$(nm_step_status ci)" = completed ]; then
+            MERGE_OBSERVED=1
+            RUN_DETAIL="run passed: PR merged/closed"
+          elif nm_ci_step_skipped; then
             RUN_DETAIL="local pipeline passed (ci step skipped - forge state not observed)"
           else
-            RUN_DETAIL="run passed: PR merged/closed"
+            RUN_DETAIL="local pipeline passed (ci step not completed - forge state not observed)"
           fi
           ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
@@ -876,9 +977,13 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
+  refresh_log_snapshot
+
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
+      runstep_record_emit "done" status-log \
+        "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" \
+        "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
     fi
     [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
     if [ "$RUN_STATUS" = fixing ]; then
@@ -889,25 +994,43 @@ if [ "$HAVE_RUN" = 1 ]; then
       CI_LOG_STATE=not-ready
     fi
     if [ "$CI_LOG_STATE" != not-ready ]; then
-      runstep_record_emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
+      runstep_record_emit "done" status-log \
+        "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR" \
+        "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
     fi
   fi
 
-  # A terminal LOCAL pass reports that the crew's pipeline finished. It is not
-  # evidence about what the crew is waiting for now, because the run never looked
-  # at the forge: the PR it pushed is open, and whoever must act on it has not.
-  # So a declared external wait standing over such a run does NOT contradict it -
-  # the two agree, and the wait is the crew's actual current state. Reporting
-  # `done` here instead is what let a correctly declared, still-true wait keep
-  # reading as a finished task, so the watcher classified it as neither working
-  # nor paused and surfaced it as a possible wedge over and over.
-  #
-  # Narrow on purpose. A run that DID observe the forge and passed means the PR
-  # merged, so any wait over it is genuinely over and stale - that case keeps
-  # reporting done. And a wait is honored only where the crew declared one; a
-  # crew that simply went quiet still reports done and stays a wedge suspect.
-  if [ "$RUN_STATE" = "done" ] && [ "$FORGE_UNOBSERVED" = 1 ] && status_is_paused "$LOG_LINE"; then
-    runstep_record_clear
+  # Terminal run-step verdicts describe the pipeline's last observed gate
+  # outcome, not what the crew is waiting on now. A declared pause or
+  # captain-held line recorded after that terminal state is newer information -
+  # the finish is exactly what prompted the park. Honor it unless the run
+  # genuinely observed a forge merge (outcome=passed with ci completed), where
+  # any wait over it is deterministically stale.
+  terminal_done_is_observed_merge() {
+    [ "$RUN_STATE" = "done" ] && [ "$MERGE_OBSERVED" = 1 ]
+  }
+  declared_wait_follows_terminal_record() {
+    runstep_record_load || return 0
+    case "${RECORD_TS:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$RECORD_VERSION" = v3 ] || return 0
+    case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$RUN_ID" != "-" ] && [ "$RECORD_RUN_ID" != "-" ]; then
+      if [ "$RECORD_RUN_ID" != "$RUN_ID" ]; then
+        run_started_after_log_line "$RUN_ID" && return 1
+        return 0
+      fi
+    else
+      [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] || return 0
+    fi
+    [ "$LOG_POSITION" -gt "$RECORD_POSITION" ]
+  }
+  if { [ "$RUN_STATE" = "done" ] || [ "$RUN_STATE" = failed ]; } \
+    && status_is_paused_or_captain_held "$LOG_LINE" \
+    && declared_wait_follows_terminal_record \
+    && ! terminal_done_is_observed_merge; then
+    WAIT_BOUNDARY_POSITION=$(( LOG_POSITION > 0 ? LOG_POSITION - 1 : 0 ))
+    runstep_record_write "$RUN_STATE" "$RUN_DETAIL" \
+      "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED" "$WAIT_BOUNDARY_POSITION"
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}$RUN_DETAIL"
   fi
 
@@ -956,7 +1079,8 @@ if [ "$HAVE_RUN" = 1 ]; then
   # path only, so nothing but a genuinely observed run is ever replayed.
   # `abandoned` is now a recorded state, so a later lookup failure degrades to
   # the same actionable verdict instead of replaying a stale `working` answer.
-  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL"
+  runstep_record_emit "$RUN_STATE" run-step "$RUN_DETAIL" \
+    "$RUN_ID" "$RUN_ALIAS" "$MERGE_OBSERVED"
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------
