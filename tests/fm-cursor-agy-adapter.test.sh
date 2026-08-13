@@ -424,6 +424,7 @@ SH
   chmod +x "$fakebin/tmux"
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$1" >> "$(dirname "$0")/../sleep_log"
 exit 0
 SH
   chmod +x "$fakebin/sleep"
@@ -447,7 +448,7 @@ case "$cmd" in
     [ "${FM_HERDR_FAKE_ENTER:-ok}" != fail ] || exit 1
     exit 0
     ;;
-  *"pane send-text"*) exit 0 ;;
+  *"pane send-text"*) printf 'send-text\n' >> "$dir/send_text_log"; exit 0 ;;
   *"pane read"*|*"pane capture"*)
     if [ -n "${FM_HERDR_FAKE_COMPOSER:-}" ]; then
       printf '%s\n' "${FM_HERDR_FAKE_COMPOSER}"
@@ -494,6 +495,10 @@ test_send_text_submit_lands_on_cursor_and_agy() {
   rc=$?
   expect_code 0 "$rc" "ordinary steer to live $harness worker should succeed when native turn starts"
   assert_no_grep "error:" "$err" "successful steer to live $harness worker should produce no error diagnostic"
+  assert_contains "$(cat "$case_dir/fake/sleep_log")" "0.6" \
+    "live $harness delivery should use the submit-specific idle settle interval"
+  assert_no_grep '^15$' "$case_dir/fake/sleep_log" \
+    "live $harness delivery must not inherit the watcher poll interval"
   pass "ordinary steer to a live $harness worker that lands does not report failure"
 }
 
@@ -513,7 +518,9 @@ test_transient_idle_does_not_confirm_cursor_and_agy_send() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 3 "$rc" "transient idle on $harness should be unverifiable"
+  expect_code 1 "$rc" "transient idle on $harness should remain undelivered"
+  assert_absent "$case_dir/fake/send_text_log" \
+    "transient idle on $harness must not receive unsubmitted text"
   assert_absent "$case_dir/fake/enter_log" \
     "transient idle on $harness must not trigger an attributable Enter"
   pass "a transient idle never confirms a $harness steer"
@@ -535,9 +542,11 @@ test_unchanged_working_does_not_confirm_cursor_and_agy_send() {
     FM_HERDR_FAKE_AGENT="$harness" \
     "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 3 "$rc" "unchanged working on $harness should be unverifiable"
-  assert_contains "$(cat "$err")" "verdict=unverifiable" \
-    "unchanged pre-existing work on $harness must not confirm this Enter"
+  expect_code 1 "$rc" "unchanged working on $harness should remain undelivered"
+  assert_absent "$case_dir/fake/send_text_log" \
+    "unchanged pre-existing work on $harness must not receive unsubmitted text"
+  assert_absent "$case_dir/fake/enter_log" \
+    "unchanged pre-existing work on $harness must not receive Enter"
   pass "unchanged pre-existing work never confirms a $harness steer"
 }
 
