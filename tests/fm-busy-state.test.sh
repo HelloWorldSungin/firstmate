@@ -356,6 +356,20 @@ test_boolean_view_never_promotes_unknown() {
   pass "the boolean view reports busy only on an exact busy verdict"
 }
 
+test_herdr_native_cursor_agy_idle() {
+  local state out
+  state=$(new_state_dir herdr-cursor-agy)
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_busy_state() { printf '%s' "$FAKE_NATIVE"; }
+  FAKE_NATIVE=idle
+  out=$(fm_busy_classify herdr s:p cursor t1 "$state")
+  [ "$out" = "idle herdr-native" ] || fail "cursor native idle with no record must classify 'idle herdr-native', got '$out'"
+  out=$(fm_busy_classify herdr s:p agy t1 "$state")
+  [ "$out" = "idle herdr-native" ] || fail "agy native idle with no record must classify 'idle herdr-native', got '$out'"
+  unset -f fm_backend_busy_state
+  pass "herdr's native idle verdict is trusted for cursor and agy"
+}
+
 test_arm_seeds_busy_spawn
 test_apply_advances_seq_and_source
 test_apply_current_gen_reset
@@ -374,6 +388,7 @@ test_codex_unverified_gate
 test_kimi_unverified_gate
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
+test_herdr_native_cursor_agy_idle
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

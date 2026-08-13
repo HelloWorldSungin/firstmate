@@ -251,9 +251,9 @@ fm_launch_template() {
     # bypasses the interactive workspace-trust modal (verified: the modal blocks
     # an unattended launch and --force does NOT cover it); --force (alias --yolo)
     # auto-approves every command, the equivalent of claude's
-    # --dangerously-skip-permissions. cursor has NO standalone effort flag: effort
-    # is encoded inside the parameterized model string (e.g.
-    # 'composer-2.5[effort=high]'), which --model accepts verbatim, so the template
+    # --dangerously-skip-permissions. cursor has NO standalone effort flag: parameterized
+    # models accept bracket overrides (e.g. 'claude-opus-4-8[context=1m,effort=high,fast=false]'),
+    # but bare models like 'composer-2.5' reject bracketed effort, so the template
     # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end is the watcher's
     # debounced native-completion detector (fm-watch.sh maybe_native_turnend), so
     # no launch-time turn-end hook is installed.
@@ -279,8 +279,8 @@ fm_launch_template() {
 
 # fm_launch_model_flag: render the --model flag for <harness> given <model>, or
 # nothing when the model is empty/default or the harness takes no verified model
-# flag. The model string is passed through verbatim (shell-quoted), so cursor's
-# parameterized form 'composer-2.5[effort=high]' reaches --model intact.
+# flag. The model string is passed through verbatim (shell-quoted), so cursor
+# model strings or parameterized overrides reach --model intact.
 fm_launch_model_flag() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0

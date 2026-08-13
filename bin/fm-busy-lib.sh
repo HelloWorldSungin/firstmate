@@ -177,6 +177,7 @@ fm_busy_sources_for_harness() {  # <harness>
       fm_busy_kimi_verified || { printf ''; return 0; }
       adapter='kimi-wire kimi-hook'
       ;;
+    cursor*|agy*) adapter=herdr-native ;;
     *) printf ''; return 0 ;;
   esac
   printf '%s fm-spawn fm-interrupt fm-recovery' "$adapter"
@@ -298,13 +299,20 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   esac
   # No record at all. A native herdr busy verdict is semantic enough to trust
   # for BUSY (streaming means a turn is running); native idle is narrower
-  # than turn state (a long foreground tool call reads idle) and stays
-  # unknown here.
+  # than turn state for converted adapters with hooks and stays unknown there,
+  # but cursor/agy install no hooks and trust herdr-native idle directly.
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
       printf 'busy herdr-native'
       return 0
+    elif [ "$native" = idle ]; then
+      case "$harness" in
+        cursor*|agy*)
+          printf 'idle herdr-native'
+          return 0
+          ;;
+      esac
     fi
   fi
   case "$harness" in

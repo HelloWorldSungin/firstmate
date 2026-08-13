@@ -134,7 +134,7 @@ The supported launch-profile flags below are summarized as verified selection ax
 | pi / pi-signed | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-27 on Pi and pi-signed 0.82.0. Both expose the same accepted thinking levels and completed the same model-qualified max-thinking smoke. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
-| cursor | `--model <model>` | none as a separate axis | Crew-only and herdr-only, verified on cursor-agent 2026.07.20. Effort is encoded in the parameterized model string, such as `composer-2.5[effort=high]`, which reaches `--model` verbatim. |
+| cursor | `--model <model>` | none as a separate axis | Crew-only and herdr-only, verified on cursor-agent 2026.08.11. Generic effort axis is absent. Parameterized models accept quoted bracket overrides (e.g. `claude-opus-4-8[context=1m,effort=high,fast=false]`), but bare models like `composer-2.5` reject bracketed effort. |
 | agy | `--model <model>` | `--effort <low\|medium\|high>` | Crew-only and herdr-only (see the agy section). Verified on agy 1.1.5, whose `--help` advertises only these three levels; `xhigh` and `max` are omitted. |
 
 The concrete `harness` field owns adapter identity independently of the model provider: `harness=pi` with `model=xai/grok-*` is Pi using xAI, not `harness=grok`, and does not require Grok CLI login; `harness=grok` remains the standalone Grok Build CLI adapter.

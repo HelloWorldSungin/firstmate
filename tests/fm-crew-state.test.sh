@@ -1294,6 +1294,50 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle() {
   pass "an idle record with idle agent_status stays not-busy (no regression for a human-blocked agent)"
 }
 
+test_finished_cursor_scout_on_herdr_reads_done_from_status_log() {
+  command -v jq >/dev/null 2>&1 || { pass "cursor scout status-log reading skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case cursor-scout-done)
+  make_repo_on_branch "$d/wt" fm/scout-1
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cursor-scout-done.meta" "window=default:w1:p5" "worktree=$d/wt" "kind=scout" \
+    "backend=herdr" "harness=cursor"
+  printf 'done: report finished\n' > "$d/state/cursor-scout-done.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_AGENT_STATUS=idle
+  FM_FAKE_HERDR_BUSY=0
+  local out; out=$(run_crew_state "$d" cursor-scout-done)
+  assert_contains "$out" "state: done" "finished cursor scout with done status log must read state: done"
+  assert_contains "$out" "source: status-log" "finished cursor scout must read from status log"
+  assert_contains "$out" "report finished" "finished cursor scout must include status line note"
+  pass "a finished cursor scout on herdr reads done from its status log"
+}
+
+test_finished_cursor_scout_with_report_and_working_status_log_reads_done() {
+  command -v jq >/dev/null 2>&1 || { pass "cursor scout report reading skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case cursor-scout-report)
+  make_repo_on_branch "$d/wt" fm/scout-2
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/data/cursor-scout-report"
+  printf '# Scout Report\nAll findings captured.\n' > "$d/data/cursor-scout-report/report.md"
+  fm_write_meta "$d/state/cursor-scout-report.meta" "window=default:w1:p6" "worktree=$d/wt" "kind=scout" \
+    "backend=herdr" "harness=cursor"
+  printf 'working: setup complete\n' > "$d/state/cursor-scout-report.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_AGENT_STATUS=idle
+  FM_FAKE_HERDR_BUSY=0
+  local out; out=$(run_crew_state "$d" cursor-scout-report)
+  assert_contains "$out" "state: done" "idle scout with report present must read state: done"
+  assert_contains "$out" "source: status-log" "idle scout with report present must use status-log source"
+  pass "an idle scout on herdr with report present reads done even if status log ended at working"
+}
+
+
 # (g) no run + idle pane -> the status-log verb, as-is
 test_no_run_idle_pane_uses_log() {
   reset_fakes
@@ -2501,5 +2545,7 @@ test_working_run_step_with_unknown_liveness_token_is_unknown
 test_secondmate_not_downgraded_by_worker_state
 test_working_run_step_with_dead_agent_not_absorbed
 test_working_run_step_with_unreadable_agent_not_absorbed
+test_finished_cursor_scout_on_herdr_reads_done_from_status_log
+test_finished_cursor_scout_with_report_and_working_status_log_reads_done
 
 echo "all fm-crew-state tests passed"
