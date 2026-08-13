@@ -85,8 +85,8 @@ fm_write_meta() {
 
 # A fakebin with a fake `no-mistakes` (serves the env-driven run output) and a
 # fake `tmux` (serves a busy or idle pane). The fake no-mistakes mirrors the real
-# command surface the helper uses: `axi status`, `axi status --run <id>`, the
-# bare `axi` home view, and `runs --limit N`.
+# command surface the helper uses: `axi status`, `axi status --run <id>`, and
+# `runs --limit N`.
 make_fakebin() {  # <dir> -> echoes fakebin path
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -110,7 +110,7 @@ case "${1:-}" in
     case "${1:-}" in
       '')
         [ "${FM_FAKE_RUNS_RC:-0}" = 0 ] || exit "${FM_FAKE_RUNS_RC}"
-        printf '%s\n' "${FM_FAKE_AXI_HOME:-}" ;;
+        ;;
       status)
         shift
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
@@ -215,7 +215,6 @@ arm_idle_record() {  # <state-dir> <id>
 reset_fakes() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_AXI_STATUS_RUN=""
-  FM_FAKE_AXI_HOME=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=0
   FM_FAKE_BUSY_TEXT=
@@ -234,7 +233,7 @@ reset_fakes() {
   FM_CREW_STATE_DEGRADED_MAX_AGE=""
   FM_CREW_STATE_NM_TIMEOUT=""
   FM_CREW_STATE_RUNS_LIMIT=""
-  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_AXI_HOME FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_NM_RC FM_FAKE_RUNS_RC FM_FAKE_NM_SLEEP FM_FAKE_NM_CALL_LOG FM_FAKE_NM_APPEND_FILE
   export FM_FAKE_NM_APPEND_LINE FM_FAKE_AGENT_STATE
@@ -1330,12 +1329,8 @@ test_prior_run_park_does_not_mask_same_head_rerun_failure() {
   assert_contains "$out" "state: done" "the first run establishes its terminal boundary"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/other-crew aaaaaaa 2026-08-13 12:01
-completed fm/feat-same-head-rerun ${short} 2026-08-13 12:00
-EOF
-)"
-  FM_FAKE_AXI_HOME="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
+runs[2]{id,branch,status,head,pr}:
+  01OTHER,fm/other-crew,running,aaaaaaa,
   01RUN-A,fm/feat-same-head-rerun,completed,${short},
 EOF
 )"
@@ -1353,6 +1348,33 @@ EOF
   pass "same-head reruns use distinct run generations"
 }
 
+test_unseen_same_head_rerun_rejects_prior_generation_park() {
+  reset_fakes
+  local d short out; d=$(new_case unseen-same-head-rerun)
+  make_repo_on_branch "$d/wt" fm/feat-unseen-same-head-rerun
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unseen-same-head-rerun.meta" \
+    "window=fm:fm-unseen-same-head-rerun" "worktree=$d/wt" "kind=ship"
+  printf 'done: first run finished locally\n' > "$d/state/unseen-same-head-rerun.status"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-unseen-same-head-rerun 01K00000000000000000000000)"
+  out=$(run_crew_state "$d" unseen-same-head-rerun)
+  assert_contains "$out" "state: done" "the first generation establishes its terminal record"
+  printf 'captain-held: hold belonging to the first run\n' >> "$d/state/unseen-same-head-rerun.status"
+  touch -t 202001010000 "$d/state/unseen-same-head-rerun.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+runs[2]{id,branch,status,head,pr}:
+  01K00000000000000000000001,fm/other-crew,running,aaaaaaa,
+  7ZZZZZZZZZZZZZZZZZZZZZZZZZ,fm/feat-unseen-same-head-rerun,cancelled,${short},
+EOF
+)"
+  out=$(run_crew_state "$d" unseen-same-head-rerun)
+  assert_contains "$out" "state: failed" "the later generation outranks the prior run's hold"
+  assert_not_contains "$out" "state: paused" "the prior generation's hold cannot mask an unseen rerun"
+  pass "same-head reruns use exact generation identity"
+}
+
 test_terminal_rerun_parked_before_first_read_reports_the_wait() {
   reset_fakes
   local d out; d=$(new_case terminal-rerun-first-read-park)
@@ -1361,12 +1383,12 @@ test_terminal_rerun_parked_before_first_read_reports_the_wait() {
   fm_write_meta "$d/state/terminal-rerun-first-read.meta" \
     "window=fm:fm-terminal-rerun-first-read" "worktree=$d/wt" "kind=ship"
   printf 'done: first run finished locally\n' > "$d/state/terminal-rerun-first-read.status"
-  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-rerun-first-read 01RUN-A)"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-rerun-first-read 01K00000000000000000000000)"
   out=$(run_crew_state "$d" terminal-rerun-first-read)
   assert_contains "$out" "state: done" "the prior generation establishes its terminal record"
   printf 'captain-held: second run finished, awaiting release approval\n' \
     >> "$d/state/terminal-rerun-first-read.status"
-  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-rerun-first-read 01RUN-B)"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_skipped fm/feat-terminal-rerun-first-read 01K00000000000000000000001)"
   out=$(run_crew_state "$d" terminal-rerun-first-read)
   assert_contains "$out" "state: paused" "a terminal rerun honors its park on first observation"
   assert_contains "$out" "awaiting release approval" "the rerun park keeps its reason"
@@ -1424,17 +1446,18 @@ test_cross_branch_attribution_honors_configured_runs_limit() {
   printf 'captain-held: stale hold before validation resumed\n' > "$d/state/feat-deep-run.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/newer-01 aaaaaaa 2026-08-13 12:10
-running fm/newer-02 aaaaaaa 2026-08-13 12:09
-running fm/newer-03 aaaaaaa 2026-08-13 12:08
-running fm/newer-04 aaaaaaa 2026-08-13 12:07
-running fm/newer-05 aaaaaaa 2026-08-13 12:06
-running fm/newer-06 aaaaaaa 2026-08-13 12:05
-running fm/newer-07 aaaaaaa 2026-08-13 12:04
-running fm/newer-08 aaaaaaa 2026-08-13 12:03
-running fm/newer-09 aaaaaaa 2026-08-13 12:02
-running fm/newer-10 aaaaaaa 2026-08-13 12:01
-running fm/feat-deep-run ${short} 2026-08-13 12:00
+runs[11]{id,branch,status,head,pr}:
+  01NEWER01,fm/newer-01,running,aaaaaaa,
+  01NEWER02,fm/newer-02,running,aaaaaaa,
+  01NEWER03,fm/newer-03,running,aaaaaaa,
+  01NEWER04,fm/newer-04,running,aaaaaaa,
+  01NEWER05,fm/newer-05,running,aaaaaaa,
+  01NEWER06,fm/newer-06,running,aaaaaaa,
+  01NEWER07,fm/newer-07,running,aaaaaaa,
+  01NEWER08,fm/newer-08,running,aaaaaaa,
+  01NEWER09,fm/newer-09,running,aaaaaaa,
+  01NEWER10,fm/newer-10,running,aaaaaaa,
+  01DEEPRUN,fm/feat-deep-run,running,${short},
 EOF
 )"
   FM_CREW_STATE_RUNS_LIMIT=12
@@ -1481,8 +1504,9 @@ test_coarse_terminal_run_with_park_reports_the_wait() {
   printf 'captain-held: awaiting release approval\n' > "$d/state/coarse-terminal-park.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/other-crew aaaaaaa 2026-08-13 12:01
-completed fm/feat-coarse-terminal-park ${short} 2026-08-13 12:00
+runs[2]{id,branch,status,head,pr}:
+  01OTHER,fm/other-crew,running,aaaaaaa,
+  01PARK,fm/feat-coarse-terminal-park,completed,${short},
 EOF
 )"
   out=$(run_crew_state "$d" coarse-terminal-park)
@@ -1507,12 +1531,8 @@ test_full_and_coarse_paths_share_run_identity() {
   assert_contains "$out" "state: working" "the full active run outranks the stale hold"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/other-crew aaaaaaa 2026-08-13 12:01
-cancelled fm/feat-full-coarse-identity ${short} 2026-08-13 12:00
-EOF
-)"
-  FM_FAKE_AXI_HOME="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
+runs[2]{id,branch,status,head,pr}:
+  01OTHER,fm/other-crew,running,aaaaaaa,
   01RUN,fm/feat-full-coarse-identity,cancelled,${short},
 EOF
 )"
@@ -1525,6 +1545,37 @@ EOF
   pass "full and coarse evidence share one stable run identity"
 }
 
+test_coarse_abandoned_run_keeps_terminal_identity() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-abandoned-identity)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-abandoned
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarse-abandoned.meta" "window=fm:fm-coarse-abandoned" \
+    "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: stale hold before validation resumed\n' > "$d/state/coarse-abandoned.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+runs[2]{id,branch,status,head,pr}:
+  01K00000000000000000000000,fm/other-crew,running,aaaaaaa,
+  01KZY5YSHPXCBS6W7G7XC8WBK0,fm/feat-coarse-abandoned,running,${short},
+EOF
+)"
+  FM_FAKE_AGENT_STATE=dead
+  out=$(run_crew_state "$d" coarse-abandoned)
+  assert_contains "$out" "state: abandoned" "the active coarse run records its abandoned verdict"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+runs[2]{id,branch,status,head,pr}:
+  01K00000000000000000000000,fm/other-crew,running,aaaaaaa,
+  01KZY5YSHPXCBS6W7G7XC8WBK0,fm/feat-coarse-abandoned,cancelled,${short},
+EOF
+)"
+  out=$(run_crew_state "$d" coarse-abandoned)
+  assert_contains "$out" "state: failed" "the terminal row retains the abandoned run's generation"
+  assert_not_contains "$out" "state: paused" "the pre-run hold cannot mask the abandoned run's failure"
+  pass "coarse abandoned verdicts retain terminal identity"
+}
+
 test_coarse_completed_preserves_observed_merge() {
   reset_fakes
   local d short out; d=$(new_case coarse-observed-merge)
@@ -1534,25 +1585,35 @@ test_coarse_completed_preserves_observed_merge() {
   fm_write_meta "$d/state/coarse-observed-merge.meta" "window=fm:fm-coarse-observed-merge" \
     "worktree=$d/wt" "kind=ship"
   printf 'done: merged\n' > "$d/state/coarse-observed-merge.status"
-  FM_FAKE_AXI_STATUS="$(run_passed_forge_observed fm/feat-coarse-observed-merge 01MERGED)"
+  FM_FAKE_AXI_STATUS="$(run_passed_forge_observed fm/feat-coarse-observed-merge 01KZY5YSHPXCBS6W7G7XC8WBK0)"
   out=$(run_crew_state "$d" coarse-observed-merge)
   assert_contains "$out" "state: done" "the full run records its observed merge"
   printf 'captain-held: stale hold appended after merge\n' >> "$d/state/coarse-observed-merge.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/other-crew aaaaaaa 2026-08-13 12:01
-completed fm/feat-coarse-observed-merge ${short} 2026-08-13 12:00
+runs[11]{id,branch,status,head,pr}:
+  01K00000000000000000000001,fm/newer-01,running,aaaaaaa,
+  01K00000000000000000000002,fm/newer-02,running,aaaaaaa,
+  01K00000000000000000000003,fm/newer-03,running,aaaaaaa,
+  01K00000000000000000000004,fm/newer-04,running,aaaaaaa,
+  01K00000000000000000000005,fm/newer-05,running,aaaaaaa,
+  01K00000000000000000000006,fm/newer-06,running,aaaaaaa,
+  01K00000000000000000000007,fm/newer-07,running,aaaaaaa,
+  01K00000000000000000000008,fm/newer-08,running,aaaaaaa,
+  01K00000000000000000000009,fm/newer-09,running,aaaaaaa,
+  01K0000000000000000000000A,fm/newer-10,running,aaaaaaa,
+  01KZY5YSHPXCBS6W7G7XC8WBK0,fm/feat-coarse-observed-merge,completed,${short},
 EOF
 )"
-  FM_FAKE_AXI_HOME="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
-  01MERGED,fm/feat-coarse-observed-merge,completed,${short},
-EOF
-)"
+  FM_CREW_STATE_RUNS_LIMIT=12
   out=$(run_crew_state "$d" coarse-observed-merge)
   assert_contains "$out" "state: done" "coarse completion retains full-status merge evidence"
   assert_not_contains "$out" "state: paused" "a stale hold cannot mask an observed merge on the coarse path"
-  pass "coarse completion preserves observed merge evidence"
+  grep -Fxq 'axi' "$FM_FAKE_NM_CALL_LOG" \
+    && fail "merge evidence depended on the capped AXI home table"
+  pass "deep coarse completion preserves observed merge evidence"
 }
 
 test_coarse_rerun_does_not_inherit_prior_merge_evidence() {
@@ -1570,12 +1631,8 @@ test_coarse_rerun_does_not_inherit_prior_merge_evidence() {
   printf 'captain-held: second run awaiting release approval\n' >> "$d/state/coarse-rerun-merge.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
-running fm/other-crew aaaaaaa 2026-08-13 12:01
-completed fm/feat-coarse-rerun-merge ${short} 2026-08-13 12:00
-EOF
-)"
-  FM_FAKE_AXI_HOME="$(cat <<EOF
-runs[1]{id,branch,status,head,pr}:
+runs[2]{id,branch,status,head,pr}:
+  01OTHER,fm/other-crew,running,aaaaaaa,
   01RUN-B,fm/feat-coarse-rerun-merge,completed,${short},
 EOF
 )"
@@ -2640,6 +2697,7 @@ test_degraded_observed_merge_suppresses_stale_wait
 test_declared_wait_over_active_run_stays_run_step
 test_stale_declared_wait_before_resumed_run_stays_failed
 test_prior_run_park_does_not_mask_same_head_rerun_failure
+test_unseen_same_head_rerun_rejects_prior_generation_park
 test_terminal_rerun_parked_before_first_read_reports_the_wait
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
@@ -2647,6 +2705,7 @@ test_cross_branch_attribution_honors_configured_runs_limit
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_terminal_run_with_park_reports_the_wait
 test_full_and_coarse_paths_share_run_identity
+test_coarse_abandoned_run_keeps_terminal_identity
 test_coarse_completed_preserves_observed_merge
 test_coarse_rerun_does_not_inherit_prior_merge_evidence
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

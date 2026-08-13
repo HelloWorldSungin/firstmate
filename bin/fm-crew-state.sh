@@ -200,6 +200,9 @@ map_log_state() {  # <line>
   esac
 }
 
+LOG_MTIME=$(stat -c %Y "$LOG" 2>/dev/null \
+  || stat -f %m "$LOG" 2>/dev/null \
+  || true)
 LOG_SNAPSHOT=$(log_snapshot || true)
 case "$LOG_SNAPSHOT" in
   *$'\t'*)
@@ -579,7 +582,7 @@ nm_ci_checks_state() {
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
 nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha run_id date_part time_part in_runs=0
+  local branch=$1 out=${2:-} row st rest br sha run_id in_runs=0
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -605,14 +608,7 @@ nm_runs_row_for_branch() {  # <branch> <runs-listing>
       rest=${rest#* }
       rest=$(trim "$rest")
       sha=${rest%% *}
-      rest=${rest#* }
-      rest=$(trim "$rest")
-      date_part=${rest%% *}
-      rest=${rest#* }
-      rest=$(trim "$rest")
-      time_part=${rest%% *}
-      [ -n "$date_part" ] && [ -n "$time_part" ] || continue
-      run_id="coarse:$br:$sha:$date_part:$time_part"
+      run_id="-"
     fi
     if [ "$br" = "$branch" ]; then
       [ -n "$run_id" ] || continue
@@ -698,6 +694,25 @@ run_identity_for_head() {  # <sha>
     *) canonical=$(git -C "$WT" rev-parse --verify "$head^{commit}" 2>/dev/null) || canonical=$head ;;
   esac
   printf '%s:%s' "$LOOKUP_BRANCH" "$canonical"
+}
+
+run_started_after_log_line() {  # <run-id>
+  local run_id=${1:-}
+  case "$LOG_MTIME" in ''|*[!0-9]*) return 1 ;; esac
+  awk -v run_id="$run_id" -v log_mtime="$LOG_MTIME" '
+    BEGIN {
+      alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+      if (length(run_id) != 26) exit 1
+      value = 0
+      for (i = 1; i <= 10; i++) {
+        digit = index(alphabet, toupper(substr(run_id, i, 1))) - 1
+        if (digit < 0) exit 1
+        value = value * 32 + digit
+      }
+      if (int(value / 1000) >= log_mtime) exit 0
+      exit 1
+    }
+  '
 }
 
 # 1 when the `axi status` run in $RUN_OUT is in an actively-executing step and so
@@ -821,17 +836,10 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
         LOOKUP_COMPLETED=1
         COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
         IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD COARSE_RUN_ID <<< "$COARSE_ROW"
-        if [ "$COARSE_STATUS" != running ] \
-          && [[ "$COARSE_RUN_ID" = coarse:* ]]; then
-          home_out=$(nm_run axi) || true
-          home_row=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$home_out")
-          IFS=$'\t' read -r home_status home_head home_run_id <<< "$home_row"
-          if [ "$home_status" = "$COARSE_STATUS" ] \
-            && [ "$home_head" = "$COARSE_HEAD" ] \
-            && [[ "$home_run_id" != coarse:* ]] \
-            && [ -n "$home_run_id" ]; then
-            COARSE_RUN_ID=$home_run_id
-          fi
+        if [ "$COARSE_STATUS" != running ] && [ "$COARSE_RUN_ID" = "-" ]; then
+          LOOKUP_COMPLETED=0
+          LOOKUP_FAILED=1
+          COARSE_STATUS=""
         fi
         if [ -n "$COARSE_STATUS" ]; then
           if [ -n "$TASK_BRANCH" ]; then
@@ -1002,13 +1010,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     case "${RECORD_POSITION:-}" in ''|*[!0-9]*) return 0 ;; esac
     if [ "$RUN_ID" != "-" ] && [ "$RECORD_RUN_ID" != "-" ]; then
       if [ "$RECORD_RUN_ID" != "$RUN_ID" ]; then
-        if [ "$RECORD_STATE" = working ] \
-          && [ "$RECORD_RUN_ALIAS" = "$RUN_ALIAS" ] \
-          && { [[ "$RECORD_RUN_ID" = coarse:* ]] \
-            || [[ "$RUN_ID" = coarse:* ]]; }; then
-          [ "$LOG_POSITION" -gt "$RECORD_POSITION" ]
-          return
-        fi
+        run_started_after_log_line "$RUN_ID" && return 1
         return 0
       fi
     else
