@@ -190,6 +190,37 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+test_scout_text_send_reopens_completion_gate() {
+  local dir fb home err log meta rc reviewed
+  dir="$TMP_ROOT/scout-reopen"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home scoutreopen); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  meta="$home/state/scout-followup.meta"
+  fm_write_meta "$meta" "window=sess:fm-scout-followup" "kind=scout" \
+    "decisions_reviewed=1" "decision_keys=route-choice"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup "check one more path" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "successful scout follow-up should be delivered"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 0 ] || fail "successful scout follow-up did not reopen completion gate"
+  assert_grep 'decision_keys=route-choice' "$meta" "reopening completion must preserve recorded decision keys"
+
+  printf 'decisions_reviewed=1\n' >> "$meta"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup --key Enter >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "key-only scout control should succeed"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 1 ] || fail "key-only scout control reopened completion gate"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_DEAD_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup "message that cannot land" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "failed scout follow-up should return nonzero"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 1 ] || fail "failed scout follow-up reopened completion gate"
+  pass "fm-send strict: confirmed scout follow-ups reopen completion review"
+}
+
 test_exact_lane_id_send_still_works
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
@@ -197,4 +228,5 @@ test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
+test_scout_text_send_reopens_completion_gate
 printf '\nall fm-send-strict tests passed\n'

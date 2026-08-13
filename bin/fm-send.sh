@@ -104,6 +104,19 @@ fm_send_record_interrupt() {  # <key>
   }
 }
 
+fm_send_reopen_scout_completion() {
+  local id
+  [ -n "$TARGET_SELECTOR" ] || return 0
+  [ -n "$TARGET_META" ] || return 0
+  [ "$(fm_meta_get "$TARGET_META" kind)" = scout ] || return 0
+  [ "$(fm_meta_get "$TARGET_META" decisions_reviewed)" = 1 ] || return 0
+  id=$(fm_send_id_from_meta "$TARGET_META")
+  if ! printf 'decisions_reviewed=0\n' >> "$TARGET_META"; then
+    echo "error: text was delivered to $T, but scout completion could not be reopened for $id. Do not resend." >&2
+    return 1
+  fi
+}
+
 fm_send_meta_for_key_value() {  # <state-dir> <key> <value>
   local state=$1 key=$2 value=$3 meta got
   for meta in "$state"/*.meta; do
@@ -374,6 +387,7 @@ else
       exit 1
     fi
   fi
+  fm_send_reopen_scout_completion || exit 1
   # Submit landed with exact empty. Confirmation only proves the text was
   # accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the
