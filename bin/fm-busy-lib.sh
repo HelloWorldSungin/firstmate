@@ -52,7 +52,10 @@
 #      (generation state is sufficient for busy, not for idle), then the
 #      Grok-only temporary regex fallback classifies a grok task from its
 #      rendered tail, then unknown missing
-#   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#   5. an untrusted cursor/agy record on Herdr may classify busy only when one
+#      native sample reports both the matching identity and working status
+#   6. every other malformed, stale, or untrusted record -> unknown, never a
+#      fallback
 # The Grok arm is the ONLY rendered-text classification that survives the
 # redesign, because Grok's structured lifecycle was not credited-live-verified
 # in the approved audit; it is scoped to harness=grok and can never classify

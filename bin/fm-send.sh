@@ -14,7 +14,10 @@
 # retried (Enter only, never retyped) until the target backend confirms a
 # submit or reports an inconclusive send. If a swallowed Enter is positively
 # confirmed, fm-send exits NON-ZERO so the caller knows the steer did not land
-# instead of silently leaving an unsubmitted instruction.
+# instead of silently leaving an unsubmitted instruction. A cursor/agy atomic
+# prompt that is known undelivered exits 1; one whose acceptance cannot be
+# verified reports verdict=unverifiable and exits 3 so callers do not treat it
+# as either success or safe-to-resend failure.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
