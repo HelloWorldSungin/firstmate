@@ -19,7 +19,7 @@
 #   refused as a flag value.
 #   A generated ship or design brief also carries one exact firstmate-task-branch marker.
 #   Spawn validates and copies that value to branch= in state/<id>.meta before
-#   the worker creates it, so current-state reconciliation has durable task
+#   the worker creates or continues it, so current-state reconciliation has durable task
 #   identity independent of the pooled worktree's later ambient branch.
 #   The marker names fm/<task-id> unless the brief was scaffolded with
 #   --continue-branch, in which case it names that existing branch; see

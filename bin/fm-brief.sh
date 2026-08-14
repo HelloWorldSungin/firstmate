@@ -77,12 +77,12 @@
 # For ship and design tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:
-# Ship modes deliver an authorized implementation:
+# Without --continue-branch, ship modes deliver an authorized implementation:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
-# Design modes deliver only the ADR:
+# Without --continue-branch, design modes deliver only the ADR:
 #   no-mistakes  ADR commit -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    ADR commit -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   ADR on branch, stop and report "ready in branch" (no push/PR);
@@ -95,15 +95,17 @@
 # recorded task metadata cannot drift apart.
 # It also records the exact tracked-output branch in a firstmate-task-branch marker.
 # bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
-# own branch durable before the worker creates it instead of reconstructing it later
-# from the task id or from whichever branch the pooled worktree currently hosts.
+# own branch durable before the worker creates or continues it instead of
+# reconstructing it later from the task id or from whichever branch the pooled
+# worktree currently hosts.
 # --continue-branch <name> is how a ship or design task continues an existing
 # branch instead of git checkout -b fm/<task-id>. It writes that name into the
-# marker so spawn records the branch the worker will actually use, and it
-# replaces only the Setup first action (and the local-only / direct-PR lines that
-# name the working branch). Omit it for the ordinary new-branch strategy; the
-# generated Setup text is then unchanged. Refused on scout and secondmate
-# scaffolds, and refused when <name> is fm/<task-id> itself, which is the default.
+# marker so spawn records the branch the worker will actually use, and replaces
+# the Setup branch action plus mode-specific branch and existing-PR wording.
+# Omit it for the ordinary new-branch strategy; the generated Setup text is then
+# unchanged. Refused on scout and secondmate scaffolds. It requires a resolvable
+# project checkout and a valid non-default branch name other than fm/<task-id>,
+# which is the ordinary strategy.
 # This header is the owner of the checkout-versus-push rule: a branch held by another worktree blocks checkout, not push.
 # The generated continue-branch first action therefore keeps the worker detached
 # and updates the existing branch with git push origin HEAD:<name> (or a local

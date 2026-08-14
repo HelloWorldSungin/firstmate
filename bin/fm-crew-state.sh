@@ -8,7 +8,7 @@
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reconciles attributable no-mistakes run
-# evidence, the bounded record used only after a lookup failure, and pane busy
+# evidence, the bounded record used only after an inconclusive lookup, and pane busy
 # state before consulting the possibly-stale log.
 #
 # The deterministic reconciliation lives entirely here - bounded run-step / pane /
