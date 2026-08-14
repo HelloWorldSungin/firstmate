@@ -3,13 +3,22 @@
 FM_TASK_BRANCH_ERROR=
 
 fm_task_branch_validate() {  # <branch>
-  local branch=${1:-}
+  local branch=${1:-} normalized
   FM_TASK_BRANCH_ERROR=
-  if [ -z "$branch" ] || ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+  if [ -z "$branch" ] \
+    || ! normalized=$(git check-ref-format --branch "$branch" 2>/dev/null); then
     FM_TASK_BRANCH_ERROR="must be a valid git branch name"
     return 1
   fi
+  if [ "$normalized" != "$branch" ]; then
+    FM_TASK_BRANCH_ERROR="must name a literal branch without revision shorthand"
+    return 1
+  fi
   case "$branch" in
+    +*)
+      FM_TASK_BRANCH_ERROR="cannot begin with + because Git treats it as a refspec force prefix"
+      return 1
+      ;;
     refs/*)
       FM_TASK_BRANCH_ERROR="must use a branch name outside the refs/ namespace"
       return 1

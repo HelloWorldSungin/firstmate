@@ -1629,7 +1629,7 @@ test_continue_branch_renders_setup_and_marker() {
 }
 
 test_continue_branch_flag_validation() {
-  local home project rc
+  local home project caller rc
   home="$TMP_ROOT/continue-branch-validation-home"
   project="$home/projects/some-proj"
   mkdir -p "$home/data" "$project"
@@ -1702,6 +1702,33 @@ test_continue_branch_flag_validation() {
     "--continue-branch accepted a revision-sensitive reserved ref name"
   assert_absent "$home/data/continue-reserved/brief.md" \
     "--continue-branch FETCH_HEAD wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-force "$project" --mode no-mistakes \
+    --continue-branch +feature/existing > "$home/force.stdout" 2> "$home/force.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch +feature/existing should fail"
+  assert_grep 'refspec force prefix' "$home/force.stderr" \
+    "--continue-branch accepted a refspec force prefix"
+  assert_absent "$home/data/continue-force/brief.md" \
+    "--continue-branch +feature/existing wrote a brief"
+
+  caller="$home/caller"
+  git init -q "$caller"
+  git -C "$caller" symbolic-ref HEAD refs/heads/main
+  printf 'caller\n' > "$caller/caller.txt"
+  git -C "$caller" add caller.txt
+  git -C "$caller" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm caller
+  git -C "$caller" checkout -qb previous
+  git -C "$caller" checkout -q main
+  (cd "$caller" && FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-dwim "$project" \
+    --mode no-mistakes --continue-branch '@{-1}') \
+    > "$home/dwim.stdout" 2> "$home/dwim.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch @{-1} should fail"
+  assert_grep 'literal branch without revision shorthand' "$home/dwim.stderr" \
+    "--continue-branch accepted checkout-history shorthand"
+  assert_absent "$home/data/continue-dwim/brief.md" \
+    "--continue-branch @{-1} wrote a brief"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-markdown "$project" --mode no-mistakes \
     --continue-branch 'feature/`unsafe`' > "$home/markdown.stdout" 2> "$home/markdown.stderr"

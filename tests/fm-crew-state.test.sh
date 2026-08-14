@@ -2608,6 +2608,34 @@ EOF
   pass "detached continuations preserve cached state for unresolved run heads"
 }
 
+test_detached_continuation_terminal_unresolved_head_clears_cache() {
+  local d out branch terminal_status
+  branch=feature/existing-pr
+  for terminal_status in completed failed cancelled; do
+    reset_fakes
+    d=$(new_case "detached-continuation-${terminal_status}")
+    make_repo_on_branch "$d/wt" "$branch"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/continuation.meta" "window=fm:fm-continuation" "worktree=$d/wt" \
+      "kind=ship" "harness=claude" "branch=$branch"
+    seed_known_run_step "$d" continuation "$branch"
+    git -C "$d/wt" checkout --detach -q
+    FM_FAKE_RUNS_LIST="${terminal_status} ${branch} ${UNRESOLVABLE_HEAD} 2026-08-13 12:00"
+    FM_FAKE_BUSY=0
+    arm_idle_record "$d/state" continuation
+    out=$(run_crew_state "$d" continuation)
+    assert_not_contains "$out" "source: run-step-degraded" \
+      "an unresolved $terminal_status continuation replayed cached working state"
+    assert_not_contains "$out" "state: working" \
+      "an unresolved $terminal_status continuation remained working"
+    FM_FAKE_NM_RC=124
+    out=$(run_crew_state "$d" continuation)
+    assert_not_contains "$out" "source: run-step-degraded" \
+      "an unresolved $terminal_status continuation left cached state behind"
+  done
+  pass "terminal continuation rows with unresolved heads clear cached working state"
+}
+
 # crew_is_provably_working end-to-end: the degraded read is what the watcher's
 # absorb path actually consumes, so prove the predicate flips back to true.
 test_provably_working_via_degraded_run_step() {
@@ -2790,6 +2818,7 @@ test_pipeline_owned_unresolvable_head_attributes
 test_terminal_unresolvable_head_still_rejected
 test_runs_list_unresolvable_head_still_rejected
 test_detached_continuation_unresolved_run_head_preserves_cache
+test_detached_continuation_terminal_unresolved_head_clears_cache
 test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current

@@ -653,7 +653,12 @@ nm_runs_row_for_branch() {  # <branch> <runs-listing>
       relation=$(nm_head_relation "$sha")
       case "$relation" in
         equal|run-ahead) printf 'attributable\t%s\t%s' "$st" "$sha" ;;
-        unresolved)     printf 'inconclusive\t%s\t%s' "$st" "$sha" ;;
+        unresolved)
+          case "$st" in
+            running) printf 'inconclusive\t%s\t%s' "$st" "$sha" ;;
+            *)       printf 'rejected\t%s\t%s' "$st" "$sha" ;;
+          esac
+          ;;
         *)              printf 'rejected\t%s\t%s' "$st" "$sha" ;;
       esac
       return 0
@@ -1154,8 +1159,8 @@ if [ "$KIND" != secondmate ]; then
   esac
 fi
 
-# The run lookup could not complete, and this crew has a recent run-step on
-# record: report that last known step, degraded, rather than unknown. Bounded by
+# The run lookup is inconclusive, and this crew has a recent run-step on record:
+# report that last known step, degraded, rather than unknown. Bounded by
 # FM_CREW_STATE_DEGRADED_MAX_AGE so a permanently unreachable daemon stops
 # absorbing wedge suspicion instead of hiding it forever, and never reached at
 # all on a completed lookup that simply found no run.

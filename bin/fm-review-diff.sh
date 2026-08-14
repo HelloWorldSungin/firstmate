@@ -6,10 +6,9 @@
 # the default branch, and local-only projects against the local default branch.
 # When state/<id>.meta records pr= (URL or number) for an open PR, the compare
 # side is ALWAYS a freshly fetched refs/pull/<n>/head by default so review stays
-# current after no-mistakes fix rounds push to the PR. A recorded pr_head= is
-# only a fallback when fetch fails (stale recorded SHAs must never win over a
-# reachable remote PR head). If neither PR head can be resolved, fall back to
-# the task record's branch= with a warning, fetching that branch when needed.
+# current after no-mistakes fix rounds push to the PR. For a PR continuation,
+# the recorded remote branch is next, ahead of recorded pr_head= and local
+# offline fallbacks. Ordinary tasks retain recorded pr_head= before branch=.
 # Legacy metadata without branch= retains the fm/<id> and ambient-branch fallback.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
@@ -83,6 +82,11 @@ else
     [ -n "$BRANCH" ] || { echo "error: branch fm/$ID does not exist, metadata records no branch=, and worktree $WT is detached" >&2; exit 1; }
   fi
 fi
+PR_CONTINUATION=0
+if [ "$IS_CONTINUATION" = 1 ] \
+  && { [ "$MODE" = no-mistakes ] || [ "$MODE" = direct-PR ]; }; then
+  PR_CONTINUATION=1
+fi
 
 resolve_local_task_branch() {
   if git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}" >/dev/null; then
@@ -103,8 +107,7 @@ fetch_remote_task_branch() {
 
 resolve_task_branch() {
   TASK_BRANCH_SOURCE=
-  if [ "$IS_CONTINUATION" = 1 ] \
-    && { [ "$MODE" = no-mistakes ] || [ "$MODE" = direct-PR ]; }; then
+  if [ "$PR_CONTINUATION" = 1 ]; then
     if fetch_remote_task_branch; then
       TASK_BRANCH_SOURCE=remote
       return 0
@@ -155,17 +158,14 @@ fetch_pull_head() {
   printf '%s' "$resolved"
 }
 
-resolve_pr_head() {
-  local pr_url=$1 recorded_head=$2 n resolved
-  n=$(pr_number_from_target "$pr_url") || true
-  if [ -n "$n" ]; then
-    if resolved=$(fetch_pull_head "$n"); then
-      printf '%s' "$resolved"
-      return 0
-    fi
-  fi
-  # Offline / unreachable remote: recorded pr_head is better than the local
-  # branch, but never preferred over a successful pull-head fetch above.
+fetch_pr_head_for_target() {
+  local pr_url=$1 n
+  n=$(pr_number_from_target "$pr_url") || return 1
+  fetch_pull_head "$n"
+}
+
+resolve_recorded_pr_head() {
+  local recorded_head=$1
   if [ -n "$recorded_head" ] \
     && git -C "$WT" cat-file -e "$recorded_head^{commit}" 2>/dev/null; then
     printf '%s' "$recorded_head"
@@ -177,20 +177,40 @@ resolve_pr_head() {
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD_RECORDED=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
 COMPARE_REF=
+TASK_BRANCH_SOURCE=
 if [ -n "$PR_URL" ]; then
-  if PR_HEAD=$(resolve_pr_head "$PR_URL" "$PR_HEAD_RECORDED"); then
+  if PR_HEAD=$(fetch_pr_head_for_target "$PR_URL"); then
     COMPARE_REF=$PR_HEAD
   fi
 fi
-if [ -z "$COMPARE_REF" ]; then
-  resolve_task_branch || {
+if [ -z "$COMPARE_REF" ] && [ "$PR_CONTINUATION" = 1 ]; then
+  if fetch_remote_task_branch; then
+    TASK_BRANCH_SOURCE=remote
+  elif PR_HEAD=$(resolve_recorded_pr_head "$PR_HEAD_RECORDED"); then
+    COMPARE_REF=$PR_HEAD
+  elif resolve_local_task_branch; then
+    TASK_BRANCH_SOURCE=local-fallback
+  else
     echo "error: recorded task branch $BRANCH does not resolve locally or from origin" >&2
     exit 1
-  }
-  if [ -n "$PR_URL" ]; then
+  fi
+  if [ "$TASK_BRANCH_SOURCE" = local-fallback ]; then
     echo "warning: PR head unavailable; diff may lag the open PR (using recorded task branch $BRANCH)" >&2
-  elif [ "$TASK_BRANCH_SOURCE" = local-fallback ]; then
-    echo "warning: remote task branch $BRANCH unavailable; diff may lag the open PR (using local branch)" >&2
+  fi
+elif [ -z "$COMPARE_REF" ]; then
+  if [ -n "$PR_URL" ] \
+    && PR_HEAD=$(resolve_recorded_pr_head "$PR_HEAD_RECORDED"); then
+    COMPARE_REF=$PR_HEAD
+  else
+    resolve_task_branch || {
+      echo "error: recorded task branch $BRANCH does not resolve locally or from origin" >&2
+      exit 1
+    }
+    if [ -n "$PR_URL" ]; then
+      echo "warning: PR head unavailable; diff may lag the open PR (using recorded task branch $BRANCH)" >&2
+    elif [ "$TASK_BRANCH_SOURCE" = local-fallback ]; then
+      echo "warning: remote task branch $BRANCH unavailable; diff may lag the open PR (using local branch)" >&2
+    fi
   fi
 fi
 

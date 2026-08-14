@@ -194,13 +194,14 @@ test_detached_continuation_uses_recorded_remote_branch() {
 }
 
 test_pr_continuation_prefers_recorded_remote_branch() {
-  local case_dir out continued
+  local case_dir out continued stale_sha
   case_dir=$(make_case stale-continuation-local-ref)
   continued=feature/existing-pr
   git -C "$case_dir/wt" checkout -q -b "$continued" main
   printf 'stale-local-continuation\n' > "$case_dir/wt/feature.txt"
   git -C "$case_dir/wt" add feature.txt
   git -C "$case_dir/wt" commit -qm "stale local continuation"
+  stale_sha=$(git -C "$case_dir/wt" rev-parse HEAD)
   git -C "$case_dir/wt" push -q origin "$continued"
   git -C "$case_dir/wt" checkout -q -b continuation-push
   printf 'remote-current-continuation\n' > "$case_dir/wt/feature.txt"
@@ -208,7 +209,8 @@ test_pr_continuation_prefers_recorded_remote_branch() {
   git -C "$case_dir/wt" commit -qm "detached continuation push"
   git -C "$case_dir/wt" push -q origin "HEAD:$continued"
   git -C "$case_dir/wt" checkout --detach -q
-  write_task_meta "$case_dir" "branch=$continued" "mode=no-mistakes"
+  write_task_meta "$case_dir" "branch=$continued" "mode=no-mistakes" \
+    "pr=https://github.com/example/repo/pull/9" "pr_head=$stale_sha"
 
   out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
 

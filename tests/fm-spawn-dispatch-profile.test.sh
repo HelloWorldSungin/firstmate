@@ -1004,6 +1004,27 @@ test_spawn_refuses_fully_qualified_task_branch_marker() {
   pass "spawn refuses fully qualified task branch markers"
 }
 
+test_spawn_refuses_refspec_force_task_branch_marker() {
+  local rec id runtime_home out status
+  id='continue-force-refused-z12'
+  rec=$(make_spawn_case continue-force-refused claude "$id")
+  read_case_record "$rec"
+  sed -i "s|firstmate-task-branch=fm/$id|firstmate-task-branch=+feature/existing|" \
+    "$HOME_DIR/data/$id/brief.md"
+  runtime_home="$CASE_DIR/runtime-home"
+  mkdir -p "$runtime_home/.claude"
+
+  out=$(HOME="$runtime_home" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a refspec-force task branch marker"
+  assert_contains "$out" "refspec force prefix" \
+    "spawn accepted a refspec-force task branch destination"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "spawn published metadata after the refspec-force branch refusal"
+  pass "spawn refuses refspec-force task branch markers"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -1037,5 +1058,6 @@ test_active_dispatch_profile_does_not_block_secondmate_launch
 test_spawn_copies_continued_task_branch_from_brief_flag
 test_spawn_refuses_default_branch_task_marker
 test_spawn_refuses_fully_qualified_task_branch_marker
+test_spawn_refuses_refspec_force_task_branch_marker
 
 printf '\nall fm-spawn-dispatch-profile tests passed\n'
