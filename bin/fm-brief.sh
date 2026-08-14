@@ -106,6 +106,9 @@
 # blocked when firstmate must act. Ship and design briefs teach both with worked examples,
 # and ship briefs use blocked for the no-mistakes validation-trigger handoff.
 # Ship, design, and scout briefs also require a readable current state after "resolved:".
+# They identify firstmate as the worker's instructor and require firstmate attribution
+# in resolved status, reports, PR bodies, and commits unless the decision text explicitly
+# says the captain was consulted; secondmate charters apply the same rule to resolved status.
 # Ship and design briefs pair the pause verb with "working:" around backgrounded pipeline calls.
 # For a no-mistakes ship, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
