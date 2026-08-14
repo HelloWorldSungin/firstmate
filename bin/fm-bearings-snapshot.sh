@@ -369,6 +369,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | {id,state:.bearings_state,
           doing:((if .bearings_state == "active_child_work" then
                     ([.active_children[] | .id + ": " + (.doing // .state)] | join("; "))
+                  elif .bearings_state == "abandoned_child_work" then
+                    ([.abandoned_children[] | .id + ": " + (.doing // .state)] | join("; "))
                   elif .bearings_state == "captain_decision" then
                     ([.bearings_captain_holds[] | .summary] | join("; "))
                   elif .bearings_state == "externally_held" then
