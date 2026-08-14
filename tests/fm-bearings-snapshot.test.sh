@@ -811,11 +811,16 @@ EOF
   ' >/dev/null || fail "abandoned child was reduced to healthy no-work: $canonical"
   json=$(FM_FAKE_AGENT_STATE=dead run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    .secondmates[] | select(.id == "abandoned-mate")
-    | .state == "abandoned_child_work"
-      and (.doing | contains("abandoned-child"))
-      and (.doing | contains("worker gone (dead)"))
-  ' >/dev/null || fail "Bearings did not preserve the abandoned child identity and detail: $json"
+    (.secondmates[] | select(.id == "abandoned-mate")
+      | .state == "abandoned_child_work"
+        and (.doing | contains("abandoned-child"))
+        and (.doing | contains("worker gone (dead)")))
+      and (.in_flight[] | select(.id == "abandoned-mate")
+        | .kind == "secondmate"
+          and .state == "abandoned_child_work"
+          and (.doing | contains("abandoned-child"))
+          and (.doing | contains("worker gone (dead)")))
+  ' >/dev/null || fail "Bearings did not route the abandoned child into Underway with identity and detail: $json"
   pass "abandoned secondmate child remains actionable with identity and detail"
 }
 
