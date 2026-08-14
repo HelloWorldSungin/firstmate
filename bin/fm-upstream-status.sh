@@ -268,6 +268,8 @@ if [ "${FM_UPSTREAM_STATUS_INTERNAL:-0}" = 1 ]; then
   exit 0
 fi
 
+git -C "$ROOT" remote get-url upstream >/dev/null 2>&1 || exit 0
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-upstream-status.XXXXXX") || {
   printf 'UPSTREAM: unable to measure upstream - temporary repository could not be created\n'
   exit 1

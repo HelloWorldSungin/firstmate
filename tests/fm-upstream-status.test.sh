@@ -66,15 +66,40 @@ make_stalling_git() {  # <directory>
   chmod +x "$directory/git"
 }
 
+make_failing_perl() {  # <directory>
+  local directory=$1
+  mkdir -p "$directory"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$directory/perl"
+  chmod +x "$directory/perl"
+}
+
 test_absent_remote_is_inert() {
-  local fixture fork upstream out
+  local fixture fork upstream out rc shim
   fixture=$(make_fixture absent)
   fork=${fixture%%|*}
   upstream=${fixture#*|}
   git -C "$fork" remote remove upstream
   out=$(run_status "$fork")
   [ -z "$out" ] || fail "absent upstream remote should be silent, got: $out"
-  pass "upstream status is inert without an upstream remote"
+
+  set +e
+  out=$(TMPDIR="$TMP_ROOT/absent/missing" FM_ROOT_OVERRIDE="$fork" \
+    FM_UPSTREAM_STATUS_TIMEOUT=10 "$STATUS" 2>/dev/null)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "absent upstream should bypass unavailable scratch space"
+  [ -z "$out" ] || fail "scratch failure should stay silent without upstream, got: $out"
+
+  shim="$TMP_ROOT/absent/runner-shim"
+  make_failing_perl "$shim"
+  set +e
+  out=$(PATH="$shim:$PATH" FM_TIMEOUT_FORCE_FALLBACK=1 FM_ROOT_OVERRIDE="$fork" \
+    FM_UPSTREAM_STATUS_TIMEOUT=10 "$STATUS" 2>/dev/null)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "absent upstream should bypass an unavailable bounded runner"
+  [ -z "$out" ] || fail "runner failure should stay silent without upstream, got: $out"
+  pass "upstream status gates all setup on the upstream remote"
 }
 
 test_reports_drift_without_mutating_source_repo() {
