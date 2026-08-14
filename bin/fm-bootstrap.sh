@@ -17,6 +17,7 @@
 #                 "RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup",
 #                 "TANGLE: <remediation>",
 #                 "VAULT_DRIFT: <project>: <vault problem and remedy>",
+#                 "UPSTREAM: <fork drift or measurement failure>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
@@ -59,6 +60,9 @@
 #          measured at all; the check is read-only and runs in detect-only
 #          sessions too. bin/fm-vault-drift.sh owns the vault shapes, thresholds,
 #          and exact wording.
+#          An UPSTREAM line is the optional fork-drift detector's read-only
+#          report. bin/fm-upstream-status.sh owns its trigger and wording, stays
+#          inert without an upstream remote, and never fetches into this repo.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -295,6 +299,11 @@ fleet_sync() {
 vault_drift_check() {
   FM_HOME="$FM_HOME" FM_PROJECTS_OVERRIDE="$PROJECTS" FM_DATA_OVERRIDE="$DATA" \
     "$SCRIPT_DIR/fm-vault-drift.sh" || true
+}
+
+upstream_status_check() {
+  [ -x "$SCRIPT_DIR/fm-upstream-status.sh" ] || return 0
+  FM_ROOT_OVERRIDE="$FM_ROOT" "$SCRIPT_DIR/fm-upstream-status.sh" || true
 }
 
 # docs/gbrain.md owns the rule. This read-only check has no fleet-sync
@@ -1194,6 +1203,9 @@ if [ -n "$tangle_branch" ]; then
     echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
   fi
 fi
+# Fork-upstream drift is read-only and independent of the session lock.
+# The detector stays inert unless this checkout opts in with an upstream remote.
+upstream_status_check
 # Documentation-vault drift is read-only, so a detect-only session can inspect
 # the clones immediately. A normal session checks after fleet sync below so it
 # inspects the resulting clone state. bin/fm-vault-drift.sh owns the shapes,

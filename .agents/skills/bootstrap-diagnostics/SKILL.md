@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -34,6 +34,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
   An `external vault link absent` or `link broken` line means drift cannot be measured there at all - the exact blindness this check exists to end - so treat restoring the link (or registering the vault repo as its own project) as the fix, and do not read the missing measurement as "the vault is current".
   An `external vault target invalid` line means a declared location lacks the OKF marker or a recognized bundle is not backed by a separate Git repository; correct the target or declaration before treating it as a measurable vault.
   The check is detection only by design: a vault is curated knowledge, so never auto-write one, and never modify a project clone to silence the line.
+- `UPSTREAM: behind ...; sync trigger not crossed` - the fork has measurable upstream drift below its standing trigger; relay the count as an FYI in the next natural captain-facing outcome and never merge it inline or through `/updatefirstmate`.
+- `UPSTREAM: behind ...; sync trigger crossed: ...` - load [`/sync-upstream`](../sync-upstream/SKILL.md) and follow its evaluation and dispatched-PR procedure; the diagnostic authorizes no inline merge and no PR merge.
+- `UPSTREAM: unable to measure ...` - report that upstream drift is currently unknown, preserve the existing fork state, and fix the named remote, transport, ancestry, or timeout blocker before treating the fork as current.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.

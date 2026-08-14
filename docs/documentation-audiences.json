@@ -130,6 +130,34 @@
       "target": "docs/configuration.md"
     },
     {
+      "source": "bin/fm-bootstrap.sh",
+      "target": "bin/fm-upstream-status.sh"
+    },
+    {
+      "source": ".agents/skills/sync-upstream/SKILL.md",
+      "target": "bin/fm-upstream-status.sh"
+    },
+    {
+      "source": ".agents/skills/sync-upstream/SKILL.md",
+      "target": "docs/fork-divergence.md"
+    },
+    {
+      "source": ".agents/skills/sync-upstream/SKILL.md",
+      "target": ".agents/skills/sync-upstream/sync-round-brief-template.md"
+    },
+    {
+      "source": ".agents/skills/sync-upstream/sync-round-brief-template.md",
+      "target": "docs/fork-divergence.md"
+    },
+    {
+      "source": ".agents/skills/updatefirstmate/SKILL.md",
+      "target": "bin/fm-upstream-status.sh"
+    },
+    {
+      "source": ".agents/skills/updatefirstmate/SKILL.md",
+      "target": ".agents/skills/sync-upstream/SKILL.md"
+    },
+    {
       "source": "docs/one-owner.md",
       "target": "docs/verification/pointer-check.md"
     },
@@ -244,6 +272,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/sync-upstream/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/sync-upstream/sync-round-brief-template.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/updatefirstmate/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -333,6 +369,10 @@
     },
     {
       "path": "docs/fleet-data-contracts.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/fork-divergence.md",
       "audience": "maintainer-architecture"
     },
     {

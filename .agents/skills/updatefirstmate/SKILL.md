@@ -1,7 +1,7 @@
 ---
 name: updatefirstmate
 description: >-
-  Self-update a running firstmate and its secondmates to the latest from origin.
+  Self-update a running firstmate and its secondmates to the latest from the fork, with upstream drift reported.
   Use when the captain invokes /updatefirstmate (e.g. "/updatefirstmate", "update firstmate", "pull the latest firstmate").
   Fast-forwards this firstmate repo's default branch and every local or remote secondmate through its guarded update path (never forced, never disruptive), then re-reads AGENTS.md and nudges each updated secondmate to do the same, so the whole tree runs the latest bin/ and instructions.
 user-invocable: true
@@ -47,15 +47,25 @@ This touches only the firstmate repo and its own worktrees, never anything under
    This is a gentle steer, not an interruption: the secondmate already got a safe tracked-files fast-forward, and the nudge never forces, tears down, or discards its work.
    A secondmate that was skipped, already current, or has no live metadata is not on the list and needs no nudge.
 
-4. **Report to the captain in plain outcomes.**
-   Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the latest, and which were left as-is and why.
-   For example: "Captain, firstmate and both second mates are now on the latest."
+4. **Report upstream drift without integrating it.**
+   Run the sole drift reader after the fork fast-forward:
+   ```sh
+   bin/fm-upstream-status.sh --details
+   ```
+   It stays silent when the fork contains upstream or no `upstream` remote exists.
+   Relay any drift or measurement failure in the final outcome, but do not fetch into the running repository, merge upstream, scaffold a sync round, or merge a sync PR from this skill.
+   The separately invoked [`/sync-upstream`](../sync-upstream/SKILL.md) skill owns evaluation and dispatch.
+
+5. **Report to the captain in plain outcomes.**
+   Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the fork's latest, what upstream drift remains, and which targets were left as-is and why.
+   For example: "Captain, firstmate and both second mates are now on the fork's latest; upstream is 8 changes ahead."
    Surface any skipped target whose reason needs the captain's attention - for instance a home with its own un-landed changes (diverged) or local edits (dirty), which were left untouched on purpose.
 
 ## Safety
 
 - **Fast-forward only.**
   A target that has diverged, is dirty, is offline, or is on a non-default branch is skipped and reported, never forced or stashed.
+  Upstream drift is reported read-only and is never merged by this skill.
   Nothing with unlanded work is ever discarded - this is prime directive #3.
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.

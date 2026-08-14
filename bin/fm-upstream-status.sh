@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# Report this fork's drift from its optional upstream remote without changing
+# this repository.
+#
+# Usage: fm-upstream-status.sh [--details]
+#
+# The presence of a git remote named `upstream` is the opt-in.
+# Without it the command exits 0 silently.
+# When upstream is current it also exits 0 silently.
+# When the fork is behind, the default output is one `UPSTREAM:` summary naming
+# the first-parent change count, instruction-surface count, and whether the
+# standing trigger was crossed.
+# `--details` adds the measured target and merge base, pending changes grouped
+# by their primary subsystem, and paths changed on both sides of the merge base.
+# Pull-request references use owner/repo#number rather than an ambiguous bare
+# number whenever the upstream commit subject carries a PR number.
+#
+# The detector never fetches into this repository, updates one of its refs,
+# merges, or changes a worktree.
+# It fetches upstream HEAD into a disposable bare repository whose object store
+# can read this repository's objects as alternates, then removes that temporary
+# repository before exiting.
+# FM_UPSTREAM_STATUS_TIMEOUT bounds that temporary fetch in seconds (default 20).
+# FM_ROOT_OVERRIDE selects the repository, primarily for bootstrap and tests.
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+REMOTE=upstream
+DETAILS=0
+THRESHOLD=15
+TIMEOUT=${FM_UPSTREAM_STATUS_TIMEOUT:-20}
+
+usage() {
+  awk '
+    NR == 1 { next }
+    /^#/ { sub(/^# ?/, ""); print; next }
+    { exit }
+  ' "$0"
+}
+
+case "${1:-}" in
+  "") ;;
+  --details) DETAILS=1 ;;
+  -h|--help) usage; exit 0 ;;
+  *) echo "usage: fm-upstream-status.sh [--details]" >&2; exit 2 ;;
+esac
+
+case "$TIMEOUT" in
+  ''|*[!0-9]*) TIMEOUT=20 ;;
+esac
+[ "$TIMEOUT" -ge 1 ] || TIMEOUT=20
+
+# An absent upstream remote is the inert, healthy state for upstream's own users.
+upstream_url=$(git -C "$ROOT" remote get-url "$REMOTE" 2>/dev/null) || exit 0
+
+repo_label() {  # <remote-url-or-path>
+  local value=$1 path owner repo
+  value=${value%/}
+  case "$value" in
+    *://*)
+      path=${value#*://}
+      path=${path#*/}
+      ;;
+    *@*:* ) path=${value#*:} ;;
+    *) path=$value ;;
+  esac
+  path=${path%/}
+  repo=${path##*/}
+  repo=${repo%.git}
+  path=${path%/*}
+  owner=${path##*/}
+  if [ -n "$owner" ] && [ -n "$repo" ]; then
+    printf '%s/%s\n' "$owner" "$repo"
+  else
+    printf '%s\n' upstream
+  fi
+}
+
+resolve_fork_ref() {
+  local ref
+  ref=$(git -C "$ROOT" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ] && git -C "$ROOT" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
+  for ref in refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master; do
+    if git -C "$ROOT" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+      printf '%s\n' "$ref"
+      return 0
+    fi
+  done
+  git -C "$ROOT" rev-parse --verify -q 'HEAD^{commit}' >/dev/null || return 1
+  printf '%s\n' HEAD
+}
+
+report_failure() {
+  printf 'UPSTREAM: unable to measure %s - %s\n' "$upstream_label" "$1"
+  exit 1
+}
+
+fork_ref=$(resolve_fork_ref) || {
+  upstream_label=$(repo_label "$upstream_url")
+  report_failure 'fork default branch cannot be resolved'
+}
+fork_oid=$(git -C "$ROOT" rev-parse "$fork_ref^{commit}")
+upstream_label=$(repo_label "$upstream_url")
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-upstream-status.XXXXXX") \
+  || report_failure 'temporary repository could not be created'
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+git init -q --bare "$tmp/repo.git" || report_failure 'temporary repository could not be initialized'
+common_dir=$(git -C "$ROOT" rev-parse --git-common-dir) \
+  || report_failure 'fork object store cannot be resolved'
+case "$common_dir" in
+  /*) ;;
+  *) common_dir=$(cd "$ROOT" && cd "$common_dir" && pwd -P) \
+       || report_failure 'fork object store cannot be resolved' ;;
+esac
+objects_dir="$common_dir/objects"
+
+# The temporary ref points through the alternate object store.
+GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" update-ref refs/heads/fork "$fork_oid" \
+  || report_failure 'fork default branch could not be staged for comparison'
+
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
+fetch_status=0
+GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" GIT_TERMINAL_PROMPT=0 \
+  fm_run_timed "$TIMEOUT" git --git-dir="$tmp/repo.git" fetch --quiet \
+    --no-tags --no-write-fetch-head -- "$upstream_url" \
+    '+HEAD:refs/remotes/upstream/HEAD' || fetch_status=$?
+case "$fetch_status" in
+  0) ;;
+  124|137) report_failure "fetch timed out after ${TIMEOUT}s" ;;
+  125) report_failure 'no bounded command runner is available' ;;
+  *) report_failure "fetch failed with exit $fetch_status" ;;
+esac
+
+upstream_oid=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" rev-parse 'refs/remotes/upstream/HEAD^{commit}') \
+  || report_failure 'upstream HEAD is not a commit'
+merge_base=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" merge-base refs/heads/fork refs/remotes/upstream/HEAD) \
+  || report_failure 'fork and upstream have no common ancestor'
+behind=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" rev-list --first-parent --count \
+    "$merge_base..refs/remotes/upstream/HEAD")
+[ "$behind" -gt 0 ] || exit 0
+
+commits_file="$tmp/commits"
+contract_group="$tmp/group-contract"
+bin_group="$tmp/group-bin"
+docs_group="$tmp/group-docs"
+tests_group="$tmp/group-tests"
+other_group="$tmp/group-other"
+: > "$contract_group"
+: > "$bin_group"
+: > "$docs_group"
+: > "$tests_group"
+: > "$other_group"
+GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" rev-list --first-parent --reverse \
+    "$merge_base..refs/remotes/upstream/HEAD" > "$commits_file"
+
+instruction_count=0
+bin_count=0
+contract_count=0
+newest_date=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" show -s --format=%cs "$upstream_oid")
+
+render_change() {  # <commit> <subject>
+  local commit=$1 subject=$2 pr title
+  pr=
+  if [[ "$subject" =~ \(\#([0-9]+)\)$ ]]; then
+    pr=${BASH_REMATCH[1]}
+    title=${subject% "(#$pr)"}
+  elif [[ "$subject" =~ \#([0-9]+)$ ]]; then
+    pr=${BASH_REMATCH[1]}
+    title=${subject% "#$pr"}
+  else
+    title=$subject
+  fi
+  title=${title% }
+  if [ -n "$pr" ] && [ "$upstream_label" != upstream ]; then
+    printf -- '- %s#%s %s [%s]\n' "$upstream_label" "$pr" "$title" "${commit:0:12}"
+  else
+    printf -- '- %s@%s %s\n' "$upstream_label" "${commit:0:12}" "$subject"
+  fi
+}
+
+while IFS= read -r commit; do
+  [ -n "$commit" ] || continue
+  subject=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+    git --git-dir="$tmp/repo.git" show -s --format=%s "$commit")
+  paths=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+    git --git-dir="$tmp/repo.git" diff-tree --no-commit-id --name-only -r \
+      "$commit^1" "$commit")
+  touches_contract=0
+  touches_bin=0
+  touches_docs=0
+  touches_tests=0
+  while IFS= read -r path; do
+    case "$path" in
+      AGENTS.md|.agents/skills/*) touches_contract=1 ;;
+      bin/*) touches_bin=1 ;;
+      docs/*) touches_docs=1 ;;
+      tests/*) touches_tests=1 ;;
+    esac
+  done <<< "$paths"
+  if [ "$touches_contract" -eq 1 ] || [ "$touches_bin" -eq 1 ]; then
+    instruction_count=$((instruction_count + 1))
+  fi
+  [ "$touches_contract" -eq 0 ] || contract_count=$((contract_count + 1))
+  [ "$touches_bin" -eq 0 ] || bin_count=$((bin_count + 1))
+
+  if [ "$touches_contract" -eq 1 ]; then
+    render_change "$commit" "$subject" >> "$contract_group"
+  elif [ "$touches_bin" -eq 1 ]; then
+    render_change "$commit" "$subject" >> "$bin_group"
+  elif [ "$touches_docs" -eq 1 ]; then
+    render_change "$commit" "$subject" >> "$docs_group"
+  elif [ "$touches_tests" -eq 1 ]; then
+    render_change "$commit" "$subject" >> "$tests_group"
+  else
+    render_change "$commit" "$subject" >> "$other_group"
+  fi
+done < "$commits_file"
+
+trigger_reasons=
+if [ "$instruction_count" -gt 0 ]; then
+  trigger_reasons='instruction-surface change'
+fi
+if [ "$behind" -ge "$THRESHOLD" ]; then
+  if [ -n "$trigger_reasons" ]; then
+    trigger_reasons="$trigger_reasons; at least $THRESHOLD pending changes"
+  else
+    trigger_reasons="at least $THRESHOLD pending changes"
+  fi
+fi
+if [ -n "$trigger_reasons" ]; then
+  trigger="sync trigger crossed: $trigger_reasons"
+else
+  trigger='sync trigger not crossed'
+fi
+printf 'UPSTREAM: behind %s by %s merged changes (%s touch bin/, %s touch AGENTS.md/skills; newest %s); %s\n' \
+  "$upstream_label" "$behind" "$bin_count" "$contract_count" "$newest_date" "$trigger"
+
+[ "$DETAILS" -eq 1 ] || exit 0
+printf 'UPSTREAM_TARGET: %s@%s\n' "$upstream_label" "$upstream_oid"
+printf 'UPSTREAM_BASE: fork@%s merge-base@%s\n' "$fork_oid" "$merge_base"
+for group_spec in \
+  "AGENTS.md/skills|$contract_group" \
+  "bin/|$bin_group" \
+  "docs/|$docs_group" \
+  "tests/|$tests_group" \
+  "other|$other_group"; do
+  group_name=${group_spec%%|*}
+  group_file=${group_spec#*|}
+  [ -s "$group_file" ] || continue
+  printf 'UPSTREAM_CHANGES: %s\n' "$group_name"
+  cat "$group_file"
+done
+
+fork_paths="$tmp/fork-paths"
+upstream_paths="$tmp/upstream-paths"
+overlap_paths="$tmp/overlap-paths"
+LC_ALL=C GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" diff --name-only "$merge_base..refs/heads/fork" \
+  | LC_ALL=C sort -u > "$fork_paths"
+LC_ALL=C GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
+  git --git-dir="$tmp/repo.git" diff --name-only \
+    "$merge_base..refs/remotes/upstream/HEAD" | LC_ALL=C sort -u > "$upstream_paths"
+LC_ALL=C comm -12 "$fork_paths" "$upstream_paths" > "$overlap_paths"
+overlap_count=$(wc -l < "$overlap_paths" | tr -d '[:space:]')
+printf 'UPSTREAM_OVERLAP: %s paths changed on both sides of the merge base\n' "$overlap_count"
+if [ "$overlap_count" -gt 0 ]; then
+  sed 's/^/- /' "$overlap_paths"
+fi
