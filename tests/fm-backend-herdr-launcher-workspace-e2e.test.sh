@@ -65,11 +65,13 @@ cleanup_all() {
   [ "$CLEANED" = 0 ] || return 0
   CLEANED=1
   for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
-    [ -n "$wt" ] && treehouse return --force "$wt" >/dev/null 2>&1
+    if [ -n "$wt" ]; then
+      treehouse return --force "$wt" >/dev/null 2>&1 || { echo "cleanup: treehouse return $wt failed" >&2; status=1; }
+    fi
   done
   WORKTREES=()
-  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=$?
-  rm -rf "$TMP_ROOT"
+  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || { echo "cleanup: herdr lab teardown failed" >&2; status=1; }
+  rm -rf "$TMP_ROOT" 2>/dev/null || { echo "cleanup: tmp root removal failed" >&2; status=1; }
   return "$status"
 }
 trap cleanup_all EXIT

@@ -10,6 +10,9 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
+
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
@@ -33,8 +36,14 @@ SHIM_DIR=
 trap cleanup_all EXIT
 
 cleanup_all() {
-  "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
+  local status=0
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
+    fm_test_tmux_safe_kill_server "$REAL_TMUX" "$SOCKET" || { echo "cleanup: tmux server teardown failed" >&2; status=1; }
+  fi
+  if [ -n "${SHIM_DIR:-}" ]; then
+    rm -rf "$SHIM_DIR" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
@@ -169,6 +178,6 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
-cleanup_all
-printf '\nall fm-backend-tmux-smoke tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-tmux-smoke tests passed\n'

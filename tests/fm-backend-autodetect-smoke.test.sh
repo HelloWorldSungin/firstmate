@@ -69,9 +69,11 @@ ID="autodetectsmoke1"
 WT=
 cleanup_all() {
   local cleanup_status=0
-  [ -n "$WT" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT" >/dev/null 2>&1
-  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
+  if [ -n "$WT" ]; then
+    treehouse return --force "$WT" >/dev/null 2>&1 || { echo "cleanup: treehouse return failed" >&2; cleanup_status=1; }
+  fi
+  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || { echo "cleanup: herdr lab teardown failed" >&2; cleanup_status=1; }
+  rm -rf "$TMP_ROOT" 2>/dev/null || { echo "cleanup: tmp root removal failed" >&2; cleanup_status=1; }
   return "$cleanup_status"
 }
 on_exit() {

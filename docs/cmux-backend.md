@@ -108,7 +108,7 @@ A selected workspace that is not last closes normally; selection itself is not t
 Firstmate does not attempt to close the macOS window because cmux's socket cannot close a window holding a live terminal.
 
 Real tests share the captain's running app rather than creating an isolated cmux session.
-`tests/cmux-test-safety.sh` permits cleanup only for an exact currently listed `fm-test-` workspace and never enumerates and closes unrelated workspaces or relaunches the app.
+`tests/cmux-test-safety.sh` permits a close only for an exact currently listed `fm-test-` workspace, treats confirmed absence as idempotent success, and never enumerates and closes unrelated workspaces or relaunches the app.
 
 ## Active limits
 

@@ -32,6 +32,9 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
+
 # Skip gracefully if tmux is not installed.
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 
@@ -48,16 +51,20 @@ fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 cleanup_all() {
+  local status=0
   if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+      afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    fi
+    fm_test_safe_stop_process "$DAEMON_PID" daemon || status=1
   fi
+  DAEMON_PID=
   if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
-    "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
+    fm_test_tmux_safe_kill_server "$REAL_TMUX" "$SOCKET" || { echo "cleanup: tmux server teardown failed" >&2; status=1; }
   fi
-  rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || true
-  rm -rf "${STATE_DIR:-}" 2>/dev/null || true
+  rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
+  rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -417,4 +424,6 @@ test_scenario_a
 test_scenario_b
 test_scenario_c
 
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
+trap - EXIT
 echo "all e2e injection tests passed"

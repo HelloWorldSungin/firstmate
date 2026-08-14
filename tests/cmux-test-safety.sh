@@ -22,30 +22,66 @@ set -u
 # non-empty, <want_label> carries the fm-test- prefix, and the workspace is
 # CURRENTLY LISTED with the scoped title for <want_label>. 1 (REFUSE) on
 # anything else. Requires bin/backends/cmux.sh already sourced.
-cmux_refuse_if_unsafe() {  # <workspace_id> <want_label>
-  local wsid=$1 want_label=$2 want_title title
+cmux_test_workspace_state() {  # <workspace_id> <want_label>
+  local wsid=$1 want_label=$2 want_title inventory title
   [ -n "$wsid" ] || { echo "cmux safety guard: refusing - empty workspace id" >&2; return 1; }
   case "$want_label" in
     fm-test-*) : ;;
     *) echo "cmux safety guard: refusing - label '$want_label' does not carry the fm-test- prefix" >&2; return 1 ;;
   esac
   want_title=$(fm_backend_cmux_scoped_title "$want_label")
-  title=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null | jq -r --arg id "$wsid" '.workspaces[]? | select(.id == $id) | .title' 2>/dev/null)
+  inventory=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null) || {
+    echo "cmux safety guard: refusing - workspace inventory is unreadable" >&2
+    return 1
+  }
+  title=$(printf '%s' "$inventory" | jq -er --arg id "$wsid" '
+    if (.workspaces | type) != "array" then error("invalid workspace inventory")
+    else [.workspaces[] | select(.id == $id) | .title]
+      | if length == 0 then ""
+        elif length == 1 and (.[0] | type) == "string" then .[0]
+        else error("ambiguous workspace inventory")
+        end
+    end
+  ' 2>/dev/null) || {
+    echo "cmux safety guard: refusing - workspace inventory is invalid or ambiguous" >&2
+    return 1
+  }
+  if [ -z "$title" ]; then
+    printf 'absent\n'
+    return 0
+  fi
   if [ "$title" != "$want_title" ]; then
     echo "cmux safety guard: refusing - workspace $wsid title '${title:-<not found>}' does not match expected '$want_title'" >&2
+    return 1
+  fi
+  printf 'present\n'
+}
+
+cmux_refuse_if_unsafe() {  # <workspace_id> <want_label>
+  local state
+  state=$(cmux_test_workspace_state "$1" "$2") || return 1
+  if [ "$state" != present ]; then
+    echo "cmux safety guard: refusing - workspace $1 not found" >&2
     return 1
   fi
   return 0
 }
 
 # cmux_safe_close_workspace: the ONLY sanctioned way for a test to tear down
-# a workspace it created. Guards first (cmux_refuse_if_unsafe), then closes
-# the whole workspace (never a bulk/enumerate-based close). Best-effort past
-# the guard (a workspace already gone must not fail the caller's cleanup
-# trap) - but the guard itself is NOT best-effort: a refusal here means
-# cleanup leaves the isolated, throwaway workspace for that fm-test- label open
-# rather than risk the wrong target.
+# a workspace it created. Validates its scoped ownership and state, then closes
+# the whole workspace (never a bulk/enumerate-based close), and confirms it is
+# absent afterward. A workspace already confirmed absent is an idempotent
+# success; inventory, guard, close, and post-close verification failures
+# propagate to the caller.
 cmux_safe_close_workspace() {  # <workspace_id> <want_label>
-  cmux_refuse_if_unsafe "$1" "$2" || return 1
-  fm_backend_cmux_cli close-workspace --workspace "$1" >/dev/null 2>&1 || true
+  local state
+  state=$(cmux_test_workspace_state "$1" "$2") || return 1
+  [ "$state" = present ] || return 0
+  fm_backend_cmux_cli close-workspace --workspace "$1" >/dev/null 2>&1 || return 1
+  state=$(cmux_test_workspace_state "$1" "$2") || return 1
+  if [ "$state" != absent ]; then
+    echo "cmux safety guard: workspace $1 still exists after close" >&2
+    return 1
+  fi
+  return 0
 }

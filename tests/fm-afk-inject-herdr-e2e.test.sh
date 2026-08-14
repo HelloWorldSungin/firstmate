@@ -40,13 +40,15 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
 
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
 # as a cross-session parent identity (tests/herdr-test-safety.sh).
 herdr_forget_inherited_pane
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
+fail() { printf 'not ok - %s\n' "$1" >&2; trap - EXIT; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 SESSION="fm-lab-afk-herdr-e2e-$$"
@@ -60,14 +62,18 @@ PANE_ID=
 LOOP_SCRIPT=
 
 cleanup_all() {
+  local status=0
   if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+      afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    fi
+    fm_test_safe_stop_process "$DAEMON_PID" daemon || status=1
   fi
-  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || true
-  rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || true
-  rm -rf "${STATE_DIR:-}" 2>/dev/null || true
+  DAEMON_PID=
+  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
+  rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -526,9 +532,8 @@ test_scenario_b
 test_scenario_c
 test_scenario_d_max_defer
 
-echo "all real-herdr afk injection e2e tests passed"
-
 fm_backend_herdr_kill "$SUPERVISOR_TARGET" 2>/dev/null || true
 fm_backend_herdr_kill "$SESSION:$FAKE_CREW_PANE_ID" 2>/dev/null || true
-cleanup_all
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+echo "all real-herdr afk injection e2e tests passed"

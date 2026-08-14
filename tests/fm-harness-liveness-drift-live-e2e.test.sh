@@ -29,6 +29,9 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
+
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 note() { printf '# %s\n' "$1"; }
@@ -40,8 +43,14 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness-drift.XXXXXX")
 SESSION=drift
 
 cleanup_all() {
-  "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${LAB:-}" ] && rm -rf "$LAB"
+  local status=0
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
+    fm_test_tmux_safe_kill_server "$REAL_TMUX" "$SOCKET" || { echo "cleanup: tmux server teardown failed" >&2; status=1; }
+  fi
+  if [ -n "${LAB:-}" ]; then
+    rm -rf "$LAB" 2>/dev/null || { echo "cleanup: lab removal failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -123,6 +132,6 @@ if [ -n "$SKIPPED" ]; then
 fi
 note "checked $CHECKED installed harness(es)"
 
-cleanup_all
-printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'
