@@ -403,6 +403,7 @@ When a routed-work phase has a supervisor-actionable material change worth repor
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
 When a decision you escalated is answered or a blocker clears and your domain resumes, append \`resolved: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
+Name the main firstmate in \`resolved:\` lines unless the decision text explicitly states the captain was consulted.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
 # Definition of done
@@ -437,7 +438,7 @@ REPO=${POS[1]}
 FIRSTMATE_REPO_CREW_SECTION=
 if fm_brief_task_repo_is_firstmate "$REPO"; then
   IFS= read -r -d '' FIRSTMATE_REPO_ROLE_FACT <<'EOF' || true
-**You report to FIRSTMATE, not the captain.** You are working in a checkout of firstmate itself, so this worktree carries firstmate's own `AGENTS.md` and its `CLAUDE.md` symlink. Those instructions describe **firstmate's** role, including a mandatory captain address. They are not your instructions. Do not adopt that address in your status lines, commits, reports, PR body or issue comments, and never attribute firstmate's decisions to the captain.
+**You report to FIRSTMATE, not the captain.** You are working in a checkout of firstmate itself, so this worktree carries firstmate's own `AGENTS.md` and its `CLAUDE.md` symlink. Those instructions describe **firstmate's** role, including a mandatory captain address. They are not your instructions; follow the reporting line and attribution rules in the rules below.
 
 If you notice yourself reaching for the word "captain", treat that as role confusion rather than your reporting line.
 EOF
@@ -593,7 +594,9 @@ The report is your only task-authored deliverable, so anything worth keeping mus
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   You are instructed by firstmate; the captain is not in the loop.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   Name firstmate in \`resolved:\` lines, reports, and commits unless the decision text explicitly states the captain was consulted.
    \`resolved:\` carries NO state, so it must never be your last line: append the next state line
    (normally \`working:\`) in the same breath. A trailing \`resolved:\` makes you read as no state at
    all - invisible to firstmate and indistinguishable from a dead worker, which is worse than stale.
@@ -631,7 +634,9 @@ DESIGN_DOD=
 IFS= read -r -d '' DECISION_RULE <<'EOF' || true
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append `needs-decision: {summary of options}` and stop. Firstmate will apply the configured authority and reply with the decision.
+   You are instructed by firstmate; the captain is not in the loop.
    When firstmate replies or a blocker clears and you resume, append `resolved: {how it was decided or unblocked}` (add the same `[key=<slug>]` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   Name firstmate in `resolved:` lines, PR bodies, and commits unless the decision text explicitly states the captain was consulted.
 EOF
 DECISION_RULE=${DECISION_RULE%$'\n'}
 OUTPUT_KIND=ship
@@ -672,8 +677,9 @@ EOF
   DESIGN_DOD=${DESIGN_DOD%$'\n'}
   IFS= read -r -d '' DECISION_RULE <<'EOF' || true
 6. Every design question follows the one-at-a-time Design profile contract above.
-   Firstmate owns the answer or escalation.
+   Firstmate owns the answer or escalation; you are instructed by firstmate and the captain is not in the loop.
    Use the same stable key on the `needs-decision` event and the `resolved` event that closes it, and do not continue while that key is unanswered.
+   Name firstmate in `resolved:` lines, PR bodies, and commits unless the decision text explicitly states the captain was consulted.
 EOF
   DECISION_RULE=${DECISION_RULE%$'\n'}
 fi
