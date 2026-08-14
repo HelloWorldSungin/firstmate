@@ -21,8 +21,10 @@
 #   Spawn validates and copies that value to branch= in state/<id>.meta before
 #   the worker creates it, so current-state reconciliation has durable task
 #   identity independent of the pooled worktree's later ambient branch.
-#   A legacy brief without the marker may still launch, but its metadata omits
-#   branch= and any run later found there is deliberately unattributable.
+#   The marker names fm/<task-id> unless the brief was scaffolded with
+#   --continue-branch, in which case it names that existing branch; see
+#   bin/fm-brief.sh. A legacy brief without the marker may still launch, but its
+#   metadata omits branch= and any run later found there is deliberately unattributable.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile

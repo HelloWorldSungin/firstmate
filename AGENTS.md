@@ -514,6 +514,8 @@ If PR-based ship or design work is sourced from a work item, scaffold it with `-
 Never infer issue identity from task or PR prose, a git remote, or the repository a PR happens to land in.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
+If a ship or design task continues an existing branch, scaffold with `--continue-branch <name>`; if that need appears after a default scaffold, stop and regenerate rather than contradicting the generated Setup from the Task section.
+`bin/fm-brief.sh` owns the flag, the generated first action, and the checkout-versus-push rule for a branch another worktree already holds.
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
 Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.

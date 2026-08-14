@@ -178,6 +178,10 @@ test_help_includes_entire_header() {
     "fm-brief.sh --help omitted the issue argument"
   assert_contains "$help" "--work-item records a resolved work item" \
     "fm-brief.sh --help omitted the work-item argument"
+  assert_contains "$help" "--continue-branch <name> is how a ship or design task continues" \
+    "fm-brief.sh --help omitted the continue-branch argument"
+  assert_contains "$help" "a branch held by another worktree blocks checkout, not push" \
+    "fm-brief.sh --help omitted the checkout-versus-push rule"
   pass "fm-brief.sh: --help renders the complete header"
 }
 
@@ -355,6 +359,9 @@ test_ship_modes_generate_clean_briefs() {
       || fail "$id: brief did not record its machine-readable delivery contract line"
     grep -qx "<!-- firstmate-task-branch=fm/$id -->" "$brief" \
       || fail "$id: brief did not record its exact machine-readable task branch"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    grep -qx '1. First action: create your branch: `git checkout -b fm/'"$id"'`' "$brief" \
+      || fail "$id: ordinary Setup first action drifted from git checkout -b fm/<task-id>"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
@@ -433,8 +440,10 @@ yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yol
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
 mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship or design briefs
 mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship or design briefs
+continue-branch on a scout brief|brief-refused-b5 some-proj --scout --continue-branch other|--continue-branch applies only to ship or design briefs
+continue-branch on a secondmate charter|brief-refused-b6 --secondmate --no-projects --continue-branch other|--continue-branch applies only to ship or design briefs
 ROWS
-  pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
+  pass "fm-brief.sh: --yolo, scout/secondmate --mode, and --continue-branch on non-tracked-output kinds are refused, never silently dropped"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -1504,6 +1513,110 @@ test_resolved_line_and_pr_attribution_guidance() {
   pass "fm-brief.sh: resolved: lines and PR/commit attribution guidance is present in all brief variants"
 }
 
+# Ordinary Setup stays byte-stable via the no-issue goldens. These cases pin the
+# continue-an-existing-branch strategy as a generated contract rather than a
+# Task-section contradiction: the first action, the task-branch marker, and the
+# isolation assertion must agree, and the flag must refuse the shapes that would
+# silently recreate the original bug.
+test_continue_branch_renders_setup_and_marker() {
+  local home id continued brief iso br
+  home="$TMP_ROOT/continue-branch-home"
+  mkdir -p "$home/data"
+  continued='fm/existing-pr-head'
+  id='brief-continue-c1'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes \
+    --continue-branch "$continued" >/dev/null 2>&1 \
+    || fail "no-mistakes --continue-branch should scaffold"
+  brief="$home/data/$id/brief.md"
+  grep -qx "<!-- firstmate-task-branch=$continued -->" "$brief" \
+    || fail "continue-branch brief recorded fm/<task-id> instead of the existing branch"
+  assert_no_grep "<!-- firstmate-task-branch=fm/$id -->" "$brief" \
+    "continue-branch brief still recorded the unused fm/<task-id> marker"
+  assert_grep "1. First action: continue existing branch \`$continued\` from detached HEAD." "$brief" \
+    "continue-branch brief did not replace the Setup first action"
+  assert_no_grep "git checkout -b fm/$id" "$brief" \
+    "continue-branch brief still instructed git checkout -b fm/<task-id>"
+  assert_grep "git fetch origin $continued" "$brief" \
+    "continue-branch brief omitted fetch of the existing branch"
+  assert_grep "git checkout --detach FETCH_HEAD" "$brief" \
+    "continue-branch brief did not keep the worker detached"
+  assert_grep "a branch held by another worktree blocks checkout, not push" "$brief" \
+    "continue-branch brief omitted the checkout-versus-push rule"
+  assert_grep "git push origin HEAD:$continued" "$brief" \
+    "continue-branch brief omitted push HEAD:<branch> for the existing PR"
+  assert_grep "Do not create \`fm/$id\`." "$brief" \
+    "continue-branch brief did not forbid creating fm/<task-id>"
+  iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
+  br=$(grep -n 'First action: continue existing branch' "$brief" | head -1 | cut -d: -f1)
+  if [ -z "$iso" ] || [ -z "$br" ]; then
+    fail "continue-branch brief missing isolation assertion ($iso) or branch step ($br)"
+  fi
+  [ "$iso" -lt "$br" ] || fail "isolation assertion (line $iso) must precede the continue-branch step (line $br)"
+
+  id='brief-continue-c2'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only \
+    --continue-branch "$continued" >/dev/null 2>&1 \
+    || fail "local-only --continue-branch should scaffold"
+  brief="$home/data/$id/brief.md"
+  grep -qx "<!-- firstmate-task-branch=$continued -->" "$brief" \
+    || fail "local-only continue-branch brief recorded the wrong task-branch marker"
+  assert_grep "git checkout --detach $continued" "$brief" \
+    "local-only continue-branch brief did not detach at the existing branch"
+  assert_no_grep "git push origin HEAD:" "$brief" \
+    "local-only continue-branch brief instructed a remote push"
+  assert_grep "git update-ref refs/heads/$continued HEAD" "$brief" \
+    "local-only continue-branch brief omitted the local ref update"
+  assert_grep "Advance branch \`$continued\` without checking it out" "$brief" \
+    "local-only continue-branch brief still told the worker to work on the held branch"
+
+  pass "fm-brief.sh: --continue-branch renders Setup, marker, and isolation in agreement"
+}
+
+test_continue_branch_flag_validation() {
+  local home rc
+  home="$TMP_ROOT/continue-branch-validation-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-missing some-proj --mode no-mistakes --continue-branch \
+    > "$home/missing.stdout" 2> "$home/missing.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch without a value should fail"
+  assert_grep 'requires a value' "$home/missing.stderr" \
+    "--continue-branch without a value did not explain the missing argument"
+  assert_absent "$home/data/continue-missing/brief.md" \
+    "--continue-branch without a value wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-empty some-proj --mode no-mistakes --continue-branch= \
+    > "$home/empty.stdout" 2> "$home/empty.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch= should fail"
+  assert_grep 'requires a git branch name' "$home/empty.stderr" \
+    "--continue-branch= did not refuse an empty name"
+  assert_absent "$home/data/continue-empty/brief.md" \
+    "--continue-branch= wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-bad some-proj --mode no-mistakes --continue-branch 'bad..name' \
+    > "$home/bad.stdout" 2> "$home/bad.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch with an invalid ref should fail"
+  assert_grep 'valid git branch name' "$home/bad.stderr" \
+    "--continue-branch bad..name did not explain the invalid ref"
+  assert_absent "$home/data/continue-bad/brief.md" \
+    "--continue-branch bad..name wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-default some-proj --mode no-mistakes \
+    --continue-branch fm/continue-default \
+    > "$home/default.stdout" 2> "$home/default.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch fm/<task-id> should fail"
+  assert_grep 'ordinary new-branch strategy' "$home/default.stderr" \
+    "--continue-branch fm/<task-id> did not tell the caller to omit the flag"
+  assert_absent "$home/data/continue-default/brief.md" \
+    "--continue-branch fm/<task-id> wrote a brief"
+
+  pass "fm-brief.sh: --continue-branch refuses missing, empty, invalid, and default-strategy names"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1537,4 +1650,6 @@ test_firstmate_repo_crew_persona_without_a_projects_clone
 test_design_brief_is_harness_independent_and_adr_only
 test_firstmate_repo_crew_persona_in_a_secondmate_home
 test_resolved_line_and_pr_attribution_guidance
+test_continue_branch_renders_setup_and_marker
+test_continue_branch_flag_validation
 printf '\nall fm-brief tests passed\n'

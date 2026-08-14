@@ -936,6 +936,32 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+# A brief scaffolded with --continue-branch must record that existing branch in
+# metadata, not fm/<task-id>. Fails if spawn copies a name the worker never uses.
+test_spawn_copies_continued_task_branch_from_brief_flag() {
+  local rec id continued runtime_home out status
+  id='continue-branch-meta-z9'
+  continued='fm/existing-pr-head'
+  rec=$(make_spawn_case continue-branch-meta claude "$id")
+  read_case_record "$rec"
+  rm -f "$HOME_DIR/data/$id/brief.md"
+  FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    "$ROOT/bin/fm-brief.sh" "$id" sample --mode no-mistakes --continue-branch "$continued" >/dev/null 2>&1 \
+    || fail "fm-brief.sh --continue-branch should scaffold before spawn"
+  runtime_home="$CASE_DIR/runtime-home"
+  mkdir -p "$runtime_home/.claude"
+
+  out=$(HOME="$runtime_home" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "spawn of a continue-branch brief should succeed"
+  assert_grep "branch=$continued" "$HOME_DIR/state/$id.meta" \
+    "spawn did not copy the continued branch from the brief marker into metadata"
+  assert_no_grep "branch=fm/$id" "$HOME_DIR/state/$id.meta" \
+    "spawn recorded unused fm/<task-id> as the task branch"
+  pass "spawn copies --continue-branch into metadata instead of fm/<task-id>"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -966,5 +992,6 @@ test_claude_default_uses_home_config_and_records_evidence_store
 test_non_claude_harness_ignores_config_dir
 test_design_profile_resolves_on_claude_codex_and_pi
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_spawn_copies_continued_task_branch_from_brief_flag
 
 printf '\nall fm-spawn-dispatch-profile tests passed\n'
