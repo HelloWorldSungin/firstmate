@@ -76,6 +76,7 @@ The inbox never scans prose to invent an item that the keyed status fold did not
 
 A `checks_pending`, `draft`, `merged`, or `closed` pull request opens no item: it is a definite state with nothing for the captain to do.
 A pull request whose status is unknown does open one, because "we cannot tell you whether this is ready" is itself something the captain needs to see.
+`abandoned` does not open an item of its own: once it stops counting as quiet that is accounted for, Task activity ages it through the existing unexplained-quiet path, and a new inbox reason would be a taxonomy the captain did not ask for.
 
 Decision text is rendered in full and never truncated.
 Pull-request links are rendered as complete `https://...` URLs, never as a bare `#number`.
@@ -141,7 +142,8 @@ Two things answer for a quiet task, and either is enough.
 
 The first is being caught in the act.
 The snapshot's `current_state` is reconciled by [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), and two of the sources it can answer with are readings taken during that refresh: `run-step`, the validation run's own current step, and `pane`, the harness's own busy verdict.
-A task carrying a definite state from either was observed working, so ordinary quiet does not colour it; the one bound that still applies to it is below.
+A task carrying a working, parked, done, or failed state from either was observed in a condition that accounts for ordinary quiet, so elapsed time does not colour it; the one bound that still applies to it is below.
+`abandoned` is a definite live reading that does the opposite: the run is advancing with nobody to drive it, so it does not buy that exemption and is aged like any other unexplained quiet.
 Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `completion-attestation` is the scout's durable decision-inventory result, `status-log` is the event log this signal already reads, and `timeout`, `not-attempted`, `row-unavailable` and `none` are readings that were not taken.
 None of those excuses quiet, because the rule at the top of this page applies here too: not knowing is not the same as knowing it is fine.
 

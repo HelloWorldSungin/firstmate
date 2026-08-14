@@ -855,11 +855,14 @@ task_json_one() {  # <meta-path> [degraded]
   # reconciled against the crew LIFECYCLE, which only clears a stale decision the
   # crew has provably moved past. Two lifecycle signals clear it, neither of which
   # reads any report content:
-  #   - a live activity read (run-step or busy pane) that is working/done, so a
+  #   - a live activity read (run-step or busy pane) that is working or done, so a
   #     crew that resumed past a gate is not still reported as parked; and
   #   - a TERMINAL done/failed state on a single-owner task (scout, design, or ship), whose
   #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
   #     report POINTER, never as a reopened pending decision.
+  # `abandoned` is a live reading that does not mean the crew moved on: the run
+  # is advancing with nobody to answer the next gate, so it must not clear a
+  # still-open decision (issue #111). `unknown` is not a resume either.
   # Secondmates are excluded from lifecycle clearing: they are persistent and
   # multiplex many concerns onto one stream, so activity on one concern must
   # never clear another concern's keyed decision. A parked/blocked state, or a
@@ -871,7 +874,7 @@ task_json_one() {  # <meta-path> [degraded]
   open_decisions_tsv=$(status_open_decisions "$status_log")
   if [ "$kind" != secondmate ] && \
      { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
-         && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
+         && { [ "$current_state" = working ] || [ "$current_state" = "done" ]; }; } \
        || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
     open_decisions_tsv=""
   fi
@@ -1010,6 +1013,14 @@ task_json_one() {  # <meta-path> [degraded]
       elif $state == "working" then
         {rank:8,column:"active",action:"supervise",
          reason:"the worker is working"}
+      elif $state == "abandoned" then
+        # The board has no abandoned column. Idle keeps the task in live work
+        # (not done) so Task activity can age the quiet; the inspect action and
+        # reason name the missing worker rather than claiming there is no
+        # signal. A new column would be the taxonomy expansion issue #111
+        # split out of #105 to avoid. docs/fleet-data-contracts.md owns the ladder.
+        {rank:10,column:"idle",action:"inspect",
+         reason:"the run is advancing with no live worker to answer its next gate"}
       elif $kind == "secondmate" then
         {rank:9,column:"secondmate",action:"route_work",
          reason:"a persistent secondmate with no higher-priority task signal"}

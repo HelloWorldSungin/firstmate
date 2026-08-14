@@ -2939,6 +2939,62 @@ test_abandoned_degrades_after_later_lookup_failure() {
   pass "an abandoned verdict degrades through a later lookup failure instead of reverting"
 }
 
+# Breaks if the degrade path replays a working record written BEFORE the worker
+# died, which is the #111 incident: pane still open, harness idle, lookup
+# failing, and crew_absorb_class counting that replay as provably working.
+test_stale_working_degraded_replay_with_dead_agent_is_abandoned() {
+  reset_fakes
+  local d out; d=$(new_case stale-working-degrade)
+  make_repo_on_branch "$d/wt" fm/feat-stale-working-deg
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/stale-working-deg.meta" \
+    "window=fm:fm-stale-working-deg" "worktree=$d/wt" "kind=ship" "harness=claude"
+  # First read: worker still alive, so the record is working.
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-stale-working-deg)"
+  FM_FAKE_AGENT_STATE=alive
+  out=$(run_crew_state "$d" stale-working-deg)
+  assert_contains "$out" "state: working" "the live read records working while the worker is alive"
+  assert_contains "$out" "source: run-step" "the seed read is a live run-step"
+  # Second read: worker is now gone, lookup times out, pane is open and idle.
+  FM_FAKE_NM_RC=124
+  FM_FAKE_BUSY=0
+  FM_FAKE_AGENT_STATE=dead
+  arm_idle_record "$d/state" stale-working-deg
+  out=$(run_crew_state "$d" stale-working-deg)
+  assert_contains "$out" "state: abandoned" "a stale working record is not replayed past a dead worker"
+  assert_contains "$out" "source: run-step-degraded" "the answer is still a degraded replay, not a disabled degrade path"
+  assert_contains "$out" "worker gone (dead)" "the detail names the dead worker"
+  assert_not_contains "$out" "state: working" "the stale working answer must not survive"
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working stale-working-deg \
+    && fail "a stale working replay after the worker died was absorbed as provably working"
+  pass "a working record written before the worker died degrades to abandoned, not working"
+}
+
+# Breaks if disabling the whole degrade path is how stale working is refused:
+# an alive worker plus a timed-out lookup must still replay working, or a
+# transient daemon blip blinds supervision the degrade window exists to cover.
+test_stale_working_degraded_replay_with_alive_agent_stays_working() {
+  reset_fakes
+  local d out; d=$(new_case alive-working-degrade)
+  make_repo_on_branch "$d/wt" fm/feat-alive-working-deg
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/alive-working-deg.meta" \
+    "window=fm:fm-alive-working-deg" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-alive-working-deg)"
+  FM_FAKE_AGENT_STATE=alive
+  out=$(run_crew_state "$d" alive-working-deg)
+  assert_contains "$out" "state: working" "the seed read is working"
+  FM_FAKE_NM_RC=124
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" alive-working-deg
+  out=$(run_crew_state "$d" alive-working-deg)
+  assert_contains "$out" "state: working" "an alive worker still gets the degraded working replay"
+  assert_contains "$out" "source: run-step-degraded" "the degrade path itself is still armed"
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working alive-working-deg \
+    || fail "a degraded working replay with a live worker was not absorbed"
+  pass "degraded replay of working still stands when the worker is alive"
+}
+
 # Breaks if the busy-pane cross-check is removed, so a stale busy record after a
 # clean worker exit reads as healthy working again.
 test_busy_pane_with_dead_agent_is_abandoned() {
@@ -3081,6 +3137,8 @@ test_terminal_failed_with_dead_agent_stays_failed
 test_parked_run_with_dead_agent_still_parked
 test_abandoned_is_recorded_for_later_degrade
 test_abandoned_degrades_after_later_lookup_failure
+test_stale_working_degraded_replay_with_dead_agent_is_abandoned
+test_stale_working_degraded_replay_with_alive_agent_stays_working
 test_busy_pane_with_dead_agent_is_abandoned
 test_busy_pane_with_unreadable_agent_is_unknown
 test_busy_pane_with_unknown_liveness_token_is_unknown
