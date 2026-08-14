@@ -3,20 +3,13 @@
 #
 # A no-mistakes ship worker parks with
 #   blocked: implemented and committed, ready to validate
-# and firstmate ends that wait by triggering validation. firstmate made and ended
-# that decision, so firstmate owns the `resolved:` line that closes it - not the
-# worker, which did neither (issue #136). Evidence showed workers skip that
-# bookkeeping even when it is the first clause of the trigger message itself: a
-# worker handed a green light reaches for the work, not for the bookkeeping about
-# the light, which is reasonable on the worker's part. Asking the worker to
-# remember it is the wrong fix; firstmate writing it is.
+# and firstmate ends that wait by triggering validation. Firstmate therefore owns
+# the `resolved:` line that closes it. Keeping the close at the trigger boundary
+# makes the status fold reflect the decision without relying on worker bookkeeping.
 #
-# There is no single script today that firstmate runs to trigger validation: it
-# is a message firstmate composes and sends through bin/fm-send.sh. This script is
-# the seam that bundles the close line with that send, so the bookkeeping cannot
-# be forgotten without also forgetting the trigger. It follows the precedent of
-# bin/fm-decision-hold.sh, which writes the `captain-held` close verb to a crew's
-# status file because firstmate owns that transfer.
+# This script bundles the close line with the validation-trigger send. It follows
+# bin/fm-decision-hold.sh's ownership pattern for a status transition firstmate
+# completes.
 #
 # Usage:
 #   fm-trigger-validation.sh <id> <message...>

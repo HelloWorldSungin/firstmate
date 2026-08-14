@@ -333,7 +333,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 ### Validate
 
 For a no-mistakes ship or design task, trigger validation on the same worker after its implementation or ADR commit through `bin/fm-trigger-validation.sh <id> <message>`, where `<message>` is the harness skill invocation owned by `harness-adapters`.
-That script owns the close line for the wait firstmate ends: it sends the trigger and then appends the `resolved:` line that closes the worker's ready-to-validate `blocked:` entry, so no worker has to remember bookkeeping about a decision firstmate made and ended.
+After confirmed delivery, that script appends the `resolved:` line only when the ship worker's exact canonical ready-to-validate `blocked:` entry is still open; design `paused:` handoffs and keyed decisions stay untouched.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 Once validation starts, prefer routing new requirements to follow-up work rather than expanding the current task, unless a new requirement completely invalidates the work being validated; however, the smallest downstream changes needed to keep already accepted product or engineering behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within the current task even when they touch files not named at intake, and corrections required to satisfy already accepted intent are not new requirements.

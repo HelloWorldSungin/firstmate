@@ -107,6 +107,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-wake-lib.sh`         | Shared durable wake queue, portable locks, and watcher identity/health helpers       |
 | `fm-classify-lib.sh`     | Shared wake-classification vocabulary and durable keyed-decision folds and scans     |
 | `fm-send.sh`             | Send one verified literal line or supported key through the target's recorded backend |
+| `fm-trigger-validation.sh` | Send a no-mistakes validation trigger, then close only its canonical ready-to-validate block after confirmed delivery |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |
 | `fm-busy-event.sh`       | The only writer of a task's semantic busy-state record; arms an incarnation and applies lifecycle events |
 | `fm-tmux-lib.sh`         | Shared tmux pane primitives for composer capture, verified submit, and the submit-time busy check |
