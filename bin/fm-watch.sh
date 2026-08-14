@@ -185,6 +185,11 @@ BUSY_TURN_MAX_SECS=$(fm_sup_busy_turn_max_seconds)
 # shared owner in fm-classify-lib.sh, which resolves FM_PAUSE_RESURFACE_SECS and
 # widens the window per unchanged recheck) - far longer than the wedge threshold,
 # but finite so a forgotten hold cannot rot invisibly.
+# Authoritative current state outranks the declared wait, so a crew that declared
+# one and then STARTED a validation run is tracked by the wedge timer instead. The
+# declaration is not discarded there: it is what wedge_timer_check falls back to
+# when the run yields no progress evidence either way, so following the brief and
+# declaring the wait can never cost a crew an alarm it would not otherwise get.
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -430,8 +435,35 @@ wedge_run_progress() {  # <window>
 # call, so holding for one and not the other would be arbitrary. The cap matters
 # more there, not less, because a busy pane has already waited a full
 # BUSY_TURN_MAX_SECS hour before its first escalation.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <hold-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 holds_file=$5 since age n reason progress detail holds
+#
+# The optional <declared-wait-task> and <pane-hash> are the crew's own statement
+# that this pane is idle ON PURPOSE - a paused: external wait or a captain-held
+# transfer - and they change exactly ONE outcome: the no-evidence one. Run
+# progress is evidence about the RUN, and a declared wait is evidence about the
+# WORKER, so the two answer different halves of "is this pane wedged", and the
+# alarm needs a reason to fire, not merely the absence of one. With a declared
+# wait on record, a progress class of `none` - no run attributed, a read that
+# could not complete, a run between steps - is no evidence at ALL, and the crew
+# has already explained the silence, so the pane falls back to the declared-wait
+# re-surface cadence (handle_paused_stale: a long, backing-off recheck that
+# still cannot rot invisibly) instead of a 240s wedge alarm. This is the policy
+# bin/fm-supervise-daemon.sh's own stale recheck already applies to a declared
+# pause, so the two supervisors now agree rather than penalising exactly the
+# crew that followed its brief and declared the wait.
+#
+# Both alarms that rest on POSITIVE evidence survive untouched, which is what
+# keeps a genuinely stranded crew loud: a `stranded` run still escalates naming
+# the step that stopped, and a confidently DEAD agent still escalates however
+# well its run is moving (its run can keep advancing with nobody left to answer
+# the next gate - that is the one shape a declared wait must never hide).
+#
+# Returns 2, and only 2, when it handed the pane to the declared-wait cadence, so
+# the caller can leave that cadence's own markers and triage line alone; every
+# other outcome returns 0.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <hold-count-file> [<declared-wait-task> <pane-hash>]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 holds_file=$5
+  local wait_task=${6:-} wait_hash=${7:-}
+  local since age n reason progress detail holds
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -468,6 +500,19 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             detail=", validation run stranded"
             [ -n "$(run_progress_detail "$progress")" ] \
               && detail="$detail: $(run_progress_detail "$progress")"
+            ;;
+          *)
+            # No evidence either way. With a declared wait on record and an agent
+            # that is not confidently dead, the crew has already explained this
+            # silence, so recheck it on the declared-wait cadence instead of
+            # alarming. parked_agent_is_dead is read ONLY here - at most once per
+            # window per pane, and only for a pane that would otherwise alarm - so
+            # the per-poll path stays as cheap as it was.
+            if [ -n "$wait_task" ] && [ -n "$wait_hash" ] && ! parked_agent_is_dead "$win"; then
+              triage_log "deferred $label wedge escalation to the declared-wait recheck ($progress, idle ${age}s): $win"
+              handle_paused_stale "$win" "$wait_task" "$wait_hash"
+              return 2
+            fi
             ;;
         esac
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
@@ -1309,7 +1354,13 @@ EOF
                 clear_pause_tracking "$w"
                 printf '%s' "$h" > "$sf"
                 date +%s > "$ssf"
-                triage_log "absorbed non-terminal stale (provably working): $w"
+                # Distinct from the repeat-poll line below on purpose: THIS poll
+                # absorbed and started the wedge timer, that one absorbed and
+                # ADVANCED an already-running timer toward an escalation. Logging
+                # both as one line is what let a stream of "absorbed" entries sit
+                # in the triage log beside arriving escalations for two days,
+                # reading as the mechanism working while it was not.
+                triage_log "absorbed non-terminal stale (provably working, wedge timer started): $w"
                 ;;
               paused)
                 handle_paused_stale "$w" "$task" "$h"
@@ -1323,10 +1374,30 @@ EOF
             if [ -e "$pf" ] || status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then
               case "$(pause_state_class "$w" "$task")" in
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
-                working) clear_pause_state "$w"
-                         printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$whf"
-                         triage_log "absorbed non-terminal stale (provably working): $w" ;;
+                working) printf '%s' "$h" > "$sf"
+                         # Authoritative working state outranks the declaration for
+                         # TRACKING - the wedge timer, not the pause cadence, owns
+                         # this pane - but the declaration is passed through, so a
+                         # no-evidence verdict at the alarm rechecks on the wait's
+                         # own cadence instead of alarming. A stranded run or a
+                         # confidently dead agent still escalates.
+                         #
+                         # The pause markers are deliberately left standing: they
+                         # carry the re-surface throttle and backoff streak the
+                         # fallback needs, and clearing them here would restart that
+                         # backoff on every poll, turning one declared wait into a
+                         # recheck every wedge window. They die with the declaration
+                         # itself, through the status reconciliation at the top of
+                         # this loop, which is the one event that means the wait is
+                         # genuinely over.
+                         wedge_rc=0
+                         wedge_timer_check "$w" "$ssf" \
+                           "non-terminal stale (provably working after a declared wait)" \
+                           "$ewf" "$whf" "$task" "$h" || wedge_rc=$?
+                         # A deferral is handle_paused_stale's event and carries its
+                         # own triage line; only the timer's own poll logs here.
+                         [ "$wedge_rc" -eq 2 ] \
+                           || triage_log "absorbed non-terminal stale (provably working after a declared wait, wedge timer advanced): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
