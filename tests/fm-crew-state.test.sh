@@ -647,6 +647,36 @@ EOF
   pass "a detached worktree skips the run lookup entirely"
 }
 
+test_detached_continued_branch_uses_recorded_run_identity() {
+  reset_fakes
+  local d out short; d=$(new_case detached-continued-branch)
+  make_repo_on_branch "$d/wt" feature/existing-pr
+  short=$(git -C "$d/wt" rev-parse --short HEAD)
+  git -C "$d/wt" checkout --detach -q
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/detached-continued.meta" \
+    "window=fm:fm-detached-continued" "worktree=$d/wt" \
+    "branch=feature/existing-pr" "kind=ship" "harness=claude"
+  printf 'blocked: implemented and pushed, ready to validate\n' \
+    > "$d/state/detached-continued.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/some-other-task)"
+  FM_FAKE_RUNS_LIST="running feature/existing-pr $short 2026-08-14 12:00"
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
+
+  out=$(run_crew_state "$d" detached-continued)
+
+  assert_not_contains "$(cat "$FM_FAKE_NM_CALL_LOG")" "axi status" \
+    "detached continuation asked branch-scoped status from detached HEAD"
+  assert_contains "$(cat "$FM_FAKE_NM_CALL_LOG")" "runs --limit" \
+    "detached continuation did not query runs by its recorded branch"
+  assert_contains "$out" "state: working" \
+    "detached continuation did not surface its validation run"
+  assert_contains "$out" "source: run-step" \
+    "detached continuation did not attribute the run to its recorded branch"
+  pass "a detached continuation resolves validation from its recorded branch"
+}
+
 # The other half of that short-circuit: it must never skip a state in which a run
 # COULD be attributed. The only such state is the recorded branch checked out
 # here, and there the lookup still runs and still answers.
@@ -2551,6 +2581,61 @@ EOF
   pass "an unresolvable sha in the runs listing is still rejected"
 }
 
+test_detached_continuation_unresolved_run_head_preserves_cache() {
+  reset_fakes
+  local d out branch; d=$(new_case detached-continuation-unresolved)
+  branch=feature/existing-pr
+  make_repo_on_branch "$d/wt" "$branch"
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/continuation.meta" "window=fm:fm-continuation" "worktree=$d/wt" \
+    "kind=ship" "harness=claude" "branch=$branch"
+  seed_known_run_step "$d" continuation "$branch"
+  git -C "$d/wt" checkout --detach -q
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+running ${branch} ${UNRESOLVABLE_HEAD} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" continuation
+  out=$(run_crew_state "$d" continuation)
+  assert_contains "$out" "source: run-step-degraded" \
+    "an unresolved continuation run head cleared the cached run step"
+  assert_contains "$out" "run head unavailable in worktree" \
+    "the degraded continuation did not identify its inconclusive head evidence"
+  assert_contains "$out" "state: working" \
+    "an unresolved pipeline-owned continuation lost its recent working state"
+  pass "detached continuations preserve cached state for unresolved run heads"
+}
+
+test_detached_continuation_terminal_unresolved_head_clears_cache() {
+  local d out branch terminal_status
+  branch=feature/existing-pr
+  for terminal_status in completed failed cancelled; do
+    reset_fakes
+    d=$(new_case "detached-continuation-${terminal_status}")
+    make_repo_on_branch "$d/wt" "$branch"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/continuation.meta" "window=fm:fm-continuation" "worktree=$d/wt" \
+      "kind=ship" "harness=claude" "branch=$branch"
+    seed_known_run_step "$d" continuation "$branch"
+    git -C "$d/wt" checkout --detach -q
+    FM_FAKE_RUNS_LIST="${terminal_status} ${branch} ${UNRESOLVABLE_HEAD} 2026-08-13 12:00"
+    FM_FAKE_BUSY=0
+    arm_idle_record "$d/state" continuation
+    out=$(run_crew_state "$d" continuation)
+    assert_not_contains "$out" "source: run-step-degraded" \
+      "an unresolved $terminal_status continuation replayed cached working state"
+    assert_not_contains "$out" "state: working" \
+      "an unresolved $terminal_status continuation remained working"
+    FM_FAKE_NM_RC=124
+    out=$(run_crew_state "$d" continuation)
+    assert_not_contains "$out" "source: run-step-degraded" \
+      "an unresolved $terminal_status continuation left cached state behind"
+  done
+  pass "terminal continuation rows with unresolved heads clear cached working state"
+}
+
 # crew_is_provably_working end-to-end: the degraded read is what the watcher's
 # absorb path actually consumes, so prove the predicate flips back to true.
 test_provably_working_via_degraded_run_step() {
@@ -2732,6 +2817,8 @@ test_terminal_run_behind_advanced_tip_still_invalidates
 test_pipeline_owned_unresolvable_head_attributes
 test_terminal_unresolvable_head_still_rejected
 test_runs_list_unresolvable_head_still_rejected
+test_detached_continuation_unresolved_run_head_preserves_cache
+test_detached_continuation_terminal_unresolved_head_clears_cache
 test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
@@ -3126,6 +3213,7 @@ test_working_run_step_with_unreadable_agent_not_absorbed() {
   pass "an unreadable worker-liveness read is not absorbed, so the stale wake surfaces"
 }
 
+test_detached_continued_branch_uses_recorded_run_identity
 test_working_run_step_with_dead_agent_is_abandoned
 test_working_run_step_with_missing_agent_is_abandoned
 test_working_run_step_with_unreadable_agent_is_unknown

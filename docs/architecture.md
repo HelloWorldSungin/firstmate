@@ -60,9 +60,9 @@ The update transition is deliberate: locked bootstrap may add a missing branch o
 Detect-only and post-migration bootstrap name every remaining live no-mistakes ship without proven branch identity, so an operator learns which run-state reads are unavailable before an urgent supervision decision.
 Pre-transition briefs have no branch marker, work items do not bind branches, and task-name, ambient-branch, and run-list matches are inference, so none can backfill the record and all remaining tasks stay refused until cleanup.
 [`bin/fm-run-attribution-legacy-transition.sh`](../bin/fm-run-attribution-legacy-transition.sh) owns the exact proof, the per-candidate and whole-sweep bounds that keep a hung forge off the session-start path, the atomic publication that keeps the record's trailing PR identity block last, and the diagnostic wording.
-The script header owns the exact run-head relationship, current-versus-historical source, lookup-failure, cache, and source-precedence rules.
+The script header owns the exact run-head relationship, current-versus-historical source, lookup-conclusiveness, cache, and source-precedence rules.
 Architecturally, an in-progress pipeline may advance the crew tip or report a head unavailable in that worktree without losing attribution, while the narrowed exceptions continue to reject stale historical evidence.
-A run lookup that cannot complete remains distinct from a confirmed absence and may replay that crew's recent observed step under source `run-step-degraded` only within a finite window after endpoint-liveness and exact-busy checks, preserving wedge detection when the crew stops or the outage persists.
+An inconclusive run lookup remains distinct from a confirmed absence and may replay that crew's recent observed step under source `run-step-degraded` only within a finite window after endpoint-liveness and exact-busy checks, preserving wedge detection when the crew stops, the lookup stays unavailable, or the reported run head remains unresolved in the worktree.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
 Only a terminal pass whose own `ci` step completed observed the forge; a skipped, absent, or incomplete step therefore reports the local pipeline passing instead of naming a merge, and the verdict stays a pure read of captured run output that never puts a forge call on a supervision poll.
@@ -181,7 +181,7 @@ Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
 `fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle.
 `fm-guard.sh` prints the repair command on the next mutable fleet action, while `bin/fm-session-start.sh` reports the same condition through bootstrap as a `TANGLE:` line at session start.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
-Ship and design briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in the primary checkout.
+Ship and design briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before the generated branch step, then stop with a blocked status if it landed in the primary checkout.
 
 ## No-mistakes gate authority boundary
 

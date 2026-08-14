@@ -8,7 +8,7 @@
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reconciles attributable no-mistakes run
-# evidence, the bounded record used only after a lookup failure, and pane busy
+# evidence, the bounded record used only after an inconclusive lookup, and pane busy
 # state before consulting the possibly-stale log.
 #
 # The deterministic reconciliation lives entirely here - bounded run-step / pane /
@@ -64,9 +64,9 @@
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
 #      agree, and are reported as parked.
-#   4. A run lookup that cannot complete may replay this crew's recent observed
-#      step as `run-step-degraded`, but only after endpoint liveness and an exact
-#      busy verdict and only inside the configured age bound. A replayed
+#   4. An inconclusive run lookup may replay this crew's recent observed step as
+#      `run-step-degraded`, but only after endpoint liveness and an exact busy
+#      verdict and only inside the configured age bound. A replayed
 #      `working` step runs the same worker-liveness cross-check as a live
 #      working verdict, so a record written before the worker died cannot
 #      re-emit `working` for the rest of the degrade window (issue #111).
@@ -637,7 +637,7 @@ nm_ci_checks_state() {
 # lookup failure there; parsing an empty string here would otherwise report the
 # same "no run for this branch" as a listing that genuinely lacks the branch.
 nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha
+  local branch=$1 out=${2:-} row st rest br sha relation
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -650,8 +650,17 @@ nm_runs_row_for_branch() {  # <branch> <runs-listing>
     rest=$(trim "$rest")
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
-      nm_head_attributable "$sha" 0 0 || continue
-      printf '%s\t%s' "$st" "$sha"
+      relation=$(nm_head_relation "$sha")
+      case "$relation" in
+        equal|run-ahead) printf 'attributable\t%s\t%s' "$st" "$sha" ;;
+        unresolved)
+          case "$st" in
+            running) printf 'inconclusive\t%s\t%s' "$st" "$sha" ;;
+            *)       printf 'rejected\t%s\t%s' "$st" "$sha" ;;
+          esac
+          ;;
+        *)              printf 'rejected\t%s\t%s' "$st" "$sha" ;;
+      esac
       return 0
     fi
   done <<< "$out"
@@ -811,27 +820,48 @@ HAVE_RUN=0
 RUN_SOURCE=full
 COARSE_STATUS=""
 COARSE_HEAD=""
-# LOOKUP_FAILED=1 means a bounded no-mistakes call could not COMPLETE - it timed
-# out under a saturated daemon, errored, or could not be bounded at all. That is
-# emphatically NOT the same as a completed lookup that found no run for this
-# branch, and only a failure may degrade to the recorded run-step below. A
-# genuine absence still falls through to the pane and status-log sources.
-LOOKUP_FAILED=0
+COARSE_EVIDENCE=""
+# A degraded reason means the current lookup could not establish presence or
+# absence for this exact branch. A genuine absence still falls through to the
+# pane and status-log sources and clears any recorded run-step.
+LOOKUP_DEGRADED_REASON=""
 LOOKUP_COMPLETED=0
 RUN_ATTRIBUTION_FAULT=""
+lookup_coarse_run() {
+  local runs_out runs_rc
+  runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  runs_rc=$?
+  if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
+    LOOKUP_DEGRADED_REASON="run lookup unavailable"
+    return
+  fi
+  COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
+  IFS=$'\t' read -r COARSE_EVIDENCE COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
+  case "$COARSE_EVIDENCE" in
+    attributable)
+      LOOKUP_COMPLETED=1
+      if [ -n "$TASK_BRANCH" ]; then
+        HAVE_RUN=1
+        RUN_SOURCE=coarse
+      else
+        RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
+      fi
+      ;;
+    inconclusive)
+      LOOKUP_DEGRADED_REASON="run head unavailable in worktree"
+      ;;
+    *)
+      LOOKUP_COMPLETED=1
+      ;;
+  esac
+}
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
-# A DETACHED worktree skips it too. What that proves is narrow but sufficient:
-# the recorded branch is not checked out here, so no run answered from this
-# worktree can bind to it. `axi status` asked from a detached worktree answers
-# for some other branch, and a coarse runs-list row would still have to bind its
-# sha to a HEAD this worktree has not moved onto the recorded branch. It does
-# NOT prove the task has no run at all - a parked task whose pooled worktree was
-# reallocated to a just-spawned, still-detached crew has one - but that run is
-# not reachable from here either, which is why the reallocated case is pinned on
-# the named-branch path (test_reallocated_worktree_branch_surfaces_attribution_
-# fault) rather than separately here. Skipping saves a just-spawned or
-# never-branched crew two bounded CLI calls per heartbeat.
+# A conventional fm/<task-id> task at detached HEAD has not created its branch
+# yet, so it still skips the lookup. A task whose recorded branch differs from
+# that conventional name is an existing-branch continuation: detached HEAD is
+# its expected placement, and the runs listing can bind branch plus commit
+# identity without asking branch-scoped `axi status` from a detached checkout.
 if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
    && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
@@ -842,7 +872,7 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
   # "nothing to report" empty answer to confuse this with.
   if [ "$nm_rc" != 0 ] || [ -z "$RUN_OUT" ]; then
     RUN_OUT=""
-    LOOKUP_FAILED=1
+    LOOKUP_DEGRADED_REASON="run lookup unavailable"
   else
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$LOOKUP_BRANCH" ]; then
@@ -865,25 +895,13 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
       # for no better answer.
-      runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
-      runs_rc=$?
-      if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
-        LOOKUP_FAILED=1
-      else
-        LOOKUP_COMPLETED=1
-        COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
-        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
-        if [ -n "$COARSE_STATUS" ]; then
-          if [ -n "$TASK_BRANCH" ]; then
-            HAVE_RUN=1
-            RUN_SOURCE=coarse
-          else
-            RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
-          fi
-        fi
-      fi
+      lookup_coarse_run
     fi
   fi
+elif tracked_output_kind && [ -z "$WORKTREE_BRANCH" ] \
+   && [ -n "$TASK_BRANCH" ] && [ "$TASK_BRANCH" != "fm/$ID" ] \
+   && command -v no-mistakes >/dev/null 2>&1; then
+  lookup_coarse_run
 fi
 
 if [ -n "$RUN_ATTRIBUTION_FAULT" ]; then
@@ -1141,8 +1159,8 @@ if [ "$KIND" != secondmate ]; then
   esac
 fi
 
-# The run lookup could not complete, and this crew has a recent run-step on
-# record: report that last known step, degraded, rather than unknown. Bounded by
+# The run lookup is inconclusive, and this crew has a recent run-step on record:
+# report that last known step, degraded, rather than unknown. Bounded by
 # FM_CREW_STATE_DEGRADED_MAX_AGE so a permanently unreachable daemon stops
 # absorbing wedge suspicion instead of hiding it forever, and never reached at
 # all on a completed lookup that simply found no run.
@@ -1156,10 +1174,10 @@ fi
 # than an append-only event log. A replayed working step still goes through
 # working_after_liveness, because a record written while the worker was alive
 # is not evidence that the worker is still there (issue #111).
-if [ "$LOOKUP_FAILED" = 1 ]; then
+if [ -n "$LOOKUP_DEGRADED_REASON" ]; then
   if DEGRADED=$(runstep_record_read); then
     IFS=$'\t' read -r deg_state deg_detail deg_age <<< "$DEGRADED"
-    deg_line="run lookup unavailable"
+    deg_line=$LOOKUP_DEGRADED_REASON
     [ -n "$deg_detail" ] && deg_line="$deg_detail${SEP}$deg_line"
     if [ "$deg_state" = working ]; then
       IFS=$'\t' read -r deg_state liveness_note <<< "$(working_after_liveness)"

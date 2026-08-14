@@ -4,10 +4,12 @@
 # For ordinary tasks, the standard Setup/Rules/Definition-of-done contract is
 # filled in. Firstmate then replaces the {TASK} placeholder with the task
 # description, acceptance criteria, and context, and may adjust other sections
-# when the task genuinely deviates (e.g. working an existing external PR instead
-# of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --design --mode <no-mistakes|direct-PR|local-only> [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
+# when the task genuinely deviates. Continuing an existing branch is not one of
+# those hand-edits: pass --continue-branch so the generated Setup and the
+# task-branch marker agree, rather than contradicting git checkout -b from the
+# Task section.
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --design --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --work-item records a resolved work item that lives in the MANAGED PROJECT's
@@ -75,7 +77,7 @@
 # For ship and design tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:
-# Ship modes deliver an authorized implementation:
+# Without --continue-branch, ship modes deliver an authorized implementation:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
@@ -93,8 +95,21 @@
 # recorded task metadata cannot drift apart.
 # It also records the exact tracked-output branch in a firstmate-task-branch marker.
 # bin/fm-spawn.sh copies that marker into branch= task metadata, making the task's
-# own branch durable before the worker creates it instead of reconstructing it later
-# from the task id or from whichever branch the pooled worktree currently hosts.
+# own branch durable before the worker creates or continues it instead of
+# reconstructing it later from the task id or from whichever branch the pooled
+# worktree currently hosts.
+# --continue-branch <name> is how a ship or design task continues an existing
+# branch instead of git checkout -b fm/<task-id>. It writes that name into the
+# marker so spawn records the branch the worker will actually use, and replaces
+# the Setup branch action plus mode-specific branch and existing-PR wording.
+# Omit it for the ordinary new-branch strategy; the generated Setup text is then
+# unchanged. Refused on scout and secondmate scaffolds. It requires a resolvable
+# project checkout and a valid non-default branch name other than fm/<task-id>,
+# which is the ordinary strategy.
+# This header is the owner of the checkout-versus-push rule: a branch held by another worktree blocks checkout, not push.
+# The generated continue-branch first action therefore keeps the worker detached
+# and updates the existing branch with git push origin HEAD:<name> (or a local
+# git update-ref under local-only). No stack, merge, or cherry-pick is required.
 # Ship and design briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -139,6 +154,8 @@ esac
 
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-task-branch-lib.sh
+. "$SCRIPT_DIR/fm-task-branch-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-issue-lib.sh
@@ -147,6 +164,8 @@ esac
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
 # shellcheck source=bin/fm-brief-repo-lib.sh
 . "$SCRIPT_DIR/fm-brief-repo-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -159,6 +178,12 @@ resolve_directory_input() {
     return 1
   }
   printf '%s\n' "$resolved"
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
 }
 
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -183,6 +208,8 @@ ISSUE_SET=0
 WORK_ITEMS=()
 PR_TARGET=
 PR_TARGET_SET=0
+CONTINUE_BRANCH=
+CONTINUE_BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -195,6 +222,7 @@ for a in "$@"; do
       issue) ISSUE=$a; ISSUE_SET=1 ;;
       work-item) WORK_ITEMS+=("$a") ;;
       pr-target) PR_TARGET=$a; PR_TARGET_SET=1 ;;
+      continue-branch) CONTINUE_BRANCH=$a; CONTINUE_BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -214,6 +242,8 @@ for a in "$@"; do
     --work-item=*) WORK_ITEMS+=("${a#--work-item=}") ;;
     --pr-target) want_value=pr-target ;;
     --pr-target=*) PR_TARGET=${a#--pr-target=}; PR_TARGET_SET=1 ;;
+    --continue-branch) want_value=continue-branch ;;
+    --continue-branch=*) CONTINUE_BRANCH=${a#--continue-branch=}; CONTINUE_BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -296,6 +326,7 @@ elif [ "$MODE_SET" -eq 1 ]; then
   exit 1
 fi
 ID=${POS[0]}
+REPO=${POS[1]:-}
 
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
@@ -308,6 +339,39 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
+TASK_BRANCH="fm/$ID"
+if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
+  tracked_output_kind || {
+    echo "error: --continue-branch applies only to ship or design briefs" >&2
+    exit 1
+  }
+  [ -n "$CONTINUE_BRANCH" ] || {
+    echo "error: --continue-branch requires a git branch name" >&2
+    exit 1
+  }
+  fm_task_branch_validate "$CONTINUE_BRANCH" || {
+    echo "error: --continue-branch $FM_TASK_BRANCH_ERROR (got '$CONTINUE_BRANCH')" >&2
+    exit 1
+  }
+  [ "$CONTINUE_BRANCH" != "fm/$ID" ] || {
+    echo "error: --continue-branch fm/$ID is the ordinary new-branch strategy; omit the flag so the generated Setup keeps git checkout -b" >&2
+    exit 1
+  }
+  PROJECT_DIR=$(fm_brief_resolve_project_dir "$REPO") || {
+    echo "error: --continue-branch requires a resolvable project checkout so its default branch can be protected (got '$REPO')" >&2
+    exit 1
+  }
+  DEFAULT_BRANCH=$(fm_default_branch "$PROJECT_DIR") || {
+    echo "error: cannot determine the default branch for $PROJECT_DIR; expected origin/HEAD, main, or master" >&2
+    exit 1
+  }
+  [ "$CONTINUE_BRANCH" != "$DEFAULT_BRANCH" ] || {
+    echo "error: --continue-branch cannot name the repository default branch '$DEFAULT_BRANCH'" >&2
+    exit 1
+  }
+  TASK_BRANCH=$CONTINUE_BRANCH
+fi
+
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 if [ "$KIND" = design ]; then
@@ -317,12 +381,6 @@ if [ "$KIND" = design ]; then
   }
 fi
 mkdir -p "$DATA/$ID"
-
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
@@ -424,8 +482,6 @@ else
 fi
 exit 0
 fi
-
-REPO=${POS[1]}
 
 # When a crewmate's disposable worktree is the firstmate repository itself, the
 # checkout's AGENTS.md installs firstmate's captain-facing persona. Emit an
@@ -697,8 +753,8 @@ DOD_DIRECT_COMPLETE='The task is complete only when committed on your branch.'
 # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_DIRECT_HANDOFF='When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
 DOD_LOCAL_INTRO='This task ships **local-only**: no remote, no PR, no pipeline.'
-DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
-DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`$TASK_BRANCH\`. Do NOT push, do NOT open a PR, do NOT merge."
+DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch $TASK_BRANCH\` to the status file and stop."
 # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_INTRO='This project ships **no-mistakes**: `done:` means the PR is open with its checks green.'
 # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
@@ -709,6 +765,8 @@ DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by 
 DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
 # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.'
 PROJECT_MEMORY_SECTION=
 if [ "$KIND" = ship ]; then
   IFS= read -r -d '' PROJECT_MEMORY_SECTION <<EOF || true
@@ -731,8 +789,8 @@ if [ -n "$DESIGN_SECTION" ]; then
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_DIRECT_HANDOFF='When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
   DOD_LOCAL_INTRO='This ADR ships **local-only**: no remote, no PR, no pipeline.'
-  DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge."
-  DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch fm/$ID\` to the status file and stop."
+  DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`$TASK_BRANCH\`. Do NOT push, do NOT open a PR, do NOT merge."
+  DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch $TASK_BRANCH\` to the status file and stop."
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   DOD_NO_MISTAKES_INTRO='This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.'
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
@@ -745,10 +803,54 @@ if [ -n "$DESIGN_SECTION" ]; then
   DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.'
 fi
 
+if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
+  TASK_BRANCH_SHELL=$(shell_quote "$TASK_BRANCH")
+  TASK_BRANCH_REF_SHELL=$(shell_quote "refs/heads/$TASK_BRANCH")
+  TASK_BRANCH_PUSH_SHELL=$(shell_quote "HEAD:$TASK_BRANCH")
+  case "$MODE:$KIND" in
+    direct-PR:ship)
+      DOD_DIRECT_INTRO='This task continues an existing PR through **direct-PR**, without the no-mistakes pipeline.'
+      DOD_DIRECT_COMPLETE='The task is complete only when committed at detached HEAD.'
+      DOD_DIRECT_HANDOFF="When it is implemented and committed, push with \`git push origin $TASK_BRANCH_PUSH_SHELL\`, use \`gh-axi\` to confirm the existing PR was updated, then append \`done: PR https://...\` with that PR's full URL to the status file and stop."
+      ;;
+    direct-PR:design)
+      DOD_DIRECT_INTRO='This ADR continues an existing PR through **direct-PR**, without the no-mistakes pipeline.'
+      DOD_DIRECT_COMPLETE='The ADR is ready only when committed at detached HEAD.'
+      DOD_DIRECT_HANDOFF="When the ADR is complete and committed, push with \`git push origin $TASK_BRANCH_PUSH_SHELL\`, use \`gh-axi\` to confirm the existing PR was updated, then append \`done: PR https://...\` with that PR's full URL to the status file and stop."
+      ;;
+    local-only:ship)
+      DOD_LOCAL_COMPLETE="The task is complete only when committed at detached HEAD and local branch \`$TASK_BRANCH\` points to that commit. Do NOT push, do NOT open a PR, do NOT merge."
+      ;;
+    local-only:design)
+      DOD_LOCAL_COMPLETE="The ADR is ready only when committed at detached HEAD and local branch \`$TASK_BRANCH\` points to that commit. Do NOT push, do NOT open a PR, do NOT merge."
+      ;;
+    no-mistakes:ship)
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_INTRO='This task continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_LOCAL='A clean local commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
+      DOD_NO_MISTAKES_COMPLETE="The task is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
+      DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, committed, and pushed to the existing branch, append \`blocked: implemented, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
+      ;;
+    no-mistakes:design)
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_INTRO='This ADR continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_LOCAL='A clean local ADR commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
+      DOD_NO_MISTAKES_COMPLETE="The ADR is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
+      DOD_NO_MISTAKES_HANDOFF="When the ADR is complete, committed, and pushed to the existing branch, append \`$PAUSED_VERB: ADR complete, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and update the existing ADR PR."
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+      DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing ADR PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
+      ;;
+  esac
+fi
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
-    RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    RULE1='1. Never push to the default branch (push only your `'"$TASK_BRANCH"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 $DOD_DIRECT
@@ -760,7 +862,7 @@ EOF
     ;;
   local-only)
     SETUP2=""
-    RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    RULE1="1. Never push to any remote and never open a PR. Work only on your \`$TASK_BRANCH\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 $DOD_LOCAL
@@ -795,10 +897,34 @@ Two firstmate-specific rules layer on top of that guidance:
 $DOD_NO_MISTAKES_ASK
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+$DOD_NO_MISTAKES_DONE
 EOF
     ;;
 esac
+
+if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
+  if [ "$MODE" = local-only ]; then
+    RULE1="1. Never push to any remote and never open a PR. Advance branch \`$TASK_BRANCH\` without checking it out; firstmate handles the merge into local \`main\`."
+    IFS= read -r -d '' SETUP_BRANCH_STEP <<EOF || true
+1. First action: continue existing branch \`$TASK_BRANCH\` from detached HEAD.
+   Point this worktree at its tip without checking the branch out (\`git checkout --detach $TASK_BRANCH_SHELL\`).
+   Do not \`git checkout $TASK_BRANCH_SHELL\`: a branch held by another worktree blocks checkout, not a ref update.
+   Commit locally, then \`git update-ref $TASK_BRANCH_REF_SHELL HEAD\` advances that branch in place.
+   Do not create \`fm/$ID\`.
+EOF
+  else
+    IFS= read -r -d '' SETUP_BRANCH_STEP <<EOF || true
+1. First action: continue existing branch \`$TASK_BRANCH\` from detached HEAD.
+   Fetch the tip (\`git fetch origin $TASK_BRANCH_SHELL\`) and \`git checkout --detach FETCH_HEAD\`.
+   Do not \`git checkout $TASK_BRANCH_SHELL\`: a branch held by another worktree blocks checkout, not push.
+   Commit locally, then \`git push origin $TASK_BRANCH_PUSH_SHELL\` updates the existing PR in place.
+   Do not create \`fm/$ID\`.
+EOF
+  fi
+  SETUP_BRANCH_STEP=${SETUP_BRANCH_STEP%$'\n'}
+else
+  SETUP_BRANCH_STEP="1. First action: create your branch: \`git checkout -b fm/$ID\`"
+fi
 
 # read -r -d '' preserves the heredoc's trailing newline that the removed
 # $(...) command substitution used to strip. Drop that one newline so generated
@@ -811,7 +937,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 ${FIRSTMATE_REPO_CREW_SECTION}# Task
 {TASK}
 
-<!-- firstmate-task-branch=fm/$ID -->
+<!-- firstmate-task-branch=$TASK_BRANCH -->
 $ISSUE_SECTION$TRACKED_SECTIONS
 
 # Setup
@@ -821,7 +947,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+$SETUP_BRANCH_STEP$SETUP2
 
 # Rules
 $RULE1

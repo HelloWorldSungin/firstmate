@@ -11,6 +11,8 @@
 #   (d) pr= present but PR head unreachable -> fallback to local branch + warning
 #   (e) pr= + STALE recorded pr_head= + newer remote pull head -> must use fetched head
 #       (this is the class that bit reviewers holding merges over "missing" fixes)
+#   (f) detached continuation + branch= -> fetch and compare the recorded branch
+#   (g) PR continuation with a stale local ref -> prefer the recorded remote branch
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -169,9 +171,61 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+test_detached_continuation_uses_recorded_remote_branch() {
+  local case_dir out continued
+  case_dir=$(make_case detached-continuation)
+  continued=feature/existing-pr
+  git -C "$case_dir/wt" checkout -q -b "$continued" main
+  printf 'continued-branch\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add feature.txt
+  git -C "$case_dir/wt" commit -qm "continued branch change"
+  git -C "$case_dir/wt" push -q origin "$continued"
+  git -C "$case_dir/wt" checkout --detach -q
+  git -C "$case_dir/wt" branch -D "$continued" >/dev/null
+  write_task_meta "$case_dir" "branch=$continued" "mode=direct-PR"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+continued-branch' \
+    "detached continuation diff did not use its recorded remote branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'worktree is detached' \
+    "detached continuation still required an attached worktree"
+  pass "fm-review-diff uses recorded branch metadata for detached continuations"
+}
+
+test_pr_continuation_prefers_recorded_remote_branch() {
+  local case_dir out continued stale_sha
+  case_dir=$(make_case stale-continuation-local-ref)
+  continued=feature/existing-pr
+  git -C "$case_dir/wt" checkout -q -b "$continued" main
+  printf 'stale-local-continuation\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add feature.txt
+  git -C "$case_dir/wt" commit -qm "stale local continuation"
+  stale_sha=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/wt" push -q origin "$continued"
+  git -C "$case_dir/wt" checkout -q -b continuation-push
+  printf 'remote-current-continuation\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add feature.txt
+  git -C "$case_dir/wt" commit -qm "detached continuation push"
+  git -C "$case_dir/wt" push -q origin "HEAD:$continued"
+  git -C "$case_dir/wt" checkout --detach -q
+  write_task_meta "$case_dir" "branch=$continued" "mode=no-mistakes" \
+    "pr=https://github.com/example/repo/pull/9" "pr_head=$stale_sha"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+remote-current-continuation' \
+    "PR continuation diff used the stale worktree-held local branch"
+  assert_not_contains "$out" '+stale-local-continuation' \
+    "PR continuation diff did not prefer its freshly fetched remote branch"
+  pass "fm-review-diff prefers remote branch tips for PR continuations"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning
+test_detached_continuation_uses_recorded_remote_branch
+test_pr_continuation_prefers_recorded_remote_branch
 printf '\nall fm-review-diff tests passed\n'
