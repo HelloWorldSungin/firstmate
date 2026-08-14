@@ -82,7 +82,7 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
-# Without --continue-branch, design modes deliver only the ADR:
+# Design modes deliver only the ADR:
 #   no-mistakes  ADR commit -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    ADR commit -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   ADR on branch, stop and report "ready in branch" (no push/PR);

@@ -963,11 +963,13 @@ test_spawn_copies_continued_task_branch_from_brief_flag() {
 }
 
 test_spawn_refuses_default_branch_task_marker() {
-  local rec id runtime_home out status
+  local rec id default_branch runtime_home out status
   id='continue-default-refused-z10'
   rec=$(make_spawn_case continue-default-refused claude "$id")
   read_case_record "$rec"
-  sed -i "s|firstmate-task-branch=fm/$id|firstmate-task-branch=main|" \
+  default_branch=$(git -C "$PROJ_DIR" symbolic-ref --quiet --short HEAD) \
+    || fail "default-branch refusal fixture has no symbolic branch"
+  sed -i "s|firstmate-task-branch=fm/$id|firstmate-task-branch=$default_branch|" \
     "$HOME_DIR/data/$id/brief.md"
   runtime_home="$CASE_DIR/runtime-home"
   mkdir -p "$runtime_home/.claude"
@@ -976,7 +978,7 @@ test_spawn_refuses_default_branch_task_marker() {
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
   status=$?
   expect_code 1 "$status" "spawn should refuse a task marker naming the default branch"
-  assert_contains "$out" "task branch marker names the repository default branch 'main'" \
+  assert_contains "$out" "task branch marker names the repository default branch '$default_branch'" \
     "spawn did not protect the default branch from a hand-edited marker"
   assert_absent "$HOME_DIR/state/$id.meta" \
     "spawn published metadata after the default-branch refusal"
