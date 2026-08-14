@@ -710,12 +710,12 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
   return buckets;
 }
 
-// A missing endpoint answers two different questions depending on whether the
-// task declared a wait. Parking a captain-gated task EXITS its agent on purpose,
-// so its absent endpoint is the expected outcome, not a worker that died; a task
-// that went quiet without declaring anything and lost its endpoint is the real
-// alarm this signal exists to raise. What parking IS - fleet operating practice
-// rather than a procedure this repo defines - is owned by
+// Endpoint state answers two different questions depending on whether the task
+// declared a wait. A declaration makes that state irrelevant to fleet health in
+// either direction, while a task that declared nothing and lost its endpoint is
+// the real alarm this signal exists to raise. A parked worker normally remains
+// alive at its prompt so work can be steered into its existing context. What
+// parking IS - fleet operating practice rather than a procedure this repo defines - is owned by
 // docs/dashboard-inbox-policy.md.
 //
 // The declared-wait verdict is the same `hints.last_event_declared_wait` that
@@ -728,10 +728,10 @@ function bucketLiveness(tasks, { agentAuthoritative }) {
 //
 // Declared waits are excluded from the endpoint buckets in both directions
 // rather than counted present: whatever their endpoint currently is, it is not
-// evidence about fleet health, and an absent one is expected.
+// evidence about fleet health.
 function workerSignal(tasks) {
   const live = liveWorkTasks(tasks);
-  const tooltip = "Whether each live task that has not declared a wait still has its recorded runtime endpoint. A task parked on a declared pause or a captain hold is counted separately, because parking exits its agent on purpose. The snapshot reports agent liveness only for secondmates, so ordinary tasks report endpoint presence.";
+  const tooltip = "Whether each live task that has not declared a wait still has its recorded runtime endpoint. A task parked on a declared pause or a captain hold is counted separately because its endpoint state is not fleet-health evidence in either direction; the worker normally remains alive at its prompt so work can be steered into its existing context. The snapshot reports agent liveness only for secondmates, so ordinary tasks report endpoint presence.";
   if (!live.length) {
     return { id: "workers", label: "Workers", tone: "green", value: "none live", detail: "No live task has a runtime endpoint to check.", tooltip };
   }
@@ -739,7 +739,7 @@ function workerSignal(tasks) {
   const { waiting, working } = splitDeclaredWaits(live);
   const waitingIds = waiting.map((task) => text(task?.id) || "unnamed");
   const waitingClause = waiting.length
-    ? `${waiting.length} task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here, so an exited agent is expected: ${waitingIds.join(", ")}.`
+    ? `${waiting.length} task${plural(waiting.length)} declared a wait and ${waiting.length === 1 ? "is" : "are"} not counted here because endpoint state is not fleet-health evidence: ${waitingIds.join(", ")}.`
     : "";
 
   if (!working.length) {

@@ -243,9 +243,12 @@ status_is_paused() {  # <status-line>
 
 # 0 if a status line declares either an external-wait pause or a verified
 # captain-held transfer.
-# Both declarations can intentionally leave an exited crew's endpoint idle, so
-# the watcher applies its bounded pause cadence when agent death confirms that
-# no live decision gate is being silenced.
+# A paused: line is the crew's own statement that its pane is idle on purpose and
+# earns the bounded cadence on its own, whether or not the brief-compliant stop
+# left the agent alive at its prompt.
+# A captain-held transfer is firstmate's record rather than the crew's declaration
+# and still requires a confidently dead agent before that cadence applies.
+# bin/fm-watch.sh's pause_state_class owns the exact liveness rule.
 # This predicate is the only definition of a declared wait: supervision reads it
 # directly and the fleet snapshot projects its verdict for read-only renderers,
 # so a change here moves both surfaces and neither carries its own token list.
