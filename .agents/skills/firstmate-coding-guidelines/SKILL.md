@@ -106,7 +106,8 @@ Every such check needs two tests, because they fail for different reasons:
   Report an absent harness explicitly rather than passing silently over it, and refuse a pass that checked nothing.
   This guard is opt-in and on-demand because standard CI has neither harness binaries nor credentials; run it after every harness upgrade and before trusting refreshed per-harness evidence.
 
-Record the dated per-harness result in `docs/verification/runtime-backends.md`, and point at the live guard as the command that refreshes it, rather than leaving a version-scoped observation to rot into a false claim.
+Record the dated per-harness result in `docs/verification/runtime-backends.md` as a new dated entry, and point at the live guard as the command that refreshes it, rather than leaving a version-scoped observation to rot into a false claim.
+[`docs/verification/README.md`](../../../docs/verification/README.md) owns the append-only contract for those entries.
 
 ## Documentation change review
 
@@ -131,6 +132,5 @@ Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this reposi
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
-- Correct a record that has gone stale with a dated annotation beside the original, or a new dated entry; never rewrite a dated observation in place.
-  Adding a line to recorded output that the recorded run could not have printed - a marker the suite gained afterwards, for instance - turns evidence into fabrication, however accurate the line is today.
+- Dated entries under `docs/verification/` are append-only; [`docs/verification/README.md`](../../../docs/verification/README.md) owns that contract.
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.
