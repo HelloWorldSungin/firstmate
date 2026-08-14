@@ -1379,6 +1379,69 @@ test_firstmate_repo_crew_persona_in_a_secondmate_home() {
   pass "fm-brief.sh: a secondmate home's marker opens the home-root candidate its registry cannot declare"
 }
 
+test_resolved_line_and_pr_attribution_guidance() {
+  local home plugin registry brief scout_brief design_brief sm_brief fm_brief
+  home="$TMP_ROOT/attribution-home"
+  plugin="$TMP_ROOT/attribution-plugin"
+  registry="$TMP_ROOT/attribution-registry.json"
+  mkdir -p "$home/data" "$home/projects" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  # 1. Ship brief (non-firstmate project)
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ship-attribution sample --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/ship-attribution/brief.md"
+  assert_grep 'You are instructed by firstmate; the captain is not in the loop.' "$brief" \
+    "ship brief did not instruct worker on firstmate reporting line"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Name firstmate in `resolved:` lines, PR bodies, and commits unless the decision text explicitly states the captain was consulted.' "$brief" \
+    "ship brief did not require firstmate attribution in status lines, PR bodies, and commits"
+
+  # 2. Scout brief (non-firstmate project)
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" scout-attribution sample --scout >/dev/null 2>&1
+  scout_brief="$home/data/scout-attribution/brief.md"
+  assert_grep 'You are instructed by firstmate; the captain is not in the loop.' "$scout_brief" \
+    "scout brief did not instruct worker on firstmate reporting line"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Name firstmate in `resolved:` lines, reports, and commits unless the decision text explicitly states the captain was consulted.' "$scout_brief" \
+    "scout brief did not require firstmate attribution in status lines, reports, and commits"
+
+  # 3. Design brief (non-firstmate project)
+  FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" design-attribution sample --design --mode no-mistakes >/dev/null 2>&1
+  design_brief="$home/data/design-attribution/brief.md"
+  assert_grep 'you are instructed by firstmate and the captain is not in the loop' "$design_brief" \
+    "design brief did not instruct worker on firstmate reporting line"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Name firstmate in `resolved:` lines, PR bodies, and commits unless the decision text explicitly states the captain was consulted.' "$design_brief" \
+    "design brief did not require firstmate attribution in status lines, PR bodies, and commits"
+
+  # 4. Secondmate charter
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' \
+    "$ROOT/bin/fm-brief.sh" sm-attribution --secondmate --no-projects >/dev/null 2>&1
+  sm_brief="$home/data/sm-attribution/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
+  assert_grep 'Name the main firstmate in `resolved:` lines unless the decision text explicitly states the captain was consulted.' "$sm_brief" \
+    "secondmate charter did not require main firstmate attribution in resolved status lines"
+
+  # 5. Firstmate-repo section points to rules section without duplication under one-owner rule
+  ln -sfn "$ROOT" "$home/projects/firstmate"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" fm-repo-attr firstmate --mode no-mistakes >/dev/null 2>&1
+  fm_brief="$home/data/fm-repo-attr/brief.md"
+  assert_grep 'follow the reporting line and attribution rules in the rules below.' "$fm_brief" \
+    "firstmate-repo persona section did not point to the rules section"
+  assert_no_grep 'and never attribute firstmate' "$fm_brief" \
+    "firstmate-repo persona section duplicated the attribution contract instead of pointing to the single owner"
+
+  pass "fm-brief.sh: resolved: lines and PR/commit attribution guidance is present in all brief variants"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1410,4 +1473,5 @@ test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
 test_design_brief_is_harness_independent_and_adr_only
 test_firstmate_repo_crew_persona_in_a_secondmate_home
+test_resolved_line_and_pr_attribution_guidance
 printf '\nall fm-brief tests passed\n'
