@@ -3,15 +3,15 @@
 # report.
 #
 # The suite is hermetic: it never touches the network. The pure subcommands
-# (version-gte, latest-ga, release-ga, floors) are tested directly, and the
+# (version-gte, latest-ga, release-ga) are tested directly, the floor report is
+# exercised from a staged repository fixture, and the
 # full report is driven end to end against a fakebin PATH where every tool,
 # npm, gh-axi, curl, and jq are stubs that record their own invocations.
 #
 # Beyond correctness of the version logic (pre-release-vs-GA is the hard-learned
 # rule: no-mistakes ships pre-releases above its GA), the report test asserts
-# the read-only contract behaviorally: npm is only ever invoked with `view`,
-# gh-axi only with `release list`, and no stub ever sees `install`, `update`,
-# or `setup hooks`.
+# the read-only contract behaviorally: every stub records and rejects calls
+# outside its exact read-only invocation.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -117,18 +117,28 @@ pass "release-ga: no GA row reports none"
 
 # --- floors (live read from the three floor-owning files) ---------------------
 
-FLOORS=$("$TOOL" floors)
+FLOOR_FIXTURE="$TMP/floor-fixture"
+mkdir -p "$FLOOR_FIXTURE/bin"
+cp "$TOOL" "$FLOOR_FIXTURE/bin/fm-tool-status.sh"
+printf '%s\n' \
+  'GH_AXI_MIN=9.91.1' \
+  'LAVISH_AXI_MIN=9.92.2' \
+  'NO_MISTAKES_MIN=9.93.3' >"$FLOOR_FIXTURE/bin/fm-bootstrap.sh"
+printf '%s\n' 'FM_TASKS_AXI_MIN=8.81.4' >"$FLOOR_FIXTURE/bin/fm-tasks-axi-lib.sh"
+printf '%s\n' 'FM_QUOTA_AXI_MIN=8.82.5' >"$FLOOR_FIXTURE/bin/fm-quota-axi-lib.sh"
+FLOOR_TOOL="$FLOOR_FIXTURE/bin/fm-tool-status.sh"
+FLOORS=$("$FLOOR_TOOL" floors)
 
-floor_row() { # floor_row <tool> <source-file-basename> <label>
-  printf '%s\n' "$FLOORS" | grep -E "^$1 +[A-Z_]+ +[0-9][0-9.]* +.*/bin/$2$" >/dev/null \
-    || fail "floors: $3; got: $(printf '%s\n' "$FLOORS" | grep "^$1 " || true)"
-pass "floors: $3"
+floor_row() { # floor_row <tool> <floor-var> <value> <source-file> <label>
+  printf '%s\n' "$FLOORS" | grep -E "^$1 +$2 +$3 +$FLOOR_FIXTURE/bin/$4$" >/dev/null \
+    || fail "floors: $5; got: $(printf '%s\n' "$FLOORS" | grep "^$1 " || true)"
+  pass "floors: $5"
 }
-floor_row gh-axi fm-bootstrap.sh "GH_AXI_MIN read from bootstrap"
-floor_row lavish-axi fm-bootstrap.sh "LAVISH_AXI_MIN read from bootstrap"
-floor_row no-mistakes fm-bootstrap.sh "NO_MISTAKES_MIN read from bootstrap"
-floor_row tasks-axi fm-tasks-axi-lib.sh "FM_TASKS_AXI_MIN read from its lib"
-floor_row quota-axi fm-quota-axi-lib.sh "FM_QUOTA_AXI_MIN read from its lib"
+floor_row gh-axi GH_AXI_MIN 9.91.1 fm-bootstrap.sh "GH_AXI_MIN read from bootstrap"
+floor_row lavish-axi LAVISH_AXI_MIN 9.92.2 fm-bootstrap.sh "LAVISH_AXI_MIN read from bootstrap"
+floor_row no-mistakes NO_MISTAKES_MIN 9.93.3 fm-bootstrap.sh "NO_MISTAKES_MIN read from bootstrap"
+floor_row tasks-axi FM_TASKS_AXI_MIN 8.81.4 fm-tasks-axi-lib.sh "FM_TASKS_AXI_MIN read from its lib"
+floor_row quota-axi FM_QUOTA_AXI_MIN 8.82.5 fm-quota-axi-lib.sh "FM_QUOTA_AXI_MIN read from its lib"
 printf '%s\n' "$FLOORS" | grep -E '^chrome-devtools-axi +none +- +no floor by design$' >/dev/null \
   || fail "floors: chrome-devtools-axi must show no floor by design"
 pass "floors: chrome-devtools-axi reported floorless by design"
@@ -136,18 +146,7 @@ if printf '%s\n' "$FLOORS" | grep -E 'unreadable' >/dev/null; then
   fail "floors: every declared floor must resolve"
 fi
 pass "floors: every declared floor resolves"
-# Floor values are read live, so assert shape, not today's numbers; the repo's
-# own floor files are the fixture.
-while read -r tool var; do
-  live=$(printf '%s\n' "$FLOORS" | awk -v t="$tool" -v v="$var" '$1 == t && $2 == v { print $3; exit }')
-  src=$(awk -v v="$var" '$0 ~ "^" v "=" { sub("^" v "=", ""); print; exit }' "$ROOT/bin/fm-bootstrap.sh")
-  [ "$live" = "$src" ] || fail "floors: $var drifted from bootstrap ($live vs $src)"
-  pass "floors: $var matches its owning file"
-done <<'EOF'
-gh-axi GH_AXI_MIN
-lavish-axi LAVISH_AXI_MIN
-no-mistakes NO_MISTAKES_MIN
-EOF
+pass "floors: distinct staged values prove all three owners are read live"
 
 # --- full report against a stubbed world --------------------------------------
 
@@ -155,23 +154,14 @@ FAKEBIN=$(fm_fakebin "$TMP")
 LOG="$FAKEBIN/invocations.log"
 : >"$LOG"
 
-mk_stub() { # mk_stub <name> <body...>
-  local name=$1
-  shift
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf '%s\n' "$*"
-  } >"$FAKEBIN/$name"
-  chmod +x "$FAKEBIN/$name"
-}
-
 # Stub npm: read-only `view` only; every call is recorded so the suite can
 # prove the report never installs, updates, or runs setup hooks.
 cat >"$FAKEBIN/npm" <<'SH'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"$(dirname "$0")/invocations.log"
-[ "${1:-}" = view ] || { printf 'npm stub: refused non-view call\n' >&2; exit 64; }
-case ${2:-} in
+[ "$#" -eq 3 ] && [ "$1" = view ] && [ "$3" = version ] \
+  || { printf 'npm stub: refused unexpected call\n' >&2; exit 64; }
+case $2 in
   gh-axi) printf '0.1.30\n' ;;
   chrome-devtools-axi) printf '0.1.29\n' ;;
   lavish-axi) printf '0.1.50\n' ;;
@@ -188,13 +178,11 @@ chmod +x "$FAKEBIN/npm"
 cat >"$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf 'gh-axi %s\n' "$*" >>"$(dirname "$0")/invocations.log"
-if [ "${1:-}" = --version ]; then printf '0.1.30\n'; exit 0; fi
-[ "${1:-}" = release ] && [ "${2:-}" = list ] || exit 64
-repo=
-while [ $# -gt 0 ]; do
-  if [ "$1" = --repo ]; then repo=$2; fi
-  shift
-done
+if [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '0.1.30\n'; exit 0; fi
+[ "$#" -eq 6 ] && [ "$1" = release ] && [ "$2" = list ] \
+  && [ "$3" = --repo ] && [ "$5" = --limit ] && [ "$6" = 30 ] \
+  || { printf 'gh-axi stub: refused unexpected call\n' >&2; exit 64; }
+repo=$4
 case $repo in
   kunchenguid/no-mistakes)
     printf 'count: 4\n  v1.51.0,v1.51.0,no,yes,17h ago\n  v1.50.0,v1.50.0,no,yes,2d ago\n  v1.49.0,v1.49.0,no,yes,3d ago\n  v1.48.0,v1.48.0,no,no,6d ago\n'
@@ -217,29 +205,48 @@ chmod +x "$FAKEBIN/gh-axi"
 cat >"$FAKEBIN/curl" <<'SH'
 #!/usr/bin/env bash
 printf 'curl %s\n' "$*" >>"$(dirname "$0")/invocations.log"
+[ "$#" -eq 2 ] && [ "$1" = -fsSL ] && [ "$2" = https://herdr.dev/latest.json ] \
+  || { printf 'curl stub: refused unexpected call\n' >&2; exit 64; }
 printf '{"version":"0.8.0","notes":"stub"}\n'
 SH
 chmod +x "$FAKEBIN/curl"
 cat >"$FAKEBIN/jq" <<'SH'
 #!/usr/bin/env bash
+printf 'jq %s\n' "$*" >>"$(dirname "$0")/invocations.log"
+[ "$#" -eq 2 ] && [ "$1" = -r ] && [ "$2" = '.version // empty' ] \
+  || { printf 'jq stub: refused unexpected call\n' >&2; exit 64; }
 input=$(cat)
 pat='"version"[[:space:]]*:[[:space:]]*"([^"]+)"'
 [[ $input =~ $pat ]] && printf '%s\n' "${BASH_REMATCH[1]}"
 SH
 chmod +x "$FAKEBIN/jq"
 
-# Installed versions: one stub per fleet tool; gh-axi is already stubbed above
+# Installed versions share one invocation-recording stub; gh-axi is separate
 # because it also serves the release-list lookup.
-mk_stub chrome-devtools-axi 'printf "0.1.29\n"'
-mk_stub lavish-axi 'printf "0.1.50\n"'
-mk_stub tasks-axi 'printf "0.2.5\n"'
-mk_stub quota-axi 'printf "0.1.21\n"'
-mk_stub gnhf 'printf "0.1.43\n"'
-mk_stub pi 'printf "0.84.1\n"'
-mk_stub no-mistakes 'printf "v1.41.2 (867d64d)\n"'
-mk_stub treehouse 'printf "v2.1.0\n"'
-mk_stub gbrain 'printf "0.45.9.0\n"'
-mk_stub herdr 'printf "0.8.0\n"'
+cat >"$FAKEBIN/fleet-tool-version" <<'SH'
+#!/usr/bin/env bash
+name=$(basename "$0")
+printf '%s %s\n' "$name" "$*" >>"$(dirname "$0")/invocations.log"
+[ "$#" -eq 1 ] && [ "$1" = --version ] \
+  || { printf '%s stub: refused unexpected call\n' "$name" >&2; exit 64; }
+case $name in
+  chrome-devtools-axi) printf '0.1.29\n' ;;
+  lavish-axi) printf '0.1.50\n' ;;
+  tasks-axi) printf '0.2.5\n' ;;
+  quota-axi) printf '0.1.21\n' ;;
+  gnhf) printf '0.1.43\n' ;;
+  pi) printf '0.84.1\n' ;;
+  no-mistakes) printf 'v1.41.2 (867d64d)\n' ;;
+  treehouse) printf 'v2.1.0\n' ;;
+  gbrain) printf '0.45.9.0\n' ;;
+  herdr) printf '0.8.0\n' ;;
+  *) exit 64 ;;
+esac
+SH
+chmod +x "$FAKEBIN/fleet-tool-version"
+for name in chrome-devtools-axi lavish-axi tasks-axi quota-axi gnhf pi no-mistakes treehouse gbrain herdr; do
+  ln -s fleet-tool-version "$FAKEBIN/$name"
+done
 
 # Restricted PATH: the fakebin plus core utilities only, so host fleet tools
 # cannot leak in and the stubs are provably the ones consulted.
@@ -263,32 +270,45 @@ report_row herdr '0\.8\.0 +none +0\.8\.0 +herdr +current; pre-releases up to pre
 report_row pi '0\.84\.1 +none +0\.84\.2 +npm +behind$' "pi tracked under its npm package name"
 report_row gnhf '0\.1\.43 +none +- +npm +could-not-verify \(npm view gnhf version\)$' "failed lookup degrades honestly, naming the command"
 
-# The read-only contract, asserted from what the stubs actually saw.
-grep -q '^npm view ' "$LOG" || fail "read-only: npm log missing"
-pass "read-only: npm log captured"
-[ "$(grep -c '^npm ' "$LOG")" -eq "$(grep -c '^npm view ' "$LOG")" ] \
-  || fail "read-only: npm called with something other than view: $(grep '^npm ' "$LOG" | grep -v '^npm view ' || true)"
-pass "read-only: npm only ever called with view"
-grep -q '^gh-axi release list ' "$LOG" || fail "read-only: gh-axi log missing"
-pass "read-only: gh-axi release list captured"
-if grep '^gh-axi ' "$LOG" | grep -Ev '^gh-axi (--version|release list )' >/dev/null; then
-  fail "read-only: gh-axi called beyond --version and release list: $(grep '^gh-axi ' "$LOG" | grep -Ev '^gh-axi (--version|release list )')"
-else
-  pass "read-only: gh-axi only ever called with --version and release list"
-fi
-if grep -Eq 'install|update|setup hooks|daemon' "$LOG"; then
-  fail "read-only: a mutating verb reached a stub: $(grep -E 'install|update|setup hooks|daemon' "$LOG")"
-else
-  pass "read-only: no install, update, setup hooks, or daemon call anywhere"
-fi
+# The read-only contract, asserted from every invocation-recording stub.
+while IFS= read -r call; do
+  case $call in
+    'npm view gh-axi version' | \
+      'npm view chrome-devtools-axi version' | \
+      'npm view lavish-axi version' | \
+      'npm view tasks-axi version' | \
+      'npm view quota-axi version' | \
+      'npm view gnhf version' | \
+      'npm view @earendil-works/pi-coding-agent version' | \
+      'gh-axi --version' | \
+      'gh-axi release list --repo kunchenguid/no-mistakes --limit 30' | \
+      'gh-axi release list --repo kunchenguid/treehouse --limit 30' | \
+      'gh-axi release list --repo garrytan/gbrain --limit 30' | \
+      'gh-axi release list --repo herdrdev/herdr --limit 30' | \
+      'curl -fsSL https://herdr.dev/latest.json' | \
+      'jq -r .version // empty' | \
+      'chrome-devtools-axi --version' | \
+      'lavish-axi --version' | \
+      'tasks-axi --version' | \
+      'quota-axi --version' | \
+      'gnhf --version' | \
+      'pi --version' | \
+      'no-mistakes --version' | \
+      'treehouse --version' | \
+      'gbrain --version' | \
+      'herdr --version') ;;
+    *) fail "read-only: unexpected external invocation: $call" ;;
+  esac
+done <"$LOG"
+pass "read-only: every external stub saw only exact permitted invocations"
 if grep -q 'invocations.log' "$TMP/report.txt"; then
   fail "report: stub internals leaked into report output"
 else
   pass "report: no stub diagnostics leak into output"
 fi
 
-# A not-installed tool (gnhf absent from a fresh fakebin) degrades to a named
-# verdict instead of borrowing the host's real gnhf.
+# A not-installed tool with a simultaneous upstream failure reports both
+# outcomes instead of borrowing the host's real gnhf or hiding either result.
 FAKEBIN2=$(fm_fakebin "$TMP/missing")
 for f in "$FAKEBIN"/*; do
   base=$(basename "$f")
@@ -299,12 +319,33 @@ done
 LOG2="$FAKEBIN2/invocations.log"
 : >"$LOG2"
 REPORT2=$(PATH="$FAKEBIN2:/usr/bin:/bin" "$TOOL" 2>&1)
-printf '%s\n' "$REPORT2" | grep -E '^gnhf +- +none +- +npm +not-installed$' >/dev/null \
-  || fail "report: absent tool must read not-installed; row: $(printf '%s\n' "$REPORT2" | grep '^gnhf ' || true)"
-pass "report: absent tool reported not-installed"
+printf '%s\n' "$REPORT2" | grep -E '^gnhf +- +none +- +npm +not-installed; could-not-verify \(npm view gnhf version\)$' >/dev/null \
+  || fail "report: absent tool must preserve both outcomes; row: $(printf '%s\n' "$REPORT2" | grep '^gnhf ' || true)"
+pass "report: absent tool preserves simultaneous upstream failure"
+
+# A failed installed-version command is a lookup failure too, and remains
+# visible alongside the failed upstream lookup.
+FAKEBIN3=$(fm_fakebin "$TMP/version-failure")
+for f in "$FAKEBIN"/*; do
+  base=$(basename "$f")
+  [ "$base" = gnhf ] && continue
+  [ "$base" = invocations.log ] && continue
+  ln -s "$f" "$FAKEBIN3/$base"
+done
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''gnhf %s\n'\'' "$*" >>"$(dirname "$0")/invocations.log"' \
+  '[ "$#" -eq 1 ] && [ "$1" = --version ] || exit 64' \
+  'exit 1' >"$FAKEBIN3/gnhf"
+chmod +x "$FAKEBIN3/gnhf"
+: >"$FAKEBIN3/invocations.log"
+REPORT3=$(PATH="$FAKEBIN3:/usr/bin:/bin" "$TOOL" 2>&1)
+printf '%s\n' "$REPORT3" | grep -E '^gnhf +- +none +- +npm +could-not-verify \(gnhf --version\); could-not-verify \(npm view gnhf version\)$' >/dev/null \
+  || fail "report: failed installed lookup must remain visible; row: $(printf '%s\n' "$REPORT3" | grep '^gnhf ' || true)"
+pass "report: installed and upstream lookup failures are combined"
 
 # Floors resolve from any working directory, not just the repo root.
-FLOORS_ELSEWHERE=$(cd /tmp && "$TOOL" floors)
+FLOORS_ELSEWHERE=$(cd /tmp && "$FLOOR_TOOL" floors)
 printf '%s\n' "$FLOORS_ELSEWHERE" | grep -q 'fm-tasks-axi-lib.sh' \
   || fail "floors: must resolve floor files from any cwd"
 pass "floors: resolve from a foreign cwd"

@@ -319,13 +319,33 @@ latest_herdr() {
 
 cmd_report() {
   local entry name channel ref floorvar floorkey
-  local installed floor latest verdict
+  local installed installed_rc installed_verdict floor latest verdict
   printf 'toolchain staleness report %s (read-only; versions read live)\n\n' "$(date -u +%Y-%m-%d)"
   printf '%-20s %-12s %-9s %-12s %-7s %s\n' "tool" "installed" "floor" "latest" "channel" "verdict"
   for entry in "${FM_TOOL_TABLE[@]}"; do
     IFS='|' read -r name channel ref floorvar floorkey <<<"$entry"
-    installed=""
-    installed_version "$name" >/dev/null 2>&1 && installed=$(installed_version "$name")
+    installed=$(installed_version "$name" 2>/dev/null)
+    installed_rc=$?
+    installed_verdict=""
+    case $installed_rc in
+      0) ;;
+      1)
+        installed="-"
+        installed_verdict="not-installed"
+        ;;
+      2)
+        installed="-"
+        installed_verdict="could-not-verify ($name --version)"
+        ;;
+      3)
+        installed="-"
+        installed_verdict="could-not-verify ($name --version: unparseable output)"
+        ;;
+      *)
+        installed="-"
+        installed_verdict="could-not-verify ($name --version: unexpected failure)"
+        ;;
+    esac
     floor="none"
     if [ -n "$floorvar" ]; then
       floor=$(floor_value "$floorvar" "$floorkey")
@@ -340,15 +360,13 @@ cmd_report() {
       herdr) latest_herdr "$ref" ;;
     esac
     latest=${LATEST:-"-"}
-    verdict=""
-    if [ -z "$installed" ]; then
-      installed="-"
-      verdict="not-installed"
-    elif [ -n "$LATEST_ERR" ]; then
-      verdict="$LATEST_ERR"
-    elif version_gte "$installed" "$latest"; then
+    verdict=$installed_verdict
+    if [ -n "$LATEST_ERR" ]; then
+      [ -z "$verdict" ] || verdict="$verdict; "
+      verdict="${verdict}${LATEST_ERR}"
+    elif [ "$installed" != "-" ] && version_gte "$installed" "$latest"; then
       verdict="current"
-    else
+    elif [ "$installed" != "-" ]; then
       verdict="behind"
     fi
     if [ "$installed" != "-" ] && [ "$floor" != "none" ] && [ "$floor" != "unreadable" ]; then
