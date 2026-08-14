@@ -819,19 +819,33 @@ COARSE_HEAD=""
 LOOKUP_FAILED=0
 LOOKUP_COMPLETED=0
 RUN_ATTRIBUTION_FAULT=""
+lookup_coarse_run() {
+  local runs_out runs_rc
+  runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  runs_rc=$?
+  if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
+    LOOKUP_FAILED=1
+    return
+  fi
+  LOOKUP_COMPLETED=1
+  COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
+  IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
+  if [ -n "$COARSE_STATUS" ]; then
+    if [ -n "$TASK_BRANCH" ]; then
+      HAVE_RUN=1
+      RUN_SOURCE=coarse
+    else
+      RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
+    fi
+  fi
+}
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
-# A DETACHED worktree skips it too. What that proves is narrow but sufficient:
-# the recorded branch is not checked out here, so no run answered from this
-# worktree can bind to it. `axi status` asked from a detached worktree answers
-# for some other branch, and a coarse runs-list row would still have to bind its
-# sha to a HEAD this worktree has not moved onto the recorded branch. It does
-# NOT prove the task has no run at all - a parked task whose pooled worktree was
-# reallocated to a just-spawned, still-detached crew has one - but that run is
-# not reachable from here either, which is why the reallocated case is pinned on
-# the named-branch path (test_reallocated_worktree_branch_surfaces_attribution_
-# fault) rather than separately here. Skipping saves a just-spawned or
-# never-branched crew two bounded CLI calls per heartbeat.
+# A conventional fm/<task-id> task at detached HEAD has not created its branch
+# yet, so it still skips the lookup. A task whose recorded branch differs from
+# that conventional name is an existing-branch continuation: detached HEAD is
+# its expected placement, and the runs listing can bind branch plus commit
+# identity without asking branch-scoped `axi status` from a detached checkout.
 if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
    && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
@@ -865,25 +879,13 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
       # for no better answer.
-      runs_out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
-      runs_rc=$?
-      if [ "$runs_rc" != 0 ] || [ -z "$runs_out" ]; then
-        LOOKUP_FAILED=1
-      else
-        LOOKUP_COMPLETED=1
-        COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
-        IFS=$'\t' read -r COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
-        if [ -n "$COARSE_STATUS" ]; then
-          if [ -n "$TASK_BRANCH" ]; then
-            HAVE_RUN=1
-            RUN_SOURCE=coarse
-          else
-            RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
-          fi
-        fi
-      fi
+      lookup_coarse_run
     fi
   fi
+elif tracked_output_kind && [ -z "$WORKTREE_BRANCH" ] \
+   && [ -n "$TASK_BRANCH" ] && [ "$TASK_BRANCH" != "fm/$ID" ] \
+   && command -v no-mistakes >/dev/null 2>&1; then
+  lookup_coarse_run
 fi
 
 if [ -n "$RUN_ATTRIBUTION_FAULT" ]; then

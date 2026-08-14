@@ -946,7 +946,7 @@ test_spawn_copies_continued_task_branch_from_brief_flag() {
   read_case_record "$rec"
   rm -f "$HOME_DIR/data/$id/brief.md"
   FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" \
-    "$ROOT/bin/fm-brief.sh" "$id" sample --mode no-mistakes --continue-branch "$continued" >/dev/null 2>&1 \
+    "$ROOT/bin/fm-brief.sh" "$id" "$PROJ_DIR" --mode no-mistakes --continue-branch "$continued" >/dev/null 2>&1 \
     || fail "fm-brief.sh --continue-branch should scaffold before spawn"
   runtime_home="$CASE_DIR/runtime-home"
   mkdir -p "$runtime_home/.claude"
@@ -960,6 +960,27 @@ test_spawn_copies_continued_task_branch_from_brief_flag() {
   assert_no_grep "branch=fm/$id" "$HOME_DIR/state/$id.meta" \
     "spawn recorded unused fm/<task-id> as the task branch"
   pass "spawn copies --continue-branch into metadata instead of fm/<task-id>"
+}
+
+test_spawn_refuses_default_branch_task_marker() {
+  local rec id runtime_home out status
+  id='continue-default-refused-z10'
+  rec=$(make_spawn_case continue-default-refused claude "$id")
+  read_case_record "$rec"
+  sed -i "s|firstmate-task-branch=fm/$id|firstmate-task-branch=main|" \
+    "$HOME_DIR/data/$id/brief.md"
+  runtime_home="$CASE_DIR/runtime-home"
+  mkdir -p "$runtime_home/.claude"
+
+  out=$(HOME="$runtime_home" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a task marker naming the default branch"
+  assert_contains "$out" "task branch marker names the repository default branch 'main'" \
+    "spawn did not protect the default branch from a hand-edited marker"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "spawn published metadata after the default-branch refusal"
+  pass "spawn refuses a task marker naming the repository default branch"
 }
 
 test_no_profile_keeps_claude_profile_defaults
@@ -993,5 +1014,6 @@ test_non_claude_harness_ignores_config_dir
 test_design_profile_resolves_on_claude_codex_and_pi
 test_active_dispatch_profile_does_not_block_secondmate_launch
 test_spawn_copies_continued_task_branch_from_brief_flag
+test_spawn_refuses_default_branch_task_marker
 
 printf '\nall fm-spawn-dispatch-profile tests passed\n'

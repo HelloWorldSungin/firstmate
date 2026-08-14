@@ -205,7 +205,7 @@ family_for_basename() {
       ;;
     fm-issue-linkage.test.sh|fm-issue-writeback.test.sh|\
     fm-outcome-manifest.test.sh|\
-    fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
+    fm-merge-local.test.sh|fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
     fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;

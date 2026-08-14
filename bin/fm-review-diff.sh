@@ -9,7 +9,8 @@
 # current after no-mistakes fix rounds push to the PR. A recorded pr_head= is
 # only a fallback when fetch fails (stale recorded SHAs must never win over a
 # reachable remote PR head). If neither PR head can be resolved, fall back to
-# the local branch with a warning. Without pr=, compare the local branch.
+# the task record's branch= with a warning, fetching that branch when needed.
+# Legacy metadata without branch= retains the fm/<id> and ambient-branch fallback.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
 set -eu
@@ -67,12 +68,31 @@ default_branch() {
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
-BRANCH="fm/$ID"
-if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
-  BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-  [ -n "$BRANCH" ] || { echo "error: branch fm/$ID does not exist and worktree $WT is detached" >&2; exit 1; }
-  git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }
+RECORDED_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+if [ -n "$RECORDED_BRANCH" ]; then
+  git check-ref-format --branch "$RECORDED_BRANCH" >/dev/null 2>&1 \
+    || { echo "error: invalid branch= in meta for task $ID" >&2; exit 1; }
+  BRANCH=$RECORDED_BRANCH
+else
+  BRANCH="fm/$ID"
+  if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+    BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [ -n "$BRANCH" ] || { echo "error: branch fm/$ID does not exist, metadata records no branch=, and worktree $WT is detached" >&2; exit 1; }
+  fi
 fi
+
+resolve_task_branch() {
+  local remote_ref="refs/fm-review/branches/$BRANCH"
+  if git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}" >/dev/null; then
+    printf '%s' "$BRANCH"
+    return 0
+  fi
+  git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
+  git -C "$WT" fetch --quiet origin \
+    "+refs/heads/$BRANCH:$remote_ref" >/dev/null 2>&1 || return 1
+  git -C "$WT" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null || return 1
+  printf '%s' "$remote_ref"
+}
 
 pr_number_from_target() {
   local target=$1 n
@@ -124,12 +144,19 @@ resolve_pr_head() {
 
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD_RECORDED=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
-COMPARE_REF=$BRANCH
+COMPARE_REF=
 if [ -n "$PR_URL" ]; then
   if PR_HEAD=$(resolve_pr_head "$PR_URL" "$PR_HEAD_RECORDED"); then
     COMPARE_REF=$PR_HEAD
-  else
-    echo "warning: PR head unavailable; diff may lag the open PR (using local branch $BRANCH)" >&2
+  fi
+fi
+if [ -z "$COMPARE_REF" ]; then
+  COMPARE_REF=$(resolve_task_branch) || {
+    echo "error: recorded task branch $BRANCH does not resolve locally or from origin" >&2
+    exit 1
+  }
+  if [ -n "$PR_URL" ]; then
+    echo "warning: PR head unavailable; diff may lag the open PR (using recorded task branch $BRANCH)" >&2
   fi
 fi
 

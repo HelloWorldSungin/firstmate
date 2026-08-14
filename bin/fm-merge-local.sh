@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship or design task: fast-forward the
-# project's default branch to the crewmate's fm/<id> branch.
+# project's default branch to the task record's branch=, with fm/<id> retained
+# only for legacy metadata.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -41,10 +42,14 @@ default_branch() {
   return 1
 }
 
-BRANCH="fm/$ID"
-git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
-
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+[ -n "$BRANCH" ] || BRANCH="fm/$ID"
+git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 \
+  || { echo "error: invalid branch= in meta for task $ID" >&2; exit 1; }
+[ "$BRANCH" != "$DEFAULT" ] \
+  || { echo "error: task branch $BRANCH is the default branch; refusing local landing" >&2; exit 1; }
+git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
 
 # The project's main checkout must be on its default branch and clean, so the
 # fast-forward lands predictably (firstmate never writes here otherwise).

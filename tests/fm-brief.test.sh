@@ -1519,63 +1519,125 @@ test_resolved_line_and_pr_attribution_guidance() {
 # isolation assertion must agree, and the flag must refuse the shapes that would
 # silently recreate the original bug.
 test_continue_branch_renders_setup_and_marker() {
-  local home id continued brief iso br
+  local home project plugin registry id continued brief iso br kind mode noun quoted
   home="$TMP_ROOT/continue-branch-home"
-  mkdir -p "$home/data"
+  project="$home/projects/some-proj"
+  plugin="$TMP_ROOT/continue-branch-design-plugin"
+  registry="$TMP_ROOT/continue-branch-design-registry.json"
+  mkdir -p "$home/data" "$project" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  git init -q "$project"
+  git -C "$project" symbolic-ref HEAD refs/heads/main
+  printf 'base\n' > "$project/base.txt"
+  git -C "$project" add base.txt
+  git -C "$project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm base
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
   continued='fm/existing-pr-head'
-  id='brief-continue-c1'
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes \
-    --continue-branch "$continued" >/dev/null 2>&1 \
-    || fail "no-mistakes --continue-branch should scaffold"
-  brief="$home/data/$id/brief.md"
-  grep -qx "<!-- firstmate-task-branch=$continued -->" "$brief" \
-    || fail "continue-branch brief recorded fm/<task-id> instead of the existing branch"
-  assert_no_grep "<!-- firstmate-task-branch=fm/$id -->" "$brief" \
-    "continue-branch brief still recorded the unused fm/<task-id> marker"
-  assert_grep "1. First action: continue existing branch \`$continued\` from detached HEAD." "$brief" \
-    "continue-branch brief did not replace the Setup first action"
-  assert_no_grep "git checkout -b fm/$id" "$brief" \
-    "continue-branch brief still instructed git checkout -b fm/<task-id>"
-  assert_grep "git fetch origin $continued" "$brief" \
-    "continue-branch brief omitted fetch of the existing branch"
-  assert_grep "git checkout --detach FETCH_HEAD" "$brief" \
-    "continue-branch brief did not keep the worker detached"
-  assert_grep "a branch held by another worktree blocks checkout, not push" "$brief" \
-    "continue-branch brief omitted the checkout-versus-push rule"
-  assert_grep "git push origin HEAD:$continued" "$brief" \
-    "continue-branch brief omitted push HEAD:<branch> for the existing PR"
-  assert_grep "Do not create \`fm/$id\`." "$brief" \
-    "continue-branch brief did not forbid creating fm/<task-id>"
-  iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
-  br=$(grep -n 'First action: continue existing branch' "$brief" | head -1 | cut -d: -f1)
-  if [ -z "$iso" ] || [ -z "$br" ]; then
-    fail "continue-branch brief missing isolation assertion ($iso) or branch step ($br)"
-  fi
-  [ "$iso" -lt "$br" ] || fail "isolation assertion (line $iso) must precede the continue-branch step (line $br)"
+  quoted="'$continued'"
+  for kind in ship design; do
+    for mode in no-mistakes direct-PR local-only; do
+      id="continue-$kind-${mode//-}"
+      if [ "$kind" = design ]; then
+        FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+          "$ROOT/bin/fm-brief.sh" "$id" "$project" --design --mode "$mode" \
+          --continue-branch "$continued" >/dev/null 2>&1 \
+          || fail "$kind $mode --continue-branch should scaffold"
+        noun=ADR
+      else
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$project" --mode "$mode" \
+          --continue-branch "$continued" >/dev/null 2>&1 \
+          || fail "$kind $mode --continue-branch should scaffold"
+        noun=task
+      fi
+      brief="$home/data/$id/brief.md"
+      grep -qx "<!-- firstmate-task-branch=$continued -->" "$brief" \
+        || fail "$kind $mode recorded the wrong continued branch"
+      assert_no_grep "<!-- firstmate-task-branch=fm/$id -->" "$brief" \
+        "$kind $mode recorded the unused fm/<task-id> marker"
+      assert_grep "1. First action: continue existing branch \`$continued\` from detached HEAD." "$brief" \
+        "$kind $mode did not replace the Setup first action"
+      assert_no_grep "git checkout -b fm/$id" "$brief" \
+        "$kind $mode still instructed git checkout -b fm/<task-id>"
+      assert_no_grep 'committed on your branch' "$brief" \
+        "$kind $mode definition of done contradicts detached continuation"
+      assert_grep "Do not create \`fm/$id\`." "$brief" \
+        "$kind $mode did not forbid creating fm/<task-id>"
+      iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
+      br=$(grep -n 'First action: continue existing branch' "$brief" | head -1 | cut -d: -f1)
+      [ -n "$iso" ] && [ -n "$br" ] && [ "$iso" -lt "$br" ] \
+        || fail "$kind $mode must keep isolation before branch continuation"
+      case "$mode" in
+        no-mistakes)
+          assert_grep "git fetch origin $quoted" "$brief" \
+            "$kind $mode omitted the shell-quoted branch fetch"
+          assert_grep "git push origin 'HEAD:$continued'" "$brief" \
+            "$kind $mode omitted the shell-quoted in-place PR update"
+          assert_grep "This $noun continues an existing PR through **no-mistakes**" "$brief" \
+            "$kind $mode did not identify the existing PR handoff"
+          assert_grep 'done: PR https://... checks green' "$brief" \
+            "$kind $mode did not require the existing PR full HTTPS URL"
+          assert_no_grep 'open a PR with `gh-axi`' "$brief" \
+            "$kind $mode still tells the worker to open a duplicate PR"
+          ;;
+        direct-PR)
+          assert_grep "git fetch origin $quoted" "$brief" \
+            "$kind $mode omitted the shell-quoted branch fetch"
+          assert_grep "git push origin 'HEAD:$continued'" "$brief" \
+            "$kind $mode omitted the shell-quoted in-place PR update"
+          assert_grep "This $noun continues an existing PR through **direct-PR**" "$brief" \
+            "$kind $mode did not identify the existing PR handoff"
+          assert_grep 'confirm the existing PR was updated' "$brief" \
+            "$kind $mode did not require confirmation of the in-place update"
+          assert_grep 'done: PR https://...' "$brief" \
+            "$kind $mode did not require the existing PR full HTTPS URL"
+          assert_no_grep 'open a PR with `gh-axi`' "$brief" \
+            "$kind $mode still tells the worker to open a duplicate PR"
+          ;;
+        local-only)
+          assert_grep "git checkout --detach $quoted" "$brief" \
+            "$kind $mode did not detach at the shell-quoted existing branch"
+          assert_grep "git update-ref 'refs/heads/$continued' HEAD" "$brief" \
+            "$kind $mode omitted the shell-quoted local ref update"
+          assert_grep "committed at detached HEAD and local branch \`$continued\` points to that commit" "$brief" \
+            "$kind $mode definition of done does not match detached continuation"
+          assert_no_grep 'git push origin' "$brief" \
+            "$kind $mode instructed a remote push"
+          assert_grep "Advance branch \`$continued\` without checking it out" "$brief" \
+            "$kind $mode still told the worker to work on the held branch"
+          ;;
+      esac
+    done
+  done
 
-  id='brief-continue-c2'
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only \
+  id='continue-shell-safe'
+  continued='feature/$(touch-owned)'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$project" --mode direct-PR \
     --continue-branch "$continued" >/dev/null 2>&1 \
-    || fail "local-only --continue-branch should scaffold"
+    || fail "shell-metacharacter branch should render safely"
   brief="$home/data/$id/brief.md"
-  grep -qx "<!-- firstmate-task-branch=$continued -->" "$brief" \
-    || fail "local-only continue-branch brief recorded the wrong task-branch marker"
-  assert_grep "git checkout --detach $continued" "$brief" \
-    "local-only continue-branch brief did not detach at the existing branch"
-  assert_no_grep "git push origin HEAD:" "$brief" \
-    "local-only continue-branch brief instructed a remote push"
-  assert_grep "git update-ref refs/heads/$continued HEAD" "$brief" \
-    "local-only continue-branch brief omitted the local ref update"
-  assert_grep "Advance branch \`$continued\` without checking it out" "$brief" \
-    "local-only continue-branch brief still told the worker to work on the held branch"
+  assert_grep "git fetch origin '$continued'" "$brief" \
+    "continue-branch fetch operand is not shell quoted"
+  assert_grep "git push origin 'HEAD:$continued'" "$brief" \
+    "continue-branch push operand is not shell quoted"
 
-  pass "fm-brief.sh: --continue-branch renders Setup, marker, and isolation in agreement"
+  pass "fm-brief.sh: all continuation mode and kind combinations agree"
 }
 
 test_continue_branch_flag_validation() {
-  local home rc
+  local home project rc
   home="$TMP_ROOT/continue-branch-validation-home"
-  mkdir -p "$home/data"
+  project="$home/projects/some-proj"
+  mkdir -p "$home/data" "$project"
+  git init -q "$project"
+  git -C "$project" symbolic-ref HEAD refs/heads/main
+  printf 'base\n' > "$project/base.txt"
+  git -C "$project" add base.txt
+  git -C "$project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm base
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-missing some-proj --mode no-mistakes --continue-branch \
     > "$home/missing.stdout" 2> "$home/missing.stderr"
@@ -1586,7 +1648,7 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-missing/brief.md" \
     "--continue-branch without a value wrote a brief"
 
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-empty some-proj --mode no-mistakes --continue-branch= \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-empty "$project" --mode no-mistakes --continue-branch= \
     > "$home/empty.stdout" 2> "$home/empty.stderr"
   rc=$?
   expect_code 1 "$rc" "--continue-branch= should fail"
@@ -1595,7 +1657,7 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-empty/brief.md" \
     "--continue-branch= wrote a brief"
 
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-bad some-proj --mode no-mistakes --continue-branch 'bad..name' \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-bad "$project" --mode no-mistakes --continue-branch 'bad..name' \
     > "$home/bad.stdout" 2> "$home/bad.stderr"
   rc=$?
   expect_code 1 "$rc" "--continue-branch with an invalid ref should fail"
@@ -1604,7 +1666,7 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-bad/brief.md" \
     "--continue-branch bad..name wrote a brief"
 
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-default some-proj --mode no-mistakes \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-default "$project" --mode no-mistakes \
     --continue-branch fm/continue-default \
     > "$home/default.stdout" 2> "$home/default.stderr"
   rc=$?
@@ -1614,7 +1676,25 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-default/brief.md" \
     "--continue-branch fm/<task-id> wrote a brief"
 
-  pass "fm-brief.sh: --continue-branch refuses missing, empty, invalid, and default-strategy names"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-main "$project" --mode no-mistakes \
+    --continue-branch main > "$home/main.stdout" 2> "$home/main.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch main should fail"
+  assert_grep "cannot name the repository default branch 'main'" "$home/main.stderr" \
+    "--continue-branch main did not protect the resolved default branch"
+  assert_absent "$home/data/continue-main/brief.md" \
+    "--continue-branch main wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-markdown "$project" --mode no-mistakes \
+    --continue-branch 'feature/`unsafe`' > "$home/markdown.stdout" 2> "$home/markdown.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch with a Markdown delimiter should fail"
+  assert_grep 'cannot contain a backtick' "$home/markdown.stderr" \
+    "--continue-branch did not protect rendered Markdown"
+  assert_absent "$home/data/continue-markdown/brief.md" \
+    "unsafe --continue-branch wrote a brief"
+
+  pass "fm-brief.sh: --continue-branch rejects invalid and protected names"
 }
 
 test_script_parses

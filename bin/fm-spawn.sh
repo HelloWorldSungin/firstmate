@@ -1274,6 +1274,22 @@ if tracked_output_kind; then
         echo "error: malformed task branch marker in $BRIEF" >&2
         exit 1
       fi
+      case "$TASK_BRANCH" in
+        *'`'*|*'-->'*)
+          echo "error: malformed task branch marker in $BRIEF" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$TASK_BRANCH" != "fm/$ID" ]; then
+        TASK_DEFAULT_BRANCH=$(default_branch "$PROJ_ABS") || {
+          echo "error: cannot determine the default branch for $PROJ_ABS; refusing continued-branch dispatch" >&2
+          exit 1
+        }
+        [ "$TASK_BRANCH" != "$TASK_DEFAULT_BRANCH" ] || {
+          echo "error: task branch marker names the repository default branch '$TASK_DEFAULT_BRANCH'; refusing dispatch" >&2
+          exit 1
+        }
+      fi
       ;;
     *) echo "error: multiple task branch markers in $BRIEF" >&2; exit 1 ;;
   esac

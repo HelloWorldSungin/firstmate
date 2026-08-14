@@ -647,6 +647,36 @@ EOF
   pass "a detached worktree skips the run lookup entirely"
 }
 
+test_detached_continued_branch_uses_recorded_run_identity() {
+  reset_fakes
+  local d out short; d=$(new_case detached-continued-branch)
+  make_repo_on_branch "$d/wt" feature/existing-pr
+  short=$(git -C "$d/wt" rev-parse --short HEAD)
+  git -C "$d/wt" checkout --detach -q
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/detached-continued.meta" \
+    "window=fm:fm-detached-continued" "worktree=$d/wt" \
+    "branch=feature/existing-pr" "kind=ship" "harness=claude"
+  printf 'blocked: implemented and pushed, ready to validate\n' \
+    > "$d/state/detached-continued.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/some-other-task)"
+  FM_FAKE_RUNS_LIST="running feature/existing-pr $short 2026-08-14 12:00"
+  FM_FAKE_NM_CALL_LOG="$d/nm-calls.log"
+  : > "$FM_FAKE_NM_CALL_LOG"
+
+  out=$(run_crew_state "$d" detached-continued)
+
+  assert_not_contains "$(cat "$FM_FAKE_NM_CALL_LOG")" "axi status" \
+    "detached continuation asked branch-scoped status from detached HEAD"
+  assert_contains "$(cat "$FM_FAKE_NM_CALL_LOG")" "runs --limit" \
+    "detached continuation did not query runs by its recorded branch"
+  assert_contains "$out" "state: working" \
+    "detached continuation did not surface its validation run"
+  assert_contains "$out" "source: run-step" \
+    "detached continuation did not attribute the run to its recorded branch"
+  pass "a detached continuation resolves validation from its recorded branch"
+}
+
 # The other half of that short-circuit: it must never skip a state in which a run
 # COULD be attributed. The only such state is the recorded branch checked out
 # here, and there the lookup still runs and still answers.
@@ -3126,6 +3156,7 @@ test_working_run_step_with_unreadable_agent_not_absorbed() {
   pass "an unreadable worker-liveness read is not absorbed, so the stale wake surfaces"
 }
 
+test_detached_continued_branch_uses_recorded_run_identity
 test_working_run_step_with_dead_agent_is_abandoned
 test_working_run_step_with_missing_agent_is_abandoned
 test_working_run_step_with_unreadable_agent_is_unknown
