@@ -53,6 +53,19 @@ run_status() {  # <fork> [args...]
   FM_ROOT_OVERRIDE="$fork" FM_UPSTREAM_STATUS_TIMEOUT=10 "$STATUS" "$@"
 }
 
+make_stalling_git() {  # <directory>
+  local directory=$1
+  mkdir -p "$directory"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'case " $* " in' \
+    '  *" diff-tree "*) sleep "${FM_TEST_GIT_STALL:-5}" ;;' \
+    'esac' \
+    'exec "$FM_TEST_REAL_GIT" "$@"' \
+    > "$directory/git"
+  chmod +x "$directory/git"
+}
+
 test_absent_remote_is_inert() {
   local fixture fork upstream out
   fixture=$(make_fixture absent)
@@ -145,6 +158,61 @@ test_current_fork_is_silent() {
   pass "upstream status stays silent when the fork contains upstream HEAD"
 }
 
+test_remote_fork_head_overrides_stale_tracking_ref() {
+  local fixture fork upstream publisher origin_url upstream_url local_oid remote_oid out
+  fixture=$(make_fixture stale-fork)
+  fork=${fixture%%|*}
+  upstream=${fixture#*|}
+  add_upstream_change "$upstream" docs/landed.md 'docs: landed upstream change (#402)' landed
+
+  origin_url=$(git -C "$fork" remote get-url origin)
+  upstream_url=$(git -C "$fork" remote get-url upstream)
+  publisher="$TMP_ROOT/stale-fork/publisher"
+  git clone -q "$origin_url" "$publisher"
+  git -C "$publisher" config user.name fmtest
+  git -C "$publisher" config user.email fmtest@example.invalid
+  git -C "$publisher" remote add upstream "$upstream_url"
+  git -C "$publisher" fetch -q upstream
+  git -C "$publisher" merge -q --no-edit upstream/main
+  git -C "$publisher" push -q origin main
+
+  local_oid=$(git -C "$fork" rev-parse refs/remotes/origin/main)
+  remote_oid=$(git ls-remote "$origin_url" HEAD | awk '{print $1}')
+  [ "$local_oid" != "$remote_oid" ] || fail "fixture should leave the local fork tracking ref stale"
+  out=$(run_status "$fork")
+  [ -z "$out" ] || fail "current remote fork head should make landed drift silent, got: $out"
+  pass "upstream status measures the current remote fork default branch"
+}
+
+test_default_is_aggregate_and_details_share_total_deadline() {
+  local fixture fork upstream shim real_git out rc started elapsed
+  fixture=$(make_fixture bounded)
+  fork=${fixture%%|*}
+  upstream=${fixture#*|}
+  add_upstream_change "$upstream" docs/bounded.md 'docs: bounded change (#403)' bounded
+  shim="$TMP_ROOT/bounded/git-shim"
+  real_git=$(command -v git)
+  make_stalling_git "$shim"
+
+  out=$(PATH="$shim:$PATH" FM_TEST_REAL_GIT="$real_git" FM_TEST_GIT_STALL=6 \
+    FM_ROOT_OVERRIDE="$fork" FM_UPSTREAM_STATUS_TIMEOUT=2 "$STATUS")
+  assert_contains "$out" 'UPSTREAM: behind kunchenguid/firstmate by 1 merged changes' \
+    "default reporting should not enumerate detailed commit records"
+
+  started=$SECONDS
+  set +e
+  out=$(PATH="$shim:$PATH" FM_TEST_REAL_GIT="$real_git" FM_TEST_GIT_STALL=6 \
+    FM_ROOT_OVERRIDE="$fork" FM_UPSTREAM_STATUS_TIMEOUT=2 "$STATUS" --details 2>/dev/null)
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  [ "$rc" -ne 0 ] || fail "stalled detail enumeration should return nonzero"
+  [ "$elapsed" -lt 5 ] || fail "the total measurement deadline took ${elapsed}s"
+  assert_contains "$out" 'UPSTREAM: unable to measure upstream - timed out after 2s' \
+    "the total deadline should bound post-fetch detail enumeration"
+  pass "default reporting avoids enumeration and all detail work stays bounded"
+}
+
 test_fetch_failure_is_actionable() {
   local fixture fork upstream out rc
   fixture=$(make_fixture failure)
@@ -156,7 +224,7 @@ test_fetch_failure_is_actionable() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "unreachable upstream should return nonzero"
-  assert_contains "$out" 'UPSTREAM: unable to measure failure/missing - fetch failed with exit' \
+  assert_contains "$out" 'UPSTREAM: unable to measure failure/missing - upstream fetch failed with exit' \
     "fetch failure should be visible on the diagnostic prefix"
   pass "upstream status reports an upstream it cannot measure"
 }
@@ -187,6 +255,8 @@ test_reports_drift_without_mutating_source_repo
 test_instruction_surface_crosses_trigger
 test_pending_count_crosses_trigger
 test_current_fork_is_silent
+test_remote_fork_head_overrides_stale_tracking_ref
+test_default_is_aggregate_and_details_share_total_deadline
 test_fetch_failure_is_actionable
 test_bootstrap_relays_upstream_in_normal_and_detect_only_modes
 printf '\nall fm-upstream-status tests passed\n'
