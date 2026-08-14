@@ -620,22 +620,24 @@ function eventSignal(tasks, supervision) {
     };
   }
 
-  // A task the snapshot got a live answer about is accounted for, however long
+  // A task whose live answer accounts for quiet gets an exemption, however long
   // its log has been quiet. That exemption is bounded exactly as supervision
-  // bounds it: a live reading buys the task the window and no more, so a pane
-  // that renders busy while its foreground call has hung cannot hide behind it.
+  // bounds it: an accounting live reading buys the task the window and no more,
+  // so a pane that renders busy while its foreground call has hung cannot hide
+  // behind it. An abandoned live answer takes the silent path below instead.
   const accounted = working.filter(stateReadLive);
   const silent = working.filter((task) => !stateReadLive(task));
   const accountedNote = accounted.length
     ? ` ${accounted.length} task${plural(accounted.length)} had a live state reading this refresh and ${accounted.length === 1 ? "is" : "are"} not aged here.`
     : "";
 
-  // A working task with no readable clock cannot be judged, and that holds
-  // whether or not the snapshot got a live reading for it. A live reading says
-  // what a task is doing now, never for how long, so the window it buys needs a
-  // clock exactly as an unobserved task's quiet does. Dropping the clockless
-  // ones from the bound instead is what made this exemption unbounded, and an
-  // exemption that can never expire is a pass dressed as a measurement.
+  // A non-waiting task with no readable clock cannot be judged, and that holds
+  // whether or not the snapshot got an accounting live reading for it. A live
+  // reading says what a task is doing now, never for how long, so the window an
+  // accounting reading buys needs a clock exactly as an unexplained task's quiet
+  // does. Dropping the clockless ones from the bound instead is what made this
+  // exemption unbounded, and an exemption that can never expire is a pass dressed
+  // as a measurement.
   const ageOf = (list) => list.map((task) => ({ task, age: activityAge(task) }));
   const silentAged = ageOf(silent);
   const accountedAged = ageOf(accounted);
@@ -667,7 +669,7 @@ function eventSignal(tasks, supervision) {
   const overdueDetail = `the slowest has recorded no activity in ${formatAge(accountedOldest)}, past the ${formatAge(allowance)} supervision allows before that is worth inspecting`;
 
   if (silentOldest === null) {
-    // Every working task answered, so there is no quiet to judge.
+    // Every non-waiting task has an answer that accounts for quiet.
     return {
       id: "events",
       label: "Task activity",
