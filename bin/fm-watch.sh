@@ -180,9 +180,11 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # of the fleet snapshot rather than inventing a second tolerance for quiet.
 BUSY_TURN_MAX_SECS=$(fm_sup_busy_turn_max_seconds)
 # A crew that declared a pause is idling on a known external wait, so its stale
-# pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# pane is absorbed rather than wedge-escalated, whether or not its agent is still
+# alive at its prompt (pause_state_class owns why).
+# A captain-held crew, which declared nothing itself, uses the same bounded
+# cadence once its agent has confidently exited, while a live or ambiguously read
+# agent still surfaces once.
 # These cases re-surface once for a recheck every pause_resurface_window (the
 # shared owner in fm-classify-lib.sh, which resolves FM_PAUSE_RESURFACE_SECS and
 # widens the window per unchanged recheck) - far longer than the wedge threshold,
@@ -620,10 +622,24 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+#
+# A DECLARED pause (paused:, the verb the generated brief tells every crew to
+# append before it parks) is the crew's own statement that this pane is idle on
+# purpose, and it is honoured on its own. Agent liveness must NOT gate it: on
+# every verified harness "append paused: and stop" means end the turn, so the
+# agent is still sitting at its prompt, and requiring a confidently dead agent
+# made the designed pause cadence unreachable for exactly the crew the brief
+# creates - it wedge-surfaced every few minutes for as long as the wait lasted.
+# Liveness keeps its RECOVERY job below and everywhere else; it just no longer
+# decides whether the declaration counts.
+#
+# A captain-held transfer is not the crew declaring anything, so it keeps the
+# original rule: only a confidently dead ordinary crew may recover paused
+# classification after fm-crew-state has fallen back to stopped or unknown. A
+# crew that declared no wait at all never reaches past the first branch, so a
+# genuine wedge still escalates on the unchanged cadence.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive
+  local win=$1 task=$2 key last recheck_file class agent_alive declared_pause
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -634,8 +650,9 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
+  if status_is_paused "$last"; then declared_pause=0; else declared_pause=1; fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
+    if [ "$declared_pause" -ne 0 ] && [ "$(window_kind "$win")" != secondmate ]; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
@@ -652,7 +669,7 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
+  if [ "$declared_pause" -ne 0 ] && [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
@@ -660,7 +677,9 @@ pause_state_class() {  # <window> <task>
       return
     fi
   fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
+  if [ "$class" = none ] && { [ "$declared_pause" -eq 0 ] || [ "${agent_alive:-unknown}" = dead ]; }; then
+    class=paused
+  fi
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
     *) rm -f "$recheck_file" ;;
@@ -678,14 +697,27 @@ parked_agent_is_dead() {  # <window>
   [ "$state" = dead ]
 }
 
+# Read the status line BEFORE queueing anything. This used to queue the wake
+# first and only then discover the declared pause, which is how a brief-compliant
+# parked crew still got a bare "stale: <window>" every few minutes: the pause was
+# recognised one step too late to suppress the wake it had just queued, and the
+# .paused-* markers it stamped afterwards left no streak record, so the designed
+# widening cadence never ran. A declared pause is now routed to its owner,
+# handle_paused_stale, which advances the same stale suppressor and owns the
+# backoff. A captain-held transfer still surfaces here, because it is not the
+# crew's own declaration that the pane is idle on purpose.
 surface_nonterminal_stale() {  # <window> <hash>
   local win=$1 h=$2 key task last
   key=$(printf '%s' "$win" | tr ':/.' '___')
+  task=$(window_to_task "$win" "$STATE")
+  last=$(last_status_line "$STATE/$task.status")
+  if status_is_paused "$last"; then
+    handle_paused_stale "$win" "$task" "$h"
+    return
+  fi
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-holds-$key"
-  task=$(window_to_task "$win" "$STATE")
-  last=$(last_status_line "$STATE/$task.status")
   if status_is_paused_or_captain_held "$last"; then
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
@@ -1343,9 +1375,10 @@ EOF
           #   - working: an actively-running pipeline legitimately sits on a static
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
           #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: the crew declared an external wait, or a declared pause or
-          #     captain hold is paired with a confidently dead agent, so absorb on
-          #     the long pause re-surface cadence instead of wedge-escalating;
+          #   - paused: the crew declared an external wait (honoured whether or not
+          #     its agent is still alive at its prompt), or a captain hold is paired
+          #     with a confidently dead agent, so absorb on the long pause
+          #     re-surface cadence instead of wedge-escalating;
           #   - none: no running pipeline, no exact busy verdict, no declared pause.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
