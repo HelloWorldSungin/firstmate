@@ -148,6 +148,22 @@
     {
       "source": "docs/dashboard-inbox-policy.md",
       "target": "docs/verification/dashboard-fleet-health.md"
+    },
+    {
+      "source": ".agents/skills/firstmate-coding-guidelines/SKILL.md",
+      "target": "docs/verification/README.md"
+    },
+    {
+      "source": "CONTRIBUTING.md",
+      "target": "docs/verification/README.md"
+    },
+    {
+      "source": "docs/documentation-audiences.md",
+      "target": "docs/verification/README.md"
+    },
+    {
+      "source": "README.md",
+      "target": "docs/verification/README.md"
     }
   ],
   "surfaces": [
@@ -442,6 +458,10 @@
     {
       "path": "docs/turnend-guard.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/verification/README.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/verification/dashboard-browser.md",

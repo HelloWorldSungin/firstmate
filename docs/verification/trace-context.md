@@ -23,6 +23,16 @@ $ bash tests/fm-trace-context-lib.test.sh | tail -1
 # fm-trace-context-lib.test.sh: all assertions passed
 $ bash tests/fm-trace-context-spawn.test.sh | tail -1
 # all fm-trace-context-spawn tests passed
+```
+
+Run both trace-context suites from the repo root; each prints one `ok - ...` per assertion.
+
+## Remote-route suite, 2026-08-03
+
+The remote-route suite was observed the same calendar day as the two-command block above.
+It is recorded here rather than inside that fence.
+
+```console
 $ bash tests/fm-remote-secondmate-trace-context.test.sh | tail -1
 ALL TESTS PASSED
 ```

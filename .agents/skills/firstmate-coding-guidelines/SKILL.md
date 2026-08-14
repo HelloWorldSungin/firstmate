@@ -131,6 +131,5 @@ Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this reposi
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
-- Correct a record that has gone stale with a dated annotation beside the original, or a new dated entry; never rewrite a dated observation in place.
-  Adding a line to recorded output that the recorded run could not have printed - a marker the suite gained afterwards, for instance - turns evidence into fabrication, however accurate the line is today.
+- For the contract governing dated verification entries, see [`docs/verification/README.md`](../../../docs/verification/README.md).
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.
