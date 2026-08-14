@@ -61,11 +61,11 @@ test_reproduce_issue_98_sequence() {
 # .github/workflows/no-mistakes-required.yml re-adds `edited` to on.pull_request.types
 # or removes opened/synchronize/reopened triggers.
 test_workflow_triggers_exclude_edited_event() {
+  local types_line
   assert_present "$WORKFLOW" "workflow file must exist"
-  assert_grep 'types: [opened, synchronize, reopened]' "$WORKFLOW" \
-    "workflow must trigger on opened, synchronize, reopened"
-  assert_no_grep 'types:.*edited' "$WORKFLOW" \
-    "workflow types must not contain edited event to avoid orphan check runs on body updates"
+  types_line=$(sed -n '/^[[:space:]]*types:/p' "$WORKFLOW")
+  [ "$types_line" = '    types: [opened, synchronize, reopened]' ] || \
+    fail "workflow must trigger only on opened, synchronize, and reopened pull request events"
   pass "no-mistakes-required workflow triggers on code/branch events and excludes edited"
 }
 
@@ -73,11 +73,11 @@ test_workflow_triggers_exclude_edited_event() {
 # What would have to break for this test to fail:
 # concurrency.group is removed or modified to re-introduce per-run_id fragmentation.
 test_workflow_concurrency_group_coalescing() {
+  local group_line
+  group_line=$(sed -n '/^[[:space:]]*group:/p' "$WORKFLOW")
   # shellcheck disable=SC2016
-  assert_grep 'group: no-mistakes-required-${{ github.event.pull_request.number }}' "$WORKFLOW" \
-    "workflow concurrency group must be scoped per pull request"
-  assert_no_grep 'group:.*github.run_id' "$WORKFLOW" \
-    "workflow concurrency group line must not fragment per run_id"
+  [ "$group_line" = '  group: no-mistakes-required-${{ github.event.pull_request.number }}' ] || \
+    fail "workflow concurrency group must be scoped exactly per pull request"
   pass "no-mistakes-required workflow uses unified per-PR concurrency group"
 }
 
