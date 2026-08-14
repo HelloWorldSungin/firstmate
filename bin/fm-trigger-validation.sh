@@ -29,13 +29,16 @@
 # The send runs first: a confirmed delivery is the moment the wait ends, so the
 # close line records that moment and is skipped on any delivery failure (firstmate
 # retries or reconciles). The close line is then appended only when the worker's
-# status fold actually has a default-keyed `blocked:` entry open - the unkeyed
-# handoff line a ship worker writes. A design task parked on `paused:` opens no
-# decision and is left untouched, and a keyed decision the worker still owes stays
-# open, because a bare `resolved:` closes only the default key. This changes
-# neither what `resolved:` means nor what the open-decision fold reconciles: the
-# fold still drops the entry only on an explicit resolution, and firstmate now
-# supplies that resolution for the one wait firstmate owns.
+# status fold actually has the exact default-keyed `blocked:` handoff a ship
+# worker writes. A different default blocker is left open even after the send:
+# the canonical handoff is firstmate-controlled, so a false negative is safer
+# than clearing a blocker firstmate cannot positively identify. A design task
+# parked on `paused:` opens no decision and is left untouched, and a keyed
+# decision the worker still owes stays open, because a bare `resolved:` closes
+# only the default key. This changes neither what `resolved:` means nor what the
+# open-decision fold reconciles: the fold still drops the entry only on an
+# explicit resolution, and firstmate now supplies that resolution for the one
+# wait firstmate owns.
 #
 # firstmate-scoped: this is firstmate's own status-file record, so it is never run
 # from a gate agent or a crewmate.
@@ -98,14 +101,17 @@ status_file="$STATE/$ID.status"
 # block stays open exactly until the trigger is confirmed delivered.
 "$FM_SEND_BIN" "$ID" "$@"
 
-# Close the ready-to-validate block firstmate just ended. Scoped to the
-# default-keyed `blocked:` entry a ship worker opens at the handoff: a design task
-# parked on `paused:` opens no decision, a keyed decision the worker still owes
-# uses a different key, and both are left untouched. A bare `resolved:` closes only
-# the default key, matching the unkeyed handoff line the worker wrote.
+# Close the ready-to-validate block firstmate just ended. Match the complete
+# canonical fold row, including its firstmate-controlled note, so a worker that
+# replaces the default key with a genuine blocker during send settlement is left
+# open. A non-match deliberately appends nothing: retaining a phantom handoff is
+# safer than clearing a blocker firstmate cannot positively identify.
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 open=$(status_open_decisions "$status_file")
-if printf '%s\n' "$open" | grep -qF "$(printf 'default\tblocked\t')"; then
-  printf 'resolved: firstmate triggered validation, the ready-to-validate block is cleared\n' >> "$status_file"
+canonical_handoff=$(printf 'default\tblocked\timplemented and committed, ready to validate')
+if printf '%s\n' "$open" | grep -Fqx "$canonical_handoff"; then
+  printf '%s\n%s\n' \
+    'resolved: firstmate triggered validation, the ready-to-validate block is cleared' \
+    'working: no-mistakes validation starting' >> "$status_file"
 fi
