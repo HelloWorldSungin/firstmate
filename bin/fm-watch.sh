@@ -38,8 +38,10 @@
 #                          moving run is quiet by design. That hold needs
 #                          positive evidence: no run, a run parked at a gate, a
 #                          stranded step, an unreadable status, or a confidently
-#                          dead agent all escalate exactly as before, and a
-#                          stranded run names the step that stopped.
+#                          dead agent cannot earn it. For a surviving declared
+#                          wait, the no-evidence class instead returns to that
+#                          wait's recheck cadence; a stranded run or dead agent
+#                          still escalates, and the former names the stopped step.
 #                          Consecutive holds are capped
 #                          (FM_RUN_PROGRESS_HOLD_MAX, below), past which the
 #                          pane escalates however healthy its run looks. At
@@ -379,8 +381,8 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 FM_RUN_PROGRESS_HOLD_MAX=${FM_RUN_PROGRESS_HOLD_MAX:-15}
 case "$FM_RUN_PROGRESS_HOLD_MAX" in ''|*[!0-9]*) FM_RUN_PROGRESS_HOLD_MAX=15 ;; esac
 
-# This pane's validation-run progress class, through the shared wedge policy in
-# fm-classify-lib.sh (crew_wedge_progress); this resolves the task from the
+# This pane's validation-run progress class, through the shared run-progress
+# policy in fm-classify-lib.sh (crew_wedge_progress); this resolves the task from the
 # watcher's own plumbing and receives the endpoint liveness verdict already
 # resolved at the escalation decision.
 #
@@ -411,9 +413,10 @@ wedge_run_progress() {  # <window> <agent-state>
 # eighteen minutes), so it holds instead of escalating and restarts the timer,
 # putting the next look one full window away rather than one poll away. It is
 # a suppressor that needs positive evidence: an absent, parked, stranded, or
-# unreadable run leaves this path byte-identical to what it was, so a crew
-# wedged with no run at all still escalates exactly as before, and a crew whose
-# own run has stranded still escalates - now naming the step that stopped.
+# unreadable run cannot earn the hold. For a crew without a declared wait those
+# answers leave the path byte-identical to what it was, while the declared-wait
+# caller may route a no-evidence answer back to that wait's recheck cadence; a
+# stranded run still escalates and names the step that stopped.
 #
 # The delay a hold buys is bounded twice over, and both bounds matter. A crew
 # that wedges immediately after a single hold waits one more STALE_ESCALATE_SECS

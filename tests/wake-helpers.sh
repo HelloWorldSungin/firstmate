@@ -51,9 +51,9 @@ export FM_WEDGE_ALARM_EXEC="$_fm_wedge_rec_dir/rec"
 # from a fixture, and it cannot be forgotten, because sourcing this harness
 # installs it.
 #
-# The stub answers `none`: the no-evidence class that leaves an escalation
-# exactly as it was before the gate existed, so every pre-existing wedge
-# assertion keeps asserting today's alarm. A test fixes a different verdict with
+# The stub answers `none`: the no-evidence class that cannot earn a run-progress
+# hold, so every pre-existing wedge assertion whose fixture declares no wait
+# keeps asserting today's alarm. A test fixes a different verdict with
 # FM_FAKE_RUN_PROGRESS (all ids) or FM_FAKE_RUN_PROGRESS_<sanitized-id> (one).
 cat > "$_fm_wedge_rec_dir/fm-run-progress.sh" <<'PROG'
 #!/usr/bin/env bash

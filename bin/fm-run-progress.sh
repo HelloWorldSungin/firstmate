@@ -37,9 +37,9 @@
 # `none` is the answer for a crew with no metadata, no worktree, no no-mistakes,
 # a lookup that could not complete, no attributed run, a run parked at a gate or
 # already terminal, and any output this cannot parse. It carries NO claim about
-# the crew, which is why every consumer must treat it as "no proof of progress"
-# and behave exactly as it did before consulting this script. Only
-# `progressing` may ever quiet an alarm.
+# the crew, which is why every consumer must treat it as "no proof of progress".
+# Only `progressing` may supply run evidence for a progress hold; callers decide
+# separately whether worker evidence changes the no-evidence outcome.
 #
 # This script writes nothing and never touches the crew, its run, or its
 # worktree.

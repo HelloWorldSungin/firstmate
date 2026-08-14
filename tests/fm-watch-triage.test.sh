@@ -309,10 +309,11 @@ test_crew_absorb_class_classifier() {
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
 }
 
-# crew_wedge_progress is the single owner of the wedge policy both supervisors
-# apply, so it is pinned as a pure decision here, independently of either one's
-# escalation path: only `progressing` may quiet an alarm, a confidently dead
-# agent never does, and everything unrecognized collapses to `none`.
+# crew_wedge_progress is the single owner of the run-progress policy both
+# supervisors apply, so it is pinned as a pure decision here, independently of
+# either one's escalation path: only `progressing` may produce a run-progress
+# hold, a confidently dead agent never does, and everything unrecognized
+# collapses to `none`.
 test_crew_wedge_progress_classifier() {
   export FM_FAKE_RUN_PROGRESS
 
@@ -1424,8 +1425,8 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   # The verdict is the run's, not the pane's: with the declared wait still on
-  # record, only positive evidence that the run stopped may raise the alarm here
-  # (issue 67). The no-evidence half of that policy is pinned by
+  # record, only positive evidence that the run stopped or the agent died may
+  # raise the alarm here (issue 67). The no-evidence half is pinned by
   # test_declared_wait_with_no_progress_evidence_rechecks_instead_of_wedging.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
@@ -1446,9 +1447,9 @@ test_paused_authoritative_working_preserves_wedge_timer() {
 # fm-crew-state reported "working · run-step · validating (running)" the whole
 # time. `status: running` alone cannot separate that from a run that has
 # stranded, so the escalation point reads bin/fm-run-progress.sh, whose classes
-# these four cases pin from the escalation side:
+# these four cases pin from the escalation side without a declared wait:
 #
-#   progressing -> held (and only here)
+#   progressing -> held
 #   stranded    -> still escalates, naming the step that stopped
 #   none        -> escalates byte-identically to before this gate existed
 #   dead agent  -> escalates however well its run is moving
