@@ -56,6 +56,7 @@ run_status() {  # <fork> [args...]
 make_stalling_git() {  # <directory>
   local directory=$1
   mkdir -p "$directory"
+  # shellcheck disable=SC2016 # Dollar expressions are literal generated wrapper source.
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'case " $* " in' \
