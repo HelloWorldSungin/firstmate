@@ -354,10 +354,16 @@ MODEL=$(printf '%s' "$SNAP" | jq \
            bearings_state:(
              if .current.state == "captain_decision" then
                if ($captain_holds | length) > 0 then "captain_decision"
+               elif (.abandoned_children | length) > 0 then "abandoned_child_work"
                elif (.active_children | length) > 0 then "active_child_work"
                elif ($backlog_holds | length) > 0 then "externally_held"
                else "unknown" end
              else .current.state end)
+         }
+       | . + {
+           bearings_children:(if .bearings_state == "abandoned_child_work"
+                             then (.abandoned_children // [])
+                             else (.active_children // []) end)
          } ]) as $secondmate_views
   | ([ if .secondmate_current.registry.available == false then
          {id:"(registry)",state:"unknown",doing:(.secondmate_current.registry.reason // "Registered secondmate table unavailable"),
@@ -367,8 +373,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        else empty end ]
      + [ $secondmate_views[]
        | {id,state:.bearings_state,
-          doing:((if .bearings_state == "active_child_work" then
-                    ([.active_children[] | .id + ": " + (.doing // .state)] | join("; "))
+          doing:((if (.bearings_state == "active_child_work" or .bearings_state == "abandoned_child_work") then
+                    ([.bearings_children[] | .id + ": " + (.doing // .state)] | join("; "))
                   elif .bearings_state == "captain_decision" then
                     ([.bearings_captain_holds[] | .summary] | join("; "))
                   elif .bearings_state == "externally_held" then
@@ -388,9 +394,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
                 | (if $d != "" then $d else (.hints.last_event_text // "") end) | trunc(90))
       } ]
      + [ $secondmate_views[]
-         | select(.bearings_state == "active_child_work")
+         | select(.bearings_state == "active_child_work" or .bearings_state == "abandoned_child_work")
          | {id,kind:"secondmate",state:.bearings_state,
-            doing:([.active_children[] | .id + ": " + (.doing // .state)] | join("; ") | trunc(90))} ]) as $in_flight_all
+            doing:([.bearings_children[] | .id + ": " + (.doing // .state)] | join("; ") | trunc(90))} ]) as $in_flight_all
   | ([ .backlog.records[]
          | select(.structured and .captain_actionable == true)
          | {id,key:.id,verb:"captain-hold",

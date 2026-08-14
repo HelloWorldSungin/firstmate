@@ -486,6 +486,40 @@ equal("a replayed run step does not excuse quiet",
     paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
   })] })).byId.events.tone, "red");
 
+// abandoned is a definite live reading that does not account for quiet.
+// What has to break for this pair to fail: stateReadLive treats abandoned as
+// accounted-for again (any non-unknown from run-step/pane), so a dead worker
+// under a live run reads as explained on Task activity.
+const abandonedQuiet = health(fleet({ tasks: [task("worker-gone", {
+  current_state: { state: "abandoned", source: "run-step", detail: "validating (running) · worker gone (dead)" },
+  paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
+})] }));
+equal("an abandoned live reading does not excuse quiet", abandonedQuiet.byId.events.tone, "red");
+check("and the card does not call the dead worker accounted for",
+  !abandonedQuiet.byId.events.detail.includes("live state reading this refresh")
+    && !abandonedQuiet.byId.events.value.includes("accounted for"),
+  `${abandonedQuiet.byId.events.value} / ${abandonedQuiet.byId.events.detail}`);
+equal("an abandoned pane reading does not excuse quiet either",
+  health(fleet({ tasks: [task("busy-but-gone", {
+    current_state: { state: "abandoned", source: "pane", detail: "harness busy (claude-hook) · worker gone (dead)" },
+    paths: { status_log: { last_event_age_seconds: QUIET_ALLOWANCE } },
+  })] })).byId.events.tone, "red");
+
+// Once abandoned stops excusing quiet, the existing unexplained-quiet path
+// surfaces the task on Task activity. The inbox still has no abandoned
+// category: that is a product decision this issue forbade inventing.
+// What has to break for this to fail: taskReasons grows an abandoned kind,
+// or unexplained-quiet stops ageing an abandoned task so the strip goes green.
+equal("abandoned alone opens no inbox row",
+  inboxOf([task("worker-gone", {
+    current_state: { state: "abandoned", source: "run-step", detail: "worker gone (dead)" },
+  })]).items.length, 0);
+equal("a working run-step still excuses instructed quiet",
+  health(fleet({ tasks: [task("still-working", {
+    current_state: { state: "working", source: "run-step", detail: "validating (running)" },
+    paths: { status_log: { last_event_age_seconds: INSTRUCTED_QUIET } },
+  })] })).byId.events.tone, "green");
+
 // A current-state read this snapshot could not take is the same: it names its
 // own failure rather than reporting a state, and it excuses nothing.
 equal("a timed-out current-state read does not excuse quiet",

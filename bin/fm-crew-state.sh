@@ -66,7 +66,10 @@
 #      agree, and are reported as parked.
 #   4. A run lookup that cannot complete may replay this crew's recent observed
 #      step as `run-step-degraded`, but only after endpoint liveness and an exact
-#      busy verdict and only inside the configured age bound.
+#      busy verdict and only inside the configured age bound. A replayed
+#      `working` step runs the same worker-liveness cross-check as a live
+#      working verdict, so a record written before the worker died cannot
+#      re-emit `working` for the rest of the degrade window (issue #111).
 #   5. A completed lookup with no run for this crew (pre-validation, or kind=scout)
 #      falls back to the recorded backend's pane busy state, then the status log's
 #      last line only when its verb maps to a recognized run-state. Decision-only
@@ -92,7 +95,8 @@
 #      check). The check is computed only on a `working` verdict, so
 #      `done`/`failed`/`parked` (which need no worker or already surface)
 #      and secondmates (which read their state from the status log) pay
-#      nothing for it.
+#      nothing for it. The same mapping is applied when a degraded replay
+#      would re-emit `working`; working_after_liveness is the single owner.
 #
 # A run LOOKUP FAILURE is not a run ABSENCE. The bounded no-mistakes call
 # propagates timeout, execution, and no-bounding-mechanism failures so only a
@@ -318,6 +322,29 @@ worker_liveness_state() {  # -> alive|dead|missing|ambiguous|unreadable|unverifi
     alive|dead|missing|ambiguous|unreadable|unverified) printf '%s' "$state" ;;
     *) printf 'unreadable' ;;
   esac
+}
+
+# Apply the worker-liveness cross-check to a plain working verdict.
+# Prints "<state>\t<detail-suffix>". The suffix is empty when the verdict is
+# unchanged. Live run-step, busy-pane, and degraded replay of a working record
+# all go through here so the mapping cannot drift across those three sites
+# (issues #105 and #111). Callers must parse both fields from one invocation:
+# a command substitution would otherwise lose the detail in a subshell.
+working_after_liveness() {
+  local state note=""
+  WORKER_STATE=$(worker_liveness_state)
+  case "$WORKER_STATE" in
+    alive|unverified) state=working ;;
+    dead|missing)
+      state=abandoned
+      note="${SEP}worker gone ($WORKER_STATE)"
+      ;;
+    *)
+      state=unknown
+      note="${SEP}agent liveness $WORKER_STATE"
+      ;;
+  esac
+  printf '%s\t%s' "$state" "$note"
 }
 
 # --- last known run-step record ---------------------------------------------
@@ -1060,18 +1087,8 @@ if [ "$HAVE_RUN" = 1 ]; then
   # `unknown`, never `alive` and never `dead`; an unverified backend has no
   # recovery classifier so the verdict keeps its current shape there.
   if [ "$RUN_STATE" = working ]; then
-    WORKER_STATE=$(worker_liveness_state)
-    case "$WORKER_STATE" in
-      alive|unverified) ;;
-      dead|missing)
-        RUN_STATE="abandoned"
-        RUN_DETAIL="$RUN_DETAIL${SEP}worker gone ($WORKER_STATE)"
-        ;;
-      ambiguous|unreadable)
-        RUN_STATE="unknown"
-        RUN_DETAIL="$RUN_DETAIL${SEP}agent liveness $WORKER_STATE"
-        ;;
-    esac
+    IFS=$'\t' read -r RUN_STATE liveness_note <<< "$(working_after_liveness)"
+    RUN_DETAIL="$RUN_DETAIL$liveness_note"
   fi
 
   # Remember this verdict so a later lookup that cannot complete degrades to it
@@ -1116,15 +1133,8 @@ if [ "$KIND" != secondmate ]; then
       # a stale busy record after a clean worker exit is the same false
       # reassurance issue #105 is fixing, so the same downgrade applies.
       busy_detail="harness busy (${BUSY_VERDICT#* })"
-      WORKER_STATE=$(worker_liveness_state)
-      case "$WORKER_STATE" in
-        alive|unverified)
-          emit working pane "$busy_detail" ;;
-        dead|missing)
-          emit abandoned pane "$busy_detail${SEP}worker gone ($WORKER_STATE)" ;;
-        *)
-          emit unknown pane "$busy_detail${SEP}agent liveness $WORKER_STATE" ;;
-      esac
+      IFS=$'\t' read -r busy_state liveness_note <<< "$(working_after_liveness)"
+      emit "$busy_state" pane "$busy_detail$liveness_note"
       ;;
     idle) BUSY_STATE=idle ;;
     *)    BUSY_STATE=unknown ;;
@@ -1143,12 +1153,18 @@ fi
 # outranks a remembered step. It sits ABOVE the unreadable-harness and
 # status-log fallbacks, which is the whole point: an observed run-step, even one
 # that could not be re-confirmed this poll, is better current-state evidence
-# than an append-only event log.
+# than an append-only event log. A replayed working step still goes through
+# working_after_liveness, because a record written while the worker was alive
+# is not evidence that the worker is still there (issue #111).
 if [ "$LOOKUP_FAILED" = 1 ]; then
   if DEGRADED=$(runstep_record_read); then
     IFS=$'\t' read -r deg_state deg_detail deg_age <<< "$DEGRADED"
     deg_line="run lookup unavailable"
     [ -n "$deg_detail" ] && deg_line="$deg_detail${SEP}$deg_line"
+    if [ "$deg_state" = working ]; then
+      IFS=$'\t' read -r deg_state liveness_note <<< "$(working_after_liveness)"
+      deg_line="$deg_line$liveness_note"
+    fi
     emit "$deg_state" run-step-degraded "$deg_line (last known ${deg_age}s ago)"
   fi
 fi

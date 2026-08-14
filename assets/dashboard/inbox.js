@@ -515,13 +515,18 @@ function splitDeclaredWaits(live) {
 // is doing something right now, so none of them excuses quiet.
 const LIVE_STATE_SOURCES = new Set(["run-step", "pane"]);
 
-// Whether the snapshot got a definite answer about this task from one of those
-// sources. A definite answer accounts for the task's quiet whatever the answer
-// was: `working` and `parked` say what it is doing, and `done` and `failed` are
-// conditions the inbox and the board already carry. `unknown` is not an answer.
+// Answers from those sources that actually account for quiet. `working` and
+// `parked` say what the task is doing; `done` and `failed` are conditions the
+// inbox and the board already carry. `abandoned` is a definite live reading
+// that does the opposite: the run is advancing with nobody to drive it, so it
+// must not buy the exemption a healthy working step buys (issue #111).
+// `unknown` is not an answer. docs/dashboard-inbox-policy.md owns the policy.
+const ACCOUNTED_LIVE_STATES = new Set(["working", "parked", "done", "failed"]);
+
+// Whether the snapshot got a live answer that accounts for this task's quiet.
 function stateReadLive(task) {
-  const state = text(task?.current_state?.state);
-  return LIVE_STATE_SOURCES.has(text(task?.current_state?.source)) && state !== "" && state !== "unknown";
+  return LIVE_STATE_SOURCES.has(text(task?.current_state?.source))
+    && ACCOUNTED_LIVE_STATES.has(text(task?.current_state?.state));
 }
 
 // How long ago this task last did anything the snapshot can see, from three
@@ -573,7 +578,7 @@ function eventSignal(tasks, supervision) {
   // to disagree about one fleet.
   const allowance = finiteAge(supervision?.watcher?.quiet_allowance_seconds);
   const windowText = allowance === null ? "its" : `the ${formatAge(allowance)}`;
-  const tooltip = `Whether any live task has gone quiet without a live reason. A task the snapshot got a live state reading for - its validation run's own step, or its harness busy this refresh - is not aged on elapsed time, because a long step is meant to be silent. Everything else is aged on the newer of its last report and its last completed turn - or, when it has neither yet, on when it was spawned - against ${windowText} window supervision itself allows before quiet is worth inspecting: amber past half of it, red past all of it. A task parked on a declared pause or a captain hold is counted separately, because its quiet was announced, and secondmates are excluded because an idle one is healthy.`;
+  const tooltip = `Whether any live task has gone quiet without a live reason. A task the snapshot got a live state reading that accounts for its quiet - a working or parked validation step, or a busy harness this refresh, or a done or failed condition the inbox already carries - is not aged on elapsed time, because a long step is meant to be silent. An abandoned reading does not count: the run is advancing with nobody to drive it. Everything else is aged on the newer of its last report and its last completed turn - or, when it has neither yet, on when it was spawned - against ${windowText} window supervision itself allows before quiet is worth inspecting: amber past half of it, red past all of it. A task parked on a declared pause or a captain hold is counted separately, because its quiet was announced, and secondmates are excluded because an idle one is healthy.`;
   if (!live.length) {
     return { id: "events", label: "Task activity", tone: "green", value: "no live tasks", detail: "Nothing is under way in this home.", tooltip };
   }
@@ -615,22 +620,24 @@ function eventSignal(tasks, supervision) {
     };
   }
 
-  // A task the snapshot got a live answer about is accounted for, however long
+  // A task whose live answer accounts for quiet gets an exemption, however long
   // its log has been quiet. That exemption is bounded exactly as supervision
-  // bounds it: a live reading buys the task the window and no more, so a pane
-  // that renders busy while its foreground call has hung cannot hide behind it.
+  // bounds it: an accounting live reading buys the task the window and no more,
+  // so a pane that renders busy while its foreground call has hung cannot hide
+  // behind it. An abandoned live answer takes the silent path below instead.
   const accounted = working.filter(stateReadLive);
   const silent = working.filter((task) => !stateReadLive(task));
   const accountedNote = accounted.length
     ? ` ${accounted.length} task${plural(accounted.length)} had a live state reading this refresh and ${accounted.length === 1 ? "is" : "are"} not aged here.`
     : "";
 
-  // A working task with no readable clock cannot be judged, and that holds
-  // whether or not the snapshot got a live reading for it. A live reading says
-  // what a task is doing now, never for how long, so the window it buys needs a
-  // clock exactly as an unobserved task's quiet does. Dropping the clockless
-  // ones from the bound instead is what made this exemption unbounded, and an
-  // exemption that can never expire is a pass dressed as a measurement.
+  // A non-waiting task with no readable clock cannot be judged, and that holds
+  // whether or not the snapshot got an accounting live reading for it. A live
+  // reading says what a task is doing now, never for how long, so the window an
+  // accounting reading buys needs a clock exactly as an unexplained task's quiet
+  // does. Dropping the clockless ones from the bound instead is what made this
+  // exemption unbounded, and an exemption that can never expire is a pass dressed
+  // as a measurement.
   const ageOf = (list) => list.map((task) => ({ task, age: activityAge(task) }));
   const silentAged = ageOf(silent);
   const accountedAged = ageOf(accounted);
@@ -662,7 +669,7 @@ function eventSignal(tasks, supervision) {
   const overdueDetail = `the slowest has recorded no activity in ${formatAge(accountedOldest)}, past the ${formatAge(allowance)} supervision allows before that is worth inspecting`;
 
   if (silentOldest === null) {
-    // Every working task answered, so there is no quiet to judge.
+    // Every non-waiting task has an answer that accounts for quiet.
     return {
       id: "events",
       label: "Task activity",

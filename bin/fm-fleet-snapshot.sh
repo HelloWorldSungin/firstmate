@@ -103,9 +103,10 @@
 #     each home with explicit provenance, freshness, endpoint evidence, and unknown
 #     failure reasons. Parent status and bounded terminal evidence are historical,
 #     untrusted supplements only and never override readable structured-home facts.
-#     Each structured-home record carries active_children, decisions_open, holds,
-#     queued, landed, endpoints, counts, and omitted. Actionable captain holds
-#     appear in decisions_open; blocked captain holds remain queued with metadata.
+#     Each structured-home record carries active_children, abandoned_children,
+#     decisions_open, holds, queued, landed, endpoints, counts, and omitted.
+#     Actionable captain holds appear in decisions_open; blocked captain holds
+#     remain queued with metadata.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes with an unknown current classification are partial, not
@@ -855,11 +856,14 @@ task_json_one() {  # <meta-path> [degraded]
   # reconciled against the crew LIFECYCLE, which only clears a stale decision the
   # crew has provably moved past. Two lifecycle signals clear it, neither of which
   # reads any report content:
-  #   - a live activity read (run-step or busy pane) that is working/done, so a
+  #   - a live activity read (run-step or busy pane) that is working or done, so a
   #     crew that resumed past a gate is not still reported as parked; and
   #   - a TERMINAL done/failed state on a single-owner task (scout, design, or ship), whose
   #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
   #     report POINTER, never as a reopened pending decision.
+  # `abandoned` is a live reading that does not mean the crew moved on: the run
+  # is advancing with nobody to answer the next gate, so it must not clear a
+  # still-open decision (issue #111). `unknown` is not a resume either.
   # Secondmates are excluded from lifecycle clearing: they are persistent and
   # multiplex many concerns onto one stream, so activity on one concern must
   # never clear another concern's keyed decision. A parked/blocked state, or a
@@ -871,7 +875,7 @@ task_json_one() {  # <meta-path> [degraded]
   open_decisions_tsv=$(status_open_decisions "$status_log")
   if [ "$kind" != secondmate ] && \
      { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
-         && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
+         && { [ "$current_state" = working ] || [ "$current_state" = "done" ]; }; } \
        || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
     open_decisions_tsv=""
   fi
@@ -1010,6 +1014,14 @@ task_json_one() {  # <meta-path> [degraded]
       elif $state == "working" then
         {rank:8,column:"active",action:"supervise",
          reason:"the worker is working"}
+      elif $state == "abandoned" then
+        # The board has no abandoned column. Idle keeps the task in live work
+        # (not done) so Task activity can age the quiet; the inspect action and
+        # reason name the missing worker rather than claiming there is no
+        # signal. A new column would be the taxonomy expansion issue #111
+        # split out of #105 to avoid. docs/fleet-data-contracts.md owns the ladder.
+        {rank:10,column:"idle",action:"inspect",
+         reason:"the run is advancing with no live worker to answer its next gate"}
       elif $kind == "secondmate" then
         {rank:9,column:"secondmate",action:"route_work",
          reason:"a persistent secondmate with no higher-priority task signal"}
@@ -1297,6 +1309,12 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
          | select(.id == $work.id and .current_state.state == "working")
          | {id,kind,state:.current_state.state,source:.current_state.source,
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
+    | ([ $owned_in_flight[] as $work
+         | select($work.current_role != "program")
+         | $tasks[]
+         | select(.id == $work.id and .current_state.state == "abandoned")
+         | {id,kind,state:.current_state.state,source:.current_state.source,
+            doing:((.current_state.detail // "") | trunc(120))} ]) as $abandoned_all
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
             | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
@@ -1329,6 +1347,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
        else {kind:null,ids:[]} end) as $invalidity
     | (if $valid | not then "unknown"
        elif any($decisions_all[]; .verb == "needs-decision" or .verb == "captain-hold") then "captain_decision"
+       elif ($abandoned_all | length) > 0 then "abandoned_child_work"
        elif ($active_all | length) > 0 then "active_child_work"
        elif ($holds_all | length) > 0 then "externally_held"
        else "no_active_work" end) as $state
@@ -1341,6 +1360,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
         invalidity:$invalidity,
         state:$state,
         active_children:$active_all[:$child_n],
+        abandoned_children:$abandoned_all[:$child_n],
         decisions_open:$decisions_all[:$decisions_n],
         holds:$holds_all[:$queued_n],
         queued:([$queued_all[] | {id:(.id | trunc(120)),title:(.title | trunc(120)),
@@ -1358,6 +1378,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           endpoint:(.endpoint + {target:((.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
         counts:{
           active_children:($active_all | length),
+          abandoned_children:($abandoned_all | length),
           decisions_open:($decisions_all | length),
           holds:($holds_all | length),
           queued:($queued_all | length),
@@ -1366,6 +1387,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
         },
         omitted:[
           (if ($active_all | length) > $child_n then {surface:"active_children",count:(($active_all | length) - $child_n)} else empty end),
+          (if ($abandoned_all | length) > $child_n then {surface:"abandoned_children",count:(($abandoned_all | length) - $child_n)} else empty end),
           (if ($decisions_all | length) > $decisions_n then {surface:"decisions_open",count:(($decisions_all | length) - $decisions_n)} else empty end),
           (if ($queued_all | length) > $queued_n then {surface:"queued",count:(($queued_all | length) - $queued_n)} else empty end),
           (if ($tasks | length) > $child_n then {surface:"endpoints",count:(($tasks | length) - $child_n)} else empty end),
@@ -1842,7 +1864,8 @@ secondmate_current_json() {  # <parent-tasks-json>
           and (($remote == true) or .generated == $generated)
           and (.valid | type) == "boolean" and (.state | type) == "string"
           and (.invalidity | type) == "object" and (.invalidity.ids | type) == "array"
-          and (.active_children | type) == "array" and (.decisions_open | type) == "array"
+          and (.active_children | type) == "array" and (.abandoned_children | type) == "array"
+          and (.decisions_open | type) == "array"
           and (.holds | type) == "array" and (.queued | type) == "array"
           and (.landed | type) == "array" and (.endpoints | type) == "array"
           and (.counts | type) == "object" and (.omitted | type) == "array"
@@ -1893,6 +1916,7 @@ secondmate_current_json() {  # <parent-tasks-json>
            trust:(if $summary_valid then "complete" else "partial-structured" end),parent_event_role:"historical-only"},
          freshness:{status:"fresh",observed_at:$observed,age_seconds:0},
          active_children:$summary.active_children,
+         abandoned_children:$summary.abandoned_children,
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
@@ -1920,7 +1944,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          current:{state:"unknown",reason:$reason},invalidity:null,
          provenance:{selected:$provenance,structured_home:($home | if . == "" then null else . end),parent_event_role:"fallback-only-not-current"},
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
-         active_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
+         active_children:[],abandoned_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],counts:{active_children:0,abandoned_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}')
     fi

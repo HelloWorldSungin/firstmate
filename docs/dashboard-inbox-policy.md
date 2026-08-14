@@ -55,7 +55,7 @@ Only the state itself survives that withdrawal; the other three fields of a stal
 
 An item is one row of work waiting on the captain, keyed by a stable identity: the task id, or the backlog id for a captain-held row with no live worker.
 Overlapping signals never produce two rows.
-A task with an open decision, a failing check, and a dead worker is one item carrying three reasons, and the card shows all of them.
+A task with an open decision, a failing check, and a failed validation run is one item carrying three reasons, and the card shows all of them.
 
 These reasons open an item.
 
@@ -76,6 +76,7 @@ The inbox never scans prose to invent an item that the keyed status fold did not
 
 A `checks_pending`, `draft`, `merged`, or `closed` pull request opens no item: it is a definite state with nothing for the captain to do.
 A pull request whose status is unknown does open one, because "we cannot tell you whether this is ready" is itself something the captain needs to see.
+`abandoned` does not open an item of its own: once it stops counting as quiet that is accounted for, Task activity ages it through the existing unexplained-quiet path, and a new inbox reason would be a taxonomy the captain did not ask for.
 
 Decision text is rendered in full and never truncated.
 Pull-request links are rendered as complete `https://...` URLs, never as a bare `#number`.
@@ -107,7 +108,7 @@ The strip carries seven signals plus one overall verdict.
 | --- | --- | --- | --- | --- |
 | Snapshot | last refresh succeeded and is fresh | showing the last known good snapshot | no valid snapshot available | first snapshot has not completed |
 | Supervision | beacon beating inside its grace window | past half the grace window | no beacon, or the snapshot marks it stale | beacon present with an unreadable age |
-| Task activity | every working task was observed working and none of them has done nothing for the whole tolerated-quiet window, or the quietest unobserved one last did something inside half that window | past half that window, or an observed task has done nothing for the whole of it | an unobserved task is past the whole window | any working task has no readable activity age, observed or not, or the snapshot carries no window |
+| Task activity | every live task declared a wait, or every non-waiting task has a readable age with unexplained quiet below half the tolerated-quiet window and accounted quiet below the whole window | unexplained quiet is past half that window, or accounted quiet is past the whole window | unexplained quiet is past the whole window | any non-waiting task has no readable activity age, or the snapshot carries no window |
 | Workers | every live task that has not declared a wait has its endpoint, or every live task declared one | - | an endpoint is gone on a task that declared no wait | endpoint presence unreadable on a task that declared no wait |
 | Secondmates | every registered secondmate answers, or none registered | - | any secondmate agent is dead | any secondmate liveness unreadable |
 | Inventory | every in-flight backlog item has a worker record | - | an orphan, or `main_inventory.valid` false | no inventory check reported |
@@ -130,23 +131,25 @@ Secondmates report through their own signal instead.
 
 ### What Task activity measures
 
-Task activity asks whether any working task has gone quiet without a live reason.
+Task activity asks whether any live task has gone quiet without a current reason that accounts for its silence.
 It used to ask a different question - how long since the slowest task last appended to its status log - and that question has a wrong answer built into it.
 
 The status log is a REPORTING cadence, not an activity one.
 [`bin/fm-brief.sh`](../bin/fm-brief.sh) instructs every worker to append only on phase changes a supervisor would act on and explicitly not to file progress notes, so a healthy worker deep in one long step is INSTRUCTED to say nothing for a long time.
 A signal that ages that log alone measures obedience and reports it as degradation, which is exactly what it did.
 
-Two things answer for a quiet task, and either is enough.
+Task activity combines a current-state reading with an activity clock.
 
 The first is being caught in the act.
 The snapshot's `current_state` is reconciled by [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), and two of the sources it can answer with are readings taken during that refresh: `run-step`, the validation run's own current step, and `pane`, the harness's own busy verdict.
-A task carrying a definite state from either was observed working, so ordinary quiet does not colour it; the one bound that still applies to it is below.
+A task carrying a working, parked, done, or failed state from either was observed in a condition that accounts for ordinary quiet, so elapsed time does not colour it; the one bound that still applies to it is below.
+`abandoned` is a definite live reading that does the opposite: the run is advancing with nobody to drive it, so it does not buy that exemption and is aged like any other unexplained quiet.
 Every other source it can answer with is a memory or an absence - `run-step-degraded` replays a step a failed lookup could not re-confirm, `run-attribution` means a run was found but could not be tied to this task, `completion-attestation` is the scout's durable decision-inventory result, `status-log` is the event log this signal already reads, and `timeout`, `not-attempted`, `row-unavailable` and `none` are readings that were not taken.
 None of those excuses quiet, because the rule at the top of this page applies here too: not knowing is not the same as knowing it is fine.
 
 The second is a turn-boundary wake.
-Everything not observed working is aged on the newer of its last status append and its `paths.turn_ended` marker, which a verified turn-end producer or cursor/agy's identity-gated, debounced native-idle detector touches whatever the worker chooses to report.
+Every non-waiting task is aged on the newer of its last status append and its `paths.turn_ended` marker, which a verified turn-end producer or cursor/agy's identity-gated, debounced native-idle detector touches whatever the worker chooses to report.
+A current reading that accounts for quiet uses that age only to bound its exemption at the whole window; without such a reading, the age turns amber at half the window and red at the whole window.
 That marker is a wake notification and an activity timestamp, never current state or terminal attestation; [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns it and already ages this exact file for the same purpose.
 A task whose harness leaves no marker still ages on its status log alone, as before.
 

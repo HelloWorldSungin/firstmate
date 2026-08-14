@@ -251,6 +251,8 @@ test_crew_is_provably_working_classifier() {
   ! crew_is_provably_working a || fail "parked run treated as provably working"
   FM_FAKE_CREW_STATE='state: failed · source: run-step · run failed'
   ! crew_is_provably_working a || fail "failed run treated as provably working"
+  FM_FAKE_CREW_STATE='state: abandoned · source: run-step · worker gone (dead)'
+  ! crew_is_provably_working a || fail "abandoned run treated as provably working"
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   ! crew_is_provably_working a || fail "unknown crew treated as provably working"
   FM_FAKE_CREW_STATE='state: working · source: run-step · x'
@@ -304,6 +306,11 @@ test_crew_absorb_class_classifier() {
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
   ! crew_is_paused a || fail "unknown crew classed paused"
+  FM_FAKE_CREW_STATE='state: abandoned · source: run-step · validating (running) · worker gone (dead)'
+  [ "$(crew_absorb_class a)" = none ] || fail "abandoned run-step classed absorbable"
+  ! crew_is_provably_working a || fail "abandoned run-step treated as provably working"
+  FM_FAKE_CREW_STATE='state: abandoned · source: run-step-degraded · worker gone (dead)'
+  [ "$(crew_absorb_class a)" = none ] || fail "abandoned degraded replay classed absorbable"
   [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
   unset FM_FAKE_CREW_STATE
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"

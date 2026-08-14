@@ -201,7 +201,7 @@ Exactly one column wins per task, resolved against this ladder in order, and `ca
 | 7 | `waiting` | `recheck` | a declared external wait |
 | 8 | `active` | `supervise` | the worker is working |
 | 9 | `secondmate` | `route_work` | a persistent secondmate with no higher-priority task signal |
-| 10 | `idle` | `inspect` | no current signal |
+| 10 | `idle` | `inspect` | no current signal, or `abandoned` (the board has no abandoned column; Task activity ages that quiet instead) |
 
 The ordering encodes four judgements worth stating.
 An open decision outranks everything because it is unanswered work for firstmate or the captain even when a PR is already open.

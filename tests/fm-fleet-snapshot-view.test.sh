@@ -442,6 +442,68 @@ test_event_hints_follow_reconciled_current_state() {
   pass "snapshot event hints follow reconciled current state"
 }
 
+# Breaks if a live abandoned reading is treated as a resume that clears still-open
+# decisions: source pane/run-step plus a state that is not parked/blocked used to
+# wipe the fold, so a dead worker under a live run hid the decision the inbox
+# would otherwise show.
+test_abandoned_live_reading_does_not_clear_open_decisions() {
+  local home fakebin out hint_gen
+  home=$(make_home abandoned-keeps-decision)
+  mkdir -p "$home/projects/abandoned-decision"
+  fm_write_meta "$home/state/abandoned-decision.meta" \
+    "window=firstmate:fm-abandoned-decision" \
+    "worktree=$home/projects/abandoned-decision" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=ship"
+  hint_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" abandoned-decision)
+  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" abandoned-decision busy --gen "$hint_gen" \
+    --source claude-hook --event user-prompt-submit
+  printf 'needs-decision [key=shape]: choose an API shape\n' > "$home/state/abandoned-decision.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_AGENT_STATE=dead "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    def task($id): (.tasks[] | select(.id == $id));
+    task("abandoned-decision").current_state.state == "abandoned"
+      and task("abandoned-decision").hints.pending_decision == true
+      and (task("abandoned-decision").hints.open_decisions | length) == 1
+      and task("abandoned-decision").hints.open_decisions[0].key == "shape"
+      and task("abandoned-decision").card.column == "needs_decision"
+  ' >/dev/null || fail "an abandoned live reading must not clear a still-open decision: $out"
+  pass "an abandoned live reading keeps open decisions instead of treating the death as a resume"
+}
+
+# Breaks if abandoned falls through as "no current signal" or is filed as done,
+# which would either lie about the worker or drop the task out of live work so
+# Task activity could not age it.
+test_abandoned_without_decision_maps_to_idle_inspect() {
+  local home fakebin out hint_gen
+  home=$(make_home abandoned-idle-card)
+  mkdir -p "$home/projects/abandoned-idle"
+  fm_write_meta "$home/state/abandoned-idle.meta" \
+    "window=firstmate:fm-abandoned-idle" \
+    "worktree=$home/projects/abandoned-idle" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=ship"
+  hint_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" abandoned-idle)
+  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" abandoned-idle busy --gen "$hint_gen" \
+    --source claude-hook --event user-prompt-submit
+  printf 'working: validating\n' > "$home/state/abandoned-idle.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_AGENT_STATE=dead "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    def task($id): (.tasks[] | select(.id == $id));
+    task("abandoned-idle").current_state.state == "abandoned"
+      and task("abandoned-idle").card.column == "idle"
+      and task("abandoned-idle").card.action == "inspect"
+      and (task("abandoned-idle").card.reason | test("no live worker"))
+  ' >/dev/null || fail "abandoned without a higher-priority signal must map to idle/inspect naming the missing worker: $out"
+  pass "abandoned without an open decision maps to idle inspect, not done or no-signal"
+}
+
 test_scout_reports_include_teardown_reports() {
   local home out
   home=$(make_home teardown-reports)
@@ -1688,6 +1750,8 @@ test_secondmate_home_summary_skips_model_enrichment
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
+test_abandoned_live_reading_does_not_clear_open_decisions
+test_abandoned_without_decision_maps_to_idle_inspect
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint
 test_open_decision_transfers_to_captain_hold

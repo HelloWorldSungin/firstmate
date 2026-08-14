@@ -777,6 +777,53 @@ EOF
   pass "nonprogressing child states are explicit and inconsistent terminal rows invalidate"
 }
 
+test_abandoned_child_state_is_actionable() {
+  local home mate fakebin canonical json
+  home=$(make_home abandoned-child-classification)
+  mate="$TMP_ROOT/abandoned-child-classification-home"
+  make_valid_secondmate_home abandoned-mate "$mate"
+  append_secondmate_registry "$home" abandoned-mate "$mate"
+  mkdir -p "$mate/projects/abandoned-child"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+- [ ] abandoned-child - Abandoned child (repo: sample) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$mate/state/abandoned-child.meta" \
+    "window=firstmate:fm-abandoned-child" "worktree=$mate/projects/abandoned-child" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$mate/state" abandoned-child busy
+  printf 'working: validation is advancing\n' > "$mate/state/abandoned-child.status"
+  fakebin=$(make_fakebin "$home")
+  canonical=$(FM_FAKE_AGENT_STATE=dead PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.records[] | select(.id == "abandoned-mate")
+    | .current.state == "abandoned_child_work"
+      and .current.reason == null
+      and [.abandoned_children[].id] == ["abandoned-child"]
+      and .abandoned_children[0].state == "abandoned"
+      and (.abandoned_children[0].doing | contains("worker gone (dead)"))
+      and .counts.abandoned_children == 1
+  ' >/dev/null || fail "abandoned child was reduced to healthy no-work: $canonical"
+  json=$(FM_FAKE_AGENT_STATE=dead run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.secondmates[] | select(.id == "abandoned-mate")
+      | .state == "abandoned_child_work"
+        and (.doing | contains("abandoned-child"))
+        and (.doing | contains("worker gone (dead)")))
+      and (.in_flight[] | select(.id == "abandoned-mate")
+        | .kind == "secondmate"
+          and .state == "abandoned_child_work"
+          and (.doing | contains("abandoned-child"))
+          and (.doing | contains("worker gone (dead)")))
+  ' >/dev/null || fail "Bearings did not route the abandoned child into Underway with identity and detail: $json"
+  pass "abandoned secondmate child remains actionable with identity and detail"
+}
+
 test_registry_unavailability_and_bounds_are_explicit() {
   local home fakebin json canonical id mate boundary
   home=$(make_home registry-unavailable)
@@ -1974,6 +2021,7 @@ test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
+test_abandoned_child_state_is_actionable
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
