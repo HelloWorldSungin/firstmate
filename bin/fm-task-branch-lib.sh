@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 FM_TASK_BRANCH_ERROR=
+export FM_TASK_BRANCH_ERROR
 
 fm_task_branch_validate() {  # <branch>
   local branch=${1:-} normalized

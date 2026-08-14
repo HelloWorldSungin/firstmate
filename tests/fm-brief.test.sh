@@ -1581,6 +1581,7 @@ test_continue_branch_renders_setup_and_marker() {
             "$kind $mode did not identify the existing PR handoff"
           assert_grep 'done: PR https://... checks green' "$brief" \
             "$kind $mode did not require the existing PR full HTTPS URL"
+          # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
           assert_no_grep 'open a PR with `gh-axi`' "$brief" \
             "$kind $mode still tells the worker to open a duplicate PR"
           ;;
@@ -1595,6 +1596,7 @@ test_continue_branch_renders_setup_and_marker() {
             "$kind $mode did not require confirmation of the in-place update"
           assert_grep 'done: PR https://...' "$brief" \
             "$kind $mode did not require the existing PR full HTTPS URL"
+          # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
           assert_no_grep 'open a PR with `gh-axi`' "$brief" \
             "$kind $mode still tells the worker to open a duplicate PR"
           ;;
@@ -1615,6 +1617,7 @@ test_continue_branch_renders_setup_and_marker() {
   done
 
   id='continue-shell-safe'
+  # shellcheck disable=SC2016 # Literal command substitution is an intentional fixture.
   continued='feature/$(touch-owned)'
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$project" --mode direct-PR \
     --continue-branch "$continued" >/dev/null 2>&1 \
@@ -1730,6 +1733,7 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-dwim/brief.md" \
     "--continue-branch @{-1} wrote a brief"
 
+  # shellcheck disable=SC2016 # Literal backticks are an intentional unsafe-name fixture.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-markdown "$project" --mode no-mistakes \
     --continue-branch 'feature/`unsafe`' > "$home/markdown.stdout" 2> "$home/markdown.stderr"
   rc=$?

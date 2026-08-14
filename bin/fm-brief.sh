@@ -765,6 +765,7 @@ DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by 
 DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
 # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
+# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
 DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.'
 PROJECT_MEMORY_SECTION=
 if [ "$KIND" = ship ]; then
@@ -824,17 +825,23 @@ if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
       DOD_LOCAL_COMPLETE="The ADR is ready only when committed at detached HEAD and local branch \`$TASK_BRANCH\` points to that commit. Do NOT push, do NOT open a PR, do NOT merge."
       ;;
     no-mistakes:ship)
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_INTRO='This task continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_LOCAL='A clean local commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
       DOD_NO_MISTAKES_COMPLETE="The task is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
       DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, committed, and pushed to the existing branch, append \`blocked: implemented, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
       ;;
     no-mistakes:design)
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_INTRO='This ADR continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_LOCAL='A clean local ADR commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
       DOD_NO_MISTAKES_COMPLETE="The ADR is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
       DOD_NO_MISTAKES_HANDOFF="When the ADR is complete, committed, and pushed to the existing branch, append \`$PAUSED_VERB: ADR complete, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and update the existing ADR PR."
+      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
       DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing ADR PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
       ;;
   esac
