@@ -11,6 +11,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-sessionstart-nudge.sh` | Print the native session-start hook nudge when the primary has not already run the digest |
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
+| `fm-upstream-status.sh`  | Measure optional fork-upstream drift read-only and report the standing sync trigger verdict |
 | `fm-fleet-sync.sh`       | Refresh project clones with stale remote-pointer pruning, safe fast-forwards, self-heals, `STUCK:` reports, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
