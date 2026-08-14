@@ -9,10 +9,11 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
 
-A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and fails if the body is missing the deterministic signature that no-mistakes writes.
-It evaluates every PR opening and body edit independently, so a later edit cannot replace an earlier pending compliance check.
-The pipeline owns the `## Pipeline` section of the body, so edit the body by amending it and leave that section in place; replacing the body wholesale - to add a `Closes #<n>` line or a delivery summary, say - drops the signature and turns the check red.
-GitHub Actions and Dependabot are exempt so their automation keeps working, but regular contributor PRs without the signature will not be reviewed or merged.
+A GitHub Actions check (`Require no-mistakes`) evaluates the body when a PR targeting `main` opens, when its candidate head changes, and when the PR reopens.
+On each of those events, it fails if the body is missing the deterministic signature that no-mistakes writes.
+Body-only edits are intentionally not evaluated because a transient failure on an unchanged head can remain attached after the body is restored.
+The pipeline owns the `## Pipeline` section of the body, so amend the body and leave that section in place; the next candidate-head or reopen event evaluates the body as it exists then.
+GitHub Actions and Dependabot are exempt so their automation keeps working; regular contributors remain subject to the contribution policy above.
 
 ## Workflow
 
