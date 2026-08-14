@@ -19,6 +19,9 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
+
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
@@ -32,12 +35,8 @@ SESSION=liveness
 
 cleanup_all() {
   local status=0
-  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
-    "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || { echo "cleanup: tmux kill-server failed" >&2; status=1; }
-  fi
-  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
-    echo "cleanup: tmux server still running after kill-server" >&2
-    status=1
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
+    fm_test_tmux_safe_kill_server "$REAL_TMUX" "$SOCKET" || { echo "cleanup: tmux server teardown failed" >&2; status=1; }
   fi
   if [ -n "${LAB:-}" ]; then
     rm -rf "$LAB" 2>/dev/null || { echo "cleanup: lab removal failed" >&2; status=1; }
@@ -45,6 +44,29 @@ cleanup_all() {
   return "$status"
 }
 trap cleanup_all EXIT
+
+tmux_inventory_failure_fixture() {
+  printf 'inventory unavailable\n' >&2
+  return 1
+}
+
+if fm_test_tmux_safe_kill_server tmux_inventory_failure_fixture "$SOCKET" >/dev/null 2>&1; then
+  fail "tmux cleanup should reject an unreadable server inventory"
+fi
+pass "tmux cleanup: unreadable inventory fails closed"
+
+[ "$(fm_test_tmux_server_state "$REAL_TMUX" "$SOCKET")" = absent ] \
+  || fail "tmux cleanup should recognize the real missing private server as absent"
+pass "tmux cleanup: the real no-server result is confirmed absence"
+
+sleep 30 &
+STOP_FIXTURE_PID=$!
+fm_test_safe_stop_process "$STOP_FIXTURE_PID" fixture \
+  || { kill "$STOP_FIXTURE_PID" 2>/dev/null || true; wait "$STOP_FIXTURE_PID" 2>/dev/null || true; fail "intentional signal status should not fail process cleanup"; }
+if kill -0 "$STOP_FIXTURE_PID" 2>/dev/null; then
+  fail "process cleanup returned success while its fixture remained alive"
+fi
+pass "process cleanup: expected signal wait status is successful teardown"
 
 # A `tmux` shim on PATH so bin/backends/tmux.sh's bare `tmux` calls reach the
 # private socket and never touch the host's real sessions.
@@ -82,6 +104,10 @@ fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -n idle -c "$LAB/wt" \
   || fail "could not start the private tmux server"
+
+[ "$(fm_test_tmux_server_state "$REAL_TMUX" "$SOCKET")" = present ] \
+  || fail "tmux cleanup should recognize the real private server as present"
+pass "tmux cleanup: a readable real server is present"
 
 # Run the pane's process DIRECTLY as the window command rather than typing into
 # a shell, so no case depends on interactive shell readiness.

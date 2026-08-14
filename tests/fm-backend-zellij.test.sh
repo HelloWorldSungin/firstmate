@@ -47,8 +47,18 @@ if [ "${1:-}" = --version ]; then
   exit 0
 fi
 if [ "${1:-}" = list-sessions ]; then
-  printf '%s\n' "${FM_ZELLIJ_SESSION_LIST:-}"
-  exit "${FM_ZELLIJ_SESSION_LIST_EXIT:-0}"
+  list_sessions=${FM_ZELLIJ_SESSION_LIST:-}
+  list_sessions_exit=${FM_ZELLIJ_SESSION_LIST_EXIT:-0}
+  if [ -f "$COUNT_FILE" ] && [ -n "${FM_ZELLIJ_SESSION_LIST_AFTER_DELETE+x}" ]; then
+    list_sessions=$FM_ZELLIJ_SESSION_LIST_AFTER_DELETE
+    list_sessions_exit=${FM_ZELLIJ_SESSION_LIST_EXIT_AFTER_DELETE:-0}
+  fi
+  if [ "$list_sessions_exit" -eq 0 ]; then
+    printf '%s\n' "$list_sessions"
+  else
+    printf '%s\n' "$list_sessions" >&2
+  fi
+  exit "$list_sessions_exit"
 fi
 if [ "${1:-}" = attach ]; then
   exit "${FM_ZELLIJ_ATTACH_EXIT:-0}"
@@ -1068,12 +1078,44 @@ test_safe_delete_accepts_confirmed_absence() {
   fb=$(make_zellij_fakebin "$dir")
 
   PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
-    FM_ZELLIJ_SESSION_LIST='' zellij_safe_delete fm-test-cleanup >/dev/null 2>&1
+    FM_ZELLIJ_SESSION_LIST='No active zellij sessions found.' FM_ZELLIJ_SESSION_LIST_EXIT=1 \
+    zellij_safe_delete fm-test-cleanup >/dev/null 2>&1
   status=$?
   expect_code 0 "$status" "safe delete should accept a session confirmed absent"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''delete-session' \
     "safe delete should not issue a delete for an absent session"
   pass "zellij_safe_delete: confirmed absence is idempotent success"
+}
+
+test_safe_delete_accepts_last_session_removal() {
+  local dir fb status
+  dir="$TMP_ROOT/safe-delete-last-session"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST=fm-test-cleanup \
+    FM_ZELLIJ_SESSION_LIST_AFTER_DELETE='No active zellij sessions found.' \
+    FM_ZELLIJ_SESSION_LIST_EXIT_AFTER_DELETE=1 \
+    zellij_safe_delete fm-test-cleanup >/dev/null 2>&1
+  status=$?
+  expect_code 0 "$status" "safe delete should accept the exact no-sessions result after deleting the last session"
+  assert_contains "$(cat "$dir/log")" $'\x1f''delete-session' \
+    "safe delete should issue delete-session for a present final session"
+  pass "zellij_safe_delete: deleting the last session accepts the exact no-sessions result"
+}
+
+test_safe_delete_rejects_empty_successful_inventory() {
+  local dir fb status
+  dir="$TMP_ROOT/safe-delete-empty-inventory"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='' zellij_safe_delete fm-test-cleanup >/dev/null 2>&1
+  status=$?
+  [ "$status" -ne 0 ] || fail "safe delete should reject an empty successful session inventory"
+  assert_not_contains "$(cat "$dir/log")" $'\x1f''delete-session' \
+    "safe delete should not issue a delete after an empty successful inventory"
+  pass "zellij_safe_delete: empty successful inventory fails closed"
 }
 
 test_safe_delete_rejects_unreadable_inventory() {
@@ -1164,6 +1206,8 @@ test_scripts_route_explicit_target_through_meta_backend
 test_scripts_verify_label_for_fm_targets
 test_scripts_reject_fm_target_label_mismatch
 test_safe_delete_accepts_confirmed_absence
+test_safe_delete_accepts_last_session_removal
+test_safe_delete_rejects_empty_successful_inventory
 test_safe_delete_rejects_unreadable_inventory
 test_safe_delete_propagates_delete_failure
 printf '\nall fm-backend-zellij tests passed\n'

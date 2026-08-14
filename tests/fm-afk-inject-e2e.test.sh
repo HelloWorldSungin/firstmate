@@ -32,6 +32,9 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
+
 # Skip gracefully if tmux is not installed.
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 
@@ -49,19 +52,15 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 cleanup_all() {
   local status=0
-  if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
-    kill "$DAEMON_PID" 2>/dev/null || { echo "cleanup: kill daemon failed" >&2; status=1; }
-    wait "$DAEMON_PID" 2>/dev/null || { echo "cleanup: wait daemon failed" >&2; status=1; }
+  if [ -n "${DAEMON_PID:-}" ]; then
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+      afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    fi
+    fm_test_safe_stop_process "$DAEMON_PID" daemon || status=1
   fi
+  DAEMON_PID=
   if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
-    if "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
-      "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || { echo "cleanup: tmux kill-server failed" >&2; status=1; }
-    fi
-    if "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
-      echo "cleanup: tmux server still running after kill-server" >&2
-      status=1
-    fi
+    fm_test_tmux_safe_kill_server "$REAL_TMUX" "$SOCKET" || { echo "cleanup: tmux server teardown failed" >&2; status=1; }
   fi
   rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
   rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }

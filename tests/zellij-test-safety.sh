@@ -31,16 +31,29 @@ set -u
 # is NOT the literal "firstmate" default session name, and IS currently
 # listed as an active zellij session. 1 (REFUSE) on anything else.
 zellij_test_session_state() {  # <name>
-  local name=$1 sessions
+  local name=$1 sessions rc
   [ -n "$name" ] || { echo "zellij safety guard: refusing - empty session name" >&2; return 1; }
   if [ "$name" = firstmate ]; then
     echo "zellij safety guard: refusing - name is literally 'firstmate' (the real default session a live fleet may use)" >&2
     return 1
   fi
-  sessions=$(zellij list-sessions --short --no-formatting 2>/dev/null) || {
-    echo "zellij safety guard: refusing - session inventory is unreadable" >&2
+  if sessions=$(zellij list-sessions --short --no-formatting 2>&1); then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 1 ] && [ "$sessions" = "No active zellij sessions found." ]; then
+      printf 'absent\n'
+      return 0
+    fi
+    echo "zellij safety guard: refusing - session inventory is unreadable: ${sessions:-<no output>}" >&2
     return 1
-  }
+  fi
+  if [ -z "$sessions" ]; then
+    echo "zellij safety guard: refusing - successful session inventory was empty" >&2
+    return 1
+  fi
   if printf '%s\n' "$sessions" | grep -qxF "$name"; then
     printf 'present\n'
   else

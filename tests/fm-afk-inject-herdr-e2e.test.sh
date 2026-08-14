@@ -40,6 +40,8 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
 
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
@@ -61,11 +63,13 @@ LOOP_SCRIPT=
 
 cleanup_all() {
   local status=0
-  if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
-    kill "$DAEMON_PID" 2>/dev/null || { echo "cleanup: kill daemon failed" >&2; status=1; }
-    wait "$DAEMON_PID" 2>/dev/null || { echo "cleanup: wait daemon failed" >&2; status=1; }
+  if [ -n "${DAEMON_PID:-}" ]; then
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+      afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    fi
+    fm_test_safe_stop_process "$DAEMON_PID" daemon || status=1
   fi
+  DAEMON_PID=
   herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || { echo "cleanup: herdr teardown failed" >&2; status=1; }
   rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
   rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }

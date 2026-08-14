@@ -255,6 +255,8 @@ export FM_BACKEND_HERDR_WORKSPACE_MOVER="$FAKEBIN/herdr-workspace-mover"
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-test-safety.sh
+. "$ROOT/tests/cleanup-test-safety.sh"
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
 # as a cross-session parent identity. Every projection below is anchored on the
@@ -269,9 +271,8 @@ RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
 cleanup_all() {
   local wt status=0
-  if [ -n "$LOCK_CONTENTION_OWNER_PID" ] && kill -0 "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null; then
-    kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || { echo "cleanup: kill lock-contention owner failed" >&2; status=1; }
-    wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || { echo "cleanup: wait lock-contention owner failed" >&2; status=1; }
+  if [ -n "$LOCK_CONTENTION_OWNER_PID" ]; then
+    fm_test_safe_stop_process "$LOCK_CONTENTION_OWNER_PID" "lock-contention owner" || status=1
   fi
   LOCK_CONTENTION_OWNER_PID=
   while IFS= read -r wt; do
