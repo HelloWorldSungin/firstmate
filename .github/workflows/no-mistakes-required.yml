@@ -3,19 +3,20 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, synchronize, reopened]
     branches:
       - main
 
 permissions:
   contents: read
 
-# GitHub concurrency groups retain at most one pending run, replacing older
-# pending runs even when cancel-in-progress is false. Give body-bearing events
-# an immutable per-event group so first-time-fork approvals can never collapse
-# opened/edited checks. Keep synchronize/reopened coalescing as before.
+# GitHub concurrency groups retain at most one pending run per PR, replacing older
+# pending runs when cancel-in-progress is true. Run on opened, synchronize (push),
+# and reopened events so compliance is evaluated when candidate code heads advance.
+# Omitting edited prevents intermediate body edits on unchanged commits from creating
+# orphan failed check run records on otherwise green PRs.
 concurrency:
-  group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
+  group: no-mistakes-required-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
