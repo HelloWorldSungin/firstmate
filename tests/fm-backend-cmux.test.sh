@@ -1044,8 +1044,56 @@ test_secondmate_spawn_refuses_cmux_backend() {
   pass "fm-spawn.sh: refuses backend=cmux for --secondmate spawns (mirrors Orca's refusal; no secondmate launch design exists yet)"
 }
 
+test_safe_close_accepts_confirmed_absence() {
+  local dir fb status
+  dir="$TMP_ROOT/safe-close-absent"; mkdir -p "$dir/responses"
+  fb=$(make_cmux_fakebin "$dir")
+  cmux_workspace_list_response "$dir" 1
+
+  PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    cmux_safe_close_workspace workspace-1 fm-test-cleanup
+  status=$?
+  expect_code 0 "$status" "safe close should accept a workspace confirmed absent"
+  assert_not_contains "$(cat "$dir/log")" $'\x1f''close-workspace' \
+    "safe close should not issue a close for an absent workspace"
+  pass "cmux_safe_close_workspace: confirmed absence is idempotent success"
+}
+
+test_safe_close_propagates_close_failure() {
+  local dir fb status title
+  dir="$TMP_ROOT/safe-close-failure"; mkdir -p "$dir/responses"
+  fb=$(make_cmux_fakebin "$dir")
+  title=$(fm_backend_cmux_scoped_title fm-test-cleanup)
+  cmux_workspace_list_response "$dir" 1 workspace-1 "$title"
+  printf '1\n' > "$dir/responses/2.exit"
+
+  PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    cmux_safe_close_workspace workspace-1 fm-test-cleanup >/dev/null 2>&1
+  status=$?
+  [ "$status" -ne 0 ] || fail "safe close should propagate close-workspace failure"
+  pass "cmux_safe_close_workspace: propagates close-workspace failure"
+}
+
+test_safe_close_rejects_surviving_workspace() {
+  local dir fb status title
+  dir="$TMP_ROOT/safe-close-survives"; mkdir -p "$dir/responses"
+  fb=$(make_cmux_fakebin "$dir")
+  title=$(fm_backend_cmux_scoped_title fm-test-cleanup)
+  cmux_workspace_list_response "$dir" 1 workspace-1 "$title"
+  cmux_workspace_list_response "$dir" 3 workspace-1 "$title"
+
+  PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    cmux_safe_close_workspace workspace-1 fm-test-cleanup >/dev/null 2>&1
+  status=$?
+  [ "$status" -ne 0 ] || fail "safe close should fail when the workspace survives close-workspace"
+  pass "cmux_safe_close_workspace: rejects a workspace that survives close-workspace"
+}
+
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
+fm_backend_source cmux || fail "fm_backend_source cmux failed"
+# shellcheck source=tests/cmux-test-safety.sh
+. "$ROOT/tests/cmux-test-safety.sh"
 
 test_version_check_accepts_current_version
 test_version_check_accepts_newer_version
@@ -1104,4 +1152,7 @@ test_kill_is_best_effort_when_close_workspace_fails
 test_kill_recovers_stale_target_by_label
 test_list_live_filters_by_title_prefix
 test_secondmate_spawn_refuses_cmux_backend
+test_safe_close_accepts_confirmed_absence
+test_safe_close_propagates_close_failure
+test_safe_close_rejects_surviving_workspace
 printf '\nall fm-backend-cmux tests passed\n'

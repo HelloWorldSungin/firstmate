@@ -31,15 +31,7 @@ export FM_ZELLIJ_SESSION="$SESSION"
 trap cleanup_all EXIT
 
 cleanup_all() {
-  local status=0
-  if zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$SESSION"; then
-    zellij_safe_delete "$SESSION" || { echo "cleanup: zellij delete-session failed" >&2; status=1; }
-  fi
-  if zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$SESSION"; then
-    echo "cleanup: zellij session $SESSION still exists after delete" >&2
-    status=1
-  fi
-  return "$status"
+  zellij_safe_delete "$SESSION" || { echo "cleanup: zellij delete-session failed" >&2; return 1; }
 }
 
 TMP_CWD="${TMPDIR:-/tmp}"

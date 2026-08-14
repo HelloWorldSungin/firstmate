@@ -30,15 +30,28 @@ set -u
 # zellij_refuse_if_unsafe: 0 (SAFE to proceed) only if <name> is non-empty,
 # is NOT the literal "firstmate" default session name, and IS currently
 # listed as an active zellij session. 1 (REFUSE) on anything else.
-zellij_refuse_if_unsafe() {  # <name>
-  local name=$1 listed
+zellij_test_session_state() {  # <name>
+  local name=$1 sessions
   [ -n "$name" ] || { echo "zellij safety guard: refusing - empty session name" >&2; return 1; }
   if [ "$name" = firstmate ]; then
     echo "zellij safety guard: refusing - name is literally 'firstmate' (the real default session a live fleet may use)" >&2
     return 1
   fi
-  listed=$(zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$name" && echo yes || echo no)
-  if [ "$listed" != yes ]; then
+  sessions=$(zellij list-sessions --short --no-formatting 2>/dev/null) || {
+    echo "zellij safety guard: refusing - session inventory is unreadable" >&2
+    return 1
+  }
+  if printf '%s\n' "$sessions" | grep -qxF "$name"; then
+    printf 'present\n'
+  else
+    printf 'absent\n'
+  fi
+}
+
+zellij_refuse_if_unsafe() {  # <name>
+  local name=$1 state
+  state=$(zellij_test_session_state "$name") || return 1
+  if [ "$state" != present ]; then
     echo "zellij safety guard: refusing - session '$name' not found in 'zellij list-sessions'" >&2
     return 1
   fi
@@ -46,15 +59,21 @@ zellij_refuse_if_unsafe() {  # <name>
 }
 
 # zellij_safe_delete: the ONLY sanctioned way for a test to tear down an
-# isolated session it created. Guards first (zellij_refuse_if_unsafe), then
+# isolated session it created. Validates the explicit session name and state, then
 # uses the explicit-by-name `delete-session --force` form (kills if running,
 # then deletes in one call) - NEVER `kill-all-sessions` or
-# `delete-all-sessions`. Best-effort past the guard (a session already gone
-# must not fail the caller's cleanup trap) - but the guard itself is NOT
-# best-effort: a refusal here means cleanup leaves the isolated, throwaway,
-# never-"firstmate" session running rather than risk the wrong target.
+# `delete-all-sessions` - and confirms the session is absent afterward.
+# A session already confirmed absent is an idempotent success; inventory,
+# delete, and post-delete verification failures propagate to the caller.
 zellij_safe_delete() {  # <name>
-  local name=$1
-  zellij_refuse_if_unsafe "$name" || return 1
-  zellij delete-session "$name" --force >/dev/null 2>&1 || true
+  local name=$1 state
+  state=$(zellij_test_session_state "$name") || return 1
+  [ "$state" = present ] || return 0
+  zellij delete-session "$name" --force >/dev/null 2>&1 || return 1
+  state=$(zellij_test_session_state "$name") || return 1
+  if [ "$state" != absent ]; then
+    echo "zellij safety guard: session '$name' still exists after delete" >&2
+    return 1
+  fi
+  return 0
 }
