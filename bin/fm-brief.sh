@@ -110,6 +110,7 @@
 # in resolved status, reports, PR bodies, and commits unless the decision text explicitly
 # says the captain was consulted; secondmate charters apply the same rule to resolved status.
 # Ship and design briefs pair the pause verb with "working:" around backgrounded pipeline calls.
+# Those same briefs warn that a `pgrep -f` or `pkill -f` wait whose pattern appears in the wait's own command line matches itself and never exits, so wait or kill by PID.
 # For a no-mistakes ship, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
 # Design tasks instead use ADR-specific no-mistakes handoff wording in the generated brief.
@@ -851,6 +852,8 @@ $RULE1
    \`$PAUSED_VERB:\` BEFORE going idle and \`working:\` as soon as it returns - otherwise a spent
    \`needs-decision:\` stays standing and firstmate reads you as still waiting on a decision it
    already answered.
+   Never poll with \`pgrep -f\` or \`pkill -f\` on a pattern that appears in your own command line - the wait matches itself and cannot exit.
+   Wait on the actual PID, or run the command in the foreground; when killing, kill by PID.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 $DECISION_RULE
    \`resolved:\` carries NO state, so it must never be your last line: append the next state line

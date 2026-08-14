@@ -591,6 +591,68 @@ test_status_protocol_teaches_blocked_for_firstmate_waits() {
   pass "fm-brief.sh: status protocol teaches blocked: for firstmate-action waits"
 }
 
+# Issue #141: a worker waited with `pgrep -f 'shellcheck --norc'` and the wait
+# matched its own command line, spinning for ~49 minutes. The generated brief
+# must spell the trap once, in the shared ship/design rule that already teaches
+# backgrounding, and must not copy it into scout, secondmate, or the no-mistakes
+# DOD that already points at rule 4.
+# This fails if that rule drops either line, if a second copy appears in a
+# variant that already carries it, if a ship or design mode diverges from the
+# shared Rules template, or if scout/secondmate start carrying a copy.
+test_status_protocol_warns_against_self_matching_pgrep() {
+  local home brief count plugin registry
+  home="$TMP_ROOT/pgrep-warn-home"
+  plugin="$TMP_ROOT/pgrep-warn-plugin"
+  registry="$TMP_ROOT/pgrep-warn-registry.json"
+  mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
+    "$plugin/skills/engineering/domain-modeling"
+  printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
+  printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  jq -n --arg plugin "$plugin" '{plugins:{
+    "mattpocock-skills@mattpocock":[
+      {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
+    ]}}' > "$registry"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pgrep-nm some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pgrep-direct some-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pgrep-local some-proj --mode local-only >/dev/null 2>&1
+  FM_HOME="$home" FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
+    "$ROOT/bin/fm-brief.sh" pgrep-design some-proj --design --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pgrep-scout some-proj --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' \
+    "$ROOT/bin/fm-brief.sh" pgrep-secondmate --secondmate --no-projects >/dev/null 2>&1
+
+  local id
+  for id in pgrep-nm pgrep-direct pgrep-local pgrep-design; do
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Never poll with `pgrep -f` or `pkill -f` on a pattern that appears in your own command line' "$brief" \
+      "$id: brief lost the self-matching pgrep/pkill prohibition"
+    assert_grep 'the wait matches itself and cannot exit' "$brief" \
+      "$id: brief lost the self-match never-exits consequence"
+    assert_grep 'Wait on the actual PID, or run the command in the foreground' "$brief" \
+      "$id: brief lost the wait-on-PID-or-foreground remedy"
+    assert_grep 'when killing, kill by PID' "$brief" \
+      "$id: brief lost the kill-by-PID remedy"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    count=$(grep -c -F 'Never poll with `pgrep -f` or `pkill -f`' "$brief" || true)
+    [ "$count" -eq 1 ] || fail "$id: self-matching pgrep warning appeared $count times, want exactly once"
+  done
+
+  for id in pgrep-scout pgrep-secondmate; do
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_no_grep 'Never poll with `pgrep -f` or `pkill -f`' "$brief" \
+      "$id: brief that does not teach backgrounding carried the pgrep warning"
+    assert_no_grep 'when killing, kill by PID' "$brief" \
+      "$id: brief that does not teach backgrounding carried the kill-by-PID remedy"
+  done
+
+  pass "fm-brief.sh: ship and design briefs warn once against self-matching pgrep waits"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -1457,6 +1519,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_status_protocol_closes_reporting_gaps
 test_status_protocol_teaches_blocked_for_firstmate_waits
+test_status_protocol_warns_against_self_matching_pgrep
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
