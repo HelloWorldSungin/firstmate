@@ -177,7 +177,7 @@ And a snapshot carrying no window at all reads unknown rather than green: withou
 
 Task activity and Workers both ask a question a declared wait answers differently, so both consult the declaration before they judge.
 Task activity asks whether anything has gone quiet, and quiet a task announced is not quiet it fell into.
-Workers asks whether a worker is still there, and an agent exited on purpose is not a worker that died.
+Workers asks whether a worker is still there, and the declaration changes how it interprets endpoint state as described below.
 
 A task parked on a `paused:` external wait or a captain-held transfer is counted separately by both and never coloured: Task activity leaves it out of the elapsed-time verdict, and Workers leaves it out of the endpoint counts, tallies it beside them, and names it in the card detail.
 When every live task is waiting, that separate count becomes the whole value on both - "2 waiting by design" - and Task activity adds how long the longest has waited.
@@ -187,7 +187,8 @@ A declared wait is green rather than a colour of its own because the strip's col
 What each signal needed was a value that says what it is instead of an elapsed time or an absent-endpoint count that says nothing.
 
 Workers excludes a declared wait from its endpoint counts in both directions rather than counting it present.
-Whatever that task's endpoint currently is, it is not evidence about fleet health: parking a captain-gated task exits its agent deliberately, precisely so a quiet pane does not read as a wedge.
+Whatever that task's endpoint currently is, it is not evidence about fleet health in either direction.
+A parked worker is normally still alive at its prompt so work can be steered into its existing context; exiting it is a per-task workaround, not the design.
 Parking is fleet operating practice rather than a procedure this repo defines, so the signal never looks for a park at all - it reads only the declaration a park leaves in the status log.
 Naming the waiting tasks rather than dropping them keeps the card honest about what it stopped counting.
 

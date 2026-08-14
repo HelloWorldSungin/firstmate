@@ -595,12 +595,13 @@ check("and states no duration it cannot read",
   agelessWait.byId.events.detail === "Every live task declared its own wait. Nothing has gone quiet without saying so.",
   agelessWait.byId.events.detail);
 
-// --- a parked agent was exited on purpose ---------------------------------
+// --- a declared wait makes endpoint state irrelevant -----------------------
 //
-// Parking a captain-gated task exits its agent deliberately, so its absent
-// endpoint is the runbook working rather than a worker that died. Workers reads
-// the SAME hints.last_event_declared_wait verdict Task activity reads, so the
-// pause vocabulary stays defined once in bin/fm-classify-lib.sh.
+// A parked worker normally remains alive at its prompt so work can be steered
+// into its existing context. Workers excludes either endpoint state once the
+// task declares a wait and reads the SAME hints.last_event_declared_wait verdict
+// Task activity reads, so the pause vocabulary stays defined once in
+// bin/fm-classify-lib.sh.
 
 function parkedWorker(id, ageSeconds = 228_489) {
   return task(id, {
