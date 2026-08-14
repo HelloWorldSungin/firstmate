@@ -71,14 +71,18 @@ test_workflow_triggers_exclude_edited_event() {
 
 # Test 3: Verify concurrency configuration in no-mistakes-required.yml.
 # What would have to break for this test to fail:
-# concurrency.group is removed or modified to re-introduce per-run_id fragmentation.
+# concurrency.group is removed or modified to re-introduce per-run_id fragmentation,
+# or cancel-in-progress no longer cancels an older compliance run for the same PR.
 test_workflow_concurrency_group_coalescing() {
-  local group_line
+  local group_line cancel_line
   group_line=$(sed -n '/^[[:space:]]*group:/p' "$WORKFLOW")
+  cancel_line=$(sed -n '/^[[:space:]]*cancel-in-progress:/p' "$WORKFLOW")
   # shellcheck disable=SC2016
   [ "$group_line" = '  group: no-mistakes-required-${{ github.event.pull_request.number }}' ] || \
     fail "workflow concurrency group must be scoped exactly per pull request"
-  pass "no-mistakes-required workflow uses unified per-PR concurrency group"
+  [ "$cancel_line" = '  cancel-in-progress: true' ] || \
+    fail "workflow must cancel an in-progress compliance run when the same PR advances"
+  pass "no-mistakes-required workflow uses unified per-PR concurrency with cancellation enabled"
 }
 
 # Test 4: Verify the signature verification step logic against valid, missing, and truncated PR bodies.
