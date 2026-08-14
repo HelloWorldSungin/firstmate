@@ -48,9 +48,9 @@
 #     step 2b below), never a wedge escalation. One further hold applies at the
 #     escalation point itself: a crew whose validation run is demonstrably
 #     PROGRESSING (bin/fm-run-progress.sh, via the shared crew_wedge_progress
-#     policy) restarts its clock rather than alarming, because such a crew is
-#     quiet by design. That hold needs positive evidence of progress - a run
-#     that is absent, parked, stranded, or unreadable, or an endpoint whose
+#     classification) restarts its clock rather than alarming, because such a
+#     crew is quiet by design. That hold needs positive evidence of progress - a
+#     run that is absent, parked, stranded, or unreadable, or an endpoint whose
 #     agent is confidently dead, escalates exactly as before - and consecutive
 #     holds are capped (RUN_PROGRESS_HOLD_MAX_DEFAULT), because run progress is
 #     evidence about the RUN and not about the WORKER, so a moving pipeline may
@@ -687,8 +687,9 @@ stale_window_is_busy() {  # <window> <state>
 }
 
 # daemon_wedge_progress: the validation-run progress class for <window>, through
-# the shared wedge policy in bin/fm-classify-lib.sh (crew_wedge_progress), with
-# this daemon's own backend plumbing supplying the endpoint liveness verdict.
+# the shared run-progress policy in bin/fm-classify-lib.sh
+# (crew_wedge_progress), with this daemon's own backend plumbing supplying the
+# endpoint liveness verdict.
 #
 # Called only where an escalation would otherwise be raised, never on the poll
 # path: the read behind it costs a bounded no-mistakes call, so it is paid once
@@ -1095,8 +1096,8 @@ housekeeping() {  # <state>
              # quiet by design, not wedged. Restart the marker's clock instead
              # of escalating, so the next look is a full window away; every
              # other progress answer falls through to the unchanged escalation
-             # below. The always-on watcher applies the identical policy
-             # through the same owner (crew_wedge_progress).
+             # below. The always-on watcher applies the identical run-progress
+             # policy through the same owner (crew_wedge_progress).
              #
              # Bounded the same way it is there: a moving run licenses a DELAY,
              # never permanent silence, because run progress is evidence about

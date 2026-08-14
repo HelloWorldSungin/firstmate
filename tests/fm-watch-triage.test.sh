@@ -309,10 +309,11 @@ test_crew_absorb_class_classifier() {
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
 }
 
-# crew_wedge_progress is the single owner of the wedge policy both supervisors
-# apply, so it is pinned as a pure decision here, independently of either one's
-# escalation path: only `progressing` may quiet an alarm, a confidently dead
-# agent never does, and everything unrecognized collapses to `none`.
+# crew_wedge_progress is the single owner of the run-progress policy both
+# supervisors apply, so it is pinned as a pure decision here, independently of
+# either one's escalation path: only `progressing` may produce a run-progress
+# hold, a confidently dead agent never does, and everything unrecognized
+# collapses to `none`.
 test_crew_wedge_progress_classifier() {
   export FM_FAKE_RUN_PROGRESS
 
@@ -1382,8 +1383,13 @@ test_nonterminal_paused_rechecks_authoritative_state() {
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "an active run behind a declared pause surfaced instead of resuming wedge tracking: $(cat "$out")"
   fi
-  [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "authoritative active run retained paused mode"; }
+  # Authoritative state moves TRACKING to the wedge timer, which is what this
+  # case is about. The declaration itself is deliberately kept on record (issue
+  # 67): it is the fallback the escalation uses when the run yields no progress
+  # evidence, and it carries that cadence's re-surface throttle and backoff, so
+  # discarding it here would restart both on every poll.
   [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "authoritative active run did not resume wedge tracking"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "authoritative active run discarded the declared wait it may still need"; }
   reap "$pid"
   unset FM_FAKE_CREW_STATE
   pass "a declared pause is periodically rechecked against authoritative active-run state"
@@ -1418,8 +1424,13 @@ test_paused_authoritative_working_preserves_wedge_timer() {
 
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
+  # The verdict is the run's, not the pane's: with the declared wait still on
+  # record, only positive evidence that the run stopped or the agent died may
+  # raise the alarm here (issue 67). The no-evidence half is pinned by
+  # test_declared_wait_with_no_progress_evidence_rechecks_instead_of_wedging.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_FAKE_RUN_PROGRESS='progress: stranded · test running, last activity 31m0s ago' \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "authoritative working state did not wedge-escalate past the threshold"
@@ -1436,9 +1447,9 @@ test_paused_authoritative_working_preserves_wedge_timer() {
 # fm-crew-state reported "working · run-step · validating (running)" the whole
 # time. `status: running` alone cannot separate that from a run that has
 # stranded, so the escalation point reads bin/fm-run-progress.sh, whose classes
-# these four cases pin from the escalation side:
+# these four cases pin from the escalation side without a declared wait:
 #
-#   progressing -> held (and only here)
+#   progressing -> held
 #   stranded    -> still escalates, naming the step that stopped
 #   none        -> escalates byte-identically to before this gate existed
 #   dead agent  -> escalates however well its run is moving
@@ -1447,10 +1458,15 @@ test_paused_authoritative_working_preserves_wedge_timer() {
 
 # Fixture: a crew parked on a validation run, its wedge timer already backdated
 # past the threshold, so the very next poll reaches the escalation decision.
+# Its status line deliberately declares NO wait, so these four cases isolate the
+# run-progress axis alone; the declared-wait axis has its own four cases below,
+# over prime_declared_wait_at_threshold. Keeping both axes in one fixture is what
+# made issue 67 invisible here - a declared wait rides a different branch of the
+# stale path, and a fixture that carries one silently tests that branch instead.
 prime_wedge_at_threshold() {  # <state> <task> <window> <capture-file>
   local state=$1 task=$2 window=$3 capture=$4 key
   printf 'window=%s\nkind=ship\n' "$window" > "$state/$task.meta"
-  printf 'paused: no-mistakes run under way, parked on the pipeline call\n' > "$state/$task.status"
+  printf 'working: no-mistakes run under way, parked on the pipeline call\n' > "$state/$task.status"
   prime_status_seen "$state" "$task"
   prime_stale_pane "$state" "$window" 'validating · esc to interrupt' "$capture"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1702,6 +1718,233 @@ test_busy_pane_progressing_run_holds_then_escalates_past_the_cap() {
   [ ! -e "$state/.wedge-holds-$key" ] || fail "the busy-path forced escalation did not reset the hold count"
   unset FM_FAKE_TMUX_CURRENT_COMMAND
   pass "a busy pane past its turn-age bound is held while its run is moving and escalates anyway past the hold cap"
+}
+
+# --- a DECLARED wait, overridden by an active run, still counts at the alarm ---
+#
+# Issue 67, reproduced 2026-08-07: a crew that followed its brief and appended
+# `paused:` before parking on a backgrounded pipeline call was wedge-escalated
+# twice inside five minutes while fm-crew-state reported an actively running
+# validation. The declared wait was consumed the moment authoritative state
+# outranked it (correctly - a crew that declared a pause and then started a run
+# IS working), and from there the pane was on the plain 240s wedge cadence with
+# nothing left of the worker's own statement about its silence.
+#
+# The four cases below are the whole policy, and each is deliberately the
+# opposite of one of the others, so no single change can satisfy them all by
+# widening or narrowing absorption:
+#
+#   progressing        -> held (positive evidence the run is moving)
+#   stranded           -> escalates (positive evidence the run stopped)
+#   dead agent         -> escalates (nobody left to answer the next gate)
+#   none + live agent  -> declared-wait recheck, NOT a wedge alarm
+#
+# Only the last one changes behavior. `none` is no evidence either way - no run
+# attributed, a status read that could not complete, a run between steps - and
+# an alarm needs a reason to fire rather than the absence of one, once the crew
+# itself has said the silence is deliberate. bin/fm-supervise-daemon.sh's own
+# stale recheck has always short-circuited a declared pause before the wedge
+# escalation, so this is also what stops the two supervisors disagreeing about
+# the same pane.
+
+# Fixture: an IDLE (non-busy) pane whose crew declared a wait and whose
+# authoritative state is an active run, its wedge timer already past the
+# threshold and its stale hash already classified, so the very next poll reaches
+# the escalation decision through the declared-wait branch. Deliberately not
+# prime_wedge_at_threshold: that fixture's pane text carries a busy signature and
+# routes through the busy-turn-age path instead, which is why the stale path's
+# declared-wait branch had no coverage of its own.
+prime_declared_wait_at_threshold() {  # <state> <task> <window> <capture-file> [<status-line>]
+  local state=$1 task=$2 window=$3 capture=$4 key
+  local status_line=${5:-'paused: no-mistakes run under way, parked on the pipeline call'}
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/$task.meta"
+  printf '%s\n' "$status_line" > "$state/$task.status"
+  prime_status_seen "$state" "$task"
+  prime_stale_pane "$state" "$window" 'idle, parked on the pipeline call' "$capture"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text 'idle, parked on the pipeline call')" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+}
+
+test_declared_wait_with_no_progress_evidence_rechecks_instead_of_wedging() {
+  local dir state fakebin out drain_out capture window key pid
+  dir=$(make_case declared-wait-no-evidence); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture="$dir/pane.txt"
+  window="test:fm-declared-none"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+  prime_declared_wait_at_threshold "$state" declared-none "$window" "$capture"
+
+  # Phase A: the wait was declared moments ago, so its own re-surface window has
+  # not elapsed - the pane is absorbed outright, where before it alarmed.
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: none · no run attributed to this crew'
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND
+    fail "a declared wait with no progress evidence still wedge-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the deferred pane still printed a wake: $(cat "$out")"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the deferral was counted as a wedge escalation"; }
+  [ -e "$state/.paused-$key" ] \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the pane was not handed back to the declared-wait cadence"; }
+  grep -F "deferred non-terminal stale (provably working after a declared wait) wedge escalation" \
+    "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the deferral was not distinguishable in the triage log: $(cat "$state/.watch-triage.log")"; }
+  reap "$pid"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the deferral failed"
+  [ -s "$drain_out" ] \
+    && { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the deferred pane queued a wake: $(cat "$drain_out")"; }
+
+  # Phase B: absorbed is not silenced. Age the wait past its own re-surface
+  # window and it comes back as a recheck the supervisor can act on - never as a
+  # possible wedge - so a wait that stops being true cannot rot invisibly.
+  set_mtime $(( $(date +%s) - 500 )) "$state/declared-none.status"
+  prime_status_seen "$state" declared-none
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: none · no run attributed to this crew' FM_PAUSE_RESURFACE_SECS=240
+  pid=$!
+  wait_for_exit "$pid" 40 \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "an aged declared wait never came back for a recheck: $(cat "$out")"; }
+  grep -F "awaiting external" "$out" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the re-surfaced wake was not a declared-wait recheck: $(cat "$out")"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    && { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the recheck was raised as a possible wedge: $(cat "$out")"; }
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a declared wait whose run yields no progress evidence is rechecked on its own cadence, never wedge-escalated"
+}
+
+test_declared_wait_on_a_progressing_run_holds() {
+  local dir state fakebin out capture window key pid since
+  dir=$(make_case declared-wait-progressing); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-declared-moving"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+  prime_declared_wait_at_threshold "$state" declared-moving "$window" "$capture"
+  since=$(cat "$state/.stale-since-$key")
+
+  # The reproduction's own numbers: `document` running, last activity ~3m ago,
+  # comfortably inside the stranded bound.
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: progressing · document running, last activity 3m16s ago (silent 196s, bound 1800s)'
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND
+    fail "a declared wait inside an actively progressing run wedge-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the held declared wait still printed a wake: $(cat "$out")"; }
+  [ "$(cat "$state/.wedge-holds-$key" 2>/dev/null || echo 0)" = 1 ] \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the declared wait's hold was not counted"; }
+  [ "$(cat "$state/.stale-since-$key")" != "$since" ] \
+    || { reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the held escalation did not restart the wedge timer"; }
+  reap "$pid"
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a declared wait inside an actively progressing validation run holds its wedge escalation"
+}
+
+test_declared_wait_on_a_stranded_run_still_escalates() {
+  local dir state fakebin out capture window key pid
+  dir=$(make_case declared-wait-stranded); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-declared-stranded"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+  prime_declared_wait_at_threshold "$state" declared-stranded "$window" "$capture"
+
+  # Positive evidence the run stopped outranks the crew's own statement that its
+  # silence is deliberate: a stranded step is exactly the case the declared wait
+  # must never hide.
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: stranded · test running, last activity 31m0s ago (silent 1860s, past the 1800s bound)'
+  pid=$!
+  wait_for_exit "$pid" 40 \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "a declared wait on a stranded run did not escalate: $(cat "$out")"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the stranded declared wait lost its wedge reason: $(cat "$out")"; }
+  grep -F "validation run stranded: test running, last activity 31m0s ago" "$out" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the stranded escalation did not name the step that stopped: $(cat "$out")"; }
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || echo 0)" = 1 ] \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the stranded declared wait's escalation was not counted"; }
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a declared wait whose validation run has stranded still wedge-escalates, naming the step"
+}
+
+test_declared_wait_with_a_dead_agent_still_escalates() {
+  local dir state fakebin out capture window pid
+  dir=$(make_case declared-wait-dead-agent); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-declared-dead"
+  # A bare shell at the endpoint is the confident dead verdict.
+  export FM_FAKE_TMUX_CURRENT_COMMAND=zsh
+  prime_declared_wait_at_threshold "$state" declared-dead "$window" "$capture"
+
+  # No progress evidence AND nobody left to answer the run's next gate. The
+  # declared wait is a statement about a worker that is no longer there, so it
+  # must not buy the pane the recheck cadence.
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: none · status read did not complete'
+  pid=$!
+  wait_for_exit "$pid" 40 \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "a declared wait whose agent had died did not escalate: $(cat "$out")"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the dead-agent declared wait lost its wedge reason: $(cat "$out")"; }
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "a declared wait whose agent has confidently exited still wedge-escalates"
+}
+
+# --- the triage log must distinguish the two provably-working absorptions ------
+# What hid issue 67 for two days: a first sighting that absorbed and STARTED the
+# wedge timer, and a repeat poll that absorbed and ADVANCED an already-running
+# timer toward an escalation, wrote the identical line. The log therefore showed
+# a steady stream of absorptions while escalations kept arriving, agreeing with
+# the intended behavior rather than the actual behavior.
+test_provably_working_absorptions_are_distinguishable_in_the_triage_log() {
+  local dir state fakebin out capture window key pane_hash pid log
+  dir=$(make_case absorb-log-distinct); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture="$dir/pane.txt"; window="test:fm-logdistinct"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  log="$state/.watch-triage.log"
+  export FM_FAKE_TMUX_CURRENT_COMMAND=claude
+  prime_declared_wait_at_threshold "$state" logdistinct "$window" "$capture"
+  pane_hash=$(hash_text 'idle, parked on the pipeline call')
+  # Phase A: an UNCLASSIFIED hash, so this poll is the first sighting - it
+  # absorbs and starts the timer.
+  rm -f "$state/.stale-$key" "$state/.stale-since-$key"
+
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: progressing · document running, last activity 3m16s ago'
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the first sighting was not absorbed: $(cat "$out")"
+  fi
+  reap "$pid"
+  grep -F "absorbed non-terminal stale (provably working, wedge timer started)" "$log" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the first sighting did not record that it STARTED the timer: $(cat "$log")"; }
+  # The first sighting is the FIRST absorption in the log; the polls behind it
+  # are already repeat polls of the same hash and rightly say so.
+  grep -F "absorbed non-terminal stale (provably working" "$log" | head -1 \
+    | grep -F "wedge timer started" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the first absorption was not the timer-started event: $(cat "$log")"; }
+
+  # Phase B: the same hash on a later poll, with the timer short of the
+  # threshold so nothing else can write a line - it absorbs and ADVANCES.
+  : > "$log"; : > "$out"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  date +%s > "$state/.stale-since-$key"
+  run_wedge_watcher "$state" "$fakebin" "$window" "$capture" "$out" \
+    'progress: progressing · document running, last activity 3m16s ago'
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the repeat poll was not absorbed: $(cat "$out")"
+  fi
+  reap "$pid"
+  grep -F "wedge timer advanced" "$log" >/dev/null \
+    || { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the repeat poll did not record that it ADVANCED the timer: $(cat "$log")"; }
+  grep -F "wedge timer started" "$log" >/dev/null \
+    && { unset FM_FAKE_TMUX_CURRENT_COMMAND; fail "the repeat poll re-used the first-sighting line"; }
+  unset FM_FAKE_TMUX_CURRENT_COMMAND
+  pass "starting the wedge timer and advancing it are distinguishable events in the triage log"
 }
 
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
@@ -2539,6 +2782,11 @@ test_wedged_crew_with_no_run_escalates_unchanged
 test_dead_agent_escalates_even_while_its_run_progresses
 test_progressing_run_escalates_anyway_past_the_hold_cap
 test_busy_pane_progressing_run_holds_then_escalates_past_the_cap
+test_declared_wait_with_no_progress_evidence_rechecks_instead_of_wedging
+test_declared_wait_on_a_progressing_run_holds
+test_declared_wait_on_a_stranded_run_still_escalates
+test_declared_wait_with_a_dead_agent_still_escalates
+test_provably_working_absorptions_are_distinguishable_in_the_triage_log
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

@@ -737,13 +737,13 @@ crew_run_progress() {  # <id>
 # <agent-state> - the backend's liveness verdict for that crew's endpoint
 # (alive|idle|dead|unknown), which each supervisor resolves through its own
 # backend plumbing. Prints the same three classes as crew_run_progress, and is
-# the ONE place the wedge policy is expressed, so the watcher and the away-mode
-# daemon cannot drift:
+# the ONE place the run-progress policy is expressed, so the watcher and the
+# away-mode daemon cannot drift:
 #
-#   * Only `progressing` may quiet an alarm. Every other answer - no run, a run
-#     parked at a gate, a stranded step, a lookup that could not complete, an
-#     unparseable status - is `none` or `stranded`, and leaves the escalation
-#     exactly as it was before this gate existed.
+#   * Only `progressing` supplies positive run evidence that may hold an alarm.
+#     Every other answer - no run, a run parked at a gate, a stranded step, a
+#     lookup that could not complete, an unparseable status - is `none` or
+#     `stranded`, and cannot hold on run evidence alone.
 #   * A confidently DEAD agent short-circuits to `none` without paying for the
 #     read, however well its run is moving. The pipeline executes its own steps,
 #     so a run can keep advancing with nobody left to answer its next gate; that

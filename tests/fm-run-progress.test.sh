@@ -244,7 +244,7 @@ test_no_active_steps_is_none() {
   local dir out
   dir=$(make_case parked-run)
   # A run parked at a gate is waiting on its WORKER, which is the opposite of
-  # evidence that the worker is alive - it must never quiet the alarm.
+  # evidence that the worker is alive - it must never earn a run-progress hold.
   out=$(read_progress "$dir" "$(cat <<'EOF'
 run:
   branch: fm/task
@@ -304,7 +304,7 @@ test_missing_evidence_shapes_are_none() {
   assert_contains "$out" "progress: none" "a torn-down worktree was not read as no-evidence"
 
   # A status read that cannot complete is a lookup FAILURE, never an absence of
-  # a run - and never permission to quiet an alarm.
+  # a run - and never progress evidence that may hold an alarm.
   cat > "$dir/fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 exit 1
