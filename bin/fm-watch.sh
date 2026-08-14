@@ -380,19 +380,19 @@ FM_RUN_PROGRESS_HOLD_MAX=${FM_RUN_PROGRESS_HOLD_MAX:-15}
 case "$FM_RUN_PROGRESS_HOLD_MAX" in ''|*[!0-9]*) FM_RUN_PROGRESS_HOLD_MAX=15 ;; esac
 
 # This pane's validation-run progress class, through the shared wedge policy in
-# fm-classify-lib.sh (crew_wedge_progress); this resolves the two inputs it
-# needs from the watcher's own plumbing.
+# fm-classify-lib.sh (crew_wedge_progress); this resolves the task from the
+# watcher's own plumbing and receives the endpoint liveness verdict already
+# resolved at the escalation decision.
 #
 # The read costs a bounded no-mistakes call, which is exactly why it lives HERE
 # and not in the poll loop above: it runs once per would-be alarm (at most once
 # per STALE_ESCALATE_SECS per pane), while the poll path runs every FM_POLL
 # seconds and must stay cheap - the same reason the wedge timer never re-reads
 # crew state.
-wedge_run_progress() {  # <window>
-  local win=$1 task agent
+wedge_run_progress() {  # <window> <agent-state>
+  local win=$1 agent=${2:-unknown} task
   task=$(window_to_task "$win" "$STATE")
   [ -n "$task" ] || { printf 'none'; return; }
-  agent=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent=unknown
   crew_wedge_progress "$task" "$agent"
 }
 
@@ -463,7 +463,7 @@ wedge_run_progress() {  # <window>
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <hold-count-file> [<declared-wait-task> <pane-hash>]
   local win=$1 since_file=$2 label=$3 escalation_file=$4 holds_file=$5
   local wait_task=${6:-} wait_hash=${7:-}
-  local since age n reason progress detail holds
+  local since age n reason progress detail holds agent
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -473,7 +473,8 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
-        progress=$(wedge_run_progress "$win")
+        agent=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent=unknown
+        progress=$(wedge_run_progress "$win" "$agent")
         detail=""
         case "$progress" in
           progressing*)
@@ -505,10 +506,10 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             # No evidence either way. With a declared wait on record and an agent
             # that is not confidently dead, the crew has already explained this
             # silence, so recheck it on the declared-wait cadence instead of
-            # alarming. parked_agent_is_dead is read ONLY here - at most once per
-            # window per pane, and only for a pane that would otherwise alarm - so
-            # the per-poll path stays as cheap as it was.
-            if [ -n "$wait_task" ] && [ -n "$wait_hash" ] && ! parked_agent_is_dead "$win"; then
+            # alarming. The endpoint verdict was read once at this escalation
+            # decision, so the per-poll path stays as cheap as it was and a
+            # confident dead verdict cannot be lost to a second backend read.
+            if [ -n "$wait_task" ] && [ -n "$wait_hash" ] && [ "$agent" != dead ]; then
               triage_log "deferred $label wedge escalation to the declared-wait recheck ($progress, idle ${age}s): $win"
               handle_paused_stale "$win" "$wait_task" "$wait_hash"
               return 2
