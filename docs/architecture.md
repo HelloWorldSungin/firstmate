@@ -42,7 +42,7 @@ Its initial normal-mode status signal still surfaces through the no-verb path, w
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
 When that captain-relevant status includes a still-open keyed decision, the one-shot suppressor is keyed on a digest of the complete open-decision set returned by `bin/fm-classify-lib.sh`'s `status_open_decisions` fold rather than on the pane hash, because an idle harness pane repaints on its own and a hash-keyed suppressor re-surfaced an unchanged already-escalated waiting state on every repaint.
 While the backend reports the agent live or returns inconclusive liveness, an unchanged open-decision set therefore surfaces only once despite pane repaint, while a fresh actionable status signal, a changed decision key or set, and resolution still surface normally.
-A parked crew whose backend confidently reports its agent dead still escalates through the same wedge timer.
+A crew parked on such an already-surfaced open decision whose backend confidently reports its agent dead still escalates through the same wedge timer.
 No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
 After each drain, `fm-wake-drain.sh` runs the same liveness guard as the supervision scripts, so a lapsed watcher chain surfaces even on a turn that only drains and handles queued wakes.
