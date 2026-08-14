@@ -70,10 +70,16 @@ SESSION="fm-lab-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
 WT1=; WT2=
 cleanup_all() {
-  [ -n "$WT1" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT1" >/dev/null 2>&1
-  [ -n "$WT2" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT2" >/dev/null 2>&1
-  herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$TMP_ROOT"
+  local status=0
+  if [ -n "$WT1" ]; then
+    treehouse return --force "$WT1" >/dev/null 2>&1 || { echo "cleanup: treehouse return WT1 failed" >&2; status=1; }
+  fi
+  if [ -n "$WT2" ]; then
+    treehouse return --force "$WT2" >/dev/null 2>&1 || { echo "cleanup: treehouse return WT2 failed" >&2; status=1; }
+  fi
+  herdr_safe_stop_and_delete "$SESSION" || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  rm -rf "$TMP_ROOT" 2>/dev/null || { echo "cleanup: tmp root removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -245,6 +251,6 @@ pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate'
 
 fm_backend_herdr_kill "$SESSION:$SM_PANE"
 
-cleanup_all
-printf '\nall fm-backend-herdr-workspace-per-home-e2e tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-herdr-workspace-per-home-e2e tests passed\n'

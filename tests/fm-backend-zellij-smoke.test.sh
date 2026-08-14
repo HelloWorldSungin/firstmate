@@ -31,7 +31,15 @@ export FM_ZELLIJ_SESSION="$SESSION"
 trap cleanup_all EXIT
 
 cleanup_all() {
-  zellij_safe_delete "$SESSION"
+  local status=0
+  if zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$SESSION"; then
+    zellij_safe_delete "$SESSION" || { echo "cleanup: zellij delete-session failed" >&2; status=1; }
+  fi
+  if zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$SESSION"; then
+    echo "cleanup: zellij session $SESSION still exists after delete" >&2
+    status=1
+  fi
+  return "$status"
 }
 
 TMP_CWD="${TMPDIR:-/tmp}"
@@ -201,6 +209,6 @@ pass "real zellij: list_live discovers a live task tab by fm-<id> name"
 
 fm_backend_zellij_kill "$SESSION:$PANE_ID2"
 
-cleanup_all
-printf '\nall fm-backend-zellij-smoke tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-zellij-smoke tests passed\n'

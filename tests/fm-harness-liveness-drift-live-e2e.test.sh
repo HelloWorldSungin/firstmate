@@ -40,8 +40,18 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness-drift.XXXXXX")
 SESSION=drift
 
 cleanup_all() {
-  "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${LAB:-}" ] && rm -rf "$LAB"
+  local status=0
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+    "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || { echo "cleanup: tmux kill-server failed" >&2; status=1; }
+  fi
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+    echo "cleanup: tmux server still running after kill-server" >&2
+    status=1
+  fi
+  if [ -n "${LAB:-}" ]; then
+    rm -rf "$LAB" 2>/dev/null || { echo "cleanup: lab removal failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -123,6 +133,6 @@ if [ -n "$SKIPPED" ]; then
 fi
 note "checked $CHECKED installed harness(es)"
 
-cleanup_all
-printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-harness-liveness-drift-live-e2e tests passed\n'

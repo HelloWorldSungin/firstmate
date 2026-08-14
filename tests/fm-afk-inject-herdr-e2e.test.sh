@@ -60,14 +60,16 @@ PANE_ID=
 LOOP_SCRIPT=
 
 cleanup_all() {
-  if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+  local status=0
+  if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    kill "$DAEMON_PID" 2>/dev/null || { echo "cleanup: kill daemon failed" >&2; status=1; }
+    wait "$DAEMON_PID" 2>/dev/null || { echo "cleanup: wait daemon failed" >&2; status=1; }
   fi
-  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || true
-  rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || true
-  rm -rf "${STATE_DIR:-}" 2>/dev/null || true
+  herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
+  rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -526,9 +528,8 @@ test_scenario_b
 test_scenario_c
 test_scenario_d_max_defer
 
-echo "all real-herdr afk injection e2e tests passed"
-
 fm_backend_herdr_kill "$SUPERVISOR_TARGET" 2>/dev/null || true
 fm_backend_herdr_kill "$SESSION:$FAKE_CREW_PANE_ID" 2>/dev/null || true
-cleanup_all
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+echo "all real-herdr afk injection e2e tests passed"

@@ -36,8 +36,12 @@ SESSION="fm-lab-backend-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SM_SCRATCH=
 cleanup_all() {
-  [ -n "$SM_SCRATCH" ] && rm -rf "$SM_SCRATCH"
-  herdr_safe_stop_and_delete "$SESSION"
+  local status=0
+  if [ -n "$SM_SCRATCH" ]; then
+    rm -rf "$SM_SCRATCH" 2>/dev/null || { echo "cleanup: secondmate scratch removal failed" >&2; status=1; }
+  fi
+  herdr_safe_stop_and_delete "$SESSION" || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -351,6 +355,6 @@ pass "real herdr: list_live discovers a live task tab by fm-<id> label"
 
 fm_backend_herdr_kill "$SESSION:$PANE_ID2"
 
-cleanup_all
-printf '\nall fm-backend-herdr-smoke tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-herdr-smoke tests passed\n'

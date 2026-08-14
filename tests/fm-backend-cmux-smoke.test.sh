@@ -39,8 +39,14 @@ PING_STATE=$(fm_backend_cmux_ping_state)
 WS1=""
 WS2=""
 cleanup_all() {
-  [ -z "$WS1" ] || cmux_safe_close_workspace "$WS1" "fm-test-smoke1"
-  [ -z "$WS2" ] || cmux_safe_close_workspace "$WS2" "fm-test-smoke2"
+  local status=0
+  if [ -n "$WS1" ]; then
+    cmux_safe_close_workspace "$WS1" "fm-test-smoke1" || { echo "cleanup: cmux close smoke1 failed" >&2; status=1; }
+  fi
+  if [ -n "$WS2" ]; then
+    cmux_safe_close_workspace "$WS2" "fm-test-smoke2" || { echo "cleanup: cmux close smoke2 failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -184,6 +190,6 @@ case "$live" in
 esac
 pass "real cmux: list_live discovers a live task workspace by fm-<id> title"
 
-cleanup_all
-printf '\nall fm-backend-cmux-smoke tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-cmux-smoke tests passed\n'

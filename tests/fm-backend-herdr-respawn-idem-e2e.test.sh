@@ -54,8 +54,10 @@ SESSION="fm-lab-respawn-idem-e2e-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-respawn-idem.XXXXXX")
 cleanup_all() {
-  herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$SCRATCH"
+  local status=0
+  herdr_safe_stop_and_delete "$SESSION" || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  rm -rf "$SCRATCH" 2>/dev/null || { echo "cleanup: scratch removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -178,6 +180,6 @@ pass "fixed: a genuinely live duplicate (a real registered agent) still refuses 
 fm_backend_herdr_kill "$SESSION:$NEW_CREW_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$NEW_SM_PANE_ID"
 
-cleanup_all
-printf '\nall fm-backend-herdr-respawn-idem-e2e tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-herdr-respawn-idem-e2e tests passed\n'

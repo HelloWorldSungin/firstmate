@@ -48,16 +48,24 @@ fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 cleanup_all() {
-  if [ -n "${DAEMON_PID:-}" ]; then
-    afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+  local status=0
+  if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    afk_exit "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: afk_exit failed" >&2; status=1; }
+    kill "$DAEMON_PID" 2>/dev/null || { echo "cleanup: kill daemon failed" >&2; status=1; }
+    wait "$DAEMON_PID" 2>/dev/null || { echo "cleanup: wait daemon failed" >&2; status=1; }
   fi
   if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
-    "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
+    if "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+      "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || { echo "cleanup: tmux kill-server failed" >&2; status=1; }
+    fi
+    if "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+      echo "cleanup: tmux server still running after kill-server" >&2
+      status=1
+    fi
   fi
-  rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || true
-  rm -rf "${STATE_DIR:-}" 2>/dev/null || true
+  rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || { echo "cleanup: shim removal failed" >&2; status=1; }
+  rm -rf "${STATE_DIR:-}" 2>/dev/null || { echo "cleanup: state removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -417,4 +425,6 @@ test_scenario_a
 test_scenario_b
 test_scenario_c
 
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
+trap - EXIT
 echo "all e2e injection tests passed"

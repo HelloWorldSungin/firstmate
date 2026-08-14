@@ -31,8 +31,18 @@ LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness.XXXXXX")
 SESSION=liveness
 
 cleanup_all() {
-  "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${LAB:-}" ] && rm -rf "$LAB"
+  local status=0
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+    "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || { echo "cleanup: tmux kill-server failed" >&2; status=1; }
+  fi
+  if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ] && "$REAL_TMUX" -L "$SOCKET" list-sessions >/dev/null 2>&1; then
+    echo "cleanup: tmux server still running after kill-server" >&2
+    status=1
+  fi
+  if [ -n "${LAB:-}" ]; then
+    rm -rf "$LAB" 2>/dev/null || { echo "cleanup: lab removal failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -227,6 +237,6 @@ fm_backend_tmux_foreground_comms "$SESSION:no-such-window" >/dev/null \
   || fail "an absent window in a readable session must classify missing, not whatever the fallback pane runs"
 pass "tmux liveness: an absent window classifies missing rather than inheriting tmux's active-window fallback"
 
-cleanup_all
-printf '\nall fm-tmux-agent-liveness tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-tmux-agent-liveness tests passed\n'

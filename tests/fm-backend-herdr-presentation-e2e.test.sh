@@ -268,25 +268,26 @@ LAB_READY=0
 RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
 cleanup_all() {
-  local wt
-  if [ -n "$LOCK_CONTENTION_OWNER_PID" ]; then
-    kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
-    wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
-    LOCK_CONTENTION_OWNER_PID=
+  local wt status=0
+  if [ -n "$LOCK_CONTENTION_OWNER_PID" ] && kill -0 "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null; then
+    kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || { echo "cleanup: kill lock-contention owner failed" >&2; status=1; }
+    wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || { echo "cleanup: wait lock-contention owner failed" >&2; status=1; }
   fi
+  LOCK_CONTENTION_OWNER_PID=
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     [ -d "$wt" ] || continue
-    "$REAL_TREEHOUSE" return --force "$wt" >/dev/null 2>&1 || true
+    "$REAL_TREEHOUSE" return --force "$wt" >/dev/null 2>&1 || { echo "cleanup: treehouse return $wt failed" >&2; status=1; }
   done <<EOF
 $RECORDED_WORKTREES
 EOF
   if [ "$LAB_READY" -eq 1 ]; then
     PATH="$HERDR_ORIGINAL_PATH" \
-      "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1 || true
+      "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1 || { echo "cleanup: herdr lab teardown failed" >&2; status=1; }
     LAB_READY=0
   fi
-  rm -rf "$TMP_ROOT"
+  rm -rf "$TMP_ROOT" 2>/dev/null || { echo "cleanup: tmp root removal failed" >&2; status=1; }
+  return "$status"
 }
 trap cleanup_all EXIT
 
@@ -1360,6 +1361,6 @@ PATH="$HERDR_ORIGINAL_PATH" \
 LAB_READY=0
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
-cleanup_all
-printf '\nall fm-backend-herdr-presentation-e2e tests passed\n'
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
 trap - EXIT
+printf '\nall fm-backend-herdr-presentation-e2e tests passed\n'
