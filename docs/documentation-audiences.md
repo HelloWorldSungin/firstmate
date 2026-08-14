@@ -11,7 +11,7 @@ The audience classes have one placement purpose each:
 - `operator-example` is copyable current setup material.
 - `maintainer-architecture` explains stable ownership, extension points, mechanism boundaries, and safety rationale for contributors.
 - `maintainer-verification` records repeatable evidence for an active guarantee and may include dates, versions, exact commands, and exact output.
-  Dated entries are append-only; [`verification/README.md`](verification/README.md) owns that contract.
+  See [`verification/README.md`](verification/README.md) for the contract governing dated entries.
 - `agent-runtime` is loaded or rendered as an operating contract for Firstmate agents rather than read as product documentation.
 
 The knowledge-placement policy is owned by [`firstmate-coding-guidelines`](../.agents/skills/firstmate-coding-guidelines/SKILL.md).

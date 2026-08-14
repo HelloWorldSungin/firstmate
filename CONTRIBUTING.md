@@ -51,7 +51,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Harness-adapter ownership spans detection in `bin/fm-harness.sh`, launch-command construction in `bin/fm-launch-lib.sh`, the surrounding gates and hook mechanics in `bin/fm-spawn.sh`, semantic busy sources and trust gates in `bin/fm-busy-lib.sh`, delivery-only rendered guards in `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`; the `firstmate-coding-guidelines` skill owns the validation policy for checks that depend on those harnesses.
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) keep current setup and limits in the relevant backend guide and active empirical evidence in [`docs/verification/runtime-backends.md`](docs/verification/runtime-backends.md).
 - [`docs/documentation-audiences.md`](docs/documentation-audiences.md) and its machine-consumed inventory own prose classification.
-- Dated entries under [`docs/verification/`](docs/verification/README.md) are append-only; that README owns the contract.
+- For the contract governing dated verification entries, see [`docs/verification/README.md`](docs/verification/README.md).
 - A fact has one authoritative home and every other mention points at it, in prose as well as in code; [`docs/one-owner.md`](docs/one-owner.md) owns that convention, including the limit it does not enforce.
   `bin/fm-doc-audience-check.sh` resolves in-repo pointers and `bin/fm-pointer-check.sh` resolves the ones that leave this repository; run both after a documentation change.
 - In Markdown, put each full sentence on its own line.

@@ -160,6 +160,10 @@
     {
       "source": "docs/documentation-audiences.md",
       "target": "docs/verification/README.md"
+    },
+    {
+      "source": "README.md",
+      "target": "docs/verification/README.md"
     }
   ],
   "surfaces": [
