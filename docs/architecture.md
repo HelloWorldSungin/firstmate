@@ -340,11 +340,11 @@ The refresh's fetch prunes only stale remote-tracking pointers; deleting a local
 
 ## Self-updates stay safe
 
-`/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from `origin`, then re-reads updated instructions and nudges updated secondmates without touching project clones.
+`/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from the fork's `origin`, then re-reads updated instructions, nudges updated secondmates, and reports upstream drift without touching project clones or merging upstream.
 For a remote route, the configured code root updates from its own origin on that host before the persistent home fast-forwards to the code-root commit.
 The update is fast-forward only: dirty, diverged, offline, and off-default targets are reported and left untouched.
 Local homes share the guarded fast-forward helper, while remote updates delegate the same safety decision to the configured host through the generic transport.
-The mechanics are owned by the `/updatefirstmate` skill and firstmate's operating manual in [`AGENTS.md`](../AGENTS.md) (self-update).
+The update mechanics are owned by the [`/updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) skill, while the fork's TRACK strategy and deliberate differences are owned by the [`fork-divergence` ledger](fork-divergence.md).
 
 ## Restart-proof
 

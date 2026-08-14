@@ -157,7 +157,7 @@ If the session lock cannot be acquired and verified, report its exact diagnostic
 A lock-refused session must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
 
 1. **Lock** - acquires the per-home session lock first, before anything mutates shared state.
-2. **Bootstrap** - detect-only checks (tool/version problems, GitHub auth, the worktree-tangle check, documentation-vault drift, the GBrain serving-credential rule, harness override, dispatch-profile validation, backlog-backend status, legacy run-attribution blindness) always run, but routine confirmations stay silent by default.
+2. **Bootstrap** - detect-only checks (tool/version problems, GitHub auth, the worktree-tangle check, documentation-vault drift, fork-upstream drift, the GBrain serving-credential rule, harness override, dispatch-profile validation, backlog-backend status, legacy run-attribution blindness) always run, but routine confirmations stay silent by default.
    When the lock could not be acquired, the worktree-tangle check uses read-only advisory wording without a checkout repair command.
    Home-local stale Herdr projection cleanup and the nine bootstrap MUTATING sweeps - non-executing legacy PR-check migration, legacy endpoint-binding migration, proven legacy run-attribution transition, fleet sync, secondmate convergence, secondmate liveness, pending remote handoff retry, X-mode artifact writes, and the bounded token-usage store refresh - run only when this session actually holds the lock from step 1.
    The secondmate liveness sweep deterministically accounts for every registered secondmate: it relaunches only from the recovery-grade `dead` or `missing` states, preserves ambiguous, unreadable, or unreachable remote targets, and reports skipped or failed guarantees as `SECONDMATE_LIVENESS:` lines (`bin/fm-bootstrap.sh`; `bin/fm-backend.sh`'s `fm_backend_agent_state`; `docs/remote-secondmates.md`).
@@ -527,12 +527,13 @@ Firstmate's shared instruction surface reaches running homes only after it lands
 Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
+When the captain asks to check, compare, or sync this fork with upstream, load `/sync-upstream`, which owns evaluation and dispatched sync rounds.
 
 ## 13. Agent-only reference skills
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `GBRAIN_SERVING_CREDENTIAL:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
