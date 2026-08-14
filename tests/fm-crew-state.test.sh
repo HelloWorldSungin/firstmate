@@ -2581,6 +2581,33 @@ EOF
   pass "an unresolvable sha in the runs listing is still rejected"
 }
 
+test_detached_continuation_unresolved_run_head_preserves_cache() {
+  reset_fakes
+  local d out branch; d=$(new_case detached-continuation-unresolved)
+  branch=feature/existing-pr
+  make_repo_on_branch "$d/wt" "$branch"
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/continuation.meta" "window=fm:fm-continuation" "worktree=$d/wt" \
+    "kind=ship" "harness=claude" "branch=$branch"
+  seed_known_run_step "$d" continuation "$branch"
+  git -C "$d/wt" checkout --detach -q
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+running ${branch} ${UNRESOLVABLE_HEAD} 2026-08-13 12:00
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" continuation
+  out=$(run_crew_state "$d" continuation)
+  assert_contains "$out" "source: run-step-degraded" \
+    "an unresolved continuation run head cleared the cached run step"
+  assert_contains "$out" "run head unavailable in worktree" \
+    "the degraded continuation did not identify its inconclusive head evidence"
+  assert_contains "$out" "state: working" \
+    "an unresolved pipeline-owned continuation lost its recent working state"
+  pass "detached continuations preserve cached state for unresolved run heads"
+}
+
 # crew_is_provably_working end-to-end: the degraded read is what the watcher's
 # absorb path actually consumes, so prove the predicate flips back to true.
 test_provably_working_via_degraded_run_step() {
@@ -2762,6 +2789,7 @@ test_terminal_run_behind_advanced_tip_still_invalidates
 test_pipeline_owned_unresolvable_head_attributes
 test_terminal_unresolvable_head_still_rejected
 test_runs_list_unresolvable_head_still_rejected
+test_detached_continuation_unresolved_run_head_preserves_cache
 test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current

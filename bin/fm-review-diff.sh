@@ -45,6 +45,7 @@ META="$STATE/$ID.meta"
 
 WT=$(grep '^worktree=' "$META" | cut -d= -f2-)
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
+MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)
 [ -n "$WT" ] || { echo "error: meta for task $ID is missing worktree=" >&2; exit 1; }
 [ -n "$PROJ" ] || { echo "error: meta for task $ID is missing project=" >&2; exit 1; }
 [ -d "$WT" ] || { echo "error: worktree for task $ID is missing: $WT" >&2; exit 1; }
@@ -69,10 +70,12 @@ default_branch() {
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
 RECORDED_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+IS_CONTINUATION=0
 if [ -n "$RECORDED_BRANCH" ]; then
   git check-ref-format --branch "$RECORDED_BRANCH" >/dev/null 2>&1 \
     || { echo "error: invalid branch= in meta for task $ID" >&2; exit 1; }
   BRANCH=$RECORDED_BRANCH
+  [ "$RECORDED_BRANCH" = "fm/$ID" ] || IS_CONTINUATION=1
 else
   BRANCH="fm/$ID"
   if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
@@ -81,17 +84,46 @@ else
   fi
 fi
 
-resolve_task_branch() {
-  local remote_ref="refs/fm-review/branches/$BRANCH"
+resolve_local_task_branch() {
   if git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}" >/dev/null; then
-    printf '%s' "$BRANCH"
+    COMPARE_REF=$BRANCH
     return 0
   fi
+  return 1
+}
+
+fetch_remote_task_branch() {
+  local remote_ref="refs/fm-review/branches/$BRANCH"
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
   git -C "$WT" fetch --quiet origin \
     "+refs/heads/$BRANCH:$remote_ref" >/dev/null 2>&1 || return 1
   git -C "$WT" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null || return 1
-  printf '%s' "$remote_ref"
+  COMPARE_REF=$remote_ref
+}
+
+resolve_task_branch() {
+  TASK_BRANCH_SOURCE=
+  if [ "$IS_CONTINUATION" = 1 ] \
+    && { [ "$MODE" = no-mistakes ] || [ "$MODE" = direct-PR ]; }; then
+    if fetch_remote_task_branch; then
+      TASK_BRANCH_SOURCE=remote
+      return 0
+    fi
+    if resolve_local_task_branch; then
+      TASK_BRANCH_SOURCE=local-fallback
+      return 0
+    fi
+    return 1
+  fi
+  if resolve_local_task_branch; then
+    TASK_BRANCH_SOURCE=local
+    return 0
+  fi
+  if fetch_remote_task_branch; then
+    TASK_BRANCH_SOURCE=remote
+    return 0
+  fi
+  return 1
 }
 
 pr_number_from_target() {
@@ -151,12 +183,14 @@ if [ -n "$PR_URL" ]; then
   fi
 fi
 if [ -z "$COMPARE_REF" ]; then
-  COMPARE_REF=$(resolve_task_branch) || {
+  resolve_task_branch || {
     echo "error: recorded task branch $BRANCH does not resolve locally or from origin" >&2
     exit 1
   }
   if [ -n "$PR_URL" ]; then
     echo "warning: PR head unavailable; diff may lag the open PR (using recorded task branch $BRANCH)" >&2
+  elif [ "$TASK_BRANCH_SOURCE" = local-fallback ]; then
+    echo "warning: remote task branch $BRANCH unavailable; diff may lag the open PR (using local branch)" >&2
   fi
 fi
 

@@ -222,6 +222,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-task-branch-lib.sh
+. "$SCRIPT_DIR/fm-task-branch-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
@@ -1270,16 +1272,10 @@ if tracked_output_kind; then
           ;;
         *) echo "error: malformed task branch marker in $BRIEF" >&2; exit 1 ;;
       esac
-      if ! git check-ref-format --branch "$TASK_BRANCH" >/dev/null 2>&1; then
-        echo "error: malformed task branch marker in $BRIEF" >&2
+      fm_task_branch_validate "$TASK_BRANCH" || {
+        echo "error: malformed task branch marker in $BRIEF: $FM_TASK_BRANCH_ERROR" >&2
         exit 1
-      fi
-      case "$TASK_BRANCH" in
-        *'`'*|*'-->'*)
-          echo "error: malformed task branch marker in $BRIEF" >&2
-          exit 1
-          ;;
-      esac
+      }
       if [ "$TASK_BRANCH" != "fm/$ID" ]; then
         TASK_DEFAULT_BRANCH=$(default_branch "$PROJ_ABS") || {
           echo "error: cannot determine the default branch for $PROJ_ABS; refusing continued-branch dispatch" >&2

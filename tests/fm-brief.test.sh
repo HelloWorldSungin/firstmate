@@ -1685,6 +1685,24 @@ test_continue_branch_flag_validation() {
   assert_absent "$home/data/continue-main/brief.md" \
     "--continue-branch main wrote a brief"
 
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-qualified "$project" --mode no-mistakes \
+    --continue-branch refs/heads/main > "$home/qualified.stdout" 2> "$home/qualified.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch refs/heads/main should fail"
+  assert_grep 'outside the refs/ namespace' "$home/qualified.stderr" \
+    "--continue-branch accepted a fully qualified default-branch destination"
+  assert_absent "$home/data/continue-qualified/brief.md" \
+    "--continue-branch refs/heads/main wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-reserved "$project" --mode no-mistakes \
+    --continue-branch FETCH_HEAD > "$home/reserved.stdout" 2> "$home/reserved.stderr"
+  rc=$?
+  expect_code 1 "$rc" "--continue-branch FETCH_HEAD should fail"
+  assert_grep "reserved ref name 'FETCH_HEAD'" "$home/reserved.stderr" \
+    "--continue-branch accepted a revision-sensitive reserved ref name"
+  assert_absent "$home/data/continue-reserved/brief.md" \
+    "--continue-branch FETCH_HEAD wrote a brief"
+
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" continue-markdown "$project" --mode no-mistakes \
     --continue-branch 'feature/`unsafe`' > "$home/markdown.stdout" 2> "$home/markdown.stderr"
   rc=$?

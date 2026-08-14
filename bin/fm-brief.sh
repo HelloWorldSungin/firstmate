@@ -152,6 +152,8 @@ esac
 
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-task-branch-lib.sh
+. "$SCRIPT_DIR/fm-task-branch-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-issue-lib.sh
@@ -345,16 +347,10 @@ if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
     echo "error: --continue-branch requires a git branch name" >&2
     exit 1
   }
-  if ! git check-ref-format --branch "$CONTINUE_BRANCH" >/dev/null 2>&1; then
-    echo "error: --continue-branch must be a valid git branch name (got '$CONTINUE_BRANCH')" >&2
+  fm_task_branch_validate "$CONTINUE_BRANCH" || {
+    echo "error: --continue-branch $FM_TASK_BRANCH_ERROR (got '$CONTINUE_BRANCH')" >&2
     exit 1
-  fi
-  case "$CONTINUE_BRANCH" in
-    *'`'*|*'-->'*)
-      echo "error: --continue-branch cannot contain a backtick or --> because the name is rendered in Markdown task metadata" >&2
-      exit 1
-      ;;
-  esac
+  }
   [ "$CONTINUE_BRANCH" != "fm/$ID" ] || {
     echo "error: --continue-branch fm/$ID is the ordinary new-branch strategy; omit the flag so the generated Setup keeps git checkout -b" >&2
     exit 1
