@@ -332,6 +332,7 @@ for f in "$FAKEBIN"/*; do
   [ "$base" = invocations.log ] && continue
   ln -s "$f" "$FAKEBIN3/$base"
 done
+# shellcheck disable=SC2016 # Preserve expansions for the generated stub's runtime.
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'printf '\''gnhf %s\n'\'' "$*" >>"$(dirname "$0")/invocations.log"' \
