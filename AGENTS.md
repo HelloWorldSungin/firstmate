@@ -528,6 +528,7 @@ Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmat
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
 It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
 When the captain asks to check, compare, or sync this fork with upstream, load `/sync-upstream`, which owns evaluation and dispatched sync rounds.
+When the captain asks to check or update this fleet's toolchain ("check tool updates", "are our tools current", "update firstmate's tools"), load the `tool-updates` skill; it reports through `bin/fm-tool-status.sh` and never upgrades anything itself.
 
 ## 13. Agent-only reference skills
 
