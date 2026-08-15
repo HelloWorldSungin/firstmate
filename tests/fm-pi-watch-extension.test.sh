@@ -520,10 +520,11 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async (message) => {
-    prompt += message;
     rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
+    // Publish the prompt last so it is the commit point for its arm snapshot.
+    prompt += message;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
@@ -545,7 +546,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor${out:+: $out}"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
@@ -1702,10 +1703,11 @@ let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
-      prompt += request.body.parts[0].text;
       rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
         ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
         : 0;
+      // Publish the prompt last so it is the commit point for its arm snapshot.
+      prompt += request.body.parts[0].text;
     },
   },
 };
@@ -1731,7 +1733,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor${out:+: $out}"
   [ -z "$out" ] || fail "OpenCode unretired-successor test printed output: $out"
   pass "OpenCode unretired successor falls back without an overlapping retry"
 }
