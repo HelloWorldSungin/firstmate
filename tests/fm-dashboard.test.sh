@@ -1333,7 +1333,7 @@ SH
     node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/unknown.log" 2>&1 &
   SERVER_PID=$!
   wait_for_http "$case_root"
-  wait_for_history "$case_root" '.status.phase == "ready"'
+  wait_for_history "$case_root" '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))'
   jq -e '.usage.available == false and .usage.collection == "operational" and (.usage.reason | test("supported schema"))' "$case_root/history.json" >/dev/null \
     || fail "an unrecognized usage report was not refused as unavailable"
 

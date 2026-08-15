@@ -65,6 +65,7 @@ type SessionGeneration = {
   seq: number;
   awayStandby: boolean;
   awayPoll: ReturnType<typeof setInterval> | null;
+  restorationInFlight: Promise<void> | null;
 };
 
 function refreshWatchToolShell(
@@ -213,6 +214,7 @@ function createGeneration(): SessionGeneration {
     seq: 0,
     awayStandby: false,
     awayPoll: null,
+    restorationInFlight: null,
   };
 }
 
@@ -498,9 +500,9 @@ export default function (pi: ExtensionAPI) {
       if (classification.kind === "actionable") {
         owner.retryFailures = 0;
         owner.restoring = true;
-        void (async () => {
+        const previousRestoration = owner.restorationInFlight;
+        const restoration = (previousRestoration ?? Promise.resolve()).catch(() => {}).then(async () => {
           const failure = await restoreAfterActionableClose(owner, predecessor);
-          if (generationIsLive(owner)) owner.restoring = false;
           if (!generationIsLive(owner)) return;
           if (awayModeActive()) {
             owner.awayStandby = true;
@@ -508,7 +510,14 @@ export default function (pi: ExtensionAPI) {
           }
           const message = failure ? `${classification.message}\n\n${failure}` : classification.message;
           await sendWake(owner, message);
-        })().catch(() => {
+        });
+        owner.restorationInFlight = restoration;
+        void restoration.finally(() => {
+          if (owner.restorationInFlight === restoration) {
+            owner.restorationInFlight = null;
+            if (generationIsLive(owner)) owner.restoring = false;
+          }
+        }).catch(() => {
         });
         return;
       }

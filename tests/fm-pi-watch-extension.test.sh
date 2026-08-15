@@ -624,7 +624,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback${out:+: $out}"
     [ -z "$out" ] || fail "Pi late-$kind test printed output: $out"
   done
   pass "Pi late unretired closes resume classified supervision"
