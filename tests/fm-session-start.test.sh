@@ -7,8 +7,8 @@
 #   - absent-file markers vs empty-but-present files in the context digest
 #   - the lock-refusal read-only path: banner leads, every mutating step is
 #     skipped (including bootstrap's mutating sweeps, verified by their
-#     ABSENCE; AGENTS.md section 3 owns their named enumeration), the digest
-#     still completes
+#     ABSENCE; bin/fm-bootstrap.sh's header owns their named enumeration),
+#     the digest still completes
 #   - output section ordering: the safety preamble leads unchanged, live fleet
 #     state precedes the curated memory a truncated tail may take, and the
 #     read-once contract precedes both
