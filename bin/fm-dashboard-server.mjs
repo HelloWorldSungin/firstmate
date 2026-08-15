@@ -34,6 +34,13 @@
 //   FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK,
 //   FM_DASHBOARD_EVENT_SKEW_SECONDS    agent-event retention and replay caps
 //
+// Endpoints: GET / (the app), GET /api/snapshot (fleet state), GET
+// /api/history (durable completion records with usage), GET /api/backlog
+// (the full backlog record set, read-only, derived from the same snapshot
+// parse), GET /api/report?task=<id> (a retained report from durable history),
+// GET /api/timeline (recorded agent events), GET /api/gbrain/health, POST
+// /api/gbrain/search, GET /api/events (SSE), POST /events (ingest).
+//
 // Every executable and flag list is fixed. This process never accepts a
 // command, a flag, a fleet path, or a shell fragment over HTTP. /api/report
 // takes a task id, and that id can only ever select among the ids the current
@@ -97,6 +104,7 @@ const ASSET_DIR = path.join(ROOT, "assets", "dashboard");
 const EXPECTED_SCHEMA = "fm-fleet-snapshot.v1";
 const ENVELOPE_SCHEMA = "fm-dashboard-envelope.v1";
 const HISTORY_ENVELOPE_SCHEMA = "fm-dashboard-history.v1";
+const BACKLOG_ENVELOPE_SCHEMA = "fm-dashboard-backlog.v1";
 const HISTORY_SCHEMA = "fm-outcome-history.v1";
 const USAGE_SCHEMA = "fm-usage-report.v1";
 const REPORT_SCHEMA = "fm-dashboard-report.v1";
@@ -237,6 +245,9 @@ const STATIC_FILES = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/inbox.js", ["inbox.js", "text/javascript; charset=utf-8"]],
   ["/history.js", ["history.js", "text/javascript; charset=utf-8"]],
+  ["/backlog.js", ["backlog.js", "text/javascript; charset=utf-8"]],
+  ["/router.js", ["router.js", "text/javascript; charset=utf-8"]],
+  ["/display.js", ["display.js", "text/javascript; charset=utf-8"]],
   ["/events.js", ["events.js", "text/javascript; charset=utf-8"]],
   ["/markdown.js", ["markdown.js", "text/javascript; charset=utf-8"]],
   ["/gbrain.js", ["gbrain.js", "text/javascript; charset=utf-8"]],
@@ -1660,6 +1671,11 @@ class DashboardState {
 
   broadcast() {
     this.clients.send("snapshot");
+    // The backlog view is derived from the same fleet snapshot parse, so it
+    // moves exactly when the snapshot does. It has its own topic because the
+    // Backlog page consumes its own envelope: the full record set is queue
+    // data the inbox deliberately narrows to captain-actionable rows.
+    this.clients.send("backlog");
   }
 
   scheduleStaleTransition() {
@@ -2209,6 +2225,21 @@ async function main() {
   const gbraintron = new GBrainState(config, clients);
   const state = new DashboardState(config, clients, history);
   clients.register("snapshot", () => state.envelope());
+  // The backlog envelope shares the snapshot's status and refresh cadence -
+  // it IS a view of the snapshot's backlog section, never a second parse of
+  // data/backlog.md. One owner for the file format, one freshness story.
+  const backlogEnvelope = () => {
+    const envelope = state.envelope();
+    return {
+      schema: BACKLOG_ENVELOPE_SCHEMA,
+      status: envelope.status,
+      config: envelope.config,
+      backlog: envelope.snapshot?.backlog && typeof envelope.snapshot.backlog === "object"
+        ? envelope.snapshot.backlog
+        : { present: false, records: [] },
+    };
+  };
+  clients.register("backlog", backlogEnvelope);
   clients.register("history", () => history.envelope());
   clients.register("agent_events", () => events.envelope());
   clients.register("gbrain_health", () => gbraintron.envelope());
@@ -2259,6 +2290,11 @@ async function main() {
     if (pathname === "/api/history") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       response.end(`${JSON.stringify(history.envelope())}\n`);
+      return;
+    }
+    if (pathname === "/api/backlog") {
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`${JSON.stringify(backlogEnvelope())}\n`);
       return;
     }
     if (pathname === "/api/report") {

@@ -42,7 +42,7 @@ const PR_ENUMS = {
 const ITEM_TONE_RANK = { green: 0, blue: 1, unknown: 2, amber: 3, red: 4 };
 const HEALTH_TONE_RANK = { green: 0, unknown: 1, amber: 2, red: 3 };
 
-const REASON_KINDS = {
+export const REASON_KINDS = {
   decision: { rank: 1, tone: "amber", label: "Decision" },
   credential: { rank: 2, tone: "amber", label: "Credential" },
   blocked: { rank: 3, tone: "red", label: "Blocked" },
