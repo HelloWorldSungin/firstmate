@@ -119,8 +119,7 @@ start_linux_worker() { # <dest>
 
 wait_ready() { # <dest>
   local dest=$1
-  local i
-  for i in $(seq 1 100); do
+  for _ in $(seq 1 100); do
     [ -f "$dest/remote-jobs/worker.ready" ] && return 0
     sleep 0.05
   done
@@ -191,11 +190,11 @@ assert_group_gone_after_term "$PGID_STATE" \
   "TERM of the serving worker after its state root disappeared"
 pass "removing the state root and TERMing the serving worker leaves no orphans"
 
-# --- failed run with an active job: lock gone, then TERM ---------------------
+# --- failed run with an active job: state root gone, then TERM ---------------
 #
 # Five to six orphans survived a failed run on the original host; this case is
-# that residue: a live command tree plus the supervisor and serving loop, TERM
-# after the lock is already gone, no KILL.
+# that residue: a live command tree plus the output readers, supervisor, and
+# serving loop, TERM after all filesystem process records are gone, no KILL.
 
 CASE_FAIL=$(prepare_case failed-run)
 cat > "$CASE_FAIL/remote-root/bin/fm-hang-job.sh" <<'SH'
@@ -218,17 +217,23 @@ FM_REMOTE_JOB_TIMEOUT=30
 export FM_REMOTE_JOB_STATE_ROOT FM_REMOTE_JOB_TIMEOUT
 fm_remote_job_stage "$CASE_FAIL/account" "$CASE_FAIL/remote-root" "$CASE_FAIL/account" \
   fm-hang-job.sh "$CASE_FAIL/started" "$CASE_FAIL/done" </dev/null >/dev/null
+JOB_FAIL="$CASE_FAIL/remote-jobs/jobs/$FM_REMOTE_JOB_ID"
 for _ in $(seq 1 100); do
   [ -f "$CASE_FAIL/started" ] && break
   sleep 0.05
 done
 [ -f "$CASE_FAIL/started" ] || fail "failed-run: the hang job never started"
+COMMAND_GROUP_FAIL=$(cat "$JOB_FAIL/.claim/group")
+case "$COMMAND_GROUP_FAIL" in ''|*[!0-9]*) fail "failed-run: no command group" ;; esac
+track_group "$COMMAND_GROUP_FAIL"
 SERVE_FAIL=$(cat "$CASE_FAIL/remote-jobs/worker.pid")
 case "$SERVE_FAIL" in ''|*[!0-9]*) fail "failed-run: no serving pid" ;; esac
-rm -rf "$CASE_FAIL/remote-jobs/worker.lock"
+rm -rf "$CASE_FAIL/remote-jobs"
 kill -TERM "$SERVE_FAIL" 2>/dev/null || true
+assert_group_gone_after_term "$COMMAND_GROUP_FAIL" \
+  "the active command after its state root disappeared"
 assert_group_gone_after_term "$PGID_FAIL" \
-  "a deliberately failed run (active job, lock gone, TERM, no KILL)"
+  "a deliberately failed run (active job, state root gone, TERM, no KILL)"
 pass "a failed run with an active job leaves no orphaned processes"
 
 printf '\nall fm-remote-job-worker-leak tests passed\n'

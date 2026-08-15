@@ -52,6 +52,9 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}
 . "$SCRIPT_DIR/fm-remote-job-lib.sh"
 
 WORKER_ACTIVE_JOB=
+WORKER_ACTIVE_GROUP=
+WORKER_STDOUT_READER=
+WORKER_STDERR_READER=
 WORKER_LOCK=
 WORKER_LOCK_HELD=0
 WORKER_RELEASE_OWNERSHIP=1
@@ -250,6 +253,44 @@ worker_signal_process_or_group() { # process|group <signal> <pid>
   esac
 }
 
+worker_stop_live_execution() {
+  local kind pid attempt still_alive=0
+  pid=${WORKER_ACTIVE_GROUP:-}
+  if [ -n "$pid" ]; then
+    worker_signal_process_or_group group TERM "$pid"
+    worker_signal_process_or_group group KILL "$pid"
+    wait "$pid" 2>/dev/null || true
+    attempt=0
+    while worker_process_or_group_alive group "$pid" && [ "$attempt" -lt 100 ]; do
+      attempt=$((attempt + 1))
+      sleep 0.01
+    done
+    if worker_process_or_group_alive group "$pid"; then
+      still_alive=1
+    else
+      WORKER_ACTIVE_GROUP=
+    fi
+  fi
+  for kind in stdout stderr; do
+    case "$kind" in
+      stdout) pid=${WORKER_STDOUT_READER:-} ;;
+      stderr) pid=${WORKER_STDERR_READER:-} ;;
+    esac
+    [ -n "$pid" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    if kill -0 "$pid" 2>/dev/null; then
+      still_alive=1
+    elif [ "$kind" = stdout ]; then
+      WORKER_STDOUT_READER=
+    else
+      WORKER_STDERR_READER=
+    fi
+  done
+  [ "$still_alive" -eq 0 ]
+}
+
 worker_stop_recorded_execution() { # <job-dir>
   local job=$1 kind file pid attempt still_alive
   for kind in process group; do
@@ -280,6 +321,7 @@ worker_stop_recorded_execution() { # <job-dir>
 
 worker_stop_active_execution() {
   local job=${WORKER_ACTIVE_JOB:-} owner owner_pid state
+  worker_stop_live_execution || return 1
   if [ -n "$job" ]; then
     worker_stop_recorded_execution "$job" || return 1
   else
@@ -414,10 +456,12 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
     exec "$@"
   ) &
   group_pid=$!
+  WORKER_ACTIVE_GROUP=$group_pid
   set +m
   tmp=$(umask 077; mktemp "$job/.claim/.group.XXXXXX") || {
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
+    WORKER_ACTIVE_GROUP=
     WORKER_ACTIVE_JOB=
     return 125
   }
@@ -425,6 +469,7 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
     rm -f -- "$tmp"
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
+    WORKER_ACTIVE_GROUP=
     WORKER_ACTIVE_JOB=
     return 125
   }
@@ -432,12 +477,14 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
     rm -f -- "$tmp"
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
+    WORKER_ACTIVE_GROUP=
     WORKER_ACTIVE_JOB=
     return 125
   fi
   tmp=$(umask 077; mktemp "$job/.claim/.armed.XXXXXX") || {
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
+    WORKER_ACTIVE_GROUP=
     rm -f -- "$group_file"
     WORKER_ACTIVE_JOB=
     return 125
@@ -446,6 +493,7 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
     rm -f -- "$tmp"
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
+    WORKER_ACTIVE_GROUP=
     rm -f -- "$group_file"
     WORKER_ACTIVE_JOB=
     return 125
@@ -483,6 +531,7 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
   done
   wait "$group_pid" 2>/dev/null
   rc=$?
+  WORKER_ACTIVE_GROUP=
   rm -f -- "$group_file" "$armed_file"
   WORKER_ACTIVE_JOB=
   [ "$timed_out" -eq 0 ] || return 124
@@ -588,8 +637,10 @@ worker_run_job() { # <account-home> <job-dir>
   }
   worker_capture_output "$stdout_pipe" "$job/stdout" &
   stdout_reader=$!
+  WORKER_STDOUT_READER=$stdout_reader
   worker_capture_output "$stderr_pipe" "$job/stderr" &
   stderr_reader=$!
+  WORKER_STDERR_READER=$stderr_reader
   child_env=(
     /usr/bin/env -i
     "PATH=$FM_REMOTE_JOB_CHILD_PATH"
@@ -604,6 +655,8 @@ worker_run_job() { # <account-home> <job-dir>
   remaining=$((deadline - $(date +%s)))
   [ "$remaining" -gt 0 ] || {
     worker_cleanup_output_capture "$job" "$stdout_reader" "$stderr_reader"
+    WORKER_STDOUT_READER=
+    WORKER_STDERR_READER=
     worker_publish_result "$job" 124
     return
   }
@@ -614,7 +667,9 @@ worker_run_job() { # <account-home> <job-dir>
   rc=$?
   WORKER_PREEMPTIBLE=0
   wait "$stdout_reader"
+  WORKER_STDOUT_READER=
   wait "$stderr_reader"
+  WORKER_STDERR_READER=
   rm -f -- "$stdout_pipe" "$stderr_pipe"
   set -e
   if [ "$WORKER_PREEMPTED" -eq 1 ]; then
