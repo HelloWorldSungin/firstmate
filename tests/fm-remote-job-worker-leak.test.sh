@@ -89,6 +89,15 @@ $survivors"
   fi
 }
 
+assert_pid_gone_after_term() { # <pid> <label>
+  local pid=$1 label=$2 deadline=$((SECONDS + 5))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -0 "$pid" 2>/dev/null && fail "$label left orphaned pid $pid"
+}
+
 build_remote_root() { # <dir>
   local root=$1
   mkdir -p "$root/bin"
@@ -100,6 +109,38 @@ build_remote_root() { # <dir>
   git -C "$root" config user.name Test
   git -C "$root" add AGENTS.md bin
   git -C "$root" commit -qm 'remote job worker leak fixture'
+}
+
+install_spawn_wrapper() { # <dest>
+  local dest=$1
+  mv "$dest/remote-root/bin/fm-remote-job-worker.sh" \
+    "$dest/remote-root/bin/fm-remote-job-worker-real.sh"
+  cat > "$dest/remote-root/bin/fm-remote-job-worker.sh" <<'SH'
+#!/bin/bash
+set -u
+SCRIPT_DIR=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+case "${FM_REMOTE_JOB_SPAWN_CASE:-}" in
+  serving-descendant)
+    if [ "${1:-}" = --serve ]; then
+      (
+        trap '' HUP INT TERM
+        while :; do /bin/sleep 1; done
+      ) &
+      printf '%s\n' "$!" > "$FM_REMOTE_JOB_SPAWN_MARKER"
+    fi
+    ;;
+  supervisor-spawn)
+    if [ "${1:-}" = --serve ]; then
+      trap '' HUP INT TERM
+      printf '%s\n' "$$" > "$FM_REMOTE_JOB_SPAWN_MARKER"
+      kill -TERM "$PPID"
+      while :; do /bin/sleep 1; done
+    fi
+    ;;
+esac
+exec "$SCRIPT_DIR/fm-remote-job-worker-real.sh" "$@"
+SH
+  chmod +x "$dest/remote-root/bin/fm-remote-job-worker.sh"
 }
 
 start_linux_worker() { # <dest>
@@ -235,5 +276,45 @@ assert_group_gone_after_term "$COMMAND_GROUP_FAIL" \
 assert_group_gone_after_term "$PGID_FAIL" \
   "a deliberately failed run (active job, state root gone, TERM, no KILL)"
 pass "a failed run with an active job leaves no orphaned processes"
+
+CASE_DESCENDANT=$(prepare_case serving-descendant)
+install_spawn_wrapper "$CASE_DESCENDANT"
+export FM_REMOTE_JOB_SPAWN_CASE=serving-descendant
+export FM_REMOTE_JOB_SPAWN_MARKER="$CASE_DESCENDANT/spawn.pid"
+SUP_DESCENDANT=$(start_linux_worker "$CASE_DESCENDANT")
+wait_ready "$CASE_DESCENDANT" || fail "serving-descendant: the worker did not become ready"
+PGID_DESCENDANT=$(fm_remote_job_process_pgid "$SUP_DESCENDANT") ||
+  fail "serving-descendant: could not resolve the worker process group"
+track_group "$PGID_DESCENDANT"
+SPAWN_DESCENDANT=$(cat "$FM_REMOTE_JOB_SPAWN_MARKER")
+case "$SPAWN_DESCENDANT" in ''|*[!0-9]*) fail "serving-descendant: no spawned pid" ;; esac
+SERVE_DESCENDANT=$(cat "$CASE_DESCENDANT/remote-jobs/worker.pid")
+case "$SERVE_DESCENDANT" in ''|*[!0-9]*) fail "serving-descendant: no serving pid" ;; esac
+kill -TERM "$SERVE_DESCENDANT" 2>/dev/null || true
+assert_pid_gone_after_term "$SPAWN_DESCENDANT" "TERM of a serving worker with an unregistered descendant"
+assert_group_gone_after_term "$PGID_DESCENDANT" \
+  "TERM of a serving worker with an unregistered descendant"
+pass "serving worker shutdown reaps an unregistered descendant"
+
+CASE_SUPERVISOR=$(prepare_case supervisor-spawn)
+install_spawn_wrapper "$CASE_SUPERVISOR"
+export FM_REMOTE_JOB_SPAWN_CASE=supervisor-spawn
+export FM_REMOTE_JOB_SPAWN_MARKER="$CASE_SUPERVISOR/spawn.pid"
+SUP_SUPERVISOR=$(start_linux_worker "$CASE_SUPERVISOR")
+PGID_SUPERVISOR=$(fm_remote_job_process_pgid "$SUP_SUPERVISOR") ||
+  fail "supervisor-spawn: could not resolve the worker process group"
+track_group "$PGID_SUPERVISOR"
+for _ in $(seq 1 100); do
+  [ -f "$FM_REMOTE_JOB_SPAWN_MARKER" ] && break
+  sleep 0.05
+done
+[ -f "$FM_REMOTE_JOB_SPAWN_MARKER" ] || fail "supervisor-spawn: the child never entered its spawn path"
+SPAWN_SUPERVISOR=$(cat "$FM_REMOTE_JOB_SPAWN_MARKER")
+case "$SPAWN_SUPERVISOR" in ''|*[!0-9]*) fail "supervisor-spawn: no spawned pid" ;; esac
+assert_pid_gone_after_term "$SPAWN_SUPERVISOR" "TERM during the supervisor child spawn"
+assert_group_gone_after_term "$PGID_SUPERVISOR" "TERM during the supervisor child spawn"
+pass "supervisor shutdown reaps a child TERMing during spawn"
+
+unset FM_REMOTE_JOB_SPAWN_CASE FM_REMOTE_JOB_SPAWN_MARKER
 
 printf '\nall fm-remote-job-worker-leak tests passed\n'
