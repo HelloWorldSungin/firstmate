@@ -18,19 +18,72 @@ FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+FIXTURE_WORKER_GROUPS=()
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
-# worker.pid records the serving child, not its restart supervisor, so stopping
-# that pid alone leaves the supervisor to respawn - the leak
-# tests/fm-remote-job-orphan-reap.test.sh pins. Stop the whole worker tree.
+
+remember_fixture_worker_group() { # <worker-or-supervisor-pid>
+  local pid=$1 group own_group tracked
+  group=$(fm_remote_job_process_pgid "$pid") || return 1
+  own_group=$(fm_remote_job_process_pgid "$$") || return 1
+  [ "$group" != "$own_group" ] || return 1
+  for tracked in "${FIXTURE_WORKER_GROUPS[@]:-}"; do
+    [ "$tracked" != "$group" ] || return 0
+  done
+  FIXTURE_WORKER_GROUPS+=("$group")
+}
+
+track_fixture_worker_group() { # <worker-or-supervisor-pid>
+  remember_fixture_worker_group "$1" || fail "the fixture worker does not own a dedicated process group"
+}
+
+remember_current_fixture_worker_group() { # <state-root>
+  local state=$1 pid
+  [ -n "$state" ] || return 1
+  pid=$(cat "$state/worker.pid" 2>/dev/null) || return 1
+  remember_fixture_worker_group "$pid"
+}
+
+track_current_fixture_worker_group() { # <state-root>
+  remember_current_fixture_worker_group "$1" || fail "the current fixture worker does not own a dedicated process group"
+}
+
+# Every Linux fixture worker has a restart supervisor above the serving child
+# recorded in worker.pid. Track each dedicated group as it appears so cleanup
+# remains complete after a failed assertion, a replacement, or corrupt state.
 cleanup_remote_job_fixture() {
+  local status=$? group attempt alive
+  trap - EXIT HUP INT TERM
+  set +e
   [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
-  if [ -f "$STATE_ROOT/worker.pid" ]; then
-    fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
-  fi
-  rm -rf -- "$TMP_ROOT"
+  remember_current_fixture_worker_group "$STATE_ROOT" 2>/dev/null || true
+  remember_current_fixture_worker_group "${RECOVERY_STATE:-}" 2>/dev/null || true
+  for group in "${FIXTURE_WORKER_GROUPS[@]:-}"; do
+    [ -n "$group" ] || continue
+    kill -TERM -- "-$group" 2>/dev/null || true
+  done
+  attempt=0
+  while [ "$attempt" -lt 20 ]; do
+    alive=0
+    for group in "${FIXTURE_WORKER_GROUPS[@]:-}"; do
+      [ -n "$group" ] && kill -0 -- "-$group" 2>/dev/null && alive=1
+    done
+    [ "$alive" -eq 1 ] || break
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  for group in "${FIXTURE_WORKER_GROUPS[@]:-}"; do
+    [ -n "$group" ] || continue
+    kill -KILL -- "-$group" 2>/dev/null || true
+    wait "$group" 2>/dev/null || true
+  done
+  fm_test_cleanup
+  return "$status"
 }
 trap cleanup_remote_job_fixture EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" \
   "$ROOT/bin/fm-remote-delta-read.sh" "$REMOTE_ROOT/bin/"
@@ -163,15 +216,21 @@ case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
 esac
 pass "operator PATH resolves the authorized Nix profile bin link"
 
+set -m
 HOME="$ACCOUNT_HOME" PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin" FM_FAKE_PERL_LOG="$FAKE_PERL_LOG" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=5 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
+FIXTURE_WORKER_PID=$!
+set +m
+track_fixture_worker_group "$FIXTURE_WORKER_PID"
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
 done
 assert_present "$STATE_ROOT/worker.ready" "the worker did not publish its readiness heartbeat"
+track_current_fixture_worker_group "$STATE_ROOT"
+[ "${FM_REMOTE_JOB_TEST_FAIL_AFTER_READY:-0}" != 1 ] || fail "deliberate fixture failure after worker readiness"
 
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
@@ -226,6 +285,7 @@ for _ in $(seq 1 40); do
 done
 fm_remote_job_probe "$ACCOUNT_HOME" || fail "the active worker did not refresh its readiness heartbeat"
 fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+track_current_fixture_worker_group "$STATE_ROOT"
 [ "$(cat "$STATE_ROOT/worker.pid")" = "$ACTIVE_WORKER_PID" ] \
   || fail "ensure replaced a healthy worker during an active job"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
@@ -239,6 +299,7 @@ printf '\n' >> "$REMOTE_ROOT/bin/fm-remote-job-worker.sh"
 fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+track_fixture_worker_group "$NEW_WORKER_PID"
 [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] || fail "ensure retained a worker running stale code"
 fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "the replacement worker did not publish the current code identity"
@@ -252,6 +313,7 @@ OLD_WORKER_PGID=$(fm_remote_job_process_pgid "$OLD_WORKER_PID") \
 fm_remote_job_ensure_worker "$RELOCATED_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+track_fixture_worker_group "$NEW_WORKER_PID"
 [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] || fail "ensure retained a worker bound to a different code root"
 ! kill -0 -- "-$OLD_WORKER_PGID" 2>/dev/null \
   || fail "ensure left the replaced worker supervisor group alive"
@@ -262,6 +324,7 @@ fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the relocated-root probe could not be reaped"
 fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+track_fixture_worker_group "$NEW_WORKER_PID"
 pass "worker identity binds the canonical configured code root"
 
 CRASHED_WORKER_PID=$NEW_WORKER_PID
@@ -279,6 +342,7 @@ fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 kill -0 "$OTHER_PID" 2>/dev/null || fail "stale worker state caused an unrelated process to be signaled"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+track_fixture_worker_group "$NEW_WORKER_PID"
 [ "$NEW_WORKER_PID" != "$OTHER_PID" ] || fail "the replacement adopted an unrelated persisted pid"
 fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "stale ownership recovery did not start the current worker"
@@ -436,14 +500,19 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 kill -0 "$WORKER_PID" 2>/dev/null && fail "the worker did not finish its TERM shutdown"
+set -m
 HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=1 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err" &
+FIXTURE_WORKER_PID=$!
+set +m
+track_fixture_worker_group "$FIXTURE_WORKER_PID"
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
 done
 assert_present "$STATE_ROOT/worker.ready" "the replacement worker did not become ready"
+track_current_fixture_worker_group "$STATE_ROOT"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "the interrupted job did not publish an unknown-completion result"
 sleep 3
@@ -471,6 +540,7 @@ for _ in $(seq 1 200); do
 done
 [ -n "${RESTARTED_WORKER_PID:-}" ] && [ "$RESTARTED_WORKER_PID" != "$CRASHED_WORKER_PID" ] \
   || fail "the Linux supervisor did not restart a crashed worker"
+track_fixture_worker_group "$RESTARTED_WORKER_PID"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "worker crash recovery did not publish unknown completion"
 sleep 3
@@ -532,6 +602,7 @@ JOB_DIR="$STATE_ROOT/jobs/$JOB_ID"
 rm -f -- "$JOB_DIR/argv"
 ln -s "$TMP_ROOT/not-an-argv" "$JOB_DIR/argv"
 fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+track_current_fixture_worker_group "$STATE_ROOT"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 126 ] || fail "the worker accepted a symlinked argv record"
 assert_absent "$SIDE_EFFECT" "the worker executed a job after its argv changed to a symlink"
@@ -607,15 +678,19 @@ set -e
 assert_present "$RECOVERY_STATE/worker.lock/quarantine" "a live recorded process lost quarantine protection"
 kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 wait "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
+set -m
 HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
   > "$TMP_ROOT/recovery-worker.out" 2> "$TMP_ROOT/recovery-worker.err" &
 RECOVERY_WORKER_PID=$!
+set +m
+track_fixture_worker_group "$RECOVERY_WORKER_PID"
 for _ in $(seq 1 300); do
   [ -f "$RECOVERY_STATE/worker.ready" ] && break
   sleep 0.05
 done
 assert_present "$RECOVERY_STATE/worker.ready" "a stopped quarantined execution did not permit worker recovery"
+track_current_fixture_worker_group "$RECOVERY_STATE"
 assert_absent "$RECOVERY_STATE/worker.lock/quarantine" "recovered worker retained stale quarantine"
 kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
