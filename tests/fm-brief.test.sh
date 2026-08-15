@@ -1408,14 +1408,10 @@ test_design_brief_is_harness_independent_and_adr_only() {
   pass "fm-brief.sh: design profile is ADR-only and resolves identically across supported harnesses"
 }
 
-# A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
-# registers only the projects it seeds - never firstmate, which is no clone under
-# projects/ - so this home structurally cannot carry the registry declaration
-# while every crew task it runs against firstmate is a firstmate-repo task.
-# Breaks if the marker stops opening the home-root candidate: the whole
-# population whose purpose is firstmate-repo work silently loses the guidance.
-# The paired negative breaks if the marker is ever treated as optional, which
-# would hand the candidate to any unresolved name in a primary home again.
+# A secondmate home is leased as a firstmate worktree, so its git object DB
+# structurally identifies it as a firstmate checkout even though
+# bin/fm-home-seed.sh does not register firstmate under projects/. Breaks if
+# either a marked or unmarked linked home loses the firstmate-repo guidance.
 test_firstmate_repo_crew_persona_in_a_secondmate_home() {
   local upstream home brief unmarked_brief
   upstream="$TMP_ROOT/sm-upstream"
@@ -1447,9 +1443,12 @@ test_firstmate_repo_crew_persona_in_a_secondmate_home() {
   unmarked_brief="$home/data/sm-unmarked/brief.md"
   assert_grep 'disposable git worktree of firstmate' "$unmarked_brief" \
     "the unmarked-home brief did not scaffold"
-  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
-    "an unmarked home with no registry declaration must not resolve a name to its own root"
-  pass "fm-brief.sh: a secondmate home's marker opens the home-root candidate its registry cannot declare"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
+    "an unmarked linked home lost the structural firstmate-repo verdict"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$unmarked_brief" \
+    "an unmarked linked home produced no coding-guidelines directive"
+  pass "fm-brief.sh: linked homes retain firstmate guidance without registry prose or a marker"
 }
 
 test_resolved_line_and_pr_attribution_guidance() {

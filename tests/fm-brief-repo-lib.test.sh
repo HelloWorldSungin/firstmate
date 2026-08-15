@@ -20,19 +20,15 @@ set -u
 ROOT="${ROOT:?}"
 
 # All the tests below need a fixture home that is structurally a firstmate
-# checkout (git-common-dir equality with ROOT). A worktree of ROOT shares the
-# git object DB without disturbing the primary checkout, so the structural
-# check passes for it just as it would for a primary checkout. The firstmate
-# script under test reads FM_ROOT for the script's location and FM_HOME for
-# the home, so the test exercises the real lookup path with both set to
-# distinct paths.
+# checkout. A linked worktree of a temporary repository shares its git object
+# DB with that repository, so the structural check passes without registering
+# a worktree against the repository under test. The firstmate script under test
+# reads FM_ROOT for the comparison target and FM_HOME for the home, so the test
+# exercises the real lookup path with both set to distinct fixture paths.
 TMP_ROOT=$(fm_test_tmproot fm-brief-repo-lib)
+FIXTURE_ROOT="$TMP_ROOT/firstmate"
 FM_HOME_DIR="$TMP_ROOT/home"
-# A prior run that aborted without cleanup can leave a stale worktree entry
-# pointing at this path; prune it so `git worktree add` does not refuse.
-git -C "$ROOT" worktree prune 2>/dev/null || true
-mkdir -p "$FM_HOME_DIR"
-git -C "$ROOT" worktree add --quiet --detach "$FM_HOME_DIR" HEAD 2>/dev/null || {
+fm_git_worktree "$FIXTURE_ROOT" "$FM_HOME_DIR" fixture-home 2>/dev/null || {
   fail "could not create a firstmate worktree for the test fixture"
 }
 mkdir -p "$FM_HOME_DIR/data"
@@ -51,7 +47,7 @@ write_registry() {
 check_candidate() {  # <name>
   (
     set -u
-    FM_ROOT="$ROOT"
+    FM_ROOT="$FIXTURE_ROOT"
     FM_HOME="$FM_HOME_DIR"
     DATA="$FM_HOME/data"
     export FM_ROOT FM_HOME DATA
@@ -117,7 +113,7 @@ test_issue_ref_resolves_path_to_firstmate_entry() {
   write_registry "- firstmate [no-mistakes +yolo tracker=github:github.com/HelloWorldSungin/firstmate] - firstmate (added 2026-01-01)"
   local out rc
   set +e
-  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$FM_HOME_DIR" \
+  out=$(FM_ROOT_OVERRIDE="$FIXTURE_ROOT" FM_HOME="$FM_HOME_DIR" \
     "$ROOT/bin/fm-issue-ref.sh" --project "$FM_HOME_DIR" 104 --format brief 2>&1)
   rc=$?
   set -e
@@ -136,7 +132,7 @@ test_issue_ref_does_not_resolve_unrelated_path() {
   write_registry "- dotfiles [no-mistakes +yolo tracker=github:github.com/HelloWorldSungin/dotfiles] - dotfiles (added 2026-01-01)"
   local out rc
   set +e
-  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$FM_HOME_DIR" \
+  out=$(FM_ROOT_OVERRIDE="$FIXTURE_ROOT" FM_HOME="$FM_HOME_DIR" \
     "$ROOT/bin/fm-issue-ref.sh" --project "/tmp/some-unrelated-path" '#5' 2>&1)
   rc=$?
   set -e
