@@ -1457,7 +1457,7 @@ SH
     node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
   SERVER_PID=$!
   wait_for_http "$case_root"
-  wait_for_history "$case_root" '.usage.collection == "absent"'
+  wait_for_history "$case_root" '.usage.available == false and .usage.collection == "absent" and (.usage.reason | test("not collected"))'
   jq -e '.usage.available == false and (.usage.reason | test("not collected"))' "$case_root/history.json" >/dev/null \
     || fail "a missing store did not classify usage as absent"
   stop_server
