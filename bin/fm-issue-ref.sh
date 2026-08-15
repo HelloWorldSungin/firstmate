@@ -39,6 +39,8 @@ REGISTRY="$DATA/projects.md"
 
 # shellcheck source=bin/fm-issue-lib.sh
 . "$SCRIPT_DIR/fm-issue-lib.sh"
+# shellcheck source=bin/fm-brief-repo-lib.sh
+. "$SCRIPT_DIR/fm-brief-repo-lib.sh"
 
 usage() {
   awk '
@@ -80,6 +82,13 @@ done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 
 [ -n "$PROJECT" ] || { echo "error: --project <name> is required; a reference is meaningless without the project it resolves against" >&2; exit 1; }
+# Resolve a path-style project identifier to a registry name. The home root
+# is the firstmate repo's checkout, so a path that matches the home root
+# resolves to the firstmate repo's registry entry rather than reading as
+# an unknown name. issue #104: this is the structural complement to the
+# prose-based detection fm_brief_repo_registers_home_root_clone used to
+# derive from registry entries.
+PROJECT=$(fm_brief_repo_resolve_project_name "$PROJECT")
 case "$FORMAT" in
   meta|brief|url|json) ;;
   *) echo "error: --format must be one of meta, brief, url, json (got '$FORMAT')" >&2; exit 1 ;;
