@@ -1085,9 +1085,9 @@ watcher_cleanup() {
 # The stop handler must disarm before exiting, not just exit: real senders
 # deliver stop signals in bursts (coreutils timeout signals the process group
 # and then re-signals from its own handler), and the second signal otherwise
-# lands inside watcher_cleanup and aborts it as described above. Cleanup is
-# bounded (child reaping plus lock release), so a stuck cleanup is not a
-# hang risk this disarm could mask.
+# lands inside watcher_cleanup and aborts it as described above. Stop signals
+# are therefore ignored while cleanup runs. Its normal work is bounded child
+# reaping plus lock release; if that work wedges, SIGKILL is the escape hatch.
 watcher_stop_signal() {
   trap '' HUP INT TERM
   exit 1
