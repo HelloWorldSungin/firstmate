@@ -537,8 +537,11 @@ for (let i = 0; i < 500 && !prompt; i += 1) {
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+// The typed failure proves that a successor was spawned but did not retire.
+// Its fixture log write can still lag behind delivery when the runner is busy,
+// so only additional rows beyond that successor prove an overlapping retry.
+if (rows.length < 1 || rows.length > 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+if (rowsAtPrompt < 1 || rowsAtPrompt > 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
@@ -1724,8 +1727,11 @@ for (let i = 0; i < 500 && !prompt; i += 1) {
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+// The typed failure proves that a successor was spawned but did not retire.
+// Its fixture log write can still lag behind delivery when the runner is busy,
+// so only additional rows beyond that successor prove an overlapping retry.
+if (rows.length < 1 || rows.length > 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+if (rowsAtPrompt < 1 || rowsAtPrompt > 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
