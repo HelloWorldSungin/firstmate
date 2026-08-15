@@ -28,6 +28,10 @@ The feature is inert when no `upstream` git remote exists so upstream users do n
 The detector fetches only into a disposable repository and never changes the source repository's objects, refs, index, branch, or worktree.
 A sync request dispatches an isolated merge task and PR rather than merging in the primary copy or extending `/updatefirstmate` with merge behavior.
 
+### Repository-local validation evidence
+
+The fork keeps `.no-mistakes.yaml` `test.evidence.store_in_repo` set to `false`, confirmed on 2026-08-14, so routine test evidence stays local instead of becoming committed repository content.
+
 ## Retired divergences
 
 ### Fork-local remote doctor - retired 2026-08-04

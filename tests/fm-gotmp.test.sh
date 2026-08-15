@@ -68,6 +68,7 @@ make_fake_root() {
   # any cleanup, and refuses when it cannot get one, so the real helper has to
   # resolve inside the fake root like every other dependency above.
   ln -s "$ROOT/bin/fm-model-verify.sh" "$fake/bin/fm-model-verify.sh"
+  ln -s "$ROOT/bin/fm-control-lib.sh" "$fake/bin/fm-control-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
@@ -159,6 +160,7 @@ test_teardown_skips_gracefully_without_tasktmp() {
   # fm-timeout-lib.sh: the shared owner of bounded execution, which teardown's
   # bounded usage refresh calls.
   ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
+  ln -s "$ROOT/bin/fm-control-lib.sh" "$fake/bin/fm-control-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
