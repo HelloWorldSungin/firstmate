@@ -423,6 +423,7 @@ import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+let rowsAtPrompt = 0;
 const pi = {
   on() {},
   registerCommand() {},
@@ -430,6 +431,9 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async (message) => {
+    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
+      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
+      : 0;
     prompt += message;
   },
 };
@@ -458,6 +462,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
 // (predecessor + at least one successor), the original wake survived, and
 // the failure was communicated in the typed prompt the supervisor relies on.
 if (rows.length < 2) throw new Error(`expected at least one restoration attempt, got ${rows.length}: ${rows.join(" | ")}`);
+if (rowsAtPrompt < 2) throw new Error(`wake arrived before restoration was attempted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity")) throw new Error(`missing typed restoration failure: ${prompt}`);
 // Stability window after the prompt: single-flight holds, so no further arms
@@ -1602,9 +1607,13 @@ import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
+let rowsAtPrompt = 0;
 const client = {
   session: {
     promptAsync: async (request) => {
+      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
+        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
+        : 0;
       prompt += request.body.parts[0].text;
     },
   },
@@ -1637,6 +1646,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
 // (predecessor + at least one successor), the original wake survived, and
 // the failure was communicated in the typed prompt the supervisor relies on.
 if (rows.length < 2) throw new Error(`expected at least one restoration attempt, got ${rows.length}: ${rows.join(" | ")}`);
+if (rowsAtPrompt < 2) throw new Error(`wake arrived before restoration was attempted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity")) throw new Error(`missing typed restoration failure: ${prompt}`);
 // Stability window after the prompt: single-flight holds, so no further arms
