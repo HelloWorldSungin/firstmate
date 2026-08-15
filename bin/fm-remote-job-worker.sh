@@ -29,6 +29,10 @@
 # loop that never stays up only burns CPU and grows its log without bound. A
 # child that stays up for FM_REMOTE_JOB_SUPERVISOR_HEALTHY_SECONDS clears that
 # count. fm-on's ensure path restarts a worker that gave up.
+# TERM, INT, and HUP always terminate the serving process: worker_shutdown never
+# returns to the poll loop, even when it cannot publish the ownership quarantine.
+# The Linux supervisor treats that exit, and 125 from a stop that could not
+# confirm the command tree is gone, as terminal and does not restart.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the
@@ -54,6 +58,7 @@ WORKER_RELEASE_OWNERSHIP=1
 WORKER_SUPERVISED_PID=
 WORKER_PREEMPTIBLE=0
 WORKER_PREEMPTED=0
+WORKER_STOP=0
 
 worker_error() { printf 'remote-job-worker: %s\n' "$1" >&2; }
 
@@ -293,16 +298,13 @@ worker_stop_active_execution() {
 
 worker_shutdown() {
   trap - HUP INT TERM
-  worker_publish_quarantine || {
-    worker_error "cannot guard worker ownership for shutdown"
-    trap worker_shutdown HUP INT TERM
-    return 0
-  }
-  worker_stop_active_execution || {
+  WORKER_STOP=1
+  worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
+  if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
-  }
+  fi
   worker_clear_quarantine || {
     worker_error "could not clear guarded worker ownership after shutdown"
     WORKER_RELEASE_OWNERSHIP=0
@@ -687,6 +689,7 @@ main() {
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }
   worker_publish_pid || { worker_error "cannot publish worker pid"; exit 1; }
   while :; do
+    [ "$WORKER_STOP" -eq 0 ] || exit 0
     worker_write_heartbeat || { worker_error "cannot update worker heartbeat"; exit 1; }
     # Checked right after a fresh heartbeat, so the grace window cannot make a
     # still-healthy worker read as unready to a concurrent probe.
@@ -754,9 +757,9 @@ worker_supervise_linux() {
       WORKER_SUPERVISED_PID=
       return 0
     fi
-    if [ "$child_status" -eq 75 ]; then
+    if [ "$child_status" -eq 75 ] || [ "$child_status" -eq 125 ]; then
       WORKER_SUPERVISED_PID=
-      return 75
+      return "$child_status"
     fi
     worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
     WORKER_SUPERVISED_PID=
