@@ -576,6 +576,66 @@ test_watcher_stops_promptly_on_term() {
   pass "watcher honors a stop signal without waiting out its poll interval"
 }
 
+test_watcher_stop_burst_during_cleanup_still_releases_lock() {
+  # Two stop signals close together must not leak the singleton lock. The first
+  # TERM interrupts the cycle wait and starts the EXIT trap; a second TERM
+  # landing while cleanup is still running used to re-enter the stop trap and
+  # exit immediately, and bash never resumes an aborted EXIT trap, so
+  # .watch.lock stayed on disk naming a dead pid with nothing left to release
+  # it (issue #160). Real senders produce exactly this shape: coreutils timeout
+  # signals the process group and then re-signals from its own handler.
+  # The window is only as wide as cleanup itself, so hold cleanup open
+  # deterministically: SIGSTOP the cycle-wait sleep child, and cleanup's own
+  # reaping wait on that child blocks until SIGCONT, guaranteeing the second
+  # TERM lands inside cleanup instead of racing a few-millisecond window.
+  local dir state fakebin out pid spid i
+  dir=$(make_case term-burst)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    || fail "watcher did not take the lock before the signal burst"
+  # The 60s cycle wait forks exactly one sleep child; find it by parent pid
+  # only (never by command-line pattern, which could match unrelated processes).
+  spid=
+  i=0
+  while [ "$i" -lt 100 ]; do
+    spid=$(pgrep -P "$pid" -x sleep | head -1)
+    [ -n "$spid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$spid" ] || fail "watcher never entered its interruptible cycle wait"
+  kill -STOP "$spid" 2>/dev/null || fail "could not hold the cycle-wait child"
+  kill -TERM "$pid" 2>/dev/null || fail "could not send the first stop signal"
+  # Cleanup is now blocked reaping the stopped child; these delays only stage
+  # the trigger inside that held-open window, they are not assertion bounds.
+  sleep 0.3
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 0.2
+  kill -CONT "$spid" 2>/dev/null || true
+  wait_for_exit "$pid" 100
+  i=0
+  while [ "$i" -lt 100 ] && { [ -e "$state/.watch.lock" ] || [ -L "$state/.watch.lock" ]; }; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  { [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ]; } \
+    || fail "stop-signal burst during cleanup leaked the watch lock"
+  ! ls "$state"/.watch.lock.owner.* >/dev/null 2>&1 \
+    || fail "stop-signal burst during cleanup leaked the lock owner directory"
+  pass "a stop-signal burst during cleanup still releases the singleton lock"
+}
+
 test_watch_restart_hands_over_within_its_own_budget() {
   # The consequence the prompt-exit property exists for. --restart signals this
   # home's watcher, then waits only 50 * 0.1s for it to exit before forking a
@@ -1195,6 +1255,7 @@ test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_watcher_stops_promptly_on_term
+test_watcher_stop_burst_during_cleanup_still_releases_lock
 test_watch_restart_hands_over_within_its_own_budget
 test_watcher_liveness_beacon_survives_interruptible_waits
 test_arm_self_eviction_is_loud_without_successor
