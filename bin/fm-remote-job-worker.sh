@@ -827,7 +827,7 @@ worker_supervise_linux() {
       return 0
     fi
     started=$SECONDS
-    "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
+    /usr/bin/env --default-signal=INT "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
     child_pid=$!
     wait "$child_pid" 2>/dev/null
     child_status=$?

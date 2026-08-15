@@ -194,6 +194,26 @@ assert_group_gone_after_term "$PGID_IDLE" \
   "TERM of the serving worker after its lock directory disappeared"
 pass "an idle worker leaves no orphans after a failed-quarantine TERM"
 
+# --- idle worker, lock gone, INT the serving child ---------------------------
+#
+# Bash starts asynchronous children with INT ignored when job control is off.
+# The Linux supervisor must ensure the serving process can still handle a
+# direct INT without moving it out of the supervisor's contained process group.
+
+CASE_INT=$(prepare_case int-lock)
+SUP_INT=$(start_linux_worker "$CASE_INT")
+wait_ready "$CASE_INT" || fail "int-lock: the worker did not become ready"
+PGID_INT=$(fm_remote_job_process_pgid "$SUP_INT") ||
+  fail "int-lock: could not resolve the worker process group"
+track_group "$PGID_INT"
+SERVE_INT=$(cat "$CASE_INT/remote-jobs/worker.pid")
+case "$SERVE_INT" in ''|*[!0-9]*) fail "int-lock: no serving pid" ;; esac
+rm -rf "$CASE_INT/remote-jobs/worker.lock"
+kill -INT "$SERVE_INT" 2>/dev/null || true
+assert_group_gone_after_term "$PGID_INT" \
+  "INT of the serving worker after its lock directory disappeared"
+pass "an idle worker leaves no orphans after a failed-quarantine INT"
+
 # --- idle worker, lock gone, TERM the isolated group -------------------------
 #
 # The same failed-run cleanup shape as signalling the whole tree, without a
