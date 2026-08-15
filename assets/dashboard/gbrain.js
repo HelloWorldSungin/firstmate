@@ -18,6 +18,8 @@
 // DOM, and the rendering layer is the only thing that touches
 // createElement.
 
+import { pathTail } from "./display.js";
+
 export const GBRAIN_HEALTH_SCHEMA = "fm-gbrain-health.v1";
 export const GBRAIN_SEARCH_SCHEMA = "fm-gbrain-search.v1";
 
@@ -94,7 +96,7 @@ export function buildGBrainHealth(envelope) {
     label: "Brain",
     tone: "green",
     value: text(h.version) || "configured",
-    detail: `index at ${text(h.index?.detail) || "an unknown path"}`,
+    detail: `index at ${pathTail(h.index?.detail) || "an unknown location"}`,
     tooltip: "GBrain is configured for this home. The version is the pinned release recorded in docs.",
   });
 
@@ -103,7 +105,7 @@ export function buildGBrainHealth(envelope) {
     label: "Index",
     tone: indexState === "ok" ? "green" : indexState === "absent" ? "amber" : "unknown",
     value: indexState,
-    detail: indexState === "ok" ? text(h.index?.detail) : (text(h.index?.detail) || "the brain has not been bootstrapped yet"),
+    detail: indexState === "ok" ? (pathTail(h.index?.detail) || "the index location is unknown") : (pathTail(h.index?.detail) || "the brain has not been bootstrapped yet"),
     tooltip: "Whether the local PGLite index exists. absent means this home has not run the initial bootstrap.",
   });
 

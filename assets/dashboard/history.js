@@ -331,8 +331,33 @@ export function buildHistory(envelope, view = {}) {
 
   const captured = rows.filter((row) => row.gbrain.status === "captured").length;
 
+  // The stat roll-up describes the FILTERED set, not the page slice: a reader
+  // who narrows to one project wants that project's totals, not the totals of
+  // whichever 25 rows happened to be on screen. Every aggregate follows the
+  // honest-state rules the rows follow - an unknown duration is excluded from
+  // the median rather than counted as zero, and token totals exist only when
+  // at least one attributed row exists, because zero-for-unknown is the one
+  // lie this view must never print.
+  const durationsOf = (set) => set.map((row) => row.duration).filter((entry) => entry?.known && Number.isFinite(entry.seconds)).map((entry) => entry.seconds).sort((a, b) => a - b);
+  const filteredDurations = durationsOf(filtered);
+  const attributed = filtered.filter((row) => row.usage?.available === true && Number.isFinite(row.usage?.totals?.total_tokens));
+  const stats = {
+    counts: {
+      done: filtered.filter((row) => row.outcome.state === "done").length,
+      failed: filtered.filter((row) => row.outcome.state === "failed").length,
+      discarded: filtered.filter((row) => row.outcome.state === "discarded").length,
+      retired: filtered.filter((row) => row.outcome.state === "retired").length,
+      unknown: filtered.filter((row) => row.outcome.state === "unknown").length,
+    },
+    median_duration_seconds: filteredDurations.length ? filteredDurations[Math.floor(filteredDurations.length / 2)] : null,
+    tokens: attributed.length
+      ? { available: true, total: attributed.reduce((sum, row) => sum + row.usage.totals.total_tokens, 0), attributed: attributed.length }
+      : { available: false, total: null, attributed: 0 },
+  };
+
   return {
     rows: visible,
+    stats,
     facets,
     filters: active,
     page: {

@@ -1,227 +1,191 @@
-import { buildHealth, buildInbox, formatAge } from "./inbox.js";
+// app.js - the Firstmate fleet dashboard application.
+//
+// Six destinations behind a hash router (#/needs, #/fleet, #/backlog,
+// #/history, #/knowledge, #/task/<id>), rebuilt from the approved design in
+// data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered at a
+// time: the router resolves exactly one view (router.js owns that contract)
+// and this module mounts only that view's DOM, so the others are absent from
+// the document rather than hidden.
+//
+// The data policy lives in the sibling modules (inbox.js, history.js,
+// backlog.js, gbrain.js, events.js); this file owns presentation and wiring.
+// display.js owns the convention that record values become labels before they
+// reach the DOM, so no filesystem path renders on any view.
+
+import { buildHealth, buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
-import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
-import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
-import { buildGBrainHealth, paintGBrainPanel, paintGBrainSearchResults, searchFailure, searchReasonLabel } from "./gbrain.js";
+import { buildTimeline, clockLabel, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
+import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
+import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
+import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
+import { label } from "./display.js";
+import { buildBacklog, BACKLOG_LIMITS } from "./backlog.js";
 
 const ui = {
-  signals: document.querySelector("#signals"),
-  badges: document.querySelector("#badges"),
-  navBadge: document.querySelector("#nav-badge"),
-  healthStrip: document.querySelector("#health-strip"),
-  inboxList: document.querySelector("#inbox-list"),
-  notices: document.querySelector("#notice-region"),
-  refreshNote: document.querySelector("#refresh-note"),
-  filterForm: document.querySelector("#filter-form"),
-  filterCount: document.querySelector("#filter-count"),
-  clearFilters: document.querySelector("#clear-filters"),
-  mateList: document.querySelector("#secondmate-list"),
-  mateCount: document.querySelector("#secondmate-count"),
-  kanban: document.querySelector("#kanban"),
-  historyForm: document.querySelector("#history-form"),
-  historyFilterCount: document.querySelector("#history-filter-count"),
-  historyClear: document.querySelector("#history-clear"),
-  historyNote: document.querySelector("#history-note"),
-  historyWarnings: document.querySelector("#history-warnings"),
-  historySummary: document.querySelector("#history-summary"),
-  historyList: document.querySelector("#history-list"),
-  historyPager: document.querySelector("#history-pager"),
-  activityForm: document.querySelector("#activity-form"),
-  activityFilterCount: document.querySelector("#activity-filter-count"),
-  activityClear: document.querySelector("#activity-clear"),
-  activityNote: document.querySelector("#activity-note"),
-  activityNotices: document.querySelector("#activity-notices"),
-  activityList: document.querySelector("#activity-list"),
-  reportDialog: document.querySelector("#report-dialog"),
-  reportTask: document.querySelector("#report-task"),
-  reportTitle: document.querySelector("#report-title"),
-  reportNotices: document.querySelector("#report-notices"),
-  reportBody: document.querySelector("#report-body"),
-  reportClose: document.querySelector("#report-close"),
-  gbraintronNote: document.querySelector("#gbraintron-note"),
-  gbraintronNotices: document.querySelector("#gbraintron-notices"),
-  gbraintronStrip: document.querySelector("#gbraintron-strip"),
-  gbraintronSearchForm: document.querySelector("#gbraintron-search-form"),
-  gbraintronSearchInput: document.querySelector("#gbraintron-search-input"),
-  gbraintronSearchLimit: document.querySelector("#gbraintron-search-limit"),
-  gbraintronSearchButton: document.querySelector("#gbraintron-search-button"),
-  gbraintronResults: document.querySelector("#gbraintron-results"),
-  themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
-  notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
+  app: document.getElementById("app"),
+  view: document.getElementById("view"),
+  vdot: document.getElementById("vdot"),
+  verdict: document.getElementById("verdict"),
+  segbar: document.getElementById("segbar"),
+  stalenote: document.getElementById("stalenote"),
+  staleText: document.getElementById("staleno-txt"),
+  navbadge: document.getElementById("navbadge"),
+  tabbadge: document.getElementById("tabbadge"),
+  navButtons: new Map(),
+  themeButton: document.getElementById("theme-button"),
+  notifyButton: document.getElementById("notify-button"),
 };
 
-const columnLabels = {
-  needs_decision: "Needs decision",
-  blocked: "Blocked",
-  parked: "Gate parked",
-  failed: "Failed",
-  review: "PR review",
-  done: "Done",
-  waiting: "Waiting",
-  active: "Active",
-  secondmate: "Secondmate",
-  idle: "Idle",
+for (const button of document.querySelectorAll("[data-route]")) {
+  const route = button.dataset.route;
+  if (!ui.navButtons.has(route)) ui.navButtons.set(route, []);
+  ui.navButtons.get(route).push(button);
+  button.addEventListener("click", () => { window.location.hash = hashFor(viewRoute(route)); });
+}
+
+// --- fleet column ladder ----------------------------------------------------
+//
+// The snapshot resolves every task to exactly one card.column against its own
+// card_precedence; these are the presentation facts for each column key. The
+// order here mirrors card_precedence so the board reads highest-priority first.
+
+const COLUMN_DEFS = [
+  { key: "needs_decision", label: "Needs decision", tone: "amber" },
+  { key: "blocked", label: "Blocked", tone: "red" },
+  { key: "parked", label: "Parked", tone: "grey" },
+  { key: "failed", label: "Failed", tone: "red" },
+  { key: "review", label: "In review", tone: "blue" },
+  { key: "done", label: "Done", tone: "green" },
+  { key: "waiting", label: "Waiting", tone: "grey" },
+  { key: "active", label: "Active", tone: "green" },
+  { key: "secondmate", label: "Secondmates", tone: "blue" },
+  { key: "idle", label: "Idle", tone: "grey" },
+];
+
+// Presentation for inbox reason kinds: shape carries the meaning, tone follows
+// the policy module's REASON_KINDS so the two cannot drift on severity.
+const REASON_PRESENTATION = {
+  decision: { glyph: "g-decision" },
+  credential: { glyph: "g-cred" },
+  blocked: { glyph: "g-blocked" },
+  failed: { glyph: "g-failed" },
+  pr_attention: { glyph: "g-blocked" },
+  merge_ready: { glyph: "g-review" },
+  review_ready: { glyph: "g-review" },
+  pr_unknown: { glyph: "g-unknown" },
 };
 
-const columnTones = {
-  needs_decision: "amber",
-  blocked: "red",
-  parked: "amber",
-  failed: "red",
-  review: "green",
-  done: "grey",
-  waiting: "amber",
-  active: "blue",
-  secondmate: "blue",
-  idle: "grey",
-};
+const BACKLOG_TABS = [
+  { key: "all", label: "All" },
+  { key: "in_flight", label: "In flight" },
+  { key: "queued", label: "Queued" },
+  { key: "held", label: "Held" },
+  { key: "blocked", label: "Blocked" },
+];
 
-const badgeOrder = [
-  ["decisions", "Decisions", "amber"],
-  ["credentials", "Credentials", "amber"],
-  ["blocked", "Blocked", "red"],
-  ["failed", "Needs attention", "red"],
-  ["merge_ready", "Merge ready", "green"],
-  ["review_ready", "Review ready", "blue"],
-  ["unknown", "PR unknown", "unknown"],
+const HISTORY_RANGES = [
+  { key: "7d", label: "7d", days: 7 },
+  { key: "30d", label: "30d", days: 30 },
+  { key: "90d", label: "90d", days: 90 },
+  { key: "all", label: "All time", days: null },
 ];
 
 const state = {
+  route: parseHash(window.location.hash),
   envelope: null,
-  filters: { project: "", harness: "", model: "", kind: "", state: "" },
-  eventSource: null,
-  reconnectTimer: null,
-  reconnectMs: 1_000,
+  history: { envelope: null, filters: { query: "", project: "", outcome: "" }, range: "30d", page: 0 },
+  backlog: { envelope: null, filters: { query: "", project: "", kind: "", prio: "" }, tab: "all", page: 0 },
+  fleet: { filters: [] },
+  gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
+  task: { reports: new Map(), timelines: new Map() },
   notifyEnabled: false,
   seenInboxIds: null,
-  history: {
-    envelope: null,
-    filters: { query: "", project: "", harness: "", model: "", kind: "", outcome: "", from: "", to: "" },
-    page: 0,
-    pageSize: HISTORY_LIMITS.defaultPageSize,
-  },
-  activity: {
-    envelope: null,
-    filters: { task: "", harness: "", type: "" },
-    // The selected task's rows fetched from the store, kept out of the stream
-    // envelope so a broadcast cannot discard them. See mergeTaskBackfill.
-    backfill: { task: "", events: [] },
-  },
 };
+
+// --- dom helpers ------------------------------------------------------------
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = text;
+  if (text !== undefined && text !== null && text !== "") node.append(document.createTextNode(text));
   return node;
 }
 
-// The project pill is ellipsized to keep a card head on one line, so the full
-// name has to stay recoverable from the element itself.
-function projectPill(name) {
-  const pill = element("span", "pill project-pill", name);
-  pill.title = name;
-  return pill;
+function dot(tone) { return element("span", tone === "unknown" ? "ring" : `dot d-${tone}`); }
+
+function glyph(kind, tone) {
+  const presentation = REASON_PRESENTATION[kind] || REASON_PRESENTATION.decision;
+  const def = REASON_KINDS[kind] || { tone: "unknown", label: kind };
+  const useTone = tone || def.tone;
+  const wrap = element("span", `g ${presentation.glyph}`);
+  if (useTone && useTone !== "unknown") wrap.classList.add(`t-${useTone}`);
+  return { node: wrap, label: def.label, tone: useTone };
 }
 
-// Folding and unfolding a device reflows this page between a single stacked
-// column and a multi-column grid, which changes the document height by
-// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
-// offset no longer points at the same content, so the reader is dropped
-// somewhere else in the page. Anchor to whatever they were actually reading
-// instead, and put that back at the same place on the screen.
-//
-// Only a width change counts. Mobile browser chrome sliding in and out changes
-// the height alone, constantly, and moving the page under the reader for that
-// would be far worse than the problem being fixed.
-const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
-let scrollAnchor = null;
-let anchorQueued = false;
-let lastViewportWidth = window.innerWidth;
-
-// The sticky bar covers the top of the viewport, so the first line the reader
-// can actually see is its lower edge.
-function anchorLine() {
-  const bar = document.querySelector(".topbar");
-  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
+function fmtAge(seconds) {
+  if (!Number.isFinite(seconds)) return null;
+  return formatAge(seconds);
 }
 
-// Anchor navigation is the other half of that same fact. Following a nav link,
-// or the board's Timeline button, scrolls the target section's top edge to the
-// top of the VIEWPORT - which is underneath the sticky bar, so the reader lands
-// part-way into the section with its eyebrow and heading hidden. The bar is
-// sized by its own content and rewraps with width, so its height is not a
-// constant the stylesheet could hold on its own; publishing it is what lets
-// every scroll target keep clear of it.
-function publishStickyHeight() {
-  const bar = document.querySelector(".topbar");
-  if (!bar) return;
-  const height = Math.ceil(bar.getBoundingClientRect().height);
-  document.documentElement.style.setProperty("--sticky-top", `${height}px`);
+function ageChip(seconds, known = true) {
+  if (!known || !Number.isFinite(seconds)) return element("span", "agechip age-unknown", "age unknown");
+  const minutes = seconds / 60;
+  const cls = minutes >= 240 ? "age-hot" : minutes >= 60 ? "age-warm" : "";
+  return element("span", `agechip ${cls}`.trim(), formatAge(seconds));
 }
 
-function captureAnchor() {
-  anchorQueued = false;
-  const line = anchorLine();
-  let best = null;
-  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
-    const top = candidate.getBoundingClientRect().top;
-    if (top > window.innerHeight) break;
-    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
-  }
-  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
+function pageHead(eyebrow, title, note) {
+  const head = element("div", "page-hd");
+  const row = element("div", "page-hd-row");
+  const text = element("div");
+  text.append(element("span", "page-eyebrow", eyebrow));
+  text.append(element("h1", "page-h", title));
+  row.append(text);
+  if (note) row.append(element("p", "refresh-note", note));
+  head.append(row);
+  return head;
 }
 
-function queueAnchorCapture() {
-  if (anchorQueued) return;
-  anchorQueued = true;
-  requestAnimationFrame(captureAnchor);
+function emptyState({ tone = "green", ring = false, big, facts, teach, action }) {
+  const box = element("div", "empty");
+  box.append(ring ? element("span", "ring") : dot(tone));
+  box.append(element("div", "empty-big", big));
+  if (facts) box.append(element("div", "empty-facts", facts));
+  if (teach) box.append(element("p", "empty-teach", teach));
+  if (action) box.append(action);
+  return box;
 }
 
-function restoreAnchor() {
-  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
-  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
-  if (Math.abs(drift) < 1) return;
-  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
-  // is not a navigation the reader should have to watch animate.
-  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
+function notice(tone, heading, detail) {
+  const node = element("div", `notice${tone === "red" ? " error" : ""}`);
+  node.append(tone === "unknown" ? element("span", "ring") : dot(tone));
+  const body = element("div");
+  if (heading) body.append(element("span", "nhead", `${heading} `));
+  body.append(document.createTextNode(detail));
+  node.append(body);
+  return node;
 }
 
-// Every render rebuilds the nodes of the section it renders, so a card the
-// reader is anchored to stops existing the moment a server push arrives - and
-// pushes arrive constantly. Re-derive the anchor here, where every render path
-// meets, so it always names something still on the page. The frame throttle
-// collapses the burst of section rebuilds in one render into a single capture.
-function replaceChildren(parent, children) {
-  parent.replaceChildren(...children.filter(Boolean));
-  queueAnchorCapture();
+function markdownDom(node) {
+  if (node.text !== undefined) return document.createTextNode(node.text);
+  const dom = element(node.tag, MARKDOWN_CLASS_FOR[node.tag] || "");
+  if (node.href) dom.setAttribute("href", safeUrl(node.href) || "#");
+  for (const child of node.children || []) dom.append(markdownDom(child));
+  return dom;
 }
 
-function dot(tone) {
-  return element("span", `dot ${tone || "grey"}`);
-}
+const MARKDOWN_CLASS_FOR = {
+  h1: "", h2: "", h3: "", h4: "", p: "", ul: "", ol: "", li: "",
+  code: "", pre: "", blockquote: "", a: "", strong: "", em: "", hr: "",
+};
 
-function titleFor(task) {
-  return task?.backlog?.title || task?.id || "Untitled task";
-}
-
-function taskState(task) {
-  return task?.card?.column || "";
-}
-
-function taskMatches(task) {
-  return Object.entries(state.filters).every(([key, selected]) => {
-    if (!selected) return true;
-    const actual = key === "state" ? taskState(task) : String(task?.[key] || "");
-    return actual === selected;
-  });
-}
+// --- theme, alerts ----------------------------------------------------------
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   try { localStorage.setItem("fm-dashboard-theme", theme); } catch {}
-  ui.themeButtons[0].textContent = theme === "dark" ? "Light mode" : "Dark mode";
-  ui.themeButtons[1].setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} mode`);
+  const text = document.querySelector("#theme-button .nlabel");
+  if (text) text.textContent = theme === "dark" ? "Light mode" : "Dark mode";
 }
 
 function toggleTheme() {
@@ -231,29 +195,22 @@ function toggleTheme() {
 function initializeTheme() {
   let saved = null;
   try { saved = localStorage.getItem("fm-dashboard-theme"); } catch {}
-  const preferred = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   setTheme(saved === "light" || saved === "dark" ? saved : preferred);
-  for (const button of ui.themeButtons) button.addEventListener("click", toggleTheme);
+  ui.themeButton.addEventListener("click", toggleTheme);
 }
 
-// Notifications are entirely client-side: the server never learns that a
-// browser wants them, and a denied or unsupported permission simply leaves the
-// control off rather than degrading anything else on the page.
 function notificationsSupported() {
   return typeof Notification === "function";
 }
 
-function paintNotifyButtons() {
+function paintNotifyButton() {
   const supported = notificationsSupported();
   const label = !supported ? "Alerts unavailable" : state.notifyEnabled ? "Alerts on" : "Alerts off";
-  ui.notifyButtons[0].textContent = label;
-  ui.notifyButtons[0].disabled = !supported;
-  for (const button of ui.notifyButtons) {
-    button.setAttribute("aria-pressed", String(state.notifyEnabled));
-    if (button !== ui.notifyButtons[0]) button.setAttribute("aria-label", `${label}. Toggle desktop alerts for new inbox items.`);
-  }
-  ui.notifyButtons[1].disabled = !supported;
-  ui.notifyButtons[1].textContent = state.notifyEnabled ? "🔔" : "🔕";
+  const text = document.querySelector("#notify-button .nlabel");
+  if (text) text.textContent = label;
+  ui.notifyButton.disabled = !supported;
+  ui.notifyButton.setAttribute("aria-pressed", String(state.notifyEnabled));
 }
 
 async function toggleNotifications() {
@@ -268,25 +225,23 @@ async function toggleNotifications() {
     state.notifyEnabled = permission === "granted";
   }
   try { localStorage.setItem("fm-dashboard-alerts", state.notifyEnabled ? "on" : "off"); } catch {}
-  paintNotifyButtons();
+  paintNotifyButton();
 }
 
 function initializeNotifications() {
   let saved = null;
   try { saved = localStorage.getItem("fm-dashboard-alerts"); } catch {}
   state.notifyEnabled = saved === "on" && notificationsSupported() && Notification.permission === "granted";
-  for (const button of ui.notifyButtons) button.addEventListener("click", () => void toggleNotifications());
-  paintNotifyButtons();
+  ui.notifyButton.addEventListener("click", () => void toggleNotifications());
+  paintNotifyButton();
 }
 
 function announceNewItems(items, observed) {
   // A render that carried no snapshot saw nothing, so it cannot be the
-  // baseline: treating its empty inbox as "what was already there" would make
-  // every waiting item alert as new the moment the first snapshot arrives.
+  // baseline: its empty inbox must not turn every waiting item into an alert.
   if (!observed) return;
   const ids = new Set(items.map((item) => item.id));
   if (state.seenInboxIds === null) {
-    // The first render is the baseline; everything already waiting is not new.
     state.seenInboxIds = ids;
     return;
   }
@@ -295,1162 +250,1056 @@ function announceNewItems(items, observed) {
   if (!fresh.length || !state.notifyEnabled || !notificationsSupported() || Notification.permission !== "granted") return;
   for (const item of fresh.slice(0, 3)) {
     try {
-      new Notification(`Firstmate: ${item.label}`, { body: `${item.title}\n${item.reasons[0].text}`, tag: `fm-inbox-${item.id}` });
-    } catch {
-      return;
-    }
-  }
-  if (fresh.length > 3) {
-    try {
-      new Notification("Firstmate: more items need you", { body: `${fresh.length - 3} further inbox items appeared.`, tag: "fm-inbox-overflow" });
-    } catch {}
+      new Notification("Firstmate: an item needs you", { body: `${item.title}\n${item.reasons[0].text}`, tag: `fm-inbox-${item.id}` });
+    } catch { return; }
   }
 }
 
-function renderSignals(health) {
-  const overall = element("div", `signal overall ${health.overall.tone}`);
-  overall.append(dot(health.overall.tone), element("span", "label", "FLEET"), element("span", "", health.overall.label));
-  const chips = health.signals.map((signal) => {
-    const item = element("div", "signal");
-    item.title = `${signal.detail} ${signal.tooltip}`;
-    item.append(dot(signal.tone));
-    item.append(element("span", "label", signal.label.toUpperCase()));
-    item.append(element("span", "", signal.value));
-    return item;
+// --- verdict strip ----------------------------------------------------------
+
+function snapshotTasks() {
+  return Array.isArray(state.envelope?.snapshot?.tasks) ? state.envelope.snapshot.tasks : [];
+}
+
+function verdictFacts() {
+  const status = state.envelope?.status;
+  const firstRun = !state.envelope?.snapshot || status?.phase === "first_run";
+  const inbox = firstRun ? { items: [], counts: { decisions: 0, credentials: 0, blocked: 0, failed: 0, review_ready: 0, merge_ready: 0, unknown: 0 } } : buildInbox(state.envelope.snapshot);
+  const amber = inbox.counts.decisions + inbox.counts.credentials + inbox.counts.review_ready + inbox.counts.merge_ready;
+  const red = inbox.counts.blocked + inbox.counts.failed;
+  return { firstRun, inbox, amber, red, stale: status?.stale === true };
+}
+
+function renderVerdict() {
+  const { firstRun, inbox, amber, red, stale } = verdictFacts();
+  ui.app.dataset.stale = stale ? "true" : "false";
+
+  let text;
+  let tone;
+  if (firstRun) { text = "Nothing has run yet"; tone = "grey"; }
+  else if (inbox.counts.total === 0) { text = "Nothing needs you"; tone = "green"; }
+  else if (red === 0) { text = `${amber} ${amber === 1 ? "decision" : "decisions"} waiting`; tone = "amber"; }
+  else if (amber === 0) { text = `${red} ${red === 1 ? "task" : "tasks"} blocked`; tone = "red"; }
+  else { text = `${inbox.counts.total} ${inbox.counts.total === 1 ? "item" : "items"} need you`; tone = "amber"; }
+
+  ui.vdot.className = `vdot ${stale ? "vd-unknown" : `vd-${tone}`}`;
+  ui.verdict.className = `verdict${!stale && tone !== "grey" ? ` t-${tone}` : ""}`;
+  ui.verdict.textContent = text;
+
+  const tasks = snapshotTasks();
+  const segments = tasks.map((task) => {
+    const def = COLUMN_DEFS.find((column) => column.key === task?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
+    return element("span", `seg seg--${def.tone}`);
   });
-  replaceChildren(ui.signals, [overall, ...chips]);
-}
+  ui.segbar.replaceChildren(...(segments.length ? segments : [element("span", "seg")]));
 
-function renderHealthStrip(health) {
-  replaceChildren(ui.healthStrip, health.signals.map((signal) => {
-    const card = element("div", `health-card ${signal.tone}`);
-    card.title = signal.tooltip;
-    const head = element("div", "health-head");
-    head.append(dot(signal.tone), element("span", "label", signal.label.toUpperCase()));
-    card.append(head);
-    card.append(element("strong", "health-value", signal.value));
-    card.append(element("p", "health-detail", signal.detail));
-    return card;
-  }));
-}
+  const age = state.envelope?.status?.last_success_age_seconds;
+  ui.stalenote.hidden = !stale;
+  if (stale) ui.staleText.textContent = `data ${fmtAge(age) || "age unknown"} old · refresh failing`;
 
-function renderBadges(counts) {
-  const chips = badgeOrder
-    .filter(([key]) => counts[key] > 0)
-    .map(([key, label, tone]) => {
-      const badge = element("span", `badge ${tone}`);
-      badge.append(element("strong", "", String(counts[key])), element("span", "", label));
-      return badge;
-    });
-  if (!chips.length) chips.push(element("span", "badge quiet", "Nothing needs you"));
-  replaceChildren(ui.badges, chips);
-  ui.navBadge.textContent = String(counts.total);
-  ui.navBadge.hidden = counts.total === 0;
-}
-
-function fieldChips(readiness) {
-  const list = element("div", "pr-fields");
-  for (const name of ["state", "review", "checks", "mergeable"]) {
-    const value = readiness.fields[name];
-    const chip = element("span", `pr-field ${value === "unknown" ? "unknown" : ""}`.trim());
-    chip.append(element("span", "key", name), element("span", "value", value));
-    list.append(chip);
+  const badge = inbox.counts.total;
+  for (const node of [ui.navbadge, ui.tabbadge]) {
+    node.hidden = badge === 0;
+    node.textContent = String(badge);
   }
-  return list;
 }
 
-function prPanel(readiness) {
-  const panel = element("div", `pr-panel ${readiness.tone}`);
-  const head = element("div", "pr-head");
-  head.append(dot(readiness.tone), element("span", "label", readiness.label.toUpperCase()));
-  const observed = readiness.freshness === "cached" && readiness.age_seconds !== null
-    ? `observed ${formatAge(readiness.age_seconds)} ago`
-    : "never observed";
-  head.append(element("span", "pr-observed", observed));
-  panel.append(head);
-  panel.append(fieldChips(readiness));
-  const link = element("a", "pr-link", readiness.url);
-  link.href = readiness.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  panel.append(link);
-  for (const caveat of readiness.caveats) panel.append(element("p", "pr-caveat", `Caveat: ${caveat}`));
-  return panel;
+function publishStickyHeight() {
+  const height = ui.app.querySelector(".vstrip")?.getBoundingClientRect().height;
+  if (Number.isFinite(height) && height > 0) document.documentElement.style.setProperty("--vstrip-h", `${Math.ceil(height)}px`);
 }
 
-function inboxCard(item) {
-  const card = element("article", `inbox-card ${item.tone}`);
-  card.setAttribute("aria-label", `${item.label}: ${item.title}`);
+// --- Needs you --------------------------------------------------------------
 
-  const head = element("div", "inbox-head");
-  head.append(dot(item.tone));
-  head.append(element("span", "pill", item.label));
-  if (item.project) head.append(projectPill(item.project));
-  const age = element("span", `age ${item.age_known ? "" : "unknown"}`.trim(),
-    item.age_known ? `${formatAge(item.age_seconds)} · ${item.age_source}` : "age unknown");
-  head.append(age);
-  card.append(head);
+function needsCard(item) {
+  const primary = item.reasons[0];
+  const def = REASON_KINDS[primary.kind] || { tone: "amber", label: "Decision" };
+  const card = element("article", "card");
+  card.setAttribute("data-task", item.id);
 
-  card.append(element("h3", "", item.title));
-  card.append(element("div", "task-id", item.task_id ? item.task_id : `backlog item ${item.id}`));
+  const top = element("div", "card-top");
+  const badge = element("span", `kind t-${def.tone === "unknown" ? "grey" : def.tone}`);
+  badge.append(glyph(primary.kind, def.tone).node, document.createTextNode(def.label));
+  top.append(badge);
+  if (item.project) top.append(element("span", "proj", label(item.project)));
+  top.append(ageChip(item.age_seconds, item.age_known));
+  card.append(top);
 
-  const reasons = element("div", "reasons");
-  for (const reason of item.reasons) {
-    const row = element("div", `reason ${reason.tone}`);
-    const label = element("div", "reason-label");
-    label.append(dot(reason.tone), element("span", "", reason.label));
-    if (reason.key) label.append(element("code", "reason-key", reason.key));
-    label.append(element("span", "reason-source", reason.source));
-    row.append(label);
-    // Full text, never truncated: a half-shown decision is a decision the
-    // captain has to go and look up somewhere else.
-    row.append(element("p", "reason-text", reason.text));
-    reasons.append(row);
+  card.append(element("h3", "card-title", item.title));
+  card.append(element("p", "card-ask", primary.text));
+
+  const extra = [];
+  if (item.pr?.url) {
+    const line = element("button", "card-linkline", `${item.pr.verdict || "pull request"} · open`);
+    line.type = "button";
+    line.addEventListener("click", (event) => { event.stopPropagation(); window.open(item.pr.url, "_blank", "noopener"); });
+    extra.push(line);
   }
-  card.append(reasons);
-
-  if (item.pr) card.append(prPanel(item.pr));
-
-  for (const reference of item.work_items) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
+  if (item.reasons.length > 1) {
+    const more = item.reasons.slice(1).map((reason) => (REASON_KINDS[reason.kind] || { label: reason.kind }).label);
+    extra.push(element("div", "card-id", `also: ${more.join(", ")}`));
   }
-  if (item.action) {
-    const action = element("div", "card-action");
-    action.append(element("span", "label", "ACTION"), element("code", "", item.action));
-    card.append(action);
-  }
+  extra.push(element("div", "card-id", item.id));
+  const wrap = element("div", "card-extra");
+  wrap.append(...extra);
+  card.append(wrap);
+
+  card.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: item.id }); });
   return card;
 }
 
-function renderInbox(inbox, envelope) {
-  if (!inbox.items.length) {
-    const empty = element("div", "inbox-empty");
-    const waiting = envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good";
-    empty.append(dot(waiting ? "amber" : "green"));
-    const copy = element("div");
-    copy.append(element("strong", "", waiting ? "No inbox yet" : "Nothing needs you"));
-    copy.append(element("p", "", waiting
-      ? "The captain inbox appears once a fleet snapshot is available. Until then this list is empty because nothing has been read, not because nothing is waiting."
-      : "No open decision, blocker, failure, credential request, or review-ready pull request is outstanding in this home."));
-    empty.append(copy);
-    replaceChildren(ui.inboxList, [empty]);
-    return;
-  }
-  replaceChildren(ui.inboxList, inbox.items.map(inboxCard));
-}
-
-function renderNotices(envelope) {
-  const status = envelope?.status;
-  if (!status) {
-    replaceChildren(ui.notices, []);
-    return;
-  }
-  if (status.phase === "first_run") {
-    const notice = element("div", "notice");
-    notice.append(dot("amber"), element("div", "", "Waiting for the first fleet snapshot. The inbox and board will populate automatically."));
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  if (status.error) {
-    const notice = element("div", `notice ${envelope.snapshot ? "" : "error"}`.trim());
-    const copy = element("div");
-    const heading = status.stale ? "Showing the last known good snapshot" : "Fleet snapshot unavailable";
-    const followup = status.error.kind === "service_unit_outdated"
-      ? " Snapshot polling is paused until the service is reinstalled."
-      : " Retrying automatically.";
-    copy.append(element("strong", "", heading));
-    copy.append(document.createTextNode(`${status.error.kind}: ${status.error.message}.${followup}`));
-    if (status.error.stderr) copy.append(element("code", "", ` ${status.error.stderr}`));
-    notice.append(dot(status.stale ? "amber" : "red"), copy);
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  if (status.stale) {
-    const notice = element("div", "notice");
-    notice.append(dot("amber"), element("div", "", `Snapshot is ${formatAge(status.last_success_age_seconds)} old. Liveness and ages are unverified until refresh recovers.`));
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  replaceChildren(ui.notices, []);
-}
-
-function valuesFor(tasks, key) {
-  return [...new Set(tasks.map((task) => key === "state" ? taskState(task) : String(task?.[key] || "")).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function syncSelect(select, values, key) {
-  const selected = state.filters[key];
-  const first = select.options[0];
-  replaceChildren(select, [first, ...values.map((value) => {
-    const option = element("option", "", key === "state" ? (columnLabels[value] || value) : value);
-    option.value = value;
-    return option;
-  })]);
-  select.value = values.includes(selected) ? selected : "";
-  if (!values.includes(selected)) state.filters[key] = "";
-}
-
-function renderFilters(tasks) {
-  for (const key of Object.keys(state.filters)) {
-    syncSelect(ui.filterForm.elements[key], valuesFor(tasks, key), key);
-  }
-  const count = Object.values(state.filters).filter(Boolean).length;
-  ui.filterCount.textContent = count ? `(${count} active)` : "";
-}
-
-function endpointLiveness(task) {
-  const status = task?.endpoint?.status;
-  if (status === "alive") return "alive";
-  if (status === "dead" || status === "absent") return "dead";
-  if (status === "unknown") return "unknown";
-  return task?.endpoint?.exists === false ? "dead" : "unknown";
-}
-
-function endpointTone(task) {
-  const liveness = endpointLiveness(task);
-  return liveness === "alive" ? "green" : liveness === "dead" ? "red" : "grey";
-}
-
-function endpointLabel(task) {
-  const status = task?.endpoint?.status;
-  if (["alive", "dead", "absent", "unknown"].includes(status)) return status;
-  if (task?.endpoint?.exists === true) return "present";
-  if (task?.endpoint?.exists === false) return "absent";
-  return "unknown";
-}
-
-function actionMetadata(task, className = "card-action") {
-  const action = task?.card?.action;
-  if (typeof action !== "string" || !action) return null;
-  const metadata = element("div", className);
-  metadata.append(element("span", "label", "ACTION"), element("code", "", action));
-  return metadata;
-}
-
-function workItemLabel(reference) {
-  const number = reference?.number ? `#${reference.number}` : "";
-  return [reference?.path || reference?.repo || reference?.owner, number].filter(Boolean).join("");
-}
-
-function workItemLink(reference) {
-  if (!reference?.url) return null;
-  const liveState = reference.forge !== "unknown" && ["open", "closed", "merged"].includes(reference?.enrichment?.state);
-  const link = element("a", `work-link ${liveState ? "" : "plain"}`.trim());
-  link.href = reference.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  link.title = reference?.enrichment?.title || reference.url;
-  link.append(element("span", "host", reference.host || reference.forge || "link"));
-  link.append(element("span", "path", workItemLabel(reference) || reference.url));
-  if (liveState) link.append(element("span", "item-state", reference.enrichment.state));
-  return link;
-}
-
-function taskCard(task) {
-  const column = taskState(task);
-  const card = element("article", `card ${column}`);
-  card.setAttribute("aria-label", `${task.id}: ${titleFor(task)}`);
-  const head = element("div", "card-head");
-  head.append(element("span", "pill", `${task.kind || "task"}`));
-  if (task.project) head.append(projectPill(task.project));
-  head.append(dot(endpointTone(task)));
-  head.append(element("span", "age", `${formatAge(task?.paths?.status_log?.last_event_age_seconds)} ago`));
-  card.append(head);
-  card.append(element("div", "task-id", task.id));
-  card.append(element("h3", "", titleFor(task)));
-
-  const dispatch = [task.harness, task.model, task.effort].filter(Boolean).join(" · ");
-  card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
-  const detail = task?.current_state?.detail || task?.current_state?.state || task?.card?.reason || "No state detail";
-  card.append(element("div", "detail", detail));
-  const action = actionMetadata(task);
-  if (action) card.append(action);
-
-  const endpoint = element("div", "endpoint");
-  endpoint.append(dot(endpointTone(task)));
-  endpoint.append(document.createTextNode(`endpoint ${endpointLabel(task)}`));
-  card.append(endpoint);
-
-  if (task?.pr?.url) {
-    const link = element("a", "pr-link", task.pr.url);
-    link.href = task.pr.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    card.append(link);
-  }
-
-  const references = Array.isArray(task.work_items) ? task.work_items : [];
-  for (const reference of references) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
-  }
-
-  // The per-agent timeline is one click from the card it belongs to, because a
-  // fleet-wide stream is where you look afterwards and a single agent's own
-  // sequence is what you want while it is working.
-  const timeline = element("button", "card-timeline", "Timeline");
-  timeline.type = "button";
-  timeline.addEventListener("click", () => showTaskTimeline(task.id));
-  card.append(timeline);
-  return card;
-}
-
-function renderSecondmates(tasks) {
-  const mates = tasks.filter((task) => task.kind === "secondmate" && taskMatches(task));
-  ui.mateCount.textContent = String(mates.length);
-  if (!mates.length) {
-    replaceChildren(ui.mateList, [element("div", "empty-inline", "None registered in this view")]);
-    return;
-  }
-  replaceChildren(ui.mateList, mates.map((task) => {
-    const mate = element("article", "mate");
-    mate.append(dot(endpointTone(task)));
-    mate.append(element("strong", "", task.id));
-    mate.append(element("span", "pill", columnLabels[taskState(task)] || taskState(task) || "unknown"));
-    const detail = [task.harness, task.model, task.effort, task.current_state?.detail].filter(Boolean).join(" · ");
-    mate.append(element("small", "", detail || "No current detail"));
-    const action = actionMetadata(task, "mate-action");
-    if (action) mate.append(action);
-    return mate;
-  }));
-}
-
-function emptyBoard(phase, errorKind = null) {
-  const panel = element("div", "empty-board");
-  panel.append(dot(phase === "first_run" || phase === "unavailable" ? "amber" : "green"));
-  panel.append(element("h2", "", phase === "first_run" ? "Waiting for the first snapshot" : phase === "unavailable" ? "Fleet unavailable" : "Fleet is empty"));
-  panel.append(element("p", "", phase === "first_run"
-    ? "The snapshot command has not completed yet. Tasks will appear here without a page reload."
-    : phase === "unavailable"
-      ? errorKind === "service_unit_outdated"
-        ? "The server cannot produce a valid fleet snapshot yet. Its error is shown above. Snapshot polling will resume after the service is reinstalled."
-        : "The server cannot produce a valid fleet snapshot yet. Its error is shown above and refreshes continue automatically."
-      : "No task metadata is present. The board is read-only and will show work as soon as Firstmate starts it."));
-  return panel;
-}
-
-function renderBoard(snapshot, envelope) {
-  const allTasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
-  renderFilters(allTasks);
-  renderSecondmates(allTasks);
-  const mainTasks = allTasks.filter((task) => task.kind !== "secondmate" && taskMatches(task));
-  const precedence = Array.isArray(snapshot?.card_precedence) ? snapshot.card_precedence.filter((column) => column !== "secondmate") : [];
-  if (!snapshot || (!allTasks.length && envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good")) {
-    replaceChildren(ui.kanban, [emptyBoard(envelope?.status?.phase, envelope?.status?.error?.kind)]);
-    return;
-  }
-  if (!allTasks.length) {
-    replaceChildren(ui.kanban, [emptyBoard("ready")]);
-    return;
-  }
-  replaceChildren(ui.kanban, precedence.map((columnName) => {
-    const tasks = mainTasks.filter((task) => taskState(task) === columnName);
-    const section = element("section", `column ${["needs_decision", "blocked", "failed"].includes(columnName) ? "attention" : ""}`.trim());
-    section.setAttribute("aria-labelledby", `column-${columnName}`);
-    const head = element("div", "column-head");
-    head.append(dot(columnTones[columnName]));
-    const title = element("h2", "", columnLabels[columnName] || columnName);
-    title.id = `column-${columnName}`;
-    head.append(title, element("span", "count", String(tasks.length)));
-    section.append(head);
-    if (tasks.length) section.append(...tasks.map(taskCard));
-    else section.append(element("div", "empty-column", mainTasks.length ? "Nothing here" : "No matching tasks"));
-    return section;
-  }));
-}
-
-// ---------------------------------------------------------------------------
-// Completed-work history
-// ---------------------------------------------------------------------------
-
-// The only path from report text to the page. Every node is built with
-// createElement and createTextNode against markdown.js's tag allowlist, the
-// class name must be one of its closed vocabulary, and `href` is re-validated
-// here even though the parser already applied the same policy. No other
-// attribute is ever set, so an `onerror` or `style` carried by a crafted node
-// cannot reach the DOM. There is no innerHTML on this path by construction.
-// --- activity -------------------------------------------------------------
-//
-// Every value below reaches the page through textContent. The server already
-// refuses anything that is not an allowlisted token, so this is the second of
-// two independent reasons a stored event can never become markup.
-
-function activityRow(row) {
-  const item = element("li", "activity-row");
-  item.title = row.at;
-  item.append(element("span", "activity-time", clockLabel(row.at)));
-
-  const body = element("div", "activity-body");
-  const head = element("div", "activity-head");
-  head.append(dot(typeTone(row.type)));
-  head.append(element("strong", "", typeLabel(row.type)));
-  if (row.tool) head.append(element("span", "activity-tool", row.tool));
-  if (row.outcome) {
-    const outcome = element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome);
-    head.append(outcome);
-  }
-  body.append(head);
-
-  const meta = [row.task, row.harness].filter(Boolean).join(" · ");
-  if (meta) body.append(element("div", "activity-meta", meta));
-  if (row.summary) body.append(element("div", "activity-summary", row.summary));
-  item.append(body);
-  return item;
-}
-
-// The activity filters are rebuilt from a stream that a broadcast replaces up
-// to four times a second, so replacing their options unconditionally would
-// close an open dropdown under the reader every quarter second - on a busy
-// fleet, which is exactly when the filter is wanted. Options are therefore
-// replaced only when the list has actually changed, and never while the reader
-// is in the control; the next render picks it up once focus leaves.
-function syncActivitySelect(key, values) {
-  const select = ui.activityForm.elements[key];
-  const selected = state.activity.filters[key];
-  // A filter whose value is no longer in the stream is kept in the list rather
-  // than silently cleared, so a reader watching one agent does not get pulled
-  // back to the whole fleet the moment that agent goes quiet.
-  const wanted = selected && !values.includes(selected) ? [...values, selected] : values;
-  const current = [...select.options].slice(1).map((option) => option.value);
-  const unchanged = current.length === wanted.length
-    && current.every((value, index) => value === wanted[index]);
-  if (!unchanged && document.activeElement !== select) {
-    const first = select.options[0];
-    replaceChildren(select, [first, ...wanted.map((value) => {
-      const option = element("option", "", key === "type" ? typeLabel(value) : value);
-      option.value = value;
-      return option;
-    })]);
-  }
-  if (select.value !== selected) select.value = selected;
-}
-
-function renderActivity() {
-  const envelope = state.activity.envelope;
-  // The stream and the selected task's backfill are two separate slots and are
-  // merged here rather than in either one, so a broadcast can replace the whole
-  // stream without discarding rows that were fetched from the store.
-  const merged = mergeTaskBackfill(envelope?.events, state.activity.backfill, state.activity.filters.task);
-  const view = buildTimeline({ events: merged }, state.activity.filters);
-  for (const key of Object.keys(state.activity.filters)) syncActivitySelect(key, view.choices[key]);
-  const active = Object.values(state.activity.filters).filter(Boolean).length;
-  ui.activityFilterCount.textContent = active ? `(${active} active)` : "";
-
-  const notices = [];
-  const notice = timelineNotice(envelope, merged.length, view.total);
-  if (notice.text) notices.push(historyWarning(notice.tone, "", notice.text));
-  if (view.truncated) {
-    notices.push(historyWarning("amber", "Showing the most recent events only",
-      ` ${view.total} events match and the newest ${view.rows.length} are drawn.`));
-  }
-  const selected = state.activity.filters.task;
-  if (selected) {
-    const task = (state.envelope?.snapshot?.tasks || []).find((entry) => entry?.id === selected);
-    const gap = sourceNotice(task, envelope);
-    if (gap) notices.push(historyWarning("amber", "", gap));
-  }
-  replaceChildren(ui.activityNotices, notices);
-  replaceChildren(ui.activityList, view.rows.map(activityRow));
-
-  // Same shape as every other refresh note on the page: a relative age, not a
-  // raw stamp. The exact instant stays on each row's own title.
-  const newest = view.rows[0]?.epoch;
-  ui.activityNote.textContent = newest
-    ? `${view.total} event${view.total === 1 ? "" : "s"} · newest ${formatAge(Math.max(0, Math.floor(Date.now() / 1000) - newest))} ago`
-    : "No events to show";
-}
-
-function markdownDom(node) {
-  if (typeof node?.text === "string") return document.createTextNode(node.text);
-  if (!node || !MARKDOWN_TAGS.has(node.tag)) return document.createTextNode("");
-  const el = document.createElement(node.tag);
-  if (typeof node.className === "string" && MARKDOWN_CLASSES.has(node.className)) el.className = node.className;
-  if (node.tag === "a") {
-    const href = safeUrl(node.href);
-    if (!href) return document.createTextNode(plainText(node));
-    el.setAttribute("href", href);
-    el.setAttribute("target", "_blank");
-    el.setAttribute("rel", "noreferrer noopener");
-  }
-  for (const child of Array.isArray(node.children) ? node.children : []) el.append(markdownDom(child));
-  return el;
-}
-
-function plainText(node) {
-  if (typeof node?.text === "string") return node.text;
-  return (Array.isArray(node?.children) ? node.children : []).map(plainText).join("");
-}
-
-function ageSince(millis) {
-  if (typeof millis !== "number") return null;
-  return Math.max(0, Math.floor((Date.now() - millis) / 1000));
-}
-
-// Red is a fault, amber is a warning, and everything else is information on a
-// neutral surface rather than on the warning strip. A heading is optional: an
-// empty one is left out entirely rather than drawn as an empty block, which
-// would give the notice a line of leading no other notice on the page has.
-function noticeVariant(tone) {
-  if (tone === "red") return "error";
-  if (tone === "amber") return "";
-  return "info";
-}
-
-function historyWarning(tone, heading, detail) {
-  const notice = element("div", `notice ${noticeVariant(tone)}`.trim());
-  const copy = element("div");
-  if (heading) copy.append(element("strong", "", heading));
-  copy.append(document.createTextNode(detail));
-  notice.append(dot(tone), copy);
-  return notice;
-}
-
-function renderHistoryWarnings(view, envelope) {
-  const notices = [];
-  const status = envelope?.status;
-  if (status?.error) {
-    notices.push(historyWarning(envelope?.history ? "amber" : "red",
-      envelope?.history ? "Showing the last completed-work records that could be read" : "Completed-work history unavailable",
-      ` ${status.error.kind}: ${status.error.message}. Retrying automatically.`));
-  }
-  if (view.truncated) {
-    notices.push(historyWarning("amber", "More completed work exists than is shown",
-      ` This view reads the most recent ${envelope?.config?.record_limit ?? "bounded set of"} completion records; ${view.record_total ?? "more"} are stored. Narrow the filters or raise the record limit to see older work.`));
-  }
-  if (view.malformed.length) {
-    const notice = element("div", "notice");
-    const copy = element("div");
-    copy.append(element("strong", "", `${view.malformed.length} completion record${view.malformed.length === 1 ? "" : "s"} could not be read`));
-    copy.append(document.createTextNode(" These tasks completed but their durable records are unusable, so they are missing from the list below rather than absent from history."));
-    const list = element("ul", "malformed-list");
-    for (const entry of view.malformed) {
-      const item = element("li");
-      item.append(element("code", "", entry.id));
-      item.append(document.createTextNode(` ${entry.explanation}`));
-      if (entry.path) item.append(element("code", "quiet-path", entry.path));
-      list.append(item);
-    }
-    copy.append(list);
-    notice.append(dot("amber"), copy);
-    notices.push(notice);
-  }
-  replaceChildren(ui.historyWarnings, notices);
-}
-
-function usagePanel(row) {
-  const tone = row.usage.available
-    ? ""
-    : row.usage.collection === "operational"
-      ? "operational"
-      : "unknown";
-  const panel = element("div", `usage-panel ${tone}`.trim());
-  panel.append(element("span", "label", "USAGE"));
-  if (!row.usage.available) {
-    // Never a blank cell and never a zero: "unavailable" and "nothing happened"
-    // are different facts.
-    panel.append(element("span", "usage-total", "unavailable"));
-    panel.append(element("span", "usage-reason", row.usage.reason));
-    return panel;
-  }
-  panel.append(element("span", "usage-total", `${formatTokens(row.usage.totals.total_tokens)} tokens`));
-  const parts = [
-    ["in", row.usage.totals.input_tokens],
-    ["out", row.usage.totals.output_tokens],
-    ["cache read", row.usage.totals.cache_read_tokens],
-    ["reasoning", row.usage.totals.reasoning_tokens],
-  ].filter(([, value]) => typeof value === "number");
-  for (const [name, value] of parts) {
-    const chip = element("span", "usage-part");
-    chip.append(element("span", "key", name), element("span", "value", formatTokens(value)));
-    panel.append(chip);
-  }
-  if (row.usage.cost) {
-    panel.append(element("span", "usage-part", `≈ ${row.usage.cost.estimated.toFixed(2)} ${row.usage.cost.currency || ""}`.trim()));
-  }
-  return panel;
-}
-
-function historyPrPanel(row) {
-  const panel = element("div", `pr-panel ${row.pr.tone}`);
-  const head = element("div", "pr-head");
-  head.append(dot(row.pr.tone), element("span", "label", row.pr.state.toUpperCase()));
-  head.append(element("span", "pr-observed", row.pr.observed
-    ? `recorded ${row.pr.observed_at}`
-    : "no status was recorded at completion"));
-  panel.append(head);
-  const fields = element("div", "pr-fields");
-  for (const field of row.pr.fields) {
-    const chip = element("span", `pr-field ${field.value === "unknown" ? "unknown" : ""}`.trim());
-    chip.append(element("span", "key", field.name), element("span", "value", field.value));
-    fields.append(chip);
-  }
-  panel.append(fields);
-  // Always the complete https URL, never a bare number.
-  const link = element("a", "pr-link", row.pr.url);
-  link.href = row.pr.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  panel.append(link);
-  return panel;
-}
-
-function historyCard(row) {
-  const card = element("article", `history-card ${row.outcome.tone}`);
-  card.setAttribute("aria-label", `${row.outcome.label}: ${row.title || row.id}`);
-
-  const head = element("div", "card-head");
-  head.append(dot(row.outcome.tone));
-  head.append(element("span", "pill", row.outcome.label));
-  head.append(element("span", "pill", row.kind));
-  if (row.project) head.append(projectPill(row.project));
-  const age = ageSince(row.completed_millis);
-  head.append(element("span", "age", row.timestamps.completed
-    ? `${row.timestamps.completed}${age === null ? "" : ` · ${formatAge(age)} ago`}`
-    : "completion time unknown"));
-  card.append(head);
-
-  card.append(element("div", "task-id", row.id));
-  card.append(element("h3", "", row.title || "No recorded title"));
-
-  const dispatch = [row.harness, row.model, row.effort].filter(Boolean).join(" · ");
-  card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
-
-  const meta = element("div", "history-meta");
-  meta.append(element("span", "", `took ${formatDuration(row.duration)}`));
-  if (row.mode) meta.append(element("span", "", `delivery ${row.mode}`));
-  if (row.yolo) meta.append(element("span", "", `autonomy ${row.yolo}`));
-  if (row.outcome.forced) meta.append(element("span", "warn", "cleaned up with unlanded work discarded"));
-  if (row.outcome.state === "unknown") meta.append(element("span", "warn", `final result not recorded (${row.outcome.source})`));
-  card.append(meta);
-
-  if (row.outcome.detail) card.append(element("div", "detail", row.outcome.detail));
-
-  if (row.pr.present) card.append(historyPrPanel(row));
-
-  for (const reference of row.work_items) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
-  }
-
-  card.append(usagePanel(row));
-
-  const actions = element("div", "history-actions");
-  if (row.report.present) {
-    const button = element("button", "report-button", "Read report");
-    button.type = "button";
-    button.addEventListener("click", () => void openReport(row));
-    actions.append(button);
-  } else if (row.kind === "scout") {
-    actions.append(element("span", "quiet", "No report was retained for this investigation"));
-  }
-  if (row.gbrain.status === "captured") actions.append(element("span", "pill quiet", "captured for search"));
-  card.append(actions);
-  return card;
-}
-
-function renderHistoryPager(view) {
-  if (view.page.pages <= 1) {
-    replaceChildren(ui.historyPager, []);
-    return;
-  }
-  const previous = element("button", "pager-button", "Newer");
-  previous.type = "button";
-  previous.disabled = view.page.index === 0;
-  previous.addEventListener("click", () => { state.history.page = view.page.index - 1; renderHistory(); });
-  const next = element("button", "pager-button", "Older");
-  next.type = "button";
-  next.disabled = view.page.index >= view.page.pages - 1;
-  next.addEventListener("click", () => { state.history.page = view.page.index + 1; renderHistory(); });
-  replaceChildren(ui.historyPager, [
-    previous,
-    element("span", "pager-label", `Page ${view.page.index + 1} of ${view.page.pages}`),
-    next,
-  ]);
-}
-
-function renderHistoryFilters(view) {
-  for (const key of ["project", "harness", "model", "kind", "outcome"]) {
-    const select = ui.historyForm.elements[key];
-    const values = view.facets[key];
-    // buildHistory has already dropped a filter whose value left the facets, so
-    // the control shows exactly what the list below it was built from.
-    const selected = view.filters[key];
-    state.history.filters[key] = selected;
-    const first = select.options[0];
-    replaceChildren(select, [first, ...values.map((value) => {
-      const option = element("option", "", value);
-      option.value = value;
-      return option;
-    })]);
-    select.value = selected;
-  }
-  const count = Object.values(view.filters).filter(Boolean).length;
-  ui.historyFilterCount.textContent = count ? `(${count} active)` : "";
-}
-
-function renderHistory() {
-  const envelope = state.history.envelope;
-  const view = buildHistory(envelope, { ...state.history.filters, page: state.history.page, pageSize: state.history.pageSize });
-  state.history.page = view.page.index;
-  renderHistoryFilters(view);
-  renderHistoryWarnings(view, envelope);
-
-  const status = envelope?.status;
-  ui.historyNote.textContent = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
-
-  const summary = element("div", "summary-line");
-  if (view.page.matched) {
-    summary.append(element("strong", "", `${view.page.first}-${view.page.last} of ${view.page.matched}`));
-    summary.append(document.createTextNode(view.page.matched === view.page.total
-      ? " completed records"
-      : ` completed records matching, from ${view.page.total} read`));
-  } else {
-    summary.append(element("strong", "", "No matching completed records"));
-  }
-  // A retained read is still attributed usage, so it is stated as such rather
-  // than as a fault - the one thing it adds is that a writer held the store when
-  // this refresh tried, which is why a just-finished task may not be in it yet.
-  if (view.usage.available && view.usage.stale) {
-    summary.append(element("span", "quiet", `showing the last known good token usage read: ${view.usage.reason || "the newest read did not land"}`));
-  } else if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
-  else if (view.usage.collection === "operational") {
-    summary.append(element("span", "quiet", `token usage needs attention: ${view.usage.reason || "the collector failed"}`));
-  } else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
-  if (view.semantic_search.captured_records) {
-    summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
-  }
-  replaceChildren(ui.historySummary, [summary]);
-
-  if (!view.page.matched) {
-    const empty = element("div", "inbox-empty");
-    const waiting = !envelope?.history;
-    empty.append(dot(waiting ? "amber" : "green"));
-    const copy = element("div");
-    copy.append(element("strong", "", waiting ? "No history yet" : view.empty ? "Nothing has completed in this home" : "Nothing matches these filters"));
-    copy.append(element("p", "", waiting
-      ? "Completed work appears once the durable completion records have been read. Until then this list is empty because nothing has been read, not because nothing has finished."
-      : view.empty
-        ? "No task has published a completion record here yet. Completed work stays listed after cleanup and after the recent-work list is pruned."
-        : "Clear or widen the filters to see the rest of the retained history."));
-    empty.append(copy);
-    replaceChildren(ui.historyList, [empty]);
-  } else {
-    replaceChildren(ui.historyList, view.rows.map(historyCard));
-  }
-  renderHistoryPager(view);
-}
-
-function reportNotice(tone, message) {
-  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
-  notice.append(dot(tone), element("div", "", message));
-  return notice;
-}
-
-const REPORT_FAILURES = {
-  invalid_task_id: "That task name is not one this dashboard will look up.",
-  history_unavailable: "The completed-work records have not been read yet, so the report cannot be located.",
-  unknown_task: "This task is no longer in the completed-work records that were read.",
-  no_retained_report: "This task's completion record says no report was retained.",
-  report_missing: "The completion record says a report was retained, but the file is missing or is no longer a plain file.",
-};
-
-async function openReport(row) {
-  ui.reportTask.textContent = `${row.id}${row.project ? ` · ${row.project}` : ""}`;
-  ui.reportTitle.textContent = row.title || row.id;
-  replaceChildren(ui.reportNotices, [reportNotice("amber", "Loading the report.")]);
-  replaceChildren(ui.reportBody, []);
-  if (typeof ui.reportDialog.showModal === "function") ui.reportDialog.showModal();
-  else ui.reportDialog.setAttribute("open", "");
-
-  let payload;
-  try {
-    const response = await fetch(`/api/report?task=${encodeURIComponent(row.id)}`, { cache: "no-store" });
-    payload = await response.json();
-  } catch (error) {
-    replaceChildren(ui.reportNotices, [reportNotice("red", `The report could not be loaded: ${error.message}`)]);
-    return;
-  }
-  if (!payload || payload.schema !== "fm-dashboard-report.v1" || payload.present !== true) {
-    const reason = REPORT_FAILURES[payload?.reason] || "The report could not be loaded.";
-    const notices = [reportNotice("red", reason)];
-    if (payload?.recorded_path) notices.push(reportNotice("amber", `The completion record points at ${payload.recorded_path}.`));
-    replaceChildren(ui.reportNotices, notices);
-    return;
-  }
-
-  const rendered = renderMarkdown(payload.text);
-  const notices = [];
-  if (payload.truncated) {
-    notices.push(reportNotice("amber",
-      `This report is ${payload.bytes} bytes and only the first ${payload.max_bytes} are shown. The full file is at ${payload.recorded_path || "its recorded path"}.`));
-  }
-  for (const notice of rendered.notices) notices.push(reportNotice("amber", noticeSentence(notice)));
-  replaceChildren(ui.reportNotices, notices);
-  replaceChildren(ui.reportBody, rendered.nodes.map(markdownDom));
-}
-
-function closeReport() {
-  if (typeof ui.reportDialog.close === "function") ui.reportDialog.close();
-  else ui.reportDialog.removeAttribute("open");
-  replaceChildren(ui.reportBody, []);
-  replaceChildren(ui.reportNotices, []);
-}
-
-function render(envelope) {
-  state.envelope = envelope;
-  const snapshot = envelope?.snapshot;
-  const health = buildHealth(snapshot, envelope);
-  const inbox = buildInbox(snapshot);
-  renderSignals(health);
-  renderHealthStrip(health);
-  renderBadges(inbox.counts);
-  renderInbox(inbox, envelope);
-  announceNewItems(inbox.items, Boolean(snapshot));
-  renderNotices(envelope);
-  const status = envelope?.status;
-  ui.refreshNote.textContent = status?.last_success_at
+function renderNeeds() {
+  const { firstRun, inbox } = verdictFacts();
+  const status = state.envelope?.status;
+  const note = status?.last_success_at
     ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
     : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
-  renderBoard(snapshot, envelope);
-}
 
-async function fetchSnapshot() {
-  try {
-    const response = await fetch("/api/snapshot", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-dashboard-envelope.v1") throw new Error("unsupported dashboard envelope");
-    render(envelope);
-  } catch (error) {
-    render({
-      schema: "fm-dashboard-envelope.v1",
-      status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: error.message } },
-      snapshot: null,
-    });
+  const view = element("div");
+  view.append(pageHead("Queue · oldest first", "Needs you", note));
+
+  if (firstRun) {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing yet.",
+      teach: "When the fleet starts work, anything that needs your decision - approvals, credential requests, blocked tasks, review-ready pull requests - appears here as a card, oldest first. Everything else stays quiet.",
+    }));
+    return view;
   }
-}
 
-function renderHistoryEnvelope(envelope) {
-  state.history.envelope = envelope;
-  renderHistory();
-}
-
-async function fetchHistory() {
-  try {
-    const response = await fetch("/api/history", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-dashboard-history.v1") throw new Error("unsupported history envelope");
-    renderHistoryEnvelope(envelope);
-  } catch (error) {
-    renderHistoryEnvelope({
-      schema: "fm-dashboard-history.v1",
-      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
-      history: null,
-      usage: null,
-    });
+  if (inbox.items.length) {
+    const cards = element("div", "cards");
+    cards.append(...inbox.items.map(needsCard));
+    view.append(cards);
+    return view;
   }
+
+  const activeCount = snapshotTasks().filter((task) => (task?.card?.column || "active") === "active").length;
+  view.append(emptyState({
+    big: "Nothing needs you.",
+    facts: `${activeCount || "No"} ${activeCount === 1 ? "task" : "tasks"} under way · last check ${formatAge(status?.last_success_age_seconds)} ago`,
+  }));
+  return view;
 }
 
-function renderActivityEnvelope(envelope) {
-  state.activity.envelope = envelope;
-  renderActivity();
+// --- Fleet -------------------------------------------------------------------
+
+function taskRow(task) {
+  const def = COLUMN_DEFS.find((column) => column.key === task?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
+  const row = element("button", "trow");
+  row.type = "button";
+  row.append(element("div", "trow-title", task.backlog?.title || task.id));
+  const meta = element("div", "trow-meta");
+  const project = task.project ? label(task.project) : null;
+  if (project) meta.append(element("span", "", project));
+  const detail = [task.harness, task.model].filter(Boolean).join(" · ");
+  meta.append(element("span", "mid", detail || task.id));
+  meta.append(element("span", "age", fmtAge(task.spawn_age_seconds) || "age unknown"));
+  row.append(meta);
+  row.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: task.id }); });
+  return row;
 }
 
-async function fetchActivity() {
-  try {
-    const response = await fetch("/api/timeline", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.schema !== "fm-dashboard-timeline.v1") throw new Error("unsupported timeline envelope");
-    renderActivityEnvelope({
-      schema: "fm-dashboard-events.v1",
-      status: { ...payload.status, last_event_at: payload.events?.[0]?.occurred_at ?? null },
-      instrumented_harnesses: payload.instrumented_harnesses,
-      events: payload.events,
-    });
-  } catch (error) {
-    renderActivityEnvelope({
-      schema: "fm-dashboard-events.v1",
-      status: { ingestion: "unavailable", reason: error.message },
-      instrumented_harnesses: [],
-      events: [],
-    });
+function fleetColumns() {
+  const tasks = snapshotTasks();
+  return COLUMN_DEFS
+    .map((def) => ({ def, items: tasks.filter((task) => (task?.card?.column || "idle") === def.key) }))
+    .filter((column) => column.items.length > 0);
+}
+
+function renderFleet() {
+  const view = element("div");
+  const status = state.envelope?.status;
+  const note = status?.last_success_at
+    ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
+    : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
+  view.append(pageHead("Live board", "Fleet", note));
+
+  const tasks = snapshotTasks();
+  if (!state.envelope?.snapshot) {
+    view.append(emptyState({
+      ring: true,
+      big: "No workers yet.",
+      teach: "Once workers pick up tasks, this board shows every one of them grouped by state - needs decision, blocked, parked, failed, in review, active, idle - with live counts on the filters above.",
+    }));
+    return view;
   }
-}
 
-// One agent's own timeline. The live stream carries a bounded fleet-wide tail,
-// so a task whose events have already scrolled out of it is fetched from the
-// store rather than shown as empty. The fetched rows go into their own slot,
-// not into the stream: the stream is replaced whole by every broadcast, and one
-// fetch per selection is the point - a busy fleet must not turn each broadcast
-// into an HTTP request.
-async function showTaskTimeline(taskId) {
-  state.activity.filters = { task: taskId, harness: "", type: "" };
-  state.activity.backfill = { task: taskId, events: [] };
-  renderActivity();
-  window.location.hash = "#activity";
-  try {
-    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.schema !== "fm-dashboard-timeline.v1" || state.activity.filters.task !== taskId) return;
-    state.activity.backfill = { task: taskId, events: payload.events || [] };
-    renderActivity();
-  } catch {
-    // The live stream is still authoritative for what has arrived since; a
-    // failed backfill narrows the view rather than breaking it.
+  const columns = fleetColumns();
+  const counts = new Map(columns.map((column) => [column.def.key, column.items.length]));
+  const filters = state.fleet.filters;
+  const shown = columns.filter((column) => filters.length === 0 || filters.includes(column.def.key));
+  const visibleTotal = shown.reduce((sum, column) => sum + column.items.length, 0);
+
+  const chips = element("div", "filters");
+  const allChip = element("button", `fchip${filters.length === 0 ? " is-on" : ""}`);
+  allChip.type = "button";
+  allChip.append(document.createTextNode(`All `), element("span", "cnt", String(tasks.length)));
+  allChip.addEventListener("click", () => { state.fleet.filters = []; render(); });
+  chips.append(allChip);
+  for (const column of columns) {
+    const chip = element("button", `fchip${filters.includes(column.def.key) ? " is-on" : ""}`);
+    chip.type = "button";
+    chip.append(dot(column.def.tone), document.createTextNode(` ${column.def.label} `), element("span", "cnt", String(counts.get(column.def.key))));
+    chip.addEventListener("click", () => {
+      state.fleet.filters = filters.includes(column.def.key)
+        ? filters.filter((key) => key !== column.def.key)
+        : [...filters, column.def.key];
+      render();
+    });
+    chips.append(chip);
   }
+  view.append(chips);
+
+  if (visibleTotal > 0) {
+    const board = element("div", "board");
+    for (const { def, items } of shown) {
+      const col = element("section", "col");
+      const head = element("div", "col-h");
+      head.append(dot(def.tone), document.createTextNode(def.label), element("span", "cnt", String(items.length)));
+      col.append(head);
+      col.append(...items.map(taskRow));
+      if (def.key === "needs_decision") {
+        const link = element("button", "col-link", "Answer in Needs you →");
+        link.type = "button";
+        link.addEventListener("click", () => { window.location.hash = hashFor(viewRoute("needs")); });
+        col.append(link);
+      }
+      board.append(col);
+    }
+    view.append(board);
+    return view;
+  }
+
+  if (tasks.length === 0) {
+    view.append(emptyState({
+      ring: true,
+      big: "No workers yet.",
+      teach: "Once workers pick up tasks, this board shows every one of them grouped by state - needs decision, blocked, parked, failed, in review, active, idle - with live counts on the filters above.",
+    }));
+    return view;
+  }
+
+  const clear = element("button", "fchip", "Clear filter");
+  clear.type = "button";
+  clear.addEventListener("click", () => { state.fleet.filters = []; render(); });
+  view.append(emptyState({
+    big: "Filtered to nothing.",
+    facts: `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} hidden by the current filter`,
+    action: clear,
+  }));
+  return view;
 }
 
-// --- GBrain panel -----------------------------------------------------------
-//
-// The panel reads its health envelope from /api/gbrain/health and submits
-// searches to /api/gbrain/search. Both pass through the same authorize()
-// gate as the rest of the surface, so the panel inherits the same
-// authentication and rate limiting without owning any of it. The render
-// path is independent of fetchSnapshot/fetchHistory: the brain is
-// optional, so its panel can render an empty state without ever blocking
-// the fleet view, and its own update cadence is the server's history-poll
-// interval rather than the faster snapshot poll.
+// --- Backlog -----------------------------------------------------------------
 
-const gbraintronElements = {
-  panel: document.querySelector("#gbraintron"),
-  strip: ui.gbraintronStrip,
-  notice: ui.gbraintronNotices,
-  searchForm: ui.gbraintronSearchForm,
-  searchInput: ui.gbraintronSearchInput,
-  searchLimit: ui.gbraintronSearchLimit,
-  searchButton: ui.gbraintronSearchButton,
-  results: ui.gbraintronResults,
-  refreshNote: ui.gbraintronNote,
-  // The panel's cards are .health-card and .history-card nodes, both of which
-  // ANCHOR_SELECTOR names, and a health poll replaces every one of them twice.
-  // Hand the panel this module's anchor-aware replacer so a reader parked on a
-  // GBrain card is not silently dropped on the next push.
-  replaceChildren,
+function backlogSelect(name, value, options, change) {
+  const select = element("select", "fsel");
+  select.name = name;
+  const all = element("option", "", options.all);
+  all.value = "";
+  select.append(all);
+  for (const [key, optionLabel] of Object.entries(options)) {
+    if (key === "all") continue;
+    const opt = element("option", "", optionLabel);
+    opt.value = key;
+    select.append(opt);
+  }
+  select.value = value || "";
+  select.addEventListener("change", () => change(select.value));
+  return select;
+}
+
+function renderBacklog() {
+  const view = element("div");
+  const status = state.backlog.envelope?.status;
+  const note = status?.last_success_at
+    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+    : status?.refreshing ? "Taking the first backlog read" : "Waiting for the first backlog read";
+  view.append(pageHead("Queue · read-only", "Backlog", note));
+
+  const built = buildBacklog(state.backlog.envelope, { ...state.backlog.filters, tab: state.backlog.tab, page: state.backlog.page });
+  state.backlog.page = built.page.index;
+
+  if (!built.present) {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing queued yet.",
+      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
+    }));
+    return view;
+  }
+
+  if (built.error) view.append(notice(built.error.tone === "red" ? "red" : "amber", null, built.error.text));
+
+  const toolbar = element("div", "toolbar");
+  const search = element("input", "search");
+  search.type = "search";
+  search.placeholder = "Search title, project, id…";
+  search.maxLength = BACKLOG_LIMITS.maxQueryChars;
+  search.value = state.backlog.filters.query;
+  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; render(); });
+  toolbar.append(search);
+  toolbar.append(backlogSelect("project", state.backlog.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, value])) }, (value) => {
+    state.backlog.filters.project = value; state.backlog.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("kind", state.backlog.filters.kind, { all: "All kinds", ...Object.fromEntries(built.facets.kind.map((value) => [value, value])) }, (value) => {
+    state.backlog.filters.kind = value; state.backlog.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("prio", state.backlog.filters.prio, { all: "Any priority", ...Object.fromEntries(built.facets.prio.map((value) => [value, `P${value}`])) }, (value) => {
+    state.backlog.filters.prio = value; state.backlog.page = 0; render();
+  }));
+  view.append(toolbar);
+
+  const tabs = element("div", "tabs");
+  for (const tab of BACKLOG_TABS) {
+    const count = built.tabs[tab.key];
+    if (count === null) continue;
+    const button = element("button", `tab${state.backlog.tab === tab.key ? " is-active" : ""}`);
+    button.type = "button";
+    button.append(document.createTextNode(`${tab.label} `), element("span", "cnt", String(count)));
+    button.addEventListener("click", () => { state.backlog.tab = tab.key; state.backlog.page = 0; render(); });
+    tabs.append(button);
+  }
+  view.append(tabs);
+
+  if (built.rows.length) {
+    const rows = element("div", "rows");
+    for (const row of built.rows) {
+      const rrow = element("button", "rrow");
+      rrow.type = "button";
+      rrow.append(dot(row.tone));
+      const main = element("div", "rmain");
+      main.append(element("div", "rtitle", row.title));
+      const meta = element("div", "rmeta");
+      meta.append(element("span", row.stateTone === "red" ? "t-red" : row.stateTone === "amber" ? "t-amber" : "t-grey", row.stateLabel));
+      if (row.project) meta.append(element("span", "", row.project));
+      if (row.kind) meta.append(element("span", "", row.kind));
+      meta.append(element("span", "mid", row.id));
+      main.append(meta);
+      if (row.reason) main.append(element("div", `rreason ${row.stateTone === "red" ? "t-red" : "t-amber"}`, row.reason));
+      rrow.append(main);
+      const right = element("div", "rright");
+      if (row.prio !== null) right.append(element("span", `prio${row.prio === 0 ? " p0" : ""}`, `P${row.prio}`));
+      const age = element("span", `rage${row.ageHot ? " age-hot" : ""}`);
+      age.textContent = row.age || "age unknown";
+      right.append(age);
+      rrow.append(right);
+      rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
+      rows.append(rrow);
+    }
+    view.append(rows);
+    view.append(pager(built.page, (delta) => { state.backlog.page = built.page.index + delta; render(); }));
+  } else if (built.total > 0) {
+    const clear = element("button", "fchip", "Clear search & filters");
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      state.backlog.filters = { query: "", project: "", kind: "", prio: "" };
+      state.backlog.tab = "all";
+      state.backlog.page = 0;
+      render();
+    });
+    view.append(emptyState({
+      big: "Filtered to nothing.",
+      facts: `${built.total} ${built.total === 1 ? "item" : "items"} hidden by search and filters`,
+      action: clear,
+    }));
+  } else {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing queued yet.",
+      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
+    }));
+  }
+
+  view.append(element("div", "ronote", "Read-only - ordering and state changes are Firstmate's"));
+  return view;
+}
+
+function pager(page, step) {
+  const nav = element("nav", "pager");
+  nav.setAttribute("aria-label", "Pages");
+  nav.append(element("span", "pginfo", page.matched ? `${page.first}–${page.last} of ${page.matched}` : `0 of ${page.matched}`));
+  const prev = element("button", `pgbtn${page.index === 0 ? " is-off" : ""}`, "← Prev");
+  prev.type = "button";
+  prev.addEventListener("click", () => step(-1));
+  const next = element("button", `pgbtn${page.index >= page.pages - 1 ? " is-off" : ""}`, "Next →");
+  next.type = "button";
+  next.addEventListener("click", () => step(1));
+  nav.append(prev, next);
+  return nav;
+}
+
+// --- History -----------------------------------------------------------------
+
+function renderHistory() {
+  const view = element("div");
+  const status = state.history.envelope?.status;
+  const note = status?.last_success_at
+    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+    : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
+  view.append(pageHead("Delivered · newest first", "History", note));
+
+  const range = HISTORY_RANGES.find((entry) => entry.key === state.history.range) || HISTORY_RANGES[1];
+  const from = range.days ? new Date(Date.now() - range.days * 86_400_000).toISOString().slice(0, 10) : "";
+  const built = buildHistory(state.history.envelope, { ...state.history.filters, from, page: state.history.page, pageSize: HISTORY_LIMITS.defaultPageSize });
+  state.history.page = built.page.index;
+
+  if (built.malformed.length) {
+    view.append(notice("amber", null, `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} could not be read and ${built.malformed.length === 1 ? "is" : "are"} disclosed rather than shown.`));
+  }
+  if (built.usage.available && built.usage.stale) {
+    view.append(notice("amber", null, `Showing the last known good token usage read: ${built.usage.reason || "the newest read did not land"}.`));
+  }
+
+  if (built.empty && !state.history.envelope?.history) {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing delivered yet.",
+      teach: "Completed work lands here with its outcome, duration and what it cost - the fleet's receipt trail.",
+    }));
+    return view;
+  }
+
+  const delivered = built.stats.counts.done;
+  const stats = element("div", "stats");
+  for (const [key, value] of [
+    ["Delivered", String(delivered)],
+    ["Failed", String(built.stats.counts.failed)],
+    ["Tokens", built.stats.tokens.available ? formatTokens(built.stats.tokens.total) : "unavailable"],
+    ["Median duration", built.stats.median_duration_seconds !== null ? formatDuration({ known: true, seconds: built.stats.median_duration_seconds }) : "unknown"],
+  ]) {
+    const stat = element("div", "stat");
+    stat.append(element("span", "stat-k", key), element("span", "stat-v", value));
+    stats.append(stat);
+  }
+  view.append(stats);
+
+  const toolbar = element("div", "toolbar");
+  const search = element("input", "search");
+  search.type = "search";
+  search.placeholder = "Search delivered work…";
+  search.maxLength = HISTORY_LIMITS.maxQueryChars;
+  search.value = state.history.filters.query;
+  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; render(); });
+  toolbar.append(search);
+  toolbar.append(backlogSelect("project", state.history.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, value])) }, (value) => {
+    state.history.filters.project = value; state.history.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("outcome", state.history.filters.outcome, { all: "Any outcome", ...Object.fromEntries(built.facets.outcome.map((value) => [value, (OUTCOME_LABELS[value] || value).toLowerCase()])) }, (value) => {
+    state.history.filters.outcome = value; state.history.page = 0; render();
+  }));
+  for (const entry of HISTORY_RANGES) {
+    const chip = element("button", `fchip${state.history.range === entry.key ? " is-on" : ""}`, entry.label);
+    chip.type = "button";
+    chip.addEventListener("click", () => { state.history.range = entry.key; state.history.page = 0; render(); });
+    toolbar.append(chip);
+  }
+  view.append(toolbar);
+
+  if (built.page.matched) {
+    const rows = element("div", "rows");
+    for (const row of built.rows) {
+      const rrow = element("button", "rrow");
+      rrow.type = "button";
+      const def = { done: "g-review", failed: "g-failed", discarded: "g-blocked", retired: "g-blocked", unknown: "g-unknown" }[row.outcome.state] || "g-unknown";
+      rrow.append(element("span", `g ${def} t-${row.outcome.tone === "unknown" ? "grey" : row.outcome.tone}`));
+      const main = element("div", "rmain");
+      main.append(element("div", "rtitle", row.title || row.id));
+      const meta = element("div", "rmeta");
+      meta.append(element("span", `t-${row.outcome.tone === "unknown" ? "grey" : row.outcome.tone}`, row.outcome.label.toLowerCase()));
+      if (row.kind) meta.append(element("span", "", row.kind));
+      meta.append(element("span", "mid", row.project ? label(row.project) : ""));
+      main.append(meta);
+      rrow.append(main);
+      const right = element("div", "rright");
+      right.append(element("span", "hdur", formatDuration(row.duration)));
+      right.append(element("span", "hcost", row.usage?.available && Number.isFinite(row.usage?.totals?.total_tokens) ? formatTokens(row.usage.totals.total_tokens) : "unavailable"));
+      right.append(element("span", "rage", row.completed_millis ? formatAge((Date.now() - row.completed_millis) / 1000) : "unknown"));
+      rrow.append(right);
+      rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
+      rows.append(rrow);
+    }
+    view.append(rows);
+    view.append(pager(built.page, (delta) => { state.history.page = built.page.index + delta; render(); }));
+  } else if (built.page.total > 0) {
+    const clear = element("button", "fchip", "Clear search & filters");
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      state.history.filters = { query: "", project: "", outcome: "" };
+      state.history.range = "all";
+      state.history.page = 0;
+      render();
+    });
+    view.append(emptyState({
+      big: "Filtered to nothing.",
+      facts: `${built.page.total} completed ${built.page.total === 1 ? "item" : "items"} hidden by search and filters`,
+      action: clear,
+    }));
+  } else {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing delivered yet.",
+      teach: "Completed work lands here with its outcome, duration and what it cost - the fleet's receipt trail.",
+    }));
+  }
+  return view;
+}
+
+const OUTCOME_LABELS = {
+  done: "Done",
+  failed: "Failed",
+  discarded: "Discarded",
+  retired: "Retired",
+  unknown: "Outcome unknown",
 };
 
-function paintGBraintronRefreshNote(envelope) {
-  if (!gbraintronElements.refreshNote) return;
-  const status = envelope?.status || {};
-  if (status.phase === "first_run") {
-    gbraintronElements.refreshNote.textContent = "Taking the first health read";
-  } else if (status.refreshing) {
-    gbraintronElements.refreshNote.textContent = "Refreshing";
-  } else if (status.last_success_at) {
-    gbraintronElements.refreshNote.textContent = `read ${formatAge(status.last_success_age_seconds)} ago`;
-  } else if (status.error) {
-    gbraintronElements.refreshNote.textContent = "Last read failed; retrying automatically";
+// --- Knowledge ---------------------------------------------------------------
+
+function renderKnowledge() {
+  const view = element("div");
+  const health = buildGBrainHealth(state.gbrain.health);
+  view.append(pageHead("Captured knowledge", "Knowledge"));
+
+  if (health.noBrain) {
+    view.append(emptyState({
+      ring: true,
+      big: "Knowledge is not configured.",
+      teach: "This install has no knowledge store attached. When one is configured, the fleet's accumulated notes - runbooks, postmortems, decisions and their reasons - become searchable here. Nothing is broken; there is simply nothing to search.",
+    }));
+    return view;
+  }
+
+  const hero = element("div", "khero");
+  hero.append(element("span", "page-eyebrow", "Search what the fleet knows"));
+  const search = element("input", "ksearch");
+  search.type = "search";
+  search.placeholder = "Search captured reports and notes…";
+  search.maxLength = 1024;
+  search.value = state.gbrain.query;
+  search.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { state.gbrain.query = search.value; void runKnowledgeSearch(); }
+  });
+  hero.append(search);
+  const hint = state.gbrain.searched
+    ? `${state.gbrain.payload?.results?.length ?? 0} ${state.gbrain.error ? "results unavailable" : "matches"}`
+    : "the brain may take a few seconds on a cold index";
+  hero.append(element("span", "khint", hint));
+  view.append(hero);
+
+  const healthBox = element("div", "health");
+  const healthButton = element("button", "health-h");
+  healthButton.type = "button";
+  healthButton.setAttribute("aria-expanded", String(state.gbrain.healthOpen));
+  const nominal = health.cards.filter((card) => card.tone === "green").length;
+  const unreadable = health.cards.filter((card) => card.tone === "unknown").length;
+  healthButton.append(
+    health.cards.some((card) => card.tone === "unknown") ? element("span", "ring") : dot("green"),
+    document.createTextNode(` ${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`),
+    element("span", "chev", state.gbrain.healthOpen ? "▲" : "▼"),
+  );
+  healthButton.addEventListener("click", () => { state.gbrain.healthOpen = !state.gbrain.healthOpen; render(); });
+  healthBox.append(healthButton);
+  if (state.gbrain.healthOpen) {
+    const list = element("div", "health-list");
+    for (const card of health.cards) {
+      const row = element("div", "hsys");
+      row.append(card.tone === "unknown" ? element("span", "ring") : dot(card.tone));
+      row.append(document.createTextNode(card.label));
+      row.append(element("span", "hstat", card.value));
+      row.title = card.detail || "";
+      list.append(row);
+    }
+    healthBox.append(list);
+  }
+  view.append(healthBox);
+
+  const results = element("div", "krows");
+  if (state.gbrain.error) {
+    results.append(notice(state.gbrain.error.tone === "red" ? "red" : "amber", null, state.gbrain.error.text));
+  } else if (state.gbrain.searched && state.gbrain.payload) {
+    const payload = state.gbrain.payload;
+    const failed = (payload.sources || []).filter((row) => !GBRAIN_HEALTHY_SOURCE_STATES.has(row.state));
+    if (failed.length) {
+      results.append(notice(failed.some((row) => row.state === "failed") ? "red" : "amber", "Some corpora did not answer.", ` ${failed.map((row) => `${row.source}: ${row.detail || row.state}`).join("; ")}`));
+    }
+    for (const row of payload.results || []) {
+      const card = element("article", "krow");
+      card.append(element("div", "kk", row.title || "Untitled"));
+      if (row.excerpt) card.append(element("div", "ksnip", row.excerpt));
+      const meta = [row.source, row.stale === true ? "stale" : null, typeof row.score === "number" ? `score ${row.score.toFixed(3)}` : null].filter(Boolean);
+      card.append(element("div", "kmeta", meta.join(" · ")));
+      results.append(card);
+    }
+    if (!payload.results?.length) {
+      const clear = element("button", "fchip", "Clear search");
+      clear.type = "button";
+      clear.addEventListener("click", () => { state.gbrain.query = ""; state.gbrain.searched = false; state.gbrain.payload = null; render(); });
+      results.append(emptyState({
+        big: "No notes match.",
+        facts: `searched the captured corpora · 0 matches`,
+        action: clear,
+      }));
+    }
+  } else if (state.gbrain.searched) {
+    results.append(notice("amber", null, "The search has not answered yet."));
   } else {
-    gbraintronElements.refreshNote.textContent = "Waiting for the first health read";
+    results.append(emptyState({
+      ring: true,
+      big: "Nothing learned yet.",
+      teach: "As the fleet works it writes down what it learns - runbooks, postmortems, decisions and their reasons. Those notes become searchable here.",
+    }));
   }
+  view.append(results);
+  return view;
 }
 
-function renderGBraintron(envelope) {
-  state.gbraintron = envelope;
-  if (!envelope) return;
-  paintGBraintronRefreshNote(envelope);
-  paintGBrainPanel(gbraintronElements, envelope);
-}
-
-async function fetchGBraintronHealth() {
-  try {
-    const response = await fetch("/api/gbrain/health", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-gbrain-health.v1") throw new Error("unsupported gbraintron health envelope");
-    renderGBraintron(envelope);
-  } catch (error) {
-    renderGBraintron({
-      schema: "fm-gbrain-health.v1",
-      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
-      config: { query_max_bytes: 1024, result_limit_max: 16 },
-      health: null,
-    });
+async function runKnowledgeSearch() {
+  const query = state.gbrain.query.trim();
+  if (query.length < 2) {
+    state.gbrain.error = { tone: "amber", text: searchReasonLabel("query_too_short") };
+    state.gbrain.searched = true;
+    state.gbrain.payload = null;
+    render();
+    return;
   }
-}
-
-// The body for /api/gbrain/search is one JSON object whose every field is
-// type-checked here before it goes over the wire. The dashboard never
-// constructs a request from anything other than the input field's current
-// textContent, so the server's byte cap and the page's maxLength together
-// keep the body small without further effort.
-async function runGBraintronSearch(query, limit) {
-  const elements = gbraintronElements;
-  if (elements.searchButton) elements.searchButton.disabled = true;
+  state.gbrain.busy = true;
+  state.gbrain.error = null;
   try {
     const response = await fetch("/api/gbrain/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, limit: state.gbrain.limit }),
       cache: "no-store",
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.schema !== "fm-gbrain-search.v1") {
       const reason = payload?.reason || (response.ok ? "unsupported_schema" : `http_${response.status}`);
-      const detail = payload?.detail;
-      paintGBrainSearchResults(elements, null, searchFailure(reason, detail || searchReasonLabel(reason)));
-      return;
+      state.gbrain.error = searchFailure(reason, payload?.detail || null) || { tone: "red", text: searchReasonLabel(reason) };
+      state.gbrain.payload = null;
+    } else {
+      state.gbrain.payload = payload;
     }
-    paintGBrainSearchResults(elements, payload, null);
   } catch (error) {
-    paintGBrainSearchResults(elements, null, { tone: "red", text: `The search could not be sent: ${error.message}` });
+    state.gbrain.error = { tone: "red", text: `The search could not be sent: ${error.message}` };
+    state.gbrain.payload = null;
   } finally {
-    if (elements.searchButton) elements.searchButton.disabled = false;
+    state.gbrain.searched = true;
+    state.gbrain.busy = false;
+    render();
   }
+}
+
+// --- Task detail --------------------------------------------------------------
+
+function kvRow(key, value) {
+  const cell = element("div", "kv");
+  cell.append(element("span", "kv-k", key), element("span", "kv-v", value ?? "unknown"));
+  return cell;
+}
+
+function historyRecordFor(taskId) {
+  const records = Array.isArray(state.history.envelope?.history?.records) ? state.history.envelope.history.records : [];
+  return records.find((record) => record?.task_id === taskId) || null;
+}
+
+function backlogRecordFor(taskId) {
+  const built = buildBacklog(state.backlog.envelope, {});
+  if (!built.present) return null;
+  return built.allRecords.find((record) => record.id === taskId) || null;
+}
+
+function liveTaskFor(taskId) {
+  return snapshotTasks().find((task) => task?.id === taskId) || null;
+}
+
+async function fetchTaskReport(taskId) {
+  if (state.task.reports.has(taskId)) return state.task.reports.get(taskId);
+  const entry = { loading: true, payload: null };
+  state.task.reports.set(taskId, entry);
+  try {
+    const response = await fetch(`/api/report?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    entry.payload = payload;
+  } catch (error) {
+    entry.payload = { schema: null, error: error.message };
+  }
+  entry.loading = false;
+  if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
+  return entry;
+}
+
+async function fetchTaskTimeline(taskId) {
+  if (state.task.timelines.has(taskId)) return state.task.timelines.get(taskId);
+  const entry = { loading: true, envelope: null };
+  state.task.timelines.set(taskId, entry);
+  try {
+    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    entry.envelope = await response.json().catch(() => null);
+  } catch {
+    entry.envelope = null;
+  }
+  entry.loading = false;
+  if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
+  return entry;
+}
+
+function reportPanel(taskId, present, live = null) {
+  const panel = element("section", "panel");
+  panel.append(element("div", "panel-h", "Report"));
+  const entry = state.task.reports.get(taskId);
+  if (!present) {
+    panel.append(element("p", "state-reason", live?.kind === "scout"
+      ? "This scout is still writing its report. The deliverable becomes readable here once the work completes and its completion record is published."
+      : "No report was retained for this task."));
+    return panel;
+  }
+  if (!entry) {
+    panel.append(element("p", "state-reason", "Loading the report…"));
+    void fetchTaskReport(taskId);
+    return panel;
+  }
+  if (entry.loading) {
+    panel.append(element("p", "state-reason", "Loading the report…"));
+    return panel;
+  }
+  const payload = entry.payload;
+  if (!payload || payload.schema !== "fm-dashboard-report.v1" || payload.present !== true) {
+    panel.append(element("p", "state-reason", "The report could not be loaded."));
+    return panel;
+  }
+  const rendered = renderMarkdown(payload.text);
+  const body = element("div", "report");
+  for (const noticeKind of rendered.notices) body.append(element("p", "state-reason", noticeSentence(noticeKind)));
+  if (payload.truncated === true) body.append(element("p", "state-reason", `This report is longer than what is shown here; the beginning is rendered.`));
+  for (const node of rendered.nodes) body.append(markdownDom(node));
+  panel.append(body);
+  return panel;
+}
+
+function activityPanel(taskId, task) {
+  const panel = element("section", "panel");
+  panel.append(element("div", "panel-h", "Activity"));
+  const entry = state.task.timelines.get(taskId);
+  if (!entry) {
+    panel.append(element("p", "state-reason", "Loading the recorded events…"));
+    void fetchTaskTimeline(taskId);
+    return panel;
+  }
+  if (entry.loading) {
+    panel.append(element("p", "state-reason", "Loading the recorded events…"));
+    return panel;
+  }
+  const events = Array.isArray(entry.envelope?.events) ? entry.envelope.events : [];
+  if (!events.length) {
+    const note = task ? sourceNotice(task, entry.envelope) : "No events are recorded for this task. The event feed only sees instrumented runtimes, so a task driven by an uninstrumented one has no timeline here.";
+    panel.append(element("p", "state-reason", note));
+    return panel;
+  }
+  for (const event of events) {
+    const row = element("div", "tl-row");
+    row.append(element("span", "tl-t", clockLabel(event.occurred_at)), element("span", "tl-e", `${typeLabel(event.type)}${event.note ? ` - ${event.note}` : ""}`));
+    panel.append(row);
+  }
+  return panel;
+}
+
+function prPanel(url, summary) {
+  const panel = element("section", "panel");
+  panel.append(element("div", "panel-h", "Pull request"));
+  if (!url) {
+    panel.append(element("p", "state-reason", "No pull request is linked to this task."));
+    return panel;
+  }
+  const line = element("div", "pr-line");
+  const link = element("a", "", url);
+  link.href = safeUrl(url) || "#";
+  link.target = "_blank";
+  link.rel = "noopener";
+  line.append(link);
+  panel.append(line);
+  if (summary) {
+    const stateLine = element("div", "pr-line");
+    stateLine.append(element("span", `t-${summary.tone === "unknown" ? "grey" : summary.tone}`, summary.label));
+    if (summary.checks) stateLine.append(element("span", "", ` · checks ${summary.checks}`));
+    panel.append(stateLine);
+  }
+  return panel;
+}
+
+function renderTask() {
+  const taskId = state.route.taskId;
+  const view = element("div");
+
+  const back = element("button", "tk-back", "← Back");
+  back.type = "button";
+  back.addEventListener("click", () => window.history.back());
+  view.append(back);
+
+  const live = liveTaskFor(taskId);
+  const record = historyRecordFor(taskId);
+  const backlog = live || record ? null : backlogRecordFor(taskId);
+  const sourcesLoaded = Boolean(state.envelope?.snapshot) && Boolean(state.history.envelope);
+
+  if (!live && !record && !backlog) {
+    if (!sourcesLoaded) {
+      view.append(pageHead("Task", "Looking this task up…"));
+      view.append(emptyState({ ring: true, big: "Reading the fleet records.", teach: "The live workers, the completed-work archive, and the queue are being read; this page fills in as each answers." }));
+      return view;
+    }
+    view.append(pageHead("Task", "No such task"));
+    view.append(emptyState({
+      ring: true,
+      big: "This task is not in any record this dashboard reads.",
+      teach: "It is not a live worker, not a completed record, and not a queued item. A task that was cleaned up before publishing a completion record leaves no trace to show.",
+    }));
+    return view;
+  }
+
+  const title = live?.backlog?.title || record?.title || backlog?.title || taskId;
+  view.append(pageHead("Task", null));
+  const head = view.querySelector(".page-h");
+  head.textContent = title;
+  head.closest(".page-hd").append(element("div", "card-id", taskId));
+
+  const strip = element("div", "kvstrip");
+  const project = live?.project || record?.project || (backlog?.repo ? backlog.repo : null);
+  strip.append(kvRow("Project", project ? label(project) : null));
+  strip.append(kvRow("Kind", live?.kind || record?.kind || backlog?.kind || null));
+  strip.append(kvRow("Runtime · model", [live?.harness, live?.model].filter(Boolean).join(" · ") || [record?.harness, record?.model].filter(Boolean).join(" · ") || null));
+  strip.append(kvRow("Delivery", live?.mode || record?.mode || null));
+  if (live) strip.append(kvRow("Age", fmtAge(live.spawn_age_seconds) || "unknown"));
+  else if (record?.timestamps?.completed) strip.append(kvRow("Completed", record.timestamps.completed.slice(0, 10)));
+  else if (backlog?.since) strip.append(kvRow("Raised", backlog.since));
+  view.append(strip);
+
+  const grid = element("div", "tk-grid");
+  const mainCol = element("div", "tkcol");
+  const sideCol = element("div", "tkcol");
+
+  const statePanel = element("section", "panel");
+  statePanel.append(element("div", "panel-h", "Current state"));
+  const statebar = element("div", "statebar");
+  let stateWord = "Unknown";
+  let stateTone = "grey";
+  let stateReason = "No state detail is recorded for this task.";
+  if (live) {
+    const def = COLUMN_DEFS.find((column) => column.key === live?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
+    stateWord = def.label;
+    stateTone = def.tone;
+    stateReason = live.current_state?.detail || live.current_state?.raw || "The worker is live; no finer detail is recorded.";
+  } else if (record) {
+    stateWord = OUTCOME_LABELS[record.outcome?.state] || "Outcome unknown";
+    stateTone = { done: "green", failed: "red", discarded: "amber", retired: "grey" }[record.outcome?.state] || "grey";
+    stateReason = record.outcome?.detail || "The completion record carries no outcome detail.";
+  } else if (backlog) {
+    stateWord = backlog.stateLabel;
+    stateTone = backlog.stateTone;
+    stateReason = backlog.reason || "This item is waiting in the queue.";
+  }
+  statebar.append(stateTone === "unknown" ? element("span", "ring") : dot(stateTone), element("span", `state-word t-${stateTone}`, stateWord));
+  statePanel.append(statebar);
+  statePanel.append(element("p", "state-reason", stateReason));
+
+  const inboxItem = verdictFacts().inbox.items.find((item) => item.id === taskId);
+  if (inboxItem) {
+    const answer = element("button", "inline-link", "Answer in Needs you →");
+    answer.type = "button";
+    answer.addEventListener("click", () => { window.location.hash = hashFor(viewRoute("needs")); });
+    statePanel.append(answer);
+  }
+  mainCol.append(statePanel);
+
+  // /api/report serves the durable completion records, so the report panel
+  // exists only for a task that has one. A live scout still writes its report
+  // to the task's own directory, but that is not exposed over HTTP until the
+  // completion record publishes it - saying so beats a panel that 404s.
+  const hasReport = record?.report?.present === true;
+  mainCol.append(reportPanel(taskId, hasReport, live));
+
+  if (live) {
+    const readiness = prReadiness(live);
+    sideCol.append(prPanel(readiness.url, { tone: readiness.tone, label: readiness.verdict || readiness.label, checks: readiness.checks || null }));
+  } else if (record?.pr?.url) {
+    sideCol.append(prPanel(record.pr.url, { tone: { merged: "green", open: "blue", draft: "grey", closed: "grey" }[record.pr.state] || "grey", label: record.pr.state || "unknown", checks: record.pr.checks || null }));
+  }
+
+  const workItems = live?.work_items || record?.work_items || [];
+  if (workItems.length) {
+    const panel = element("section", "panel");
+    panel.append(element("div", "panel-h", "Linked items"));
+    for (const reference of workItems) {
+      const row = element("div", "linkrow");
+      row.append(dot("grey"), document.createTextNode(reference.forge ? `${reference.forge}: ` : ""));
+      const label_ = reference.label || reference.url || "linked item";
+      if (reference.url && safeUrl(reference.url)) {
+        const link = element("a", "", label_);
+        link.href = safeUrl(reference.url);
+        link.target = "_blank";
+        link.rel = "noopener";
+        row.append(link);
+      } else {
+        row.append(document.createTextNode(label_));
+      }
+      panel.append(row);
+    }
+    sideCol.append(panel);
+  }
+
+  sideCol.append(activityPanel(taskId, live));
+
+  grid.append(mainCol, sideCol);
+  view.append(grid);
+  return view;
+}
+
+// --- router mounting ----------------------------------------------------------
+
+const VIEW_RENDERERS = {
+  needs: renderNeeds,
+  fleet: renderFleet,
+  backlog: renderBacklog,
+  history: renderHistory,
+  knowledge: renderKnowledge,
+  [TASK_VIEW]: renderTask,
+};
+
+function render() {
+  const route = state.route;
+  renderVerdict();
+  publishStickyHeight();
+
+  for (const [name, buttons] of ui.navButtons) {
+    for (const button of buttons) {
+      const active = route.view === name;
+      button.classList.toggle("is-active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
+  }
+
+  const renderer = VIEW_RENDERERS[route.view] || renderNeeds;
+  const fresh = renderer();
+  // Mutual exclusivity is structural: the view container's children are
+  // replaced whole, so the previous view's DOM is gone, not hidden.
+  ui.view.replaceChildren(fresh);
+}
+
+function onRouteChange() {
+  const route = parseHash(window.location.hash);
+  if (route.view === state.route.view && route.taskId === state.route.taskId) return;
+  state.route = route;
+  if (route.view !== TASK_VIEW) window.scrollTo({ top: 0 });
+  render();
+}
+
+// --- data plumbing -------------------------------------------------------------
+
+async function fetchJson(url, schema) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const envelope = await response.json();
+  if (schema && envelope.schema !== schema) throw new Error(`unsupported envelope ${envelope.schema}`);
+  return envelope;
+}
+
+function unavailableEnvelope(schema, message) {
+  return { schema, status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message } } };
+}
+
+async function fetchSnapshot() {
+  try {
+    const envelope = await fetchJson("/api/snapshot", "fm-dashboard-envelope.v1");
+    state.envelope = envelope;
+    announceNewItems(buildInbox(envelope.snapshot).items, true);
+  } catch (error) {
+    state.envelope = unavailableEnvelope("fm-dashboard-envelope.v1", error.message);
+  }
+  render();
+}
+
+async function fetchHistory() {
+  try {
+    state.history.envelope = await fetchJson("/api/history", "fm-dashboard-history.v1");
+  } catch (error) {
+    state.history.envelope = unavailableEnvelope("fm-dashboard-history.v1", error.message);
+  }
+  render();
+}
+
+async function fetchBacklog() {
+  try {
+    state.backlog.envelope = await fetchJson("/api/backlog", "fm-dashboard-backlog.v1");
+  } catch (error) {
+    state.backlog.envelope = unavailableEnvelope("fm-dashboard-backlog.v1", error.message);
+  }
+  render();
+}
+
+async function fetchGBrainHealth() {
+  try {
+    state.gbrain.health = await fetchJson("/api/gbrain/health", "fm-gbrain-health.v1");
+  } catch (error) {
+    state.gbrain.health = unavailableEnvelope("fm-gbrain-health.v1", error.message);
+  }
+  render();
 }
 
 function connectEvents() {
-  clearTimeout(state.reconnectTimer);
-  state.eventSource?.close();
-  const source = new EventSource("/api/events");
-  state.eventSource = source;
-  source.addEventListener("open", () => { state.reconnectMs = 1_000; });
-  source.addEventListener("snapshot", (event) => {
+  let events;
+  try {
+    events = new EventSource("/api/events");
+  } catch {
+    return;
+  }
+  events.addEventListener("snapshot", (event) => {
     try {
       const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-envelope.v1") render(envelope);
-    } catch {
-      source.close();
-    }
+      if (envelope.schema === "fm-dashboard-envelope.v1") {
+        state.envelope = envelope;
+        announceNewItems(buildInbox(envelope.snapshot).items, true);
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("history", (event) => {
+  events.addEventListener("history", (event) => {
     try {
       const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-history.v1") renderHistoryEnvelope(envelope);
-    } catch {
-      source.close();
-    }
+      if (envelope.schema === "fm-dashboard-history.v1") {
+        state.history.envelope = envelope;
+        state.task.reports.clear();
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("agent_events", (event) => {
+  events.addEventListener("backlog", (event) => {
     try {
       const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-events.v1") renderActivityEnvelope(envelope);
-    } catch {
-      source.close();
-    }
+      if (envelope.schema === "fm-dashboard-backlog.v1") {
+        state.backlog.envelope = envelope;
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("gbrain_health", (event) => {
+  events.addEventListener("gbrain_health", (event) => {
     try {
       const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-gbrain-health.v1") renderGBraintron(envelope);
-    } catch {
-      source.close();
-    }
-  });
-  source.addEventListener("error", () => {
-    source.close();
-    const delay = state.reconnectMs;
-    state.reconnectMs = Math.min(state.reconnectMs * 2, 30_000);
-    state.reconnectTimer = setTimeout(connectEvents, delay + Math.floor(Math.random() * 250));
+      if (envelope.schema === "fm-gbrain-health.v1") {
+        state.gbrain.health = envelope;
+        render();
+      }
+    } catch {}
   });
 }
 
-ui.filterForm.addEventListener("change", () => {
-  for (const key of Object.keys(state.filters)) state.filters[key] = ui.filterForm.elements[key].value;
-  renderBoard(state.envelope?.snapshot, state.envelope);
-});
+// --- start ----------------------------------------------------------------------
 
-ui.clearFilters.addEventListener("click", () => {
-  for (const key of Object.keys(state.filters)) state.filters[key] = "";
-  renderBoard(state.envelope?.snapshot, state.envelope);
-});
-
-function readHistoryForm() {
-  for (const key of Object.keys(state.history.filters)) {
-    state.history.filters[key] = ui.historyForm.elements[key].value;
-  }
-  const size = Number(ui.historyForm.elements.pageSize.value);
-  state.history.pageSize = HISTORY_LIMITS.pageSizes.includes(size) ? size : HISTORY_LIMITS.defaultPageSize;
-  // Any change to what is being asked for restarts at the newest page, so the
-  // reader is never left looking at page 7 of a three-page result.
-  state.history.page = 0;
-  renderHistory();
-}
-
-ui.historyForm.addEventListener("change", readHistoryForm);
-ui.historyForm.addEventListener("input", (event) => {
-  if (event.target?.name === "query") readHistoryForm();
-});
-ui.historyForm.addEventListener("submit", (event) => event.preventDefault());
-
-ui.historyClear.addEventListener("click", () => {
-  for (const key of Object.keys(state.history.filters)) {
-    state.history.filters[key] = "";
-    ui.historyForm.elements[key].value = "";
-  }
-  state.history.pageSize = HISTORY_LIMITS.defaultPageSize;
-  ui.historyForm.elements.pageSize.value = String(HISTORY_LIMITS.defaultPageSize);
-  state.history.page = 0;
-  renderHistory();
-});
-
-ui.reportClose.addEventListener("click", closeReport);
-ui.reportDialog.addEventListener("close", () => {
-  replaceChildren(ui.reportBody, []);
-  replaceChildren(ui.reportNotices, []);
-});
-
-// Submitting the search form fires one read-only GBrain search. The submit
-// handler is bound even on a configured home with no input: an empty form
-// submission is the same as a no-op for the wrapper, and the form's
-// novalidate state lets Enter inside the input box fire the search without
-// needing a click.
-if (ui.gbraintronSearchForm) {
-  ui.gbraintronSearchForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const query = ui.gbraintronSearchInput?.value || "";
-    const limit = Number(ui.gbraintronSearchLimit?.value || 8);
-    void runGBraintronSearch(query, limit);
-  });
-}
-
-ui.activityForm.addEventListener("change", () => {
-  for (const key of Object.keys(state.activity.filters)) {
-    state.activity.filters[key] = ui.activityForm.elements[key].value;
-  }
-  renderActivity();
-});
-ui.activityForm.addEventListener("submit", (event) => event.preventDefault());
-
-ui.activityClear.addEventListener("click", () => {
-  for (const key of Object.keys(state.activity.filters)) {
-    state.activity.filters[key] = "";
-    ui.activityForm.elements[key].value = "";
-  }
-  renderActivity();
-});
-
-// Observed rather than recomputed on resize alone: the bar's height also
-// changes when its own counts and health chips rewrap, which happens on a fleet
-// update at a fixed width.
-publishStickyHeight();
-if (typeof ResizeObserver === "function") {
-  const stickyBar = document.querySelector(".topbar");
-  if (stickyBar) new ResizeObserver(publishStickyHeight).observe(stickyBar);
-}
-
-window.addEventListener("scroll", queueAnchorCapture, { passive: true });
-window.addEventListener("resize", () => {
-  if (window.innerWidth === lastViewportWidth) return;
-  lastViewportWidth = window.innerWidth;
-  restoreAnchor();
-  queueAnchorCapture();
-});
-queueAnchorCapture();
-
+window.addEventListener("hashchange", onRouteChange);
 initializeTheme();
 initializeNotifications();
+render();
 void fetchSnapshot();
 void fetchHistory();
-void fetchActivity();
-void fetchGBraintronHealth();
-renderHistory();
-renderActivity();
-renderGBraintron(state.gbraintron);
+void fetchBacklog();
+void fetchGBrainHealth();
 connectEvents();

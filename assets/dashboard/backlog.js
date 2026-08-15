@@ -1,0 +1,154 @@
+// backlog.js - the read-only queue policy for the dashboard's Backlog page.
+//
+// The records come from GET /api/backlog, which serves the same full
+// fm-fleet-snapshot.sh backlog parse the fleet state reads (one owner for the
+// file format). This module derives the page's view model: the current queue
+// (every record that is not Done - delivered work belongs to History), the
+// state tabs, the facets, the search, and the pagination.
+//
+// The page is read-only by contract, so nothing here computes an action:
+// ordering is preserved exactly as the backlog file records it, because that
+// order IS Firstmate's queue decision.
+//
+// Invariants shared with history.js: an unknown age is never a fabricated
+// zero, and the three empty shapes stay distinct - no backlog at all
+// (first run), a queue with nothing matching (filtered), and a queue that is
+// genuinely empty all render differently.
+
+export const BACKLOG_LIMITS = {
+  maxQueryChars: 120,
+  pageSize: 25,
+};
+
+const STATE_PRESENTATION = {
+  in_flight: { label: "in flight", tone: "green", tab: "in_flight" },
+  queued: { label: "queued", tone: "grey", tab: "queued" },
+  held: { label: "held", tone: "amber", tab: "held" },
+  blocked: { label: "blocked", tone: "red", tab: "blocked" },
+  done: { label: "done", tone: "green", tab: null },
+};
+
+function text(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function finiteAge(seconds) {
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
+function formatAge(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
+}
+
+/** The display row for one backlog record, or null for one with no id. */
+function backlogRow(record) {
+  const id = text(record?.id);
+  if (!id) return null;
+  // Done rows are History's content, not the queue's: a completed item leaves
+  // this page the moment its state flips, which is also what the backlog file
+  // itself does when Done entries are pruned.
+  if (text(record?.state) === "done") {
+    const donePresentation = STATE_PRESENTATION.done;
+    return { id, title: text(record?.title) || id, state: "done", stateLabel: donePresentation.label, stateTone: donePresentation.tone, tone: donePresentation.tone, order: Number.isFinite(record?.order) ? record.order : Number.MAX_SAFE_INTEGER, reason: null, prio: null, kind: null, project: null, since: null, sinceAgeSeconds: null, age: null, ageHot: false };
+  }
+  const held = text(record?.hold_reason) || record?.hold_reason != null;
+  const blocked = record?.blocked_by != null || text(record?.blocked_reason);
+  const key = held ? "held" : blocked ? "blocked" : (text(record?.state) === "in_flight" ? "in_flight" : "queued");
+  const presentation = STATE_PRESENTATION[key];
+  const reason = text(record?.hold_reason) || text(record?.blocked_reason) || null;
+  const prioRaw = Number.isFinite(Number(record?.priority)) ? Number(record?.priority) : null;
+  const ageSeconds = finiteAge(record?.since_age_seconds);
+  return {
+    id,
+    title: text(record?.title) || id,
+    project: text(record?.repo) || null,
+    kind: text(record?.kind) || null,
+    since: text(record?.since) || null,
+    sinceAgeSeconds: ageSeconds,
+    age: ageSeconds === null ? null : formatAge(ageSeconds),
+    ageHot: ageSeconds !== null && ageSeconds >= 240 * 60,
+    prio: prioRaw !== null && prioRaw >= 0 && prioRaw <= 9 ? prioRaw : null,
+    state: key,
+    stateLabel: presentation.label,
+    stateTone: presentation.tone,
+    tone: presentation.tone,
+    reason,
+    order: Number.isFinite(record?.order) ? record.order : Number.MAX_SAFE_INTEGER,
+  };
+}
+
+function facetValues(rows, key, project = null) {
+  return [...new Set(rows.map((row) => row[key]).filter((value) => value !== null && value !== ""))]
+    .sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true }));
+}
+
+/**
+ * Build the Backlog page view from the server's fm-dashboard-backlog.v1
+ * envelope. `view` carries the search query, the project/kind/priority facet
+ * choices, the state tab, and the page index.
+ */
+export function buildBacklog(envelope, view = {}) {
+  const document = envelope?.backlog && typeof envelope.backlog === "object" ? envelope.backlog : null;
+  const records = Array.isArray(document?.records) ? document.records : [];
+  const allRows = records.map(backlogRow).filter(Boolean);
+  const queue = allRows
+    .filter((row) => row.state !== "done")
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+
+  const status = envelope?.status;
+  const error = status && status.phase === "unavailable" && !document
+    ? { tone: "red", text: `The backlog could not be read: ${text(status.error?.message) || "unknown reason"}. Retrying automatically.` }
+    : null;
+
+  const query = text(view.query).slice(0, BACKLOG_LIMITS.maxQueryChars).toLowerCase();
+  const project = text(view.project);
+  const kind = text(view.kind);
+  const prio = text(view.prio);
+
+  const base = queue.filter((row) =>
+    (!project || row.project === project)
+    && (!kind || row.kind === kind)
+    && (!prio || String(row.prio) === prio)
+    && (!query || `${row.title} ${row.project ?? ""} ${row.id}`.toLowerCase().includes(query)));
+
+  const tab = text(view.tab) || "all";
+  const tabs = {};
+  for (const key of ["all", "in_flight", "queued", "held", "blocked"]) {
+    tabs[key] = key === "all" ? base.length : base.filter((row) => row.state === key).length;
+  }
+  const effectiveTab = tabs[tab] === undefined ? "all" : tab;
+  const filtered = (effectiveTab === "all" ? base : base.filter((row) => row.state === effectiveTab));
+
+  const pages = Math.max(1, Math.ceil(filtered.length / BACKLOG_LIMITS.pageSize));
+  const index = Math.min(Math.max(Number.isInteger(view.page) ? view.page : 0, 0), pages - 1);
+  const start = index * BACKLOG_LIMITS.pageSize;
+  const rows = filtered.slice(start, start + BACKLOG_LIMITS.pageSize);
+
+  return {
+    present: document?.present === true && allRows.length > 0,
+    error,
+    queueTotal: queue.length,
+    total: base.length,
+    tabs,
+    facets: {
+      project: facetValues(queue, "project"),
+      kind: facetValues(queue, "kind"),
+      prio: facetValues(queue, "prio"),
+    },
+    rows,
+    page: {
+      index,
+      pages,
+      first: filtered.length ? start + 1 : 0,
+      last: Math.min(start + BACKLOG_LIMITS.pageSize, filtered.length),
+      matched: filtered.length,
+      total: queue.length,
+    },
+    // Every current-queue row, unfiltered, for task-detail lookups.
+    allRecords: queue,
+  };
+}
