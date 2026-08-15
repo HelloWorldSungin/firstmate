@@ -31,8 +31,8 @@
 # count. fm-on's ensure path restarts a worker that gave up.
 # TERM, INT, and HUP always terminate the serving process: worker_shutdown never
 # returns to the poll loop, even when it cannot publish the ownership quarantine.
-# The Linux supervisor treats that exit, and 125 from a stop that could not
-# confirm the command tree is gone, as terminal and does not restart.
+# The Linux supervisor treats serving-child exits 0, 75, and 125 as terminal
+# and does not restart them.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the

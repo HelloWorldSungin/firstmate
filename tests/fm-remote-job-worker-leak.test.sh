@@ -10,8 +10,8 @@
 # stay waiting on it or spawn a replacement. That is the leak that accumulates
 # CPU and starves a neighbouring shard.
 #
-# These cases exercise the production worker through its public start and TERM
-# interface. They do not read the worker's source, and they do not rely on the
+# These cases exercise the production worker through its public start and signal
+# interfaces. They do not read the worker's source, and they do not rely on the
 # test-side process-group KILL in tests/fm-remote-job.test.sh.
 set -u
 
@@ -99,9 +99,11 @@ assert_pid_gone_after_term() { # <pid> <label>
 }
 
 build_remote_root() { # <dir>
-  local root=$1
+  local root=$1 worker_source
+  worker_source=${FM_REMOTE_JOB_WORKER_UNDER_TEST:-$ROOT/bin/fm-remote-job-worker.sh}
   mkdir -p "$root/bin"
-  cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-remote-job-lib.sh" "$root/bin/"
+  cp "$worker_source" "$root/bin/fm-remote-job-worker.sh"
   chmod +x "$root/bin"/*.sh
   printf 'fixture\n' > "$root/AGENTS.md"
   git -C "$root" init -q -b main
@@ -143,6 +145,24 @@ SH
   chmod +x "$dest/remote-root/bin/fm-remote-job-worker.sh"
 }
 
+install_exit_wrapper() { # <dest>
+  local dest=$1
+  mv "$dest/remote-root/bin/fm-remote-job-worker.sh" \
+    "$dest/remote-root/bin/fm-remote-job-worker-real.sh"
+  cat > "$dest/remote-root/bin/fm-remote-job-worker.sh" <<'SH'
+#!/bin/bash
+set -u
+SCRIPT_DIR=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+if [ "${1:-}" = --serve ]; then
+  printf 'serve\n' >> "$FM_REMOTE_JOB_EXIT_MARKER"
+  sleep 0.2
+  exit "$FM_REMOTE_JOB_EXIT_CASE"
+fi
+exec "$SCRIPT_DIR/fm-remote-job-worker-real.sh" "$@"
+SH
+  chmod +x "$dest/remote-root/bin/fm-remote-job-worker.sh"
+}
+
 start_linux_worker() { # <dest>
   local dest=$1 pid
   set -m
@@ -156,6 +176,20 @@ start_linux_worker() { # <dest>
   pid=$!
   set +m
   printf '%s\n' "$pid"
+}
+
+start_linux_worker_direct() { # <dest>
+  local dest=$1
+  set -m
+  HOME="$dest/account" \
+    FM_ROOT_OVERRIDE="$dest/remote-root" \
+    FM_REMOTE_JOB_STATE_ROOT="$dest/remote-jobs" \
+    FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+    FM_REMOTE_JOB_TIMEOUT=5 \
+    "$dest/remote-root/bin/fm-remote-job-worker.sh" \
+    > "$dest/worker.out" 2> "$dest/worker.err" &
+  LINUX_WORKER_PID=$!
+  set +m
 }
 
 wait_ready() { # <dest>
@@ -214,6 +248,22 @@ assert_group_gone_after_term "$PGID_INT" \
   "INT of the serving worker after its lock directory disappeared"
 pass "an idle worker leaves no orphans after a failed-quarantine INT"
 
+# --- idle worker, lock gone, HUP the serving child ---------------------------
+
+CASE_HUP=$(prepare_case hup-lock)
+SUP_HUP=$(start_linux_worker "$CASE_HUP")
+wait_ready "$CASE_HUP" || fail "hup-lock: the worker did not become ready"
+PGID_HUP=$(fm_remote_job_process_pgid "$SUP_HUP") ||
+  fail "hup-lock: could not resolve the worker process group"
+track_group "$PGID_HUP"
+SERVE_HUP=$(cat "$CASE_HUP/remote-jobs/worker.pid")
+case "$SERVE_HUP" in ''|*[!0-9]*) fail "hup-lock: no serving pid" ;; esac
+rm -rf "$CASE_HUP/remote-jobs/worker.lock"
+kill -HUP "$SERVE_HUP" 2>/dev/null || true
+assert_group_gone_after_term "$PGID_HUP" \
+  "HUP of the serving worker after its lock directory disappeared"
+pass "an idle worker leaves no orphans after a failed-quarantine HUP"
+
 # --- idle worker, lock gone, TERM the isolated group -------------------------
 #
 # The same failed-run cleanup shape as signalling the whole tree, without a
@@ -245,7 +295,7 @@ PGID_STATE=$(fm_remote_job_process_pgid "$SUP_STATE") ||
 track_group "$PGID_STATE"
 SERVE_STATE=$(cat "$CASE_STATE/remote-jobs/worker.pid")
 case "$SERVE_STATE" in ''|*[!0-9]*) fail "state-gone: no serving pid" ;; esac
-rm -rf "$CASE_STATE/remote-jobs"
+mv "$CASE_STATE/remote-jobs" "$CASE_STATE/remote-jobs.removed"
 kill -TERM "$SERVE_STATE" 2>/dev/null || true
 assert_group_gone_after_term "$PGID_STATE" \
   "TERM of the serving worker after its state root disappeared"
@@ -289,7 +339,7 @@ case "$COMMAND_GROUP_FAIL" in ''|*[!0-9]*) fail "failed-run: no command group" ;
 track_group "$COMMAND_GROUP_FAIL"
 SERVE_FAIL=$(cat "$CASE_FAIL/remote-jobs/worker.pid")
 case "$SERVE_FAIL" in ''|*[!0-9]*) fail "failed-run: no serving pid" ;; esac
-rm -rf "$CASE_FAIL/remote-jobs"
+mv "$CASE_FAIL/remote-jobs" "$CASE_FAIL/remote-jobs.removed"
 kill -TERM "$SERVE_FAIL" 2>/dev/null || true
 assert_group_gone_after_term "$COMMAND_GROUP_FAIL" \
   "the active command after its state root disappeared"
@@ -336,5 +386,34 @@ assert_group_gone_after_term "$PGID_SUPERVISOR" "TERM during the supervisor chil
 pass "supervisor shutdown reaps a child TERMing during spawn"
 
 unset FM_REMOTE_JOB_SPAWN_CASE FM_REMOTE_JOB_SPAWN_MARKER
+
+# --- serving exits 0, 75, or 125: supervisor does not restart ---------------
+
+for EXIT_CASE in 0 75 125; do
+  CASE_EXIT=$(prepare_case "supervisor-exit-$EXIT_CASE")
+  install_exit_wrapper "$CASE_EXIT"
+  FM_REMOTE_JOB_EXIT_CASE=$EXIT_CASE
+  FM_REMOTE_JOB_EXIT_MARKER="$CASE_EXIT/serve-count"
+  export FM_REMOTE_JOB_EXIT_CASE FM_REMOTE_JOB_EXIT_MARKER
+  start_linux_worker_direct "$CASE_EXIT"
+  SUP_EXIT=$LINUX_WORKER_PID
+  PGID_EXIT=$(fm_remote_job_process_pgid "$SUP_EXIT") ||
+    fail "supervisor-exit-$EXIT_CASE: could not resolve the worker process group"
+  track_group "$PGID_EXIT"
+  if wait "$SUP_EXIT"; then
+    SUPERVISOR_RC=0
+  else
+    SUPERVISOR_RC=$?
+  fi
+  [ "$SUPERVISOR_RC" -eq "$EXIT_CASE" ] ||
+    fail "serving exit $EXIT_CASE produced supervisor exit $SUPERVISOR_RC"
+  SERVE_COUNT=$(wc -l < "$FM_REMOTE_JOB_EXIT_MARKER" | tr -d ' ')
+  [ "$SERVE_COUNT" -eq 1 ] ||
+    fail "serving exit $EXIT_CASE was restarted $SERVE_COUNT times"
+  assert_group_gone_after_term "$PGID_EXIT" "serving exit $EXIT_CASE"
+  pass "the Linux supervisor does not restart serving exit $EXIT_CASE"
+done
+
+unset FM_REMOTE_JOB_EXIT_CASE FM_REMOTE_JOB_EXIT_MARKER
 
 printf '\nall fm-remote-job-worker-leak tests passed\n'
