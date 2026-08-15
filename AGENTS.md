@@ -112,8 +112,8 @@ state/               volatile runtime signals; gitignored
   <id>.check.sh      authenticated slow poll; the watcher runs only validated trusted or registered check content and rejects every other state check without execution (section 7; bin/fm-watch.sh)
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
-  <id>.pr-poll-registration  private transactional provenance record for the static poll publication
-  <id>.pr-poll-retirement  private crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
+  <id>.pr-poll-registration  private transactional provenance record for the static poll publication (bin/fm-pr-lib.sh)
+  <id>.pr-poll-retirement  private crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire (bin/fm-pr-lib.sh)
   .pr-check-quarantine/  private non-runnable storage for checks neutralized by the non-executing migration
   .pr-check-migration.log .pr-check-migration-scan-v1 .pr-check-migration-v1  private legacy-check migration outcomes and completion markers (bin/fm-pr-check-migrate.sh)
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
