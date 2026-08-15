@@ -874,7 +874,9 @@ run_check_capture() {
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
   pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
-  trap 'exit 1' HUP INT TERM
+  # Re-arm the burst-safe stop handler installed at startup, never a bare
+  # 'exit 1': a second stop signal during the EXIT trap must stay disarmed.
+  trap watcher_stop_signal HUP INT TERM
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_check_output_cleanup
@@ -1068,14 +1070,30 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   exit 0
 fi
 watcher_cleanup() {
+  # Disarm stop signals for the whole cleanup, covering exits the stop handler
+  # did not initiate (self-eviction, error exits): a stop signal landing while
+  # this EXIT trap runs would re-enter its own trap and exit immediately, and
+  # bash never resumes an aborted EXIT trap, so the lock release below would be
+  # skipped and the singleton lock left on disk naming a dead pid (issue #160).
+  trap '' HUP INT TERM
   interruptible_sleep_stop
   fm_active_check_stop || return 1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
   fm_lock_release "$WATCH_LOCK"
 }
+# The stop handler must disarm before exiting, not just exit: real senders
+# deliver stop signals in bursts (coreutils timeout signals the process group
+# and then re-signals from its own handler), and the second signal otherwise
+# lands inside watcher_cleanup and aborts it as described above. Stop signals
+# are therefore ignored while cleanup runs. Its normal work is bounded child
+# reaping plus lock release; if that work wedges, SIGKILL is the escape hatch.
+watcher_stop_signal() {
+  trap '' HUP INT TERM
+  exit 1
+}
 trap watcher_cleanup EXIT
-trap 'exit 1' HUP INT TERM
+trap watcher_stop_signal HUP INT TERM
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
