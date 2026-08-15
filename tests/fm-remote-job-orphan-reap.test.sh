@@ -81,7 +81,7 @@ build_remote_root() {
 # start_worker <remote-root> <account-home> <state-root>: start the worker
 # through the shared library start path and echo the supervisor pid.
 start_worker() {
-  local root=$1 account_home=$2 state_root=$3 pid
+  local root=$1 account_home=$2 state_root=$3 pid i
   pid=$(
     export FM_REMOTE_JOB_STATE_ROOT="$state_root"
     export FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
@@ -89,7 +89,16 @@ start_worker() {
     # shellcheck source=bin/fm-remote-job-lib.sh
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_start_linux_worker "$root" "$account_home" >&2 || exit 1
-    pgrep -f "^/bin/bash $root/bin/fm-remote-job-worker.sh\$" | head -n 1
+    printf '%s\n' "${BASHPID:-$$}" > "$state_root/fixture-launcher.pid"
+    pid=
+    i=0
+    while [ "$i" -lt 100 ]; do
+      pid=$(pgrep -f "^/bin/bash $root/bin/fm-remote-job-worker.sh\$" | head -n 1)
+      [ -n "$pid" ] && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    printf '%s\n' "$pid"
   ) || return 1
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$pid"
@@ -103,6 +112,8 @@ WORKER=$(start_worker "$CASE1/remote-root" "$CASE1/account" "$CASE1/remote-jobs"
 track "$WORKER"
 wait_child "$WORKER" 10 || fail "the fixture worker never started its serving child"
 SERVE=$(pgrep -P "$WORKER" | head -n 1)
+LAUNCHER=$(cat "$CASE1/remote-jobs/fixture-launcher.pid")
+case "$LAUNCHER" in ''|*[!0-9]*) fail "the fixture launcher identity was not recorded" ;; esac
 
 [ "$(pgid_of "$WORKER")" = "$WORKER" ] ||
   fail "the started worker is not its own process group leader, so its tree cannot be signalled as one group"
@@ -110,8 +121,8 @@ SERVE=$(pgrep -P "$WORKER" | head -n 1)
   fail "the serving child is outside the worker's process group"
 pass "the Linux start path puts the whole worker tree in its own process group"
 
-[ "$(ppid_of "$WORKER")" = 1 ] ||
-  fail "the fixture worker is not orphaned to init, so this case does not reproduce the leak"
+[ "$(ppid_of "$WORKER")" != "$LAUNCHER" ] ||
+  fail "the fixture worker is still owned by its launching shell, so this case does not reproduce the leak"
 
 # The exact teardown shape that leaked in production: a fixture cleanup removes
 # the worker's state root and then stops only the single recorded worker pid -
@@ -124,7 +135,7 @@ kill -KILL "$SERVE" 2>/dev/null || true
 wait_gone "$SERVE" 10 || fail "the recorded serving child did not stop"
 alive "$WORKER" || fail "the fixture supervisor did not survive a lone child kill, so this case no longer covers the leak"
 wait_child "$WORKER" 15 || fail "the supervisor did not respawn after its recorded child pid was killed"
-pass "removing the state root and killing the recorded worker pid leaves the tree running at ppid 1"
+pass "removing the state root and killing the recorded worker pid leaves the detached tree running"
 
 # A worker whose code root is intact is never a reap candidate, which is what
 # keeps the account's healthy LaunchAgent worker out of scope.

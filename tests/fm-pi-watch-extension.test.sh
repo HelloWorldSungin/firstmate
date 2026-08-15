@@ -540,13 +540,12 @@ EOF
 }
 
 test_pi_late_unretired_close_resumes_supervision() {
-  local kind repo home plugin log ready retired release stop out status
+  local kind repo home plugin log ready release stop out status
   for kind in actionable non-actionable; do
     repo="$TMP_ROOT/pi-late-$kind-root"
     home="$TMP_ROOT/pi-late-$kind-home"
     log="$TMP_ROOT/pi-late-$kind.log"
     ready="$TMP_ROOT/pi-late-$kind.ready"
-    retired="$TMP_ROOT/pi-late-$kind.retired"
     release="$TMP_ROOT/pi-late-$kind.release"
     stop="$TMP_ROOT/pi-late-$kind.stop"
     mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -562,7 +561,7 @@ if [ "$count" -eq 1 ]; then
   exit 0
 fi
 if [ "$count" -eq 2 ]; then
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap '' TERM INT
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -573,12 +572,30 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 const prompts = [];
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      if (signal === "SIGTERM") retireRequests += 1;
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -586,6 +603,7 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async (message) => {
+    retireRequestsAtPrompt = retireRequests;
     prompts.push(message);
   },
 };
@@ -608,10 +626,9 @@ await waitFor(
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
-  "unretired successor was not asked to retire before fallback",
-);
+// The kill call is the retirement request. Waiting for the child shell to run
+// its signal trap races process scheduling against the assertion ceiling.
+if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
@@ -1715,14 +1732,13 @@ EOF
 }
 
 test_opencode_late_unretired_close_resumes_supervision() {
-  local kind plugin repo home log ready retired release stop out status
+  local kind plugin repo home log ready release stop out status
   for kind in actionable non-actionable; do
     plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
     repo="$TMP_ROOT/opencode-late-$kind-root"
     home="$TMP_ROOT/opencode-late-$kind-home"
     log="$TMP_ROOT/opencode-late-$kind.log"
     ready="$TMP_ROOT/opencode-late-$kind.ready"
-    retired="$TMP_ROOT/opencode-late-$kind.retired"
     release="$TMP_ROOT/opencode-late-$kind.release"
     stop="$TMP_ROOT/opencode-late-$kind.stop"
     mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -1739,7 +1755,7 @@ if [ "$count" -eq 1 ]; then
   exit 0
 fi
 if [ "$count" -eq 2 ]; then
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap '' TERM INT
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -1750,15 +1766,34 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      if (signal === "SIGTERM") retireRequests += 1;
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
+      retireRequestsAtPrompt = retireRequests;
       prompts.push(request.body.parts[0].text);
     },
   },
@@ -1785,10 +1820,9 @@ await waitFor(
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
-  "unretired successor was not asked to retire before fallback",
-);
+// The kill call is the retirement request. Waiting for the child shell to run
+// its signal trap races process scheduling against the assertion ceiling.
+if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
