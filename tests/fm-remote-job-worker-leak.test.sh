@@ -98,6 +98,20 @@ assert_pid_gone_after_term() { # <pid> <label>
   kill -0 "$pid" 2>/dev/null && fail "$label left orphaned pid $pid"
 }
 
+assert_run_left_no_tracked_processes() {
+  local pgid survivors='' remaining=''
+  for pgid in "${TRACKED_GROUPS[@]:-}"; do
+    [ -n "$pgid" ] || continue
+    if group_alive "$pgid"; then
+      survivors=$(group_members "$pgid")
+      remaining="${remaining}${remaining:+
+}$survivors"
+    fi
+  done
+  [ -z "$remaining" ] || fail "the completed regression run left orphaned processes:
+$remaining"
+}
+
 build_remote_root() { # <dir>
   local root=$1 worker_source
   worker_source=${FM_REMOTE_JOB_WORKER_UNDER_TEST:-$ROOT/bin/fm-remote-job-worker.sh}
@@ -416,4 +430,7 @@ done
 
 unset FM_REMOTE_JOB_EXIT_CASE FM_REMOTE_JOB_EXIT_MARKER
 
+assert_run_left_no_tracked_processes
+trap - EXIT HUP INT TERM
+fm_test_cleanup
 printf '\nall fm-remote-job-worker-leak tests passed\n'
