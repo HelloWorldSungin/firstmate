@@ -1179,16 +1179,10 @@ test_firstmate_repo_crew_persona_section() {
   pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated and split by kind"
 }
 
-# This home IS the firstmate clone, the documented default, so firstmate has no
-# clone under projects/ and a bare `firstmate` repo name resolves nowhere else.
-# Positive case breaks if fm_brief_resolve_project_dir stops offering the home
-# root to a name whose registry line declares that layout: the name resolves to
-# nothing, the git-common-dir comparison never runs, and the guidance is
-# silently absent from exactly the canonical call. Negative cases break if that
-# candidate is ever offered on anything weaker - registration alone, or nothing
-# at all - because every such name would resolve to the home, which in this
-# layout IS firstmate's repo, and ordinary projects would then be told they are
-# working in a checkout of firstmate.
+# This home is the firstmate clone, so its shared git object database must let a
+# bare `firstmate` name reach the final structural verdict without depending on
+# registry prose. The negative cases ensure other names do not inherit that
+# candidate merely because they are present in the registry.
 test_firstmate_repo_crew_persona_without_a_projects_clone() {
   local data brief unregistered_brief uncloned_brief
   data="$TMP_ROOT/firstmate-home-data"
@@ -1229,9 +1223,8 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   assert_no_grep "changes firstmate's shared tracked material" "$unregistered_brief" \
     "an unregistered project name must not be told it changes firstmate's tracked material"
 
-  # Registered, but its line claims no home-root clone and the clone is simply
-  # not in this home yet - register-then-clone ordering, or a renamed clone
-  # directory. Registration alone must not put it in firstmate's own checkout.
+  # A different registered project's absent clone must not map to firstmate's
+  # own checkout merely because the registry contains its name.
   (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
     FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
     "$ROOT/bin/fm-brief.sh" fm-home-uncloned some-clone --mode no-mistakes >/dev/null 2>&1)
@@ -1408,14 +1401,10 @@ test_design_brief_is_harness_independent_and_adr_only() {
   pass "fm-brief.sh: design profile is ADR-only and resolves identically across supported harnesses"
 }
 
-# A secondmate home is leased as a firstmate worktree, and bin/fm-home-seed.sh
-# registers only the projects it seeds - never firstmate, which is no clone under
-# projects/ - so this home structurally cannot carry the registry declaration
-# while every crew task it runs against firstmate is a firstmate-repo task.
-# Breaks if the marker stops opening the home-root candidate: the whole
-# population whose purpose is firstmate-repo work silently loses the guidance.
-# The paired negative breaks if the marker is ever treated as optional, which
-# would hand the candidate to any unresolved name in a primary home again.
+# A secondmate home is leased as a firstmate worktree, so its git object DB
+# structurally identifies it as a firstmate checkout even though
+# bin/fm-home-seed.sh does not register firstmate under projects/. Breaks if
+# either a marked or unmarked linked home loses the firstmate-repo guidance.
 test_firstmate_repo_crew_persona_in_a_secondmate_home() {
   local upstream home brief unmarked_brief
   upstream="$TMP_ROOT/sm-upstream"
@@ -1447,9 +1436,12 @@ test_firstmate_repo_crew_persona_in_a_secondmate_home() {
   unmarked_brief="$home/data/sm-unmarked/brief.md"
   assert_grep 'disposable git worktree of firstmate' "$unmarked_brief" \
     "the unmarked-home brief did not scaffold"
-  assert_no_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
-    "an unmarked home with no registry declaration must not resolve a name to its own root"
-  pass "fm-brief.sh: a secondmate home's marker opens the home-root candidate its registry cannot declare"
+  assert_grep 'You report to FIRSTMATE, not the captain.' "$unmarked_brief" \
+    "an unmarked linked home lost the structural firstmate-repo verdict"
+  # shellcheck disable=SC2016 # Literal backticks are part of the generated Markdown.
+  assert_grep 'Load the `firstmate-coding-guidelines` skill first.' "$unmarked_brief" \
+    "an unmarked linked home produced no coding-guidelines directive"
+  pass "fm-brief.sh: linked homes retain firstmate guidance without registry prose or a marker"
 }
 
 test_resolved_line_and_pr_attribution_guidance() {

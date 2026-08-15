@@ -2,56 +2,63 @@
 # fm-brief-repo-lib.sh - detect when a crewmate task's project checkout is the
 # firstmate repository itself.
 #
-# fm-brief.sh uses this to emit role-confusion guidance for ship, design, and scout
-# scaffolds only. The REPO name argument is not authoritative; two projects can
-# share a display name or a clone can be misnamed. Instead, resolve the name to
-# a project directory and compare that checkout's git-common-dir against
-# FM_ROOT's, which is the sole authority on the verdict.
+# fm-brief.sh uses this to emit role-confusion guidance for ship, design, and
+# scout scaffolds only. The REPO name selects a checkout candidate, but only a
+# git-common-dir match with FM_ROOT decides the final firstmate-repo verdict.
 #
-# Sourced by bin/fm-brief.sh and tests. No side effects on source.
+# Sourced by bin/fm-brief.sh, bin/fm-issue-ref.sh, and tests. No side effects
+# on source.
 
 _FM_BRIEF_REPO_LIB_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) \
   || _FM_BRIEF_REPO_LIB_DIR=.
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$_FM_BRIEF_REPO_LIB_DIR/fm-primary-scope-lib.sh"
 
-# fm_brief_repo_registers_home_root_clone: return 0 when data/projects.md
-# carries a registry line for exactly this project name and that line declares
-# the project's clone to be the home root itself rather than a directory under
-# projects/. Same `- <name>` parsing as bin/fm-project-mode.sh, which owns the
-# registry line format; docs/configuration.md owns the declaration prose.
-fm_brief_repo_registers_home_root_clone() {
-  local name=$1 registry=${FM_DATA_OVERRIDE:-${FM_HOME:-}/data}/projects.md
-  [ -f "$registry" ] || return 1
-  awk -v n="$name" '
-    $1 == "-" && $2 == n {
-      line = tolower($0)
-      if (index(line, "home is the clone") || index(line, "lives at the home root rather than under projects/")) {
-        found = 1
-      }
-      exit
-    }
-    END { exit !found }
-  ' "$registry"
+# fm_brief_repo_home_root_clone_name: print the canonical registry name when
+# FM_HOME and FM_ROOT share a git object database, otherwise return 1.
+# docs/configuration.md owns the canonical `firstmate` name and home layout.
+fm_brief_repo_home_root_clone_name() {
+  local root_common home_common
+  root_common=$(git -C "${FM_ROOT:-}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  home_common=$(git -C "${FM_HOME:-}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  [ "$root_common" = "$home_common" ] || return 1
+  printf '%s\n' firstmate
 }
 
-# fm_brief_repo_home_root_is_candidate: return 0 when the home root may be tried
-# as a name's checkout, which is true in exactly two shapes.
-#
-# In a primary home the registry decides: only a name whose data/projects.md line
-# declares the home-root layout gets the candidate, so an intake typo, a display
-# spelling that differs from the clone directory, and an ordinary project
-# registered before its clone is synced all resolve to nothing instead.
-#
-# A secondmate home carries no such line and structurally cannot: bin/fm-home-seed.sh
-# leases it as a firstmate worktree and writes registry lines only for the
-# projects it seeds, while a --no-projects domain - one whose whole subject is
-# the firstmate repo - refuses a registry entirely. The genuine marker is the
-# standing evidence for that shape, so it opens the same candidate there.
+# fm_brief_repo_registers_home_root_clone: return 0 when the passed name
+# matches the structurally detected home-root clone name.
+fm_brief_repo_registers_home_root_clone() {
+  local name=$1 home_root_name
+  home_root_name=$(fm_brief_repo_home_root_clone_name 2>/dev/null) || return 1
+  [ "$name" = "$home_root_name" ]
+}
+
+# fm_brief_repo_home_root_is_candidate: return 0 when the home root may be
+# tried as a name's checkout. A structural `firstmate` match or a genuine
+# secondmate-home marker may select the candidate; fm_brief_task_repo_is_firstmate
+# still owns the final git object-database verdict.
 fm_brief_repo_home_root_is_candidate() {
   local repo=$1
-  fm_brief_repo_registers_home_root_clone "$repo" && return 0
+  if [ "$(fm_brief_repo_home_root_clone_name 2>/dev/null)" = "$repo" ]; then
+    return 0
+  fi
   fm_root_is_secondmate_home "${FM_HOME:-}"
+}
+
+# fm_brief_repo_resolve_project_name: return the canonical registry name for
+# a structurally verified home-root path. Return other names and paths unchanged.
+fm_brief_repo_resolve_project_name() {
+  local project=$1 home_root_name fm_home_abs project_abs
+  home_root_name=$(fm_brief_repo_home_root_clone_name 2>/dev/null) || true
+  if [ -n "$home_root_name" ]; then
+    fm_home_abs=$(CDPATH='' cd -- "${FM_HOME:-}" 2>/dev/null && pwd -P) || true
+    project_abs=$(CDPATH='' cd -- "$project" 2>/dev/null && pwd -P) || true
+    if [ -n "$fm_home_abs" ] && [ -n "$project_abs" ] && [ "$fm_home_abs" = "$project_abs" ]; then
+      printf '%s\n' "$home_root_name"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$project"
 }
 
 # fm_brief_resolve_project_dir: print the resolved project directory for a brief
