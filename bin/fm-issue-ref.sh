@@ -5,8 +5,8 @@
 # and yolo posture: the answer is decided once, against the project, and then
 # passed explicitly to bin/fm-brief.sh and bin/fm-spawn.sh, which never guess.
 #
-# Usage: fm-issue-ref.sh --project <name> [--format meta|url|json] <ref>...
-#        fm-issue-ref.sh --project <name> --show-tracker
+# Usage: fm-issue-ref.sh --project <name-or-home-path> [--format meta|url|json] <ref>...
+#        fm-issue-ref.sh --project <name-or-home-path> --show-tracker
 #
 #   <ref> is a full issue URL, a "<forge>:<url>" prefixed URL, "<owner>/<repo>#<n>",
 #   "#<n>", or "<n>". bin/fm-issue-lib.sh owns the accepted forms, the registry
@@ -82,12 +82,8 @@ done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 
 [ -n "$PROJECT" ] || { echo "error: --project <name> is required; a reference is meaningless without the project it resolves against" >&2; exit 1; }
-# Resolve a path-style project identifier to a registry name. The home root
-# is the firstmate repo's checkout, so a path that matches the home root
-# resolves to the firstmate repo's registry entry rather than reading as
-# an unknown name. issue #104: this is the structural complement to the
-# prose-based detection fm_brief_repo_registers_home_root_clone used to
-# derive from registry entries.
+# Normalize a structurally verified firstmate home-root path to its canonical
+# registry name before the name-keyed tracker lookup.
 PROJECT=$(fm_brief_repo_resolve_project_name "$PROJECT")
 case "$FORMAT" in
   meta|brief|url|json) ;;

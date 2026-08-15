@@ -130,6 +130,10 @@
       "target": "docs/configuration.md"
     },
     {
+      "source": "bin/fm-brief-repo-lib.sh",
+      "target": "docs/configuration.md"
+    },
+    {
       "source": "bin/fm-bootstrap.sh",
       "target": "bin/fm-upstream-status.sh"
     },

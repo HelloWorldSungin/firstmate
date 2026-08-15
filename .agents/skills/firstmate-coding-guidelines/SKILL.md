@@ -73,7 +73,7 @@ Every new skill needs its load trigger declared inline: section 13 for agent-onl
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
 `bin/fm-brief.sh` emits that instruction automatically into ship and design briefs whose resolved project checkout shares `FM_ROOT`'s git object database (`bin/fm-brief-repo-lib.sh`).
-Resolving the name that far needs this home to declare the firstmate checkout its own root, per [`docs/configuration.md`](../../../docs/configuration.md), or to be a marked secondmate home; a home with neither emits nothing, so read the scaffold and hand-write the instruction only when it is absent.
+Resolving the canonical `firstmate` name to a structurally matching home follows [`docs/configuration.md`](../../../docs/configuration.md) rather than registry prose or a secondmate marker, so read the scaffold and hand-write the instruction only when it is absent.
 A scout brief carries only the role fact, because a scout's deliverable is a report and telling it that it changes tracked material would be false.
 `CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder for contributors editing the repo directly.
 

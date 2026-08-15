@@ -1179,16 +1179,10 @@ test_firstmate_repo_crew_persona_section() {
   pass "fm-brief.sh: firstmate-repo persona guidance is git-common-dir gated and split by kind"
 }
 
-# This home IS the firstmate clone, the documented default, so firstmate has no
-# clone under projects/ and a bare `firstmate` repo name resolves nowhere else.
-# Positive case breaks if fm_brief_resolve_project_dir stops offering the home
-# root to a name whose registry line declares that layout: the name resolves to
-# nothing, the git-common-dir comparison never runs, and the guidance is
-# silently absent from exactly the canonical call. Negative cases break if that
-# candidate is ever offered on anything weaker - registration alone, or nothing
-# at all - because every such name would resolve to the home, which in this
-# layout IS firstmate's repo, and ordinary projects would then be told they are
-# working in a checkout of firstmate.
+# This home is the firstmate clone, so its shared git object database must let a
+# bare `firstmate` name reach the final structural verdict without depending on
+# registry prose. The negative cases ensure other names do not inherit that
+# candidate merely because they are present in the registry.
 test_firstmate_repo_crew_persona_without_a_projects_clone() {
   local data brief unregistered_brief uncloned_brief
   data="$TMP_ROOT/firstmate-home-data"
@@ -1229,9 +1223,8 @@ test_firstmate_repo_crew_persona_without_a_projects_clone() {
   assert_no_grep "changes firstmate's shared tracked material" "$unregistered_brief" \
     "an unregistered project name must not be told it changes firstmate's tracked material"
 
-  # Registered, but its line claims no home-root clone and the clone is simply
-  # not in this home yet - register-then-clone ordering, or a renamed clone
-  # directory. Registration alone must not put it in firstmate's own checkout.
+  # A different registered project's absent clone must not map to firstmate's
+  # own checkout merely because the registry contains its name.
   (cd "$TMP_ROOT" && FM_HOME="$ROOT" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$data" \
     FM_STATE_OVERRIDE="$TMP_ROOT/firstmate-home-state" \
     "$ROOT/bin/fm-brief.sh" fm-home-uncloned some-clone --mode no-mistakes >/dev/null 2>&1)

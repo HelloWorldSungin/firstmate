@@ -65,7 +65,7 @@ Tracked changes to firstmate itself - `AGENTS.md`, `README.md`, `CONTRIBUTING.md
 Before making any such change, load the agent-only `firstmate-coding-guidelines` skill (`.agents/skills/firstmate-coding-guidelines/SKILL.md`).
 It has the knowledge-placement rules that keep `AGENTS.md` from regrowing after each diet pass.
 `bin/fm-brief.sh` emits that skill's load instruction automatically for ship or design tasks whose project checkout shares this repository's git object database, and gives ship, design, and scout workers alike the role fact that this checkout's `AGENTS.md` describes firstmate rather than the worker.
-Reaching that comparison needs the home to say the firstmate checkout is its own root - the registry declaration described in [docs/configuration.md](docs/configuration.md), or a secondmate home's marker - so a home whose `data/projects.md` predates that convention emits nothing and its briefs still need the instruction by hand.
+Resolving the canonical `firstmate` name to a structurally matching home follows [docs/configuration.md](docs/configuration.md), so it does not depend on registry prose or a secondmate marker; read the scaffold and add the instruction by hand only when it is absent.
 A crewmate picking up such a brief should load the skill when the task touches shared tracked material.
 When supervising live crewmates, keep firstmate's own long validation or build commands in the background so watcher wakes can still be handled.
 Crewmate validation follows the installed no-mistakes version's SKILL.md and live `axi` help instead of duplicating gate mechanics in firstmate docs.

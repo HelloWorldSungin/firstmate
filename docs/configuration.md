@@ -16,7 +16,7 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 The firstmate repository's home-root clone uses the canonical registry name `firstmate`, and `bin/fm-brief-repo-lib.sh` offers the home root as its resolution candidate when `FM_HOME` and `FM_ROOT` share the same git object database.
 That structural comparison is the sole authority, so registry prose does not control detection and a path matching the home root resolves to the `firstmate` registry entry without a new registry field.
-A secondmate home instead uses its `.fm-secondmate-home` marker to open the same candidate because `bin/fm-home-seed.sh` leases it as a firstmate worktree and registers only the projects it seeds.
+A `.fm-secondmate-home` marker can also open the home-root candidate for secondmate fallback resolution, but it never replaces the final object-database comparison.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 The producing PR and Relay helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
