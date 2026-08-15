@@ -233,9 +233,9 @@ fm_launch_template() {
     # executable name, so pi-signed never silently falls back to pi.
     pi|pi-signed)
       if [ "$kind" = secondmate ]; then
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' --tui-mode regular __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' --tui-mode regular __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -263,6 +263,11 @@ fm_launch_template() {
     # token, so no launch placeholder belongs here. __KIMIBIN__ is resolved by
     # fm-spawn before rendering, because the binary lookup is spawn-time state.
     kimi) printf '%s' '__KIMIBIN__ __MODELFLAG__--auto' ;;
+    # Muse is crewmate/scout only. Its default build has no usable hook surface,
+    # so fm-spawn binds its durable session log rather than adding a turn-end
+    # placeholder here. The foreign-context kill switch keeps operator-private
+    # Claude rules out of Meta-hosted inference while preserving project rules.
+    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
@@ -285,7 +290,7 @@ fm_launch_model_flag() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|agy)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|muse|cursor|agy)
       printf -- '--model %s ' "$(fm_launch_shell_quote "$model")"
       ;;
   esac
@@ -332,6 +337,12 @@ fm_launch_effort_flag() {
       # than passing an unsupported value.
       case "$effort" in
         low|medium|high) printf -- '--effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
+      esac
+      ;;
+    muse)
+      case "$effort" in
+        low|medium|high|xhigh) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
+        max) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote ultra)" ;;
       esac
       ;;
     # cursor has no standalone effort flag. Parameterized models may carry their

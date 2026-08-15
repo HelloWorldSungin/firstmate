@@ -1,57 +1,27 @@
 #!/usr/bin/env bash
 # fm-timeout-lib.sh - the single owner of bounded external command execution.
 #
-# Firstmate calls forges and other external tools from paths that must never
-# hang: an optional status lookup that a dashboard waits on, an optional tracker
-# write-back that runs inside dispatch and merge, and a brain read a crewmate is
-# waiting on. A hung CLI is indistinguishable from a slow one, so every such call
-# is bounded here rather than each caller re-rolling a timeout. bin/fm-watch.sh
-# deliberately keeps its own process-group-OWNING variant, which execs in place,
-# honors an inherited group, and traps HUP/INT/TERM so a terminating watcher
-# takes its check with it. That is a different guarantee, not a second copy.
+# Sourced, never executed. Every bounded call in this repository shares the
+# mechanism selection, process-group reap, budget calculation, and exit-status
+# contract declared here.
 #
-# fm_run_timed <seconds> <command...> runs the command with a hard bound and
-# returns the command's own exit code, except:
-#   124 or 137  the bound elapsed (whichever the runner reports)
-#   125         nothing was executed: no bounded runner could start, or the
-#               requested bound was not a positive whole number of seconds
-# A caller distinguishes those from a real command failure and reports each
-# differently; 125 in particular means "not attempted", never "failed".
-# A command killed by a signal reports 128+signal rather than the shell's own
-# status, so a child the OOM killer or an outer bound took is never mistaken for
-# one that exited 0.
+# fm_timeout_mechanism prints timeout, gtimeout, perl, or bash.
+# FM_TIMEOUT_MECHANISM_OVERRIDE=bash forces the dependency-free fallback.
+# FM_TIMEOUT_FORCE_FALLBACK=1 forces a non-coreutils fallback, preferring perl
+# for compatibility with the fork's existing fallback test surface.
 #
-# A bound of 0 is refused rather than honored, because 0 is not a bound: GNU
-# timeout documents DURATION 0 as "no timeout", and the perl arm's `alarm 0`
-# cancels the alarm outright, so either arm would run the command unbounded on
-# the exact input a caller meant as "no time left".
+# fm_run_timed <seconds> <command...> returns the command's own exit code,
+# except 124 means the bound elapsed and 125 means nothing was attempted because
+# the bound was invalid or no bounded runner could start.
+# A command killed by a signal reports 128+signal.
 #
-# FM_TIMEOUT_KILL_GRACE is the seconds between the polite signal and the kill
-# (1 by default). A caller raises it for a call whose child must leave something
-# CONSISTENT behind rather than merely die - bin/fm-usage.mjs checkpoints its
-# store back out of WAL on SIGTERM, and a kill that arrives mid-checkpoint would
-# leave the shape the dashboard cannot read.
+# Every runner places the command in its own process group and reaps the whole
+# group after the polite timeout signal, so a hung descendant cannot survive.
+# FM_TIMEOUT_KILL_GRACE is the positive whole-number delay between TERM and KILL
+# and defaults to 1 second.
 #
-# The grace is a CEILING, not a cost: both arms return as soon as the child is
-# reaped, so a child that answers the polite signal promptly is not waited out.
-# A zero grace falls back to 1 with the blank and the non-numeric, because a
-# grace of zero is the one value that voids the escalation entirely - GNU
-# timeout arms no kill at all for --kill-after=0, which would leave a child that
-# ignores SIGTERM running past the deadline the caller was promised.
-#
-# fm_call_bound <per-call-default> prints the seconds the NEXT bounded call may
-# take. A script that makes several calls inside one operation the caller bounds
-# as a whole - a milestone write-back across two surfaces, say - exports
-# FM_WRITE_BACK_BUDGET as the seconds that whole script may spend, and each call
-# then takes the smaller of its own default and the time left. 0 means the budget
-# is spent, which a caller reports as "not attempted" rather than as a forge
-# failure. Spending the budget this way is what lets a script exit cleanly with
-# its own warning instead of being killed mid-call by an outer bound.
-#
-# macOS ships neither timeout nor gtimeout without coreutils, so the perl arm is
-# the portability floor rather than a curiosity.
-# FM_TIMEOUT_FORCE_FALLBACK=1 forces that arm so it stays exercised on hosts
-# that do have timeout(1).
+# fm_call_bound <per-call-default> prints the next call's share of the optional
+# FM_WRITE_BACK_BUDGET whole-operation budget.
 #
 # No side effects on source. set -u / set -e safe.
 
@@ -63,7 +33,7 @@ fm_call_bound() {  # <per-call-default>
       return 0
       ;;
   esac
-  left=$(( budget - SECONDS ))
+  left=$((budget - SECONDS))
   if [ "$left" -le 0 ]; then
     printf '0\n'
   elif [ "$left" -lt "$default" ]; then
@@ -73,19 +43,113 @@ fm_call_bound() {  # <per-call-default>
   fi
 }
 
+fm_timeout_mechanism() {
+  if [ "${FM_TIMEOUT_MECHANISM_OVERRIDE:-}" = bash ]; then
+    printf 'bash\n'
+  elif [ "${FM_TIMEOUT_FORCE_FALLBACK:-0}" = 1 ]; then
+    if command -v perl >/dev/null 2>&1; then
+      printf 'perl\n'
+    else
+      printf 'bash\n'
+    fi
+  elif command -v timeout >/dev/null 2>&1; then
+    printf 'timeout\n'
+  elif command -v gtimeout >/dev/null 2>&1; then
+    printf 'gtimeout\n'
+  elif command -v perl >/dev/null 2>&1; then
+    printf 'perl\n'
+  else
+    printf 'bash\n'
+  fi
+}
+
+fm_run_bash_timeout() {  # <seconds> <grace> <command...>
+  local seconds=$1 grace=$2 command_status deadline_status child_pid watchdog_pid
+  local command_rc recorded_rc monitor_was_on=0
+  shift 2
+  command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-timeout-command.XXXXXX" 2>/dev/null) || return 125
+  deadline_status="${command_status}.deadline"
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m
+  (
+    set +m
+    "$@"
+    command_rc=$?
+    printf '%s\n' "$command_rc" > "$command_status"
+    exit "$command_rc"
+  ) &
+  child_pid=$!
+  (
+    set +m
+    sleep "$seconds"
+    printf 'expired\n' > "$deadline_status"
+    kill -TERM -- "-$child_pid" 2>/dev/null || true
+    sleep "$grace"
+    kill -KILL -- "-$child_pid" 2>/dev/null || true
+    exit 124
+  ) &
+  watchdog_pid=$!
+  [ "$monitor_was_on" -eq 1 ] || set +m
+
+  if wait "$child_pid" 2>/dev/null; then
+    command_rc=0
+  else
+    command_rc=$?
+  fi
+  if [ -s "$deadline_status" ]; then
+    wait "$watchdog_pid" 2>/dev/null || true
+    command_rc=124
+  else
+    kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    recorded_rc=$(cat "$command_status" 2>/dev/null || true)
+    case "$recorded_rc" in ''|*[!0-9]*) ;; *) command_rc=$recorded_rc ;; esac
+  fi
+  rm -f "$command_status" "$deadline_status" 2>/dev/null || true
+  return "$command_rc"
+}
+
+fm_run_external_timeout() {  # <runner> <seconds> <grace> <command...>
+  local runner=$1 seconds=$2 grace=$3 runner_rc started elapsed
+  shift 3
+  started=$SECONDS
+  if "$runner" -k "$grace" "$seconds" "$@"; then
+    runner_rc=0
+  else
+    runner_rc=$?
+  fi
+  elapsed=$((SECONDS - started))
+  case "$runner_rc" in
+    124) return 124 ;;
+    # GNU timeout reports 137 when its kill-after escalation fired, while a
+    # command may also naturally exit 137. The deadline distinguishes them
+    # without interposing a status-recording shell that would become the direct
+    # child and let the real command escape timeout's process-group reap.
+    137)
+      [ "$elapsed" -ge "$seconds" ] && return 124
+      return 137
+      ;;
+    *) return "$runner_rc" ;;
+  esac
+}
+
+fm_run_perl_timeout() {  # <seconds> <grace> <command...>
+  local seconds=$1 grace=$2
+  shift 2
+  perl -e 'use POSIX qw(WNOHANG); my $t = shift; my $g = shift; my $pid = fork; exit 125 unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 125 } local $SIG{ALRM} = sub { kill "TERM", -$pid; for (my $i = 0; $i < $g * 20; $i++) { last if waitpid($pid, WNOHANG) != 0; select undef, undef, undef, 0.05 } kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; alarm $t; waitpid $pid, 0; my $st = $?; exit($st & 127 ? 128 + ($st & 127) : $st >> 8)' "$seconds" "$grace" "$@"
+}
+
 fm_run_timed() {  # <seconds> <command...>
-  local seconds=$1 force=${FM_TIMEOUT_FORCE_FALLBACK:-0} grace=${FM_TIMEOUT_KILL_GRACE:-1}
+  local seconds=$1 grace=${FM_TIMEOUT_KILL_GRACE:-1}
   shift
   case "$seconds" in ''|*[!0-9]*) return 125 ;; esac
   [ "$seconds" -ge 1 ] || return 125
   case "$grace" in ''|*[!0-9]*|0) grace=1 ;; esac
-  if [ "$force" != 1 ] && command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after="$grace" "$seconds" "$@"
-  elif [ "$force" != 1 ] && command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --kill-after="$grace" "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'use POSIX qw(WNOHANG); my $t = shift; my $g = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; for (my $i = 0; $i < $g * 20; $i++) { last if waitpid($pid, WNOHANG) != 0; select undef, undef, undef, 0.05 } kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $st = $?; exit($st & 127 ? 128 + ($st & 127) : $st >> 8)' "$seconds" "$grace" "$@"
-  else
-    return 125
-  fi
+  case "$(fm_timeout_mechanism)" in
+    timeout) fm_run_external_timeout timeout "$seconds" "$grace" "$@" ;;
+    gtimeout) fm_run_external_timeout gtimeout "$seconds" "$grace" "$@" ;;
+    perl) fm_run_perl_timeout "$seconds" "$grace" "$@" ;;
+    bash) fm_run_bash_timeout "$seconds" "$grace" "$@" ;;
+    *) return 125 ;;
+  esac
 }

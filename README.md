@@ -48,8 +48,8 @@ Launching a supported harness inside it instantiates your first mate - and makes
 - **Explicit project modes** - each project ships via `no-mistakes`, `direct-PR`, or `local-only`, with an optional `+yolo` autonomy flag.
 - **Optional secondmates** - opt in to persistent second mates that run from isolated firstmate homes with their own `FM_HOME`, state, projects, and session lock, either locally or as a whole home on an SSH-reachable host, with guarded updates and recovery that never turns an unavailable remote route into a local replacement.
 - **Event-driven, zero-token supervision** - a bash watcher sleeps on the fleet and wakes the first mate only when something needs you; verified primary harnesses also get a turn-end backstop that blocks or follows up on a blind stop when work is under way and supervision is not live.
-- **Optional X mode** - opt in with one local `.env` token so firstmate can answer your public `@myfirstmate` mentions, act on normal reversible mention requests through the same lifecycle as chat requests, acknowledge spawned work, and post up to three public-safe completion follow-ups within seven days for genuine milestones and the final outcome without changing non-X behavior; a final reply promised in a thread becomes durable state that is reconciled from disk, so a restart or a compacted conversation cannot lose it; dry-run preview records would-be replies and dismissals locally before go-live.
-- **Strict project boundary** - the first mate is read-only over your projects except for the narrow guarded and captain-approved operations authorized by [hard rule 1](AGENTS.md#1-identity-and-prime-directives), including stale remote-pointer pruning during clone refresh and exact-task merged-branch cleanup; crewmates make every other project change behind the configured merge authority.
+- **Optional Relay** - opt in with one local `.env` pairing token so firstmate can answer your public mentions on X and Discord alike, act on normal reversible mention requests through the same lifecycle as chat requests, acknowledge spawned work, and post up to three public-safe completion follow-ups within seven days for genuine milestones and the final outcome without changing non-Relay behavior; a final reply promised in a thread becomes durable state that is reconciled from disk, so a restart or a compacted conversation cannot lose it; dry-run preview records would-be replies and dismissals locally before go-live.
+- **Strict project boundary** - the first mate is read-only over your projects except for the narrow guarded and captain-approved operations authorized by [hard rule 1](AGENTS.md#1-identity-and-prime-directives), including fleet sync's guarded safe branch pruning and exact-task merged-branch cleanup; crewmates make every other project change behind the configured merge authority.
 - **Restart-proof** - all state lives on disk and in the active session backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected); kill the session anytime and the next one reconciles, including confirmed-dead secondmate agents, and carries on.
 - **Read-only captain inbox, fleet board, completed-work history, and live agent activity** - an optional mobile-first view, loopback by default and reachable from off the machine only once you have configured authentication, renders the versioned fleet snapshot contract as an age-sorted inbox of what needs you, a fleet health strip, and a kanban, browses finished work with its rendered reports from the durable completion manifests that outlive cleanup, and - once you turn it on - streams a per-agent timeline of safe lifecycle and tool summaries reported by the harnesses' own hooks, without owning dispatch, lifecycle, or fleet writes.
 
@@ -159,10 +159,10 @@ Setup guides for tmux (the default) and every other supported backend (herdr, ze
 
 You chat with the first mate.
 It routes each request to a crewmate in its own session endpoint and git worktree, supervises the fleet with a zero-token event-driven watcher, and brings you finished PRs, approved local merges, or investigation reports.
-Optional secondmates extend this to persistent local or whole-home remote second mates, dispatch profiles let you steer which harness handles which task, and an opt-in X mode lets the same fleet answer public mentions.
+Optional secondmates extend this to persistent local or whole-home remote second mates, dispatch profiles let you steer which harness handles which task, and opt-in Relay lets the same fleet answer public mentions.
 `codex-app` is not a runtime backend yet; [docs/codex-app-backend.md](docs/codex-app-backend.md) owns the Codex App boundary.
 
-Full architecture - the supervision engine, worktree isolation, secondmates, dispatch profiles, project modes, optional X mode, fleet sync, and self-update - is in [docs/architecture.md](docs/architecture.md).
+Full architecture - the supervision engine, worktree isolation, secondmates, dispatch profiles, project modes, optional Relay, fleet sync, and self-update - is in [docs/architecture.md](docs/architecture.md).
 
 ## Built-in skills
 
@@ -177,7 +177,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/sync-upstream`   | Check the fork's read-only upstream drift status or, when asked to sync, dispatch the next contiguous full-merge round as a reviewable fork PR without merging it |
 | `/tool-updates`    | Check installed tools against their latest stable releases and live compatibility floors, record evidence-backed decisions, and prepare an attended upgrade plan without changing the machine |
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the fork's latest with fast-forward-only pulls, then re-read instructions, nudge secondmates, and report upstream drift without merging it |
-| `/stow`            | Sweep the session for uncaptured durable knowledge, route each finding to its disk home per AGENTS.md, archive a pruned-but-still-true learning into this home's own brain before deleting it, file undone next steps to the backlog, and report what is now safe to reset |
+| `/stow`            | Sweep durable knowledge, curate tiered startup memory with decay and cold archival, preserve pruned truth in the home's brain, propose captain-gated offloads when still over budget, cascade to registered second mates, file undone next steps, and report what is safe to reset |
 
 Bearings invocation examples:
 
@@ -195,13 +195,13 @@ Firstmate's skills live in two separate places with different audiences:
 - `.agents/skills/` - agent-loaded skills (this section's table, plus firstmate's agent-only reference skills). Every one of these assumes a live firstmate home and is meaningless, or actively misleading, installed anywhere else, so each carries `metadata.internal: true` in its frontmatter. That flag hides them from installer discovery (tools like the [skills.sh](https://skills.sh) `npx skills add` installer) without affecting how firstmate itself loads them - frontmatter metadata is inert to the agent's own skill loader.
 - `skills/` - public, installer-facing skills meant to be installed standalone into any project, independent of firstmate.
   Each one is a self-contained skill with no dependency on firstmate's paths, tools, or vocabulary.
-  Today that is `skills/stow`, a generic session-knowledge-sweep skill that routes findings by explicit instruction first, then existing local conventions, then a private `.stow-notes.md` fallback in the current directory, and closes with a resume pointer for the next session.
+  Today that is `skills/stow`, a generic session-knowledge-sweep skill that routes findings by explicit instruction first, then existing local conventions, then a private `.stow-notes.md` fallback, and curates tiered entries through decay, local archival, and user-approved on-demand offload proposals.
   It intentionally shares no code with the firstmate-internal `.agents/skills/stow` it is named after, so the two can evolve independently.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
-- [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
+- [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, the files you set, and harness support.
 - [docs/dashboard.md](docs/dashboard.md) - install and operate the read-only captain inbox, fleet kanban, and completed-work history service.
 - [docs/dashboard-remote-access.md](docs/dashboard-remote-access.md) - reach the dashboard from off the machine: what authentication protects, what stays yours in your own network, and how to confirm the boundary.
 - [docs/dashboard-inbox-policy.md](docs/dashboard-inbox-policy.md) - the single documented statement of what reaches the captain inbox, what makes a pull request green, and what turns each health signal amber or red.
