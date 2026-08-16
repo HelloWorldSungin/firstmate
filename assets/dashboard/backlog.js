@@ -12,9 +12,10 @@
 //
 // Invariants shared with history.js: an unknown age is never a fabricated
 // zero, a record this page cannot read is counted and disclosed rather than
-// silently dropped, and the three empty shapes stay distinct - no backlog at
-// all (first run), a queue with nothing matching (filtered), and a queue that
-// is genuinely empty all render differently.
+// silently dropped, and the four empty shapes stay distinct - no backlog at
+// all (first run), a queue with nothing matching (filtered), a queue whose
+// rows were all unreadable, and a queue that is genuinely empty all render
+// differently.
 
 export const BACKLOG_LIMITS = {
   maxQueryChars: 120,
@@ -56,6 +57,26 @@ function backlogReadState(envelope, document) {
   if (envelope.status?.phase === "last_good" && document) return "stale";
   if (!document || document.present !== true) return "absent";
   return "ready";
+}
+
+// What the page must render, which is a different question from how the read
+// went. Two of these shapes are built from the same zero rows and say opposite
+// things - a queue that is genuinely empty is an all-clear, a queue whose every
+// row was unreadable is work the captain cannot see - so the choice is made
+// here, once, against the counts that decide it. A renderer that re-derived it
+// from `queueTotal === 0` would eventually print the all-clear over the
+// disclosure again, which is the failure this exists to make impossible.
+//
+// "unreadable" is asked before absence and before presence on purpose: rows
+// that failed the parse ARE rows that were found, so nothing downstream can
+// pair a count of them with a sentence claiming there was nothing to read.
+function backlogShape({ readState, present, unreadable, queueTotal, visible }) {
+  if (readState === "pending" || readState === "unavailable") return readState;
+  if (queueTotal === 0 && unreadable > 0) return "unreadable";
+  if (readState === "absent" || !present) return "absent";
+  if (visible > 0) return "rows";
+  if (queueTotal > 0) return "filtered";
+  return "empty";
 }
 
 /** The display row for one backlog record, or null for one with no id. */
@@ -176,9 +197,11 @@ export function buildBacklog(envelope, view = {}) {
   const start = index * BACKLOG_LIMITS.pageSize;
   const rows = filtered.slice(start, start + BACKLOG_LIMITS.pageSize);
 
+  const present = document?.present === true;
   return {
     readState,
-    present: document?.present === true,
+    shape: backlogShape({ readState, present, unreadable, queueTotal: queue.length, visible: rows.length }),
+    present,
     error,
     unreadable,
     queueTotal: queue.length,

@@ -989,6 +989,62 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await settle();
   if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 2) throw new Error("the Backlog page did not return to its own queue");
 
+  // --- a queue nobody could read never renders as a queue with nothing in it --
+  //
+  // Reachable whenever the only structured rows are Done and at least one
+  // current row is free-form. An amber notice above a confident "the queue is
+  // empty" does not undo the all-clear: the captain reads the big sentence and
+  // stops looking, while the work sits in the file unread.
+  eventSources[0].listeners.backlog({
+    data: JSON.stringify({
+      ...backlogEnvelope,
+      backlog: {
+        present: true,
+        records: [
+          { id: "delivered-x", title: "Delivered x", state: "done", order: 1 },
+          { structured: false, id: null, state: "queued", raw: "a row in a shape the parse could not read", order: 2 },
+          { structured: false, id: null, state: "in_flight", raw: "another unreadable row", order: 3 },
+        ],
+      },
+    }),
+  });
+  await settle();
+  const unreadableQueue = one(viewNode, (node) => node.id === "view-backlog", "backlog view with no readable row").textContent;
+  if (unreadableQueue.includes("The queue is empty.") || unreadableQueue.includes("contains no current work")) {
+    throw new Error(`the Backlog page claimed an empty queue while every row was unreadable: ${unreadableQueue}`);
+  }
+  if (!unreadableQueue.includes("The queue could not be read.")) throw new Error(`the all-unreadable queue lost its own state: ${unreadableQueue}`);
+  if (!unreadableQueue.includes("2 current backlog rows could not be read")) throw new Error(`the all-unreadable queue lost its count: ${unreadableQueue}`);
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  await settle();
+
+  // --- and its twin: a history nobody could read is not a fleet with no work --
+  await go("#/history");
+  eventSources[0].listeners.history({
+    data: JSON.stringify({
+      ...historyEnvelope,
+      history: {
+        present: true,
+        records: [],
+        malformed: [
+          { id: "legacy-task", path: "/home/captain/data/legacy-task/outcome.json", reason: "unexpected_fields" },
+          { id: "broken-task", path: "/home/captain/data/broken-task/outcome.json", reason: "unreadable_or_wrong_schema" },
+        ],
+      },
+    }),
+  });
+  await settle();
+  const unreadableHistory = one(viewNode, (node) => node.id === "view-history", "history view with no readable record").textContent;
+  if (unreadableHistory.includes("Nothing delivered yet.")) {
+    throw new Error(`History claimed nothing was delivered while every record was unreadable: ${unreadableHistory}`);
+  }
+  if (!unreadableHistory.includes("Delivered work could not be read.")) throw new Error(`the all-unreadable history lost its own state: ${unreadableHistory}`);
+  if (!unreadableHistory.includes("2 completion records could not be read")) throw new Error(`the all-unreadable history lost its disclosure: ${unreadableHistory}`);
+  if (unreadableHistory.includes("/home/captain")) throw new Error("a malformed record path reached the page");
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  await settle();
+  await go("#/backlog");
+
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");
   const knowledgeText = one(viewNode, (node) => node.id === "view-knowledge", "knowledge view").textContent;

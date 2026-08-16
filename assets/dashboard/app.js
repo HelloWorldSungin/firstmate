@@ -525,10 +525,14 @@ function publishStickyHeight() {
 // it. The strip's own height is what is observed, because it changes for two
 // independent reasons - the viewport reflowing it, and its own counts and
 // notes rewrapping at a fixed width - and only one of those arrives with data.
+// Observing that box covers both, which is why the resize listener is the
+// fallback for a browser without ResizeObserver rather than a second path
+// republishing the same measurement on every frame of a drag.
 function observeStickyHeight() {
-  if (typeof ResizeObserver === "function") {
-    const strip = ui.app.querySelector(".vstrip");
-    if (strip) new ResizeObserver(publishStickyHeight).observe(strip);
+  const strip = typeof ResizeObserver === "function" ? ui.app.querySelector(".vstrip") : null;
+  if (strip) {
+    new ResizeObserver(publishStickyHeight).observe(strip);
+    return;
   }
   window.addEventListener("resize", publishStickyHeight, { passive: true });
 }
@@ -797,24 +801,16 @@ function renderBacklog() {
   const built = buildBacklog(state.backlog.envelope, { ...state.backlog.filters, tab: state.backlog.tab, page: state.backlog.page });
   state.backlog.page = built.page.index;
 
-  if (built.readState === "pending") {
+  if (built.shape === "pending") {
     view.append(emptyState({ ring: true, big: "Reading the queue.", teach: "Waiting for the first backlog read to finish." }));
     return view;
   }
-  if (built.readState === "unavailable") {
+  if (built.shape === "unavailable") {
     view.append(notice("red", "Backlog unavailable.", built.error.text));
     view.append(emptyState({
       ring: true,
       big: "The queue cannot be read.",
       teach: "Until the backlog can be read again, nothing on this page is a claim about the queue.",
-    }));
-    return view;
-  }
-  if (built.readState === "absent") {
-    view.append(emptyState({
-      ring: true,
-      big: "Nothing queued yet.",
-      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
     }));
     return view;
   }
@@ -826,12 +822,22 @@ function renderBacklog() {
     const rows = `${built.unreadable} current backlog ${built.unreadable === 1 ? "row" : "rows"}`;
     view.append(notice("amber", null, `${rows} could not be read and ${built.unreadable === 1 ? "is" : "are"} not listed below: the backlog file records ${built.unreadable === 1 ? "it" : "them"} in a shape this page cannot read as a queue item.`));
   }
-  if (!built.present) {
+  if (built.shape === "absent") {
     view.append(emptyState({
       ring: true,
       big: "Nothing queued yet.",
       teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
     }));
+    return view;
+  }
+  if (built.shape === "unreadable") {
+    view.append(emptyState({
+      ring: true,
+      big: "The queue could not be read.",
+      facts: `${built.unreadable} current ${built.unreadable === 1 ? "row" : "rows"} found · none readable`,
+      teach: "The backlog file was read and every current row in it is written in a shape this page cannot read, so this page cannot say what is queued. Open the backlog file to see the work itself.",
+    }));
+    view.append(element("div", "ronote", "Read-only - ordering and state changes are Firstmate's"));
     return view;
   }
 
@@ -866,7 +872,7 @@ function renderBacklog() {
   }
   view.append(tabs);
 
-  if (built.rows.length) {
+  if (built.shape === "rows") {
     const rows = element("div", "rows");
     for (const row of built.rows) {
       const rrow = element("button", "rrow");
@@ -891,7 +897,7 @@ function renderBacklog() {
     }
     view.append(rows);
     view.append(pager(built.page, (delta) => { state.backlog.page = built.page.index + delta; render(); }));
-  } else if (built.queueTotal > 0) {
+  } else if (built.shape === "filtered") {
     const clear = element("button", "fchip", "Clear search & filters");
     clear.type = "button";
     clear.addEventListener("click", () => {
@@ -949,7 +955,7 @@ function renderHistory() {
       : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
   view.append(pageHead("Delivered · newest first", "History", note));
 
-  if (built.readState === "pending") {
+  if (built.shape === "pending") {
     view.append(emptyState({ ring: true, big: "Reading completed work.", teach: "Waiting for the first history read to finish." }));
     return view;
   }
@@ -980,11 +986,20 @@ function renderHistory() {
     view.append(notice("amber", null, `Showing the last known good token usage read: ${built.usage.reason || "the newest read did not land"}.`));
   }
 
-  if (built.empty && !state.history.envelope?.history) {
+  if (built.shape === "absent") {
     view.append(emptyState({
       ring: true,
       big: "Nothing delivered yet.",
       teach: "Completed work lands here with its outcome, duration and what it cost - the fleet's receipt trail.",
+    }));
+    return view;
+  }
+  if (built.shape === "unreadable") {
+    view.append(emptyState({
+      ring: true,
+      big: "Delivered work could not be read.",
+      facts: `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} found · none readable`,
+      teach: "Every completion record this read found is listed above with the reason it could not be used, so this page cannot say what was delivered. It is not a claim that nothing was.",
     }));
     return view;
   }
@@ -1027,7 +1042,7 @@ function renderHistory() {
   }
   view.append(toolbar);
 
-  if (built.page.matched) {
+  if (built.shape === "rows") {
     const rows = element("div", "rows");
     for (const row of built.rows) {
       const rrow = element("button", "rrow");
@@ -1052,7 +1067,7 @@ function renderHistory() {
     }
     view.append(rows);
     view.append(pager(built.page, (delta) => { state.history.page = built.page.index + delta; render(); }));
-  } else if (built.page.total > 0) {
+  } else if (built.shape === "filtered") {
     const clear = element("button", "fchip", "Clear search & filters");
     clear.type = "button";
     clear.addEventListener("click", () => {

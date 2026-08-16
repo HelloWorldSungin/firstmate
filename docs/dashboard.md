@@ -100,6 +100,8 @@ It reads `GET /api/backlog`, which serves the full record set from the same snap
 [`assets/dashboard/backlog.js`](../assets/dashboard/backlog.js) is the page policy's single executable copy: state tabs, project, kind, and priority facets, bounded text search, and pagination, with delivered work excluded because completed items belong to History.
 A row is drawn as blocked only while the snapshot still lists an unresolved blocker for it, never on the presence of a `blocked-by:` token alone, so an item whose blocker has since been delivered reads as queued rather than staying red until someone edits the file.
 A current row the parse could not read as a queue item is counted and disclosed above the list, the way History discloses an unreadable completion record, because queued work missing from the queue with nothing saying so is this page's worst failure.
+A queue whose rows were all unreadable is its own state rather than an empty queue: "the backlog contains no current work" and "no current row in the backlog could be read" are opposite claims built from the same zero, so the module decides which one is true and the page never prints the all-clear under the disclosure.
+That choice belongs to [`assets/dashboard/backlog.js`](../assets/dashboard/backlog.js) and to [`assets/dashboard/history.js`](../assets/dashboard/history.js) rather than to the renderer, because a renderer deriving it from a count is how the reassuring sentence comes back.
 The page changes nothing: ordering and state changes are Firstmate's, and it says so on the page.
 
 ## Task detail
@@ -126,6 +128,7 @@ Project and outcome filters, a completion-date range (7, 30, 90 days, or all tim
 Search covers ids, titles, projects, dispatch metadata, outcome detail, pull request URLs, and work-item links; it does not read report bodies.
 The server reads a bounded number of records per refresh, and says so in the view when more completed work is stored than was read - raise `--history-limit` to widen it.
 A manifest that is missing, corrupt, or written against a schema version this dashboard does not accept is listed with its id and the reason it could not be used, never silently skipped.
+A read where every manifest found was unreadable says exactly that and never "nothing delivered yet", which is the same distinct state the Backlog page gives an all-unreadable queue.
 Token usage is presence-gated on the fleet's token-usage collector and on its `data/usage.db` store existing under this home: with no store there is nothing to read, and no collector child is spawned at all.
 Totals appear when that store has attributed usage to a task, and every other state renders with its reason rather than as a zero, because a blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
 Those states are deliberately not collapsed together. No collector, no store, usage reads switched off for this dashboard, no attributed row for this task, or a collected row with no readable total all read as `unavailable`, which is nothing to fix; a collector that failed, or one whose output this dashboard does not recognize, reads as needing attention and is drawn distinctly, which is.

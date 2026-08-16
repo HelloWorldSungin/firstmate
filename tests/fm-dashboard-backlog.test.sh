@@ -53,20 +53,52 @@ function envelope(records, status = { phase: "ready" }) {
   return { schema: "fm-dashboard-backlog.v1", status, backlog: { present: true, records } };
 }
 
-// --- the three empty shapes stay distinct ------------------------------------
+// --- the empty shapes stay distinct ------------------------------------------
 equal("no envelope at all is not a present backlog", buildBacklog(null, {}).present, false);
 equal("no envelope is a pending read", buildBacklog(null, {}).readState, "pending");
 check("no envelope carries no error", buildBacklog(null, {}).error === null);
+equal("no envelope renders as a pending read", buildBacklog(null, {}).shape, "pending");
 const unavailable = buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "unavailable", error: { message: "the read failed" } } }, {});
 equal("an unreadable backlog is not a present backlog", unavailable.present, false);
 equal("an unreadable backlog has its own read state", unavailable.readState, "unavailable");
+equal("an unreadable backlog has its own page shape", unavailable.shape, "unavailable");
 check("an unreadable backlog is disclosed as unreadable", unavailable.error !== null && unavailable.error.text.includes("the read failed"));
 const absent = buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "first_run" }, backlog: { present: false, records: [] } }, {});
 equal("a first-run absent backlog has its own read state", absent.readState, "absent");
+equal("a first-run absent backlog has its own page shape", absent.shape, "absent");
 equal("an in-progress first read stays pending", buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "first_run", refreshing: true }, backlog: null }).readState, "pending");
 const genuinelyEmpty = buildBacklog(envelope([]), {});
 equal("a successfully read empty backlog stays present", genuinelyEmpty.present, true);
 equal("a successfully read empty backlog is ready", genuinelyEmpty.readState, "ready");
+equal("a successfully read empty backlog is genuinely empty", genuinelyEmpty.shape, "empty");
+
+// --- "no current work" and "none of it could be read" are opposite claims ----
+//
+// Both are built from zero readable rows, and the second rendered as the first
+// is the most dangerous sentence this page can print: it tells the captain
+// there is nothing queued while queued work sits in the file unread. The
+// distinction is decided here, in the model, so no renderer can rebuild it
+// from a count and drift back to the reassuring version.
+const allUnreadable = buildBacklog(envelope([
+  { id: "u1", title: "Delivered thing", state: "done", order: 1 },
+  { structured: false, id: null, state: "queued", raw: "- a row in a shape the parse could not read", order: 2 },
+  { structured: false, id: null, state: "in_flight", raw: "* another unreadable row", order: 3 },
+]), {});
+equal("a queue whose every row was unreadable is not an empty queue", allUnreadable.shape, "unreadable");
+equal("the all-unreadable shape carries the count it found", allUnreadable.unreadable, 2);
+equal("the all-unreadable shape still reports a completed read", allUnreadable.readState, "ready");
+equal("the all-unreadable shape has no rows to show", allUnreadable.queueTotal, 0);
+const partlyUnreadable = buildBacklog(envelope([
+  { id: "p1", title: "Readable thing", state: "queued", order: 1 },
+  { structured: false, id: null, state: "queued", raw: "- an unreadable row", order: 2 },
+]), {});
+equal("one readable row is enough to be a queue with rows", partlyUnreadable.shape, "rows");
+equal("a partly unreadable queue still discloses the count", partlyUnreadable.unreadable, 1);
+const filteredAway = buildBacklog(envelope([
+  { id: "f1", title: "Readable thing", state: "queued", order: 1 },
+  { structured: false, id: null, state: "queued", raw: "- an unreadable row", order: 2 },
+]), { query: "matches nothing at all" });
+equal("a filter hiding every readable row is filtered, not unreadable", filteredAway.shape, "filtered");
 
 // --- done rows belong to History, not the queue ------------------------------
 const mixed = buildBacklog(envelope([

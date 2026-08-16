@@ -404,6 +404,27 @@ equal("an unreadable record is disclosed, not dropped", damaged.malformed.length
 check("an unreadable record explains itself in plain words",
   damaged.malformed.every((entry) => entry.explanation.length > 20), JSON.stringify(damaged.malformed));
 equal("a readable record still renders alongside", damaged.rows.length, 1);
+equal("one readable record is enough to be a page with rows", damaged.shape, "rows");
+
+// A history whose every manifest was unreadable is not a fleet that delivered
+// nothing - the same opposite-claims rule the Backlog page follows for a queue
+// it could not read. Deciding it here is what stops the reassuring sentence
+// from being rebuilt at the render site from a row count of zero.
+const allDamaged = buildHistory(envelope([], {
+  history: {
+    malformed: [
+      { id: "legacy-task", path: "/h/data/legacy-task/outcome.json", reason: "unexpected_fields" },
+      { id: "broken-task", path: "/h/data/broken-task/outcome.json", reason: "unreadable_or_wrong_schema" },
+    ],
+  },
+}));
+equal("a history whose every record was unreadable is not an empty history", allDamaged.shape, "unreadable");
+equal("the all-unreadable history carries the records it found", allDamaged.malformed.length, 2);
+equal("the all-unreadable history still reports a completed read", allDamaged.readState, "ready");
+equal("a genuinely empty history keeps its own shape", buildHistory(envelope([])).shape, "empty");
+equal("a first-run history with no document is absent", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run" }, history: null }).shape, "absent");
+equal("a filter hiding every readable record is filtered, not unreadable",
+  buildHistory(envelope([manifest("alpha")]), { query: "matches nothing at all" }).shape, "filtered");
 
 // --- filters, bounded search, and pagination ---------------------------------
 

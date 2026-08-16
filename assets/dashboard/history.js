@@ -288,6 +288,21 @@ function historyReadState(envelope, document) {
   return "ready";
 }
 
+// What the page must render, the twin of backlog.js's backlogShape and for the
+// same reason: "nothing has been delivered" and "every completion record found
+// was unreadable" are opposite claims made from the same zero rows, and a
+// renderer deriving the difference from a count would print the reassuring one
+// over the disclosure. The all-unreadable answer is asked first, because a
+// record that failed to load is still a record that exists.
+function historyShape({ readState, hasDocument, malformed, total, visible }) {
+  if (readState === "pending" || readState === "unavailable") return readState;
+  if (total === 0 && malformed > 0) return "unreadable";
+  if (!hasDocument) return "absent";
+  if (visible > 0) return "rows";
+  if (total > 0) return "filtered";
+  return "empty";
+}
+
 /**
  * Build the history view from the server's fm-dashboard-history.v1 envelope.
  * `view` carries the active filters, the search query, the page index, and the
@@ -299,6 +314,12 @@ export function buildHistory(envelope, view = {}) {
   const usage = envelope?.usage && typeof envelope.usage === "object" ? envelope.usage : null;
   const rows = records.map((record) => historyRow(record, usage)).filter((row) => row.id);
   const readState = historyReadState(envelope, document);
+  const malformed = (Array.isArray(document?.malformed) ? document.malformed : []).map((entry) => ({
+    id: text(entry?.id) || "unknown record",
+    path: text(entry?.path) || null,
+    reason: text(entry?.reason) || "unknown",
+    explanation: MALFORMED_REASONS[text(entry?.reason)] || "the completion record could not be used",
+  }));
 
   const facets = {
     project: facetValues(rows, "project"),
@@ -335,13 +356,6 @@ export function buildHistory(envelope, view = {}) {
   const start = index * size;
   const visible = filtered.slice(start, start + size);
 
-  const malformed = (Array.isArray(document?.malformed) ? document.malformed : []).map((entry) => ({
-    id: text(entry?.id) || "unknown record",
-    path: text(entry?.path) || null,
-    reason: text(entry?.reason) || "unknown",
-    explanation: MALFORMED_REASONS[text(entry?.reason)] || "the completion record could not be used",
-  }));
-
   const captured = rows.filter((row) => row.gbrain.status === "captured").length;
 
   // The stat roll-up describes the FILTERED set, not the page slice: a reader
@@ -370,6 +384,13 @@ export function buildHistory(envelope, view = {}) {
 
   return {
     readState,
+    shape: historyShape({
+      readState,
+      hasDocument: document !== null,
+      malformed: malformed.length,
+      total: rows.length,
+      visible: filtered.length,
+    }),
     rows: visible,
     allRecords: rows,
     stats,
