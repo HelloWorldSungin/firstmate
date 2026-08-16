@@ -102,6 +102,12 @@
 #                      nav:unverified       the navigation could not be read
 #                      task-open:fail       a board row did not open its task
 #                      task-open:unverified
+#                      task-height:fail     the task page rendered real height
+#                      task-height:unverified
+#                      task-legible:fail    the task page is legible
+#                      task-legible:unverified
+#                      task-swipe:fail      nothing behind a swipe on the task
+#                      task-swipe:unverified
 #                      live-event:fail      the event never reached the page
 #                      live-event:unverified
 #                      isolation:fail       unrelated traffic reached the timeline
@@ -168,7 +174,13 @@
 #   no destination may scroll sideways; the History view must display the
 #   completion records it read, each displayed row carrying its usage cell;
 #   opening a task from the Fleet board must land on that task's detail page
-#   alone; no destination's operational chrome may contain a credential-shaped
+#   alone, and that page is then held to the same three measurements the five
+#   are - real rendered height, its own landmark text, and nothing behind a
+#   horizontal swipe - because a destination a reader is sent to owes the same
+#   answers whether they got there from a tab or from a board row, and
+#   measuring only the five was how a task page that scrolled sideways at 390
+#   CSS px went unobserved while this run's own summary said none did;
+#   no destination's operational chrome may contain a credential-shaped
 #   or absolute-path-shaped value - the labels, filters, errors, status lines
 #   and notices the dashboard itself composes, read as rendered attributes as
 #   well as rendered text, because a value written into a title or a data-
@@ -193,6 +205,15 @@
 #   dashboard. Extending it for a new destination means adding a row to VIEWS
 #   below.
 #
+#   One scope limit worth stating rather than leaving to be assumed: every
+#   measurement here is taken in the dark theme, which is what the page loads
+#   as by default and what this run never toggles away from. The stylesheet
+#   observation is written to be theme-independent by design - it requires a
+#   painted body and this stylesheet's own --amber-soft, both of which hold in
+#   either theme rather than pinning one theme's colours - but no observation in
+#   this run renders the light theme, so nothing here is evidence about how the
+#   light theme paints.
+#
 # The four verdicts, and why there are four
 #
 #   ok    the thing the observation names was seen to happen.
@@ -215,17 +236,23 @@
 #   signal. ???? means something that should have been observable was not, and
 #   it fails the run. n/a means the observation is out of this mode's reach by
 #   design - the three task-timeline observations under --url, which can only be
-#   proved by posting events into a dashboard this command does not own - so it
-#   is reported and counted but does not fail the run. Without the distinction
-#   --url could never exit 0 however healthy the page was, which would leave
-#   the only mode that can be pointed at the shipped dashboard impossible to
-#   automate against.
+#   proved by posting events into a dashboard this command does not own, and,
+#   under --url against an idle fleet, opening a task from the board and the
+#   three measurements of the page that would have opened: a board with no live
+#   task has no row to click, so no run against that fleet could observe them.
+#   The leak scan is deliberately NOT among them - it reaches that destination
+#   in every mode, by selecting a task address of its own - so its coverage
+#   requirement is unchanged by an idle fleet. An n/a is reported and counted
+#   but does not fail the run. Without the distinction --url could never exit 0
+#   however healthy the page was, which would leave the only mode that can be
+#   pointed at the shipped dashboard impossible to automate against.
 #
 # The declared observation set, and why it is reconciled
 #
 #   Every mode declares up front the observations it makes: the per-width ones
 #   once per --width, the five per-destination ones once per VIEWS row inside
-#   each of those, the task-detail, leak, usage and history-display ones once
+#   each of those, the task-detail four - opening it, its height, its
+#   legibility, its swipe - and the leak, usage and history-display ones once
 #   per width, and the timeline and console ones once for the run. That list is
 #   derived from VIEWS and WIDTHS rather than written out, so a new view row or
 #   a new width extends it without anyone remembering to.
@@ -256,7 +283,8 @@
 # FM_DASHBOARD_BROWSER_FORCE injected a fault, 4 when this run did not emit the
 # observation set it declared. An n/a observation never fails the run, so a
 # healthy dashboard checked with --url exits 0 with its three task-timeline
-# observations recorded as n/a; every other observation is made identically in
+# observations recorded as n/a - and, if that fleet is idle, its four task
+# destination observations too; every other observation is made identically in
 # both modes. The full per-observation result is printed and written to
 # <out>/result.txt either way.
 set -u
@@ -283,6 +311,15 @@ DEFAULT_WIDTHS='390x844 899x844 900x844 1440x900'
 # Every view root id the router can mount, the task detail included: the
 # absence half of the exclusivity assertion looks for all of them by name.
 ALL_VIEW_IDS="$(printf '%s\n' "$VIEWS" | cut -d'|' -f2 | paste -sd, -),view-task"
+
+# The sixth destination. It is not a VIEWS row because it is not reached from
+# the navigation - it is reached by opening a row on the Fleet board - but it
+# is a destination a reader lands on, so it owes the same per-destination
+# observations the five do: real height, its own landmarks, and nothing behind
+# a horizontal swipe. Its landmarks are the furniture every task page carries
+# whatever the task is doing: the page eyebrow and the state panel's heading.
+TASK_VIEW_NAME='Task detail'
+TASK_LANDMARKS='Task;Current state'
 
 # How many completion records the fixture publishes, so the History display
 # assertion can hold the page to the exact record set this run controls.
@@ -516,6 +553,12 @@ nav:fail
 nav:unverified
 task-open:fail
 task-open:unverified
+task-height:fail
+task-height:unverified
+task-legible:fail
+task-legible:unverified
+task-swipe:fail
+task-swipe:unverified
 live-event:fail
 live-event:unverified
 isolation:fail
@@ -586,6 +629,9 @@ declared_observations() {
 $VIEWS
 VIEWROWS
     printf '%s: opening a task from the Fleet board lands on its detail page alone\n' "$spec"
+    printf '%s: the %s view rendered with real height\n' "$spec" "$TASK_VIEW_NAME"
+    printf '%s: the %s view is legible\n' "$spec" "$TASK_VIEW_NAME"
+    printf '%s: nothing is placed behind a horizontal swipe on %s\n' "$spec" "$TASK_VIEW_NAME"
     printf '%s: the History view displays the completion records it read\n' "$spec"
     printf '%s: every completed row shows its usage cell\n' "$spec"
     printf '%s: no credential-shaped or path-shaped value on any destination\n' "$spec"
@@ -759,6 +805,20 @@ EVENT_TOKEN=0123456789abcdef0123456789abcdef
 # page that renders paths everywhere a real dashboard would fail. The page must
 # still show the short name display.js label() returns, which is exactly what
 # the text-and-attribute scan then proves end to end.
+#
+# For the same reason the task the board lists first - fixture-scout, by the
+# card precedence below - carries a pull request URL. That first row is the one
+# check_task_open clicks, so its task page is the one the task destination's
+# height, legibility and swipe observations measure, and a PR URL is the
+# longest unbreakable token this page ever renders. Without one on THAT task,
+# those observations run against a page that could not overflow whatever the
+# stylesheet said, which is a measurement that cannot fail rather than one that
+# passed - and a task page scrolling sideways at 390 CSS px is the defect they
+# exist to catch.
+#
+# The probe itself stays generic - it clicks whatever row the board lists
+# first, which is what makes it work against a live fleet under --url. It is
+# the fixture's job, not the probe's, to make that row the demanding case.
 write_fixture_snapshot() {  # <path>
   cat > "$1" <<'JSON'
 {
@@ -791,7 +851,7 @@ write_fixture_snapshot() {  # <path>
       "current_state": {"state": "needs_decision", "detail": "Two viable layouts"},
       "endpoint": {"exists": true, "status": "alive"},
       "paths": {"status_log": {"last_event_age_seconds": 40}},
-      "pr": {"url": null},
+      "pr": {"url": "https://github.com/HelloWorldSungin/firstmate/pull/156"},
       "work_items": [],
       "card": {"rank": 10, "column": "needs_decision", "action": "decide", "reason": "contract-defined"}
     },
@@ -1249,11 +1309,23 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
 # Clicks the first task row on the Fleet board and reads where it landed, so
 # the detail route is proven through the interaction that reaches it rather
 # than by writing a hash by hand.
+#
+# It also measures the destination it landed on, for the same reason the route
+# probe measures the five: a page a reader is sent to owes the same answers
+# about its height, its landmarks, and its width whether the reader got there
+# from a tab or from a board row. Measuring only the five was how a task page
+# that scrolled sideways at 390 CSS px went unobserved while this run's own
+# summary said no destination did.
 task_open_probe_js() {
   # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
   node -e '
-    const [allIdsRaw, leaksRaw, leakFault, scanSource] = process.argv.slice(1);
-    const config = { allIds: allIdsRaw.split(",").filter(Boolean), leaks: leaksRaw.split(";").filter(Boolean), leakFault };
+    const [allIdsRaw, landmarksRaw, leaksRaw, leakFault, scanSource] = process.argv.slice(1);
+    const config = {
+      allIds: allIdsRaw.split(",").filter(Boolean),
+      landmarks: landmarksRaw.split(";").filter(Boolean),
+      leaks: leaksRaw.split(";").filter(Boolean),
+      leakFault,
+    };
     process.stdout.write(`async () => {
       const config = ${JSON.stringify(config)};
       const scan = ${scanSource};
@@ -1264,6 +1336,19 @@ task_open_probe_js() {
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
         return null;
+      };
+      // The same measurements the route probe takes of a navigation
+      // destination, taken of this one.
+      const measure = (view) => {
+        const doc = document.documentElement;
+        const lower = view.innerText.toLowerCase();
+        return {
+          clientWidth: doc.clientWidth,
+          scrollWidth: doc.scrollWidth,
+          height: Math.round(view.getBoundingClientRect().height),
+          landmarksChecked: config.landmarks.length,
+          missing: config.landmarks.filter((landmark) => !lower.includes(landmark.toLowerCase())),
+        };
       };
       const row = document.querySelector("#view-fleet .trow");
       if (!row) {
@@ -1289,9 +1374,10 @@ task_open_probe_js() {
         others: config.allIds.filter((id) => document.getElementById(id) !== null),
         othersChecked: config.allIds.length,
         ...(task ? scan() : {}),
+        ...(task ? measure(task) : {}),
       });
     }`);
-  ' "$ALL_VIEW_IDS" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
+  ' "$ALL_VIEW_IDS" "$TASK_LANDMARKS" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
 }
 
 # A bounded slice of each view, saved so a human can read what the check saw.
@@ -1644,12 +1730,19 @@ INNER
     fi
   fi
 
-  # The swipe verdict is a page property at this destination, judged only at a
-  # width the run proved, because a sideways scroll measured at the wrong
-  # viewport says nothing about this one.
   local trusted=$WIDTH_TRUSTED
   forced swipe unverified && trusted=no
   forced swipe fail && scroll_width=$((client_width + 240))
+  judge_swipe "$label" "$name" "$trusted" "$client_width" "$scroll_width"
+  return 0
+}
+
+# The swipe verdict is a page property at a destination, judged only at a width
+# the run proved, because a sideways scroll measured at the wrong viewport says
+# nothing about this one. Shared by the five navigation destinations and the
+# task detail so all six are judged by one rule in one wording.
+judge_swipe() {  # <label> <name> <width trusted> <client width> <scroll width>
+  local label=$1 name=$2 trusted=$3 client_width=$4 scroll_width=$5
   if [ "$trusted" != yes ]; then
     record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe on $name" \
       "the page is not proven to be at ${label%%x*} CSS px, so this was never measured at it"
@@ -1663,7 +1756,37 @@ INNER
     record FAIL "$label: nothing is placed behind a horizontal swipe on $name" \
       "the document scrolls sideways at this destination: scrollWidth $scroll_width > viewport $client_width"
   fi
-  return 0
+}
+
+# The height and legibility verdicts, in the one wording every destination is
+# judged by. The caller has already applied any forced corruption, so what
+# arrives here is the value this judgment reads.
+judge_view_body() {  # <label> <name> <height> <landmarks checked> <expected> <missing>
+  local label=$1 name=$2 height=$3 checked=$4 expected=$5 missing=$6
+  # A view that exists but occupies almost nothing is exactly the "it loaded"
+  # answer this check refuses to accept.
+  if ! is_number "$height"; then
+    record "$UNVERIFIED" "$label: the $name view rendered with real height" \
+      "the probe reported its height as [$height]"
+  elif [ "$height" -ge 60 ]; then
+    record ok "$label: the $name view rendered with real height" "${height}px"
+  else
+    record FAIL "$label: the $name view rendered with real height" "only ${height}px tall"
+  fi
+
+  # An empty "missing" list is only evidence of legibility if landmarks were
+  # actually looked for, and as many of them as this check names.
+  if ! is_number "$checked" || [ "$checked" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "no landmark was evaluated for this view, so nothing about its legibility was judged"
+  elif [ "$checked" != "$expected" ]; then
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "the page evaluated $checked landmarks, but this check names $expected of them"
+  elif [ -z "$missing" ]; then
+    record ok "$label: the $name view is legible" "all $checked of its own headings and controls are on the page"
+  else
+    record FAIL "$label: the $name view is legible" "$checked landmarks checked, missing: $missing"
+  fi
 }
 
 # The height and legibility of a view the probe confirmed present, plus the
@@ -1692,34 +1815,9 @@ INNER
 
   forced view-height unverified && height="not a measurement"
   forced view-height fail && height=10
-
-  # A view that exists but occupies almost nothing is exactly the "it loaded"
-  # answer this check refuses to accept.
-  if ! is_number "$height"; then
-    record "$UNVERIFIED" "$label: the $name view rendered with real height" \
-      "the probe reported its height as [$height]"
-  elif [ "$height" -ge 60 ]; then
-    record ok "$label: the $name view rendered with real height" "${height}px"
-  else
-    record FAIL "$label: the $name view rendered with real height" "only ${height}px tall"
-  fi
-
   forced view-legible unverified && checked=0
   forced view-legible fail && missing="$name"
-
-  # An empty "missing" list is only evidence of legibility if landmarks were
-  # actually looked for, and as many of them as this check names.
-  if ! is_number "$checked" || [ "$checked" -eq 0 ]; then
-    record "$UNVERIFIED" "$label: the $name view is legible" \
-      "no landmark was evaluated for this view, so nothing about its legibility was judged"
-  elif [ "$checked" != "$expected" ]; then
-    record "$UNVERIFIED" "$label: the $name view is legible" \
-      "the page evaluated $checked landmarks, but this check names $expected of them"
-  elif [ -z "$missing" ]; then
-    record ok "$label: the $name view is legible" "all $checked of its own headings and controls are on the page"
-  else
-    record FAIL "$label: the $name view is legible" "$checked landmarks checked, missing: $missing"
-  fi
+  judge_view_body "$label" "$name" "$height" "$checked" "$expected" "$missing"
 
   [ "$id" = view-history ] || return 0
   if ! fields=$(probe_fields "$probe" historyRows=historyRows usageCells=usageCells \
@@ -1827,6 +1925,15 @@ check_usage_cells() {  # <label> <rows> <cells>
   fi
 }
 
+# The three per-destination observations the task detail owes, for a run that
+# never got to measure it. Mirrors route_unobserved for the five.
+task_unobserved() {  # <label> <verdict> <reason>
+  local label=$1 verdict=$2 reason=$3
+  record "$verdict" "$label: the $TASK_VIEW_NAME view rendered with real height" "$reason"
+  record "$verdict" "$label: the $TASK_VIEW_NAME view is legible" "$reason"
+  record "$verdict" "$label: nothing is placed behind a horizontal swipe on $TASK_VIEW_NAME" "$reason"
+}
+
 # The task detail route, proven through the interaction that reaches it: a row
 # on the Fleet board, clicked while that board is the active view.
 check_task_open() {  # <label>
@@ -1837,6 +1944,8 @@ check_task_open() {  # <label>
   if forced task-open unverified || ! browser_eval_json "$(task_open_probe_js)" "$probe"; then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the page returned nothing readable about the board"
+    task_unobserved "$label" "$UNVERIFIED" \
+      "the destination was never reached, so nothing about its view was observed"
     return
   fi
   if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason mounted=mounted settled=settled \
@@ -1844,6 +1953,8 @@ check_task_open() {  # <label>
     leakAttributeChars=leakAttributeChars leakExcludedReports=leakExcludedReports pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the page did not say whether a board row was found"
+    task_unobserved "$label" "$UNVERIFIED" \
+      "the destination was never reached, so nothing about its view was observed"
     return
   fi
   clicked=; reason=; mounted=; settled=; leak_patterns=; leak_chars=; leak_text_chars=; leak_attribute_chars=; leak_excluded_reports=; page_leaks=
@@ -1877,14 +1988,24 @@ CLICK
   if [ "$clicked" != true ]; then
     if [ "$MODE" = fixture ]; then
       record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" "$reason"
+      task_unobserved "$label" "$UNVERIFIED" \
+        "the destination could not be reached, so nothing about its view was observed"
     else
       # A healthy fleet can be idle. A board with no row is not a defect of the
-      # detail route, and no run against it could observe this.
+      # detail route, and no run against it could observe this - the
+      # destination itself is out of this run's reach, so everything measured
+      # on the page a row would have opened is n/a rather than unverified.
       record "$INAPPLICABLE" "$label: opening a task from the Fleet board lands on its detail page alone" \
         "$reason - a fleet with no live task has no row to open"
+      task_unobserved "$label" "$INAPPLICABLE" \
+        "there is no board row to open, so this fleet has no task destination to measure"
     fi
     return
   fi
+  # Measured before the landing is judged, because the height, the landmarks and
+  # the width of the page a reader was sent to are worth recording whether or
+  # not the exclusivity verdict below comes out clean.
+  check_task_body "$label" "$probe"
   if ! fields=$(probe_fields "$probe" hash=hash present=present others=others othersChecked=othersChecked); then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the landing could not be read out of the probe"
@@ -1928,11 +2049,57 @@ INNER
     "the row's own task page is mounted alone at $hash, with all $others_checked view roots checked"
 }
 
+# The height, legibility and sideways-swipe verdicts for the task destination,
+# read from the same probe that opened it and judged by the same rules the five
+# navigation destinations are judged by.
+check_task_body() {  # <label> <probe>
+  local label=$1 probe=$2 fields key value expected
+  local height checked missing client_width scroll_width trusted
+  expected=$(count_landmarks "$TASK_LANDMARKS")
+  capture_view_text "$label" view-task
+  if ! fields=$(probe_fields "$probe" height=height checked=landmarksChecked missing=missing \
+    clientWidth=clientWidth scrollWidth=scrollWidth); then
+    task_unobserved "$label" "$UNVERIFIED" \
+      "the probe carried no measurement of the task page it opened"
+    return
+  fi
+  height=; checked=; missing=; client_width=; scroll_width=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      height) height=$value ;;
+      checked) checked=$value ;;
+      missing) missing=$value ;;
+      clientWidth) client_width=$value ;;
+      scrollWidth) scroll_width=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+  forced task-height unverified && height="not a measurement"
+  forced task-height fail && height=10
+  forced task-legible unverified && checked=0
+  forced task-legible fail && missing="$TASK_VIEW_NAME"
+  judge_view_body "$label" "$TASK_VIEW_NAME" "$height" "$checked" "$expected" "$missing"
+
+  trusted=$WIDTH_TRUSTED
+  forced task-swipe unverified && trusted=no
+  forced task-swipe fail && scroll_width=$((client_width + 240))
+  judge_swipe "$label" "$TASK_VIEW_NAME" "$trusted" "$client_width" "$scroll_width"
+}
+
 # The higher-stakes empty list, aggregated across every destination this width
 # reached. "No leaks found" is worth nothing unless the scan can be shown to
 # have run over every destination's rendered page, so the verdict requires one
 # completed scan per primary destination plus the task detail and a real
 # character count before an empty result is read as a clean page.
+#
+# The sixth scan is required in every mode, including --url against an idle
+# fleet, because it is reached in every mode: where no board row exists to
+# open, the task probe still selects a task address of its own and scans the
+# page the router mounts for it. So an idle fleet costs this run the task-open
+# observation and the three measurements of the page a row would have opened -
+# all recorded n/a - but not the leak scan's coverage of that destination, and
+# expecting five here would be reading a scan that ran as one that did not.
 check_leak_aggregate() {  # <label>
   local label=$1 route_total
   route_total=$(printf '%s\n' "$VIEWS" | grep -c .)

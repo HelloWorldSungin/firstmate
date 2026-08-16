@@ -92,6 +92,9 @@ for observation in \
   "the Knowledge view is legible" \
   "nothing is placed behind a horizontal swipe on Fleet" \
   "opening a task from the Fleet board lands on its detail page alone" \
+  "the Task detail view rendered with real height" \
+  "the Task detail view is legible" \
+  "nothing is placed behind a horizontal swipe on Task detail" \
   "the History view displays the completion records it read" \
   "every completed row shows its usage cell" \
   "no credential-shaped or path-shaped value on any destination" \
@@ -151,10 +154,12 @@ done
 
 # And the assertions whose honest answer on an empty page is "there was nothing
 # to look at" have to say so, rather than reporting a clean scan of no text, a
-# view judged behind an unreachable destination, or a usage cell on no rows.
+# view judged behind an unreachable destination, a task page measured behind a
+# board that has no rows, or a usage cell on no rows.
 for observation in \
   "only the Fleet view is on the page" \
   "no credential-shaped or path-shaped value on any destination" \
+  "nothing is placed behind a horizontal swipe on Task detail" \
   "the History view displays the completion records it read" \
   "every completed row shows its usage cell"
 do
@@ -243,6 +248,19 @@ status=$?
 assert_contains "$forced" "forced: leak:fail" "the injected run did not stamp the branch it forced"
 grep -qF "matched Needs you: /home/" "$TMP_ROOT/forced-leak/result.txt" \
   || fail "forcing leak:fail did not make the attribute scanner find its path-shaped value"$'\n'"$(cat "$TMP_ROOT/forced-leak/result.txt")"
+
+# The task destination's own swipe branch, pinned separately from the five.
+# It is the observation the sideways-scrolling task page went unseen for, and
+# an observation added to close a gap is worth nothing until its failure branch
+# has been executed rather than reasoned about.
+forced=$(FM_DASHBOARD_BROWSER_FORCE=task-swipe:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-task-swipe" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing task-swipe:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: task-swipe:fail" "the injected run did not stamp the branch it forced"
+grep -qE "^FAIL .*nothing is placed behind a horizontal swipe on Task detail - the document scrolls sideways at this destination" \
+  "$TMP_ROOT/forced-task-swipe/result.txt" \
+  || fail "forcing task-swipe:fail did not run the task destination's own swipe failure branch"$'\n'"$(cat "$TMP_ROOT/forced-task-swipe/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
 
 # --- the observation set is reconciled ----------------------------------------

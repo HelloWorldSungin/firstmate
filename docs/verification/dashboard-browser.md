@@ -12,6 +12,8 @@ Every observation below is one of four verdicts, not two.
 `ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, `????` means it could not be observed at all, and `n/a` means it does not apply to the target being checked in this mode.
 `????` exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
 `n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the three task-timeline observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
+Under `--url` against an idle fleet the four task-destination observations join them, because a board with no live task has no row to click and so no task page to open or measure.
+The leak scan is deliberately not among them: it reaches that destination in every mode by selecting a task address of its own, so an idle fleet does not reduce what it is required to have covered.
 
 Which observations a run makes is not left to be kept in step by hand.
 Each mode declares its observation set up front, and before the run exits that list is reconciled against the verdicts actually recorded; a declared observation with no verdict, one carrying two, or a verdict for something never declared names the offending observation and exits 4.
@@ -24,12 +26,14 @@ Date: 2026-08-16, after the rebuild of the page into six destinations behind a h
 Widths: 390x844 (phone), 899x844 and 900x844 (the two sides of the navigation boundary), 1440x900 (desktop).
 
 The page under check is no longer one scrolling document, so the observation set changed shape with it: at every width, every destination is visited through the navigation control actually visible there, and the active view must be the only view in the DOM.
-All 136 declared observations recorded `ok` and reconciled:
+All 148 declared observations recorded `ok` and reconciled:
 
 ```
-136 passed, 0 failed, 0 could not be verified
-observation set reconciled: all 136 declared observations recorded exactly once
+148 passed, 0 failed, 0 could not be verified
+observation set reconciled: all 148 declared observations recorded exactly once
 ```
+
+The set grew from 136 to 148 because the task detail now owes the same three per-destination measurements the five navigation destinations do - height, legibility, and sideways scroll - at each of the four widths.
 
 What the run observed, with the load-bearing details:
 
@@ -38,9 +42,16 @@ What the run observed, with the load-bearing details:
   That is the 899/900 boundary observed from both sides in one run - navigation vanishing below 900px is the defect that started the rebuild, so it is pinned per width rather than assumed from the stylesheet.
 - At every width and every destination, the active view root was mounted and all 5 other view roots were absent from the DOM - absent, not hidden - and the address bar carried the destination's own hash.
 - Opening a task from the Fleet board's own row landed on `#/task/<id>` with the task view mounted alone, all 6 view roots checked.
+  That page is then held to the same three measurements the five navigation destinations are - real rendered height, its own landmark text, and nothing behind a horizontal swipe - because a destination a reader is sent to owes the same answers whether they reached it from a tab or from a board row.
+  The fixture's first board row carries a pull request URL on purpose: that URL is the longest unbreakable token the page ever renders, so without one on the task the check opens, those measurements would run against a page that could not overflow whatever the stylesheet said.
 - The History view displayed both of the fixture's completion records, agreeing with its own pager (`1-2 of 2`), each row carrying a non-empty usage cell.
   The fixture publishes those records through the real manifest writer, so this is the production record format rendering, not a lookalike envelope.
-- No destination scrolls sideways: `scrollWidth <= viewport` on every route at every width.
+- No destination scrolls sideways: `scrollWidth <= viewport` on all six destinations at all four widths, the task detail included - 24 measurements, one per destination per width.
+  The task detail is measured here for the first time in this record.
+  Until it was, the sentence above was broader than the run beneath it: the check declared its swipe observation once per navigation destination, so the task page was opened and never measured, and it was in fact scrolling sideways at 390 CSS px (`scrollWidth` 421) and at 900 (`976`).
+  A pull request URL is one unbreakable token, `flex-wrap` cannot break a single word, and the panel holding it is a grid item whose automatic minimum size is that token's width, so the shared track was widened past the viewport.
+  Fixed in `assets/dashboard/styles.css` by letting the token wrap: `overflow-wrap: anywhere` on `.pr-line`, which is the one value that also shrinks a min-content width, and `min-width: 0` on `.panel` so the grid item can shrink to the track.
+  The URL wraps whole and readable inside the panel; nothing is clipped, truncated, or hidden.
 - The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (6 scans per width) and matched nothing.
   What that scan covers is the operational chrome the dashboard itself composes - labels, filters, errors, status lines, notices - read as rendered attributes as well as rendered text, because a value written into a `title` or a `data-` attribute is on the page exactly as much as one written into a text node.
   It deliberately excludes worker-authored report bodies, which render as written with any absolute paths they narrate: that is the captain's decision on [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169), and the scan counts every `.report` region it skipped so an `ok` verdict states what it stepped over rather than implying it read it.
@@ -62,12 +73,17 @@ A check that only ever reports success is worth nothing, so this is pinned rathe
 Observed 2026-08-16:
 
 ```
-8 passed, 32 failed, 92 could not be verified
-observation set reconciled: all 132 declared observations recorded exactly once
-negative proof PASSED: the check refuses a page that renders nothing (32 failed, 92 could not be verified, and every one of the 9 assertions that read what rendered recorded a FAIL or a ???? of its own)
+8 passed, 28 failed, 108 could not be verified
+observation set reconciled: all 144 declared observations recorded exactly once
+negative proof PASSED: the check refuses a page that renders nothing (28 failed, 108 could not be verified, and every one of the 9 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
+The split recorded here previously read `32 failed, 92 could not be verified` against 132 declared.
+That was wrong when it was written, not made wrong by this change: rerunning the pre-change script proves it, and it records 7 failed and 24 could not be verified at a single width - 28 and 96 over the four.
+The twelve added observations are all `????` on a page with no board to open, which is the whole difference between 96 and 108.
+
 On the empty page every destination's navigation control is missing, so the reachability assertion records `FAIL` at each width and the view assertions behind it record `????` - a destination that could not be reached is a view nobody observed, not a view seen to be fine.
+The task destination records `????` the same way, because a page with no Fleet board has no row to open.
 The nine named evidence assertions are the rendered text, the stylesheet, the reachability of each destination, the active view being the only one on the page, its height, its legibility, the leak scan, the History display, and the usage cells.
 Requiring each to appear in `result.txt` as a `FAIL` or `????` line of its own is positive evidence it ran and refused; an earlier version inferred the proof from absences and once reported `PASSED` on a host whose browser bridge was busy.
 
@@ -89,9 +105,16 @@ FAIL 390x844: only the Needs you view is on the page - another view is in the DO
 $ FM_DASHBOARD_BROWSER_FORCE=history:fail bin/fm-dashboard-browser-check.sh --width 390x844
      forced: history:fail (FM_DASHBOARD_BROWSER_FORCE)
 FAIL 390x844: the History view displays the completion records it read - the fixture published 2 completion records but the page displays none
+
+$ FM_DASHBOARD_BROWSER_FORCE=task-swipe:fail bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: task-swipe:fail (FM_DASHBOARD_BROWSER_FORCE)
+FAIL 390x844: nothing is placed behind a horizontal swipe on Task detail - the document scrolls sideways at this destination: scrollWidth 630 > viewport 390
 ```
 
-`tests/fm-dashboard-browser.test.sh` pins those three pairs, the three `reconcile:` pairs that corrupt the emitted observation set itself, the refusal of unknown entries, and the refusal to combine injection with `--negative`.
+The task destination's other two branches were executed the same way on 2026-08-16: `task-height:fail` printed `only 10px tall`, and `task-legible:fail` printed `2 landmarks checked, missing: Task detail`.
+An observation added to close a gap is worth nothing until its failure branch has been run rather than reasoned about, so these were executed before this record claimed the gap was closed.
+
+`tests/fm-dashboard-browser.test.sh` pins those four pairs, the three `reconcile:` pairs that corrupt the emitted observation set itself, the refusal of unknown entries, and the refusal to combine injection with `--negative`.
 
 ## Limits of what a browser check can see here
 
@@ -103,3 +126,7 @@ So the console is read while each bucket is still current - immediately before e
 Each read is paged one message at a time, which puts the listing's own `Showing 1-1 of N` line in front of the verdict, and a read that does not produce that line records `????` instead of a clean console.
 
 The browser this ran in has no colour emoji font, so any emoji glyph draws as an empty box; that is a property of this host's fonts rather than of the dashboard.
+
+Every measurement in this record is taken in the dark theme.
+That is what the page loads as by default, and no run here toggles away from it.
+The stylesheet observation is written to be theme-independent by design - it requires a painted body and this stylesheet's own `--amber-soft`, both of which hold in either theme rather than pinning one theme's colours - but no observation renders the light theme, so nothing here is evidence about how the light theme paints.
