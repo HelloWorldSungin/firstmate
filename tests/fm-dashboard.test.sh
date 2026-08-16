@@ -814,42 +814,42 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   projectFilterRuns("History", "history-search", 3, 3);
   await go("#/backlog");
 
-  // The filter the reader sees has to keep naming the project the rows are
-  // filtered by, across a refresh that moves it. Option values are opaque
-  // indexes into a SORTED facet list, so a push that adds an earlier-sorting
-  // project shifts the chosen project's index while the raw key state holds is
-  // unchanged - and anything that carries a pre-refresh index onto the rebuilt
-  // control leaves the select naming one project and the rows showing another.
+  // The filter the reader sees has to keep naming what the rows are filtered
+  // by, and a control the renderer rebuilt takes the renderer's value - never
+  // the one it carried before the render. Clearing is exactly that case and the
+  // only one that can be told apart: option values are opaque indexes into a
+  // facet list built from the whole queue, so clearing changes what belongs on
+  // the select while leaving the options it is chosen from identical.
+  //
+  // The select is focused while that happens, and it is the MOUNTED select that
+  // is focused rather than a node an earlier render already detached - a
+  // detached node is not what the document reports as active, so focusing one
+  // would skip the reconciliation path this is here to hold.
   const projectFilter = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "project", `backlog project filter ${why}`);
   const chosen = projectFilter("before").options.find((option) => option.textContent === "firstmate");
   if (!chosen) throw new Error("the Backlog project filter offered no firstmate option to choose");
-  const chosenSelect = projectFilter("choosing");
-  chosenSelect.value = chosen.value;
-  chosenSelect.listeners.change();
-  chosenSelect.focus();
-  eventSources[0].listeners.backlog({
-    data: JSON.stringify({
-      ...backlogEnvelope,
-      backlog: {
-        ...backlogEnvelope.backlog,
-        records: [
-          { id: "queued-z", title: "Queued z", state: "queued", repo: "/home/captain/projects/arknode", order: 0 },
-          ...backlogEnvelope.backlog.records,
-        ],
-      },
-    }),
-  });
+  const choosing = projectFilter("choosing");
+  choosing.value = chosen.value;
+  choosing.listeners.change();
+  const beforeClear = one(viewNode, (node) => node.id === "backlog-search", "backlog search before clearing");
+  beforeClear.value = "no-queued-item-says-this";
+  beforeClear.listeners.input();
+  const focusedFilter = projectFilter("focused");
+  if (focusedFilter.value !== chosen.value) throw new Error(`the mounted project filter lost the chosen project before clearing: ${focusedFilter.value}`);
+  focusedFilter.focus();
+  if (document.activeElement !== focusedFilter) throw new Error("the fake document did not report the mounted project filter as focused");
+  const clearBacklog = one(viewNode, (node) => node.tagName === "BUTTON" && node.textContent === "Clear search & filters", "Backlog clear search");
+  clearBacklog.listeners.click();
   await settle();
-  const refiled = projectFilter("after");
-  const shown = refiled.options.find((option) => option.value === refiled.value);
-  if (!shown || shown.textContent !== "firstmate") {
-    throw new Error(`a refresh left the project filter naming a different project than the one it filters by: ${shown ? shown.textContent : "no option"}`);
+  const cleared = projectFilter("after clearing");
+  const shown = cleared.options.find((option) => option.value === cleared.value);
+  if (!shown || shown.textContent !== "All projects") {
+    throw new Error(`clearing left the project filter naming a project the rows are no longer filtered by: ${shown ? shown.textContent : "no option"}`);
   }
-  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
-  await settle();
-  const restored = projectFilter("restored");
-  restored.value = "";
-  restored.listeners.change();
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 2) throw new Error("clearing the Backlog filters did not bring the whole queue back");
+  // And the reader is still on the control they were on: it has no id, so this
+  // is the signature path carrying focus across a node the renderer rebuilt.
+  if (document.activeElement !== cleared) throw new Error("clearing the filters dropped the focus off the control the reader was on");
 
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");

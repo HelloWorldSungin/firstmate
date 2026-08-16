@@ -210,7 +210,7 @@ function eachElement(root, visit) {
 function focusSignature(node) {
   const label = [node.getAttribute?.("aria-label"), node.getAttribute?.("title"), node.textContent]
     .find((value) => typeof value === "string" && value.trim() !== "") || "";
-  return `${node.tagName} ${label.replace(/\s+/g, " ").trim()}`;
+  return `${node.tagName}\u0000${label.replace(/\s+/g, " ").trim()}`;
 }
 
 function signatureMatches(root, signature) {
