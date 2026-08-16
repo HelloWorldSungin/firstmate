@@ -70,10 +70,9 @@
 #   worker does not inherit firstmate's captain-facing AGENTS.md persona; ship
 #   and design briefs additionally require the firstmate-coding-guidelines skill, which a
 #   report-only scout has no tracked material to need. Firstmate's own checkout
-#   is the home root rather than a clone under projects/, so a name is resolved
-#   against the home only when its data/projects.md line declares that layout,
-#   or when this home is a marked secondmate home, which cannot carry that line.
-#   See bin/fm-brief-repo-lib.sh.
+#   is the home root rather than a clone under projects/. Home-root resolution
+#   is structural and registry-prose-independent; bin/fm-brief-repo-lib.sh owns
+#   the candidate mechanics and final object-database verdict.
 # For ship and design tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads a mode from it:

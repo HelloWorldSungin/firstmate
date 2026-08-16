@@ -372,7 +372,8 @@ worker_stop_active_execution() {
 }
 
 worker_shutdown() {
-  trap - HUP INT TERM
+  # A process-group stop reaches this child directly and through its supervisor.
+  trap '' HUP INT TERM
   WORKER_STOP=1
   worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
   if ! worker_stop_active_execution; then

@@ -228,7 +228,7 @@ Both recorded runtime identities now classify the exact `pi-launcher` foreground
 
 Backend applicability was reviewed across every spawn adapter.
 Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
-Herdr uses native registered-agent state and needs no process-name branch.
+Herdr uses native registered-agent state and needs no harness-process-name branch; [`herdr-backend.md`](../herdr-backend.md#restart-and-liveness-behavior) owns its separate structural stale-registration cross-check.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
 The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
@@ -624,7 +624,7 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Agent lifecycle control
 
-Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
+Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating and stale-registration cross-check were verified on 2026-08-15 against Herdr 0.8.0:
 
 ```sh
 tests/fm-control-herdr-smoke.test.sh
@@ -635,12 +635,21 @@ Observed output:
 ```text
 ok - real herdr: exit on a pane with no registered agent is idempotent success
 ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
+ok - real herdr: a registration with no agent process behind it classifies dead (stale), not alive
+ok - real herdr: interrupt refuses a stale registration instead of keying a dead shell
+ok - real herdr: exit on a stale registration is idempotent success, so relaunch can proceed
+ok - real herdr: a registered agent with a live process stays alive through the cross-check
 ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
 ok - real herdr: no control verb removed the endpoint or the task's local copy
 ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
+
+all fm-control-herdr-smoke tests passed
 ```
 
-The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
+The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies.
+In this guard, the unregistered case confirms the ordinary agent-free baseline, `report-agent` creates the stale-registration state over a plain idle shell, and a real foreground process makes the paired live case fail the agent-free proof without launching a real agent.
+A separate live reading on 2026-08-15 found the other dead-pane shape the classifier must accept: pane shell, resident `treehouse` wrapper, and worktree subshell holding the foreground.
+The classifier read that endpoint `dead` while four concurrently live Pi and Claude panes on the same server all read `alive`; the portable `test_agent_state_*` cases in `tests/fm-backend-herdr.test.sh` pin the chain and negative shapes.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
 ### Away-mode transport

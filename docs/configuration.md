@@ -14,8 +14,9 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 [`fleet-data-contracts.md`](fleet-data-contracts.md) owns the durable manifest, work-item, and normalized PR-observation contracts and the field ownership across their producers and consumers.
 `state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, generated Relay artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
-A project whose clone is the home root itself rather than a directory under `projects/` says so in its `data/projects.md` line - "this home IS the clone", "lives at the home root rather than under projects/" - and `bin/fm-brief-repo-lib.sh` offers the home root as a resolution candidate only for a name carrying that declaration.
-A secondmate home is exempt because it cannot carry that line - `bin/fm-home-seed.sh` leases it as a firstmate worktree and registers only the projects it seeds - so its `.fm-secondmate-home` marker opens the same candidate there.
+The firstmate repository's home-root clone uses the canonical registry name `firstmate`, and `bin/fm-brief-repo-lib.sh` offers the home root as its resolution candidate when `FM_HOME` and `FM_ROOT` share the same git object database.
+That structural comparison is the sole authority, so registry prose does not control detection and a path matching the home root resolves to the `firstmate` registry entry without a new registry field.
+A `.fm-secondmate-home` marker can also open the home-root candidate for secondmate fallback resolution, but it never replaces the final object-database comparison.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 The producing PR and Relay helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
@@ -767,7 +768,7 @@ FM_ARM_ATTACH_POLL=0.5  # seconds between checks while fm-watch-arm is attached 
 FM_OPENCODE_ARM_READY_TIMEOUT_MS=12000   # milliseconds the OpenCode primary watcher plugin waits for an arm attempt to report started, healthy, wake, or failure; default 35000 on Windows to stay above the MSYS confirm budget
 FM_PI_ARM_READY_TIMEOUT_MS=12000   # milliseconds the Pi watcher extension waits for a successor arm to report started or attached; default 35000 on Windows to stay above the MSYS confirm budget
 FM_PI_AWAY_POLL_MS=2000   # milliseconds between Pi extension checks for away-mode ownership transitions
-FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000   # milliseconds Pi/OpenCode wait for an unready successor arm to exit before abandoning retries
+FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000   # milliseconds Pi/OpenCode give a still-running unready successor to exit; an arm observed exited when the deadline verdict settles gets one additional grace period of this length for close and stream teardown
 FM_WATCH_REARM_RETRY_BASE_MS=250   # Pi/OpenCode adapter base delay for continuity restoration retries
 FM_WATCH_REARM_RETRY_MAX_MS=4000   # Pi/OpenCode adapter cap for exponential continuity retry delay
 FM_WATCH_REARM_RETRY_LIMIT=5   # Pi/OpenCode adapter launch-failure retries before surfacing restoration failure

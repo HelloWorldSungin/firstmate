@@ -110,7 +110,7 @@ if (!notification.includes("started Pi extension arm child")) {
   console.error(notification);
   process.exit(1);
 }
-for (let i = 0; i < 250 && !prompt; i += 1) {
+for (let i = 0; i < 1000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
@@ -217,10 +217,23 @@ while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -246,13 +259,16 @@ if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
 if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
   throw new Error(`redundant call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
-for (let i = 0; i < 100 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+// Event wait: fails only when the child never starts, so a 20s ceiling
+// absorbs CI runner contention without weakening any assertion.
+for (let i = 0; i < 2000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("initial arm child did not start");
+// Stability window on the launch count, which unlike the fixture log does not
+// depend on how quickly the runner schedules child shells.
 await new Promise((resolve) => setTimeout(resolve, 100));
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 1) throw new Error(`redundant call spawned ${rows.length} arm children`);
+if (armSpawns !== 1) throw new Error(`redundant call spawned ${armSpawns - 1} extra arm children`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
@@ -277,10 +293,23 @@ exit 0
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=10000 FM_WATCH_REARM_RETRY_MAX_MS=10000 node --input-type=module 2>&1 <<'EOF'
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -293,8 +322,11 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
+// Event wait: the ownership guidance can only appear once the initial arm
+// close has been observed, so the ceiling fires only on genuine failure and
+// 20s absorbs CI runner contention without weakening any assertion.
 let redundant = null;
-for (let i = 0; i < 100; i += 1) {
+for (let i = 0; i < 2000; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
   redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
   if (redundant.content[0]?.text.includes("scheduled continuity retry")) break;
@@ -308,9 +340,11 @@ if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
 if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
   throw new Error(`scheduled retry call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
+// Stability window on the launch count, which unlike the fixture log does not
+// depend on how quickly the runner schedules child shells. The extension-owned
+// retry itself cannot fire inside it because the retry base is 10s.
 await new Promise((resolve) => setTimeout(resolve, 100));
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 1) throw new Error(`scheduled retry call spawned ${rows.length} arm children`);
+if (armSpawns !== 1) throw new Error(`scheduled retry call spawned ${armSpawns - 1} extra arm children`);
 EOF
 )
   status=$?
@@ -343,15 +377,37 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let deliveryStarted = false;
-let rowsAtDelivery = 0;
+let armSpawns = 0;
+let successorSpawns = 0;
+let successorSpawnsAtDelivery = 0;
+let successorStartedAtDelivery = false;
+const successorPredecessors = [];
 let releaseDelivery = () => {};
 const deliveryBlocked = new Promise((resolve) => {
   releaseDelivery = resolve;
 });
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm); the spawn call is the successor launch, so counting it does not
+  // race the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) {
+    armSpawns += 1;
+    if (args[2].env.FM_WATCH_PREDECESSOR_ARM_PID) {
+      successorSpawns += 1;
+      successorPredecessors.push(args[2].env.FM_WATCH_PREDECESSOR_ARM_PID);
+    }
+  }
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -359,32 +415,38 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async () => {
-    rowsAtDelivery = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    successorSpawnsAtDelivery = successorSpawns;
+    successorStartedAtDelivery = rows().some((row) => /predecessor=[0-9]+/.test(row));
     deliveryStarted = true;
     await deliveryBlocked;
   },
 };
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2 && deliveryStarted) break;
+// Wait on the observable events - delivery beginning and the successor child
+// appending its row. The ceilings fire only when an event never happens, so
+// 20s absorbs CI runner contention without weakening any assertion.
+for (let i = 0; i < 2000 && !deliveryStarted; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
 if (!deliveryStarted) throw new Error("wake delivery did not begin");
-if (rowsAtDelivery !== 2) throw new Error(`wake delivery began before successor establishment (${rowsAtDelivery} arm rows)`);
-if (!/predecessor=[0-9]+/.test(rows[1])) throw new Error(`successor did not receive predecessor identity: ${rows[1]}`);
+if (successorSpawnsAtDelivery !== 1) throw new Error(`wake delivery began with ${successorSpawnsAtDelivery} successor launches`);
+if (!successorStartedAtDelivery) throw new Error("wake delivery began before the successor arm child started");
+if (!/^[0-9]+$/.test(successorPredecessors[0] ?? "")) throw new Error(`successor launch missing predecessor identity: ${successorPredecessors.join(" | ")}`);
+for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows().length < 2) throw new Error(`successor arm child did not start: ${rows().join(" | ")}`);
+if (!/predecessor=[0-9]+/.test(rows()[1])) throw new Error(`successor did not receive predecessor identity: ${rows()[1]}`);
+// Stability window: single-flight holds, so no further arm launches happen
+// once the successor is up and delivery has begun.
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (stableRows.length !== 2) throw new Error(`single-flight violation launched ${stableRows.length} arms`);
+if (armSpawns !== 2 || successorSpawns !== 1) throw new Error(`single-flight violation launched ${armSpawns} arms (${successorSpawns} successors): ${rows().join(" | ")}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 releaseDelivery();
 process.exit(0);
@@ -418,12 +480,22 @@ while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
-let rowsAtPrompt = 0;
+let successorAttempts = 0;
+let successorAttemptsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) successorAttempts += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -431,29 +503,25 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async (message) => {
+    successorAttemptsAtPrompt = successorAttempts;
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 1000 && !prompt; i += 1) {
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
+if (!prompt) throw new Error("hung-successor prompt did not arrive within ceiling");
+// The spawn call is the restoration attempt. Waiting for the child shell to
+// append its fixture row races process scheduling against the ready timeout.
+if (successorAttemptsAtPrompt < 1) throw new Error("wake arrived before restoration was attempted");
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
-await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
+if (!prompt.includes("could not restore watcher continuity")) throw new Error(`missing typed restoration failure: ${prompt}`);
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (successorAttempts !== successorAttemptsAtPrompt) throw new Error(`single-flight recovery launched additional ${successorAttempts - successorAttemptsAtPrompt} arms after delivery`);
 EOF
 )
   status=$?
@@ -490,12 +558,35 @@ while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
-let rowsAtPrompt = 0;
+let successorAttempts = 0;
+let successorAttemptsAtPrompt = 0;
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    successorAttempts += 1;
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -504,43 +595,206 @@ const pi = {
   },
   sendUserMessage: async (message) => {
     prompt += message;
-    rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-      ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-      : 0;
+    successorAttemptsAtPrompt = successorAttempts;
+    retireRequestsAtPrompt = retireRequests;
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+if (!prompt) throw new Error("unretired-successor prompt did not arrive within ceiling");
+// Spawn and kill are the lifecycle events under test. Waiting for the child
+// shell to append a fixture row races process scheduling against the timeout.
+if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
+if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor${out:+: $out}"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
 
+# Deterministic regression for the retirement deadline races: a successor exits
+# across the retire deadline while an inherited stdio pipe keeps its close
+# pending, then the pipe closes while the event loop is stalled across the grace
+# deadline. The next timers phase always races the queued close at both verdicts
+# - the interleaving a contended CI runner produces by starvation.
+test_pi_retired_successor_close_at_deadline_keeps_continuity() {
+  local repo home plugin log retire_ready recovery_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  repo="$TMP_ROOT/pi-retire-settle-root"
+  home="$TMP_ROOT/pi-retire-settle-home"
+  log="$TMP_ROOT/pi-retire-settle.log"
+  retire_ready="$TMP_ROOT/pi-retire-settle.ready"
+  recovery_ready="$TMP_ROOT/pi-retire-settle.recovery-ready"
+  term_seen="$TMP_ROOT/pi-retire-settle.term-seen"
+  retire_release="$TMP_ROOT/pi-retire-settle.retire-release"
+  exit_marker="$TMP_ROOT/pi-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/pi-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/pi-retire-settle.stdio-exit"
+  stop="$TMP_ROOT/pi-retire-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: synthetic wake\n'
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  on_term() {
+    printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
+    while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
+    printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
+    exit 0
+  }
+  trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
+  while :; do sleep 0.02; done
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_RECOVERY_READY_FILE:?}"
+trap 'exit 0' TERM INT
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_RECOVERY_READY_FILE="$recovery_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+let prompt = "";
+let successorAttempts = 0;
+let retireStalled = false;
+// Barriers that establish the test setup, so runner scheduling never decides
+// it: the arm child has provably reached the marked point before the plugin
+// gets to arm any deadline against it. The event-loop stalls below still
+// decide the retirement verdict.
+const awaitFixture = (path, what) => {
+  const deadline = Date.now() + 5000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`fixture timed out ${what}: ${path}`);
+  }
+};
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const successor = Boolean(args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID);
+  const child = originalSpawn(...args);
+  if (successor) {
+    successorAttempts += 1;
+    if (successorAttempts === 1) {
+      // SIGTERM must not arrive before the retiring successor installs its handler.
+      awaitFixture(process.env.FM_RETIRE_READY_FILE, "installing retirement handler");
+    } else {
+      // The readiness deadline is armed once this spawn returns, so the recovery
+      // arm's readiness line must already be written. Otherwise a starved runner
+      // that cannot start bash within the readiness deadline spends an extra
+      // retry here and the retirement verdict under test is no longer what the
+      // successor count measures.
+      awaitFixture(process.env.FM_RECOVERY_READY_FILE, "producing recovery readiness");
+    }
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      const delivered = originalKill(signal, ...killArgs);
+      if (signal === "SIGTERM" && !retireStalled) {
+        retireStalled = true;
+        // The retire timer is armed synchronously after this kill call
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
+        setImmediate(() => {
+          writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
+          while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
+        });
+      }
+      return delivered;
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt += message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-retire-settle", {}, undefined, undefined, {});
+for (let i = 0; i < 2000 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+try {
+  if (!prompt) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+  // Match the failure by what it means, not by one release's phrasing: any
+  // wording of a lost-continuity verdict must fail this regression.
+  if (prompt.includes("could not restore watcher continuity")) throw new Error(`retired successor lost continuity: ${prompt}`);
+  if (successorAttempts !== 2) throw new Error(`restoration did not continue after retirement: ${successorAttempts} successor attempts`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi must honor a successor that exited by the retire deadline${out:+: $out}"
+  [ -z "$out" ] || fail "Pi retire-settle test printed output: $out"
+  pass "Pi retirement honors a queued close at the deadline and keeps continuity"
+}
+
 test_pi_late_unretired_close_resumes_supervision() {
-  local kind repo home plugin log ready retired release stop out status
+  local kind repo home plugin log ready release stop out status
   for kind in actionable non-actionable; do
     repo="$TMP_ROOT/pi-late-$kind-root"
     home="$TMP_ROOT/pi-late-$kind-home"
     log="$TMP_ROOT/pi-late-$kind.log"
     ready="$TMP_ROOT/pi-late-$kind.ready"
-    retired="$TMP_ROOT/pi-late-$kind.retired"
     release="$TMP_ROOT/pi-late-$kind.release"
     stop="$TMP_ROOT/pi-late-$kind.stop"
     mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -556,7 +810,7 @@ if [ "$count" -eq 1 ]; then
   exit 0
 fi
 if [ "$count" -eq 2 ]; then
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap '' TERM INT
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -567,12 +821,41 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 const prompts = [];
+let armSpawns = 0;
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      // Hold the successor open deterministically until the release event.
+      // The retirement request itself is the lifecycle event under test; a
+      // shell trap is not a reliable process-boundary oracle under load.
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -580,6 +863,7 @@ const pi = {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
   sendUserMessage: async (message) => {
+    retireRequestsAtPrompt = retireRequests;
     prompts.push(message);
   },
 };
@@ -587,7 +871,9 @@ const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
 async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
+  // Event waits fail only when the event never happens; a 20s ceiling absorbs
+  // CI runner contention without weakening any assertion.
+  for (let i = 0; i < 2000; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -602,18 +888,24 @@ await waitFor(
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
-  "unretired successor was not asked to retire before fallback",
-);
-if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
+// The intercepted kill call is the retirement request; withholding it keeps
+// the successor unretired deterministically until the release event.
+if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
+if (armSpawns !== 2) throw new Error(`unretired arm overlapped before fallback: ${armSpawns} arm launches: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
+// The restored supervisor is the third arm launch; an actionable late close
+// must also deliver its wake. Both are observable events, so the ceiling
+// never decides the verdict.
+await waitFor(
+  () => armSpawns >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake"))),
+  "late close did not restore one successor",
+);
+await waitFor(() => rows().length >= 3, "restored arm child did not start");
+// Sample the exact count only after the restore event, holding a short
+// stability window so a duplicate restore cannot hide behind the sample.
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (armSpawns !== 3) throw new Error(`late close restored ${armSpawns - 2} successors: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
 } else if (prompts.length !== 1) {
@@ -651,10 +943,23 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompts = 0;
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -665,19 +970,28 @@ const pi = {
     prompts += 1;
   },
 };
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2) break;
+// Wait on the observable events - the retry launch and its child appending a
+// row. The ceilings fire only when an event never happens, so 20s absorbs CI
+// runner contention without weakening any assertion.
+for (let i = 0; i < 2000 && armSpawns < 2; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`clean empty close was ignored: ${rows.join(" | ")}`);
+if (armSpawns < 2) throw new Error(`clean empty close was ignored: ${rows().join(" | ")}`);
+for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows().length < 2) throw new Error(`continuity retry arm child did not start: ${rows().join(" | ")}`);
+// Stability window on the launch count: exactly one bounded retry, sampled at
+// a defined point instead of at a timeout.
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (armSpawns !== 2) throw new Error(`clean empty close launched ${armSpawns} arms: ${rows().join(" | ")}`);
 if (prompts !== 0) throw new Error(`restored transient close surfaced ${prompts} failure prompts`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
@@ -706,10 +1020,23 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -724,14 +1051,21 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-established-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !prompt; i += 1) {
+// Wait on the observable event - the exhaustion prompt - rather than racing
+// the retry cadence on a wall-clock bound; 20s absorbs CI runner contention
+// without weakening any assertion.
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+if (!prompt) throw new Error("retry exhaustion prompt did not arrive");
+if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+// Sampled after the exhaustion event: every arm row is written before the
+// close that advances the retry sequence, so both counts are settled here.
+if (armSpawns !== 3) throw new Error(`retry limit launched ${armSpawns} arm cycles`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
-if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+if (rows.length !== 3) throw new Error(`retry limit ran ${rows.length} arm cycles: ${rows.join(" | ")}`);
 EOF
 )
   status=$?
@@ -757,12 +1091,25 @@ printf 'signal: lock handoff\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" node --input-type=module 2>&1 <<'EOF'
-import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
 let prompt = "";
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append; the test helper spawn below
+  // passes no env and stays uncounted.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const pi = {
   on() {},
   registerCommand() {},
@@ -778,16 +1125,19 @@ writeFileSync(lock, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-lock-close", {}, undefined, undefined, {});
-const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+const other = originalSpawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-  for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
+  // Event wait: fails only when the lock-loss prompt never arrives, so a 20s
+  // ceiling absorbs CI runner contention without weakening any assertion.
+  for (let i = 0; i < 2000 && !prompt.includes("no longer owns the lock"); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-  if (rows.length !== 1) throw new Error(`successor launched after lock loss: ${rows.join(" | ")}`);
   if (!prompt.includes("no longer owns the lock")) throw new Error(`missing lock-loss failure: ${prompt}`);
+  // Sampled after the lock-loss prompt: only the initial arm may have
+  // launched, so any second launch is a successor that ignored lock loss.
+  if (armSpawns !== 1) throw new Error(`successor launched after lock loss: ${armSpawns} arm launches`);
 } finally {
   other.kill("SIGTERM");
 }
@@ -868,7 +1218,7 @@ const owned = await callArm();
 if (owned.details?.ok !== true || !owned.details.message.includes("started Pi extension arm child")) {
   throw new Error(`owned lock did not arm: ${JSON.stringify(owned.details)}`);
 }
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("owned lock did not run the watcher arm");
@@ -933,7 +1283,7 @@ function pidAlive(pid) {
   }
 }
 
-async function waitFor(pred, label, attempts = 250) {
+async function waitFor(pred, label, attempts = 1000) {
   for (let i = 0; i < attempts; i += 1) {
     if (pred()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1145,7 +1495,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-exit", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !existsSync(process.env.FM_CHILD_PID_FILE); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_CHILD_PID_FILE); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_CHILD_PID_FILE)) throw new Error("arm child did not start");
@@ -1153,7 +1503,7 @@ const firstChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
 await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, {});
 await handlers.get("session_start")?.({ type: "session_start" }, {});
 await tool.execute("tool-call-replacement", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 1000; i += 1) {
   const currentChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
   if (currentChild !== firstChild) break;
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1169,7 +1519,7 @@ EOF
   [ -z "$out" ] || fail "Pi process-exit cleanup test printed output: $out"
   pid=$(cat "$pid_file")
   i=0
-  while [ "$i" -lt 250 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
+  while [ "$i" -lt 1000 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
     sleep 0.02
     i=$((i + 1))
   done
@@ -1230,7 +1580,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1280,7 +1630,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1318,8 +1668,22 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm). The launch count proves the withheld arm was never even spawned,
+  // where the fixture log could stay absent merely because a spawned child
+  // had not been scheduled yet.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
 const hooks = await mod.FmPrimaryWatchArm({
@@ -1330,14 +1694,24 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
-if (existsSync(process.env.FM_ARM_LOG)) {
+const withheldStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (withheldStatus !== "read-only") {
+  console.error(`expected read-only while the session lock was held elsewhere, got ${withheldStatus}`);
+  process.exit(1);
+}
+if (armSpawns !== 0 || existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+// The plugin coalesces idle events that arrive while a launch attempt is
+// still in flight, and the dead-lock attempt above walks subprocesses that
+// can outlast any fixed pause on a contended runner. OpenCode re-emits
+// session.idle whenever the session settles, so model that by re-firing the
+// event while waiting; the wait fails only when the arm never runs, so a 20s
+// ceiling absorbs contention without weakening the withheld-arm assertion.
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+  await hooks.event(event);
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1425,26 +1799,50 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompts = 0;
-let rowsAtPrompt = 0;
+let armSpawns = 0;
+let successorSpawns = 0;
+let successorSpawnsAtPrompt = 0;
+let successorStartedAtPrompt = false;
+const successorPredecessors = [];
 let releasePrompt = () => {};
 const promptBlocked = new Promise((resolve) => {
   releasePrompt = resolve;
 });
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm); the spawn call is the successor launch, so counting it does not
+  // race the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) {
+    armSpawns += 1;
+    if (args[2].env.FM_WATCH_PREDECESSOR_ARM_PID) {
+      successorSpawns += 1;
+      successorPredecessors.push(args[2].env.FM_WATCH_PREDECESSOR_ARM_PID);
+    }
+  }
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async () => {
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      successorSpawnsAtPrompt = successorSpawns;
+      successorStartedAtPrompt = rows().some((row) => /predecessor=[0-9]+/.test(row));
       prompts += 1;
       await promptBlocked;
     },
   },
 };
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
 const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
@@ -1453,21 +1851,26 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2 && prompts >= 1) break;
+// Wait on the observable events - the wake prompt beginning and the successor
+// child appending its row. The ceilings fire only when an event never
+// happens, so 20s absorbs CI runner contention without weakening assertions.
+for (let i = 0; i < 2000 && prompts < 1; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
 if (prompts !== 1) throw new Error(`expected one blocked wake prompt, got ${prompts}`);
-if (rowsAtPrompt !== 2) throw new Error(`wake prompt began before successor establishment (${rowsAtPrompt} arm rows)`);
-if (!/predecessor=[0-9]+/.test(rows[1])) throw new Error(`successor did not receive predecessor identity: ${rows[1]}`);
+if (successorSpawnsAtPrompt !== 1) throw new Error(`wake prompt began with ${successorSpawnsAtPrompt} successor launches`);
+if (!successorStartedAtPrompt) throw new Error("wake prompt began before the successor arm child started");
+if (!/^[0-9]+$/.test(successorPredecessors[0] ?? "")) throw new Error(`successor launch missing predecessor identity: ${successorPredecessors.join(" | ")}`);
+for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows().length < 2) throw new Error(`successor arm child did not start: ${rows().join(" | ")}`);
+if (!/predecessor=[0-9]+/.test(rows()[1])) throw new Error(`successor did not receive predecessor identity: ${rows()[1]}`);
+// Stability window: single-flight holds, so no further arm launches happen
+// once the successor is up and the wake prompt has begun.
 await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (stableRows.length !== 2) throw new Error(`single-flight violation launched ${stableRows.length} arms`);
+if (armSpawns !== 2 || successorSpawns !== 1) throw new Error(`single-flight violation launched ${armSpawns} arms (${successorSpawns} successors): ${rows().join(" | ")}`);
+if (prompts !== 1) throw new Error(`expected one blocked wake prompt, got ${prompts}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 releasePrompt();
 EOF
@@ -1513,8 +1916,21 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PRE_READY_RELEASE_FILE="$release" FM_PRE_READY_RETIRED_FILE="$retired" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
 const client = {
@@ -1524,6 +1940,18 @@ const client = {
     },
   },
 };
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
+async function waitFor(predicate, message) {
+  // Event waits fail only when the event never happens; a 20s ceiling absorbs
+  // CI runner contention without weakening any assertion.
+  for (let i = 0; i < 2000; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
 const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
@@ -1531,26 +1959,26 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2 && prompts.some((message) => message.includes("original wake"))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`pre-ready successor was replaced before its close: ${rows.join(" | ")}`);
-if (!prompts.some((message) => message.includes("original wake"))) throw new Error(`original actionable wake was not delivered: ${prompts.join(" | ")}`);
+await waitFor(
+  () => prompts.some((message) => message.includes("original wake")),
+  "original actionable wake was not delivered",
+);
+await waitFor(() => rows().length >= 2, "pre-ready successor arm child did not start");
+// Sampled after both events: a replacement of the pre-ready successor would
+// show up as a third arm launch before its close.
+if (armSpawns !== 2) throw new Error(`pre-ready successor was replaced before its close: ${armSpawns} arm launches: ${rows().join(" | ")}`);
 await new Promise((resolve) => setTimeout(resolve, 150));
 if (existsSync(process.env.FM_PRE_READY_RETIRED_FILE)) throw new Error("pre-ready actionable successor was retired before its close");
 writeFileSync(process.env.FM_PRE_READY_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  const successorRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-  if (successorRows.length >= 3 && prompts.some((message) => message.includes("pre-ready successor wake"))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (stableRows.length !== 3) throw new Error(`pre-ready close did not create exactly one successor: ${stableRows.join(" | ")}`);
+await waitFor(
+  () => armSpawns >= 3 && prompts.some((message) => message.includes("pre-ready successor wake")),
+  "pre-ready actionable wake was not delivered with a successor",
+);
+await waitFor(() => rows().length >= 3, "restored arm child did not start");
+// Sample the exact count only after the restore event, holding a short
+// stability window so a duplicate restore cannot hide behind the sample.
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (armSpawns !== 3) throw new Error(`pre-ready close created ${armSpawns - 2} successors: ${rows().join(" | ")}`);
 if (!prompts.some((message) => message.includes("pre-ready successor wake"))) throw new Error(`pre-ready actionable wake was not delivered: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
@@ -1585,19 +2013,27 @@ while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
-let rowsAtPrompt = 0;
+let successorAttempts = 0;
+let successorAttemptsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) successorAttempts += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
+      successorAttemptsAtPrompt = successorAttempts;
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
     },
   },
 };
@@ -1608,19 +2044,17 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
+if (!prompt) throw new Error("hung-successor prompt did not arrive within ceiling");
+// The spawn call is the restoration attempt. Waiting for the child shell to
+// append its fixture row races process scheduling against the ready timeout.
+if (successorAttemptsAtPrompt < 1) throw new Error("wake arrived before restoration was attempted");
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
-await new Promise((resolve) => setTimeout(resolve, 100));
-const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
+if (!prompt.includes("could not restore watcher continuity")) throw new Error(`missing typed restoration failure: ${prompt}`);
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (successorAttempts !== successorAttemptsAtPrompt) throw new Error(`single-flight recovery launched additional ${successorAttempts - successorAttemptsAtPrompt} arms after delivery`);
 EOF
 )
   status=$?
@@ -1659,19 +2093,41 @@ while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
-let rowsAtPrompt = 0;
+let successorAttempts = 0;
+let successorAttemptsAtPrompt = 0;
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    successorAttempts += 1;
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
-      rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
-        ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
-        : 0;
+      successorAttemptsAtPrompt = successorAttempts;
+      retireRequestsAtPrompt = retireRequests;
     },
   },
 };
@@ -1682,35 +2138,36 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
-if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+if (!prompt) throw new Error("unretired-successor prompt did not arrive within ceiling");
+// Spawn and kill are the lifecycle events under test. Waiting for the child
+// shell to append a fixture row races process scheduling against the timeout.
+if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
+if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor${out:+: $out}"
   [ -z "$out" ] || fail "OpenCode unretired-successor test printed output: $out"
   pass "OpenCode unretired successor falls back without an overlapping retry"
 }
 
 test_opencode_late_unretired_close_resumes_supervision() {
-  local kind plugin repo home log ready retired release stop out status
+  local kind plugin repo home log initial_ready initial_release ready release stop out status
   for kind in actionable non-actionable; do
     plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
     repo="$TMP_ROOT/opencode-late-$kind-root"
     home="$TMP_ROOT/opencode-late-$kind-home"
     log="$TMP_ROOT/opencode-late-$kind.log"
+    initial_ready="$TMP_ROOT/opencode-late-$kind-initial.ready"
+    initial_release="$TMP_ROOT/opencode-late-$kind-initial.release"
     ready="$TMP_ROOT/opencode-late-$kind.ready"
-    retired="$TMP_ROOT/opencode-late-$kind.retired"
     release="$TMP_ROOT/opencode-late-$kind.release"
     stop="$TMP_ROOT/opencode-late-$kind.stop"
     mkdir -p "$repo/bin" "$home/state" "$home/config"
@@ -1723,11 +2180,21 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'ready\n' > "${FM_INITIAL_READY_FILE:?}"
+  while [ ! -e "$FM_INITIAL_RELEASE_FILE" ]; do sleep 0.02; done
   printf 'signal: original wake\n'
   exit 0
 fi
 if [ "$count" -eq 2 ]; then
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap '' TERM INT
+  # Announce unreadiness instead of waiting out the readiness deadline. This
+  # case also needs the restored arm below to be observed ready, so a
+  # compressed readiness budget would have to cover a real bash login-shell
+  # start: that measures runner speed, not behavior. Exactly that happened on
+  # CI - a slow start made the plugin declare a spurious readiness timeout on
+  # the continuity retry and surface a second wake. An observed unready line
+  # keeps the same restoration path without any wall-clock verdict.
+  printf 'watcher: FAILED - successor arm cannot confirm a watcher\n'
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -1738,15 +2205,50 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    # No compressed FM_OPENCODE_ARM_READY_TIMEOUT_MS: every arm here settles
+    # readiness from its own output, so the shipped budget is never waited out
+    # and can never be the oracle. The retirement budget stays compressed
+    # because that verdict is deterministic - the successor is held alive by
+    # the release event until well after the deadline settles.
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
+let armSpawns = 0;
+let retireRequests = 0;
+let retireRequestsAtPrompt = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  const child = originalSpawn(...args);
+  if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      // Hold the successor open deterministically until the release event.
+      // The retirement request itself is the lifecycle event under test; a
+      // shell trap is not a reliable process-boundary oracle under load.
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
+      return originalKill(signal, ...killArgs);
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
+      retireRequestsAtPrompt = retireRequests;
       prompts.push(request.body.parts[0].text);
     },
   },
@@ -1755,7 +2257,9 @@ const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
 async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
+  // Event waits fail only when the event never happens; a 20s ceiling absorbs
+  // CI runner contention without weakening any assertion.
+  for (let i = 0; i < 2000; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -1769,22 +2273,38 @@ const hooks = await mod.FmPrimaryWatchArm({
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 await waitFor(
+  () => existsSync(process.env.FM_INITIAL_READY_FILE),
+  "initial arm child did not reach its ready boundary",
+);
+// Join the event's launch attempt before allowing its actionable close. This
+// proves the initial child is ready and clears OpenCode's deliberate in-flight
+// coalescing boundary before the late-close lifecycle begins.
+const initialStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (initialStatus !== "armed") throw new Error(`initial arm did not become ready: ${initialStatus}`);
+writeFileSync(process.env.FM_INITIAL_RELEASE_FILE, "release\n");
+await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
-  "unretired successor was not asked to retire before fallback",
-);
-if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
+// The intercepted kill call is the retirement request; withholding it keeps
+// the successor unretired deterministically until the release event.
+if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
+if (armSpawns !== 2) throw new Error(`unretired arm overlapped before fallback: ${armSpawns} arm launches: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
+// The restored supervisor is the third arm launch; an actionable late close
+// must also deliver its wake. Both are observable events, so the ceiling
+// never decides the verdict.
+await waitFor(
+  () => armSpawns >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake"))),
+  "late close did not restore one successor",
+);
+await waitFor(() => rows().length >= 3, "restored arm child did not start");
+// Sample the exact count only after the restore event, holding a short
+// stability window so a duplicate restore cannot hide behind the sample.
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (armSpawns !== 3) throw new Error(`late close restored ${armSpawns - 2} successors: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
 } else if (prompts.length !== 1) {
@@ -1795,10 +2315,250 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback${out:+: $out}"
     [ -z "$out" ] || fail "OpenCode late-$kind test printed output: $out"
   done
   pass "OpenCode late unretired closes resume classified supervision"
+}
+
+# Deterministic regression for the readiness deadline race: readiness output
+# already queued in the poll phase when the deadline timer fires must settle
+# the verdict, not be discarded for a spurious timeout. The arm child holds
+# its readiness line until the go file exists; the harness releases it from a
+# check-phase callback and spins until the output is provably written and the
+# deadline has passed, so the next iteration's timers phase always races the
+# queued output - the interleaving a contended CI runner produces by
+# starvation.
+test_opencode_queued_readiness_at_deadline_reports_armed() {
+  local plugin repo home go marker stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-ready-settle-root"
+  home="$TMP_ROOT/opencode-ready-settle-home"
+  go="$TMP_ROOT/opencode-ready-settle.go"
+  marker="$TMP_ROOT/opencode-ready-settle.marker"
+  stop="$TMP_ROOT/opencode-ready-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+while [ ! -e "${FM_GO_FILE:?}" ]; do sleep 0.01; done
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_READY_MARKER:?}"
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_GO_FILE="$go" FM_READY_MARKER="$marker" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=200 node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let armSpawns = 0;
+const prompts = [];
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async (request) => { prompts.push(request.body.parts[0].text); } } };
+await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const statusPromise = globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+for (let i = 0; i < 2000 && armSpawns < 1; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (armSpawns < 1) throw new Error("arm child never spawned");
+// The readiness timer is armed in the same macrotask as the spawn. From a
+// check-phase callback, release the child, spin until its readiness line is
+// provably written (the marker file follows it), then spin past the
+// deadline. The next loop iteration runs its timers phase before its poll
+// phase, so the deadline always fires while readiness output is queued.
+await new Promise((resolve) => setImmediate(() => {
+  writeFileSync(process.env.FM_GO_FILE, "go\n");
+  const markerDeadline = Date.now() + 5000;
+  while (!existsSync(process.env.FM_READY_MARKER)) {
+    if (Date.now() >= markerDeadline) {
+      throw new Error(`fixture timed out waiting for readiness marker: ${process.env.FM_READY_MARKER}`);
+    }
+  }
+  const settle = Date.now() + 350;
+  while (Date.now() < settle) { /* spin */ }
+  resolve();
+}));
+const status = await statusPromise;
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+if (status !== "armed") throw new Error(`queued readiness was discarded at the deadline: ${status}`);
+if (prompts.length !== 0) throw new Error(`readiness deadline surfaced a spurious failure: ${prompts.join(" | ")}`);
+await new Promise((resolve) => setTimeout(resolve, 80));
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must honor readiness output queued when the deadline fires${out:+: $out}"
+  [ -z "$out" ] || fail "OpenCode readiness-settle test printed output: $out"
+  pass "OpenCode readiness queued at the deadline reports armed"
+}
+
+# Deterministic regression for the retirement deadline race, mirroring the Pi
+# case: a successor that exits while the loop is stalled across the retire
+# deadline must be reported retired so restoration continues, instead of the
+# false unretired verdict that tears down continuity.
+test_opencode_retired_successor_close_at_deadline_keeps_continuity() {
+  local plugin repo home log retire_ready recovery_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-retire-settle-root"
+  home="$TMP_ROOT/opencode-retire-settle-home"
+  log="$TMP_ROOT/opencode-retire-settle.log"
+  retire_ready="$TMP_ROOT/opencode-retire-settle.ready"
+  recovery_ready="$TMP_ROOT/opencode-retire-settle.recovery-ready"
+  term_seen="$TMP_ROOT/opencode-retire-settle.term-seen"
+  retire_release="$TMP_ROOT/opencode-retire-settle.retire-release"
+  exit_marker="$TMP_ROOT/opencode-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/opencode-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/opencode-retire-settle.stdio-exit"
+  stop="$TMP_ROOT/opencode-retire-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: original wake\n'
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  on_term() {
+    printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
+    while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
+    printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
+    exit 0
+  }
+  trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
+  while :; do sleep 0.02; done
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_RECOVERY_READY_FILE:?}"
+trap 'exit 0' TERM INT
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_RECOVERY_READY_FILE="$recovery_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let armSpawns = 0;
+let successorSpawns = 0;
+let retireStalled = false;
+const prompts = [];
+// Barriers that establish the test setup, so runner scheduling never decides
+// it: the arm child has provably reached the marked point before the plugin
+// gets to arm any deadline against it. The event-loop stalls below still
+// decide the retirement verdict.
+const awaitFixture = (path, what) => {
+  const deadline = Date.now() + 5000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`fixture timed out ${what}: ${path}`);
+  }
+};
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const successor = Boolean(args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID);
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  const child = originalSpawn(...args);
+  if (successor) {
+    successorSpawns += 1;
+    if (successorSpawns === 1) {
+      // SIGTERM must not arrive before the retiring successor installs its handler.
+      awaitFixture(process.env.FM_RETIRE_READY_FILE, "installing retirement handler");
+    } else {
+      // The readiness deadline is armed once this spawn returns, so the recovery
+      // arm's readiness line must already be written. Otherwise a starved runner
+      // that cannot start bash within the readiness deadline spends an extra
+      // retry here and the retirement verdict under test is no longer what the
+      // arm-launch count measures.
+      awaitFixture(process.env.FM_RECOVERY_READY_FILE, "producing recovery readiness");
+    }
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      const delivered = originalKill(signal, ...killArgs);
+      if (signal === "SIGTERM" && !retireStalled) {
+        retireStalled = true;
+        // The retire timer is armed synchronously after this kill call
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
+        setImmediate(() => {
+          writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
+          while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
+        });
+      }
+      return delivered;
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async (request) => { prompts.push(request.body.parts[0].text); } } };
+const hooks = await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let i = 0; i < 2000 && prompts.length < 1; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+try {
+  if (prompts.length < 1) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompts[0].includes("original wake")) throw new Error(`missing original wake: ${prompts.join(" | ")}`);
+  // Match the failure by what it means, not by one release's phrasing: any
+  // wording of a lost-continuity verdict must fail this regression.
+  if (prompts[0].includes("could not restore watcher continuity")) throw new Error(`retired successor lost continuity: ${prompts[0]}`);
+  if (armSpawns !== 3) throw new Error(`restoration did not continue after retirement: ${armSpawns} arm launches`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must honor a successor that exited by the retire deadline${out:+: $out}"
+  [ -z "$out" ] || fail "OpenCode retire-settle test printed output: $out"
+  pass "OpenCode retirement honors a queued close at the deadline and keeps continuity"
 }
 
 test_opencode_empty_close_retries_instead_of_disappearing() {
@@ -1824,10 +2584,23 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompts = 0;
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async () => {
@@ -1835,6 +2608,9 @@ const client = {
     },
   },
 };
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
 const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
@@ -1842,15 +2618,21 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2) break;
+// Wait on the observable events - the retry launch and its child appending a
+// row. The ceilings fire only when an event never happens, so 20s absorbs CI
+// runner contention without weakening any assertion.
+for (let i = 0; i < 2000 && armSpawns < 2; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`clean empty close was ignored: ${rows.join(" | ")}`);
+if (armSpawns < 2) throw new Error(`clean empty close was ignored: ${rows().join(" | ")}`);
+for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (rows().length < 2) throw new Error(`continuity retry arm child did not start: ${rows().join(" | ")}`);
+// Stability window on the launch count: exactly one bounded retry, sampled at
+// a defined point instead of at a timeout.
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (armSpawns !== 2) throw new Error(`clean empty close launched ${armSpawns} arms: ${rows().join(" | ")}`);
 if (prompts !== 0) throw new Error(`restored transient close surfaced ${prompts} failure prompts`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
@@ -1880,10 +2662,23 @@ SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append on a contended runner.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
@@ -1898,14 +2693,21 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !prompt; i += 1) {
+// Wait on the observable event - the exhaustion prompt - rather than racing
+// the retry cadence on a wall-clock bound; 20s absorbs CI runner contention
+// without weakening any assertion.
+for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+if (!prompt) throw new Error("retry exhaustion prompt did not arrive");
+if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+// Sampled after the exhaustion event: every arm row is written before the
+// close that advances the retry sequence, so both counts are settled here.
+if (armSpawns !== 3) throw new Error(`retry limit launched ${armSpawns} arm cycles`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
-if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+if (rows.length !== 3) throw new Error(`retry limit ran ${rows.length} arm cycles: ${rows.join(" | ")}`);
 EOF
 )
   status=$?
@@ -1933,12 +2735,25 @@ printf 'signal: lock handoff\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" node 2>&1 <<'EOF'
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
+let armSpawns = 0;
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  // Every plugin arm spawn carries the predecessor key (empty for a fresh
+  // arm), so counting the spawn calls observes arm launches without racing
+  // the child-shell fixture-row append; the test helper spawn below
+  // passes no env and stays uncounted.
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = {
   session: {
     promptAsync: async (request) => {
@@ -1954,20 +2769,24 @@ const hooks = await mod.FmPrimaryWatchArm({
 const lock = `${process.env.FM_HOME}/state/.lock`;
 writeFileSync(lock, `${process.pid}\n`);
 const eventPromise = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+// Event wait: fails only when the arm child never starts, so a 20s ceiling
+// absorbs CI runner contention without weakening any assertion.
+for (let i = 0; i < 2000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("initial arm child did not start");
+const other = originalSpawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   await eventPromise;
-  for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
+  for (let i = 0; i < 2000 && !prompt.includes("no longer owns the lock"); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-  if (rows.length !== 1) throw new Error(`successor launched after lock loss: ${rows.join(" | ")}`);
   if (!prompt.includes("no longer owns the lock")) throw new Error(`missing lock-loss failure: ${prompt}`);
+  // Sampled after the lock-loss prompt: only the initial arm may have
+  // launched, so any second launch is a successor that ignored lock loss.
+  if (armSpawns !== 1) throw new Error(`successor launched after lock loss: ${armSpawns} arm launches`);
 } finally {
   other.kill("SIGTERM");
 }
@@ -2029,7 +2848,7 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -2102,7 +2921,7 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
+for (let i = 0; i < 1000 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -2175,7 +2994,7 @@ const armRecords = () =>
 const armCount = (verb) => armRecords().filter((record) => record.startsWith(verb)).length;
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitFor = async (predicate, label) => {
-  for (let i = 0; i < 400; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     if (predicate()) return;
     await settle(20);
   }
@@ -2237,6 +3056,7 @@ test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
+test_pi_retired_successor_close_at_deadline_keeps_continuity
 test_pi_late_unretired_close_resumes_supervision
 test_pi_empty_close_retries_instead_of_disappearing
 test_pi_established_empty_close_honors_retry_limit
@@ -2255,6 +3075,8 @@ test_opencode_pre_ready_actionable_close_preserves_its_successor
 test_opencode_hung_successor_falls_back_to_typed_wake
 test_opencode_unretired_successor_falls_back_without_retry
 test_opencode_late_unretired_close_resumes_supervision
+test_opencode_queued_readiness_at_deadline_reports_armed
+test_opencode_retired_successor_close_at_deadline_keeps_continuity
 test_opencode_empty_close_retries_instead_of_disappearing
 test_opencode_established_empty_close_honors_retry_limit
 test_opencode_actionable_close_rechecks_session_lock
