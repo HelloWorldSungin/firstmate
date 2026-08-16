@@ -2187,6 +2187,14 @@ if [ "$count" -eq 1 ]; then
 fi
 if [ "$count" -eq 2 ]; then
   trap '' TERM INT
+  # Announce unreadiness instead of waiting out the readiness deadline. This
+  # case also needs the restored arm below to be observed ready, so a
+  # compressed readiness budget would have to cover a real bash login-shell
+  # start: that measures runner speed, not behavior. Exactly that happened on
+  # CI - a slow start made the plugin declare a spurious readiness timeout on
+  # the continuity retry and surface a second wake. An observed unready line
+  # keeps the same restoration path without any wall-clock verdict.
+  printf 'watcher: FAILED - successor arm cannot confirm a watcher\n'
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -2197,7 +2205,12 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    # No compressed FM_OPENCODE_ARM_READY_TIMEOUT_MS: every arm here settles
+    # readiness from its own output, so the shipped budget is never waited out
+    # and can never be the oracle. The retirement budget stays compressed
+    # because that verdict is deterministic - the successor is held alive by
+    # the release event until well after the deadline settles.
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
