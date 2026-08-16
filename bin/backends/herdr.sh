@@ -1290,8 +1290,8 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 
 # fm_backend_herdr_pane_agent_free_proof: true (0) only when <pane-id>
 # provably hosts NO agent process at all - the pane's entire process tree,
-# rooted at its shell pid, is nothing but recognized idle shells, and the
-# foreground process is one of them.
+# rooted at its shell pid, is nothing but recognized idle shells plus the
+# resident treehouse worktree wrapper, and the foreground process is a shell.
 #
 # This is a deliberately SEPARATE predicate from the lone-idle-shell proof
 # above, because the two license different actions. The lone-shell proof
@@ -1302,9 +1302,8 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # is left in when its agent dies: fm-spawn's `treehouse get` enters a
 # worktree SUBSHELL and the treehouse wrapper process stays resident, so the
 # dead pane's tree is pane shell -> treehouse -> subshell, with the innermost
-# shell holding the foreground - verified live 2026-08-15 on the
-# fm-dashboard-ia-redesign endpoint (zsh 112610 -> treehouse 113530 -> zsh
-# 116609), where the lone-shell proof failed on exactly that nesting.
+# shell holding the foreground. docs/verification/runtime-backends.md owns
+# the active live evidence for that shape.
 #
 # One strict sample requires, all read structurally and never from the
 # screen: pane process-info round-trips the pane id; exactly one foreground
@@ -2112,19 +2111,18 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
 # re-checks the pane itself, the extension reports state transitions but never
 # deregisters on exit, and herdr exposes no agent-deregister verb - so after
 # the agent stops, a clean /quit exactly as much as a provider kill, `agent
-# get` keeps answering with the last reported agent_status forever (verified
-# live 2026-08-15 against herdr 0.8.0: a cleanly exited pi still read
-# agent_status "idle" while its pane sat at a bare zsh prompt). Reporting that
-# husk as `alive` made every recovery verb refuse in exactly the state
-# recovery exists for (task fm-control-classifies-shell-as-live-agent).
+# get` keeps answering with the last reported agent_status forever. Reporting
+# that husk as `alive` makes every recovery verb refuse in exactly the state
+# recovery exists for. docs/verification/runtime-backends.md owns the active
+# versioned evidence.
 #
 # So a live registration is cross-checked against the OS-level agent-free
 # proof (fm_backend_herdr_pane_agent_free_proof): when the pane's entire
-# process tree is provably nothing but recognized idle shells - the shape a
-# task pane is left in when its agent dies, including the treehouse worktree
-# subshell nesting - the registered agent's process does not exist, the
-# registration is stale, and the endpoint classifies `dead` (agent-free,
-# recovery licensed). This is deliberately a process-table fact, never a
+# process tree is provably nothing but recognized idle shells plus the
+# treehouse worktree wrapper - the shape a task pane is left in when its agent
+# dies - the registered agent's process does not exist, the registration is
+# stale, and the endpoint classifies `dead` (agent-free, recovery licensed).
+# This is deliberately a process-table fact, never a
 # screen read: a rendered-prompt heuristic cannot be trusted here (agy's live
 # prompt glyph is a bare `>`, and a themed shell prompt can itself end in
 # `❯`), while any genuinely live agent - working, idle, suspended, or
