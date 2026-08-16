@@ -87,8 +87,16 @@ EOF
 # Every distinct rule number cited by tracked prose, ascending. The one place
 # that decides what counts as a citation, so range and identity never disagree
 # about the set they are checking.
+#
+# Citations are spelled `hard rule N`, `hard rule #N`, and `prime directive #N`
+# here, and a wrapped shell comment can strand a `rule #N` on its own line with
+# its `hard` above it, so all four count. A bare `rule N` deliberately does
+# not: bin/fm-brief.sh, bin/fm-classify-lib.sh, and the tool-updates skill
+# number their own local lists that way, and counting those would fail this
+# suite over prose that never named a hard rule.
 cited_numbers() {  # <repo-root>
-  git -C "$1" grep -hIoiE 'hard rule [0-9]+' | awk '{ print $NF }' | LC_ALL=C sort -un
+  git -C "$1" grep -hIoiE '((hard rule|prime directive) *#?|rule *#) *[0-9]+' \
+    | awk '{ gsub(/[^0-9]/, ""); print }' | LC_ALL=C sort -un
 }
 
 # The boundary each cited number is expected to name, as "<number>\t<title>".
