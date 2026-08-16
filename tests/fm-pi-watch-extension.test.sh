@@ -385,6 +385,7 @@ let deliveryStarted = false;
 let armSpawns = 0;
 let successorSpawns = 0;
 let successorSpawnsAtDelivery = 0;
+let successorStartedAtDelivery = false;
 const successorPredecessors = [];
 let releaseDelivery = () => {};
 const deliveryBlocked = new Promise((resolve) => {
@@ -415,6 +416,7 @@ const pi = {
   },
   sendUserMessage: async () => {
     successorSpawnsAtDelivery = successorSpawns;
+    successorStartedAtDelivery = rows().some((row) => /predecessor=[0-9]+/.test(row));
     deliveryStarted = true;
     await deliveryBlocked;
   },
@@ -434,6 +436,7 @@ for (let i = 0; i < 2000 && !deliveryStarted; i += 1) {
 }
 if (!deliveryStarted) throw new Error("wake delivery did not begin");
 if (successorSpawnsAtDelivery !== 1) throw new Error(`wake delivery began with ${successorSpawnsAtDelivery} successor launches`);
+if (!successorStartedAtDelivery) throw new Error("wake delivery began before the successor arm child started");
 if (!/^[0-9]+$/.test(successorPredecessors[0] ?? "")) throw new Error(`successor launch missing predecessor identity: ${successorPredecessors.join(" | ")}`);
 for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1520,7 +1523,11 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+const withheldStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (withheldStatus !== "read-only") {
+  console.error(`expected read-only while the session lock was held elsewhere, got ${withheldStatus}`);
+  process.exit(1);
+}
 if (armSpawns !== 0 || existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
@@ -1628,6 +1635,7 @@ let prompts = 0;
 let armSpawns = 0;
 let successorSpawns = 0;
 let successorSpawnsAtPrompt = 0;
+let successorStartedAtPrompt = false;
 const successorPredecessors = [];
 let releasePrompt = () => {};
 const promptBlocked = new Promise((resolve) => {
@@ -1655,6 +1663,7 @@ const client = {
   session: {
     promptAsync: async () => {
       successorSpawnsAtPrompt = successorSpawns;
+      successorStartedAtPrompt = rows().some((row) => /predecessor=[0-9]+/.test(row));
       prompts += 1;
       await promptBlocked;
     },
@@ -1679,6 +1688,7 @@ for (let i = 0; i < 2000 && prompts < 1; i += 1) {
 }
 if (prompts !== 1) throw new Error(`expected one blocked wake prompt, got ${prompts}`);
 if (successorSpawnsAtPrompt !== 1) throw new Error(`wake prompt began with ${successorSpawnsAtPrompt} successor launches`);
+if (!successorStartedAtPrompt) throw new Error("wake prompt began before the successor arm child started");
 if (!/^[0-9]+$/.test(successorPredecessors[0] ?? "")) throw new Error(`successor launch missing predecessor identity: ${successorPredecessors.join(" | ")}`);
 for (let i = 0; i < 2000 && rows().length < 2; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
