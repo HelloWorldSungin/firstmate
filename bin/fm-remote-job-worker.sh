@@ -29,6 +29,10 @@
 # loop that never stays up only burns CPU and grows its log without bound. A
 # child that stays up for FM_REMOTE_JOB_SUPERVISOR_HEALTHY_SECONDS clears that
 # count. fm-on's ensure path restarts a worker that gave up.
+# TERM, INT, and HUP always terminate the serving process: worker_shutdown never
+# returns to the poll loop, even when it cannot publish the ownership quarantine.
+# The Linux supervisor treats serving-child exits 0, 75, and 125 as terminal
+# and does not restart them.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the
@@ -51,9 +55,9 @@ WORKER_ACTIVE_JOB=
 WORKER_LOCK=
 WORKER_LOCK_HELD=0
 WORKER_RELEASE_OWNERSHIP=1
-WORKER_SUPERVISED_PID=
 WORKER_PREEMPTIBLE=0
 WORKER_PREEMPTED=0
+WORKER_STOP=0
 
 worker_error() { printf 'remote-job-worker: %s\n' "$1" >&2; }
 
@@ -245,6 +249,81 @@ worker_signal_process_or_group() { # process|group <signal> <pid>
   esac
 }
 
+worker_descendant_snapshot() { # <root-pid>
+  ps -axo pid=,ppid=,pgid= 2>/dev/null | awk -v root="$1" '
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
+      count++
+      pid[count] = $1
+      parent[count] = $2
+      group[count] = $3
+    }
+    END {
+      descendant[root] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= count; i++) {
+          if (!descendant[pid[i]] && descendant[parent[i]]) {
+            descendant[pid[i]] = 1
+            changed = 1
+          }
+        }
+      }
+      for (i = 1; i <= count; i++) {
+        if (pid[i] != root && descendant[pid[i]]) print pid[i], group[i]
+      }
+    }
+  '
+}
+
+worker_reap_descendants() {
+  local self own_group snapshot pid group signal known_groups attempt=0 live
+  local -a pids groups
+  self=${BASHPID:-$$}
+  own_group=$(fm_remote_job_process_pgid "$self") || return 1
+  while [ "$attempt" -lt 100 ]; do
+    snapshot=$(worker_descendant_snapshot "$self") || return 1
+    pids=()
+    groups=()
+    known_groups=' '
+    while read -r pid group; do
+      case "$pid:$group" in
+        *[!0-9:]*|:*|*:) continue ;;
+      esac
+      [ "$pid" -gt 1 ] || continue
+      kill -0 "$pid" 2>/dev/null || continue
+      pids+=("$pid")
+      if [ "$group" -gt 1 ] && [ "$group" != "$own_group" ]; then
+        case "$known_groups" in
+          *" $group "*) ;;
+          *) groups+=("$group"); known_groups="$known_groups$group " ;;
+        esac
+      fi
+    done <<< "$snapshot"
+    [ "${#pids[@]}" -gt 0 ] || return 0
+    for signal in TERM KILL; do
+      for group in "${groups[@]}"; do
+        worker_signal_process_or_group group "$signal" "$group"
+      done
+      for pid in "${pids[@]}"; do
+        worker_signal_process_or_group process "$signal" "$pid"
+      done
+    done
+    for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  snapshot=$(worker_descendant_snapshot "$self") || return 1
+  live=0
+  while read -r pid group; do
+    case "$pid:$group" in
+      *[!0-9:]*|:*|*:) continue ;;
+    esac
+    if kill -0 "$pid" 2>/dev/null; then live=1; fi
+  done <<< "$snapshot"
+  [ "$live" -eq 0 ]
+}
+
 worker_stop_recorded_execution() { # <job-dir>
   local job=$1 kind file pid attempt still_alive
   for kind in process group; do
@@ -275,6 +354,7 @@ worker_stop_recorded_execution() { # <job-dir>
 
 worker_stop_active_execution() {
   local job=${WORKER_ACTIVE_JOB:-} owner owner_pid state
+  worker_reap_descendants || return 1
   if [ -n "$job" ]; then
     worker_stop_recorded_execution "$job" || return 1
   else
@@ -294,16 +374,13 @@ worker_stop_active_execution() {
 worker_shutdown() {
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
-  worker_publish_quarantine || {
-    worker_error "cannot guard worker ownership for shutdown"
-    trap worker_shutdown HUP INT TERM
-    return 0
-  }
-  worker_stop_active_execution || {
+  WORKER_STOP=1
+  worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
+  if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
-  }
+  fi
   worker_clear_quarantine || {
     worker_error "could not clear guarded worker ownership after shutdown"
     WORKER_RELEASE_OWNERSHIP=0
@@ -313,9 +390,11 @@ worker_shutdown() {
 }
 
 worker_exit_cleanup() {
-  if [ "$WORKER_RELEASE_OWNERSHIP" -eq 1 ] && ! worker_stop_active_execution; then
+  if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree during exit"
-    worker_publish_quarantine || worker_error "could not quarantine failed exit ownership"
+    if [ "$WORKER_RELEASE_OWNERSHIP" -eq 1 ]; then
+      worker_publish_quarantine || worker_error "could not quarantine failed exit ownership"
+    fi
     WORKER_RELEASE_OWNERSHIP=0
   fi
   worker_cleanup
@@ -688,6 +767,7 @@ main() {
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }
   worker_publish_pid || { worker_error "cannot publish worker pid"; exit 1; }
   while :; do
+    [ "$WORKER_STOP" -eq 0 ] || exit 0
     worker_write_heartbeat || { worker_error "cannot update worker heartbeat"; exit 1; }
     # Checked right after a fresh heartbeat, so the grace window cannot make a
     # still-healthy worker read as unready to a concurrent probe.
@@ -725,21 +805,22 @@ worker_supervisor_cleanup_dead_child() { # <account-home> <pid>
 }
 
 worker_supervisor_shutdown() {
-  local pid=${WORKER_SUPERVISED_PID:-}
   trap - HUP INT TERM
-  if [ -n "$pid" ]; then
-    kill -TERM "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  fi
+  worker_reap_descendants || { worker_error "could not stop the supervised worker tree"; exit 125; }
   exit 0
 }
 
+worker_supervisor_exit_cleanup() {
+  worker_reap_descendants || worker_error "could not stop the supervised worker tree during exit"
+}
+
 worker_supervise_linux() {
-  local account_home child_status started failures=0 backoff
+  local account_home child_pid child_status started failures=0 backoff
   account_home=$(worker_account_home) || { worker_error "cannot resolve account home"; return 1; }
   FM_ROOT=$(fm_remote_job_canonical_existing_dir "$FM_ROOT") || { worker_error "configured FM_ROOT is unsafe"; return 1; }
   [ -f "$FM_ROOT/AGENTS.md" ] && [ ! -L "$FM_ROOT/AGENTS.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; return 1; }
   fm_remote_job_prepare_state "$account_home" || { worker_error "$FM_REMOTE_JOB_ERROR"; return 1; }
+  trap worker_supervisor_exit_cleanup EXIT
   trap worker_supervisor_shutdown HUP INT TERM
   while :; do
     if worker_code_root_abandoned; then
@@ -747,20 +828,17 @@ worker_supervise_linux() {
       return 0
     fi
     started=$SECONDS
-    "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
-    WORKER_SUPERVISED_PID=$!
-    wait "$WORKER_SUPERVISED_PID" 2>/dev/null
+    /usr/bin/env --default-signal=INT "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
+    child_pid=$!
+    wait "$child_pid" 2>/dev/null
     child_status=$?
     if [ "$child_status" -eq 0 ]; then
-      WORKER_SUPERVISED_PID=
       return 0
     fi
-    if [ "$child_status" -eq 75 ]; then
-      WORKER_SUPERVISED_PID=
-      return 75
+    if [ "$child_status" -eq 75 ] || [ "$child_status" -eq 125 ]; then
+      return "$child_status"
     fi
-    worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
-    WORKER_SUPERVISED_PID=
+    worker_supervisor_cleanup_dead_child "$account_home" "$child_pid" || true
     if [ $((SECONDS - started)) -ge "$FM_REMOTE_JOB_SUPERVISOR_HEALTHY_SECONDS" ]; then
       failures=0
       sleep 0.1

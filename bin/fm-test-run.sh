@@ -169,6 +169,7 @@ family_for_basename() {
       ;;
     fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
     fm-remote-doctor.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
+    fm-remote-job-worker-leak.test.sh|\
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
     fm-remote-secondmate-trace-context.test.sh|\
     fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
@@ -401,6 +402,7 @@ tests/fm-backend-zellij.test.sh 4225
 tests/fm-backend.test.sh 16370
 tests/fm-backlog-handoff.test.sh 2786
 tests/fm-bearings-snapshot.test.sh 60103
+tests/fm-brief-repo-lib.test.sh 169
 tests/fm-bootstrap.test.sh 21912
 tests/fm-busy-adapter-wiring.test.sh 13962
 tests/fm-busy-state.test.sh 607
@@ -433,6 +435,8 @@ tests/fm-pr-check-security.test.sh 199573
 tests/fm-procevent.test.sh 42789
 tests/fm-public-followup.test.sh 23365
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
+tests/fm-remote-job.test.sh 80912
+tests/fm-remote-job-worker-leak.test.sh 3650
 tests/fm-run-progress.test.sh 333
 tests/fm-secondmate-harness.test.sh 87895
 tests/fm-secondmate-lifecycle-e2e.test.sh 4929
