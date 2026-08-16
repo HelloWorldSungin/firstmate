@@ -266,8 +266,17 @@ Create replaces only a confidently dead or no-agent husk, creates the replacemen
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
-A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
+A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive` unless its registration is proven stale, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
+
+A registration is not trusted on its own, because Herdr can hold one that outlives its agent.
+An agent whose lifecycle reporting is hook-authoritative (Pi's `herdr:pi` extension) never deregisters on exit, Herdr skips screen detection for it, and Herdr exposes no agent-deregister verb, so `agent get` keeps reporting the last agent state forever after any exit, clean or killed.
+The recovery-grade probe therefore cross-checks every registered agent against an operating-system agent-free proof: the pane's process tree must be nothing but sleeping recognized shells plus the resident treehouse worktree wrapper, with the foreground held by an idle shell that is the tree's only leaf.
+That is exactly the shape a task pane is left in when its agent dies (pane shell, treehouse wrapper, worktree subshell), so a stale registration over it classifies `dead`, while a foreground, suspended, backgrounded, or shell-hosting agent breaks one of those rules and stays `alive`.
+Any inconclusive read also fails the proof, so recovery stays refused unless the pane is positively agent-free.
+The proof is deliberately not a screen read; a rendered prompt glyph cannot distinguish a dead shell from every agent composer.
+It is a separate, classification-only predicate beside the stricter lone-idle-shell proof under [Presentation spaces](#presentation-spaces), which licenses signaling a shell pid and stays unchanged.
+`bin/backends/herdr.sh`'s `fm_backend_herdr_agent_state` owns the exact contract.
 
 The session-start sweep uses this probe.
 Mid-session secondmate liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

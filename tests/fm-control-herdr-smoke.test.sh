@@ -12,6 +12,10 @@
 # No real agent is launched. herdr's `pane report-agent` is the same registry
 # the adapter reads, so registering and not registering an agent on a plain
 # shell pane exercises exactly the classification the control plane gates on.
+# A registration over a plain idle shell is the STALE-registration state (the
+# registry outliving its agent), which the classifier must downgrade to
+# agent-free; modelling a genuinely live agent therefore additionally needs a
+# real foreground process in the pane, so the idle-shell cross-check refuses.
 #
 # Always runs on a private, named, throwaway lab session, never the default
 # one (tests/herdr-test-safety.sh; the 2026-07-02 incident). Skips cleanly
@@ -34,8 +38,12 @@ SESSION="fm-lab-control-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=
 cleanup_all() {
-  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-  herdr_safe_stop_and_delete "$SESSION"
+  local status=0
+  herdr_safe_stop_and_delete "$SESSION" || { echo "cleanup: herdr teardown failed" >&2; status=1; }
+  if [ -n "$SCRATCH" ]; then
+    rm -rf "$SCRATCH" 2>/dev/null || { echo "cleanup: scratch removal failed" >&2; status=1; }
+  fi
+  return "$status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
@@ -113,16 +121,64 @@ case "$OUT" in
 esac
 pass "real herdr: interrupt refuses when herdr's own agent registry reports no agent"
 
-# --- a registered agent: classification flips, and the verbs follow ---------
+# --- a registered agent over a plain idle shell: a STALE registration -------
+#
+# This is the live blocker fixed by task
+# fm-control-classifies-shell-as-live-agent: herdr's registry can outlive its
+# agent (a hook-authoritative harness never deregisters on exit, and herdr has
+# no agent-deregister verb), so a registration whose pane provably holds only
+# a lone idle shell must classify agent-free, making exit idempotent success
+# and recovery available. Before the fix this exact state read `alive`
+# forever and every recovery verb refused. `pane report-agent` on the plain
+# shell pane reproduces that state against the real registry: registered, but
+# with no agent process behind it.
 
 herdr pane report-agent "$PANE_ID" --source fm-control-smoke --agent fm-control-smoke-agent \
   --state idle --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not register a live agent on the task pane"
+  || fail "could not register an agent on the task pane"
 
 STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-[ "$STATE" = alive ] || fail "herdr should classify a registered agent as alive, got '$STATE'"
+[ "$STATE" = dead ] || fail "a registered agent over a provably lone idle shell is a stale registration and must classify dead, got '$STATE'"
+pass "real herdr: a registration with no agent process behind it classifies dead (stale), not alive"
 
-OUT=$(run_control hsmoke interrupt) || fail "interrupt against a registered agent should succeed: $OUT"
+if OUT=$(run_control hsmoke interrupt 2>&1); then
+  fail "interrupt should refuse a stale registration with no agent behind it: $OUT"
+fi
+case "$OUT" in
+  *"nothing to interrupt"*) : ;;
+  *) fail "the stale-registration interrupt refusal should say there is no agent, got: $OUT" ;;
+esac
+pass "real herdr: interrupt refuses a stale registration instead of keying a dead shell"
+
+OUT=$(run_control hsmoke exit) || fail "exit against a stale registration must be idempotent success (this was the unrecoverable state): $OUT"
+case "$OUT" in
+  "already-stopped hsmoke"*) : ;;
+  *) fail "a stale registration should report already-stopped, got: $OUT" ;;
+esac
+pass "real herdr: exit on a stale registration is idempotent success, so relaunch can proceed"
+
+# --- a genuinely live agent: a registered agent WITH a real process ---------
+#
+# The paired negative: with a real long-running foreground process occupying
+# the pane, the idle-shell proof fails, the registration keeps the benefit of
+# the doubt, and the verbs treat the agent as alive - the cross-check must
+# never let a live worker be exited or replaced.
+
+fm_backend_herdr_send_literal "$SESSION:$PANE_ID" "sleep 300" \
+  || fail "could not type the live-process model into the task pane"
+fm_backend_herdr_send_key "$SESSION:$PANE_ID" Enter \
+  || fail "could not start the live-process model in the task pane"
+
+STATE=
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+  [ "$STATE" = alive ] && break
+  sleep 0.3
+done
+[ "$STATE" = alive ] || fail "a registered agent with a live foreground process must classify alive, got '$STATE'"
+pass "real herdr: a registered agent with a live process stays alive through the cross-check"
+
+OUT=$(run_control hsmoke interrupt) || fail "interrupt against a live agent should succeed: $OUT"
 case "$OUT" in
   *"interrupt-delivered hsmoke harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
   *) fail "interrupt should report the agent-alive proof on herdr, got: $OUT" ;;
@@ -134,9 +190,10 @@ herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
 [ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
 pass "real herdr: no control verb removed the endpoint or the task's local copy"
 
-# Last, because it deliberately types a harness command into a pane that hosts
-# a plain shell: the registered agent cannot actually be stopped that way, and
-# the control plane must say so rather than report a stop it did not achieve.
+# Last, because it deliberately types a harness command into a pane whose
+# foreground process ignores it: the live agent cannot actually be stopped
+# that way, and the control plane must say so rather than report a stop it
+# did not achieve.
 if OUT=$(run_control hsmoke exit 2>&1); then
   fail "exit should fail closed when the agent does not stop: $OUT"
 fi
@@ -147,3 +204,7 @@ esac
 pass "real herdr: an agent that does not stop fails closed instead of being reported as stopped"
 
 fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
+
+cleanup_all || { trap - EXIT; printf 'not ok - cleanup failed\n' >&2; exit 1; }
+trap - EXIT
+printf '\nall fm-control-herdr-smoke tests passed\n'

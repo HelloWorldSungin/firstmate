@@ -1288,6 +1288,160 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   printf '%s\n' "$shell_pid"
 }
 
+# fm_backend_herdr_pane_agent_free_proof: true (0) only when <pane-id>
+# provably hosts NO agent process at all - every process attached to the
+# pane's terminal belongs to the tree rooted at its shell pid, that tree is
+# nothing but recognized idle shells plus the resident treehouse worktree
+# wrapper, and the foreground process is a shell.
+#
+# This is a deliberately SEPARATE predicate from the lone-idle-shell proof
+# above, because the two license different actions. The lone-shell proof
+# licenses SIGNALING shell_pid to end the pane, so it demands the strictest
+# shape: exactly one shell, no descendant of any kind. This proof licenses
+# only a CLASSIFICATION (the stale-registration cross-check in
+# fm_backend_herdr_agent_state), and must accept the shape a real task pane
+# is left in when its agent dies: fm-spawn's `treehouse get` enters a
+# worktree SUBSHELL and the treehouse wrapper process stays resident, so the
+# dead pane's tree is pane shell -> treehouse -> subshell, with the innermost
+# shell holding the foreground. docs/verification/runtime-backends.md owns
+# the active live evidence for that shape.
+#
+# One strict sample requires, all read structurally and never from the
+# screen: pane process-info round-trips the pane id; exactly one foreground
+# process, itself a recognized shell whose argv0 resolves to its own name and
+# its own process group leader; the operating-system process table shows the
+# pane's shell pid exactly once with a readable terminal; the foreground
+# process is a member of the tree rooted at that shell pid; every process on
+# the shell's terminal belongs to that tree; every tree member is sleeping or
+# idle with an unambiguous single-word name; EVERY LEAF of the tree is the
+# foreground shell itself; and every non-leaf member is a recognized shell or
+# the treehouse worktree wrapper fm-spawn launches through. These rules make
+# the chain shape safe without weakening refusal: a live agent owns the
+# foreground (fails the foreground-shell rule), a suspended or backgrounded
+# agent is a stopped or extra leaf (fails the stat or every-leaf-is-the-
+# foreground-shell rule), a reparented agent remains on the pane terminal but
+# outside the shell tree (fails the terminal-membership rule), and an agent
+# hosting an interactive escape shell is a non-shell NON-LEAF ancestor (fails
+# the wrapper allowlist), so no reachable live-agent shape can classify
+# agent-free. Every unreadable or ambiguous field also fails, so the caller's
+# fail-safe direction is refusal. Retryable samples retain the same bounded
+# settle window as the lone-shell proof to absorb a transient prompt helper
+# (starship redrawing after a relayout), while a non-shell foreground process
+# reported by process-info refuses immediately.
+fm_backend_herdr_pane_agent_free_proof() {  # <session> <pane-id>
+  local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10} sample_result
+  while :; do
+    if fm_backend_herdr_pane_agent_free_sample "$1" "$2"; then
+      return 0
+    else
+      sample_result=$?
+    fi
+    [ "$sample_result" -eq 2 ] && return 1
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "$max_attempts" ] || return 1
+    sleep 0.1
+  done
+}
+
+# fm_backend_herdr_pane_agent_free_sample: one tri-state instantaneous
+# observation for fm_backend_herdr_pane_agent_free_proof: 0 is agent-free,
+# 1 is retryable, and 2 is a conclusively live process-info foreground.
+fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
+  local session=$1 pane=$2 info shell_pid fg_pgid count fg_pid name argv0 shell_name ps_bin rows
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || return 1
+  shell_pid=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.shell_pid | select(type == "number" and . > 1) | floor' 2>/dev/null) || return 1
+  fg_pgid=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_process_group_id | select(type == "number" and . > 1) | floor' 2>/dev/null) || return 1
+  count=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_processes | select(type == "array") | length' 2>/dev/null) || return 1
+  [ "$count" -eq 1 ] || return 1
+  fg_pid=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_processes[0].pid | select(type == "number") | floor' 2>/dev/null) || return 1
+  name=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_processes[0].name | select(type == "string" and length > 0)' 2>/dev/null) || return 1
+  argv0=$(printf '%s' "$info" | jq -er '
+    .result.process_info.foreground_processes[0] as $process
+    | ($process.argv0 // $process.argv[0])
+    | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  shell_name=${name##*/}
+  argv0=${argv0#-}
+  argv0=${argv0##*/}
+  [ "$argv0" = "$shell_name" ] || return 1
+  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 2 ;; esac
+
+  [ "$fg_pgid" = "$fg_pid" ] || return 1
+  ps_bin=${FM_HERDR_PS_BIN:-ps}
+  command -v "$ps_bin" >/dev/null 2>&1 || return 1
+  rows=$("$ps_bin" -axo pid=,ppid=,stat=,comm=,tty= 2>/dev/null) || return 1
+  # Close the descendant set of shell_pid, then enforce the terminal and tree
+  # rules from the header. A member row with extra fields (a comm containing
+  # whitespace) can never be a plain shell or the wrapper and fails rather
+  # than matching on its first word.
+  printf '%s\n' "$rows" | LC_ALL=C awk -v shell="$shell_pid" -v fg="$fg_pid" '
+    function normname(c) {
+      sub(/^-/, "", c)
+      sub(/.*\//, "", c)
+      return c
+    }
+    function isshell(c) {
+      return (c == "sh" || c == "bash" || c == "zsh" || c == "dash" || c == "ksh" || c == "fish")
+    }
+    {
+      pid[NR] = $1
+      ppid[NR] = $2
+      stat[NR] = $3
+      comm[NR] = $4
+      tty[NR] = $NF
+      fields[NR] = NF
+    }
+    END {
+      found = 0
+      for (i = 1; i <= NR; i++) {
+        if (fields[i] < 5) exit 1
+        if (pid[i] == shell) {
+          found++
+          pane_tty = tty[i]
+        }
+      }
+      if (found != 1) exit 1
+      if (pane_tty == "" || pane_tty ~ /^\?+$/) exit 1
+      inset[shell] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= NR; i++) {
+          if (!(pid[i] in inset) && (ppid[i] in inset)) { inset[pid[i]] = 1; changed = 1 }
+        }
+      }
+      if (!(fg in inset)) exit 1
+      for (i = 1; i <= NR; i++) {
+        if (tty[i] == pane_tty && !(pid[i] in inset)) exit 1
+      }
+      for (i = 1; i <= NR; i++) {
+        if ((pid[i] in inset) && (ppid[i] in inset)) kids[ppid[i]]++
+      }
+      for (i = 1; i <= NR; i++) {
+        if (!(pid[i] in inset)) continue
+        if (fields[i] != 5) exit 1
+        c = normname(comm[i])
+        if (!isshell(c) && c != "treehouse") exit 1
+        if (stat[i] !~ /^[SI]/) exit 1
+        if (kids[pid[i]] + 0 == 0) {
+          if (pid[i] != fg) exit 1
+          if (!isshell(c)) exit 1
+        }
+      }
+      exit 0
+    }
+  '
+}
+
 # fm_backend_herdr_projection_order_best_effort: place the exact workspace id
 # returned by THIS projected create immediately after its owning parent's
 # contiguous child block and before the next parent.
@@ -1918,6 +2072,9 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              idle, done, or blocked - any registered value). An idle or
 #              blocked agent is still a genuine, still-registered agent, not
 #              a restored husk, so it is never a close-and-replace candidate.
+#              A registration can outlive its agent, though: the recovery-grade
+#              fm_backend_herdr_agent_state below owns the stale-registration
+#              cross-check layered on top of this raw verdict.
 #   unknown  - anything else: an unparseable/unexpected response from either
 #              call, or a `pane get` success whose own echoed pane_id does not
 #              round-trip (guards against misreading a herdr response shape
@@ -1962,15 +2119,52 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
 # sweep as the tmux classifier. It reuses the husk classifier rather than
 # creating a second Herdr state machine: a structurally gone pane is `missing`,
-# a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
-# unexpected or failed API read is `unreadable`.
+# a confirmed agent-less pane is `dead`, a registered agent is `alive` unless
+# its registration is proven stale (below), and an unexpected or failed API
+# read is `unreadable`.
+#
+# A registered agent is NOT taken at its word here, because herdr can hold a
+# permanently stale registration. For an agent whose lifecycle reporting is
+# hook-authoritative (pi's herdr:pi extension - `herdr agent explain` reports
+# screen_detection_skip_reason: full_lifecycle_hook_authority), herdr never
+# re-checks the pane itself, the extension reports state transitions but never
+# deregisters on exit, and herdr exposes no agent-deregister verb - so after
+# the agent stops, a clean /quit exactly as much as a provider kill, `agent
+# get` keeps answering with the last reported agent_status forever. Reporting
+# that husk as `alive` makes every recovery verb refuse in exactly the state
+# recovery exists for. docs/verification/runtime-backends.md owns the active
+# versioned evidence.
+#
+# So a live registration is cross-checked against the OS-level agent-free
+# proof (fm_backend_herdr_pane_agent_free_proof): when the pane's entire
+# process tree is provably nothing but recognized idle shells plus the
+# treehouse worktree wrapper - the shape a task pane is left in when its agent
+# dies - the registered agent's process does not exist, the registration is
+# stale, and the endpoint classifies `dead` (agent-free, recovery licensed).
+# This is deliberately a process-table fact, never a
+# screen read: a rendered-prompt heuristic cannot be trusted here (agy's live
+# prompt glyph is a bare `>`, and a themed shell prompt can itself end in
+# `❯`), while any genuinely live agent - working, idle, suspended, or
+# backgrounded as a shell job - puts a non-shell process in the pane's tree,
+# fails the proof, and stays `alive`. Every inconclusive read (process info
+# unavailable, unknown shell, unreadable process table) also fails the proof
+# and stays `alive`, preserving the husk classifier's
+# fail-safe-toward-refusal contract: only a positively proven agent-free pane
+# ever unlocks recovery.
 fm_backend_herdr_agent_state() {  # <target>
   local target=$1
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
   case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
     dead) printf 'missing' ;;
     no-agent) printf 'dead' ;;
-    live) printf 'alive' ;;
+    live)
+      if fm_backend_herdr_pane_agent_free_proof \
+           "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1; then
+        printf 'dead'
+      else
+        printf 'alive'
+      fi
+      ;;
     *) printf 'unreadable' ;;
   esac
 }

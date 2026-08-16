@@ -986,6 +986,31 @@ test_stop_transport_failure_reconciles_a_dead_agent() {
   pass "fm-control relaunch: partial stop reconciles actual agent state"
 }
 
+test_relaunch_of_an_already_stopped_agent_starts_the_replacement() {
+  # The recovery composition for a worker that died out from under its task
+  # (task fm-control-classifies-shell-as-live-agent): once the recovery-grade
+  # classifier reports the endpoint agent-free, the relaunch's internal exit
+  # is idempotent success and the replacement still launches into the same
+  # endpoint. Fails if relaunch starts demanding a live agent to stop, or if
+  # already-stopped short-circuits before the launch phase - either strands a
+  # dead task in exactly the state recovery exists for.
+  local dir out rc
+  dir=$(new_case deadstart rl35)
+  add_ship_task "$dir" rl35 claude
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_control "$dir" rl35 relaunch --note "provider killed the worker"); rc=$?
+  expect_code 0 "$rc" "relaunching an already-stopped agent should succeed"$'\n'"$out"
+  assert_contains "$out" "relaunched rl35 harness=claude" "the outcome should report the relaunch"
+  [ "$(journal_field "$dir" rl35 exit_result)" = already-stopped ] \
+    || fail "the journal should record the idempotent exit, got '$(journal_field "$dir" rl35 exit_result)'"
+  ! grep -qx '/exit' "$dir/fake/literal" \
+    || fail "no exit command should be typed at an endpoint with no agent"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  [ "$(journal_field "$dir" rl35 phase)" = complete ] \
+    || fail "the transaction should complete, got phase '$(journal_field "$dir" rl35 phase)'"
+  pass "fm-control relaunch: an already-stopped agent recovers - idempotent exit, replacement launched into the same endpoint"
+}
+
 test_complete_journal_failure_rolls_back_from_durable_phase() {
   local dir out rc real_mv
   dir=$(new_case completejournal rl27)
@@ -1331,6 +1356,7 @@ test_launch_failure_keeps_the_prior_record_and_reports_it
 test_prepublication_failure_keeps_concurrent_durable_metadata
 test_post_publication_launch_failure_keeps_the_new_record
 test_stop_transport_failure_reconciles_a_dead_agent
+test_relaunch_of_an_already_stopped_agent_starts_the_replacement
 test_complete_journal_failure_rolls_back_from_durable_phase
 test_prepublication_abort_retires_replacement_wiring_and_busy_state
 test_journal_records_the_checkpoint_it_proved
@@ -1344,3 +1370,5 @@ test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+
+printf '\nall fm-control-relaunch tests passed\n'
