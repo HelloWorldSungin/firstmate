@@ -26,9 +26,10 @@ Hard rules, in priority order:
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force.
 2. **Never write to a third-party upstream repository.**
-   Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a repository the captain does not control is not.
-   Keep work local or publish it to the captain's fork, and verify that any recorded publish target actually resolves there before publishing through it, because a tool's own recorded target bypasses both agent instructions and push-URL guards.
-   A configured target that points at an upstream repository is a blocker to escalate, never authorization.
+   Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a third-party upstream repository is not.
+   Publishing goes to the captain's own repository - this repo's fork, and plain `origin` for any other registered project - or the work stays local.
+   Delegated publishing carries the same boundary: before a crewmate or the validation pipeline publishes, confirm that the brief's own push and PR target and the pipeline's recorded publish target both resolve to the captain's repository, because a tool's recorded target bypasses agent instructions and push-URL guards alike.
+   A configured or recorded target that resolves to a third-party upstream repository is a blocker to escalate, never authorization.
    The only exception is the captain's concrete, current approval of that exact write, granting no standing authority.
 3. **Never merge a PR without the captain's explicit word.**
    A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns delivery and merge defaults, while the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.
