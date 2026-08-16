@@ -544,6 +544,7 @@ class FakeEventSource {
 }
 
 const scrollCalls = [];
+const openedUrls = [];
 const fakeWindow = {
   innerWidth: 1440,
   innerHeight: 900,
@@ -553,10 +554,15 @@ const fakeWindow = {
   history: { back() {} },
   addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
   scrollTo(options) { scrollCalls.push(options); },
-  open() {},
+  open(url) { openedUrls.push(url); },
 };
 
 const storage = new Map();
+// The knowledge search is the one request the page must hold itself to one at
+// a time, so this fixture can keep a search in flight while a second Enter is
+// pressed.
+const knowledgeSearches = [];
+let knowledgeSearchGate = null;
 Object.assign(globalThis, {
   document,
   window: fakeWindow,
@@ -565,6 +571,15 @@ Object.assign(globalThis, {
   fetch: async (url) => ({
     ok: true,
     json: async () => {
+      if (url.startsWith("/api/gbrain/search")) {
+        knowledgeSearches.push(url);
+        if (knowledgeSearchGate) await knowledgeSearchGate;
+        return {
+          schema: "fm-gbrain-search.v1",
+          results: [{ title: "A captured runbook", source: "gbrain", excerpt: "how the fleet did it" }],
+          sources: [{ source: "gbrain", state: "ok" }],
+        };
+      }
       if (url.startsWith("/api/snapshot")) return envelope;
       if (url.startsWith("/api/history")) return historyEnvelope;
       if (url.startsWith("/api/backlog")) return backlogEnvelope;
@@ -597,6 +612,12 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
     return matches;
   };
   const hasClass = (node, className) => node.classNames().includes(className);
+  // The words a control is known by: its text minus the regions the renderer
+  // marked as live values. Comparing raw textContent instead would make this
+  // harness disagree with the focus rule the moment a count or an age moved.
+  const stableWords = (node) => (node.nodeType === 3
+    ? node.textContent
+    : node.children.filter((child) => child.dataset?.volatile === undefined).map(stableWords).join(""));
   const one = (root, predicate, label) => {
     const matches = all(root, predicate);
     if (matches.length !== 1) throw new Error(`${label}: expected one match, received ${matches.length}`);
@@ -636,6 +657,39 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const card = one(viewNode, (node) => hasClass(node, "card"), "needs card");
   const ask = one(card, (node) => hasClass(node, "card-ask"), "card ask");
   if (ask.textContent !== DECISION_TEXT) throw new Error(`the decision text was not rendered in full: ${ask.textContent}`);
+
+  // --- a card opens only a URL the page's protocol allowlist admits ----------
+  //
+  // This is the one sink that opens a URL itself rather than handing the
+  // browser an href to judge, and the URL comes from a snapshot: a
+  // javascript: scheme reaching window.open is script running in the
+  // dashboard's own origin the moment a captain clicks. The card must still
+  // say a pull request exists - refusing the jump is not the same as hiding
+  // the work.
+  const prShortcut = one(card, (node) => hasClass(node, "card-linkline"), "card pull-request shortcut");
+  prShortcut.listeners.click({ stopPropagation() {} });
+  if (openedUrls.length !== 1 || openedUrls[0] !== PR_URL) throw new Error(`the card opened ${JSON.stringify(openedUrls)} rather than the recorded https PR URL`);
+  for (const hostile of ["javascript:alert(1)", "java\tscript:alert(1)", "JaVaScript:alert(1)", "//evil.example/pull/1", "data:text/html,<script>alert(1)</script>"]) {
+    const hostileEnvelope = {
+      ...envelope,
+      snapshot: {
+        ...envelope.snapshot,
+        tasks: envelope.snapshot.tasks.map((entry) => (entry.id === TASK_ID
+          ? { ...entry, pr: { ...entry.pr, url: hostile } }
+          : entry)),
+      },
+    };
+    eventSources[0].listeners.snapshot({ data: JSON.stringify(hostileEnvelope) });
+    await settle();
+    const hostileCard = one(viewNode, (node) => hasClass(node, "card"), `needs card carrying ${hostile}`);
+    if (all(hostileCard, (node) => hasClass(node, "card-linkline")).length !== 0) {
+      throw new Error(`a card kept an openable shortcut for a refused URL: ${hostile}`);
+    }
+    if (!hostileCard.textContent.includes("link not opened")) throw new Error(`a card silently dropped its refused pull request: ${hostile}`);
+    if (openedUrls.length !== 1) throw new Error(`a refused URL reached window.open: ${JSON.stringify(openedUrls)}`);
+  }
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
 
   // --- every route renders its view and only its view ------------------------
   for (const route of ["fleet", "backlog", "history", "knowledge", "needs"]) {
@@ -678,6 +732,35 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   toggledChips[1].listeners.click();
   await settle();
 
+  // --- a count ticking is the fleet changing, not the control changing --------
+  //
+  // Every one of these chips renders a live count inside its own label, and the
+  // count moves on a push nobody asked for. If the control's identity folded
+  // that number in, the chip the reader is on would stop being itself the
+  // moment a worker started or finished, and focus would land back on the
+  // document - the exact failure the identity rule exists to prevent, arriving
+  // through the label instead of through the position.
+  const countChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const activeCountChip = countChips.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!activeCountChip) throw new Error(`the Fleet board rendered no Active chip to focus: ${countChips.map((chip) => chip.textContent).join(", ")}`);
+  activeCountChip.focus();
+  const grown = {
+    ...envelope,
+    snapshot: { ...envelope.snapshot, tasks: [...envelope.snapshot.tasks, task("second-worker", "ship", "active")] },
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(grown) });
+  await settle();
+  const grownChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const grownActive = grownChips.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!grownActive || !grownActive.textContent.includes("2")) {
+    throw new Error(`the push did not change the Active chip's count, so this proves nothing: ${grownChips.map((chip) => chip.textContent).join(", ")}`);
+  }
+  if (document.activeElement !== grownActive) {
+    throw new Error(`a ticking count took focus off the chip the reader was on: ${document.activeElement ? document.activeElement.textContent : "nothing"}`);
+  }
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+
   // --- and a refresh that reshapes the list never re-aims it ------------------
   //
   // The reader is on "Active"; the next push moves the parked task into active,
@@ -704,7 +787,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const chipsAfter = all(viewNode, (node) => hasClass(node, "fchip"));
   if (chipsAfter.length >= chipsBefore.length) throw new Error("the shifted push did not actually shorten the chip list, so this proves nothing");
   const landed = document.activeElement;
-  if (landed && chipsAfter.includes(landed) && landed.textContent !== activeChip.textContent) {
+  if (landed && chipsAfter.includes(landed) && stableWords(landed).trim() !== stableWords(activeChip).trim()) {
     throw new Error(`a refresh moved focus to a control the reader never chose: ${landed.textContent}`);
   }
   eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
@@ -851,6 +934,61 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   // is the signature path carrying focus across a node the renderer rebuilt.
   if (document.activeElement !== cleared) throw new Error("clearing the filters dropped the focus off the control the reader was on");
 
+  // --- what the queue may never do: hide a row, or keep a freed one red ------
+  //
+  // A facet value is a record value, so any key the select reserved for its
+  // placeholder is a real value somewhere - a kind named "all" belongs in the
+  // list, not swallowed by it. An unreadable current row is queued work, and
+  // the page says how much of it there is rather than dropping it. A blocker
+  // that has since been delivered leaves its id on the row, so the still-
+  // blocked answer has to come from the snapshot rather than from the token.
+  const backlogEdges = {
+    ...backlogEnvelope,
+    backlog: {
+      present: true,
+      records: [
+        ...backlogEnvelope.backlog.records,
+        { id: "kind-all", title: "Kind named all", state: "queued", kind: "all", order: 3 },
+        { id: "freed-c", title: "Freed c", state: "queued", blocked_by: "kind-all", blocked_by_ids: ["kind-all"], unresolved_blocker_ids: [], blocked_reason: "needed kind-all first", order: 4 },
+        { id: "blocked-d", title: "Blocked d", state: "queued", blocked_by: "not-yet", blocked_by_ids: ["not-yet"], unresolved_blocker_ids: ["not-yet"], blocked_reason: "needs not-yet first", order: 5 },
+        { structured: false, id: null, state: "queued", raw: "a row in a shape the parse could not read", order: 6 },
+      ],
+    },
+  };
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEdges) });
+  await settle();
+  const backlogText = one(viewNode, (node) => node.id === "view-backlog", "backlog view with an unreadable row").textContent;
+  if (!backlogText.includes("1 current backlog row could not be read")) throw new Error(`the Backlog page hid an unreadable queued row: ${backlogText}`);
+  const backlogRowText = (title) => {
+    const row = all(viewNode, (node) => hasClass(node, "rrow")).find((node) => node.textContent.includes(title));
+    if (!row) throw new Error(`the Backlog page did not render the ${title} row`);
+    return row.textContent;
+  };
+  if (!backlogRowText("Blocked d").includes("blocked") || !backlogRowText("Blocked d").includes("needs not-yet first")) {
+    throw new Error(`a row with an unresolved blocker lost its blocked state: ${backlogRowText("Blocked d")}`);
+  }
+  if (backlogRowText("Freed c").includes("blocked") || backlogRowText("Freed c").includes("needed kind-all first")) {
+    throw new Error(`a row whose blocker was delivered still reads as blocked: ${backlogRowText("Freed c")}`);
+  }
+  const blockedTab = all(viewNode, (node) => hasClass(node, "tab")).find((node) => node.textContent.startsWith("Blocked"));
+  if (!blockedTab || !blockedTab.textContent.includes("1")) throw new Error(`the Blocked tab counted more than the still-blocked row: ${blockedTab ? blockedTab.textContent : "no tab"}`);
+  const kindSelect = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "kind", `backlog kind filter ${why}`);
+  const namedAll = kindSelect("options").options.find((option) => option.textContent === "all");
+  if (!namedAll || namedAll.value === "") throw new Error("a backlog kind literally named all was swallowed by the placeholder option");
+  const choosingKind = kindSelect("choosing");
+  choosingKind.value = namedAll.value;
+  choosingKind.listeners.change();
+  const kindRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (kindRows.length !== 1 || !kindRows[0].textContent.includes("Kind named all")) {
+    throw new Error(`filtering by the kind named all did not land on the raw value: ${kindRows.map((row) => row.textContent).join(" | ")}`);
+  }
+  const resetKind = kindSelect("reset");
+  resetKind.value = "";
+  resetKind.listeners.change();
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  await settle();
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 2) throw new Error("the Backlog page did not return to its own queue");
+
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");
   const knowledgeText = one(viewNode, (node) => node.id === "view-knowledge", "knowledge view").textContent;
@@ -883,6 +1021,42 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const healthAttributes = all(viewNode, (node) => hasClass(node, "hsys")).map((node) => node.title || "").join(" ");
   if (healthAttributes.includes("/home/") || healthAttributes.includes(".gbrain-lock")) throw new Error(`a raw GBrain diagnostic reached a health attribute: ${healthAttributes}`);
   if (!healthAttributes.includes("the last capture attempt failed")) throw new Error(`the capture failure lost its display-safe detail: ${healthAttributes}`);
+
+  // --- one search at a time, and a landed answer is never masked -------------
+  //
+  // The brain accepts one search and refuses a second while the first runs, so
+  // a page that sent the second would race its own refusal against the first
+  // search's results and could replace answers the reader can see with an
+  // error about a search they never started. The refusal is made here instead,
+  // and the failed attempt before it must not survive the answer that lands.
+  const knowledgeView = (why) => one(viewNode, (node) => node.id === "view-knowledge", `knowledge view ${why}`);
+  const knowledgeInput = (why) => one(viewNode, (node) => node.id === "knowledge-search", `knowledge search ${why}`);
+  const tooShort = knowledgeInput("for the short query");
+  tooShort.value = "a";
+  tooShort.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (!knowledgeView("after the short query").textContent.includes("The query was too short to search.")) {
+    throw new Error("a query too short to search did not say so");
+  }
+  let releaseKnowledgeSearch;
+  knowledgeSearchGate = new Promise((resolve) => { releaseKnowledgeSearch = resolve; });
+  const firstSearch = knowledgeInput("for the first search");
+  firstSearch.value = "runbook";
+  firstSearch.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (!knowledgeView("while searching").textContent.includes("searching")) throw new Error("a search in flight did not say it was running");
+  const secondSearch = knowledgeInput("for the second search");
+  secondSearch.value = "runbook";
+  secondSearch.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (knowledgeSearches.length !== 1) throw new Error(`a second Enter while a search was in flight sent ${knowledgeSearches.length} requests`);
+  releaseKnowledgeSearch();
+  await settle();
+  await settle();
+  const answered = knowledgeView("after the search landed").textContent;
+  if (!answered.includes("A captured runbook")) throw new Error(`the search results that landed are not on the page: ${answered}`);
+  if (answered.includes("The query was too short to search.")) throw new Error("an earlier failed search masked the results that landed");
+  knowledgeSearchGate = null;
 
   // --- the task route: kv strip, full PR URL, and honest outcome chips -------
   await go(`#/task/${TASK_ID}`);

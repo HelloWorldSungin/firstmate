@@ -19,7 +19,7 @@ import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
 import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
 import { label } from "./display.js";
-import { buildBacklog, BACKLOG_LIMITS } from "./backlog.js";
+import { buildBacklog, BACKLOG_LIMITS, BACKLOG_TAB_KEYS } from "./backlog.js";
 import { displayError, displaySafeEnvelope } from "./errors.js";
 
 const ui = {
@@ -76,13 +76,15 @@ const REASON_PRESENTATION = {
   pr_unknown: { glyph: "g-unknown" },
 };
 
-const BACKLOG_TABS = [
-  { key: "all", label: "All" },
-  { key: "in_flight", label: "In flight" },
-  { key: "queued", label: "Queued" },
-  { key: "held", label: "Held" },
-  { key: "blocked", label: "Blocked" },
-];
+// Labels for the tabs backlog.js counts. The keys are the queue policy's, so
+// the page cannot render a tab the policy never filled or miss one it did.
+const BACKLOG_TAB_LABELS = {
+  all: "All",
+  in_flight: "In flight",
+  queued: "Queued",
+  held: "Held",
+  blocked: "Blocked",
+};
 
 const HISTORY_RANGES = [
   { key: "7d", label: "7d", days: 7 },
@@ -125,9 +127,19 @@ function viewRoot(name) {
 }
 
 const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
 
 function isElement(node) {
   return node?.nodeType === ELEMENT_NODE;
+}
+
+// A value the page re-reads on every push - a count, an age, a duration, a
+// cost. Marked here, where it is made, so nothing downstream has to recognize
+// one by its class or by the control it sits in.
+function liveText(className, text) {
+  const node = element("span", className, text);
+  node.dataset.volatile = "1";
+  return node;
 }
 
 // The reader's live value on a control, as opposed to the renderer's copy of
@@ -199,6 +211,22 @@ function eachElement(root, visit) {
   for (const child of root?.childNodes || []) eachElement(child, visit);
 }
 
+// The words a control is known by, with the words that tick left out. A live
+// value - a filter chip's count, a row's age, a row's cost - is rendered
+// inside the control it belongs to and changes on its own between pushes, so
+// folding it into that control's identity would let it stop being itself while
+// nobody touched anything. Every such region is marked where it is built, by
+// liveText, which keeps this a rule about volatile content rather than a list
+// of which controls happen to carry one.
+function stableLabel(node) {
+  let out = "";
+  for (const child of node?.childNodes || []) {
+    if (child.nodeType === TEXT_NODE) out += child.nodeValue ?? child.textContent ?? "";
+    else if (isElement(child) && child.dataset?.volatile === undefined) out += stableLabel(child);
+  }
+  return out;
+}
+
 // What a control IS, asked of the control rather than of where it sits. A
 // child index is a position: the moment a refresh adds or drops a sibling -
 // which every one of these lists does by design - the same index names a
@@ -208,7 +236,7 @@ function eachElement(root, visit) {
 // The class name is left out on purpose: it carries selection state, and a
 // control must stay itself across the click that selects it.
 function focusSignature(node) {
-  const label = [node.getAttribute?.("aria-label"), node.getAttribute?.("title"), node.textContent]
+  const label = [node.getAttribute?.("aria-label"), node.getAttribute?.("title"), stableLabel(node)]
     .find((value) => typeof value === "string" && value.trim() !== "") || "";
   return `${node.tagName}\u0000${label.replace(/\s+/g, " ").trim()}`;
 }
@@ -287,10 +315,10 @@ function fmtAge(seconds) {
 }
 
 function ageChip(seconds, known = true) {
-  if (!known || !Number.isFinite(seconds)) return element("span", "agechip age-unknown", "age unknown");
+  if (!known || !Number.isFinite(seconds)) return liveText("agechip age-unknown", "age unknown");
   const minutes = seconds / 60;
   const cls = minutes >= 240 ? "age-hot" : minutes >= 60 ? "age-warm" : "";
-  return element("span", `agechip ${cls}`.trim(), formatAge(seconds));
+  return liveText(`agechip ${cls}`.trim(), formatAge(seconds));
 }
 
 function pageHead(eyebrow, title, note) {
@@ -491,6 +519,20 @@ function publishStickyHeight() {
   if (Number.isFinite(height) && height > 0) document.documentElement.style.setProperty("--vstrip-h", `${Math.ceil(height)}px`);
 }
 
+// The rail's top and its height are both derived from --vstrip-h, so a strip
+// that grew without a re-render leaves the rail tucked under it or hanging past
+// the viewport, taking the alerts and theme controls pinned to its bottom with
+// it. The strip's own height is what is observed, because it changes for two
+// independent reasons - the viewport reflowing it, and its own counts and
+// notes rewrapping at a fixed width - and only one of those arrives with data.
+function observeStickyHeight() {
+  if (typeof ResizeObserver === "function") {
+    const strip = ui.app.querySelector(".vstrip");
+    if (strip) new ResizeObserver(publishStickyHeight).observe(strip);
+  }
+  window.addEventListener("resize", publishStickyHeight, { passive: true });
+}
+
 // --- Needs you --------------------------------------------------------------
 
 function needsCard(item) {
@@ -512,10 +554,20 @@ function needsCard(item) {
 
   const extra = [];
   if (item.pr?.url) {
-    const line = element("button", "card-linkline", `${item.pr.verdict || "pull request"} · open`);
-    line.type = "button";
-    line.addEventListener("click", (event) => { event.stopPropagation(); window.open(item.pr.url, "_blank", "noopener"); });
-    extra.push(line);
+    // Every URL this page can follow passes the same allowlist first, and this
+    // is the one sink that opens one itself rather than handing the browser an
+    // href to judge. A refused URL keeps the pull request on the card - the
+    // task page shows the recorded address - and only loses the jump.
+    const href = safeUrl(item.pr.url);
+    const verdict = item.pr.verdict || "pull request";
+    if (href) {
+      const line = element("button", "card-linkline", `${verdict} · open`);
+      line.type = "button";
+      line.addEventListener("click", (event) => { event.stopPropagation(); window.open(href, "_blank", "noopener"); });
+      extra.push(line);
+    } else {
+      extra.push(element("div", "card-id", `${verdict} · link not opened: not an http or https address`));
+    }
   }
   if (item.reasons.length > 1) {
     const more = item.reasons.slice(1).map((reason) => (REASON_KINDS[reason.kind] || { label: reason.kind }).label);
@@ -588,7 +640,7 @@ function taskRow(task) {
   if (project) meta.append(element("span", "", project));
   const detail = [task.harness, task.model].filter(Boolean).join(" · ");
   meta.append(element("span", "mid", detail || task.id));
-  meta.append(element("span", "age", fmtAge(task.spawn_age_seconds) || "age unknown"));
+  meta.append(liveText("age", fmtAge(task.spawn_age_seconds) || "age unknown"));
   row.append(meta);
   row.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: task.id }); });
   return row;
@@ -641,13 +693,13 @@ function renderFleet() {
   const chips = element("div", "filters");
   const allChip = element("button", `fchip${filters.length === 0 ? " is-on" : ""}`);
   allChip.type = "button";
-  allChip.append(document.createTextNode(`All `), element("span", "cnt", String(tasks.length)));
+  allChip.append(document.createTextNode(`All `), liveText("cnt", String(tasks.length)));
   allChip.addEventListener("click", () => { state.fleet.filters = []; render(); });
   chips.append(allChip);
   for (const column of columns) {
     const chip = element("button", `fchip${filters.includes(column.def.key) ? " is-on" : ""}`);
     chip.type = "button";
-    chip.append(dot(column.def.tone), document.createTextNode(` ${column.def.label} `), element("span", "cnt", String(counts.get(column.def.key))));
+    chip.append(dot(column.def.tone), document.createTextNode(` ${column.def.label} `), liveText("cnt", String(counts.get(column.def.key))));
     chip.addEventListener("click", () => {
       state.fleet.filters = filters.includes(column.def.key)
         ? filters.filter((key) => key !== column.def.key)
@@ -663,7 +715,7 @@ function renderFleet() {
     for (const { def, items } of shown) {
       const col = element("section", "col");
       const head = element("div", "col-h");
-      head.append(dot(def.tone), document.createTextNode(def.label), element("span", "cnt", String(items.length)));
+      head.append(dot(def.tone), document.createTextNode(def.label), liveText("cnt", String(items.length)));
       col.append(head);
       col.append(...items.map(taskRow));
       if (def.key === "needs_decision") {
@@ -706,24 +758,28 @@ function renderFleet() {
 // its position instead and the change handler resolves the key from the list
 // the options were built from, which keeps filtering exact on the raw value
 // while the only project string the page renders is the one label() returned.
-function backlogSelect(name, value, options, change) {
+//
+// The placeholder is its own argument rather than a reserved key in that list,
+// because any key this function reserved would be a real facet value somewhere
+// - a project or a backlog kind literally named "all" would vanish from the
+// filter while its items stayed in the queue.
+function backlogSelect(name, value, placeholder, options, change) {
   const select = element("select", "fsel");
   select.name = name;
-  const keyed = Object.entries(options).filter(([key]) => key !== "all");
-  const all = element("option", "", options.all);
+  const all = element("option", "", placeholder);
   all.value = "";
   select.append(all);
-  keyed.forEach(([, optionLabel], index) => {
+  options.forEach(([, optionLabel], index) => {
     const opt = element("option", "", optionLabel);
     opt.value = String(index);
     select.append(opt);
   });
   const current = value === null || value === undefined ? "" : String(value);
-  const selected = keyed.findIndex(([key]) => key === current);
+  const selected = options.findIndex(([key]) => String(key) === current);
   select.value = selected === -1 ? "" : String(selected);
   select.addEventListener("change", () => {
-    const chosen = select.value === "" ? null : keyed[Number(select.value)];
-    change(chosen ? chosen[0] : "");
+    const chosen = select.value === "" ? null : options[Number(select.value)];
+    change(chosen ? String(chosen[0]) : "");
   });
   return select;
 }
@@ -764,6 +820,12 @@ function renderBacklog() {
   }
 
   if (built.error) view.append(notice(built.error.tone === "red" ? "red" : "amber", null, built.error.text));
+  // Counted and said out loud, never quietly skipped: queued work missing from
+  // the queue with nothing disclosing it is this page's worst failure.
+  if (built.unreadable) {
+    const rows = `${built.unreadable} current backlog ${built.unreadable === 1 ? "row" : "rows"}`;
+    view.append(notice("amber", null, `${rows} could not be read and ${built.unreadable === 1 ? "is" : "are"} not listed below: the backlog file records ${built.unreadable === 1 ? "it" : "them"} in a shape this page cannot read as a queue item.`));
+  }
   if (!built.present) {
     view.append(emptyState({
       ring: true,
@@ -783,25 +845,23 @@ function renderBacklog() {
   search.value = state.backlog.filters.query;
   search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; render(); });
   toolbar.append(search);
-  toolbar.append(backlogSelect("project", state.backlog.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
+  toolbar.append(backlogSelect("project", state.backlog.filters.project, "All projects", built.facets.project.map((value) => [value, label(value)]), (value) => {
     state.backlog.filters.project = value; state.backlog.page = 0; render();
   }));
-  toolbar.append(backlogSelect("kind", state.backlog.filters.kind, { all: "All kinds", ...Object.fromEntries(built.facets.kind.map((value) => [value, value])) }, (value) => {
+  toolbar.append(backlogSelect("kind", state.backlog.filters.kind, "All kinds", built.facets.kind.map((value) => [value, value]), (value) => {
     state.backlog.filters.kind = value; state.backlog.page = 0; render();
   }));
-  toolbar.append(backlogSelect("prio", state.backlog.filters.prio, { all: "Any priority", ...Object.fromEntries(built.facets.prio.map((value) => [value, `P${value}`])) }, (value) => {
+  toolbar.append(backlogSelect("prio", state.backlog.filters.prio, "Any priority", built.facets.prio.map((value) => [value, `P${value}`]), (value) => {
     state.backlog.filters.prio = value; state.backlog.page = 0; render();
   }));
   view.append(toolbar);
 
   const tabs = element("div", "tabs");
-  for (const tab of BACKLOG_TABS) {
-    const count = built.tabs[tab.key];
-    if (count === null) continue;
-    const button = element("button", `tab${state.backlog.tab === tab.key ? " is-active" : ""}`);
+  for (const key of BACKLOG_TAB_KEYS) {
+    const button = element("button", `tab${state.backlog.tab === key ? " is-active" : ""}`);
     button.type = "button";
-    button.append(document.createTextNode(`${tab.label} `), element("span", "cnt", String(count)));
-    button.addEventListener("click", () => { state.backlog.tab = tab.key; state.backlog.page = 0; render(); });
+    button.append(document.createTextNode(`${BACKLOG_TAB_LABELS[key] || key} `), liveText("cnt", String(built.tabs[key])));
+    button.addEventListener("click", () => { state.backlog.tab = key; state.backlog.page = 0; render(); });
     tabs.append(button);
   }
   view.append(tabs);
@@ -824,9 +884,7 @@ function renderBacklog() {
       rrow.append(main);
       const right = element("div", "rright");
       if (row.prio !== null) right.append(element("span", `prio${row.prio === 0 ? " p0" : ""}`, `P${row.prio}`));
-      const age = element("span", `rage${row.ageHot ? " age-hot" : ""}`);
-      age.textContent = row.age || "age unknown";
-      right.append(age);
+      right.append(liveText(`rage${row.ageHot ? " age-hot" : ""}`, row.age || "age unknown"));
       rrow.append(right);
       rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
       rows.append(rrow);
@@ -955,10 +1013,10 @@ function renderHistory() {
   search.value = state.history.filters.query;
   search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; render(); });
   toolbar.append(search);
-  toolbar.append(backlogSelect("project", state.history.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
+  toolbar.append(backlogSelect("project", state.history.filters.project, "All projects", built.facets.project.map((value) => [value, label(value)]), (value) => {
     state.history.filters.project = value; state.history.page = 0; render();
   }));
-  toolbar.append(backlogSelect("outcome", state.history.filters.outcome, { all: "Any outcome", ...Object.fromEntries(built.facets.outcome.map((value) => [value, (OUTCOME_LABELS[value] || value).toLowerCase()])) }, (value) => {
+  toolbar.append(backlogSelect("outcome", state.history.filters.outcome, "Any outcome", built.facets.outcome.map((value) => [value, (OUTCOME_LABELS[value] || value).toLowerCase()]), (value) => {
     state.history.filters.outcome = value; state.history.page = 0; render();
   }));
   for (const entry of HISTORY_RANGES) {
@@ -985,9 +1043,9 @@ function renderHistory() {
       main.append(meta);
       rrow.append(main);
       const right = element("div", "rright");
-      right.append(element("span", "hdur", formatDuration(row.duration)));
-      right.append(element("span", "hcost", row.usage?.available && Number.isFinite(row.usage?.totals?.total_tokens) ? formatTokens(row.usage.totals.total_tokens) : "unavailable"));
-      right.append(element("span", "rage", row.completed_millis ? formatAge((Date.now() - row.completed_millis) / 1000) : "unknown"));
+      right.append(liveText("hdur", formatDuration(row.duration)));
+      right.append(liveText("hcost", row.usage?.available && Number.isFinite(row.usage?.totals?.total_tokens) ? formatTokens(row.usage.totals.total_tokens) : "unavailable"));
+      right.append(liveText("rage", row.completed_millis ? formatAge((Date.now() - row.completed_millis) / 1000) : "unknown"));
       rrow.append(right);
       rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
       rows.append(rrow);
@@ -1048,9 +1106,11 @@ function renderKnowledge() {
     if (event.key === "Enter") { state.gbrain.query = search.value; void runKnowledgeSearch(); }
   });
   hero.append(search);
-  const hint = state.gbrain.searched
-    ? `${state.gbrain.payload?.results?.length ?? 0} ${state.gbrain.error ? "results unavailable" : "matches"}`
-    : "the brain may take a few seconds on a cold index";
+  const hint = state.gbrain.busy
+    ? "searching…"
+    : state.gbrain.searched
+      ? `${state.gbrain.payload?.results?.length ?? 0} ${state.gbrain.error ? "results unavailable" : "matches"}`
+      : "the brain may take a few seconds on a cold index";
   hero.append(element("span", "khint", hint));
   view.append(hero);
 
@@ -1129,7 +1189,12 @@ function renderKnowledge() {
   return view;
 }
 
+// One search at a time, refused here rather than by the server: the brain
+// accepts a single search and answers a second with a busy refusal, and that
+// refusal landing after the first search's results would replace results the
+// reader can see with an error about a search they did not mean to start.
 async function runKnowledgeSearch() {
+  if (state.gbrain.busy) return;
   const query = state.gbrain.query.trim();
   if (query.length < 2) {
     state.gbrain.error = { tone: "amber", text: searchReasonLabel("query_too_short") };
@@ -1140,6 +1205,7 @@ async function runKnowledgeSearch() {
   }
   state.gbrain.busy = true;
   state.gbrain.error = null;
+  render();
   try {
     const response = await fetch("/api/gbrain/search", {
       method: "POST",
@@ -1154,6 +1220,7 @@ async function runKnowledgeSearch() {
       state.gbrain.error = searchFailure(failure.kind) || { tone: "red", text: searchReasonLabel(failure.kind) };
       state.gbrain.payload = null;
     } else {
+      state.gbrain.error = null;
       state.gbrain.payload = payload;
     }
   } catch (error) {
@@ -1868,6 +1935,7 @@ window.addEventListener("hashchange", onRouteChange);
 initializeTheme();
 initializeNotifications();
 render();
+observeStickyHeight();
 void fetchSnapshot();
 void fetchHistory();
 void fetchBacklog();

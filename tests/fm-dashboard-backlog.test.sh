@@ -73,7 +73,7 @@ const mixed = buildBacklog(envelope([
   { id: "a1", title: "Queued thing", state: "queued", order: 1 },
   { id: "a2", title: "Delivered thing", state: "done", order: 2 },
   { id: "a3", title: "Held thing", state: "queued", hold_reason: "waiting on the captain", order: 3 },
-  { id: "a4", title: "Blocked thing", state: "queued", blocked_by: "a1", blocked_reason: "needs a1 first", order: 4 },
+  { id: "a4", title: "Blocked thing", state: "queued", blocked_by: "a1", blocked_by_ids: ["a1"], unresolved_blocker_ids: ["a1"], blocked_reason: "needs a1 first", order: 4 },
   { id: "a5", title: "Running thing", state: "in_flight", order: 5 },
 ]), {});
 equal("a done row leaves the queue", mixed.queueTotal, 4);
@@ -89,6 +89,37 @@ check("a held row is toned amber", held && held.stateTone === "amber");
 const blocked = mixed.rows.find((row) => row.id === "a4");
 check("a blocked row carries its reason", blocked && blocked.reason === "needs a1 first");
 check("a blocked row is toned red", blocked && blocked.stateTone === "red");
+
+// --- blocked means STILL blocked, which is the fleet's answer, not the token --
+//
+// The snapshot resolves blocked-by ids against the rows it read and leaves the
+// unresolved ones in unresolved_blocker_ids. The raw token survives a delivered
+// blocker, so a page reading it would paint a runnable item red forever, which
+// is the queue lying about what can start.
+const resolvedBlocker = buildBacklog(envelope([
+  { id: "r1", title: "The blocker", state: "done", order: 1 },
+  { id: "r2", title: "Freed thing", state: "queued", blocked_by: "r1", blocked_by_ids: ["r1"], unresolved_blocker_ids: [], blocked_reason: "needs r1 first", order: 2 },
+  { id: "r3", title: "Still blocked thing", state: "queued", blocked_by: "r4", blocked_by_ids: ["r4"], unresolved_blocker_ids: ["r4"], blocked_reason: "needs r4 first", order: 3 },
+]), {});
+equal("a row whose blocker was delivered is no longer blocked", resolvedBlocker.rows.find((row) => row.id === "r2")?.state, "queued");
+equal("a freed row drops the blocked reason with the blocked state", resolvedBlocker.rows.find((row) => row.id === "r2")?.reason, null);
+equal("a row with an unresolved blocker stays blocked", resolvedBlocker.rows.find((row) => row.id === "r3")?.state, "blocked");
+equal("only the still-blocked row counts on the Blocked tab", resolvedBlocker.tabs.blocked, 1);
+
+// --- a row the parse could not read is disclosed, never silently dropped ------
+//
+// fm-fleet-snapshot.sh emits {structured:false, id:null, raw} for a current row
+// it could not parse, and queued work missing from the queue with nothing
+// saying so is this page's worst failure.
+const unstructured = buildBacklog(envelope([
+  { id: "s1", title: "Readable", state: "queued", order: 1 },
+  { structured: false, id: null, state: "queued", raw: "- something written in an unknown shape", order: 2 },
+  { structured: false, id: null, state: "in_flight", raw: "* another unreadable row", order: 3 },
+  { structured: false, id: null, state: "done", raw: "- an unreadable delivered row", order: 4 },
+]), {});
+equal("an unreadable current row is counted", unstructured.unreadable, 2);
+equal("an unreadable done row is History's problem, not the queue's", unstructured.queueTotal, 1);
+equal("a readable queue with nothing unreadable counts zero", mixed.unreadable, 0);
 
 // --- file order IS the queue order -------------------------------------------
 equal("rows keep the backlog file's own order", mixed.rows.map((row) => row.id), ["a1", "a3", "a4", "a5"]);

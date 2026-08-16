@@ -11,14 +11,19 @@
 // order IS Firstmate's queue decision.
 //
 // Invariants shared with history.js: an unknown age is never a fabricated
-// zero, and the three empty shapes stay distinct - no backlog at all
-// (first run), a queue with nothing matching (filtered), and a queue that is
-// genuinely empty all render differently.
+// zero, a record this page cannot read is counted and disclosed rather than
+// silently dropped, and the three empty shapes stay distinct - no backlog at
+// all (first run), a queue with nothing matching (filtered), and a queue that
+// is genuinely empty all render differently.
 
 export const BACKLOG_LIMITS = {
   maxQueryChars: 120,
   pageSize: 25,
 };
+
+// The state tabs, owned here with the counts that fill them so the renderer
+// cannot ask for a tab this module never counts.
+export const BACKLOG_TAB_KEYS = ["all", "in_flight", "queued", "held", "blocked"];
 
 const STATE_PRESENTATION = {
   in_flight: { label: "in flight", tone: "green", tab: "in_flight" },
@@ -81,10 +86,17 @@ function backlogRow(record) {
     };
   }
   const held = text(record?.hold_reason) || record?.hold_reason != null;
-  const blocked = record?.blocked_by != null || text(record?.blocked_reason);
+  // Still-blocked is the fleet's own answer, never the raw blocked-by token: a
+  // blocker that has since been delivered leaves the id on the row, and the
+  // snapshot resolves exactly that into unresolved_blocker_ids. Reading the
+  // token instead would paint a runnable item red until someone edited the
+  // file, which is the opposite of what the queue is for.
+  const blocked = (record?.unresolved_blocker_ids || []).length > 0;
   const key = held ? "held" : blocked ? "blocked" : (text(record?.state) === "in_flight" ? "in_flight" : "queued");
   const presentation = STATE_PRESENTATION[key];
-  const reason = text(record?.hold_reason) || text(record?.blocked_reason) || null;
+  const reason = key === "held"
+    ? text(record?.hold_reason) || null
+    : key === "blocked" ? text(record?.blocked_reason) || null : null;
   const priority = record?.priority;
   const prioRaw = priority !== null && priority !== undefined && priority !== "" && Number.isFinite(Number(priority))
     ? Number(priority)
@@ -109,7 +121,7 @@ function backlogRow(record) {
   };
 }
 
-function facetValues(rows, key, project = null) {
+function facetValues(rows, key) {
   return [...new Set(rows.map((row) => row[key]).filter((value) => value !== null && value !== ""))]
     .sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true }));
 }
@@ -122,7 +134,12 @@ function facetValues(rows, key, project = null) {
 export function buildBacklog(envelope, view = {}) {
   const document = envelope?.backlog && typeof envelope.backlog === "object" ? envelope.backlog : null;
   const records = Array.isArray(document?.records) ? document.records : [];
-  const allRows = records.map(backlogRow).filter(Boolean);
+  const parsed = records.map((record) => ({ record, row: backlogRow(record) }));
+  const allRows = parsed.map((entry) => entry.row).filter(Boolean);
+  // A current row the parse could not turn into a queue item is queued work
+  // this page would otherwise hide. Done rows are History's, so an unreadable
+  // one there is not a claim this page makes.
+  const unreadable = parsed.filter((entry) => !entry.row && text(entry.record?.state) !== "done").length;
   const queue = allRows
     .filter((row) => row.state !== "done")
     .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
@@ -148,7 +165,7 @@ export function buildBacklog(envelope, view = {}) {
 
   const tab = text(view.tab) || "all";
   const tabs = {};
-  for (const key of ["all", "in_flight", "queued", "held", "blocked"]) {
+  for (const key of BACKLOG_TAB_KEYS) {
     tabs[key] = key === "all" ? base.length : base.filter((row) => row.state === key).length;
   }
   const effectiveTab = tabs[tab] === undefined ? "all" : tab;
@@ -163,6 +180,7 @@ export function buildBacklog(envelope, view = {}) {
     readState,
     present: document?.present === true,
     error,
+    unreadable,
     queueTotal: queue.length,
     total: base.length,
     tabs,

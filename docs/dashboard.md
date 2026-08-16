@@ -57,6 +57,7 @@ That log is remembered per source and cleared by that source's own next success,
 A data refresh reconciles the mounted view rather than replacing it: results update in place, and the control a reader is on keeps its focus, its live value, and its caret across every push.
 That rule belongs to the reconciliation boundary rather than to a list of protected elements, so it holds for a filter chip, a state tab, a pager button, or a disclosure toggle exactly as it does for a search box - including on views that have no search box at all.
 Focus is carried by what a control is rather than by where it sits: its own id when the renderer gave it one, otherwise the tag and the words the reader was looking at, and its position among controls that are genuinely indistinguishable.
+The words a control is known by exclude the values that tick - a filter chip's count, a row's age, duration and cost - because a count moving from 3 to 4 is the fleet changing, not the reader's chip becoming a different control; every such region is marked where it is rendered rather than recognized afterwards by which control it sits in.
 A refresh that reshapes a list - a state column emptying out, a row leaving the queue - therefore restores nothing rather than re-aiming the keyboard at whichever control inherited the position, because a refresh may drop focus but may never move it.
 Clearing a filter is the one thing that replaces a value under the reader's hand, because it is an explicit committed transition rather than a refresh.
 
@@ -71,7 +72,8 @@ When the newest snapshot is stale, the strip says how old the data is and greys 
 
 Nothing is placed behind a horizontal page swipe: the document itself never scrolls sideways.
 Two regions scroll inside their own box instead of stretching the page: the Fleet board's column strip at desktop widths, and worker-written content inside a rendered report.
-Page edges respect safe-area insets, and a route change puts the reader at the top of the destination they asked for.
+One page edge is inset-aware: the bottom tab bar pads itself past the home indicator with `env(safe-area-inset-bottom)`, which is the only safe-area inset this stylesheet applies - the horizontal page edges use a plain gutter, and [issue #174](https://github.com/HelloWorldSungin/firstmate/issues/174) tracks the viewport decisions the rebuild dropped.
+A route change puts the reader at the top of the destination they asked for.
 Folding or unfolding a device reflows the current view while the page stays loaded; the address carries the route, so the selected view and its filter state survive.
 The page loads dark whatever the system prefers, and the navigation's theme toggle is the only thing that changes it: loading stores nothing, so a browser holding no choice is a reader who has not made one rather than one who accepted a default.
 
@@ -81,6 +83,7 @@ The landing view is the captain inbox: open decisions, blockers, failures, crede
 [`docs/dashboard-inbox-policy.md`](dashboard-inbox-policy.md) owns that policy in full, including what makes a pull request green and how overlapping signals deduplicate into one item.
 The short version worth knowing before reading it: a pull request is shown as green only when its normalized checks, review, and mergeability all say so, and anything missing or stale is drawn as an explicit unknown rather than as a pass.
 A card opens its task's detail page, and a fleet with nothing waiting says so as designed content - the all-clear is what the captain sees most often, and it reads as reassurance rather than as a blank page.
+A card's pull-request shortcut opens the recorded address only when it passes the same protocol allowlist every other link on the page passes - absolute `http`, `https`, or `mailto`, and nothing else - so a snapshot cannot turn a captain's click into script in the dashboard's own origin; a refused address keeps the pull request on the card and loses only the jump.
 An unreachable snapshot is its own explicit state on this view and on Fleet, never rendered as the calm first-run page.
 
 ## Fleet
@@ -95,6 +98,8 @@ At desktop widths the columns read side by side and the strip scrolls inside its
 The Backlog page is the read-only queue: every current backlog record with its project, kind, priority, age, and - for anything held or blocked - the reason, in the backlog file's own order, because that order is Firstmate's queue decision.
 It reads `GET /api/backlog`, which serves the full record set from the same snapshot backlog parse the fleet state reads - one owner for the file format, one freshness story - rather than the bounded slice the compact fleet listing shows.
 [`assets/dashboard/backlog.js`](../assets/dashboard/backlog.js) is the page policy's single executable copy: state tabs, project, kind, and priority facets, bounded text search, and pagination, with delivered work excluded because completed items belong to History.
+A row is drawn as blocked only while the snapshot still lists an unresolved blocker for it, never on the presence of a `blocked-by:` token alone, so an item whose blocker has since been delivered reads as queued rather than staying red until someone edits the file.
+A current row the parse could not read as a queue item is counted and disclosed above the list, the way History discloses an unreadable completion record, because queued work missing from the queue with nothing saying so is this page's worst failure.
 The page changes nothing: ordering and state changes are Firstmate's, and it says so on the page.
 
 ## Task detail
@@ -160,6 +165,7 @@ A brain the operator has paused for care reports `maintenance.state: upgrading` 
 The search itself is a POST to `/api/gbrain/search` that runs [`bin/fm-recall.sh`](../bin/fm-recall.sh) `search` over the read-only scopes this home already holds.
 The query reaches the wrapper as an argument array after `--`, never interpolated into a shell command, so a shell metacharacter in a query is a character to search for rather than syntax.
 The endpoint bounds the query size, the result count, and how long one search may take, and it admits one search at a time.
+The page holds itself to that same one-at-a-time rule and says it is searching, rather than sending a second request whose busy refusal could land after the first search's results and replace answers the reader can see with an error about a search they never started.
 A search that never started - the wrapper could not create the working files it needs, so no corpus was asked - is reported as its own state rather than as a corpus that did not answer, because the second sends you to look at your brain for a fault in the service's own environment.
 Results come back in a closed vocabulary - source, slug, title, score, excerpt, stale - with anything outside it dropped rather than passed through, and [`assets/dashboard/gbrain.js`](../assets/dashboard/gbrain.js) builds every result node with `createElement` and `textContent`, so nothing in a stored brain document can become markup or restructure the page.
 
