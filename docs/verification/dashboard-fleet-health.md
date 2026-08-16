@@ -1,7 +1,10 @@
 # Dashboard fleet-health verification
 
-Repeatable evidence for the two numbers behind the dashboard's fleet health strip: how long a working task may be quiet before the strip says so, and how long the fleet snapshot behind it may take.
+Repeatable evidence for the two numbers behind the dashboard's fleet health signals: how long a working task may be quiet before the Task activity signal says so, and how long the fleet snapshot behind it may take.
 Current behavior is owned by [`../dashboard-inbox-policy.md`](../dashboard-inbox-policy.md), the snapshot contract by [`../../bin/fm-fleet-snapshot.sh`](../../bin/fm-fleet-snapshot.sh)'s header, and the quiet window itself by [`../../bin/fm-supervision-lib.sh`](../../bin/fm-supervision-lib.sh); this page records evidence only.
+
+Note, 2026-08-16: the routed rebuild left no view mounting the seven-signal strip these observations were taken against, so read every "strip" below as the signal set that owner still states.
+Both numbers stay live either way - [`bin/fm-watch.sh`](../../bin/fm-watch.sh) still ages a busy pane against the quiet window, and the snapshot bounds still bound every dashboard read - which is why this record is kept rather than retired while [issue #173](https://github.com/HelloWorldSungin/firstmate/issues/173) decides the chain's future.
 
 Date: 2026-08-12.
 Host: Linux 6.14.11, GNU bash 5.x, 9 to 10 live task records in the observed home.
