@@ -612,7 +612,7 @@ if (!prompt) throw new Error("unretired-successor prompt did not arrive within c
 if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
 if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
@@ -747,7 +747,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 if (!prompt) throw new Error("restored wake was not delivered");
 if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (prompt.includes("did not exit within")) throw new Error(`retired successor reported unretired: ${prompt}`);
+if (prompt.includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompt}`);
 if (successorAttempts !== 2) throw new Error(`restoration did not continue after retirement: ${successorAttempts} successor attempts`);
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
@@ -2117,7 +2117,7 @@ if (!prompt) throw new Error("unretired-successor prompt did not arrive within c
 if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
 if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
@@ -2475,7 +2475,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 if (prompts.length < 1) throw new Error("restored wake was not delivered");
 if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
 if (!prompts[0].includes("original wake")) throw new Error(`missing original wake: ${prompts.join(" | ")}`);
-if (prompts[0].includes("did not exit within")) throw new Error(`retired successor reported unretired: ${prompts[0]}`);
+if (prompts[0].includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompts[0]}`);
 if (armSpawns !== 3) throw new Error(`restoration did not continue after retirement: ${armSpawns} arm launches`);
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF

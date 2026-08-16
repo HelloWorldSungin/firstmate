@@ -283,7 +283,7 @@ async function restoreAfterActionableClose(paths, sessionID, client, predecessor
     failure = restorationFailure(status);
     if (!(await retireArm(armChild))) {
       setArmStatus("failed");
-      return `${failure}\nwatcher: FAILED - OpenCode could not restore watcher continuity because the unready successor arm did not exit within ${ARM_RETIRE_TIMEOUT_MS}ms`;
+      return `${failure}\nwatcher: FAILED - OpenCode could not restore watcher continuity because the unready successor arm was still running when the ${ARM_RETIRE_TIMEOUT_MS}ms retirement deadline settled or did not close within the additional ${ARM_RETIRE_TIMEOUT_MS}ms grace after exit`;
     }
     if (status === "read-only" || status === "not-primary" || status === "skipped") break;
     if (attempt === REARM_RETRY_LIMIT) break;

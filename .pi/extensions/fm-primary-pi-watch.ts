@@ -397,7 +397,7 @@ export default function (pi: ExtensionAPI) {
       if (replacement.ok) {
         failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
         if (!(await retireArm(successorChild))) {
-          return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm did not exit within ${armRetireTimeoutMs}ms`;
+          return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm was still running when the ${armRetireTimeoutMs}ms retirement deadline settled or did not close within the additional ${armRetireTimeoutMs}ms grace after exit`;
         }
       } else {
         failure = /(?:read-only|no live session)/.test(replacement.message)
