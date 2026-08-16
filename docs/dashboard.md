@@ -167,10 +167,16 @@ Document size, line count, node count, and nesting are all bounded, and every tr
 The report itself is fetched by task id, and that id selects nothing on its own: it must name a task the current history published with a retained report, and the file is then read from this home's own data directory rather than from the path recorded in the manifest.
 A report that is missing, is no longer a plain file, or resolves outside that directory is refused with a reason, and a report larger than the configured byte limit is served truncated and labeled.
 
+A report body is the one region the no-filesystem-paths rule does not cover, and that is a decision rather than an oversight.
+The rule is scoped to the operational chrome the dashboard itself composes - labels, filters, errors, status lines, notices, and every attribute or text node built from a record value, all of which go through [`assets/dashboard/display.js`](../assets/dashboard/display.js)'s `label()`.
+A worker's report renders as written, absolute paths included, because a report narrating the path it worked in is the deliverable saying what it did, and deciding what to redact there belongs to whoever writes it.
+That is the captain's decision on [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169); the browser check's leak scan excludes the `.report` subtree by name and counts what it skipped rather than narrowing what it claims.
+
 ## Checking it in a browser
 
 The module-level tests prove what each browser module returns; they cannot prove that the page loads, that the stylesheet arrived, that the layout holds at 390 CSS px, or that the console is clean.
 [`bin/fm-dashboard-browser-check.sh`](../bin/fm-dashboard-browser-check.sh) drives the real page in a real browser and records what it rendered, at a phone width, both sides of the 899/900 navigation boundary, and a desktop width, visiting every destination through the navigation control visible at each and asserting the active view is the only one in the DOM.
+Its credential- and path-leak scan runs over every destination's rendered text and its rendered attributes alike, since a value written into a `title` or a `data-` attribute is on the page exactly as much as one written into a text node; it excludes the worker-authored report bodies [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169) exempted, and states how many of those regions it stepped over.
 
 Run it with no arguments and it starts its own dashboard from this checkout on an ephemeral loopback port over a throwaway home, so it never touches an installed service.
 Pass `--url` with `--user` and `--password-file` to point it at a running dashboard; the password is held by a loopback-only front and never enters the URL the browser opens, so it reaches neither the browser's history nor any evidence the check captures, and the dashboard's own exposure, authentication, and credentials are untouched.

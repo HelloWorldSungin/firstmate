@@ -42,6 +42,8 @@ What the run observed, with the load-bearing details:
   The fixture publishes those records through the real manifest writer, so this is the production record format rendering, not a lookalike envelope.
 - No destination scrolls sideways: `scrollWidth <= viewport` on every route at every width.
 - The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (6 scans per width) and matched nothing.
+  What that scan covers is the operational chrome the dashboard itself composes - labels, filters, errors, status lines, notices - read as rendered attributes as well as rendered text, because a value written into a `title` or a `data-` attribute is on the page exactly as much as one written into a text node.
+  It deliberately excludes worker-authored report bodies, which render as written with any absolute paths they narrate: that is the captain's decision on [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169), and the scan counts every `.report` region it skipped so an `ok` verdict states what it stepped over rather than implying it read it.
 - The console was clean across all 37 windows read - one immediately before every navigation the run made and one after the last of each.
 
 ## The task timeline

@@ -807,6 +807,39 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await settle();
   if (timelineFetches !== afterRecovery) throw new Error("healthy fleet broadcasts repeatedly refetched a recovered task timeline");
 
+  // A timeline that stays unreachable is worth one more read, not one per
+  // frame: busy fleet traffic must not become traffic against a dead endpoint.
+  timelineFetchFailure = true;
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  const beforeStorm = timelineFetches;
+  for (let frame = 0; frame < 5; frame += 1) {
+    eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+    await settle();
+    await settle();
+  }
+  if (timelineFetches !== beforeStorm + 1) throw new Error(`a persistently failing timeline retried per broadcast: ${timelineFetches - beforeStorm} requests over 5 healthy frames`);
+  timelineFetchFailure = false;
+  const stormedTimeline = one(viewNode, (node) => node.id === "view-task", "task with a persistently failing timeline").textContent;
+  if (!stormedTimeline.includes("Activity cannot be recorded: the stored task timeline could not be read")) throw new Error(`a spent retry lost the failed timeline disclosure: ${stormedTimeline}`);
+  timelineFetchFailure = true;
+  const beforeRearm = timelineFetches;
+  await go("#/needs");
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 1) throw new Error("revisiting a failed task timeline did not revalidate it");
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "unavailable", reason: "the event store is unreadable" }, events: [] }) });
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 1) throw new Error("a fleet frame that was not healthy spent the failed timeline's one retry");
+  timelineFetchFailure = false;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 2) throw new Error("a route revisit did not rearm the failed task timeline's retry");
+
   timelineEnvelope = {
     schema: "fm-dashboard-timeline.v1",
     status: { ingestion: "disabled" },

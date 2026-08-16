@@ -1262,10 +1262,13 @@ async function fetchTaskReport(taskId) {
 async function fetchTaskTimeline(taskId, routeEpoch = state.routeEpoch, force = false) {
   let entry = state.task.timelines.get(taskId);
   if (!entry) {
-    entry = { loading: false, envelope: null, failed: false, routeEpoch: -1 };
+    entry = { loading: false, envelope: null, failed: false, retryArmed: true, routeEpoch: -1 };
     state.task.timelines.set(taskId, entry);
   }
   if (entry.loading || (!force && entry.routeEpoch === routeEpoch)) return entry;
+  // Arriving here unforced means the route was (re)visited, which is one of the
+  // two things that hands a failed entry a fresh retry; the other is recovery.
+  if (!force) entry.retryArmed = true;
   entry.loading = true;
   entry.routeEpoch = routeEpoch;
   try {
@@ -1278,12 +1281,27 @@ async function fetchTaskTimeline(taskId, routeEpoch = state.routeEpoch, force = 
       events: mergeTaskBackfill(Array.isArray(entry.envelope?.events) ? entry.envelope.events : [], retained, taskId),
     };
     entry.failed = false;
+    entry.retryArmed = true;
   } catch {
     entry.failed = true;
   }
   entry.loading = false;
   if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
   return entry;
+}
+
+// A failed backfill is worth one more read, not one per broadcast. The retry is
+// armed by a route visit or by a read that succeeded, spent by a single healthy
+// ready frame for the task currently open, and not rearmed by anything else, so
+// an endpoint that stays unreachable costs one request however busy the fleet
+// stream is - mergeTaskBackfill's no-HTTP-per-broadcast invariant survives the
+// failure path as well as the healthy one.
+function retryFailedTaskTimeline(taskId, entry, envelope) {
+  if (!entry.failed || !entry.retryArmed) return;
+  if (envelope?.status?.ingestion !== "ready") return;
+  if (state.route.view !== TASK_VIEW || state.route.taskId !== taskId) return;
+  entry.retryArmed = false;
+  void fetchTaskTimeline(taskId, state.routeEpoch, true);
 }
 
 function reportPanel(taskId, present, live = null) {
@@ -1667,9 +1685,7 @@ function connectEvents() {
             instrumented_harnesses: envelope.instrumented_harnesses || entry.envelope?.instrumented_harnesses,
             events: mergeTaskBackfill(Array.isArray(envelope.events) ? envelope.events : [], backfill, taskId),
           };
-          if (entry.failed && state.route.view === TASK_VIEW && state.route.taskId === taskId) {
-            void fetchTaskTimeline(taskId, state.routeEpoch, true);
-          }
+          retryFailedTaskTimeline(taskId, entry, envelope);
         }
         if (state.route.view === TASK_VIEW) render();
       }

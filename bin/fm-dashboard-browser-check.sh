@@ -168,12 +168,25 @@
 #   no destination may scroll sideways; the History view must display the
 #   completion records it read, each displayed row carrying its usage cell;
 #   opening a task from the Fleet board must land on that task's detail page
-#   alone; no destination's rendered page may contain a credential-shaped or
-#   absolute-path-shaped value; and the console must be clean. The fixture run
+#   alone; no destination's operational chrome may contain a credential-shaped
+#   or absolute-path-shaped value - the labels, filters, errors, status lines
+#   and notices the dashboard itself composes, read as rendered attributes as
+#   well as rendered text, because a value written into a title or a data-
+#   attribute is on the page exactly as much as one written into a text node;
+#   and the console must be clean. The fixture run
 #   additionally proves the task timeline: an event posted while a task's page
 #   is open appears with no reload, the task's earlier events survive unrelated
 #   fleet traffic, and that unrelated traffic stays off the task's own
 #   timeline.
+#
+#   That leak scan deliberately excludes one region and names it rather than
+#   quietly covering less than it claims. A worker-authored report BODY - the
+#   .report subtree on a task page - renders as written, filesystem paths
+#   included, because the captain decided on issue 169 that a report narrating
+#   a real path is the deliverable saying what it did, and redacting it is the
+#   worker's call rather than the dashboard's. The scan skips that subtree by
+#   name and counts every region it skipped, so an ok verdict states how many
+#   report bodies it stepped over instead of implying it read them.
 #
 #   The structural assertions are written against the page's own contract, not
 #   against fixture data, so this same command is what you point at a live
@@ -1047,10 +1060,12 @@ probe_fields() {  # <file> <alias>=<dotted.path>...
 
 # --- assertions --------------------------------------------------------------
 
-# Values that must never be on the page. Absolute paths and credential shapes
-# are the two the dashboard's own redaction is written against, so this is the
-# rendered-page end of that guarantee. These are evaluated as JavaScript regular
-# expressions inside the page.
+# Values that must never be in the chrome the dashboard composes. Absolute paths
+# and credential shapes are the two the dashboard's own redaction is written
+# against, so this is the rendered-page end of that guarantee - over rendered
+# attributes as well as rendered text, and over every region except the
+# worker-authored report bodies issue 169 exempted. These are evaluated as
+# JavaScript regular expressions inside the page.
 LEAK_PATTERNS='/home/;/root/;/etc/;-----BEGIN;sk-[A-Za-z0-9];gh[pousr]_[A-Za-z0-9];github_pat_;glpat-;xox[abprs]-;AKIA[A-Z0-9];AIza[A-Za-z0-9]'
 LEAK_PATTERN_COUNT=$(printf '%s' "$LEAK_PATTERNS" | tr ';' '\n' | grep -c .)
 
