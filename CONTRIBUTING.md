@@ -17,10 +17,10 @@ GitHub Actions and Dependabot are exempt so their automation keeps working; regu
 
 ## Workflow
 
-1. Fork the repo, then clone your fork so `origin` points at it (`git@github.com:<you>/firstmate.git`).
+1. Fork the repo, then clone this repository so your local `origin` points at it, because `origin` is the repository your PR opens against.
 2. Create a branch and make your changes.
-3. Initialize the gate so it records your fork as the push target: with `origin` already pointing at your fork, plain `no-mistakes init` records it (firstmate expects **no-mistakes v1.31.2+**; pass `--fork-url git@github.com:<you>/firstmate.git` when `origin` points anywhere else).
-   Check the recorded target before your first push and never leave it pointing at a repository you cannot push to.
+3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (firstmate expects **no-mistakes v1.31.2+**; without a fork, plain `no-mistakes init` still works for maintainers with push access).
+   Check the recorded push target before your first push and never leave it pointing at a repository you cannot push to.
 4. Commit your changes.
 5. Push through the gate instead of pushing to `origin`:
 
