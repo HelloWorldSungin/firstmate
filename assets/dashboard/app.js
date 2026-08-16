@@ -100,6 +100,7 @@ const state = {
   gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
   task: { reports: new Map(), timelines: new Map() },
   events: null,
+  routeEpoch: 0,
   controlCommit: 0,
   notifyEnabled: false,
   seenInboxIds: null,
@@ -1258,15 +1259,25 @@ async function fetchTaskReport(taskId) {
   return entry;
 }
 
-async function fetchTaskTimeline(taskId) {
-  if (state.task.timelines.has(taskId)) return state.task.timelines.get(taskId);
-  const entry = { loading: true, envelope: null, failed: false };
-  state.task.timelines.set(taskId, entry);
+async function fetchTaskTimeline(taskId, routeEpoch = state.routeEpoch, force = false) {
+  let entry = state.task.timelines.get(taskId);
+  if (!entry) {
+    entry = { loading: false, envelope: null, failed: false, routeEpoch: -1 };
+    state.task.timelines.set(taskId, entry);
+  }
+  if (entry.loading || (!force && entry.routeEpoch === routeEpoch)) return entry;
+  entry.loading = true;
+  entry.routeEpoch = routeEpoch;
   try {
     const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
     const envelope = displaySafeEnvelope(await response.json().catch(() => null));
     if (!response.ok || envelope?.schema !== "fm-dashboard-timeline.v1") throw new Error("timeline unavailable");
-    entry.envelope = envelope;
+    const retained = { task: taskId, events: Array.isArray(envelope.events) ? envelope.events : [] };
+    entry.envelope = {
+      ...envelope,
+      events: mergeTaskBackfill(Array.isArray(entry.envelope?.events) ? entry.envelope.events : [], retained, taskId),
+    };
+    entry.failed = false;
   } catch {
     entry.failed = true;
   }
@@ -1315,14 +1326,12 @@ function activityPanel(taskId, task) {
   const panel = element("section", "panel");
   panel.dataset.loadState = "settled";
   panel.append(element("div", "panel-h", "Activity"));
-  const entry = state.task.timelines.get(taskId);
-  if (!entry) {
-    panel.dataset.loadState = "loading";
-    panel.append(element("p", "state-reason", "Loading the recorded events…"));
+  let entry = state.task.timelines.get(taskId);
+  if (!entry || entry.routeEpoch !== state.routeEpoch) {
     void fetchTaskTimeline(taskId);
-    return panel;
+    entry = state.task.timelines.get(taskId);
   }
-  if (entry.loading) {
+  if (!entry || (entry.loading && !entry.envelope)) {
     panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the recorded events…"));
     return panel;
@@ -1548,6 +1557,7 @@ function onRouteChange() {
   const route = parseHash(window.location.hash);
   if (route.view === state.route.view && route.taskId === state.route.taskId) return;
   state.route = route;
+  state.routeEpoch += 1;
   if (route.view !== TASK_VIEW) window.scrollTo({ top: 0 });
   render();
 }
@@ -1657,6 +1667,9 @@ function connectEvents() {
             instrumented_harnesses: envelope.instrumented_harnesses || entry.envelope?.instrumented_harnesses,
             events: mergeTaskBackfill(Array.isArray(envelope.events) ? envelope.events : [], backfill, taskId),
           };
+          if (entry.failed && state.route.view === TASK_VIEW && state.route.taskId === taskId) {
+            void fetchTaskTimeline(taskId, state.routeEpoch, true);
+          }
         }
         if (state.route.view === TASK_VIEW) render();
       }

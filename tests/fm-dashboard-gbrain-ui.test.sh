@@ -145,16 +145,14 @@ const degradedEnvelope = {
   // green because hosted synthesis is up.
   deepEqual("degraded embedding only flips retrieval", tones,
     ["green", "green", "amber", "green", "green", "green"]);
-  // The card's value is the aggregate "degraded", so its detail is the only
-  // place the operator can read WHICH leg went and why - the reason rides on
-  // the leg that failed, and the healthy leg beside it stays a bare
-  // model @ endpoint.
+  // The card's value is the aggregate "degraded", so its detail names the
+  // failed leg without publishing its raw probe diagnostics.
   const retrieval = view.cards.find((c) => c.label === "Retrieval");
-  check("degraded embedding states its reason",
-    retrieval.detail.includes("embed-test @ http://127.0.0.1:11434/v1: no answer at http://127.0.0.1:11434/v1"),
+  check("degraded embedding states its outcome",
+    retrieval.detail.includes("embed-test: degraded"),
     retrieval.detail);
   check("healthy reranker states no reason",
-    retrieval.detail.includes("rerank-test @ http://127.0.0.1:8081/v1 /"),
+    retrieval.detail.includes("rerank-test /"),
     retrieval.detail);
 }
 
@@ -178,11 +176,11 @@ const degradedEnvelope = {
     },
   });
   const retrieval = view.cards.find((c) => c.label === "Retrieval");
-  check("degraded reranker states its reason",
-    retrieval.detail.includes("rerank-test @ http://127.0.0.1:8081/v1: no answer at http://127.0.0.1:8081/v1; search falls back to non-reranked ordering"),
+  check("degraded reranker states its outcome",
+    retrieval.detail.includes("rerank-test: degraded"),
     retrieval.detail);
   check("healthy embedding states no reason",
-    retrieval.detail.includes("embed-test @ http://127.0.0.1:11434/v1 /"),
+    retrieval.detail.includes("embed-test /"),
     retrieval.detail);
 }
 
@@ -233,7 +231,7 @@ const captureIssuesEnvelope = {
     index: { state: "ok", detail: "ok" },
     retrieval: { state: "ok" },
     synthesis: { state: "ok" },
-    capture: { enabled: true, archived: 5, pending: 3, failed: 1, unreadable: 0, last_capture_at: null, last_error: "brain refused: index is locked" },
+    capture: { enabled: true, archived: 5, pending: 3, failed: 1, unreadable: 0, last_capture_at: null, last_error: "Remove /home/firstmate/data/.gbrain-lock" },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -243,12 +241,11 @@ const captureIssuesEnvelope = {
   // failed > 0 takes precedence over pending; the operator reads red first.
   equal("capture tone when failed > 0", captureCard.tone, "red");
   equal("capture value when failed > 0", captureCard.value, "degraded");
-  // The detail carries every count plus the last error so the operator
-  // sees the retry queue without opening the durable outbox.
   check("capture detail shows archived count", captureCard.detail.includes("5 archived"));
   check("capture detail shows pending count", captureCard.detail.includes("3 pending"));
   check("capture detail shows failed count", captureCard.detail.includes("1 failed"));
-  check("capture detail shows last error", captureCard.detail.includes("brain refused: index is locked"));
+  check("capture detail maps the last error", captureCard.detail.includes("the last capture attempt failed"));
+  check("capture detail keeps raw diagnostics off the display model", !captureCard.detail.includes("/home/") && !captureCard.detail.includes(".gbrain-lock"));
 }
 
 // --- capture with only pending (no failures) -------------------------------
@@ -376,7 +373,7 @@ const upgradingEnvelope = {
   const maintenanceCard = view.cards.find((c) => c.label === "Maintenance");
   equal("maintenance tone when upgrading", maintenanceCard.tone, "amber");
   equal("maintenance value when upgrading", maintenanceCard.value, "upgrading");
-  equal("maintenance detail is verbatim", maintenanceCard.detail, "rebuild embedding index for v0.43");
+  equal("maintenance detail names the state", maintenanceCard.detail, "maintenance is upgrading");
 }
 
 // --- search failure reasons render with the operator's vocabulary ---------

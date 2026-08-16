@@ -705,7 +705,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
       index: { state: "ok", detail: "/home/captain/data/gbrain/index" },
       retrieval: { state: "ok" },
       synthesis: { state: "ok" },
-      capture: { enabled: true, archived: 1, pending: 0, failed: 0 },
+      capture: { enabled: true, archived: 1, pending: 0, failed: 1, last_error: "Remove /home/captain/data/.gbrain-lock" },
       maintenance: { state: "ready" },
     },
   };
@@ -718,6 +718,11 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   eventSources[0].listeners.gbrain_health({ data: JSON.stringify({ ...configuredBrain, status: { phase: "ready", last_success_age_seconds: 0 } }) });
   const refreshedKnowledgeSearch = one(viewNode, (node) => node.id === "knowledge-search", "knowledge search after refresh");
   if (refreshedKnowledgeSearch !== knowledgeSearch || refreshedKnowledgeSearch.value !== "unsubmitted fleet draft" || !refreshedKnowledgeSearch.focused) throw new Error("a health refresh reset the mounted Knowledge search draft");
+  const healthButton = one(viewNode, (node) => hasClass(node, "health-h"), "knowledge health disclosure");
+  healthButton.listeners.click();
+  const healthAttributes = all(viewNode, (node) => hasClass(node, "hsys")).map((node) => node.title || "").join(" ");
+  if (healthAttributes.includes("/home/") || healthAttributes.includes(".gbrain-lock")) throw new Error(`a raw GBrain diagnostic reached a health attribute: ${healthAttributes}`);
+  if (!healthAttributes.includes("the last capture attempt failed")) throw new Error(`the capture failure lost its display-safe detail: ${healthAttributes}`);
 
   // --- the task route: kv strip, full PR URL, and honest outcome chips -------
   await go(`#/task/${TASK_ID}`);
@@ -744,6 +749,20 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
 
   timelineEnvelope = {
     schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "disabled" },
+    events: [{ event_id: "revisit-event", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "revisit", outcome: "ok", occurred_at: "2026-08-15T10:00:04Z", occurred_epoch: 4 }],
+  };
+  const beforeRevisit = timelineFetches;
+  await go("#/needs");
+  await go(`#/task/${TASK_ID}`);
+  await settle();
+  await settle();
+  const revisitedTimeline = one(viewNode, (node) => node.id === "view-task", "revalidated task timeline").textContent;
+  if (timelineFetches !== beforeRevisit + 1) throw new Error("revisiting a cached task did not revalidate its timeline");
+  if (!revisitedTimeline.includes("Reporting is off in this home") || !revisitedTimeline.includes("revisit")) throw new Error(`a fresher per-task status did not replace the cached ready status: ${revisitedTimeline}`);
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
     status: { ingestion: "unavailable", reason: "the event store is unreadable" },
     events: [],
   };
@@ -766,6 +785,27 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   timelineFetchFailure = false;
   const failedTimeline = one(viewNode, (node) => node.id === "view-task", "task with failed timeline fetch").textContent;
   if (!failedTimeline.includes("Activity cannot be recorded: the stored task timeline could not be read")) throw new Error(`a failed task backfill fell through to the fleet stream: ${failedTimeline}`);
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "ready" },
+    events: [{ event_id: "recovered-event", task_id: "busy-worker", harness: "codex", type: "tool_finished", tool: "recover", outcome: "ok", occurred_at: "2026-08-15T10:00:05Z", occurred_epoch: 5 }],
+  };
+  const beforeRecovery = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    status: { ingestion: "ready" },
+    events: [],
+  }) });
+  await settle();
+  await settle();
+  const recoveredTimeline = one(viewNode, (node) => node.id === "view-task", "recovered task timeline").textContent;
+  if (timelineFetches !== beforeRecovery + 1) throw new Error("a healthy stream did not make one failed task timeline retryable");
+  if (recoveredTimeline.includes("stored task timeline could not be read") || !recoveredTimeline.includes("recover")) throw new Error(`a successful timeline retry kept the failed cache state: ${recoveredTimeline}`);
+  const afterRecovery = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+  await settle();
+  if (timelineFetches !== afterRecovery) throw new Error("healthy fleet broadcasts repeatedly refetched a recovered task timeline");
 
   timelineEnvelope = {
     schema: "fm-dashboard-timeline.v1",

@@ -114,6 +114,9 @@ assert_contains "$(cat "$result")" "observation set reconciled" \
 # the harness lost the ability to read some evidence it used to read - which
 # would otherwise show up as a quietly smaller green run.
 grep -q '^?' "$result" && fail "the check could not verify an observation against a fixture it controls"$'\n'"$(cat "$result")"
+assert_contains "$(cat "$result")" "attribute characters" "the leak scan did not report attribute coverage"
+assert_contains "$(cat "$result")" "worker-authored report region(s) deliberately excluded pending issue 169" \
+  "the leak scan did not disclose its worker-report scope boundary"
 pass "the browser check passes against a correctly rendering dashboard at phone, boundary, and desktop widths"
 
 # --- a page that renders nothing fails ---------------------------------------
@@ -232,6 +235,14 @@ status=$?
 assert_contains "$forced" "forced: history:fail" "the injected run did not stamp the branch it forced"
 grep -qF "completion records but the page displays none" "$TMP_ROOT/forced-history/result.txt" \
   || fail "forcing history:fail did not run the history display assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced-history/result.txt")"
+
+forced=$(FM_DASHBOARD_BROWSER_FORCE=leak:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-leak" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing leak:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: leak:fail" "the injected run did not stamp the branch it forced"
+grep -qF "matched Needs you: /home/" "$TMP_ROOT/forced-leak/result.txt" \
+  || fail "forcing leak:fail did not make the attribute scanner find its path-shaped value"$'\n'"$(cat "$TMP_ROOT/forced-leak/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
 
 # --- the observation set is reconciled ----------------------------------------

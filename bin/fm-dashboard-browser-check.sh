@@ -521,6 +521,10 @@ for entry in $(printf '%s' "${FM_DASHBOARD_BROWSER_FORCE:-}" | tr ',' ' '); do
     || die "FM_DASHBOARD_BROWSER_FORCE: [$entry] is not a check and branch this script can force; see its header for the list"
   FORCE_SPEC="${FORCE_SPEC} $entry"
 done
+LEAK_FAULT_ATTRIBUTE=
+case " $FORCE_SPEC " in
+  *" leak:fail "*) LEAK_FAULT_ATTRIBUTE=/home/fm-dashboard-browser-attribute-probe ;;
+esac
 [ -n "$FORCE_SPEC" ] && [ "$NEGATIVE" = yes ] \
   && die "--negative proves these assertions can fail; FM_DASHBOARD_BROWSER_FORCE makes them fail, so the two together prove nothing"
 
@@ -1050,6 +1054,46 @@ probe_fields() {  # <file> <alias>=<dotted.path>...
 LEAK_PATTERNS='/home/;/root/;/etc/;-----BEGIN;sk-[A-Za-z0-9];gh[pousr]_[A-Za-z0-9];github_pat_;glpat-;xox[abprs]-;AKIA[A-Z0-9];AIza[A-Za-z0-9]'
 LEAK_PATTERN_COUNT=$(printf '%s' "$LEAK_PATTERNS" | tr ';' '\n' | grep -c .)
 
+leak_scan_js() {
+  cat <<'JS'
+() => {
+  const patterns = [];
+  for (const source of config.leaks) {
+    try { patterns.push({ source, expression: new RegExp(source) }); } catch {}
+  }
+  if (config.leakFault) document.body.setAttribute("data-dashboard-leak-probe", config.leakFault);
+  const textParts = [];
+  const attributeParts = [];
+  let excludedReports = 0;
+  const collect = (node) => {
+    if (node.nodeType === Node.ELEMENT_NODE && node.matches(".report")) {
+      excludedReports += 1;
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE) textParts.push(node.nodeValue || "");
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      for (const attribute of node.attributes) attributeParts.push(attribute.name + "=" + attribute.value);
+    }
+    for (const child of node.childNodes) collect(child);
+  };
+  collect(document.body);
+  const renderedText = textParts.join(" ");
+  const renderedAttributes = attributeParts.join("\n");
+  const leakSurface = renderedText + "\n" + renderedAttributes;
+  return {
+    leakPatterns: patterns.length,
+    leakChars: leakSurface.length,
+    leakTextChars: renderedText.length,
+    leakAttributeChars: renderedAttributes.length,
+    leakExcludedReports: excludedReports,
+    pageLeaks: patterns.filter((pattern) => pattern.expression.test(leakSurface)).map((pattern) => pattern.source),
+  };
+}
+JS
+}
+
+LEAK_SCAN_JS=$(leak_scan_js)
+
 count_landmarks() {  # <semicolon-separated landmarks>
   printf '%s' "${1:-}" | tr ';' '\n' | grep -c . || true
 }
@@ -1101,13 +1145,14 @@ JS
 route_probe_js() {  # <route> <view id> <semicolon landmarks>
   # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
   node -e '
-    const [route, viewId, landmarksRaw, allIdsRaw, leaksRaw] = process.argv.slice(1);
+    const [route, viewId, landmarksRaw, allIdsRaw, leaksRaw, leakFault, scanSource] = process.argv.slice(1);
     const config = {
       route,
       viewId,
       landmarks: landmarksRaw.split(";").filter(Boolean),
       allIds: allIdsRaw.split(",").filter(Boolean),
       leaks: leaksRaw.split(";").filter(Boolean),
+      leakFault,
     };
     process.stdout.write(`async () => {
       const config = ${JSON.stringify(config)};
@@ -1155,17 +1200,7 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
       // the count of how many were looked for so an empty list is checkable.
       out.others = config.allIds.filter((id) => id !== config.viewId && document.getElementById(id) !== null);
       out.othersChecked = config.allIds.length - 1;
-      const patterns = [];
-      for (const source of config.leaks) {
-        try { patterns.push({ source, expression: new RegExp(source) }); } catch { /* only a pattern that compiles is one this scan ran */ }
-      }
-      // The whole rendered page at this destination, because that is what the
-      // leak observation claims: the verdict strip, the navigation, and any
-      // notice carrying a failed command'"'"'s stderr sit outside the view root.
-      const bodyText = document.body.innerText;
-      out.leakPatterns = patterns.length;
-      out.leakChars = bodyText.length;
-      out.pageLeaks = patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source);
+      Object.assign(out, (${scanSource})());
       if (element) {
         const text = element.innerText;
         const lower = text.toLowerCase();
@@ -1187,7 +1222,7 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
       }
       return JSON.stringify(out);
     }`);
-  ' "$1" "$2" "$3" "$ALL_VIEW_IDS" "$LEAK_PATTERNS"
+  ' "$1" "$2" "$3" "$ALL_VIEW_IDS" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
 }
 
 # Clicks the first task row on the Fleet board and reads where it landed, so
@@ -1196,22 +1231,11 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
 task_open_probe_js() {
   # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
   node -e '
-    const [allIdsRaw, leaksRaw] = process.argv.slice(1);
-    const config = { allIds: allIdsRaw.split(",").filter(Boolean), leaks: leaksRaw.split(";").filter(Boolean) };
+    const [allIdsRaw, leaksRaw, leakFault, scanSource] = process.argv.slice(1);
+    const config = { allIds: allIdsRaw.split(",").filter(Boolean), leaks: leaksRaw.split(";").filter(Boolean), leakFault };
     process.stdout.write(`async () => {
       const config = ${JSON.stringify(config)};
-      const scan = () => {
-        const patterns = [];
-        for (const source of config.leaks) {
-          try { patterns.push({ source, expression: new RegExp(source) }); } catch {}
-        }
-        const bodyText = document.body.innerText;
-        return {
-          leakPatterns: patterns.length,
-          leakChars: bodyText.length,
-          pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
-        };
-      };
+      const scan = ${scanSource};
       const settledTask = async () => {
         for (let tick = 0; tick < 80; tick += 1) {
           const view = document.getElementById("view-task");
@@ -1246,7 +1270,7 @@ task_open_probe_js() {
         ...(task ? scan() : {}),
       });
     }`);
-  ' "$ALL_VIEW_IDS" "$LEAK_PATTERNS"
+  ' "$ALL_VIEW_IDS" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
 }
 
 # A bounded slice of each view, saved so a human can read what the check saw.
@@ -1260,6 +1284,9 @@ capture_view_text() {  # <label> <view id>
 WIDTH_TRUSTED=no
 LEAK_SCANS=0
 LEAK_CHARS_TOTAL=0
+LEAK_TEXT_CHARS_TOTAL=0
+LEAK_ATTRIBUTE_CHARS_TOTAL=0
+LEAK_EXCLUDED_REPORTS=0
 LEAK_PATTERNS_SHORT=no
 LEAK_MATCHES=
 
@@ -1289,6 +1316,9 @@ check_width() {  # <width> <height>
   WIDTH_TRUSTED=no
   LEAK_SCANS=0
   LEAK_CHARS_TOTAL=0
+  LEAK_TEXT_CHARS_TOTAL=0
+  LEAK_ATTRIBUTE_CHARS_TOTAL=0
+  LEAK_EXCLUDED_REPORTS=0
   LEAK_PATTERNS_SHORT=no
   LEAK_MATCHES=
 
@@ -1463,7 +1493,7 @@ route_unobserved() {  # <label> <name> <reason>
 check_route() {  # <width label> <route> <view id> <name> <landmarks>
   local label=$1 route=$2 id=$3 name=$4 landmarks=$5 expected probe fields key value
   local clicked control reason hash present others others_checked
-  local client_width scroll_width leak_patterns leak_chars page_leaks
+  local client_width scroll_width leak_patterns leak_chars leak_text_chars leak_attribute_chars leak_excluded_reports page_leaks
   expected=$(count_landmarks "$landmarks")
   probe="$OUT_DIR/route-$label-$route.json"
 
@@ -1506,14 +1536,15 @@ CLICK
 
   if ! fields=$(probe_fields "$probe" hash=hash control=control present=present \
     others=others othersChecked=othersChecked clientWidth=clientWidth scrollWidth=scrollWidth \
-    leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
+    leakPatterns=leakPatterns leakChars=leakChars leakTextChars=leakTextChars \
+    leakAttributeChars=leakAttributeChars leakExcludedReports=leakExcludedReports pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: the $name destination is reachable from the visible navigation" \
       "the landing could not be read out of the probe"
     route_unobserved "$label" "$name" "the landing could not be read, so nothing about the view was observed"
     return 1
   fi
   hash=; control=; present=; others=; others_checked=; client_width=; scroll_width=
-  leak_patterns=; leak_chars=; page_leaks=
+  leak_patterns=; leak_chars=; leak_text_chars=; leak_attribute_chars=; leak_excluded_reports=; page_leaks=
   while IFS='=' read -r key value; do
     case "$key" in
       hash) hash=$value ;;
@@ -1525,6 +1556,9 @@ CLICK
       scrollWidth) scroll_width=$value ;;
       leakPatterns) leak_patterns=$value ;;
       leakChars) leak_chars=$value ;;
+      leakTextChars) leak_text_chars=$value ;;
+      leakAttributeChars) leak_attribute_chars=$value ;;
+      leakExcludedReports) leak_excluded_reports=$value ;;
       pageLeaks) page_leaks=$value ;;
     esac
   done <<INNER
@@ -1542,9 +1576,14 @@ INNER
 
   # Fold this destination's page-wide leak scan into the width's aggregate.
   # A scan over zero characters is a scan that cannot be shown to have run.
-  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
+  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ] \
+    && is_number "$leak_text_chars" && is_number "$leak_attribute_chars" && [ "$leak_attribute_chars" -gt 0 ] \
+    && is_number "$leak_excluded_reports"; then
     LEAK_SCANS=$((LEAK_SCANS + 1))
     LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
+    LEAK_TEXT_CHARS_TOTAL=$((LEAK_TEXT_CHARS_TOTAL + leak_text_chars))
+    LEAK_ATTRIBUTE_CHARS_TOTAL=$((LEAK_ATTRIBUTE_CHARS_TOTAL + leak_attribute_chars))
+    LEAK_EXCLUDED_REPORTS=$((LEAK_EXCLUDED_REPORTS + leak_excluded_reports))
     [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
     [ -n "$page_leaks" ] && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }$name: $page_leaks"
   fi
@@ -1771,7 +1810,7 @@ check_usage_cells() {  # <label> <rows> <cells>
 # on the Fleet board, clicked while that board is the active view.
 check_task_open() {  # <label>
   local label=$1 probe fields key value clicked reason hash present others others_checked
-  local mounted settled leak_patterns leak_chars page_leaks
+  local mounted settled leak_patterns leak_chars leak_text_chars leak_attribute_chars leak_excluded_reports page_leaks
   probe="$OUT_DIR/task-open-$label.json"
   console_collect "$label-before-task"
   if forced task-open unverified || ! browser_eval_json "$(task_open_probe_js)" "$probe"; then
@@ -1779,12 +1818,14 @@ check_task_open() {  # <label>
       "the page returned nothing readable about the board"
     return
   fi
-  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason mounted=mounted settled=settled leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
+  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason mounted=mounted settled=settled \
+    leakPatterns=leakPatterns leakChars=leakChars leakTextChars=leakTextChars \
+    leakAttributeChars=leakAttributeChars leakExcludedReports=leakExcludedReports pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the page did not say whether a board row was found"
     return
   fi
-  clicked=; reason=; mounted=; settled=; leak_patterns=; leak_chars=; page_leaks=
+  clicked=; reason=; mounted=; settled=; leak_patterns=; leak_chars=; leak_text_chars=; leak_attribute_chars=; leak_excluded_reports=; page_leaks=
   while IFS='=' read -r key value; do
     case "$key" in
       clicked) clicked=$value ;;
@@ -1793,14 +1834,22 @@ check_task_open() {  # <label>
       settled) settled=$value ;;
       leakPatterns) leak_patterns=$value ;;
       leakChars) leak_chars=$value ;;
+      leakTextChars) leak_text_chars=$value ;;
+      leakAttributeChars) leak_attribute_chars=$value ;;
+      leakExcludedReports) leak_excluded_reports=$value ;;
       pageLeaks) page_leaks=$value ;;
     esac
   done <<CLICK
 $fields
 CLICK
-  if [ "$mounted" = true ] && [ "$settled" = true ] && is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
+  if [ "$mounted" = true ] && [ "$settled" = true ] && is_number "$leak_patterns" \
+    && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ] && is_number "$leak_text_chars" \
+    && is_number "$leak_attribute_chars" && [ "$leak_attribute_chars" -gt 0 ] && is_number "$leak_excluded_reports"; then
     LEAK_SCANS=$((LEAK_SCANS + 1))
     LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
+    LEAK_TEXT_CHARS_TOTAL=$((LEAK_TEXT_CHARS_TOTAL + leak_text_chars))
+    LEAK_ATTRIBUTE_CHARS_TOTAL=$((LEAK_ATTRIBUTE_CHARS_TOTAL + leak_attribute_chars))
+    LEAK_EXCLUDED_REPORTS=$((LEAK_EXCLUDED_REPORTS + leak_excluded_reports))
     [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
     [ -n "$page_leaks" ] && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }Task: $page_leaks"
   fi
@@ -1868,9 +1917,9 @@ check_leak_aggregate() {  # <label>
   route_total=$(printf '%s\n' "$VIEWS" | grep -c .)
   route_total=$((route_total + 1))
   forced leak unverified && LEAK_SCANS=0
-  if [ "$LEAK_SCANS" -ne "$route_total" ] || [ "$LEAK_CHARS_TOTAL" -eq 0 ]; then
+  if [ "$LEAK_SCANS" -ne "$route_total" ] || [ "$LEAK_CHARS_TOTAL" -eq 0 ] || [ "$LEAK_ATTRIBUTE_CHARS_TOTAL" -eq 0 ]; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
-      "the scan ran on $LEAK_SCANS of $route_total destinations over $LEAK_CHARS_TOTAL characters, so it cannot be shown to have covered the page"
+      "the scan ran on $LEAK_SCANS of $route_total destinations over $LEAK_TEXT_CHARS_TOTAL text and $LEAK_ATTRIBUTE_CHARS_TOTAL attribute characters, so it cannot be shown to have covered the page"
     return
   fi
   if [ "$LEAK_PATTERNS_SHORT" = yes ]; then
@@ -1878,10 +1927,10 @@ check_leak_aggregate() {  # <label>
       "a destination evaluated fewer than this check's $LEAK_PATTERN_COUNT patterns, so the scan was incomplete"
     return
   fi
-  forced leak fail && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }forced: /home/"
+  forced leak fail || true
   if [ -z "$LEAK_MATCHES" ]; then
     record ok "$label: no credential-shaped or path-shaped value on any destination" \
-      "$LEAK_PATTERN_COUNT patterns over $LEAK_CHARS_TOTAL rendered characters across $route_total destinations"
+      "$LEAK_PATTERN_COUNT patterns over $LEAK_TEXT_CHARS_TOTAL text and $LEAK_ATTRIBUTE_CHARS_TOTAL attribute characters across $route_total destinations; $LEAK_EXCLUDED_REPORTS worker-authored report region(s) deliberately excluded pending issue 169"
   else
     record FAIL "$label: no credential-shaped or path-shaped value on any destination" \
       "matched $LEAK_MATCHES"
