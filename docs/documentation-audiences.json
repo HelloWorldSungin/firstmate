@@ -138,6 +138,10 @@
       "target": "bin/fm-upstream-status.sh"
     },
     {
+      "source": "tests/fm-session-start.test.sh",
+      "target": "bin/fm-bootstrap.sh"
+    },
+    {
       "source": ".agents/skills/sync-upstream/SKILL.md",
       "target": "bin/fm-upstream-status.sh"
     },

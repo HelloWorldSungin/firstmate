@@ -322,10 +322,17 @@ export default function (pi: ExtensionAPI) {
     const readiness = armReadiness.get(armChild);
     if (!readiness) return Promise.resolve(false);
     return new Promise((resolveReady) => {
-      const timer = setTimeout(() => resolveReady(false), armReadyTimeoutMs);
+      let expiry: ReturnType<typeof setImmediate> | null = null;
+      const timer = setTimeout(() => {
+        // Give stdout/stderr already queued in the poll phase one turn to
+        // settle readiness before treating the wall-clock deadline as final.
+        expiry = setImmediate(() => resolveReady(false));
+        expiry.unref();
+      }, armReadyTimeoutMs);
       timer.unref();
       void readiness.then((ready) => {
         clearTimeout(timer);
+        if (expiry) clearImmediate(expiry);
         resolveReady(ready);
       });
     });
