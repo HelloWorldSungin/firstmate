@@ -2150,7 +2150,7 @@ test_agent_state_live_agent_shapes_stay_alive() {
   #   background  - a backgrounded agent is an extra sleeping leaf
   #   escape      - an agent hosting an interactive shell is a non-shell,
   #                 non-treehouse ancestor of the idle foreground shell
-  local shape dir log resp fb out
+  local shape dir log resp fb out process_info_calls
   for shape in foreground suspended background escape; do
     dir="$TMP_ROOT/agent-state-live-$shape"; mkdir -p "$dir/responses"
     log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -2178,6 +2178,9 @@ test_agent_state_live_agent_shapes_stay_alive() {
     fb=$(make_herdr_fakebin "$dir")
     out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
     [ "$out" = alive ] || fail "a registered agent in the '$shape' live shape must stay alive, got '$out'"
+    process_info_calls=$(grep -c $'pane\x1fprocess-info' "$log")
+    [ "$process_info_calls" -eq 1 ] \
+      || fail "the '$shape' live shape must stop after one conclusive process-info sample, got $process_info_calls calls"
   done
   pass "fm_backend_herdr_agent_state: foreground, suspended, backgrounded, and escape-shell live agents all stay alive"
 }

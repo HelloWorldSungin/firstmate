@@ -1322,24 +1322,28 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # interactive escape shell is a non-shell NON-LEAF ancestor (fails the
 # wrapper allowlist), so no reachable live-agent shape can classify
 # agent-free. Every unreadable or ambiguous field also fails, so the caller's
-# fail-safe direction is refusal. The same bounded settle retry as the
-# lone-shell proof absorbs a transient prompt helper (starship redrawing
-# after a relayout).
+# fail-safe direction is refusal. Retryable samples retain the same bounded
+# settle window as the lone-shell proof to absorb a transient prompt helper
+# (starship redrawing after a relayout), while positive live-agent evidence
+# refuses immediately.
 fm_backend_herdr_pane_agent_free_proof() {  # <session> <pane-id>
-  local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10}
+  local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10} sample_result
   while :; do
     if fm_backend_herdr_pane_agent_free_sample "$1" "$2"; then
       return 0
+    else
+      sample_result=$?
     fi
+    [ "$sample_result" -eq 2 ] && return 1
     attempt=$((attempt + 1))
     [ "$attempt" -lt "$max_attempts" ] || return 1
     sleep 0.1
   done
 }
 
-# fm_backend_herdr_pane_agent_free_sample: one strict instantaneous
-# observation for fm_backend_herdr_pane_agent_free_proof, which owns the
-# proof contract and the settle retry.
+# fm_backend_herdr_pane_agent_free_sample: one tri-state instantaneous
+# observation for fm_backend_herdr_pane_agent_free_proof: 0 is agent-free,
+# 1 is retryable, and 2 is conclusively live.
 fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid fg_pgid count fg_pid name argv0 shell_name ps_bin rows
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
@@ -1367,7 +1371,7 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
   argv0=${argv0#-}
   argv0=${argv0##*/}
   [ "$argv0" = "$shell_name" ] || return 1
-  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 1 ;; esac
+  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 2 ;; esac
 
   [ "$fg_pgid" = "$fg_pid" ] || return 1
   ps_bin=${FM_HERDR_PS_BIN:-ps}
@@ -1407,13 +1411,12 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
       for (i = 1; i <= NR; i++) {
         if (!(pid[i] in inset)) continue
         if (fields[i] != 4) exit 1
-        if (stat[i] !~ /^[SI]/) exit 1
         c = normname(comm[i])
+        if (!isshell(c) && c != "treehouse") exit 2
+        if (stat[i] !~ /^[SI]/) exit 2
         if (kids[pid[i]] + 0 == 0) {
           if (pid[i] != fg) exit 1
           if (!isshell(c)) exit 1
-        } else if (!isshell(c) && c != "treehouse") {
-          exit 1
         }
       }
       exit 0
