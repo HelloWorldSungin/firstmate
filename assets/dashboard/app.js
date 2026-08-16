@@ -617,20 +617,31 @@ function renderFleet() {
 
 // --- Backlog -----------------------------------------------------------------
 
+// A facet key is a record value, and a record value is sometimes a clone path.
+// option.value reflects a content attribute, so writing the key there would put
+// that path in the document as surely as a text node would. The option carries
+// its position instead and the change handler resolves the key from the list
+// the options were built from, which keeps filtering exact on the raw value
+// while the only project string the page renders is the one label() returned.
 function backlogSelect(name, value, options, change) {
   const select = element("select", "fsel");
   select.name = name;
+  const keyed = Object.entries(options).filter(([key]) => key !== "all");
   const all = element("option", "", options.all);
   all.value = "";
   select.append(all);
-  for (const [key, optionLabel] of Object.entries(options)) {
-    if (key === "all") continue;
+  keyed.forEach(([, optionLabel], index) => {
     const opt = element("option", "", optionLabel);
-    opt.value = key;
+    opt.value = String(index);
     select.append(opt);
-  }
-  select.value = value || "";
-  select.addEventListener("change", () => change(select.value));
+  });
+  const current = value === null || value === undefined ? "" : String(value);
+  const selected = keyed.findIndex(([key]) => key === current);
+  select.value = selected === -1 ? "" : String(selected);
+  select.addEventListener("change", () => {
+    const chosen = select.value === "" ? null : keyed[Number(select.value)];
+    change(chosen ? chosen[0] : "");
+  });
   return select;
 }
 
@@ -1121,6 +1132,7 @@ function liveTaskRecord(task) {
     },
     pr: readiness.url ? { url: readiness.url, tone: readiness.tone, label: readiness.label, checks: readiness.fields?.checks || null } : null,
     reportPresent: false,
+    reportKey: null,
     workItems: taskWorkItems(task.work_items),
   };
 }
@@ -1147,8 +1159,19 @@ function historyTaskRecord(record) {
     },
     pr: record.pr?.present ? { url: record.pr.url, tone: record.pr.tone || "unknown", label: record.pr.state || "unknown", checks } : null,
     reportPresent: record.report?.present === true,
+    reportKey: reportKeyFor(record),
     workItems: taskWorkItems(record.work_items),
   };
+}
+
+// What a cached report is a cache OF. History republishes on every poll, twice,
+// with the records usually unchanged, so identity has to come from the record
+// rather than from the arrival of a push: the same key means the retained
+// report the server would serve is the same file, and the cached body stays on
+// the page untouched.
+function reportKeyFor(record) {
+  if (record?.report?.present !== true) return null;
+  return [record.report.path || "", record.timestamps?.completed || "", record.id || ""].join("|");
 }
 
 function backlogTaskRecord(record) {
@@ -1172,6 +1195,7 @@ function backlogTaskRecord(record) {
     },
     pr: null,
     reportPresent: false,
+    reportKey: null,
     workItems: [],
   };
 }
@@ -1243,10 +1267,15 @@ function taskLookup(taskId) {
   return { phase: "missing", sources };
 }
 
-async function fetchTaskReport(taskId) {
-  if (state.task.reports.has(taskId)) return state.task.reports.get(taskId);
-  const entry = { loading: true, payload: null };
-  state.task.reports.set(taskId, entry);
+async function fetchTaskReport(taskId, reportKey = null) {
+  let entry = state.task.reports.get(taskId);
+  if (entry && (entry.loading || entry.reportKey === reportKey)) return entry;
+  if (!entry) {
+    entry = { loading: false, payload: null, reportKey: null };
+    state.task.reports.set(taskId, entry);
+  }
+  entry.loading = true;
+  entry.reportKey = reportKey;
   try {
     const response = await fetch(`/api/report?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
     const payload = await response.json().catch(() => ({}));
@@ -1304,24 +1333,22 @@ function retryFailedTaskTimeline(taskId, entry, envelope) {
   void fetchTaskTimeline(taskId, state.routeEpoch, true);
 }
 
-function reportPanel(taskId, present, live = null) {
+function reportPanel(taskId, present, live = null, reportKey = null) {
   const panel = element("section", "panel");
   panel.dataset.loadState = "settled";
   panel.append(element("div", "panel-h", "Report"));
-  const entry = state.task.reports.get(taskId);
   if (!present) {
     panel.append(element("p", "state-reason", live?.kind === "scout"
       ? "This scout is still writing its report. The deliverable becomes readable here once the work completes and its completion record is published."
       : "No report was retained for this task."));
     return panel;
   }
-  if (!entry) {
-    panel.dataset.loadState = "loading";
-    panel.append(element("p", "state-reason", "Loading the report…"));
-    void fetchTaskReport(taskId);
-    return panel;
-  }
-  if (entry.loading) {
+  void fetchTaskReport(taskId, reportKey);
+  const entry = state.task.reports.get(taskId);
+  // A revalidation behind a report already on the page is not a load: the body
+  // stays rendered and the panel stays settled, so a history push that changed
+  // nothing cannot blink the report out and back twice a minute.
+  if (!entry || (entry.loading && !entry.payload)) {
     panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the report…"));
     return panel;
@@ -1491,7 +1518,7 @@ function renderTask() {
   // exists only for a task that has one. A live scout still writes its report
   // to the task's own directory, but that is not exposed over HTTP until the
   // completion record publishes it - saying so beats a panel that 404s.
-  const report = reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null);
+  const report = reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null, task.reportKey);
   mainCol.append(report);
 
   if (task.pr) sideCol.append(prPanel(task.pr.url, task.pr));
@@ -1656,7 +1683,6 @@ function connectEvents() {
       const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-history.v1") {
         state.history.envelope = envelope;
-        state.task.reports.clear();
         render();
       }
     } catch {}

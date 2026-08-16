@@ -753,6 +753,12 @@ fixture_env() {
 
 EVENT_TOKEN=0123456789abcdef0123456789abcdef
 
+# Every project and repo value here is a real absolute clone path, because that
+# is what a registered project IS in a live fleet and the leak scan is only as
+# good as the data it runs over: with bare repo names the scan would pass on a
+# page that renders paths everywhere a real dashboard would fail. The page must
+# still show the short name display.js label() returns, which is exactly what
+# the text-and-attribute scan then proves end to end.
 write_fixture_snapshot() {  # <path>
   cat > "$1" <<'JSON'
 {
@@ -762,7 +768,7 @@ write_fixture_snapshot() {  # <path>
     {
       "id": "fixture-ship",
       "kind": "ship",
-      "project": "firstmate",
+      "project": "/home/fixture-captain/projects/firstmate",
       "harness": "claude",
       "model": "claude-opus-5",
       "effort": "high",
@@ -777,7 +783,7 @@ write_fixture_snapshot() {  # <path>
     {
       "id": "fixture-scout",
       "kind": "scout",
-      "project": "firstmate",
+      "project": "/home/fixture-captain/projects/firstmate",
       "harness": "claude",
       "model": "claude-opus-5",
       "effort": "xhigh",
@@ -809,8 +815,8 @@ write_fixture_snapshot() {  # <path>
     "path": "data/backlog.md",
     "present": true,
     "records": [
-      {"order":1,"state":"queued","structured":true,"id":"fixture-queued-fix","title":"Fix the stale badge count","repo":"firstmate","kind":"fix","priority":"1","since":"2026-08-01","since_age_seconds":86400},
-      {"order":2,"state":"queued","structured":true,"id":"fixture-queued-held","title":"Design token sync from the studio site","repo":"arknodestudio-website","kind":"chore","priority":"2","hold_reason":"waiting on vault token rotation","since":"2026-08-02","since_age_seconds":43200}
+      {"order":1,"state":"queued","structured":true,"id":"fixture-queued-fix","title":"Fix the stale badge count","repo":"/home/fixture-captain/projects/firstmate","kind":"fix","priority":"1","since":"2026-08-01","since_age_seconds":86400},
+      {"order":2,"state":"queued","structured":true,"id":"fixture-queued-held","title":"Design token sync from the studio site","repo":"/home/fixture-captain/projects/arknodestudio-website","kind":"chore","priority":"2","hold_reason":"waiting on vault token rotation","since":"2026-08-02","since_age_seconds":43200}
     ]
   }
 }
@@ -826,7 +832,7 @@ seed_completed_task() {  # <home> <id> <kind> <title> [pr-url]
   {
     printf 'window=%s\n' "fm:$id"
     printf 'kind=%s\n' "$kind"
-    printf 'project=firstmate\n'
+    printf 'project=/home/fixture-captain/projects/firstmate\n'
     printf 'harness=claude\n'
     printf 'model=claude-opus-5\n'
     printf 'effort=high\n'
@@ -864,8 +870,8 @@ build_fixture() {
 ## In flight
 
 ## Queued
-- [ ] fixture-queued-fix - Fix the stale badge count (repo: firstmate, kind: fix, priority: 1, since 2026-08-01)
-- [ ] fixture-queued-held - Design token sync from the studio site (repo: arknodestudio-website, kind: chore, hold: waiting on vault token rotation, since 2026-08-02)
+- [ ] fixture-queued-fix - Fix the stale badge count (repo: /home/fixture-captain/projects/firstmate, kind: fix, priority: 1, since 2026-08-01)
+- [ ] fixture-queued-held - Design token sync from the studio site (repo: /home/fixture-captain/projects/arknodestudio-website, kind: chore, hold: waiting on vault token rotation, since 2026-08-02)
 
 ## Done
 MD

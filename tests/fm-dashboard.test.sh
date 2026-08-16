@@ -477,7 +477,7 @@ function completionRecord(id, state, hoursAgo) {
       url: "https://github.com/HelloWorldSungin/firstmate/pull/156",
       status: { state: "merged", review: "approved", checks: "passing", mergeable: "mergeable", observed_at: recentIso(hoursAgo), source: "github" },
     } : {},
-    report: {},
+    report: id === "delivered-one" ? { present: true, path: `/home/captain/data/${id}/report.md` } : {},
     work_items: id === "delivered-one" ? { references: [{ forge: "github", url: "https://github.com/HelloWorldSungin/firstmate/issues/156", enrichment: { title: "Dashboard rebuild" } }] } : { references: [] },
   };
 }
@@ -517,6 +517,8 @@ let timelineEnvelope = {
 const eventSources = [];
 let timelineFetches = 0;
 let timelineFetchFailure = false;
+let reportFetches = 0;
+let reportText = "The delivered report body.";
 class FakeEventSource {
   constructor() {
     this.listeners = {};
@@ -557,6 +559,10 @@ Object.assign(globalThis, {
         timelineFetches += 1;
         if (timelineFetchFailure) throw new Error("the task timeline request failed");
         return timelineEnvelope;
+      }
+      if (url.startsWith("/api/report")) {
+        reportFetches += 1;
+        return { schema: "fm-dashboard-report.v1", present: true, text: reportText };
       }
       return {};
     },
@@ -690,6 +696,47 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "second restored backlog search");
   backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
   if (!backlogSearch.focused || backlogSearch.value !== "held" || backlogRows.length !== 1) throw new Error("Backlog search did not accept multiple characters continuously");
+
+  // A facet key is a record value and a record value is sometimes a clone
+  // path, so the option carries its position and never the key itself - an
+  // option value is a rendered attribute, which is on the page exactly as
+  // much as a text node is. Filtering still has to land on the raw value.
+  const projectFilterRuns = (when, searchId, expectedTotal, expectedCovered) => {
+    const search = one(viewNode, (node) => node.id === searchId, `${when} search`);
+    search.value = "";
+    search.listeners.input();
+    const projectSelect = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "project", `${when} project filter ${why}`);
+    const rowCount = () => all(viewNode, (node) => hasClass(node, "rrow")).length;
+    if (rowCount() !== expectedTotal) throw new Error(`${when} did not start from its unfiltered set: ${rowCount()} of ${expectedTotal}`);
+    const keyed = projectSelect("options").options.filter((option) => option.value !== "");
+    if (!keyed.length) throw new Error(`${when} rendered no project options to check`);
+    for (const option of projectSelect("labels").options) {
+      if (/[/\\]/.test(String(option.value))) throw new Error(`${when} rendered a path in an option value: ${option.value}`);
+      if (option.value !== "" && !/^\d+$/.test(String(option.value))) throw new Error(`${when} option value is not opaque: ${option.value}`);
+      if (/[/\\]/.test(option.textContent)) throw new Error(`${when} rendered a path as an option label: ${option.textContent}`);
+    }
+    // Every option must select a real, non-empty slice, and the slices must
+    // add back up: that is filtering landing on the raw key the option no
+    // longer carries. Selecting the "all" option has to give the set back.
+    let matched = 0;
+    for (const option of keyed) {
+      const live = projectSelect(`for ${option.value}`);
+      live.value = option.value;
+      live.listeners.change();
+      const rows = rowCount();
+      if (!rows) throw new Error(`${when} option ${option.value} (${option.textContent}) matched nothing, so its opaque value lost the raw key`);
+      matched += rows;
+      const reset = projectSelect("reset");
+      reset.value = "";
+      reset.listeners.change();
+      if (rowCount() !== expectedTotal) throw new Error(`${when} did not restore every row after selecting all projects`);
+    }
+    if (matched !== expectedCovered) throw new Error(`${when} project options covered ${matched} of ${expectedCovered} projected rows`);
+  };
+  projectFilterRuns("Backlog", "backlog-search", 2, 1);
+  await go("#/history");
+  projectFilterRuns("History", "history-search", 3, 3);
+  await go("#/backlog");
 
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");
@@ -852,9 +899,41 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (!disabledTimeline.includes("Reporting is off in this home") || !disabledTimeline.includes("Tool finished · read")) throw new Error(`disabled ingestion with retained rows looked current or empty: ${disabledTimeline}`);
 
   await go("#/task/delivered-one");
+  await settle();
+  await settle();
   const completedTask = one(viewNode, (node) => node.id === "view-task", "completed task view");
   if (completedTask.textContent.includes("/home/captain")) throw new Error("a completed task project path reached the page");
   if (!completedTask.textContent.includes("merged") || !completedTask.textContent.includes("Dashboard rebuild")) throw new Error("the normalized completion PR or work item did not render");
+
+  // A retained report is a cache of the completion record, not of the last
+  // push: history broadcasts twice per poll with the records unchanged, and
+  // neither one may blink the rendered report out or spend a request on it.
+  const reportBody = () => one(viewNode, (node) => node.id === "view-task", "task with a report").textContent;
+  if (!reportBody().includes("The delivered report body.")) throw new Error(`the retained report did not render: ${reportBody()}`);
+  if (reportFetches !== 1) throw new Error(`opening a completed task read its report ${reportFetches} times`);
+  for (let push = 0; push < 4; push += 1) {
+    eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== 1) throw new Error(`unchanged history pushes refetched the report ${reportFetches - 1} extra times`);
+  if (!reportBody().includes("The delivered report body.")) throw new Error("an unchanged history push replaced the rendered report");
+  const reportPanelNode = all(viewNode, (node) => node.dataset.loadState !== undefined).find((node) => node.textContent.includes("The delivered report body."));
+  if (!reportPanelNode || reportPanelNode.dataset.loadState !== "settled") throw new Error("an unchanged history push flipped the settled report back to loading");
+  reportText = "The republished report body.";
+  eventSources[0].listeners.history({ data: JSON.stringify({
+    ...historyEnvelope,
+    history: {
+      ...historyEnvelope.history,
+      records: historyEnvelope.history.records.map((record) => (record.task_id === "delivered-one"
+        ? { ...record, report: { present: true, path: "/home/captain/data/delivered-one/report-2.md" } }
+        : record)),
+    },
+  }) });
+  await settle();
+  await settle();
+  if (reportFetches !== 2) throw new Error(`a republished completion record did not revalidate the report: ${reportFetches} reads`);
+  if (!reportBody().includes("The republished report body.")) throw new Error("the revalidated report kept the superseded body");
 
   await go("#/task/queued-a");
   const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");
