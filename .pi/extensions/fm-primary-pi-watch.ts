@@ -344,10 +344,28 @@ export default function (pi: ExtensionAPI) {
     const closed = armClose.get(armChild);
     if (!closed) return false;
     return new Promise((resolveRetired) => {
-      const timer = setTimeout(() => resolveRetired(false), armRetireTimeoutMs);
+      let expiry: ReturnType<typeof setImmediate> | null = null;
+      const timer = setTimeout(() => {
+        // Judge the deadline against the observable exit, not the close event:
+        // close propagates through stream teardown a few turns after exit, so a
+        // wall-clock verdict on close alone reports an already-exited arm as
+        // unretired on a contended runner. The one-turn settle lets a queued
+        // exit event land first; an exited arm then gets one bounded grace
+        // period for its close, while a still-running arm fails retirement.
+        expiry = setImmediate(() => {
+          if (armChild.exitCode === null && armChild.signalCode === null) {
+            resolveRetired(false);
+            return;
+          }
+          const grace = setTimeout(() => resolveRetired(false), armRetireTimeoutMs);
+          grace.unref();
+        });
+        expiry.unref();
+      }, armRetireTimeoutMs);
       timer.unref();
       void closed.then(() => {
         clearTimeout(timer);
+        if (expiry) clearImmediate(expiry);
         resolveRetired(true);
       });
     });
