@@ -385,6 +385,35 @@ EOF
   pass "successful search returns the cleaned envelope the page consumes"
 }
 
+test_partial_source_failure_uses_display_error() {
+  local home bindir out
+  home=$(make_home search-partial)
+  bindir=$(make_bin_dir search-partial)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","home":"/home/firstmate","query":"dashboard","sources":[{"source":"local","state":"failed","brain":"/home/firstmate/data/gbrain","results":0,"detail":"Remove /home/captain/private/.gbrain-lock before retrying"},{"source":"main","state":"ok","brain":"https://brain.example","results":1}],"results":[{"source":"main","slug":"shared/dashboard","title":"shared dashboard note","score":0.72,"stale":false,"excerpt":"body"}]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"dashboard","limit":3}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e --arg safe_detail "this home's knowledge corpus could not be read" '
+    .schema == "fm-gbrain-search.v1"
+      and (.results | length) == 1
+      and .results[0].source == "main"
+      and (.sources[] | select(.source == "local")
+        | .state == "failed"
+          and .detail == $safe_detail)
+  ' >/dev/null || fail "a partial source failure did not retain its typed safe detail: $out"
+  assert_not_contains "$out" "/home/captain/private/.gbrain-lock" \
+    "a partial source failure exposed its raw diagnostic"
+  pass "partial source failures cross the display-safe error funnel"
+}
+
 # A brain that accepts the search but never answers must not hold the request
 # open forever. The endpoint bounds the wrapper at GBRAIN_SEARCH_TIMEOUT_SECONDS
 # + 1 (13s today) and kills the child, so the operator gets 504 / timed_out
@@ -727,6 +756,7 @@ test_health_panel_reports_configured_home
 test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
+test_partial_source_failure_uses_display_error
 test_search_preserves_same_as_local_source_state
 test_search_returns_504_when_recall_exceeds_budget
 test_search_separates_a_search_that_never_started_from_one_no_corpus_answered

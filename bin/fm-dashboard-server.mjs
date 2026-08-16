@@ -239,6 +239,8 @@ const GBRAIN_QUERY_MIN_LENGTH = 2;
 // that owns the main brain emits for the main corpus, and dropping it here
 // would rewrite a healthy read into "unknown" and paint a false failure.
 const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "same-as-local", "unknown"]);
+const GBRAIN_SOURCE_NAMES = new Set(["local", "main"]);
+const GBRAIN_NON_ERROR_SOURCE_STATES = new Set(["ok", "absent", "unconfigured", "same-as-local"]);
 
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -1384,13 +1386,23 @@ class GBrainState {
         excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
         stale: row?.stale === true,
       }));
-      const cleanedSources = sources.map((row) => ({
-        source: typeof row?.source === "string" ? row.source : null,
-        state: GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown",
-        brain: typeof row?.brain === "string" ? safeText(row.brain, 240) : null,
-        results: typeof row?.results === "number" && Number.isFinite(row.results) ? row.results : 0,
-        detail: typeof row?.detail === "string" ? safeText(row.detail, 240) : null,
-      }));
+      const cleanedSources = sources.map((row) => {
+        const source = GBRAIN_SOURCE_NAMES.has(row?.source) ? row.source : "unknown";
+        const state = GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown";
+        const kind = source === "local"
+          ? "gbrain_local_source_failed"
+          : source === "main" ? "gbrain_main_source_failed" : "gbrain_source_failed";
+        const failure = GBRAIN_NON_ERROR_SOURCE_STATES.has(state)
+          ? null
+          : displayError({ kind, message: typeof row?.detail === "string" ? row.detail : null }, kind);
+        return {
+          source,
+          state,
+          brain: typeof row?.brain === "string" ? safeText(row.brain, 240) : null,
+          results: typeof row?.results === "number" && Number.isFinite(row.results) ? row.results : 0,
+          detail: failure?.message || (typeof row?.detail === "string" ? safeText(row.detail, 240) : null),
+        };
+      });
       return {
         schema: GBRAIN_SEARCH_SCHEMA,
         generated: nowIso(),
