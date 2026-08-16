@@ -20,6 +20,7 @@ import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchR
 import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
 import { label } from "./display.js";
 import { buildBacklog, BACKLOG_LIMITS } from "./backlog.js";
+import { displayError, displaySafeEnvelope } from "./errors.js";
 
 const ui = {
   app: document.getElementById("app"),
@@ -99,6 +100,7 @@ const state = {
   gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
   task: { reports: new Map(), timelines: new Map() },
   events: null,
+  controlCommit: 0,
   notifyEnabled: false,
   seenInboxIds: null,
 };
@@ -129,6 +131,10 @@ function persistentControlIds(node) {
 }
 
 function refreshMountedView(current, fresh) {
+  const committedValue = current.tagName === "INPUT"
+    && current.type === "search"
+    && current.id === fresh.id
+    && current.dataset.valueCommit !== fresh.dataset.valueCommit;
   current.className = fresh.className;
   for (const key of Object.keys(current.dataset)) {
     if (!(key in fresh.dataset)) delete current.dataset[key];
@@ -138,6 +144,7 @@ function refreshMountedView(current, fresh) {
   if (current.tagName === "INPUT" && current.type === "search" && current.id === fresh.id) {
     current.placeholder = fresh.placeholder;
     current.maxLength = fresh.maxLength;
+    if (committedValue) current.value = fresh.value;
     return;
   }
 
@@ -166,6 +173,17 @@ function refreshMountedView(current, fresh) {
     index += 1;
   }
   while (current.childNodes.length > index) current.removeChild(current.childNodes[index]);
+}
+
+function stampControlCommit(node) {
+  if (node?.tagName === "INPUT" && node.type === "search" && node.id) node.dataset.valueCommit = String(state.controlCommit);
+  for (const child of node?.childNodes || []) stampControlCommit(child);
+}
+
+function commitControlValues(update) {
+  update();
+  state.controlCommit += 1;
+  render();
 }
 
 function dot(tone) { return element("span", tone === "unknown" ? "ring" : `dot d-${tone}`); }
@@ -338,8 +356,9 @@ function verdictFacts() {
 // The plain-words sentence for a snapshot that could not be read, with the one
 // error kind whose polling really does stop called out honestly.
 function snapshotFailureText(error) {
-  const detail = error?.message ? `: ${error.message}` : "";
-  const followup = error?.kind === "service_unit_outdated"
+  const failure = displayError(error, "snapshot_failed");
+  const detail = failure.message ? `: ${failure.message}` : "";
+  const followup = failure.kind === "service_unit_outdated"
     ? " Snapshot polling is paused until the service is reinstalled."
     : " Retrying automatically.";
   return `The fleet snapshot could not be read${detail}.${followup}`;
@@ -723,10 +742,11 @@ function renderBacklog() {
     const clear = element("button", "fchip", "Clear search & filters");
     clear.type = "button";
     clear.addEventListener("click", () => {
-      state.backlog.filters = { query: "", project: "", kind: "", prio: "" };
-      state.backlog.tab = "all";
-      state.backlog.page = 0;
-      render();
+      commitControlValues(() => {
+        state.backlog.filters = { query: "", project: "", kind: "", prio: "" };
+        state.backlog.tab = "all";
+        state.backlog.page = 0;
+      });
     });
     view.append(emptyState({
       big: "Filtered to nothing.",
@@ -883,10 +903,11 @@ function renderHistory() {
     const clear = element("button", "fchip", "Clear search & filters");
     clear.type = "button";
     clear.addEventListener("click", () => {
-      state.history.filters = { query: "", project: "", outcome: "" };
-      state.history.range = "all";
-      state.history.page = 0;
-      render();
+      commitControlValues(() => {
+        state.history.filters = { query: "", project: "", outcome: "" };
+        state.history.range = "all";
+        state.history.page = 0;
+      });
     });
     view.append(emptyState({
       big: "Filtered to nothing.",
@@ -995,7 +1016,13 @@ function renderKnowledge() {
     if (!payload.results?.length) {
       const clear = element("button", "fchip", "Clear search");
       clear.type = "button";
-      clear.addEventListener("click", () => { state.gbrain.query = ""; state.gbrain.searched = false; state.gbrain.payload = null; render(); });
+      clear.addEventListener("click", () => {
+        commitControlValues(() => {
+          state.gbrain.query = "";
+          state.gbrain.searched = false;
+          state.gbrain.payload = null;
+        });
+      });
       results.append(emptyState({
         big: "No notes match.",
         facts: `searched the captured corpora · 0 matches`,
@@ -1036,13 +1063,15 @@ async function runKnowledgeSearch() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.schema !== "fm-gbrain-search.v1") {
       const reason = payload?.reason || (response.ok ? "unsupported_schema" : `http_${response.status}`);
-      state.gbrain.error = searchFailure(reason, payload?.detail || null) || { tone: "red", text: searchReasonLabel(reason) };
+      const failure = displayError({ kind: reason, message: payload?.detail }, reason);
+      state.gbrain.error = searchFailure(failure.kind) || { tone: "red", text: searchReasonLabel(failure.kind) };
       state.gbrain.payload = null;
     } else {
       state.gbrain.payload = payload;
     }
   } catch (error) {
-    state.gbrain.error = { tone: "red", text: `The search could not be sent: ${error.message}` };
+    const failure = displayError(error, "server_unreachable");
+    state.gbrain.error = { tone: "red", text: `The search could not be sent: ${failure.message}` };
     state.gbrain.payload = null;
   } finally {
     state.gbrain.searched = true;
@@ -1222,7 +1251,7 @@ async function fetchTaskReport(taskId) {
     const payload = await response.json().catch(() => ({}));
     entry.payload = payload;
   } catch (error) {
-    entry.payload = { schema: null, error: error.message };
+    entry.payload = { schema: null, error: displayError(error, "server_unreachable") };
   }
   entry.loading = false;
   if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
@@ -1235,7 +1264,7 @@ async function fetchTaskTimeline(taskId) {
   state.task.timelines.set(taskId, entry);
   try {
     const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
-    const envelope = await response.json().catch(() => null);
+    const envelope = displaySafeEnvelope(await response.json().catch(() => null));
     if (!response.ok || envelope?.schema !== "fm-dashboard-timeline.v1") throw new Error("timeline unavailable");
     entry.envelope = envelope;
   } catch {
@@ -1306,7 +1335,7 @@ function activityPanel(taskId, task) {
   const built = buildTimeline({ events: merged }, { task: taskId });
   const statusEnvelope = entry.failed
     ? { status: { ingestion: "unavailable", reason: "the stored task timeline could not be read" } }
-    : state.events?.status ? state.events : entry.envelope;
+    : entry.envelope;
   const status = timelineNotice(statusEnvelope, merged.length, built.rows.length);
   if (status.text) panel.append(notice(status.tone, null, status.text));
   if (!built.rows.length) {
@@ -1498,6 +1527,7 @@ function render() {
 
   const renderer = VIEW_RENDERERS[route.view] || renderNeeds;
   const fresh = renderer();
+  stampControlCommit(fresh);
   // The entry animation belongs to arriving at a view, not to a data refresh:
   // every push re-renders, and cards that re-fade on each one read as flicker.
   // Tracked as data-view, because data-route names the navigation controls and
@@ -1526,14 +1556,14 @@ function onRouteChange() {
 
 async function fetchJson(url, schema) {
   const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { kind: "http_error" });
   const envelope = await response.json();
-  if (schema && envelope.schema !== schema) throw new Error(`unsupported envelope ${envelope.schema}`);
-  return envelope;
+  if (schema && envelope.schema !== schema) throw Object.assign(new Error(`unsupported envelope ${envelope.schema}`), { kind: "unsupported_envelope" });
+  return displaySafeEnvelope(envelope);
 }
 
-function unavailableEnvelope(schema, message) {
-  return { schema, status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message } } };
+function unavailableEnvelope(schema, error) {
+  return { schema, status: { phase: "unavailable", refreshing: false, stale: false, error: displayError(error, "server_unreachable") } };
 }
 
 async function fetchSnapshot() {
@@ -1542,7 +1572,7 @@ async function fetchSnapshot() {
     state.envelope = envelope;
     announceNewItems(buildInbox(envelope.snapshot).items, Boolean(envelope.snapshot));
   } catch (error) {
-    state.envelope = unavailableEnvelope("fm-dashboard-envelope.v1", error.message);
+    state.envelope = unavailableEnvelope("fm-dashboard-envelope.v1", error);
   }
   render();
 }
@@ -1551,7 +1581,7 @@ async function fetchHistory() {
   try {
     state.history.envelope = await fetchJson("/api/history", "fm-dashboard-history.v1");
   } catch (error) {
-    state.history.envelope = unavailableEnvelope("fm-dashboard-history.v1", error.message);
+    state.history.envelope = unavailableEnvelope("fm-dashboard-history.v1", error);
   }
   render();
 }
@@ -1560,7 +1590,7 @@ async function fetchBacklog() {
   try {
     state.backlog.envelope = await fetchJson("/api/backlog", "fm-dashboard-backlog.v1");
   } catch (error) {
-    state.backlog.envelope = unavailableEnvelope("fm-dashboard-backlog.v1", error.message);
+    state.backlog.envelope = unavailableEnvelope("fm-dashboard-backlog.v1", error);
   }
   render();
 }
@@ -1569,7 +1599,7 @@ async function fetchGBrainHealth() {
   try {
     state.gbrain.health = await fetchJson("/api/gbrain/health", "fm-gbrain-health.v1");
   } catch (error) {
-    state.gbrain.health = unavailableEnvelope("fm-gbrain-health.v1", error.message);
+    state.gbrain.health = unavailableEnvelope("fm-gbrain-health.v1", error);
   }
   render();
 }
@@ -1583,7 +1613,7 @@ function connectEvents() {
   }
   events.addEventListener("snapshot", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-envelope.v1") {
         state.envelope = envelope;
         // A push that carried no snapshot saw nothing, so it must not become
@@ -1595,7 +1625,7 @@ function connectEvents() {
   });
   events.addEventListener("history", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-history.v1") {
         state.history.envelope = envelope;
         state.task.reports.clear();
@@ -1605,7 +1635,7 @@ function connectEvents() {
   });
   events.addEventListener("backlog", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-backlog.v1") {
         state.backlog.envelope = envelope;
         render();
@@ -1614,7 +1644,7 @@ function connectEvents() {
   });
   events.addEventListener("agent_events", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-events.v1") {
         state.events = envelope;
         for (const [taskId, entry] of state.task.timelines) {
@@ -1623,6 +1653,8 @@ function connectEvents() {
           entry.envelope = {
             ...(entry.envelope || {}),
             task: taskId,
+            status: envelope.status || entry.envelope?.status,
+            instrumented_harnesses: envelope.instrumented_harnesses || entry.envelope?.instrumented_harnesses,
             events: mergeTaskBackfill(Array.isArray(envelope.events) ? envelope.events : [], backfill, taskId),
           };
         }
@@ -1632,7 +1664,7 @@ function connectEvents() {
   });
   events.addEventListener("gbrain_health", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-gbrain-health.v1") {
         state.gbrain.health = envelope;
         render();

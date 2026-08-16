@@ -93,6 +93,7 @@ import {
   sanitizeEvent,
   WIRE_SCHEMA as EVENT_WIRE_SCHEMA,
 } from "./fm-event-store.mjs";
+import { displayError } from "../assets/dashboard/errors.js";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -248,6 +249,7 @@ const STATIC_FILES = new Map([
   ["/backlog.js", ["backlog.js", "text/javascript; charset=utf-8"]],
   ["/router.js", ["router.js", "text/javascript; charset=utf-8"]],
   ["/display.js", ["display.js", "text/javascript; charset=utf-8"]],
+  ["/errors.js", ["errors.js", "text/javascript; charset=utf-8"]],
   ["/events.js", ["events.js", "text/javascript; charset=utf-8"]],
   ["/markdown.js", ["markdown.js", "text/javascript; charset=utf-8"]],
   ["/gbrain.js", ["gbrain.js", "text/javascript; charset=utf-8"]],
@@ -579,33 +581,8 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
   });
 }
 
-const DISPLAY_ERROR_MESSAGES = {
-  command_missing: "a required dashboard command is unavailable",
-  command_error: "a dashboard command could not be started",
-  timed_out: "a dashboard data source did not answer before its deadline",
-  output_too_large: "a dashboard data source returned too much data",
-  exit_nonzero: "a dashboard data source reported a failure",
-  malformed_json: "a dashboard data source returned unreadable data",
-  unsupported_schema: "a dashboard data source returned an unsupported format",
-  service_unit_outdated: "the installed dashboard service is out of date; rerun bin/fm-dashboard-install.sh",
-  history_refresh_failed: "the completion history could not be read",
-  gbrain_health_unavailable: "GBrain health could not be read",
-  event_store_unavailable: "the activity store could not be opened",
-  snapshot_failed: "the fleet snapshot could not be read",
-};
-
-function displayErrorMessage(kind) {
-  return DISPLAY_ERROR_MESSAGES[kind] || "a dashboard data source could not be read";
-}
-
 function errorRecord(error, fallback) {
-  const kind = error.kind || fallback;
-  const record = { kind, message: displayErrorMessage(kind), at: nowIso() };
-  Object.defineProperty(record, "diagnostic", {
-    value: { message: safeText(error.message), stderr: safeText(error.stderr) },
-    enumerable: false,
-  });
-  return record;
+  return displayError(error, fallback, { at: nowIso() });
 }
 
 // The one set of connected browsers. The snapshot and the history each push
@@ -1425,10 +1402,6 @@ class GBrainState {
       };
     } catch (error) {
       const kind = error.kind || "search_failed";
-      // fm-recall exits non-zero when no corpus answered, which is a real
-      // signal rather than a transport failure; surface it verbatim with its
-      // per-source verdict, which is the operator's only way to see WHICH
-      // corpus was unreachable.
       if (kind === "exit_nonzero") {
         // fm-recall separates "every corpus was asked and none answered" from
         // "the search never started", and the panel has to keep them apart:
@@ -2102,7 +2075,8 @@ async function serveIngest(request, response, events) {
   try {
     stored = events.accept(accepted, nowIso());
   } catch (error) {
-    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "store_write_failed", detail: safeText(error.message) });
+    const failure = displayError(error, "store_write_failed");
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: failure.kind, detail: failure.message });
     return;
   }
   if (!stored) {
@@ -2198,11 +2172,12 @@ async function serveGBrainSearch(request, response, gbraintron) {
         : error.kind === "query_too_short" || error.kind === "query_too_large" ? 400
           : error.kind === "no_corpus_answered" || error.kind === "search_setup_failed" ? 503
             : 502;
+    const failure = displayError(error, error.kind || "search_failed");
     sendJson(response, status, {
       schema: GBRAIN_SEARCH_SCHEMA,
       results: [],
-      reason: error.kind || "search_failed",
-      detail: safeText(error.message),
+      reason: failure.kind,
+      detail: failure.message,
     });
   }
 }

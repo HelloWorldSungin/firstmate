@@ -655,6 +655,16 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   historySearch = one(viewNode, (node) => node.id === "history-search", "second restored history search");
   historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
   if (!historySearch.focused || historySearch.value !== "delivered-two" || historyRows.length !== 1) throw new Error("History search did not accept multiple characters continuously");
+  historySearch.value = "not-a-delivery";
+  historySearch.listeners.input();
+  const clearHistory = one(viewNode, (node) => node.tagName === "BUTTON" && node.textContent === "Clear search & filters", "History clear search");
+  clearHistory.listeners.click();
+  const clearedHistorySearch = one(viewNode, (node) => node.id === "history-search", "cleared history search");
+  historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (clearedHistorySearch !== historySearch || clearedHistorySearch.value !== "" || historyRows.length !== 3) throw new Error("History clear did not commit its value to the mounted search control");
+  clearedHistorySearch.value = "failed";
+  clearedHistorySearch.listeners.input();
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 1) throw new Error("History search resumed from the stale pre-clear query");
 
   // --- Backlog renders the queue with its held reason -------------------------
   await go("#/backlog");
@@ -762,7 +772,6 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
     status: { ingestion: "disabled" },
     events: [{ event_id: "held-event", task_id: "held-b", harness: "codex", type: "tool_finished", tool: "read", outcome: "ok", occurred_at: "2026-08-15T10:00:04Z", occurred_epoch: 4 }],
   };
-  eventSources[0].listeners.agent_events({ data: JSON.stringify({ ...timelineEnvelope, schema: "fm-dashboard-events.v1" }) });
   await go("#/task/held-b");
   await settle();
   await settle();
@@ -828,7 +837,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
 
   // --- an unreadable fleet is never the calm first-run page -------------------
   const push = (payload) => eventSources[0].listeners.snapshot({ data: JSON.stringify(payload) });
-  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "HTTP 503" } }, snapshot: null });
+  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "spawn /home/captain/bin/fm-fleet-snapshot.sh ENOENT" } }, snapshot: null });
   await go("#/task/not-recorded");
   const failedLookup = one(viewNode, (node) => node.id === "view-task", "failed task lookup").textContent;
   if (!failedLookup.includes("Task lookup unavailable") || failedLookup.includes("No such task")) throw new Error(`a failed source became negative task evidence: ${failedLookup}`);
@@ -837,7 +846,8 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (byId.get("vdot").className !== "vdot vd-unknown") throw new Error(`the unavailable verdict dot is not the hollow unknown: ${byId.get("vdot").className}`);
   let needsText = one(viewNode, (node) => node.id === "view-needs", "needs view").textContent;
   if (needsText.includes("Nothing has run yet") || needsText.includes("Nothing needs you")) throw new Error(`an unreachable fleet rendered as a calm page: ${needsText}`);
-  if (!needsText.includes("HTTP 503") || !needsText.includes("Retrying automatically.")) throw new Error(`the failure was not disclosed with its retry story: ${needsText}`);
+  if (!needsText.includes("the dashboard server could not be reached") || !needsText.includes("Retrying automatically.")) throw new Error(`the failure was not disclosed with its retry story: ${needsText}`);
+  if (needsText.includes("/home/captain") || needsText.includes("ENOENT")) throw new Error(`a raw client-side failure reached the dashboard: ${needsText}`);
 
   // --- a stale service unit says polling is paused, not retrying --------------
   push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "service_unit_outdated", message: "rerun bin/fm-dashboard-install.sh" } }, snapshot: null });

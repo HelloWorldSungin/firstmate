@@ -152,7 +152,7 @@ SH
 # under test so the per-test bin IS the server's SCRIPT_DIR.
 make_bin_dir() {
   local bindir=$TMP_ROOT/bin-$1
-  mkdir -p "$bindir"
+  mkdir -p "$bindir" "$TMP_ROOT/assets/dashboard"
   cp "$ROOT/bin/fm-gbrain-health.sh" "$bindir/"
   cp "$ROOT/bin/fm-gbrain-lib.sh" "$bindir/"
   cp "$ROOT/bin/fm-gbrain.sh" "$bindir/" 2>/dev/null || true
@@ -161,6 +161,7 @@ make_bin_dir() {
   cp "$ROOT/bin/fm-event-store.mjs" "$bindir/"
   cp "$ROOT/bin/fm-telemetry-store.mjs" "$bindir/"
   cp "$SERVER" "$bindir/"
+  cp "$ROOT/assets/dashboard/errors.js" "$TMP_ROOT/assets/dashboard/"
   printf '%s\n' "$bindir"
 }
 
@@ -702,7 +703,7 @@ EOF
     .schema == "fm-gbrain-search.v1"
       and .reason == "search_setup_failed"
       and (.results | length) == 0
-      and (.detail | test("could not create a temporary file"))
+      and .detail == "the semantic search could not be started"
   ' >/dev/null || fail "a search that never started was not reported as search_setup_failed: $out"
 
   # The other side of the distinction, against the same endpoint: a wrapper that
