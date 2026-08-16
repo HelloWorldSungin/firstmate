@@ -1324,8 +1324,8 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # agent-free. Every unreadable or ambiguous field also fails, so the caller's
 # fail-safe direction is refusal. Retryable samples retain the same bounded
 # settle window as the lone-shell proof to absorb a transient prompt helper
-# (starship redrawing after a relayout), while positive live-agent evidence
-# refuses immediately.
+# (starship redrawing after a relayout), while a non-shell foreground process
+# reported by process-info refuses immediately.
 fm_backend_herdr_pane_agent_free_proof() {  # <session> <pane-id>
   local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10} sample_result
   while :; do
@@ -1343,7 +1343,7 @@ fm_backend_herdr_pane_agent_free_proof() {  # <session> <pane-id>
 
 # fm_backend_herdr_pane_agent_free_sample: one tri-state instantaneous
 # observation for fm_backend_herdr_pane_agent_free_proof: 0 is agent-free,
-# 1 is retryable, and 2 is conclusively live.
+# 1 is retryable, and 2 is a conclusively live process-info foreground.
 fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid fg_pgid count fg_pid name argv0 shell_name ps_bin rows
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
@@ -1412,8 +1412,8 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
         if (!(pid[i] in inset)) continue
         if (fields[i] != 4) exit 1
         c = normname(comm[i])
-        if (!isshell(c) && c != "treehouse") exit 2
-        if (stat[i] !~ /^[SI]/) exit 2
+        if (!isshell(c) && c != "treehouse") exit 1
+        if (stat[i] !~ /^[SI]/) exit 1
         if (kids[pid[i]] + 0 == 0) {
           if (pid[i] != fg) exit 1
           if (!isshell(c)) exit 1

@@ -2071,6 +2071,22 @@ SH
   chmod +x "$1/ps"
 }
 
+make_agent_free_sequence_lab() {  # <dir>
+  cat > "$1/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  "-axo pid=,ppid=,stat=,comm=")
+    count_file="$1/ps-count"
+    next=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+    printf '%s\n' "\$next" > "\$count_file"
+    cat "$1/pstable.\$next"
+    ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$1/ps"
+}
+
 # The verified dead treehouse chain: every leaf is the foreground subshell.
 agent_free_chain_pstable() {  # <dir>
   printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n' > "$1/pstable"
@@ -2178,9 +2194,11 @@ test_agent_state_live_agent_shapes_stay_alive() {
     fb=$(make_herdr_fakebin "$dir")
     out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
     [ "$out" = alive ] || fail "a registered agent in the '$shape' live shape must stay alive, got '$out'"
-    process_info_calls=$(grep -c $'pane\x1fprocess-info' "$log")
-    [ "$process_info_calls" -eq 1 ] \
-      || fail "the '$shape' live shape must stop after one conclusive process-info sample, got $process_info_calls calls"
+    if [ "$shape" = foreground ]; then
+      process_info_calls=$(grep -c $'pane\x1fprocess-info' "$log")
+      [ "$process_info_calls" -eq 1 ] \
+        || fail "the '$shape' live shape must stop after one conclusive process-info sample, got $process_info_calls calls"
+    fi
   done
   pass "fm_backend_herdr_agent_state: foreground, suspended, backgrounded, and escape-shell live agents all stay alive"
 }
@@ -2223,6 +2241,25 @@ test_agent_state_transient_prompt_helper_settles_to_dead() {
   [ "$(grep -c $'pane\x1fprocess-info' "$log")" -ge 2 ] \
     || fail "the cross-check did not retry the agent-free proof through the settle window"
   pass "fm_backend_herdr_agent_state: a transient prompt helper settles into the dead verdict"
+}
+
+test_agent_state_cross_snapshot_prompt_helper_settles_to_dead() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-cross-snapshot-settle"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  agent_free_process_info_fixture 4646 > "$resp/3.out"
+  agent_free_process_info_fixture 4646 > "$resp/4.out"
+  printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n99998 4646 Sl starship\n' > "$dir/pstable.1"
+  agent_free_chain_pstable "$dir"
+  mv "$dir/pstable" "$dir/pstable.2"
+  make_agent_free_sequence_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 3)
+  [ "$out" = dead ] || fail "a cross-snapshot prompt helper must settle into the dead verdict, got '$out'"
+  [ "$(grep -c $'pane\x1fprocess-info' "$log")" -ge 2 ] \
+    || fail "the cross-snapshot prompt helper did not retain the settle retry"
+  pass "fm_backend_herdr_agent_state: a cross-snapshot prompt helper settles into the dead verdict"
 }
 
 test_kill_emptying_non_focused_uses_pane_death() {
@@ -4681,6 +4718,7 @@ test_agent_state_stale_working_registration_reads_dead
 test_agent_state_live_agent_shapes_stay_alive
 test_agent_state_inconclusive_process_read_stays_alive
 test_agent_state_transient_prompt_helper_settles_to_dead
+test_agent_state_cross_snapshot_prompt_helper_settles_to_dead
 test_kill_emptying_non_focused_uses_pane_death
 test_kill_focused_workspace_stays_plain_close
 test_endpoint_confirmed_gone_gates_on_structured_presence
