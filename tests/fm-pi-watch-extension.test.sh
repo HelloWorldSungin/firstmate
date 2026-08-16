@@ -629,10 +629,11 @@ EOF
 # deadline. The next timers phase always races the queued close at both verdicts
 # - the interleaving a contended CI runner produces by starvation.
 test_pi_retired_successor_close_at_deadline_keeps_continuity() {
-  local repo home plugin log term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  local repo home plugin log retire_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
   repo="$TMP_ROOT/pi-retire-settle-root"
   home="$TMP_ROOT/pi-retire-settle-home"
   log="$TMP_ROOT/pi-retire-settle.log"
+  retire_ready="$TMP_ROOT/pi-retire-settle.ready"
   term_seen="$TMP_ROOT/pi-retire-settle.term-seen"
   retire_release="$TMP_ROOT/pi-retire-settle.retire-release"
   exit_marker="$TMP_ROOT/pi-retire-settle.exit-marker"
@@ -663,6 +664,7 @@ if [ "$count" -eq 2 ]; then
     exit 0
   }
   trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
   while :; do sleep 0.02; done
 fi
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -670,7 +672,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -687,6 +689,15 @@ childProcess.spawn = (...args) => {
   const child = originalSpawn(...args);
   if (successor) {
     successorAttempts += 1;
+    // Do not let runner scheduling decide whether SIGTERM arrives before the
+    // fixture installs its handler. This barrier establishes the test setup;
+    // the event-loop stalls below still decide the retirement verdict.
+    const readyDeadline = Date.now() + 5000;
+    while (!existsSync(process.env.FM_RETIRE_READY_FILE)) {
+      if (Date.now() >= readyDeadline) {
+        throw new Error(`fixture timed out installing retirement handler: ${process.env.FM_RETIRE_READY_FILE}`);
+      }
+    }
     const originalKill = child.kill.bind(child);
     child.kill = (signal, ...killArgs) => {
       const delivered = originalKill(signal, ...killArgs);
@@ -2365,11 +2376,12 @@ EOF
 # deadline must be reported retired so restoration continues, instead of the
 # false unretired verdict that tears down continuity.
 test_opencode_retired_successor_close_at_deadline_keeps_continuity() {
-  local plugin repo home log term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  local plugin repo home log retire_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-retire-settle-root"
   home="$TMP_ROOT/opencode-retire-settle-home"
   log="$TMP_ROOT/opencode-retire-settle.log"
+  retire_ready="$TMP_ROOT/opencode-retire-settle.ready"
   term_seen="$TMP_ROOT/opencode-retire-settle.term-seen"
   retire_release="$TMP_ROOT/opencode-retire-settle.retire-release"
   exit_marker="$TMP_ROOT/opencode-retire-settle.exit-marker"
@@ -2401,6 +2413,7 @@ if [ "$count" -eq 2 ]; then
     exit 0
   }
   trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
   while :; do sleep 0.02; done
 fi
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -2408,7 +2421,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -2424,6 +2437,15 @@ childProcess.spawn = (...args) => {
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   const child = originalSpawn(...args);
   if (successor) {
+    // Do not let runner scheduling decide whether SIGTERM arrives before the
+    // fixture installs its handler. This barrier establishes the test setup;
+    // the event-loop stalls below still decide the retirement verdict.
+    const readyDeadline = Date.now() + 5000;
+    while (!existsSync(process.env.FM_RETIRE_READY_FILE)) {
+      if (Date.now() >= readyDeadline) {
+        throw new Error(`fixture timed out installing retirement handler: ${process.env.FM_RETIRE_READY_FILE}`);
+      }
+    }
     const originalKill = child.kill.bind(child);
     child.kill = (signal, ...killArgs) => {
       const delivered = originalKill(signal, ...killArgs);
