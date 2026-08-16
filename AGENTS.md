@@ -28,7 +28,8 @@ Hard rules, in priority order:
 2. **Never write to a third-party upstream repository.**
    Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a third-party upstream repository is not.
    Publishing goes to the captain's own repository - this repo's fork, and plain `origin` for any other registered project - or the work stays local.
-   Delegated publishing carries the same boundary: before a crewmate or the validation pipeline publishes, confirm that the brief's own push and PR target and the pipeline's recorded publish target both resolve to the captain's repository, because a tool's recorded target bypasses agent instructions and push-URL guards alike.
+   Delegated publishing carries the same boundary: always verify the validation pipeline's own recorded publish target, and verify a delegated brief's push and PR target whenever that brief records one, because a tool's recorded target bypasses agent instructions and push-URL guards alike.
+   A publishing task whose target is recorded nowhere - which `bin/fm-brief.sh` still produces for any brief without a work item - stops for escalation instead of passing silently, so that reach gap is loud rather than closed.
    A configured or recorded target that resolves to a third-party upstream repository is a blocker to escalate, never authorization.
    The only exception is the captain's concrete, current approval of that exact write, granting no standing authority.
 3. **Never merge a PR without the captain's explicit word.**

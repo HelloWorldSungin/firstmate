@@ -30,8 +30,8 @@ GitHub Actions and Dependabot are exempt so their automation keeps working; regu
 
 6. Run `no-mistakes` to attach to the pipeline, watch findings, authorize auto-fixes, and review ask-user findings as needed.
    Follow the installed no-mistakes version's SKILL.md and live `axi` help for gate mechanics.
-7. Once the pipeline passes, it pushes the branch to your fork and opens the PR there for you.
-   Link that PR from an issue or on Discord when you want a maintainer to pick the change up.
+7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against this repository's `main` for you.
+   Confirm the opened PR's base repository is this one rather than assuming where the tool aimed it.
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
