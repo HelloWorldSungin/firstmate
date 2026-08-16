@@ -229,7 +229,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -305,7 +305,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -322,7 +322,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
-// Event wait: the ownership guidance can only appear once the first arm's
+// Event wait: the ownership guidance can only appear once the initial arm
 // close has been observed, so the ceiling fires only on genuine failure and
 // 20s absorbs CI runner contention without weakening any assertion.
 let redundant = null;
@@ -397,7 +397,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm); the spawn call is the successor launch, so counting it does not
-  // race the child shell's fixture-row append on a contended runner.
+  // race the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) {
     armSpawns += 1;
     if (args[2].env.FM_WATCH_PREDECESSOR_ARM_PID) {
@@ -672,13 +672,19 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   const child = originalSpawn(...args);
   if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
     const originalKill = child.kill.bind(child);
     child.kill = (signal, ...killArgs) => {
-      if (signal === "SIGTERM") retireRequests += 1;
+      // Hold the successor open deterministically until the release event.
+      // The retirement request itself is the lifecycle event under test; a
+      // shell trap is not a reliable process-boundary oracle under load.
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
       return originalKill(signal, ...killArgs);
     };
   }
@@ -717,8 +723,8 @@ await waitFor(
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-// The kill call is the retirement request. Waiting for the child shell to run
-// its signal trap races process scheduling against the assertion ceiling.
+// The intercepted kill call is the retirement request; withholding it keeps
+// the successor unretired deterministically until the release event.
 if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
 if (armSpawns !== 2) throw new Error(`unretired arm overlapped before fallback: ${armSpawns} arm launches: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
@@ -784,7 +790,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -861,7 +867,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -888,7 +894,7 @@ for (let i = 0; i < 2000 && !prompt; i += 1) {
 }
 if (!prompt) throw new Error("retry exhaustion prompt did not arrive");
 if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
-// Sampled after the exhaustion event: each arm's row is written before the
+// Sampled after the exhaustion event: every arm row is written before the
 // close that advances the retry sequence, so both counts are settled here.
 if (armSpawns !== 3) throw new Error(`retry limit launched ${armSpawns} arm cycles`);
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -933,7 +939,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append; the test's own helper spawn below
+  // the child-shell fixture-row append; the test helper spawn below
   // passes no env and stays uncounted.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
@@ -1647,7 +1653,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm); the spawn call is the successor launch, so counting it does not
-  // race the child shell's fixture-row append on a contended runner.
+  // race the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) {
     armSpawns += 1;
     if (args[2].env.FM_WATCH_PREDECESSOR_ARM_PID) {
@@ -1755,7 +1761,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -2037,13 +2043,19 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   const child = originalSpawn(...args);
   if (args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID) {
     const originalKill = child.kill.bind(child);
     child.kill = (signal, ...killArgs) => {
-      if (signal === "SIGTERM") retireRequests += 1;
+      // Hold the successor open deterministically until the release event.
+      // The retirement request itself is the lifecycle event under test; a
+      // shell trap is not a reliable process-boundary oracle under load.
+      if (signal === "SIGTERM") {
+        retireRequests += 1;
+        return true;
+      }
       return originalKill(signal, ...killArgs);
     };
   }
@@ -2083,8 +2095,8 @@ await waitFor(
   "unretired successor did not enter its retirement wait",
 );
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-// The kill call is the retirement request. Waiting for the child shell to run
-// its signal trap races process scheduling against the assertion ceiling.
+// The intercepted kill call is the retirement request; withholding it keeps
+// the successor unretired deterministically until the release event.
 if (retireRequestsAtPrompt < 1) throw new Error("unretired successor was not asked to retire before fallback");
 if (armSpawns !== 2) throw new Error(`unretired arm overlapped before fallback: ${armSpawns} arm launches: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
@@ -2151,7 +2163,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -2229,7 +2241,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append on a contended runner.
+  // the child-shell fixture-row append on a contended runner.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
 };
@@ -2257,7 +2269,7 @@ for (let i = 0; i < 2000 && !prompt; i += 1) {
 }
 if (!prompt) throw new Error("retry exhaustion prompt did not arrive");
 if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
-// Sampled after the exhaustion event: each arm's row is written before the
+// Sampled after the exhaustion event: every arm row is written before the
 // close that advances the retry sequence, so both counts are settled here.
 if (armSpawns !== 3) throw new Error(`retry limit launched ${armSpawns} arm cycles`);
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -2303,7 +2315,7 @@ const originalSpawn = childProcess.spawn;
 childProcess.spawn = (...args) => {
   // Every plugin arm spawn carries the predecessor key (empty for a fresh
   // arm), so counting the spawn calls observes arm launches without racing
-  // the child shell's fixture-row append; the test's own helper spawn below
+  // the child-shell fixture-row append; the test helper spawn below
   // passes no env and stays uncounted.
   if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
   return originalSpawn(...args);
