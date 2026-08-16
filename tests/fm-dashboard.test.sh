@@ -260,6 +260,7 @@ const { pathToFileURL } = require("node:url");
 class FakeNode {
   constructor(tagName, text = "") {
     this.tagName = String(tagName).toUpperCase();
+    this.nodeType = this.tagName === "#TEXT" ? 3 : 1;
     this.children = [];
     this.attributes = {};
     this.className = "";
@@ -292,6 +293,7 @@ class FakeNode {
   classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
   get childNodes() { return this.children; }
+  get parentNode() { return this.parent; }
   get firstElementChild() { return this.children.find((child) => child.tagName !== "#TEXT") ?? null; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
   set textContent(value) { this._text = String(value ?? ""); this.children = []; }
@@ -341,8 +343,9 @@ class FakeNode {
   setAttribute(name, value) { this.attributes[name] = String(value); }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
-  focus() { this.focused = true; }
+  focus() { this.focused = true; activeElement = this; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  contains(node) { for (let cursor = node; cursor; cursor = cursor.parent) if (cursor === this) return true; return false; }
   getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
 
   matchesSelector(selector) {
@@ -372,6 +375,7 @@ class FakeNode {
   click() { this.listeners.click?.({ stopPropagation() {} }); }
 }
 
+let activeElement = null;
 const byId = new Map();
 function staticNode(tag, id, className = "") {
   const node = new FakeNode(tag);
@@ -404,6 +408,14 @@ for (const route of ["needs", "fleet", "backlog", "history", "knowledge"]) {
 
 const document = {
   documentElement: new FakeNode("html"),
+  // Focus follows the tree: a node the renderer replaced is detached, and a
+  // detached node is not what the document considers focused.
+  get activeElement() {
+    if (!activeElement) return null;
+    let root = activeElement;
+    while (root.parent) root = root.parent;
+    return byId.get(root.id) === root ? activeElement : null;
+  },
   getElementById: (id) => byId.get(id) ?? null,
   querySelector: (selector) => {
     const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
@@ -635,6 +647,35 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
       if (!active && "aria-current" in button.attributes) throw new Error(`#/${route}: ${button.id} kept a stale aria-current`);
     }
   }
+
+  // --- a data refresh never steals focus from a mounted control --------------
+  //
+  // Deliberately NOT a search input. The rule belongs to the reconciliation
+  // boundary rather than to a listed few controls, so it is pinned on a Fleet
+  // state chip - a plain button the renderer rebuilds on every push, on a view
+  // that has no search input at all. The server broadcasts twice per snapshot
+  // poll, so a chip that cannot hold focus drops a keyboard reader back to the
+  // top of the document every few seconds without anyone touching anything.
+  await go("#/fleet");
+  const fleetChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (fleetChips.length < 2) throw new Error(`the Fleet board rendered ${fleetChips.length} state chips, so there is none to hold focus`);
+  const stateChip = fleetChips[1];
+  stateChip.focus();
+  if (document.activeElement !== stateChip) throw new Error("the fake document did not accept focus on a Fleet state chip");
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+  const refreshedChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const refocused = document.activeElement;
+  if (!refocused || !hasClass(refocused, "fchip")) throw new Error("a snapshot push took focus off the Fleet state chip and left it nowhere");
+  if (refocused !== refreshedChips[1]) throw new Error("a snapshot push moved focus to a different control than the one the reader was on");
+  // And the same rule holds through the control's own click, which re-renders.
+  refreshedChips[1].listeners.click();
+  await settle();
+  const toggledChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (document.activeElement !== toggledChips[1]) throw new Error("acting on a state chip discarded the focus it was acting from");
+  if (!hasClass(toggledChips[1], "is-on")) throw new Error("the reconciled chip did not take the selected class its click asked for");
+  toggledChips[1].listeners.click();
+  await settle();
 
   // --- History displays every record it found --------------------------------
   await go("#/history");
@@ -1077,6 +1118,7 @@ const { pathToFileURL } = require("node:url");
 class FakeNode {
   constructor(tagName, text = "") {
     this.tagName = String(tagName).toUpperCase();
+    this.nodeType = this.tagName === "#TEXT" ? 3 : 1;
     this.children = [];
     this.attributes = {};
     this.className = "";
@@ -1105,6 +1147,9 @@ class FakeNode {
 
   classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
+  get childNodes() { return this.children; }
+  get parentNode() { return this.parent; }
+  get firstElementChild() { return this.children.find((child) => child.tagName !== "#TEXT") ?? null; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
   set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
@@ -1124,9 +1169,38 @@ class FakeNode {
     this.append(...children);
   }
 
+  insertBefore(child, before) {
+    if (child.parent) child.parent.removeChild(child);
+    const index = before ? this.children.indexOf(before) : this.children.length;
+    child.parent = this;
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    return child;
+  }
+
+  replaceChild(child, replaced) {
+    const index = this.children.indexOf(replaced);
+    if (index < 0) throw new Error("replacement target is not a child");
+    if (child.parent) child.parent.removeChild(child);
+    replaced.parent = null;
+    child.parent = this;
+    this.children[index] = child;
+    return replaced;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index < 0) throw new Error("removal target is not a child");
+    this.children.splice(index, 1);
+    child.parent = null;
+    return child;
+  }
+
   setAttribute(name, value) { this.attributes[name] = String(value); }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  focus() { this.focused = true; activeElement = this; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  contains(node) { for (let cursor = node; cursor; cursor = cursor.parent) if (cursor === this) return true; return false; }
   getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
   matchesSelector(selector) {
     if (selector.startsWith("#")) return this.id === selector.slice(1);
@@ -1153,6 +1227,7 @@ class FakeNode {
   }
 }
 
+let activeElement = null;
 const byId = new Map();
 function staticNode(tag, id, className = "") {
   const node = new FakeNode(tag);
@@ -1177,6 +1252,14 @@ for (const buttonId of ["theme-button", "notify-button"]) {
 
 const document = {
   documentElement: new FakeNode("html"),
+  // Focus follows the tree: a node the renderer replaced is detached, and a
+  // detached node is not what the document considers focused.
+  get activeElement() {
+    if (!activeElement) return null;
+    let root = activeElement;
+    while (root.parent) root = root.parent;
+    return byId.get(root.id) === root ? activeElement : null;
+  },
   getElementById: (id) => byId.get(id) ?? null,
   querySelector: (selector) => {
     const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
@@ -1368,7 +1451,22 @@ test_first_run_failures_are_explicit() {
     *"$case_root"*|*"/home/"*) fail "a command failure exposed its filesystem path: $error_message" ;;
   esac
   stop_server
-  pass "malformed JSON, unsupported versions, and missing commands expose first-run errors"
+
+  # Raw error text is kept OUT of the browser payload, not thrown away. A source
+  # that exits non-zero with an explanation hands the page only the display-safe
+  # sentence, while its own message and stderr stay readable in the server's log
+  # - which is the only place an operator can learn why the snapshot failed.
+  case_root=$(make_runtime diagnosed)
+  printf 'fail\n' > "$case_root/control/mode"
+  start_fixture_server "$case_root" 1 1
+  wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "exit_nonzero"'
+  jq -e '.status.error | (has("stderr") | not) and (has("diagnostic") | not) and .message == "a dashboard data source reported a failure"' \
+    "$case_root/envelope.json" >/dev/null \
+    || fail "the browser payload lost its display-safe sentence or carried raw diagnostics: $(jq -c '.status.error' "$case_root/envelope.json")"
+  stop_server
+  grep -q '^fm-dashboard: exit_nonzero: .*fixture snapshot failed' "$case_root/server.log" \
+    || fail "the failure reason was discarded instead of logged where an operator can read it: $(cat "$case_root/server.log")"
+  pass "malformed JSON, unsupported versions, and missing commands expose first-run errors, with the raw reason logged rather than discarded"
 }
 
 fleet_fingerprint() {  # <home>

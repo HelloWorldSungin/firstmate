@@ -97,6 +97,7 @@ for observation in \
   "nothing is placed behind a horizontal swipe on Task detail" \
   "the History view displays the completion records it read" \
   "every completed row shows its usage cell" \
+  "a worker-authored report body is the scan's one excluded region" \
   "no credential-shaped or path-shaped value on any destination" \
   "a live event appears on the open task page without a reload" \
   "the task's earlier events survive unrelated fleet traffic" \
@@ -120,6 +121,27 @@ grep -q '^?' "$result" && fail "the check could not verify an observation agains
 assert_contains "$(cat "$result")" "attribute characters" "the leak scan did not report attribute coverage"
 assert_contains "$(cat "$result")" "worker-authored report region(s) deliberately excluded pending issue 169" \
   "the leak scan did not disclose its worker-report scope boundary"
+# And that boundary has to have been exercised. A scan that stepped over zero
+# report bodies is disclosing the scope of an exclusion no page in the run ever
+# triggered, which is what this fixture now seeds a retained report to end.
+grep -q "0 worker-authored report region(s) deliberately excluded" "$result" \
+  && fail "the leak scan disclosed an exclusion it never made"$'\n'"$(cat "$result")"
+
+# The 899/900 boundary, asserted as the mapping it is rather than read out of
+# whichever control the run happened to find. This is the founding defect of
+# the rebuild, so it is pinned per width and by verdict, not by presence: a run
+# that reached the 900 section through the bottom tab bar - a container query
+# measured against a scrollbar-narrowed box would do exactly that - must not be
+# able to report green under a section named after the rail.
+for mapping in \
+  "390x844: the Needs you destination is reached through the bottom tab bar" \
+  "899x844: the Knowledge destination is reached through the bottom tab bar" \
+  "900x844: the Needs you destination is reached through the rail" \
+  "1440x900: the Knowledge destination is reached through the rail"
+do
+  grep -qF "ok   $mapping" "$result" \
+    || fail "the check did not assert the navigation control the design requires: $mapping"$'\n'"$(cat "$result")"
+done
 pass "the browser check passes against a correctly rendering dashboard at phone, boundary, and desktop widths"
 
 # --- a page that renders nothing fails ---------------------------------------
@@ -175,6 +197,8 @@ for observation in \
   "the page rendered text rather than an empty document" \
   "the stylesheet was applied" \
   "destination is reachable from the visible navigation" \
+  "destination is reached through" \
+  "a worker-authored report body is the scan's one excluded region" \
   "view is on the page" \
   "view rendered with real height" \
   "view is legible" \
@@ -261,6 +285,31 @@ assert_contains "$forced" "forced: task-swipe:fail" "the injected run did not st
 grep -qE "^FAIL .*nothing is placed behind a horizontal swipe on Task detail - the document scrolls sideways at this destination" \
   "$TMP_ROOT/forced-task-swipe/result.txt" \
   || fail "forcing task-swipe:fail did not run the task destination's own swipe failure branch"$'\n'"$(cat "$TMP_ROOT/forced-task-swipe/result.txt")"
+
+# The navigation boundary's own failure branch. The rebuild exists for the
+# 899/900 defect, so the assertion that pins which control appears at which
+# width has to be one that can still fail: forcing it flips the control the
+# probe reported to the other side of the boundary and the check must refuse
+# the width in its own words.
+forced=$(FM_DASHBOARD_BROWSER_FORCE=nav-control:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-nav-control" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing nav-control:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: nav-control:fail" "the injected run did not stamp the branch it forced"
+grep -qE "^FAIL .*destination is reached through the bottom tab bar - at 390 CSS px the design places navigation in the bottom tab bar, but the visible control was the rail" \
+  "$TMP_ROOT/forced-nav-control/result.txt" \
+  || fail "forcing nav-control:fail did not run the width-to-control assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced-nav-control/result.txt")"
+
+# And the exclusion the leak scan discloses. A scan that names a region it
+# skipped must be able to fail when that region was never on any page it read,
+# which is the state the exclusion sat in until the fixture seeded a report.
+forced=$(FM_DASHBOARD_BROWSER_FORCE=report-exclusion:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-report" 2>&1 </dev/null)
+status=$?
+[ "$status" -eq 3 ] \
+  || fail "forcing report-exclusion:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: report-exclusion:fail" "the injected run did not stamp the branch it forced"
+grep -qF "the scan's one exclusion was never executed" "$TMP_ROOT/forced-report/result.txt" \
+  || fail "forcing report-exclusion:fail did not run the exclusion assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced-report/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
 
 # --- the observation set is reconciled ----------------------------------------

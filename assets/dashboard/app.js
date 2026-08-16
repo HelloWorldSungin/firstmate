@@ -13,7 +13,7 @@
 // reach the DOM, so no filesystem path renders on any view.
 
 import { buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
-import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
+import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS, OUTCOME_LABELS } from "./history.js";
 import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel } from "./events.js";
 import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
@@ -124,30 +124,38 @@ function viewRoot(name) {
   return node;
 }
 
+const ELEMENT_NODE = 1;
+
+function isElement(node) {
+  return node?.nodeType === ELEMENT_NODE;
+}
+
+// The reader's live value on a control, as opposed to the renderer's copy of
+// it. Whether an element carries one is asked of the element itself, so this
+// never becomes a list of which controls are worth protecting.
+function liveValue(node) {
+  return isElement(node) && typeof node.value === "string" ? node.value : null;
+}
+
+// Reconciliation identity: a node the renderer gave a stable id is kept and
+// updated in place rather than replaced. Nothing here names a tag or an input
+// type - a control added later is reconciled by giving it an id, not by
+// extending a list that would otherwise go stale behind it.
 function persistentControlIds(node) {
   const ids = [];
-  if (node?.tagName === "INPUT" && node.type === "search" && node.id) ids.push(node.id);
+  if (isElement(node) && node.id) ids.push(node.id);
   for (const child of node?.childNodes || []) ids.push(...persistentControlIds(child));
   return ids;
 }
 
 function refreshMountedView(current, fresh) {
-  const committedValue = current.tagName === "INPUT"
-    && current.type === "search"
-    && current.id === fresh.id
-    && current.dataset.valueCommit !== fresh.dataset.valueCommit;
+  const committedValue = current.dataset.valueCommit !== fresh.dataset.valueCommit;
+  const live = liveValue(current);
   current.className = fresh.className;
   for (const key of Object.keys(current.dataset)) {
     if (!(key in fresh.dataset)) delete current.dataset[key];
   }
   for (const [key, value] of Object.entries(fresh.dataset)) current.dataset[key] = value;
-
-  if (current.tagName === "INPUT" && current.type === "search" && current.id === fresh.id) {
-    current.placeholder = fresh.placeholder;
-    current.maxLength = fresh.maxLength;
-    if (committedValue) current.value = fresh.value;
-    return;
-  }
 
   let index = 0;
   for (const freshChild of [...fresh.childNodes]) {
@@ -174,11 +182,55 @@ function refreshMountedView(current, fresh) {
     index += 1;
   }
   while (current.childNodes.length > index) current.removeChild(current.childNodes[index]);
+
+  // A value under the reader's hand belongs to the reader until an explicit
+  // committed transition replaces it, so reconciliation reads the mounted value
+  // back rather than writing the renderer's copy over it.
+  if (live !== null) current.value = committedValue ? fresh.value : live;
 }
 
 function stampControlCommit(node) {
-  if (node?.tagName === "INPUT" && node.type === "search" && node.id) node.dataset.valueCommit = String(state.controlCommit);
+  if (isElement(node) && node.id && liveValue(node) !== null) node.dataset.valueCommit = String(state.controlCommit);
   for (const child of node?.childNodes || []) stampControlCommit(child);
+}
+
+// Reconciliation must not move the reader's focus, on any control rather than
+// on a listed few. The focused element is found again by its position under the
+// view root - a stable identity for a renderer that builds the same tree from
+// the same state - and its live value and selection travel with it, so a
+// background refresh cannot drop a keyboard reader back to the top of the
+// document or cut a caret out of a half-typed word.
+function captureViewFocus() {
+  const active = document.activeElement;
+  if (!isElement(active) || active === ui.view || !ui.view.contains?.(active)) return null;
+  const path = [];
+  for (let node = active; node !== ui.view; node = node.parentNode) {
+    const parent = node.parentNode;
+    if (!parent) return null;
+    path.unshift([...parent.childNodes].indexOf(node));
+  }
+  const capture = { node: active, path, tagName: active.tagName, value: liveValue(active), selection: null };
+  try {
+    if (Number.isInteger(active.selectionStart)) {
+      capture.selection = [active.selectionStart, Number.isInteger(active.selectionEnd) ? active.selectionEnd : active.selectionStart];
+    }
+  } catch {}
+  return capture;
+}
+
+function restoreViewFocus(capture) {
+  if (!capture || document.activeElement === capture.node) return;
+  let node = ui.view;
+  for (const index of capture.path) {
+    node = node?.childNodes?.[index];
+    if (!node) return;
+  }
+  if (!isElement(node) || node.tagName !== capture.tagName || typeof node.focus !== "function") return;
+  if (capture.value !== null && liveValue(node) !== null) node.value = capture.value;
+  node.focus({ preventScroll: true });
+  if (capture.selection && typeof node.setSelectionRange === "function") {
+    try { node.setSelectionRange(capture.selection[0], capture.selection[1]); } catch {}
+  }
 }
 
 function commitControlValues(update) {
@@ -936,14 +988,6 @@ function renderHistory() {
   return view;
 }
 
-const OUTCOME_LABELS = {
-  done: "Done",
-  failed: "Failed",
-  discarded: "Discarded",
-  retired: "Retired",
-  unknown: "Outcome unknown",
-};
-
 // --- Knowledge ---------------------------------------------------------------
 
 function renderKnowledge() {
@@ -1320,11 +1364,27 @@ async function fetchTaskReport(taskId, reportKey = null, routeEpoch = state.rout
   return entry;
 }
 
+// One retained timeline per task visited, bounded the way the report cache is
+// and for the same reason: a tab left open for a shift visits many task pages,
+// and every agent_events broadcast merges over every retained entry. The open
+// task is never the eviction candidate - it is the entry the page is rendering
+// from - and eviction costs no request, because only the open task refetches.
+const TIMELINE_CACHE_LIMIT = 12;
+
+function evictTaskTimelines() {
+  for (const taskId of state.task.timelines.keys()) {
+    if (state.task.timelines.size <= TIMELINE_CACHE_LIMIT) return;
+    if (taskId === state.route.taskId) continue;
+    state.task.timelines.delete(taskId);
+  }
+}
+
 async function fetchTaskTimeline(taskId, routeEpoch = state.routeEpoch, force = false) {
   let entry = state.task.timelines.get(taskId);
   if (!entry) {
     entry = { loading: false, envelope: null, failed: false, retryArmed: true, routeEpoch: -1 };
     state.task.timelines.set(taskId, entry);
+    evictTaskTimelines();
   }
   if (entry.loading || (!force && entry.routeEpoch === routeEpoch)) return entry;
   // Arriving here unforced means the route was (re)visited, which is one of the
@@ -1620,11 +1680,15 @@ function render() {
   // the container must never match a [data-route] selector.
   ui.view.classList.toggle("settled", ui.view.dataset.view === route.view);
   ui.view.dataset.view = route.view;
+  // A data refresh reconciles the mounted view; only arriving at a different
+  // destination replaces it. Focus is carried across the reconciliation, which
+  // is the boundary that could steal it, and deliberately not across the
+  // replacement, where the control the reader was on is genuinely gone.
   const mounted = ui.view.firstElementChild;
-  const currentControls = mounted ? persistentControlIds(mounted) : [];
-  const freshControls = persistentControlIds(fresh);
-  if (mounted?.id === fresh.id && currentControls.length && currentControls.length === freshControls.length && currentControls.every((id) => freshControls.includes(id))) {
+  if (mounted?.id === fresh.id) {
+    const focus = captureViewFocus();
     refreshMountedView(mounted, fresh);
+    restoreViewFocus(focus);
   } else {
     ui.view.replaceChildren(fresh);
   }

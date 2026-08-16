@@ -163,6 +163,8 @@ A view is not worth a stalled agent, so there is no retry and no spool.
 Each task detail page carries an Activity panel that lists only that task's events newest first.
 The panel backfills the task's events from the store because the live stream carries a bounded fleet-wide tail and a busy fleet can scroll one agent out of it.
 [`assets/dashboard/events.js`](../assets/dashboard/events.js) is the single executable copy of that policy.
+Merging that backfill with the live tail is also where the retained set is bounded - newest kept, oldest dropped, arrival order as the tie-break - because every union goes through that one function, and a page left open for a shift would otherwise accumulate the union of every broadcast for every task it ever opened, past the store's own per-task cap.
+The browser keeps a bounded number of task timelines for the same reason, dropping the earliest-cached first and never the task on screen, which costs no request because only the open task refetches.
 Every value reaches the page through `textContent`, which is the second independent reason a stored event can never become markup.
 
 ## Verification

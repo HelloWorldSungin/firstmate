@@ -34,7 +34,10 @@ const OUTCOME_TONES = {
   unknown: "unknown",
 };
 
-const OUTCOME_LABELS = {
+// The outcome vocabulary, owned here because this module is what stamps an
+// outcome onto a row. Exported so the History filter's own labels come from the
+// same map: a state added here must not leave the facet showing a raw key.
+export const OUTCOME_LABELS = {
   done: "Done",
   failed: "Failed",
   discarded: "Discarded",

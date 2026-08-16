@@ -100,6 +100,10 @@
 #                      history:unverified   the history view could not be read
 #                      nav:fail             the destination's control went unfound
 #                      nav:unverified       the navigation could not be read
+#                      nav-control:fail     the wrong control for this width
+#                      nav-control:unverified
+#                      report-exclusion:fail   the exempt report region unproven
+#                      report-exclusion:unverified
 #                      task-open:fail       a board row did not open its task
 #                      task-open:unverified
 #                      task-height:fail     the task page rendered real height
@@ -166,8 +170,11 @@
 #   page that loaded. The page is a hash router with mutually exclusive views,
 #   and the assertions are shaped for that: every destination must be reachable
 #   through the navigation control that is actually visible at the width being
-#   checked (the rail at >=900 CSS px, the bottom tab bar below it - navigation
-#   existing at every width is the defect that motivated the rebuild); the
+#   checked, and it must be the control the design places at that width - the
+#   rail at >=900 CSS px, the bottom tab bar below it - asserted per width
+#   rather than merely reported, because "some control was visible" is not the
+#   899/900 claim, and a container query read against a scrollbar-narrowed box
+#   would satisfy it while showing the other side's control; the
 #   active view must be on the page with real rendered height and its own
 #   landmark text while EVERY OTHER view is absent from the DOM, not hidden;
 #   the browser must be proven to be at the width the section is named after;
@@ -199,6 +206,14 @@
 #   worker's call rather than the dashboard's. The scan skips that subtree by
 #   name and counts every region it skipped, so an ok verdict states how many
 #   report bodies it stepped over instead of implying it read them.
+#
+#   Fixture mode then makes that exclusion a tested claim rather than a stated
+#   one. It seeds a completed task whose retained report body carries an
+#   absolute clone path, visits that task's page as a seventh destination, and
+#   requires all three of: the exempt region present, a path-shaped value
+#   inside it, and the scan over everything else clean. A count of zero
+#   excluded regions fails the scan's own coverage verdict there, because a
+#   disclosed exclusion that no page ever triggered discloses nothing.
 #
 #   The structural assertions are written against the page's own contract, not
 #   against fixture data, so this same command is what you point at a live
@@ -308,6 +323,25 @@ knowledge|view-knowledge|Knowledge|Knowledge'
 
 DEFAULT_WIDTHS='390x844 899x844 900x844 1440x900'
 
+# The navigation boundary this rebuild exists to pin, as a rule rather than as
+# prose: below it the destinations are reached through the bottom tab bar, at it
+# and above through the rail. Every width's expectation is derived from this one
+# number, so a section named after a width cannot report green while the page
+# was showing the other side's control - which is what a container query read
+# against a scrollbar-narrowed box, or an edited breakpoint, would do.
+NAV_BOUNDARY_WIDTH=900
+
+expected_control() {  # <css px width>
+  if [ "$1" -ge "$NAV_BOUNDARY_WIDTH" ]; then printf 'the rail'; else printf 'the bottom tab bar'; fi
+}
+
+# The completed fixture task whose retained report body carries an absolute
+# path. The leak scan exempts worker-authored report bodies by the captain's
+# decision on issue 169, and an exemption nothing ever renders is an exemption
+# nothing has tested: this is the destination that makes the exempt region
+# real, so the scan is shown to pass BECAUSE the path sits inside it.
+FIXTURE_REPORT_TASK=fixture-done-ship
+
 # Every view root id the router can mount, the task detail included: the
 # absence half of the exclusivity assertion looks for all of them by name.
 ALL_VIEW_IDS="$(printf '%s\n' "$VIEWS" | cut -d'|' -f2 | paste -sd, -),view-task"
@@ -405,7 +439,9 @@ Each observation is recorded as ok, FAIL, ???? or n/a. ???? means it could not
 be observed at all, which is not a pass and fails the run. n/a means it does
 not apply to the target being checked in this mode, which does not fail the
 run; the three task-timeline observations are n/a under --url, because proving
-them means posting events into a dashboard this command does not own.
+them means posting events into a dashboard this command does not own, and so
+is the retained-report exclusion, which needs a completed task this command
+authored.
 
 Every mode declares the observations it makes and reconciles that list against
 what it recorded before it exits, so an observation left unrecorded, recorded
@@ -551,6 +587,10 @@ history:fail
 history:unverified
 nav:fail
 nav:unverified
+nav-control:fail
+nav-control:unverified
+report-exclusion:fail
+report-exclusion:unverified
 task-open:fail
 task-open:unverified
 task-height:fail
@@ -612,8 +652,9 @@ EMITTED_LOG="$WORK_DIR/emitted.txt"
 # the widths, before the live stream and the console, because the property it
 # proves is about the assertions that read what rendered.
 declared_observations() {
-  local spec _route _id name _landmarks
+  local spec _route _id name _landmarks control
   for spec in $WIDTHS; do
+    control=$(expected_control "${spec%%x*}")
     printf '%s: the dashboard document loaded\n' "$spec"
     printf '%s: the browser really is at this viewport\n' "$spec"
     printf '%s: the page rendered text rather than an empty document\n' "$spec"
@@ -621,6 +662,7 @@ declared_observations() {
     while IFS='|' read -r _route _id name _landmarks; do
       [ -n "$_route" ] || continue
       printf '%s: the %s destination is reachable from the visible navigation\n' "$spec" "$name"
+      printf '%s: the %s destination is reached through %s\n' "$spec" "$name" "$control"
       printf '%s: only the %s view is on the page\n' "$spec" "$name"
       printf '%s: the %s view rendered with real height\n' "$spec" "$name"
       printf '%s: the %s view is legible\n' "$spec" "$name"
@@ -634,6 +676,7 @@ VIEWROWS
     printf '%s: nothing is placed behind a horizontal swipe on %s\n' "$spec" "$TASK_VIEW_NAME"
     printf '%s: the History view displays the completion records it read\n' "$spec"
     printf '%s: every completed row shows its usage cell\n' "$spec"
+    printf '%s: a worker-authored report body is the scan'"'"'s one excluded region\n' "$spec"
     printf '%s: no credential-shaped or path-shaped value on any destination\n' "$spec"
   done
   [ "$NEGATIVE" = yes ] && return 0
@@ -902,6 +945,19 @@ seed_completed_task() {  # <home> <id> <kind> <title> [pr-url]
     [ -n "$pr" ] && printf 'pr=%s\n' "$pr"
   } > "$home/state/$id.meta"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  # A retained report body, because bin/fm-outcome-manifest.sh sets
+  # report.present only when this file exists, and without it no page this run
+  # visits would ever render the ONE region the leak scan deliberately exempts.
+  # The absolute clone path in it is the point: a worker writes the paths it
+  # worked in, issue 169 exempted report bodies from redaction, and the scan
+  # passing over this page is that exemption working rather than being assumed.
+  cat > "$home/data/$id/report.md" <<REPORT
+# Report for $id
+
+The work was carried out in the clone at /home/fixture-captain/projects/firstmate.
+
+A worker writes the paths it worked in, and this body renders as written.
+REPORT
   printf 'working: started\ndone: finished\n' > "$home/state/$id.status"
   printf -- '- [x] %s - %s (since 2026-08-01)\n' "$id" "$title" >> "$home/data/backlog.md"
   "${FIXTURE_ENV[@]}" FM_HOME="$home" "$ROOT/bin/fm-outcome-manifest.sh" write "$id" >/dev/null 2>&1 \
@@ -1391,6 +1447,55 @@ task_open_probe_js() {
   ' "$ALL_VIEW_IDS" "$TASK_LANDMARKS" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
 }
 
+# The one destination that renders the region the leak scan exempts.
+#
+# It opens a completed task's page - the fixture seeded its retained report with
+# an absolute clone path in it - and answers three separate questions in one
+# evaluation: how many report regions the page carries, whether the patterns
+# match INSIDE those regions, and what the ordinary page-wide scan (which skips
+# them) came back with. The caller needs all three, because a page whose report
+# body happened to carry no path would satisfy "the scan came back clean"
+# without the exclusion having done anything.
+report_exclusion_probe_js() {  # <task id>
+  # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
+  node -e '
+    const [taskId, leaksRaw, leakFault, scanSource] = process.argv.slice(1);
+    const config = { taskId, leaks: leaksRaw.split(";").filter(Boolean), leakFault };
+    process.stdout.write(`async () => {
+      const config = ${JSON.stringify(config)};
+      const scan = ${scanSource};
+      location.hash = "#/task/" + config.taskId;
+      let view = null;
+      for (let tick = 0; tick < 100; tick += 1) {
+        const candidate = document.getElementById("view-task");
+        if (candidate?.dataset.settled === "true" && candidate.querySelector(".report")) {
+          view = candidate;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const out = { opened: view !== null, hash: location.hash, reportRegions: 0, reportLeaks: [] };
+      if (view) {
+        const regions = [...view.querySelectorAll(".report")];
+        out.reportRegions = regions.length;
+        const parts = [];
+        for (const region of regions) {
+          parts.push(region.innerText || "");
+          for (const node of [region, ...region.querySelectorAll("*")]) {
+            for (const attribute of node.attributes) parts.push(attribute.name + "=" + attribute.value);
+          }
+        }
+        const inside = parts.join("\\n");
+        for (const source of config.leaks) {
+          try { if (new RegExp(source).test(inside)) out.reportLeaks.push(source); } catch {}
+        }
+      }
+      Object.assign(out, scan());
+      return JSON.stringify(out);
+    }`);
+  ' "$1" "$LEAK_PATTERNS" "$LEAK_FAULT_ATTRIBUTE" "$LEAK_SCAN_JS"
+}
+
 # A bounded slice of each view, saved so a human can read what the check saw.
 # Evidence only - nothing is asserted from it, so the bound costs no coverage.
 capture_view_text() {  # <label> <view id>
@@ -1599,8 +1704,10 @@ EOF
   done <<EOF
 $VIEWS
 EOF
-  # The bucket the last click opened. Without this, whatever the page printed
-  # while rendering the final destination would be in no window anyone read.
+  check_report_exclusion "$label"
+  # The bucket the last navigation opened. Without this, whatever the page
+  # printed while rendering the final destination would be in no window anyone
+  # read.
   console_collect "$label-after-nav"
 
   check_leak_aggregate "$label"
@@ -1611,9 +1718,10 @@ EOF
   record_missing "$label"
 }
 
-# ???? for the four view observations of a destination that was never reached.
+# ???? for the five view observations of a destination that was never reached.
 route_unobserved() {  # <label> <name> <reason>
   local label=$1 name=$2 reason=$3
+  record "$UNVERIFIED" "$label: the $name destination is reached through $(expected_control "${label%%x*}")" "$reason"
   record "$UNVERIFIED" "$label: only the $name view is on the page" "$reason"
   record "$UNVERIFIED" "$label: the $name view rendered with real height" "$reason"
   record "$UNVERIFIED" "$label: the $name view is legible" "$reason"
@@ -1622,7 +1730,7 @@ route_unobserved() {  # <label> <name> <reason>
 
 check_route() {  # <width label> <route> <view id> <name> <landmarks>
   local label=$1 route=$2 id=$3 name=$4 landmarks=$5 expected probe fields key value
-  local clicked control reason hash present others others_checked
+  local clicked control reason hash present others others_checked required_control
   local client_width scroll_width leak_patterns leak_chars leak_text_chars leak_attribute_chars leak_excluded_reports page_leaks
   expected=$(count_landmarks "$landmarks")
   probe="$OUT_DIR/route-$label-$route.json"
@@ -1703,6 +1811,25 @@ INNER
   fi
   record ok "$label: the $name destination is reachable from the visible navigation" \
     "reached through $control, and the address reads $hash"
+
+  # Which control, not merely that one existed. The rail and the bottom tab bar
+  # are the two sides of the 899/900 boundary this rebuild exists to pin, and a
+  # run that only reported the control it happened to find would report green
+  # under a section named after the other side of it.
+  required_control=$(expected_control "${label%%x*}")
+  if forced nav-control fail; then
+    if [ "$required_control" = "the rail" ]; then control="the bottom tab bar"; else control="the rail"; fi
+  fi
+  if forced nav-control unverified || [ -z "$control" ]; then
+    record "$UNVERIFIED" "$label: the $name destination is reached through $required_control" \
+      "the page did not say which navigation control it followed"
+  elif [ "$control" = "$required_control" ]; then
+    record ok "$label: the $name destination is reached through $required_control" \
+      "the design places navigation in $required_control at ${label%%x*} CSS px, and that is the control this destination was reached through"
+  else
+    record FAIL "$label: the $name destination is reached through $required_control" \
+      "at ${label%%x*} CSS px the design places navigation in $required_control, but the visible control was $control"
+  fi
 
   # Fold this destination's page-wide leak scan into the width's aggregate.
   # A scan over zero characters is a scan that cannot be shown to have run.
@@ -2121,6 +2248,95 @@ INNER
   judge_swipe "$label" "$TASK_VIEW_NAME" "$trusted" "$client_width" "$scroll_width"
 }
 
+# The leak scan's one deliberate exclusion, exercised rather than assumed.
+#
+# Fixture mode seeds a completed task whose retained report body carries an
+# absolute clone path, and this opens that task's page. Three things have to
+# hold together before the exclusion counts as proven: the exempt region is
+# actually on the page, it really does carry a path-shaped value, and the scan
+# over everything else still comes back clean. Any one of them alone is
+# satisfied by a page that never rendered a report at all, which is exactly the
+# state this observation exists to end - the scan used to disclose "0 report
+# regions deliberately excluded", an exclusion no run had ever executed.
+#
+# Under --url this run authored none of the fleet's completed work and may not
+# write into it, so there is no retained report it can hold this to: n/a, the
+# same verdict the task-timeline observations take in that mode.
+check_report_exclusion() {  # <label>
+  local label=$1 probe fields key value observation
+  local opened regions report_leaks page_leaks excluded
+  local leak_patterns leak_chars leak_text_chars leak_attribute_chars
+  observation="$label: a worker-authored report body is the scan's one excluded region"
+  console_collect "$label-before-report"
+  if [ "$MODE" != fixture ]; then
+    record "$INAPPLICABLE" "$observation" \
+      "this run authored none of this fleet's completed work, so it has no retained report body to hold the exclusion to"
+    return
+  fi
+  probe="$OUT_DIR/report-exclusion-$label.json"
+  if forced report-exclusion unverified \
+    || ! browser_eval_json "$(report_exclusion_probe_js "$FIXTURE_REPORT_TASK")" "$probe"; then
+    record "$UNVERIFIED" "$observation" \
+      "the page returned nothing readable about the retained-report destination"
+    return
+  fi
+  if ! fields=$(probe_fields "$probe" opened=opened reportRegions=reportRegions \
+    reportLeaks=reportLeaks pageLeaks=pageLeaks leakExcludedReports=leakExcludedReports \
+    leakPatterns=leakPatterns leakChars=leakChars leakTextChars=leakTextChars \
+    leakAttributeChars=leakAttributeChars); then
+    record "$UNVERIFIED" "$observation" \
+      "the probe carried no verdict about the retained-report destination"
+    return
+  fi
+  opened=; regions=; report_leaks=; page_leaks=; excluded=
+  leak_patterns=; leak_chars=; leak_text_chars=; leak_attribute_chars=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      opened) opened=$value ;;
+      reportRegions) regions=$value ;;
+      reportLeaks) report_leaks=$value ;;
+      pageLeaks) page_leaks=$value ;;
+      leakExcludedReports) excluded=$value ;;
+      leakPatterns) leak_patterns=$value ;;
+      leakChars) leak_chars=$value ;;
+      leakTextChars) leak_text_chars=$value ;;
+      leakAttributeChars) leak_attribute_chars=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+
+  # This destination's scan counts toward the width's coverage like any other,
+  # so the aggregate below expects one more scan in fixture mode than under
+  # --url rather than quietly reading six where seven ran.
+  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ] \
+    && is_number "$leak_text_chars" && is_number "$leak_attribute_chars" \
+    && [ "$leak_attribute_chars" -gt 0 ] && is_number "$excluded"; then
+    LEAK_SCANS=$((LEAK_SCANS + 1))
+    LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
+    LEAK_TEXT_CHARS_TOTAL=$((LEAK_TEXT_CHARS_TOTAL + leak_text_chars))
+    LEAK_ATTRIBUTE_CHARS_TOTAL=$((LEAK_ATTRIBUTE_CHARS_TOTAL + leak_attribute_chars))
+    LEAK_EXCLUDED_REPORTS=$((LEAK_EXCLUDED_REPORTS + excluded))
+    [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
+    [ -n "$page_leaks" ] && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }Retained report: $page_leaks"
+  fi
+
+  forced report-exclusion fail && { regions=0; report_leaks=; }
+  if [ "$opened" != true ] || ! is_number "$regions" || [ "$regions" -eq 0 ]; then
+    record FAIL "$observation" \
+      "the completed task's page rendered no report region, so the scan's one exclusion was never executed"
+  elif [ -z "$report_leaks" ]; then
+    record FAIL "$observation" \
+      "$regions report region(s) rendered, but none carried a path-shaped value, so excluding them proves nothing"
+  elif [ -n "$page_leaks" ]; then
+    record FAIL "$observation" \
+      "the report body is exempt, but the rest of that page matched $page_leaks"
+  else
+    record ok "$observation" \
+      "$regions worker-authored report region(s) on the page, carrying [$report_leaks] inside the exempt body, and the scan over everything else came back clean"
+  fi
+}
+
 # The higher-stakes empty list, aggregated across every destination this width
 # reached. "No leaks found" is worth nothing unless the scan can be shown to
 # have run over every destination's rendered page, so the verdict requires one
@@ -2134,10 +2350,19 @@ INNER
 # observation and the three measurements of the page a row would have opened -
 # all recorded n/a - but not the leak scan's coverage of that destination, and
 # expecting five here would be reading a scan that ran as one that did not.
+#
+# Fixture mode reaches a seventh: the completed task whose retained report body
+# is the region this scan skips. Only fixture mode can, because only a run that
+# authored the completed work can seed a report to skip, so the expected count
+# follows the mode rather than being a constant that would read a scan that ran
+# as one that did not in the other direction.
 check_leak_aggregate() {  # <label>
   local label=$1 route_total
   route_total=$(printf '%s\n' "$VIEWS" | grep -c .)
   route_total=$((route_total + 1))
+  # The seventh destination fixture mode visits: the completed task whose
+  # retained report body is the one region this scan skips.
+  [ "$MODE" = fixture ] && route_total=$((route_total + 1))
   forced leak unverified && LEAK_SCANS=0
   if [ "$LEAK_SCANS" -ne "$route_total" ] || [ "$LEAK_CHARS_TOTAL" -eq 0 ] || [ "$LEAK_ATTRIBUTE_CHARS_TOTAL" -eq 0 ]; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
@@ -2147,6 +2372,15 @@ check_leak_aggregate() {  # <label>
   if [ "$LEAK_PATTERNS_SHORT" = yes ]; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
       "a destination evaluated fewer than this check's $LEAK_PATTERN_COUNT patterns, so the scan was incomplete"
+    return
+  fi
+  # An exclusion is part of this verdict's scope, so a run that states one has
+  # to have exercised it. Fixture mode controls the records and seeds a retained
+  # report on purpose; a zero here means the scan skipped nothing and the scope
+  # it discloses is a claim about a region no page in this run ever carried.
+  if [ "$MODE" = fixture ] && [ "$LEAK_EXCLUDED_REPORTS" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
+      "no worker-authored report region was on any destination, so the one exclusion this scan makes went unexercised and its scope cannot be shown"
     return
   fi
   forced leak fail || true
@@ -2511,6 +2745,8 @@ FRESH
 EVIDENCE_ASSERTIONS='the page rendered text rather than an empty document
 the stylesheet was applied
 destination is reachable from the visible navigation
+destination is reached through
+a worker-authored report body is the scan'"'"'s one excluded region
 view is on the page
 view rendered with real height
 view is legible

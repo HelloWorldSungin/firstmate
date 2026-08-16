@@ -50,6 +50,13 @@ The server also pushes a stale transition as soon as the last successful snapsho
 The empty, first-run, missing-command, timeout, malformed-JSON, unsupported-schema, and stale-last-good cases remain explicit in the same board surface.
 The browser reconnects its event stream with bounded exponential backoff, while periodic polling guarantees eventual updates even when a filesystem notification is unavailable.
 
+Raw error text reaches a reader through one funnel and never reaches the DOM: [`assets/dashboard/errors.js`](../assets/dashboard/errors.js) turns a typed failure into a display-safe sentence for its kind and carries the underlying message and stderr on a non-enumerable property, which is what keeps them out of the envelope the browser receives.
+Kept out is not thrown away - the server logs that diagnostic once per distinct reason, so an operator can read why a source failed from the service journal while the page still says only what it can say safely.
+
+A data refresh reconciles the mounted view rather than replacing it: results update in place, and the control a reader is on keeps its focus, its live value, and its caret across every push.
+That rule belongs to the reconciliation boundary rather than to a list of protected elements, so it holds for a filter chip, a state tab, a pager button, or a disclosure toggle exactly as it does for a search box - including on views that have no search box at all.
+Clearing a filter is the one thing that replaces a value under the reader's hand, because it is an explicit committed transition rather than a refresh.
+
 ## Navigation and reading it on a phone
 
 The five destinations live behind a hash router (`#/needs`, `#/fleet`, `#/backlog`, `#/history`, `#/knowledge`, plus `#/task/<id>`), and [`assets/dashboard/router.js`](../assets/dashboard/router.js) owns the routing contract: a hash resolves to exactly one view, that view is the only one in the DOM, and an unknown or stale hash lands on Needs you rather than a blank page.
@@ -163,6 +170,7 @@ Raw HTML in a report is therefore never markup - a `<script>` tag arrives on the
 A link survives only when it is absolute and its protocol is `http`, `https`, or `mailto`; `javascript:`, `data:`, and every other protocol, along with protocol-relative and relative references, are refused and the refusal is shown next to the surviving label rather than hidden.
 Images are rendered as labeled external links instead of `<img>` elements, because the page's content-security policy forbids remote images and a broken-image icon would read as a corrupt report rather than as policy.
 Document size, line count, node count, and nesting are all bounded, and every truncation is stated above the report.
+A report's own headings are scaled to the panel that holds it rather than left at the browser's defaults, because an unstyled `#` line renders larger and heavier than the page's own title and inverts the hierarchy - a worker's report is content on the task page, not the task page.
 
 The report itself is fetched by task id, and that id selects nothing on its own: it must name a task the current history published with a retained report, and the file is then read from this home's own data directory rather than from the path recorded in the manifest.
 A report that is missing, is no longer a plain file, or resolves outside that directory is refused with a reason, and a report larger than the configured byte limit is served truncated and labeled.
@@ -171,11 +179,13 @@ A report body is the one region the no-filesystem-paths rule does not cover, and
 The rule is scoped to the operational chrome the dashboard itself composes - labels, filters, errors, status lines, notices, and every attribute or text node built from a record value, all of which go through [`assets/dashboard/display.js`](../assets/dashboard/display.js)'s `label()`.
 A worker's report renders as written, absolute paths included, because a report narrating the path it worked in is the deliverable saying what it did, and deciding what to redact there belongs to whoever writes it.
 That is the captain's decision on [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169); the browser check's leak scan excludes the `.report` subtree by name and counts what it skipped rather than narrowing what it claims.
+In fixture mode that exclusion is exercised rather than stated: the check seeds a completed task whose retained report body carries an absolute clone path, visits that task's page, and requires the exempt region to be present, to carry a path-shaped value, and the scan over everything else to come back clean - so a run disclosing zero skipped regions fails its own coverage verdict.
 
 ## Checking it in a browser
 
 The module-level tests prove what each browser module returns; they cannot prove that the page loads, that the stylesheet arrived, that the layout holds at 390 CSS px, or that the console is clean.
 [`bin/fm-dashboard-browser-check.sh`](../bin/fm-dashboard-browser-check.sh) drives the real page in a real browser and records what it rendered, at a phone width, both sides of the 899/900 navigation boundary, and a desktop width, visiting every destination through the navigation control visible at each and asserting the active view is the only one in the DOM.
+Which control that was is a verdict of its own rather than a line of detail: below 900 CSS px the destination must have been reached through the bottom tab bar and at 900 and above through the rail, so a section named after one side of the boundary cannot report green while the page was showing the other side's control.
 Its credential- and path-leak scan runs over every destination's rendered text and its rendered attributes alike, since a value written into a `title` or a `data-` attribute is on the page exactly as much as one written into a text node; it excludes the worker-authored report bodies [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169) exempted, and states how many of those regions it stepped over.
 
 Run it with no arguments and it starts its own dashboard from this checkout on an ephemeral loopback port over a throwaway home, so it never touches an installed service.
@@ -187,7 +197,7 @@ On a host with other tenants that is worth weighing before running `--url`.
 
 Each observation is recorded as `ok`, `FAIL`, `????`, or `n/a`.
 `????` is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, or a scan cannot be shown to have run, and a run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.
-`n/a` is the separate case of an observation this mode was never able to make: the three task-timeline observations under `--url`, which can only be proved by posting events into a dashboard this command does not own.
+`n/a` is the separate case of an observation this mode was never able to make: under `--url`, the three task-timeline observations, which can only be proved by posting events into a dashboard this command does not own, and the retained-report exclusion, which needs a completed task this command authored.
 It is reported and counted but does not fail the run, so a healthy dashboard checked with `--url` exits 0; every other observation is made identically in both modes.
 
 That last claim is structural rather than a promise anyone has to keep by hand.

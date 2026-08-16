@@ -583,8 +583,28 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
   });
 }
 
+// Raw error text is kept OUT of the browser payload, not thrown away.
+// displayError() carries the underlying message and stderr on a non-enumerable
+// `diagnostic`, so the envelope this record becomes serializes only the
+// display-safe sentence, and the record itself still holds the reason for
+// anything server-side that needs it. This is the sink that makes it readable
+// by an operator: one bounded line per distinct reason, remembered per kind
+// because a source that fails every poll would otherwise repeat the same
+// sentence into the journal for as long as it stays broken.
+const loggedDiagnostics = new Map();
+
 function errorRecord(error, fallback) {
-  return displayError(error, fallback, { at: nowIso() });
+  const record = displayError(error, fallback, { at: nowIso() });
+  const diagnostic = record.diagnostic || {};
+  const detail = [safeText(diagnostic.message, 500), safeText(diagnostic.stderr, 500)]
+    .filter(Boolean)
+    .join(" | ");
+  const line = `fm-dashboard: ${record.kind}: ${detail || record.message}`;
+  if (loggedDiagnostics.get(record.kind) !== line) {
+    loggedDiagnostics.set(record.kind, line);
+    console.error(line);
+  }
+  return record;
 }
 
 // The one set of connected browsers. The snapshot and the history each push

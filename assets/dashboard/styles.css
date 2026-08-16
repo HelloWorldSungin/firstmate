@@ -274,7 +274,15 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 .chip.amber { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 .chip.unknown { border-style: dashed; border-color: var(--grey); background: transparent; color: var(--muted); }
 .report { display: grid; gap: 10px; font-size: 14px; line-height: 1.65; color: var(--text2); }
-.report h4 { font-size: 13px; font-weight: 650; color: var(--text); margin: 6px 0 0; letter-spacing: -.008em; }
+/* A report is subordinate content inside a panel, so a worker's own headings
+   scale to this page rather than to the browser's defaults. An unstyled h1 is
+   2em with UA margins, which puts the first line of a report above the page's
+   own title in both size and weight - the report reads as the page. */
+.report h1, .report h2, .report h3, .report h4, .report h5, .report h6 { font-weight: 650; color: var(--text); margin: 6px 0 0; letter-spacing: -.008em; line-height: 1.35; }
+.report h1 { font-size: 16px; }
+.report h2 { font-size: 15px; }
+.report h3 { font-size: 14px; }
+.report h4, .report h5, .report h6 { font-size: 13px; }
 .report p { margin: 0; text-wrap: pretty; }
 .report code { font-family: var(--mono); font-size: 12px; background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
 .report pre { overflow-x: auto; }

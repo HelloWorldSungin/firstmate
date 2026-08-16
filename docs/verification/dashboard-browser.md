@@ -12,10 +12,13 @@ Every observation below is one of four verdicts, not two.
 `ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, `????` means it could not be observed at all, and `n/a` means it does not apply to the target being checked in this mode.
 `????` exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
 `n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the three task-timeline observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
+The retained-report exclusion is `n/a` under `--url` for the same shape of reason - it needs a completed task with a report body this command authored, and the check writes nothing into a fleet it does not own.
 Under `--url` against an idle fleet the four task-destination observations join them, because a board with no live task has no row to click and so no task page to open or measure, and the usage-cell observation joins them too, because a fleet that has delivered nothing renders History's designed empty state and has no completion row a cell could ever sit on.
 Both stay `????` in fixture mode, where the fixture always publishes rows and their absence means something broke.
 The leak scan is deliberately not among them: it reaches that destination in every mode by selecting a task address of its own, so an idle fleet does not reduce what it is required to have covered.
 Proven, not assumed: a real server over an idle home, checked with `--url` on 2026-08-16, recorded `125 passed, 0 failed, 0 could not be verified, 23 not applicable to this target` with all 148 declared observations reconciled, and exited 0.
+That figure is the run it was taken from and not a claim about the current set: it predates the twenty-four observations added below.
+What `--url` does with those was executed rather than reasoned about, by pointing the check at a dashboard it did not start (`--width 390x844`, one width): the retained-report exclusion recorded `n/a` with its reason, the leak scan required six destinations there rather than the fixture's seven, and the run came out `42 passed, 0 failed, 0 could not be verified, 4 not applicable to this target` with all 46 declared observations reconciled, exit 0.
 
 Which observations a run makes is not left to be kept in step by hand.
 Each mode declares its observation set up front, and before the run exits that list is reconciled against the verdicts actually recorded; a declared observation with no verdict, one carrying two, or a verdict for something never declared names the offending observation and exits 4.
@@ -28,14 +31,15 @@ Date: 2026-08-16, after the rebuild of the page into six destinations behind a h
 Widths: 390x844 (phone), 899x844 and 900x844 (the two sides of the navigation boundary), 1440x900 (desktop).
 
 The page under check is no longer one scrolling document, so the observation set changed shape with it: at every width, every destination is visited through the navigation control actually visible there, and the active view must be the only view in the DOM.
-All 148 declared observations recorded `ok` and reconciled:
+All 172 declared observations recorded `ok` and reconciled:
 
 ```
-148 passed, 0 failed, 0 could not be verified
-observation set reconciled: all 148 declared observations recorded exactly once
+172 passed, 0 failed, 0 could not be verified
+observation set reconciled: all 172 declared observations recorded exactly once
 ```
 
 The set grew from 136 to 148 because the task detail now owes the same three per-destination measurements the five navigation destinations do - height, legibility, and sideways scroll - at each of the four widths.
+It grew from 148 to 172 for two reasons, both of them a claim that used to be prose becoming a verdict: which navigation control each destination was reached through is now asserted against the width rather than reported alongside it (20 observations), and the leak scan's one deliberate exclusion is now exercised on a page that actually carries a report body (4).
 
 What the run observed, with the load-bearing details:
 
@@ -45,6 +49,9 @@ What the run observed, with the load-bearing details:
   The structural form passes that page (observed: `the verdict strip reads [Nothing needs you] and #view-needs rendered 105 characters of its designed content`) and still fails the deliberately broken page, whose probe reads `mounted view [none], verdict [empty], 0 view characters`.
 - At 390x844 and 899x844 every destination was reached through the bottom tab bar; at 900x844 and 1440x900 every destination was reached through the rail.
   That is the 899/900 boundary observed from both sides in one run - navigation vanishing below 900px is the defect that started the rebuild, so it is pinned per width rather than assumed from the stylesheet.
+  It is now a verdict of its own rather than a detail on the reachability line: the run derives the control the design requires from the width it is at and refuses the destination when the visible control is the other one (`at 390 CSS px the design places navigation in the bottom tab bar, but the visible control was the rail`).
+  The distinction is load-bearing, because the breakpoints are container queries evaluated against `.app`'s inline size rather than against `window.innerWidth`: a browser reserving a classic scrollbar would put the 900 section's container at 885, exercise the tab bar, and satisfy "some control was visible" under a section named after the rail.
+  Observed here: the container matched the viewport at every width, so both sides of the boundary were reached through the control the design places there.
 - At every width and every destination, the active view root was mounted and all 5 other view roots were absent from the DOM - absent, not hidden - and the address bar carried the destination's own hash.
 - Opening a task from the Fleet board's own row landed on `#/task/<id>` with the task view mounted alone, all 6 view roots checked.
   That page is then held to the same three measurements the five navigation destinations are - real rendered height, its own landmark text, and nothing behind a horizontal swipe - because a destination a reader is sent to owes the same answers whether they reached it from a tab or from a board row.
@@ -57,11 +64,16 @@ What the run observed, with the load-bearing details:
   A pull request URL is one unbreakable token, `flex-wrap` cannot break a single word, and the panel holding it is a grid item whose automatic minimum size is that token's width, so the shared track was widened past the viewport.
   Fixed in `assets/dashboard/styles.css` by letting the token wrap: `overflow-wrap: anywhere` on `.pr-line`, which is the one value that also shrinks a min-content width, and `min-width: 0` on `.panel` so the grid item can shrink to the track.
   The URL wraps whole and readable inside the panel; nothing is clipped, truncated, or hidden.
-- The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (6 scans per width) and matched nothing.
+- The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (7 scans per width) and matched nothing.
   What that scan covers is the operational chrome the dashboard itself composes - labels, filters, errors, status lines, notices - read as rendered attributes as well as rendered text, because a value written into a `title` or a `data-` attribute is on the page exactly as much as one written into a text node.
   It deliberately excludes worker-authored report bodies, which render as written with any absolute paths they narrate: that is the captain's decision on [issue 169](https://github.com/HelloWorldSungin/firstmate/issues/169), and the scan counts every `.report` region it skipped so an `ok` verdict states what it stepped over rather than implying it read it.
   The fixture registers every project and repo as a real absolute clone path, so an empty match is evidence about path-shaped data reaching the page rather than about a fixture that never held a path; the labels still render as the short names `label()` returns.
-- The console was clean across all 37 windows read - one immediately before every navigation the run made and one after the last of each.
+- That exclusion is now executed rather than disclosed.
+  The fixture seeds a retained report through the real manifest writer - `data/<id>/report.md`, which is the only thing that makes `report.present` true - with an absolute clone path written in the body, and the check visits that completed task's page as a seventh destination.
+  The verdict requires all three of: the exempt region on the page, a path-shaped value inside it, and the scan over everything else clean (`1 worker-authored report region(s) on the page, carrying [/home/] inside the exempt body, and the scan over everything else came back clean`).
+  Before this, no destination the run visited rendered a `.report` at all - the fixture wrote only a brief, and the board row the task probe clicks is a live task, which carries no retained report - so the scan disclosed `0 worker-authored report region(s) deliberately excluded`, an exclusion nothing had ever triggered.
+  A zero now fails the scan's own coverage verdict in fixture mode, because a stated scope boundary that no page in the run crossed states nothing.
+- The console was clean across all 41 windows read - one immediately before every navigation the run made and one after the last of each.
 
 ## The task timeline
 
@@ -78,18 +90,17 @@ A check that only ever reports success is worth nothing, so this is pinned rathe
 Observed 2026-08-16:
 
 ```
-8 passed, 28 failed, 108 could not be verified
-observation set reconciled: all 144 declared observations recorded exactly once
-negative proof PASSED: the check refuses a page that renders nothing (28 failed, 108 could not be verified, and every one of the 9 assertions that read what rendered recorded a FAIL or a ???? of its own)
+8 passed, 32 failed, 128 could not be verified
+observation set reconciled: all 168 declared observations recorded exactly once
+negative proof PASSED: the check refuses a page that renders nothing (32 failed, 128 could not be verified, and every one of the 11 assertions that read what rendered recorded a FAIL or a ???? of its own)
 ```
 
-The split recorded here previously read `32 failed, 92 could not be verified` against 132 declared.
-That was wrong when it was written, not made wrong by this change: rerunning the pre-change script proves it, and it records 7 failed and 24 could not be verified at a single width - 28 and 96 over the four.
-The twelve added observations are all `????` on a page with no board to open, which is the whole difference between 96 and 108.
+An earlier record of this run read `32 failed, 92 could not be verified` against 132 declared, and that was wrong when it was written rather than made wrong by any change since: rerunning the script of the day proves it, and it records 7 failed and 24 could not be verified at a single width - 28 and 96 over the four.
+The task-detail observations added after it are all `????` on a page with no board to open, which took 96 to 108; the twenty added since take it to 128, and the four extra `FAIL` are the retained-report exclusion refusing a page that renders no report at any width.
 
-On the empty page every destination's navigation control is missing, so the reachability assertion records `FAIL` at each width and the view assertions behind it record `????` - a destination that could not be reached is a view nobody observed, not a view seen to be fine.
+On the empty page every destination's navigation control is missing, so the reachability assertion records `FAIL` at each width and the five view assertions behind it record `????` - a destination that could not be reached is a view nobody observed, not a view seen to be fine, and which control it would have been reached through is not something a run with no controls saw either.
 The task destination records `????` the same way, because a page with no Fleet board has no row to open.
-The nine named evidence assertions are the rendered text, the stylesheet, the reachability of each destination, the active view being the only one on the page, its height, its legibility, the leak scan, the History display, and the usage cells.
+The eleven named evidence assertions are the rendered text, the stylesheet, the reachability of each destination, the control it was reached through, the retained-report exclusion, the active view being the only one on the page, its height, its legibility, the leak scan, the History display, and the usage cells.
 Requiring each to appear in `result.txt` as a `FAIL` or `????` line of its own is positive evidence it ran and refused; an earlier version inferred the proof from absences and once reported `PASSED` on a host whose browser bridge was busy.
 
 ## Executing each failure path rather than reasoning about it
@@ -114,12 +125,20 @@ FAIL 390x844: the History view displays the completion records it read - the fix
 $ FM_DASHBOARD_BROWSER_FORCE=task-swipe:fail bin/fm-dashboard-browser-check.sh --width 390x844
      forced: task-swipe:fail (FM_DASHBOARD_BROWSER_FORCE)
 FAIL 390x844: nothing is placed behind a horizontal swipe on Task detail - the document scrolls sideways at this destination: scrollWidth 630 > viewport 390
+
+$ FM_DASHBOARD_BROWSER_FORCE=nav-control:fail bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: nav-control:fail (FM_DASHBOARD_BROWSER_FORCE)
+FAIL 390x844: the Needs you destination is reached through the bottom tab bar - at 390 CSS px the design places navigation in the bottom tab bar, but the visible control was the rail
+
+$ FM_DASHBOARD_BROWSER_FORCE=report-exclusion:fail bin/fm-dashboard-browser-check.sh --width 390x844
+     forced: report-exclusion:fail (FM_DASHBOARD_BROWSER_FORCE)
+FAIL 390x844: a worker-authored report body is the scan's one excluded region - the completed task's page rendered no report region, so the scan's one exclusion was never executed
 ```
 
 The task destination's other two branches were executed the same way on 2026-08-16: `task-height:fail` printed `only 10px tall`, and `task-legible:fail` printed `2 landmarks checked, missing: Task detail`.
 An observation added to close a gap is worth nothing until its failure branch has been run rather than reasoned about, so these were executed before this record claimed the gap was closed.
 
-`tests/fm-dashboard-browser.test.sh` pins those four pairs, the three `reconcile:` pairs that corrupt the emitted observation set itself, the refusal of unknown entries, and the refusal to combine injection with `--negative`.
+`tests/fm-dashboard-browser.test.sh` pins those six pairs, the three `reconcile:` pairs that corrupt the emitted observation set itself, the refusal of unknown entries, and the refusal to combine injection with `--negative`.
 
 ## Limits of what a browser check can see here
 

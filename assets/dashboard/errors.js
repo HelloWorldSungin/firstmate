@@ -35,6 +35,13 @@ function normalizedKind(error, fallback) {
   return typeof candidate === "string" && /^[a-z0-9_]+$/.test(candidate) ? candidate : fallback;
 }
 
+// The one funnel raw error text passes through on its way to a reader: what
+// comes back carries a display-safe sentence for the kind, and the raw message
+// and stderr on a NON-ENUMERABLE `diagnostic`. Non-enumerable is the whole
+// mechanism - JSON.stringify skips it, so the record can be published as an
+// envelope without the raw text crossing into the browser, while anything
+// server-side still has it. bin/fm-dashboard-server.mjs's errorRecord() is that
+// sink: it logs the diagnostic so an operator can read why a source failed.
 export function displayError(error, fallback = "dashboard_read_failed", fields = {}) {
   const kind = normalizedKind(error, fallback);
   const record = { kind, message: DISPLAY_ERROR_MESSAGES[kind] || DISPLAY_ERROR_MESSAGES.dashboard_read_failed, ...fields };
