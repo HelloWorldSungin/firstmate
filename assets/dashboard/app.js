@@ -194,22 +194,53 @@ function stampControlCommit(node) {
   for (const child of node?.childNodes || []) stampControlCommit(child);
 }
 
+function eachElement(root, visit) {
+  if (isElement(root)) visit(root);
+  for (const child of root?.childNodes || []) eachElement(child, visit);
+}
+
+// What a control IS, asked of the control rather than of where it sits. A
+// child index is a position: the moment a refresh adds or drops a sibling -
+// which every one of these lists does by design - the same index names a
+// different control. What survives that is the tag the renderer chose and the
+// words the reader was looking at, so a chip that moved is still the chip they
+// were on and a chip whose label changed is deliberately no longer a match.
+// The class name is left out on purpose: it carries selection state, and a
+// control must stay itself across the click that selects it.
+function focusSignature(node) {
+  const label = [node.getAttribute?.("aria-label"), node.getAttribute?.("title"), node.textContent]
+    .find((value) => typeof value === "string" && value.trim() !== "") || "";
+  return `${node.tagName} ${label.replace(/\s+/g, " ").trim()}`;
+}
+
+function signatureMatches(root, signature) {
+  const matches = [];
+  eachElement(root, (node) => { if (focusSignature(node) === signature) matches.push(node); });
+  return matches;
+}
+
+function elementById(root, id) {
+  let found = null;
+  eachElement(root, (node) => { if (!found && node.id === id) found = node; });
+  return found;
+}
+
 // Reconciliation must not move the reader's focus, on any control rather than
-// on a listed few. The focused element is found again by its position under the
-// view root - a stable identity for a renderer that builds the same tree from
-// the same state - and its live value and selection travel with it, so a
-// background refresh cannot drop a keyboard reader back to the top of the
-// document or cut a caret out of a half-typed word.
+// on a listed few, and must not move it to a DIFFERENT control either - a
+// refresh that silently re-aims the keyboard at the neighbouring chip is worse
+// than one that drops focus, because the next Enter acts on something nobody
+// chose. So the focused control is found again by identity: its own id when the
+// renderer gave it one, otherwise its signature, and among several controls
+// that are genuinely indistinguishable, its occurrence among them. When the set
+// of matches is not the set that was captured, nothing is restored.
 function captureViewFocus() {
   const active = document.activeElement;
   if (!isElement(active) || active === ui.view || !ui.view.contains?.(active)) return null;
-  const path = [];
-  for (let node = active; node !== ui.view; node = node.parentNode) {
-    const parent = node.parentNode;
-    if (!parent) return null;
-    path.unshift([...parent.childNodes].indexOf(node));
-  }
-  const capture = { node: active, path, tagName: active.tagName, value: liveValue(active), selection: null };
+  const signature = focusSignature(active);
+  const peers = signatureMatches(ui.view, signature);
+  const index = peers.indexOf(active);
+  if (index < 0) return null;
+  const capture = { node: active, id: active.id || null, signature, index, peers: peers.length, selection: null };
   try {
     if (Number.isInteger(active.selectionStart)) {
       capture.selection = [active.selectionStart, Number.isInteger(active.selectionEnd) ? active.selectionEnd : active.selectionStart];
@@ -220,13 +251,13 @@ function captureViewFocus() {
 
 function restoreViewFocus(capture) {
   if (!capture || document.activeElement === capture.node) return;
-  let node = ui.view;
-  for (const index of capture.path) {
-    node = node?.childNodes?.[index];
-    if (!node) return;
+  let node = capture.id ? elementById(ui.view, capture.id) : null;
+  if (!node) {
+    const peers = signatureMatches(ui.view, capture.signature);
+    if (peers.length !== capture.peers) return;
+    node = peers[capture.index];
   }
-  if (!isElement(node) || node.tagName !== capture.tagName || typeof node.focus !== "function") return;
-  if (capture.value !== null && liveValue(node) !== null) node.value = capture.value;
+  if (!isElement(node) || typeof node.focus !== "function") return;
   node.focus({ preventScroll: true });
   if (capture.selection && typeof node.setSelectionRange === "function") {
     try { node.setSelectionRange(capture.selection[0], capture.selection[1]); } catch {}

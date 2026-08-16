@@ -583,28 +583,41 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
   });
 }
 
-// Raw error text is kept OUT of the browser payload, not thrown away.
+// Raw error text is kept OUT of every client payload, not thrown away.
 // displayError() carries the underlying message and stderr on a non-enumerable
-// `diagnostic`, so the envelope this record becomes serializes only the
-// display-safe sentence, and the record itself still holds the reason for
-// anything server-side that needs it. This is the sink that makes it readable
-// by an operator: one bounded line per distinct reason, remembered per kind
-// because a source that fails every poll would otherwise repeat the same
-// sentence into the journal for as long as it stays broken.
+// `diagnostic`, so what a browser or a posting agent receives is only the
+// display-safe sentence, and this is the sink that keeps the reason readable by
+// an operator. Every server-side displayError call goes through here, the
+// per-source GBrain failures and the ingest refusal included, so the
+// retrievability rule holds on all of them rather than on the polling paths
+// alone.
+//
+// Remembered per SOURCE rather than per kind, and cleared by that source's own
+// next success. A source failing every poll therefore says so once, while the
+// same failure returning after a recovery says so again - on a service that
+// runs for weeks, that recurrence is the thing worth reading, and dedup that
+// never expires would have swallowed it.
 const loggedDiagnostics = new Map();
 
-function errorRecord(error, fallback) {
-  const record = displayError(error, fallback, { at: nowIso() });
-  const diagnostic = record.diagnostic || {};
+function logDiagnostic(source, record) {
+  const diagnostic = record?.diagnostic || {};
   const detail = [safeText(diagnostic.message, 500), safeText(diagnostic.stderr, 500)]
     .filter(Boolean)
     .join(" | ");
-  const line = `fm-dashboard: ${record.kind}: ${detail || record.message}`;
-  if (loggedDiagnostics.get(record.kind) !== line) {
-    loggedDiagnostics.set(record.kind, line);
+  const line = `fm-dashboard: ${source}: ${record?.kind || "unknown"}: ${detail || record?.message || ""}`;
+  if (loggedDiagnostics.get(source) !== line) {
+    loggedDiagnostics.set(source, line);
     console.error(line);
   }
   return record;
+}
+
+function clearDiagnostic(source) {
+  loggedDiagnostics.delete(source);
+}
+
+function errorRecord(source, error, fallback) {
+  return logDiagnostic(source, displayError(error, fallback, { at: nowIso() }));
 }
 
 // The one set of connected browsers. The snapshot and the history each push
@@ -756,9 +769,10 @@ class HistoryState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("history");
       this.usage = this.retainUsage(await this.readUsage());
     } catch (error) {
-      this.lastError = errorRecord(error, "history_refresh_failed");
+      this.lastError = errorRecord("history", error, "history_refresh_failed");
     } finally {
       this.refreshing = false;
       this.clients.send("history");
@@ -1327,8 +1341,9 @@ class GBrainState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("gbrain-health");
     } catch (error) {
-      this.lastError = errorRecord(error, "gbrain_health_unavailable");
+      this.lastError = errorRecord("gbrain-health", error, "gbrain_health_unavailable");
     } finally {
       this.refreshing = false;
       this.broadcast();
@@ -1412,9 +1427,10 @@ class GBrainState {
         const kind = source === "local"
           ? "gbrain_local_source_failed"
           : source === "main" ? "gbrain_main_source_failed" : "gbrain_source_failed";
-        const failure = GBRAIN_NON_ERROR_SOURCE_STATES.has(state)
-          ? null
-          : displayError({ kind, message: typeof row?.detail === "string" ? row.detail : null }, kind);
+        const path = `gbrain-source-${source}`;
+        let failure = null;
+        if (GBRAIN_NON_ERROR_SOURCE_STATES.has(state)) clearDiagnostic(path);
+        else failure = logDiagnostic(path, displayError({ kind, message: typeof row?.detail === "string" ? row.detail : null }, kind));
         return {
           source,
           state,
@@ -1545,10 +1561,11 @@ class EventsState {
         ? new EventStore(this.config.eventStorePath, this.config.eventLimits)
         : EventStore.openExisting(this.config.eventStorePath, this.config.eventLimits);
     } catch (error) {
-      this.storeError = errorRecord(error, "event_store_unavailable");
+      this.storeError = errorRecord("event-store", error, "event_store_unavailable");
       return this.store;
     }
     if (!this.store) return null;
+    clearDiagnostic("event-store");
     this.tail = this.store.tail();
     this.lastEventAt = this.tail[0]?.occurred_at ?? null;
     return this.store;
@@ -1659,7 +1676,7 @@ class DashboardState {
     this.stopped = false;
     this.activeChild = null;
     this.durablePending = false;
-    this.lastError = config.serviceUnitError ? errorRecord(config.serviceUnitError, "service_unit_outdated") : null;
+    this.lastError = config.serviceUnitError ? errorRecord("service-unit", config.serviceUnitError, "service_unit_outdated") : null;
   }
 
   envelope() {
@@ -1777,8 +1794,9 @@ class DashboardState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("snapshot");
     } catch (error) {
-      this.lastError = errorRecord(error, "snapshot_failed");
+      this.lastError = errorRecord("snapshot", error, "snapshot_failed");
     } finally {
       this.refreshing = false;
       this.scheduleStaleTransition();
@@ -2106,8 +2124,9 @@ async function serveIngest(request, response, events) {
   let stored;
   try {
     stored = events.accept(accepted, nowIso());
+    clearDiagnostic("event-ingest");
   } catch (error) {
-    const failure = displayError(error, "store_write_failed");
+    const failure = logDiagnostic("event-ingest", displayError(error, "store_write_failed"));
     sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: failure.kind, detail: failure.message });
     return;
   }
@@ -2197,6 +2216,7 @@ async function serveGBrainSearch(request, response, gbraintron) {
   }
   try {
     const payload = await gbraintron.search(document.query, document.limit);
+    clearDiagnostic("gbrain-search");
     sendJson(response, 200, payload);
   } catch (error) {
     const status = error.kind === "timed_out" ? 504
@@ -2204,7 +2224,7 @@ async function serveGBrainSearch(request, response, gbraintron) {
         : error.kind === "query_too_short" || error.kind === "query_too_large" ? 400
           : error.kind === "no_corpus_answered" || error.kind === "search_setup_failed" ? 503
             : 502;
-    const failure = displayError(error, error.kind || "search_failed");
+    const failure = logDiagnostic("gbrain-search", displayError(error, error.kind || "search_failed"));
     sendJson(response, status, {
       schema: GBRAIN_SEARCH_SCHEMA,
       results: [],

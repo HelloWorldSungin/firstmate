@@ -51,10 +51,13 @@ The empty, first-run, missing-command, timeout, malformed-JSON, unsupported-sche
 The browser reconnects its event stream with bounded exponential backoff, while periodic polling guarantees eventual updates even when a filesystem notification is unavailable.
 
 Raw error text reaches a reader through one funnel and never reaches the DOM: [`assets/dashboard/errors.js`](../assets/dashboard/errors.js) turns a typed failure into a display-safe sentence for its kind and carries the underlying message and stderr on a non-enumerable property, which is what keeps them out of the envelope the browser receives.
-Kept out is not thrown away - the server logs that diagnostic once per distinct reason, so an operator can read why a source failed from the service journal while the page still says only what it can say safely.
+Kept out is not thrown away - every server-side failure, the per-source knowledge failures and the event-ingest refusal included, logs its raw reason to the service journal, so an operator can read why a source failed while the page and the posting agent still see only what can be said safely.
+That log is remembered per source and cleared by that source's own next success, so a source that is simply still broken says so once while a failure that returns after a recovery says so again.
 
 A data refresh reconciles the mounted view rather than replacing it: results update in place, and the control a reader is on keeps its focus, its live value, and its caret across every push.
 That rule belongs to the reconciliation boundary rather than to a list of protected elements, so it holds for a filter chip, a state tab, a pager button, or a disclosure toggle exactly as it does for a search box - including on views that have no search box at all.
+Focus is carried by what a control is rather than by where it sits: its own id when the renderer gave it one, otherwise the tag and the words the reader was looking at, and its position among controls that are genuinely indistinguishable.
+A refresh that reshapes a list - a state column emptying out, a row leaving the queue - therefore restores nothing rather than re-aiming the keyboard at whichever control inherited the position, because a refresh may drop focus but may never move it.
 Clearing a filter is the one thing that replaces a value under the reader's hand, because it is an explicit committed transition rather than a refresh.
 
 ## Navigation and reading it on a phone

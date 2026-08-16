@@ -341,6 +341,7 @@ class FakeNode {
   }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   focus() { this.focused = true; activeElement = this; }
@@ -677,6 +678,38 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   toggledChips[1].listeners.click();
   await settle();
 
+  // --- and a refresh that reshapes the list never re-aims it ------------------
+  //
+  // The reader is on "Active"; the next push moves the parked task into active,
+  // so the needs-decision column empties out, the chip list shrinks, and every
+  // chip after it shifts up one place. Resolving the focused control by its
+  // position would land on the chip that took over the index and the reader's
+  // next Enter would toggle a filter they never chose. Restoring nothing is the
+  // required answer: a refresh may drop focus, it may never move it.
+  const chipsBefore = all(viewNode, (node) => hasClass(node, "fchip"));
+  const activeChip = chipsBefore.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!activeChip) throw new Error(`the Fleet board rendered no Active chip to focus: ${chipsBefore.map((chip) => chip.textContent).join(", ")}`);
+  activeChip.focus();
+  const shifted = {
+    ...envelope,
+    snapshot: {
+      ...envelope.snapshot,
+      tasks: envelope.snapshot.tasks.map((entry) => (entry.card?.column === "needs_decision"
+        ? { ...entry, card: { ...entry.card, column: "active" } }
+        : entry)),
+    },
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(shifted) });
+  await settle();
+  const chipsAfter = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (chipsAfter.length >= chipsBefore.length) throw new Error("the shifted push did not actually shorten the chip list, so this proves nothing");
+  const landed = document.activeElement;
+  if (landed && chipsAfter.includes(landed) && landed.textContent !== activeChip.textContent) {
+    throw new Error(`a refresh moved focus to a control the reader never chose: ${landed.textContent}`);
+  }
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+
   // --- History displays every record it found --------------------------------
   await go("#/history");
   let historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
@@ -780,6 +813,43 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await go("#/history");
   projectFilterRuns("History", "history-search", 3, 3);
   await go("#/backlog");
+
+  // The filter the reader sees has to keep naming the project the rows are
+  // filtered by, across a refresh that moves it. Option values are opaque
+  // indexes into a SORTED facet list, so a push that adds an earlier-sorting
+  // project shifts the chosen project's index while the raw key state holds is
+  // unchanged - and anything that carries a pre-refresh index onto the rebuilt
+  // control leaves the select naming one project and the rows showing another.
+  const projectFilter = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "project", `backlog project filter ${why}`);
+  const chosen = projectFilter("before").options.find((option) => option.textContent === "firstmate");
+  if (!chosen) throw new Error("the Backlog project filter offered no firstmate option to choose");
+  const chosenSelect = projectFilter("choosing");
+  chosenSelect.value = chosen.value;
+  chosenSelect.listeners.change();
+  chosenSelect.focus();
+  eventSources[0].listeners.backlog({
+    data: JSON.stringify({
+      ...backlogEnvelope,
+      backlog: {
+        ...backlogEnvelope.backlog,
+        records: [
+          { id: "queued-z", title: "Queued z", state: "queued", repo: "/home/captain/projects/arknode", order: 0 },
+          ...backlogEnvelope.backlog.records,
+        ],
+      },
+    }),
+  });
+  await settle();
+  const refiled = projectFilter("after");
+  const shown = refiled.options.find((option) => option.value === refiled.value);
+  if (!shown || shown.textContent !== "firstmate") {
+    throw new Error(`a refresh left the project filter naming a different project than the one it filters by: ${shown ? shown.textContent : "no option"}`);
+  }
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  await settle();
+  const restored = projectFilter("restored");
+  restored.value = "";
+  restored.listeners.change();
 
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");
@@ -1196,6 +1266,7 @@ class FakeNode {
   }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   focus() { this.focused = true; activeElement = this; }
@@ -1425,7 +1496,7 @@ test_stale_service_unit_is_actionable() {
 }
 
 test_first_run_failures_are_explicit() {
-  local case_root backlog error_message
+  local case_root backlog error_message logged
   case_root=$(make_runtime malformed)
   printf 'malformed\n' > "$case_root/control/mode"
   start_fixture_server "$case_root" 1 1
@@ -1464,8 +1535,27 @@ test_first_run_failures_are_explicit() {
     "$case_root/envelope.json" >/dev/null \
     || fail "the browser payload lost its display-safe sentence or carried raw diagnostics: $(jq -c '.status.error' "$case_root/envelope.json")"
   stop_server
-  grep -q '^fm-dashboard: exit_nonzero: .*fixture snapshot failed' "$case_root/server.log" \
+  grep -q '^fm-dashboard: snapshot: exit_nonzero: .*fixture snapshot failed' "$case_root/server.log" \
     || fail "the failure reason was discarded instead of logged where an operator can read it: $(cat "$case_root/server.log")"
+
+  # And a failure that comes BACK after a recovery says so again. A long-lived
+  # service that remembers a reason forever reports the 02:00 outage and stays
+  # silent through the identical one at 05:00, which is the harder failure to
+  # diagnose and the one worth a line. The dedupe is per source and its own
+  # success is what clears it, so a source that is simply still broken stays
+  # quiet while a recurrence does not.
+  case_root=$(make_runtime recurrence)
+  printf 'fail\n' > "$case_root/control/mode"
+  start_fixture_server "$case_root" 1 1
+  wait_for_expression "$case_root" '.status.error.kind == "exit_nonzero"'
+  printf 'good\n' > "$case_root/control/mode"
+  wait_for_expression "$case_root" '.status.phase == "ready"'
+  printf 'fail\n' > "$case_root/control/mode"
+  wait_for_expression "$case_root" '.status.error.kind == "exit_nonzero"'
+  stop_server
+  logged=$(grep -c '^fm-dashboard: snapshot: exit_nonzero: ' "$case_root/server.log")
+  [ "$logged" -ge 2 ] \
+    || fail "a failure that recurred after a recovery was suppressed as a repeat: $(cat "$case_root/server.log")"
   pass "malformed JSON, unsupported versions, and missing commands expose first-run errors, with the raw reason logged rather than discarded"
 }
 
