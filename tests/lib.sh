@@ -467,9 +467,10 @@ expect_code() {
 # assertion is "this finished in N seconds".
 fm_test_wait_absent() {
   local path=$1 description=$2 ceiling_secs=${3:-15}
-  local deadline=$(( $(date +%s) + ceiling_secs ))
-  while [ -e "$path" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+  local remaining_polls=$(( ceiling_secs * 20 ))
+  while [ -e "$path" ] && [ "$remaining_polls" -gt 0 ]; do
     sleep 0.05
+    remaining_polls=$(( remaining_polls - 1 ))
   done
   [ ! -e "$path" ] || fail "$description (still present after ${ceiling_secs}s ceiling)"
 }
