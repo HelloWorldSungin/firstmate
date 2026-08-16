@@ -188,11 +188,10 @@
 #
 #   --reemit  This process ALREADY took the helm at its own startup and has
 #             only lost its context (a /clear or a compaction). Skip the
-#             mutating sweeps that startup already reconciled - the stale Herdr
-#             projection cleanup and bootstrap's six mutating sweeps (fleet
-#             sync, secondmate convergence and liveness, PR-check migration,
-#             pending remote handoff retry, X-mode artifact writes) - and
-#             re-emit the rest. The wake-queue drain is NOT skipped: queued
+#             mutating work startup already reconciled - stale Herdr projection
+#             cleanup plus every bootstrap mutating sweep enumerated in
+#             bin/fm-bootstrap.sh's header - and re-emit the rest. The wake-queue
+#             drain is NOT skipped: queued
 #             records are this turn's work queue, they arrived after startup,
 #             and a session that owns the lock is exactly the session that must
 #             take them. Lock acquisition still runs, because ownership must be
