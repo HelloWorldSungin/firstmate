@@ -393,16 +393,24 @@ function armAttempt(status, armChild, includeArmChild) {
 
 async function ensureArm(paths, sessionID, client, predecessorArmPid = "", includeArmChild = false) {
   let launchResult = null;
-  if (!launchInFlight) {
-    const launch = beginArm(paths, sessionID, client, predecessorArmPid);
-    launchInFlight = launch;
-    try {
-      launchResult = await launch;
-    } finally {
-      if (launchInFlight === launch) launchInFlight = null;
+  let recheckedJoinedOwnership = false;
+  for (;;) {
+    let joinedLaunch = false;
+    if (!launchInFlight) {
+      const launch = beginArm(paths, sessionID, client, predecessorArmPid);
+      launchInFlight = launch;
+      try {
+        launchResult = await launch;
+      } finally {
+        if (launchInFlight === launch) launchInFlight = null;
+      }
+    } else {
+      joinedLaunch = true;
+      launchResult = await launchInFlight;
     }
-  } else {
-    launchResult = await launchInFlight;
+    // A newer idle event must not inherit an older attempt's lock snapshot.
+    if (!joinedLaunch || launchResult.status !== "read-only" || recheckedJoinedOwnership) break;
+    recheckedJoinedOwnership = true;
   }
   const armChild = launchResult.armChild;
   if (!armChild) {
