@@ -56,8 +56,10 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* ===== app frame ===== */
-.app { min-height: 100vh; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; -webkit-font-smoothing: antialiased; container-type: inline-size; }
-.shell { display: flex; align-items: stretch; }
+.app { min-height: 100vh; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; -webkit-font-smoothing: antialiased; container-type: inline-size; display: flex; flex-direction: column; }
+/* the shell absorbs the spare height, so the bottom tab bar sits at the
+   bottom of a short page instead of floating above a bare gap */
+.shell { display: flex; align-items: stretch; flex: 1; }
 .main { flex: 1; min-width: 0; padding: 28px 32px 64px; }
 
 /* ===== tones ===== */
@@ -103,6 +105,7 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 .rail-actions { margin-top: auto; border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 2px; }
 .rail-sec-label { padding: 2px 12px 6px; font-family: var(--mono); font-size: 8.5px; font-weight: 620; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 .iconbtn { display: flex; align-items: center; gap: 11px; min-height: 44px; padding: 0 12px; border-radius: 8px; color: var(--text2); font-size: 12.5px; font-weight: 560; width: 100%; box-sizing: border-box; }
+.iconbtn svg { width: 18px; height: 18px; flex: none; }
 .iconbtn:hover { color: var(--text); background: var(--surface); }
 @container (min-width: 900px) and (max-width: 1199px) {
   .rail { width: 64px; padding: 14px 10px; }
@@ -136,6 +139,8 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 /* ===== Needs you - roomy cards ===== */
 .cards { display: grid; gap: 12px; max-width: 840px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 10px; animation: fm-in .3s ease-out; cursor: pointer; }
+/* a data refresh re-renders in place; only arriving at the view animates */
+.main.settled .card { animation: none; }
 .card:hover { border-color: var(--line2); }
 .card-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .kind { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 10px; font-weight: 620; letter-spacing: .12em; text-transform: uppercase; }
@@ -253,7 +258,14 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 .tl-row { display: flex; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; align-items: baseline; }
 .tl-row:first-child { border-top: 0; }
 .tl-t { font-family: var(--mono); font-size: 10.5px; color: var(--muted); min-width: 52px; flex: none; }
-.tl-e { color: var(--text2); }
+.tl-e { color: var(--text2); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* outcome chips: an unknown verdict is dashed and hollow, distinct from both
+   the good and the bad chip even in greyscale */
+.chip { flex: none; padding: 1px 7px; border: 1px solid var(--line2); border-radius: 999px; color: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 600; line-height: 1.6; }
+.chip.green { border-color: var(--green); background: var(--green-soft); color: var(--green); }
+.chip.red { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+.chip.amber { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
+.chip.unknown { border-style: dashed; border-color: var(--grey); background: transparent; color: var(--muted); }
 .report { display: grid; gap: 10px; font-size: 14px; line-height: 1.65; color: var(--text2); }
 .report h4 { font-size: 13px; font-weight: 650; color: var(--text); margin: 6px 0 0; letter-spacing: -.008em; }
 .report p { margin: 0; text-wrap: pretty; }

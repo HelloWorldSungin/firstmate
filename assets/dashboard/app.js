@@ -12,9 +12,9 @@
 // display.js owns the convention that record values become labels before they
 // reach the DOM, so no filesystem path renders on any view.
 
-import { buildHealth, buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
+import { buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
-import { buildTimeline, clockLabel, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, typeLabel } from "./events.js";
 import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
 import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
@@ -98,6 +98,7 @@ const state = {
   fleet: { filters: [] },
   gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
   task: { reports: new Map(), timelines: new Map() },
+  events: null,
   notifyEnabled: false,
   seenInboxIds: null,
 };
@@ -108,6 +109,15 @@ function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined && text !== null && text !== "") node.append(document.createTextNode(text));
+  return node;
+}
+
+// Every view's root carries a stable id (#view-needs, #view-fleet, ...) so a
+// test or browser check can assert the router's contract structurally: the
+// active view's id is on the page and every other view id is absent.
+function viewRoot(name) {
+  const node = element("div");
+  node.id = `view-${name}`;
   return node;
 }
 
@@ -181,22 +191,27 @@ const MARKDOWN_CLASS_FOR = {
 
 // --- theme, alerts ----------------------------------------------------------
 
-function setTheme(theme) {
+function setTheme(theme, persist = false) {
   document.documentElement.dataset.theme = theme;
-  try { localStorage.setItem("fm-dashboard-theme", theme); } catch {}
+  // Only an explicit toggle persists: initialization writes nothing, so "no
+  // stored preference" stays a real state and a later browser import of the
+  // operator's storage cannot fossilize a default they never chose.
+  if (persist) { try { localStorage.setItem("fm-dashboard-theme", theme); } catch {} }
   const text = document.querySelector("#theme-button .nlabel");
   if (text) text.textContent = theme === "dark" ? "Light mode" : "Dark mode";
 }
 
 function toggleTheme() {
-  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light", true);
 }
 
 function initializeTheme() {
+  // Dark is the root identity, and light is reached only by an explicit
+  // choice: with no stored preference the page is dark whatever the system
+  // says, the same default the fleet's shipped dashboard has always had.
   let saved = null;
   try { saved = localStorage.getItem("fm-dashboard-theme"); } catch {}
-  const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  setTheme(saved === "light" || saved === "dark" ? saved : preferred);
+  setTheme(saved === "light" || saved === "dark" ? saved : "dark");
   ui.themeButton.addEventListener("click", toggleTheme);
 }
 
@@ -263,27 +278,44 @@ function snapshotTasks() {
 
 function verdictFacts() {
   const status = state.envelope?.status;
-  const firstRun = !state.envelope?.snapshot || status?.phase === "first_run";
-  const inbox = firstRun ? { items: [], counts: { decisions: 0, credentials: 0, blocked: 0, failed: 0, review_ready: 0, merge_ready: 0, unknown: 0 } } : buildInbox(state.envelope.snapshot);
+  // An unreadable fleet is not a fleet that has done nothing: "unavailable"
+  // renders as its own explicit state, never as the calm first-run page.
+  const unavailable = status?.phase === "unavailable";
+  const firstRun = !unavailable && (!state.envelope?.snapshot || status?.phase === "first_run");
+  const inbox = firstRun || unavailable ? { items: [], counts: { total: 0, decisions: 0, credentials: 0, blocked: 0, failed: 0, review_ready: 0, merge_ready: 0, unknown: 0 } } : buildInbox(state.envelope.snapshot);
   const amber = inbox.counts.decisions + inbox.counts.credentials + inbox.counts.review_ready + inbox.counts.merge_ready;
   const red = inbox.counts.blocked + inbox.counts.failed;
-  return { firstRun, inbox, amber, red, stale: status?.stale === true };
+  return { firstRun, unavailable, inbox, amber, red, stale: status?.stale === true };
+}
+
+// The plain-words sentence for a snapshot that could not be read, with the one
+// error kind whose polling really does stop called out honestly.
+function snapshotFailureText(error) {
+  const detail = error?.message ? `: ${error.message}` : "";
+  const followup = error?.kind === "service_unit_outdated"
+    ? " Snapshot polling is paused until the service is reinstalled."
+    : " Retrying automatically.";
+  return `The fleet snapshot could not be read${detail}.${followup}`;
 }
 
 function renderVerdict() {
-  const { firstRun, inbox, amber, red, stale } = verdictFacts();
+  const { firstRun, unavailable, inbox, amber, red, stale } = verdictFacts();
   ui.app.dataset.stale = stale ? "true" : "false";
 
   let text;
   let tone;
-  if (firstRun) { text = "Nothing has run yet"; tone = "grey"; }
+  // The specific sentences require a real count of their own kind: an inbox
+  // whose items are all unknown-toned (say, an unreadable PR state) must read
+  // as items needing you, never as "0 decisions waiting".
+  if (unavailable) { text = "Fleet unavailable"; tone = "unknown"; }
+  else if (firstRun) { text = "Nothing has run yet"; tone = "grey"; }
   else if (inbox.counts.total === 0) { text = "Nothing needs you"; tone = "green"; }
-  else if (red === 0) { text = `${amber} ${amber === 1 ? "decision" : "decisions"} waiting`; tone = "amber"; }
-  else if (amber === 0) { text = `${red} ${red === 1 ? "task" : "tasks"} blocked`; tone = "red"; }
-  else { text = `${inbox.counts.total} ${inbox.counts.total === 1 ? "item" : "items"} need you`; tone = "amber"; }
+  else if (red === 0 && amber > 0) { text = `${amber} ${amber === 1 ? "decision" : "decisions"} waiting`; tone = "amber"; }
+  else if (amber === 0 && red > 0) { text = `${red} ${red === 1 ? "task" : "tasks"} blocked`; tone = "red"; }
+  else { text = `${inbox.counts.total} ${inbox.counts.total === 1 ? "item needs" : "items need"} you`; tone = "amber"; }
 
-  ui.vdot.className = `vdot ${stale ? "vd-unknown" : `vd-${tone}`}`;
-  ui.verdict.className = `verdict${!stale && tone !== "grey" ? ` t-${tone}` : ""}`;
+  ui.vdot.className = `vdot ${stale || tone === "unknown" ? "vd-unknown" : `vd-${tone}`}`;
+  ui.verdict.className = `verdict${!stale && tone !== "grey" && tone !== "unknown" ? ` t-${tone}` : ""}`;
   ui.verdict.textContent = text;
 
   const tasks = snapshotTasks();
@@ -349,14 +381,26 @@ function needsCard(item) {
 }
 
 function renderNeeds() {
-  const { firstRun, inbox } = verdictFacts();
+  const { firstRun, unavailable, inbox } = verdictFacts();
   const status = state.envelope?.status;
-  const note = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
+  const note = unavailable
+    ? "snapshot refresh failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
 
-  const view = element("div");
+  const view = viewRoot("needs");
   view.append(pageHead("Queue · oldest first", "Needs you", note));
+
+  if (unavailable) {
+    view.append(notice("red", "Fleet snapshot unavailable.", snapshotFailureText(status?.error)));
+    view.append(emptyState({
+      ring: true,
+      big: "The fleet cannot be read.",
+      teach: "Until the snapshot can be read again, nothing on this page is a claim about the fleet.",
+    }));
+    return view;
+  }
 
   if (firstRun) {
     view.append(emptyState({
@@ -408,12 +452,25 @@ function fleetColumns() {
 }
 
 function renderFleet() {
-  const view = element("div");
+  const view = viewRoot("fleet");
+  const { unavailable } = verdictFacts();
   const status = state.envelope?.status;
-  const note = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
+  const note = unavailable
+    ? "snapshot refresh failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
   view.append(pageHead("Live board", "Fleet", note));
+
+  if (unavailable) {
+    view.append(notice("red", "Fleet snapshot unavailable.", snapshotFailureText(status?.error)));
+    view.append(emptyState({
+      ring: true,
+      big: "The fleet cannot be read.",
+      teach: "Until the snapshot can be read again, nothing on this page is a claim about the fleet.",
+    }));
+    return view;
+  }
 
   const tasks = snapshotTasks();
   if (!state.envelope?.snapshot) {
@@ -511,17 +568,30 @@ function backlogSelect(name, value, options, change) {
 }
 
 function renderBacklog() {
-  const view = element("div");
+  const view = viewRoot("backlog");
   const status = state.backlog.envelope?.status;
-  const note = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first backlog read" : "Waiting for the first backlog read";
+  const note = status?.phase === "unavailable"
+    ? "backlog read failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first backlog read" : "Waiting for the first backlog read";
   view.append(pageHead("Queue · read-only", "Backlog", note));
 
   const built = buildBacklog(state.backlog.envelope, { ...state.backlog.filters, tab: state.backlog.tab, page: state.backlog.page });
   state.backlog.page = built.page.index;
 
   if (!built.present) {
+    // An unreadable queue is disclosed as unreadable; only a genuinely absent
+    // backlog gets the calm first-run explanation.
+    if (built.error) {
+      view.append(notice(built.error.tone === "red" ? "red" : "amber", "Backlog unavailable.", built.error.text));
+      view.append(emptyState({
+        ring: true,
+        big: "The queue cannot be read.",
+        teach: "Until the backlog can be read again, nothing on this page is a claim about the queue.",
+      }));
+      return view;
+    }
     view.append(emptyState({
       ring: true,
       big: "Nothing queued yet.",
@@ -535,6 +605,8 @@ function renderBacklog() {
   const toolbar = element("div", "toolbar");
   const search = element("input", "search");
   search.type = "search";
+  search.id = "backlog-search";
+  search.name = "backlog-search";
   search.placeholder = "Search title, project, id…";
   search.maxLength = BACKLOG_LIMITS.maxQueryChars;
   search.value = state.backlog.filters.query;
@@ -590,7 +662,7 @@ function renderBacklog() {
     }
     view.append(rows);
     view.append(pager(built.page, (delta) => { state.backlog.page = built.page.index + delta; render(); }));
-  } else if (built.total > 0) {
+  } else if (built.queueTotal > 0) {
     const clear = element("button", "fchip", "Clear search & filters");
     clear.type = "button";
     clear.addEventListener("click", () => {
@@ -601,7 +673,7 @@ function renderBacklog() {
     });
     view.append(emptyState({
       big: "Filtered to nothing.",
-      facts: `${built.total} ${built.total === 1 ? "item" : "items"} hidden by search and filters`,
+      facts: `${built.queueTotal} ${built.queueTotal === 1 ? "item" : "items"} hidden by search and filters`,
       action: clear,
     }));
   } else {
@@ -633,12 +705,25 @@ function pager(page, step) {
 // --- History -----------------------------------------------------------------
 
 function renderHistory() {
-  const view = element("div");
+  const view = viewRoot("history");
   const status = state.history.envelope?.status;
-  const note = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
+  const unavailable = status?.phase === "unavailable" && !state.history.envelope?.history;
+  const note = unavailable
+    ? "history read failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
   view.append(pageHead("Delivered · newest first", "History", note));
+
+  if (unavailable) {
+    view.append(notice("red", "Completed-work history unavailable.", `The completion records could not be read${status?.error?.message ? `: ${status.error.message}` : ""}. Retrying automatically.`));
+    view.append(emptyState({
+      ring: true,
+      big: "Delivered work cannot be read.",
+      teach: "Until the completion records can be read again, nothing on this page is a claim about what was delivered.",
+    }));
+    return view;
+  }
 
   const range = HISTORY_RANGES.find((entry) => entry.key === state.history.range) || HISTORY_RANGES[1];
   const from = range.days ? new Date(Date.now() - range.days * 86_400_000).toISOString().slice(0, 10) : "";
@@ -646,7 +731,10 @@ function renderHistory() {
   state.history.page = built.page.index;
 
   if (built.malformed.length) {
-    view.append(notice("amber", null, `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} could not be read and ${built.malformed.length === 1 ? "is" : "are"} disclosed rather than shown.`));
+    // Named, never a bare count: an unreadable record silently missing from
+    // the list is the failure this disclosure exists to end.
+    const named = built.malformed.map((entry) => `${entry.id} (${entry.explanation})`).join("; ");
+    view.append(notice("amber", null, `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} could not be read: ${named}.`));
   }
   if (built.usage.available && built.usage.stale) {
     view.append(notice("amber", null, `Showing the last known good token usage read: ${built.usage.reason || "the newest read did not land"}.`));
@@ -678,6 +766,8 @@ function renderHistory() {
   const toolbar = element("div", "toolbar");
   const search = element("input", "search");
   search.type = "search";
+  search.id = "history-search";
+  search.name = "history-search";
   search.placeholder = "Search delivered work…";
   search.maxLength = HISTORY_LIMITS.maxQueryChars;
   search.value = state.history.filters.query;
@@ -757,7 +847,7 @@ const OUTCOME_LABELS = {
 // --- Knowledge ---------------------------------------------------------------
 
 function renderKnowledge() {
-  const view = element("div");
+  const view = viewRoot("knowledge");
   const health = buildGBrainHealth(state.gbrain.health);
   view.append(pageHead("Captured knowledge", "Knowledge"));
 
@@ -774,6 +864,8 @@ function renderKnowledge() {
   hero.append(element("span", "page-eyebrow", "Search what the fleet knows"));
   const search = element("input", "ksearch");
   search.type = "search";
+  search.id = "knowledge-search";
+  search.name = "knowledge-search";
   search.placeholder = "Search captured reports and notes…";
   search.maxLength = 1024;
   search.value = state.gbrain.query;
@@ -793,9 +885,11 @@ function renderKnowledge() {
   healthButton.setAttribute("aria-expanded", String(state.gbrain.healthOpen));
   const nominal = health.cards.filter((card) => card.tone === "green").length;
   const unreadable = health.cards.filter((card) => card.tone === "unknown").length;
+  // No cards means the health envelope never arrived, which is an unknown, not
+  // a clean bill: the hollow ring, never the green dot.
   healthButton.append(
-    health.cards.some((card) => card.tone === "unknown") ? element("span", "ring") : dot("green"),
-    document.createTextNode(` ${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`),
+    health.cards.length === 0 || health.cards.some((card) => card.tone === "unknown") ? element("span", "ring") : dot("green"),
+    document.createTextNode(` ${health.cards.length === 0 ? "health unread" : `${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`}`),
     element("span", "chev", state.gbrain.healthOpen ? "▲" : "▼"),
   );
   healthButton.addEventListener("click", () => { state.gbrain.healthOpen = !state.gbrain.healthOpen; render(); });
@@ -990,16 +1084,31 @@ function activityPanel(taskId, task) {
     panel.append(element("p", "state-reason", "Loading the recorded events…"));
     return panel;
   }
-  const events = Array.isArray(entry.envelope?.events) ? entry.envelope.events : [];
-  if (!events.length) {
-    const note = task ? sourceNotice(task, entry.envelope) : "No events are recorded for this task. The event feed only sees instrumented runtimes, so a task driven by an uninstrumented one has no timeline here.";
-    panel.append(element("p", "state-reason", note));
+  // The durable backfill (/api/timeline reads the store) merged with the live
+  // fleet tail, so an event that arrived after the backfill was fetched is on
+  // the page before the next refetch lands. events.js owns the merge rule.
+  const backfill = { task: taskId, events: Array.isArray(entry.envelope?.events) ? entry.envelope.events : [] };
+  const merged = mergeTaskBackfill(Array.isArray(state.events?.events) ? state.events.events : [], backfill, taskId);
+  const built = buildTimeline({ events: merged }, { task: taskId });
+  if (!built.rows.length) {
+    const note = task ? sourceNotice(task, entry.envelope || state.events) : null;
+    panel.append(element("p", "state-reason", note || "No events are recorded for this task. The event feed only sees instrumented runtimes, so a task driven by an uninstrumented one has no timeline here."));
     return panel;
   }
-  for (const event of events) {
-    const row = element("div", "tl-row");
-    row.append(element("span", "tl-t", clockLabel(event.occurred_at)), element("span", "tl-e", `${typeLabel(event.type)}${event.note ? ` - ${event.note}` : ""}`));
-    panel.append(row);
+  for (const row of built.rows) {
+    const line = element("div", "tl-row");
+    const clock = element("span", "tl-t", clockLabel(row.at));
+    clock.title = row.at;
+    const what = [typeLabel(row.type), row.tool, row.summary].filter(Boolean).join(" · ");
+    line.append(clock, element("span", "tl-e", what));
+    // An outcome-bearing row always shows its verdict, and an outcome nobody
+    // observed is an explicit dashed unknown, never a bare row that reads as
+    // fine beside a green one (events.js owns that normalization).
+    if (row.outcome) line.append(element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome));
+    panel.append(line);
+  }
+  if (built.truncated) {
+    panel.append(element("p", "state-reason", `Showing the newest ${built.rows.length} of ${built.total} recorded events.`));
   }
   return panel;
 }
@@ -1029,7 +1138,7 @@ function prPanel(url, summary) {
 
 function renderTask() {
   const taskId = state.route.taskId;
-  const view = element("div");
+  const view = viewRoot("task");
 
   const back = element("button", "tk-back", "← Back");
   back.type = "button";
@@ -1180,6 +1289,12 @@ function render() {
 
   const renderer = VIEW_RENDERERS[route.view] || renderNeeds;
   const fresh = renderer();
+  // The entry animation belongs to arriving at a view, not to a data refresh:
+  // every push re-renders, and cards that re-fade on each one read as flicker.
+  // Tracked as data-view, because data-route names the navigation controls and
+  // the container must never match a [data-route] selector.
+  ui.view.classList.toggle("settled", ui.view.dataset.view === route.view);
+  ui.view.dataset.view = route.view;
   // Mutual exclusivity is structural: the view container's children are
   // replaced whole, so the previous view's DOM is gone, not hidden.
   ui.view.replaceChildren(fresh);
@@ -1211,7 +1326,7 @@ async function fetchSnapshot() {
   try {
     const envelope = await fetchJson("/api/snapshot", "fm-dashboard-envelope.v1");
     state.envelope = envelope;
-    announceNewItems(buildInbox(envelope.snapshot).items, true);
+    announceNewItems(buildInbox(envelope.snapshot).items, Boolean(envelope.snapshot));
   } catch (error) {
     state.envelope = unavailableEnvelope("fm-dashboard-envelope.v1", error.message);
   }
@@ -1257,7 +1372,9 @@ function connectEvents() {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-envelope.v1") {
         state.envelope = envelope;
-        announceNewItems(buildInbox(envelope.snapshot).items, true);
+        // A push that carried no snapshot saw nothing, so it must not become
+        // the alert baseline (announceNewItems owns that rule).
+        announceNewItems(buildInbox(envelope.snapshot).items, Boolean(envelope.snapshot));
         render();
       }
     } catch {}
@@ -1278,6 +1395,19 @@ function connectEvents() {
       if (envelope.schema === "fm-dashboard-backlog.v1") {
         state.backlog.envelope = envelope;
         render();
+      }
+    } catch {}
+  });
+  events.addEventListener("agent_events", (event) => {
+    try {
+      const envelope = JSON.parse(event.data);
+      if (envelope.schema === "fm-dashboard-events.v1") {
+        state.events = envelope;
+        // The stored timelines predate this broadcast, so the next task render
+        // refetches its complete store-backed timeline rather than trusting a
+        // snapshot the fleet has already moved past.
+        state.task.timelines.clear();
+        if (state.route.view === TASK_VIEW) render();
       }
     } catch {}
   });

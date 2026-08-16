@@ -60,9 +60,12 @@ status=$?
 result="$TMP_ROOT/fixture/result.txt"
 [ -f "$result" ] || fail "the browser check recorded no per-observation result"
 
-# Both widths, named, because a check that quietly stopped visiting the phone
-# width would still pass everything it did run.
+# Every default width, named, because a check that quietly stopped visiting
+# the phone width - or either side of the 899/900 navigation boundary, the
+# defect that motivated the rebuild - would still pass everything it did run.
 assert_contains "$(cat "$result")" "390x844" "the check did not record the phone width"
+assert_contains "$(cat "$result")" "899x844" "the check did not record the tab-bar side of the navigation boundary"
+assert_contains "$(cat "$result")" "900x844" "the check did not record the rail side of the navigation boundary"
 assert_contains "$(cat "$result")" "1440x900" "the check did not record the desktop width"
 
 # The observations the dashboard's own stories rest on. Each is asserted by
@@ -72,17 +75,29 @@ for observation in \
   "the dashboard document loaded" \
   "the browser really is at this viewport" \
   "the stylesheet was applied" \
-  "nothing is placed behind a horizontal swipe" \
-  "the Captain inbox view is legible" \
-  "the Board view is legible" \
-  "the GBrain view is legible" \
-  "the Activity view is legible" \
+  "the Needs you destination is reachable from the visible navigation" \
+  "the Fleet destination is reachable from the visible navigation" \
+  "the Backlog destination is reachable from the visible navigation" \
+  "the History destination is reachable from the visible navigation" \
+  "the Knowledge destination is reachable from the visible navigation" \
+  "only the Needs you view is on the page" \
+  "only the Fleet view is on the page" \
+  "only the Backlog view is on the page" \
+  "only the History view is on the page" \
+  "only the Knowledge view is on the page" \
+  "the Needs you view is legible" \
+  "the Fleet view is legible" \
+  "the Backlog view is legible" \
   "the History view is legible" \
-  "every completed record shows its usage panel" \
-  "no credential-shaped or path-shaped value on the page" \
-  "lands on that section's heading" \
-  "a live event appears without a reload" \
-  "backfilled history survives a subsequent event" \
+  "the Knowledge view is legible" \
+  "nothing is placed behind a horizontal swipe on Fleet" \
+  "opening a task from the Fleet board lands on its detail page alone" \
+  "the History view displays the completion records it read" \
+  "every completed row shows its usage cell" \
+  "no credential-shaped or path-shaped value on any destination" \
+  "a live event appears on the open task page without a reload" \
+  "the task's earlier events survive unrelated fleet traffic" \
+  "unrelated traffic stays off the task's own timeline" \
   "the browser console is clean"
 do
   assert_contains "$(cat "$result")" "$observation" "the check stopped observing: $observation"
@@ -99,7 +114,7 @@ assert_contains "$(cat "$result")" "observation set reconciled" \
 # the harness lost the ability to read some evidence it used to read - which
 # would otherwise show up as a quietly smaller green run.
 grep -q '^?' "$result" && fail "the check could not verify an observation against a fixture it controls"$'\n'"$(cat "$result")"
-pass "the browser check passes against a correctly rendering dashboard at phone and desktop widths"
+pass "the browser check passes against a correctly rendering dashboard at phone, boundary, and desktop widths"
 
 # --- a page that renders nothing fails ---------------------------------------
 #
@@ -125,19 +140,20 @@ grep -q '^FAIL' "$negative_result" \
 for observation in \
   "the page rendered text rather than an empty document" \
   "the stylesheet was applied" \
-  "the Board view is on the page" \
-  "the Board link lands on that section's heading"
+  "the Fleet destination is reachable from the visible navigation"
 do
   grep -q "^FAIL.*$observation" "$negative_result" \
     || fail "the check did not notice this on an empty page: $observation"$'\n'"$(cat "$negative_result")"
 done
 
 # And the assertions whose honest answer on an empty page is "there was nothing
-# to look at" have to say so, rather than reporting a clean scan of no text or
-# a usage panel on no records.
+# to look at" have to say so, rather than reporting a clean scan of no text, a
+# view judged behind an unreachable destination, or a usage cell on no rows.
 for observation in \
-  "no credential-shaped or path-shaped value on the page" \
-  "every completed record shows its usage panel"
+  "only the Fleet view is on the page" \
+  "no credential-shaped or path-shaped value on any destination" \
+  "the History view displays the completion records it read" \
+  "every completed row shows its usage cell"
 do
   grep -q "^?.*$observation" "$negative_result" \
     || fail "the check claimed to have observed this on an empty page: $observation"$'\n'"$(cat "$negative_result")"
@@ -150,12 +166,13 @@ done
 for observation in \
   "the page rendered text rather than an empty document" \
   "the stylesheet was applied" \
+  "destination is reachable from the visible navigation" \
   "view is on the page" \
   "view rendered with real height" \
   "view is legible" \
-  "no credential-shaped or path-shaped value on the page" \
-  "lands on that section's heading" \
-  "every completed record shows its usage panel"
+  "no credential-shaped or path-shaped value on any destination" \
+  "the History view displays the completion records it read" \
+  "every completed row shows its usage cell"
 do
   grep -qE "^(FAIL|\?\?\?\?) .*$observation" "$negative_result" \
     || fail "the negative proof passed without this assertion recording a refusal of its own: $observation"$'\n'"$(cat "$negative_result")"
@@ -187,33 +204,34 @@ out=$(FM_DASHBOARD_BROWSER_FORCE=leak:fail "$CHECK" --negative --out "$TMP_ROOT/
 status=$?
 [ "$status" -eq 2 ] || fail "fault injection was allowed to run alongside the negative proof"$'\n'"$out"
 
-# And one branch executed for real, at a single width, to prove the mechanism
-# reaches the check's own failure branch rather than substituting a verdict for
-# it: the detail below is the nav assertion's own wording, not the injector's.
-forced=$(FM_DASHBOARD_BROWSER_FORCE=nav:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced" 2>&1)
+# And a few branches executed for real, at a single width, to prove the
+# mechanism reaches each check's own failure branch rather than substituting a
+# verdict for it: every detail asserted below is the assertion's own wording,
+# not the injector's.
+forced=$(FM_DASHBOARD_BROWSER_FORCE=nav:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced" 2>&1 </dev/null)
 status=$?
 [ "$status" -eq 3 ] \
   || fail "an injected run did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
 assert_contains "$forced" "forced: nav:fail" "the injected run did not stamp the branch it forced"
-grep -qE "^FAIL .*lands on that section's heading - the sticky bar hides the top of the section by" \
+grep -qE "^FAIL .*destination is reachable from the visible navigation - the route has 2 controls but none is visible at this width" \
   "$TMP_ROOT/forced/result.txt" \
-  || fail "forcing nav:fail did not run the nav assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced/result.txt")"
+  || fail "forcing nav:fail did not run the navigation assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced/result.txt")"
 
-forced=$(FM_DASHBOARD_BROWSER_FORCE=usage:tokens "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-usage-tokens" 2>&1 </dev/null)
+forced=$(FM_DASHBOARD_BROWSER_FORCE=view-present:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-exclusive" 2>&1 </dev/null)
 status=$?
 [ "$status" -eq 3 ] \
-  || fail "forcing usage:tokens did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
-assert_contains "$forced" "forced: usage:tokens" "the injected run did not stamp the branch it forced"
-grep -qF "rendered token totals" "$TMP_ROOT/forced-usage-tokens/result.txt" \
-  || fail "forcing usage:tokens did not run the token-totals assertion's ok branch"$'\n'"$(cat "$TMP_ROOT/forced-usage-tokens/result.txt")"
+  || fail "forcing view-present:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: view-present:fail" "the injected run did not stamp the branch it forced"
+grep -qF "another view is in the DOM beside it rather than absent" "$TMP_ROOT/forced-exclusive/result.txt" \
+  || fail "forcing view-present:fail did not run the exclusivity assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced-exclusive/result.txt")"
 
-forced=$(FM_DASHBOARD_BROWSER_FORCE=usage:operational "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-usage-operational" 2>&1 </dev/null)
+forced=$(FM_DASHBOARD_BROWSER_FORCE=history:fail "$CHECK" --width 390x844 --out "$TMP_ROOT/forced-history" 2>&1 </dev/null)
 status=$?
 [ "$status" -eq 3 ] \
-  || fail "forcing usage:operational did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
-assert_contains "$forced" "forced: usage:operational" "the injected run did not stamp the branch it forced"
-grep -qF "operational usage failure instead of totals" "$TMP_ROOT/forced-usage-operational/result.txt" \
-  || fail "forcing usage:operational did not run the token-totals assertion's failure branch"$'\n'"$(cat "$TMP_ROOT/forced-usage-operational/result.txt")"
+  || fail "forcing history:fail did not exit 3, so its result could be read as a check of the dashboard"$'\n'"$forced"
+assert_contains "$forced" "forced: history:fail" "the injected run did not stamp the branch it forced"
+grep -qF "completion records but the page displays none" "$TMP_ROOT/forced-history/result.txt" \
+  || fail "forcing history:fail did not run the history display assertion's own failure branch"$'\n'"$(cat "$TMP_ROOT/forced-history/result.txt")"
 pass "each named check's failure path is reachable from outside the script, and an injected run cannot pass for a check"
 
 # --- the observation set is reconciled ----------------------------------------
