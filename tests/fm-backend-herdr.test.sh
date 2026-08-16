@@ -2019,6 +2019,209 @@ test_projection_close_failed_removal_rolls_back_the_reposition() {
   pass "herdr presentation cleanup: every unconfirmed removal restores the exact original workspace order and reports failure"
 }
 
+# --- recovery-grade agent state: the stale-registration cross-check ---------
+#
+# Herdr can hold an agent registration that outlives its agent: a
+# hook-authoritative harness (pi's herdr:pi extension) never deregisters on
+# exit, and herdr has no agent-deregister verb, so `agent get` reports the
+# last agent_status forever while the pane sits at a bare shell (task
+# fm-control-classifies-shell-as-live-agent, verified live against herdr
+# 0.8.0). The recovery-grade classifier must cross-check a registered agent
+# against the OS-level agent-free proof and classify a provably agent-free
+# pane `dead`, while every live-agent shape and every inconclusive read stay
+# `alive`.
+#
+# Response sequencing per fm_backend_herdr_agent_state call: 1 = pane get
+# (presence), 2 = agent get (registration), 3.. = pane process-info (one per
+# agent-free proof sample).
+#
+# The dead-pane fixtures model the two REAL shapes, both verified live on
+# 2026-08-15: a lone idle shell (a plain pane, the smoke lab shape), and the
+# treehouse chain every fm-spawn task pane is left in when its agent dies
+# (pane zsh -> resident treehouse wrapper -> worktree subshell zsh holding
+# the foreground - the exact fm-dashboard-ia-redesign incident tree). A
+# lone-shell-only fixture would go quietly vacuous on real task panes, which
+# is how the first cut of this fix initially misread the incident endpoint
+# as alive.
+
+# agent_state_registration_fixtures <resp-dir> <agent_status>: the presence
+# and registration responses every case below shares.
+agent_state_registration_fixtures() {  # <resp-dir> <agent_status>
+  printf '{"result":{"pane":{"pane_id":"w2:p2"}}}\n' > "$1/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"%s"}}}\n' "$2" > "$1/2.out"
+}
+
+# agent_free_process_info_fixture <fg-pid>: process-info naming pane shell
+# 4242 with <fg-pid> as the sole foreground process, a zsh that is its own
+# process group leader (the argv path form mirrors real herdr 0.8.0 output).
+agent_free_process_info_fixture() {  # <fg-pid>
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":4242,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv":["/home/u/.nix-profile/bin/zsh"]}]}}}\n' "$1" "$1"
+}
+
+# make_agent_free_lab <dir>: a fake ps serving the four-column tree query
+# from <dir>/pstable, which each case writes to model its process tree.
+make_agent_free_lab() {  # <dir>
+  cat > "$1/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  "-axo pid=,ppid=,stat=,comm=") cat "$1/pstable" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$1/ps"
+}
+
+# The verified dead treehouse chain: every leaf is the foreground subshell.
+agent_free_chain_pstable() {  # <dir>
+  printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n' > "$1/pstable"
+}
+
+run_agent_state() {  # <fakebin> <log> <resp> <ps-bin> <polls>
+  PATH="$1:$PATH" FM_HERDR_LOG="$2" FM_HERDR_RESPONSES="$3" \
+    FM_HERDR_PS_BIN="$4" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS="$5" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w2:p2' "$ROOT" 2>/dev/null
+}
+
+test_agent_state_stale_registration_treehouse_chain_reads_dead() {
+  # THE regression for the live blocker: a REGISTERED idle agent whose task
+  # pane provably holds only the treehouse shell chain must classify `dead`
+  # (agent-free), so exit is idempotent success and relaunch may proceed.
+  # Fails if the classifier goes back to trusting the registration alone, OR
+  # if the proof narrows back to the lone-shell shape that cannot see a real
+  # task pane - either regression re-strands every dead pi task on herdr.
+  # NOTE a fixture reporting agent_not_found would NOT cover this bug: that
+  # path (no-agent -> dead) already worked before the fix.
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-stale-chain"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  agent_free_process_info_fixture 4646 > "$resp/3.out"
+  agent_free_chain_pstable "$dir"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+  [ "$out" = dead ] || fail "a registered agent over the provably agent-free treehouse chain must classify dead (stale registration), got '$out'"
+  assert_contains "$(cat "$log")" $'pane\x1fprocess-info' "the live registration was never cross-checked against the agent-free proof"
+  pass "fm_backend_herdr_agent_state: a stale registration over the dead treehouse chain classifies dead, unlocking recovery"
+}
+
+test_agent_state_stale_registration_lone_shell_reads_dead() {
+  # The plain-pane variant of the same staleness (a pane that never entered a
+  # worktree subshell, e.g. the control smoke lab): foreground IS the pane
+  # shell and the tree is that one shell. Fails if the proof starts requiring
+  # the chain shape and stops recognizing the simplest dead pane.
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-stale-lone"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  agent_free_process_info_fixture 4242 > "$resp/3.out"
+  printf '1 0 Ss init\n4242 1 Ss+ zsh\n' > "$dir/pstable"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+  [ "$out" = dead ] || fail "a registered agent over a lone idle pane shell must classify dead (stale registration), got '$out'"
+  pass "fm_backend_herdr_agent_state: a stale registration over a lone idle shell classifies dead"
+}
+
+test_agent_state_stale_working_registration_reads_dead() {
+  # A provider kill mid-turn freezes the last reported status at "working";
+  # the staleness proof is the process table, never the frozen status, so the
+  # verdict must be identical. Fails if the cross-check starts trusting a
+  # frozen "working" report over the process-table fact.
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-stale-working"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" working
+  agent_free_process_info_fixture 4646 > "$resp/3.out"
+  agent_free_chain_pstable "$dir"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+  [ "$out" = dead ] || fail "a frozen 'working' registration over the agent-free chain must still classify dead, got '$out'"
+  pass "fm_backend_herdr_agent_state: a frozen working registration over the agent-free chain still classifies dead"
+}
+
+test_agent_state_live_agent_shapes_stay_alive() {
+  # The paired negatives: every reachable live-agent shape must stay `alive`,
+  # or a live worker could be exited and replaced. Each shape drives a
+  # different rule of the proof, so this fails if any single rule is dropped:
+  #   foreground  - the agent owns the composer (foreground-shell rule)
+  #   suspended   - a stopped agent is an extra, non-sleeping leaf
+  #   background  - a backgrounded agent is an extra sleeping leaf
+  #   escape      - an agent hosting an interactive shell is a non-shell,
+  #                 non-treehouse ancestor of the idle foreground shell
+  local shape dir log resp fb out
+  for shape in foreground suspended background escape; do
+    dir="$TMP_ROOT/agent-state-live-$shape"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    agent_state_registration_fixtures "$resp" idle
+    case "$shape" in
+      foreground)
+        printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":4242,"foreground_process_group_id":5001,"foreground_processes":[{"pid":5001,"name":"pi","argv0":"pi"}]}}}\n' > "$resp/3.out"
+        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S zsh\n5001 4646 Sl+ pi\n' > "$dir/pstable"
+        ;;
+      suspended)
+        agent_free_process_info_fixture 4646 > "$resp/3.out"
+        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n5001 4646 T pi\n' > "$dir/pstable"
+        ;;
+      background)
+        agent_free_process_info_fixture 4646 > "$resp/3.out"
+        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n5001 4646 Sl pi\n' > "$dir/pstable"
+        ;;
+      escape)
+        agent_free_process_info_fixture 4646 > "$resp/3.out"
+        printf '1 0 Ss init\n4242 1 Ss zsh\n5001 4242 Sl pi\n4646 5001 S+ zsh\n' > "$dir/pstable"
+        ;;
+    esac
+    cp "$resp/3.out" "$resp/4.out"
+    make_agent_free_lab "$dir"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+    [ "$out" = alive ] || fail "a registered agent in the '$shape' live shape must stay alive, got '$out'"
+  done
+  pass "fm_backend_herdr_agent_state: foreground, suspended, backgrounded, and escape-shell live agents all stay alive"
+}
+
+test_agent_state_inconclusive_process_read_stays_alive() {
+  # The conservative backstop: when the process check cannot complete, the
+  # registration keeps the benefit of the doubt and recovery stays refused.
+  # Fails if an unreadable process check starts licensing recovery - the
+  # fail-open direction that could destroy an agent the read simply missed.
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-inconclusive"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  printf '{"error":{"code":"internal_error","message":"transient failure"}}\n' > "$resp/3.out"
+  cp "$resp/3.out" "$resp/4.out"
+  agent_free_chain_pstable "$dir"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+  [ "$out" = alive ] || fail "an inconclusive process read must keep a registered agent alive (refusing recovery), got '$out'"
+  pass "fm_backend_herdr_agent_state: an inconclusive process read keeps the registration alive and recovery refused"
+}
+
+test_agent_state_transient_prompt_helper_settles_to_dead() {
+  # A dead pane transiently hosting a prompt helper (starship redrawing) must
+  # settle into the dead verdict within the proof's retry window, or recovery
+  # of a genuinely dead pane becomes flaky. Fails if the cross-check stops
+  # using the proof's settle retry and gives up on the first unclean sample.
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-settle"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":4242,"foreground_process_group_id":4646,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":4646,"name":"zsh","argv0":"zsh"}]}}}\n' > "$resp/3.out"
+  agent_free_process_info_fixture 4646 > "$resp/4.out"
+  agent_free_chain_pstable "$dir"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 3)
+  [ "$out" = dead ] || fail "a transient prompt helper must settle into the dead verdict, got '$out'"
+  [ "$(grep -c $'pane\x1fprocess-info' "$log")" -ge 2 ] \
+    || fail "the cross-check did not retry the agent-free proof through the settle window"
+  pass "fm_backend_herdr_agent_state: a transient prompt helper settles into the dead verdict"
+}
+
 test_kill_emptying_non_focused_uses_pane_death() {
   local dir log resp fb out status bgpid lock_log lock_held
   dir="$TMP_ROOT/kill-death"; mkdir -p "$dir/responses"
@@ -4469,6 +4672,12 @@ test_projection_close_death_failure_falls_back_to_plain_close
 test_projection_close_death_still_restores_a_stolen_focus
 test_projection_close_death_never_sigkills_a_reused_pid
 test_projection_close_failed_removal_rolls_back_the_reposition
+test_agent_state_stale_registration_treehouse_chain_reads_dead
+test_agent_state_stale_registration_lone_shell_reads_dead
+test_agent_state_stale_working_registration_reads_dead
+test_agent_state_live_agent_shapes_stay_alive
+test_agent_state_inconclusive_process_read_stays_alive
+test_agent_state_transient_prompt_helper_settles_to_dead
 test_kill_emptying_non_focused_uses_pane_death
 test_kill_focused_workspace_stays_plain_close
 test_endpoint_confirmed_gone_gates_on_structured_presence

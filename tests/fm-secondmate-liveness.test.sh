@@ -162,12 +162,21 @@ SH
 test_herdr_agent_state_preserves_husk_classifier() {
   local pane_state expected out
 
+  # A live registration additionally runs the stale-registration cross-check
+  # (the idle-shell process proof); stub it inconclusive here so this table
+  # keeps pinning the raw husk mapping. The cross-check's own verdicts are
+  # pinned in tests/fm-backend-herdr.test.sh and in the next case below.
   for row in 'dead missing' 'no-agent dead' 'live alive' 'unknown unreadable'; do
     pane_state=${row%% *}
     expected=${row#* }
-    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_pane_agent_free_proof() { return 1; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
     [ "$out" = "$expected" ] || fail "Herdr pane state $pane_state should map to $expected, got '$out'"
   done
+
+  # A registration whose pane provably holds only a lone idle shell is stale:
+  # the agent process is gone, so the recovery-grade verdict is dead.
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_herdr_pane_agent_free_proof() { return 0; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+  [ "$out" = dead ] || fail "a live registration over a proven lone idle shell should classify dead, got '$out'"
 
   out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state "no-colon-target"' "$ROOT")
   [ "$out" = unreadable ] || fail "an unparseable Herdr target should classify as unreadable, got '$out'"
@@ -175,7 +184,7 @@ test_herdr_agent_state_preserves_husk_classifier() {
   out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "no-agent"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
   [ "$out" = dead ] || fail "the Herdr compatibility view should keep a no-agent husk dead, got '$out'"
 
-  pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior"
+  pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior plus the stale-registration downgrade"
 }
 
 # --- unit level: the generic dispatchers ------------------------------------
@@ -187,7 +196,7 @@ test_agent_state_dispatcher_and_compatibility() {
   out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:win' "$ROOT")
   [ "$out" = alive ] || fail "detailed dispatcher should route tmux, got '$out'"
 
-  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_agent_state herdr sess:p1' "$ROOT")
+  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_herdr_pane_agent_free_proof() { return 1; }; fm_backend_agent_state herdr sess:p1' "$ROOT")
   [ "$out" = alive ] || fail "detailed dispatcher should route Herdr, got '$out'"
 
   out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state zellij sess:7' "$ROOT")

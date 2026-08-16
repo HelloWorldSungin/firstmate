@@ -624,7 +624,7 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Agent lifecycle control
 
-Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
+Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-15 on Herdr 0.8.0 with the stale-registration cross-check (first measured 2026-08-02 on Herdr 0.7.5, reverified 2026-08-08 on 0.8.0, both under the pre-cross-check contract):
 
 ```sh
 tests/fm-control-herdr-smoke.test.sh
@@ -635,12 +635,18 @@ Observed output:
 ```text
 ok - real herdr: exit on a pane with no registered agent is idempotent success
 ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
+ok - real herdr: a registration with no agent process behind it classifies dead (stale), not alive
+ok - real herdr: interrupt refuses a stale registration instead of keying a dead shell
+ok - real herdr: exit on a stale registration is idempotent success, so relaunch can proceed
+ok - real herdr: a registered agent with a live process stays alive through the cross-check
 ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
 ok - real herdr: no control verb removed the endpoint or the task's local copy
 ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
 ```
 
-The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
+The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, with no real agent launched.
+A registration over a plain idle shell is the stale-registration state (a registry entry outliving its agent, which a hook-authoritative harness produces on every exit because it never deregisters and Herdr has no agent-deregister verb - verified live 2026-08-15 on Herdr 0.8.0 with a cleanly exited Pi still reading `agent_status "idle"`), so that pane must classify agent-free; modelling a genuinely live agent additionally requires a real foreground process in the pane so the agent-free cross-check refuses.
+The same 2026-08-15 live reading established that a real dead task pane is a process CHAIN, not a lone shell - pane zsh, resident `treehouse` wrapper, worktree subshell zsh holding the foreground (pids 112610 -> 113530 -> 116609 on the incident endpoint) - and that the classifier reads it `dead` while four concurrently live pi and claude panes on the same server all read `alive`; the chain shape is pinned by the `test_agent_state_*` fixtures in `tests/fm-backend-herdr.test.sh`.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
 ### Away-mode transport
