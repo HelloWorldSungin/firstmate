@@ -518,6 +518,7 @@ const eventSources = [];
 let timelineFetches = 0;
 let timelineFetchFailure = false;
 let reportFetches = 0;
+let reportFetchFailure = false;
 let reportText = "The delivered report body.";
 class FakeEventSource {
   constructor() {
@@ -562,6 +563,7 @@ Object.assign(globalThis, {
       }
       if (url.startsWith("/api/report")) {
         reportFetches += 1;
+        if (reportFetchFailure) throw new Error("the report request failed");
         return { schema: "fm-dashboard-report.v1", present: true, text: reportText };
       }
       return {};
@@ -921,7 +923,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const reportPanelNode = all(viewNode, (node) => node.dataset.loadState !== undefined).find((node) => node.textContent.includes("The delivered report body."));
   if (!reportPanelNode || reportPanelNode.dataset.loadState !== "settled") throw new Error("an unchanged history push flipped the settled report back to loading");
   reportText = "The republished report body.";
-  eventSources[0].listeners.history({ data: JSON.stringify({
+  const republishedHistory = {
     ...historyEnvelope,
     history: {
       ...historyEnvelope.history,
@@ -929,11 +931,63 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
         ? { ...record, report: { present: true, path: "/home/captain/data/delivered-one/report-2.md" } }
         : record)),
     },
-  }) });
+  };
+  eventSources[0].listeners.history({ data: JSON.stringify(republishedHistory) });
   await settle();
   await settle();
   if (reportFetches !== 2) throw new Error(`a republished completion record did not revalidate the report: ${reportFetches} reads`);
   if (!reportBody().includes("The republished report body.")) throw new Error("the revalidated report kept the superseded body");
+
+  // A read that failed is a different fact from a record that changed: it
+  // stays on the page as the failure it was, it costs nothing per render, and
+  // the two things that can change the answer - revisiting the route and a
+  // later history push - each get one more read out of it.
+  const failingHistory = {
+    ...historyEnvelope,
+    history: {
+      ...historyEnvelope.history,
+      records: historyEnvelope.history.records.map((record) => (record.task_id === "delivered-one"
+        ? { ...record, report: { present: true, path: "/home/captain/data/delivered-one/report-3.md" } }
+        : record)),
+    },
+  };
+  reportFetchFailure = true;
+  const beforeFailure = reportFetches;
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (reportFetches !== beforeFailure + 1) throw new Error(`a republished record did not read its report: ${reportFetches - beforeFailure} reads`);
+  if (!reportBody().includes("The report could not be loaded.")) throw new Error(`a failed report read did not disclose itself: ${reportBody()}`);
+  const beforeIdleRenders = reportFetches;
+  for (let push = 0; push < 4; push += 1) {
+    eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== beforeIdleRenders) throw new Error(`a failed report refetched on every render: ${reportFetches - beforeIdleRenders} extra reads over 4 renders`);
+  await go("#/needs");
+  await go("#/task/delivered-one");
+  await settle();
+  await settle();
+  if (reportFetches !== beforeIdleRenders + 1) throw new Error(`revisiting the route did not retry the failed report exactly once: ${reportFetches - beforeIdleRenders} reads`);
+  const beforeFailedPush = reportFetches;
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (reportFetches !== beforeFailedPush + 1) throw new Error(`a history push did not retry the failed report exactly once: ${reportFetches - beforeFailedPush} reads`);
+  reportFetchFailure = false;
+  reportText = "The recovered report body.";
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (!reportBody().includes("The recovered report body.")) throw new Error(`a failed report read never recovered: ${reportBody()}`);
+  const afterReportRecovery = reportFetches;
+  for (let push = 0; push < 3; push += 1) {
+    eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== afterReportRecovery) throw new Error(`a recovered report resumed refetching on unchanged pushes: ${reportFetches - afterReportRecovery} extra reads`);
 
   await go("#/task/queued-a");
   const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");

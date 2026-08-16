@@ -94,7 +94,7 @@ const HISTORY_RANGES = [
 const state = {
   route: parseHash(window.location.hash),
   envelope: null,
-  history: { envelope: null, filters: { query: "", project: "", outcome: "" }, range: "30d", page: 0 },
+  history: { envelope: null, epoch: 0, filters: { query: "", project: "", outcome: "" }, range: "30d", page: 0 },
   backlog: { envelope: null, filters: { query: "", project: "", kind: "", prio: "" }, tab: "all", page: 0 },
   fleet: { filters: [] },
   gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
@@ -1267,21 +1267,53 @@ function taskLookup(taskId) {
   return { phase: "missing", sources };
 }
 
-async function fetchTaskReport(taskId, reportKey = null) {
+// One retained report per task visited, each up to the server's report byte
+// limit, so the cache is bounded rather than growing for the life of the tab.
+// The open task is never the eviction candidate: it is the entry the page is
+// rendering from, and dropping it would refetch what is already on screen.
+const REPORT_CACHE_LIMIT = 12;
+
+function evictTaskReports() {
+  for (const taskId of state.task.reports.keys()) {
+    if (state.task.reports.size <= REPORT_CACHE_LIMIT) return;
+    if (taskId === state.route.taskId) continue;
+    state.task.reports.delete(taskId);
+  }
+}
+
+// A report is cached against the completion record it came from, so an
+// unchanged record never costs a request however often history republishes.
+// A read that FAILED is a different fact from a read that answered: it stays
+// on the page as the failure it was, but it is retryable, and the two things
+// that make it retryable are the two that can change the answer - revisiting
+// the route, and a later history push. Neither a re-render nor a fleet
+// broadcast spends a request, which is what keeps reportPanel's fetch-on-every
+// -render from becoming a loop against a server that is refusing.
+async function fetchTaskReport(taskId, reportKey = null, routeEpoch = state.routeEpoch) {
   let entry = state.task.reports.get(taskId);
-  if (entry && (entry.loading || entry.reportKey === reportKey)) return entry;
   if (!entry) {
-    entry = { loading: false, payload: null, reportKey: null };
+    entry = { loading: false, payload: null, reportKey: null, failed: false, routeEpoch: -1, historyEpoch: -1 };
     state.task.reports.set(taskId, entry);
+    evictTaskReports();
+  }
+  if (entry.loading) return entry;
+  if (entry.reportKey === reportKey) {
+    const retryable = entry.failed
+      && (entry.routeEpoch !== routeEpoch || entry.historyEpoch !== state.history.epoch);
+    if (!retryable) return entry;
   }
   entry.loading = true;
   entry.reportKey = reportKey;
+  entry.routeEpoch = routeEpoch;
+  entry.historyEpoch = state.history.epoch;
   try {
     const response = await fetch(`/api/report?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
     const payload = await response.json().catch(() => ({}));
     entry.payload = payload;
+    entry.failed = payload?.schema !== "fm-dashboard-report.v1" || payload.present !== true;
   } catch (error) {
     entry.payload = { schema: null, error: displayError(error, "server_unreachable") };
+    entry.failed = true;
   }
   entry.loading = false;
   if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
@@ -1632,11 +1664,18 @@ async function fetchSnapshot() {
   render();
 }
 
+// Every history read enters through here, so the epoch that a failed report
+// read waits on cannot drift from the envelope it was derived against.
+function adoptHistory(envelope) {
+  state.history.envelope = envelope;
+  state.history.epoch += 1;
+}
+
 async function fetchHistory() {
   try {
-    state.history.envelope = await fetchJson("/api/history", "fm-dashboard-history.v1");
+    adoptHistory(await fetchJson("/api/history", "fm-dashboard-history.v1"));
   } catch (error) {
-    state.history.envelope = unavailableEnvelope("fm-dashboard-history.v1", error);
+    adoptHistory(unavailableEnvelope("fm-dashboard-history.v1", error));
   }
   render();
 }
@@ -1682,7 +1721,7 @@ function connectEvents() {
     try {
       const envelope = displaySafeEnvelope(JSON.parse(event.data));
       if (envelope.schema === "fm-dashboard-history.v1") {
-        state.history.envelope = envelope;
+        adoptHistory(envelope);
         render();
       }
     } catch {}
