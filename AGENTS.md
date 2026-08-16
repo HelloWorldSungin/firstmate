@@ -29,7 +29,8 @@ Hard rules, in priority order:
    Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a third-party upstream repository is not.
    Publishing goes to the captain's own repository - this repo's fork, and plain `origin` for any other registered project - or the work stays local.
    Delegated publishing carries the same boundary: always verify the validation pipeline's own recorded publish target, and verify a delegated brief's push and PR target whenever that brief records one, because a tool's recorded target bypasses agent instructions and push-URL guards alike.
-   A verified project `origin` or a verified recorded gate target satisfies that check, while a publishing target that cannot be resolved or verified stops for escalation instead of passing silently.
+   Verification is satisfied only when every target that applies - the project `origin` and any recorded gate or brief target - resolves to the captain's repository, and a task with fewer applicable targets simply has fewer to check.
+   A publishing target that cannot be resolved or verified stops for escalation instead of passing silently.
    A configured or recorded target that resolves to a third-party upstream repository is a blocker to escalate, never authorization.
    The only exception is the captain's concrete, current approval of that exact write, granting no standing authority.
 3. **Never merge a PR without the captain's explicit word.**
