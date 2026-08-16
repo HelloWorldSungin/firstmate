@@ -754,13 +754,16 @@ await tool.execute("tool-call-retire-settle", {}, undefined, undefined, {});
 for (let i = 0; i < 2000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-writeFileSync(process.env.FM_STOP_FILE, "stop\n");
-if (!prompt) throw new Error("restored wake was not delivered");
-if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
-if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (prompt.includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompt}`);
-if (successorAttempts !== 2) throw new Error(`restoration did not continue after retirement: ${successorAttempts} successor attempts`);
-await new Promise((resolve) => setTimeout(resolve, 80));
+try {
+  if (!prompt) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+  if (prompt.includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompt}`);
+  if (successorAttempts !== 2) throw new Error(`restoration did not continue after retirement: ${successorAttempts} successor attempts`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
 EOF
 )
   status=$?
@@ -2493,13 +2496,16 @@ await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses
 for (let i = 0; i < 2000 && prompts.length < 1; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-writeFileSync(process.env.FM_STOP_FILE, "stop\n");
-if (prompts.length < 1) throw new Error("restored wake was not delivered");
-if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
-if (!prompts[0].includes("original wake")) throw new Error(`missing original wake: ${prompts.join(" | ")}`);
-if (prompts[0].includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompts[0]}`);
-if (armSpawns !== 3) throw new Error(`restoration did not continue after retirement: ${armSpawns} arm launches`);
-await new Promise((resolve) => setTimeout(resolve, 80));
+try {
+  if (prompts.length < 1) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompts[0].includes("original wake")) throw new Error(`missing original wake: ${prompts.join(" | ")}`);
+  if (prompts[0].includes("unready successor arm was still running when")) throw new Error(`retired successor reported unretired: ${prompts[0]}`);
+  if (armSpawns !== 3) throw new Error(`restoration did not continue after retirement: ${armSpawns} arm launches`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
 EOF
 )
   status=$?
