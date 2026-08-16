@@ -1994,12 +1994,14 @@ EOF
 }
 
 test_opencode_late_unretired_close_resumes_supervision() {
-  local kind plugin repo home log ready release stop out status
+  local kind plugin repo home log initial_ready initial_release ready release stop out status
   for kind in actionable non-actionable; do
     plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
     repo="$TMP_ROOT/opencode-late-$kind-root"
     home="$TMP_ROOT/opencode-late-$kind-home"
     log="$TMP_ROOT/opencode-late-$kind.log"
+    initial_ready="$TMP_ROOT/opencode-late-$kind-initial.ready"
+    initial_release="$TMP_ROOT/opencode-late-$kind-initial.release"
     ready="$TMP_ROOT/opencode-late-$kind.ready"
     release="$TMP_ROOT/opencode-late-$kind.release"
     stop="$TMP_ROOT/opencode-late-$kind.stop"
@@ -2013,6 +2015,8 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'ready\n' > "${FM_INITIAL_READY_FILE:?}"
+  while [ ! -e "$FM_INITIAL_RELEASE_FILE" ]; do sleep 0.02; done
   printf 'signal: original wake\n'
   exit 0
 fi
@@ -2028,7 +2032,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -2091,6 +2095,16 @@ const hooks = await mod.FmPrimaryWatchArm({
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 await waitFor(
+  () => existsSync(process.env.FM_INITIAL_READY_FILE),
+  "initial arm child did not reach its ready boundary",
+);
+// Join the event's launch attempt before allowing its actionable close. This
+// proves the initial child is ready and clears OpenCode's deliberate in-flight
+// coalescing boundary before the late-close lifecycle begins.
+const initialStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (initialStatus !== "armed") throw new Error(`initial arm did not become ready: ${initialStatus}`);
+writeFileSync(process.env.FM_INITIAL_RELEASE_FILE, "release\n");
+await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
@@ -2123,7 +2137,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback${out:+: $out}"
     [ -z "$out" ] || fail "OpenCode late-$kind test printed output: $out"
   done
   pass "OpenCode late unretired closes resume classified supervision"
