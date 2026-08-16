@@ -137,7 +137,9 @@ export function sourceNotice(task, envelope) {
 // merged here instead - which also means a broadcast costs no HTTP request,
 // however busy the fleet is.
 export function mergeTaskBackfill(events, backfill, taskId) {
-  const rows = Array.isArray(events) ? [...events] : [];
+  const rows = Array.isArray(events)
+    ? events.filter((event) => !taskId || event?.task_id === taskId)
+    : [];
   if (!taskId || backfill?.task !== taskId || !Array.isArray(backfill.events)) return rows;
   const known = new Set(rows.map((event) => event?.event_id));
   for (const event of backfill.events) {

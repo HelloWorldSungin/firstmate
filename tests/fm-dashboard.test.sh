@@ -291,6 +291,8 @@ class FakeNode {
 
   classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
+  get childNodes() { return this.children; }
+  get firstElementChild() { return this.children.find((child) => child.tagName !== "#TEXT") ?? null; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
   set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
@@ -308,6 +310,32 @@ class FakeNode {
     for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
+  }
+
+  insertBefore(child, before) {
+    if (child.parent) child.parent.removeChild(child);
+    const index = before ? this.children.indexOf(before) : this.children.length;
+    child.parent = this;
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    return child;
+  }
+
+  replaceChild(child, replaced) {
+    const index = this.children.indexOf(replaced);
+    if (index < 0) throw new Error("replacement target is not a child");
+    if (child.parent) child.parent.removeChild(child);
+    replaced.parent = null;
+    child.parent = this;
+    this.children[index] = child;
+    return replaced;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index < 0) throw new Error("removal target is not a child");
+    this.children.splice(index, 1);
+    child.parent = null;
+    return child;
   }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
@@ -478,7 +506,7 @@ const backlogEnvelope = {
   },
 };
 const gbrainHealth = { schema: "fm-gbrain-health.v1", status: {}, config: {}, health: { configured: false } };
-const timelineEnvelope = {
+let timelineEnvelope = {
   events: [
     { event_id: "e1", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", outcome: "ok", occurred_at: "2026-08-15T10:00:02Z", occurred_epoch: 2 },
     { event_id: "e2", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", occurred_at: "2026-08-15T10:00:01Z", occurred_epoch: 1 },
@@ -605,12 +633,15 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const delivered = all(viewNode, (node) => hasClass(node, "stat")).map((node) => node.textContent).find((text) => text.startsWith("Delivered"));
   if (delivered !== "Delivered2") throw new Error(`the Delivered stat did not count the done records: ${delivered}`);
   let historySearch = one(viewNode, (node) => node.id === "history-search", "history search");
+  historySearch.focus();
   historySearch.value = "del";
   historySearch.selectionStart = 3;
   historySearch.selectionEnd = 3;
   historySearch.listeners.input();
-  historySearch = one(viewNode, (node) => node.id === "history-search", "restored history search");
-  if (!historySearch.focused || historySearch.selectionStart !== 3) throw new Error("History search lost focus or selection after its first input event");
+  const mountedHistorySearch = one(viewNode, (node) => node.id === "history-search", "mounted history search");
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  historySearch = one(viewNode, (node) => node.id === "history-search", "history search after refresh");
+  if (historySearch !== mountedHistorySearch || !historySearch.focused || historySearch.selectionStart !== 3) throw new Error("History search was replaced by a data refresh");
   historySearch.value = "delivered-two";
   historySearch.selectionStart = 13;
   historySearch.selectionEnd = 13;
@@ -627,11 +658,15 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (one(viewNode, (node) => node.id === "view-backlog", "backlog view").textContent.includes("/home/captain")) throw new Error("a backlog project path reached the page");
   if (!all(viewNode, (node) => hasClass(node, "ronote")).length) throw new Error("the read-only note is missing from the Backlog page");
   let backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "backlog search");
+  backlogSearch.focus();
   backlogSearch.value = "he";
   backlogSearch.selectionStart = 2;
   backlogSearch.selectionEnd = 2;
   backlogSearch.listeners.input();
-  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "restored backlog search");
+  const mountedBacklogSearch = one(viewNode, (node) => node.id === "backlog-search", "mounted backlog search");
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "backlog search after refresh");
+  if (backlogSearch !== mountedBacklogSearch || !backlogSearch.focused) throw new Error("Backlog search was replaced by a data refresh");
   backlogSearch.value = "held";
   backlogSearch.selectionStart = 4;
   backlogSearch.selectionEnd = 4;
@@ -668,6 +703,17 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (timelineFetches !== beforeBroadcast) throw new Error("an agent_events broadcast refetched the task timeline");
   if (!one(viewNode, (node) => node.id === "view-task", "updated task view").textContent.includes("git")) throw new Error("the task-scoped event tail was not merged into the cached timeline");
 
+  timelineEnvelope = {
+    status: { ingestion: "unavailable", reason: "the event store is unreadable" },
+    events: [],
+  };
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  const unavailableTimeline = one(viewNode, (node) => node.id === "view-task", "task with unavailable timeline");
+  if (!unavailableTimeline.textContent.includes("Activity cannot be recorded: the event store is unreadable")) throw new Error("an unavailable task timeline lost its failure notice");
+  if (unavailableTimeline.textContent.includes("No events are recorded for this task")) throw new Error("an unavailable task timeline rendered as calmly empty");
+
   await go("#/task/delivered-one");
   const completedTask = one(viewNode, (node) => node.id === "view-task", "completed task view");
   if (completedTask.textContent.includes("/home/captain")) throw new Error("a completed task project path reached the page");
@@ -677,11 +723,30 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");
   if (!queuedTask.textContent.includes("firstmate") || queuedTask.textContent.includes("/home/captain")) throw new Error("the normalized queued project label did not render safely");
 
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    ...backlogEnvelope,
+    backlog: { ...backlogEnvelope.backlog, records: [...backlogEnvelope.backlog.records, { id: "just-done", title: "Just delivered", state: "done", repo: "/home/captain/projects/firstmate", kind: "ship", order: 3 }] },
+  }) });
+  await go("#/task/just-done");
+  const doneTransition = one(viewNode, (node) => node.id === "view-task", "done backlog transition");
+  if (!doneTransition.textContent.includes("Just delivered") || doneTransition.textContent.includes("No such task") || doneTransition.textContent.includes("/home/captain")) throw new Error("a Done transition disappeared before History caught up");
+
+  eventSources[0].listeners.history({ data: JSON.stringify({
+    ...historyEnvelope,
+    history: { ...historyEnvelope.history, truncated: true, total: 90 },
+  }) });
+  await go("#/task/not-recorded");
+  const boundedLookup = one(viewNode, (node) => node.id === "view-task", "bounded task lookup").textContent;
+  if (!boundedLookup.includes("Task lookup unavailable") || boundedLookup.includes("No such task")) throw new Error(`a truncated completion read became conclusive negative evidence: ${boundedLookup}`);
+
   eventSources[0].listeners.history({ data: JSON.stringify({
     ...historyEnvelope,
     status: { phase: "last_good", stale: true, error: { message: "history refresh failed" } },
     history: { ...historyEnvelope.history, truncated: true, total: 90 },
   }) });
+  await go("#/task/delivered-one");
+  const staleCompletedTask = one(viewNode, (node) => node.id === "view-task", "stale completed task").textContent;
+  if (!staleCompletedTask.includes("last known good completion history")) throw new Error(`a task found in stale History lost its disclosure: ${staleCompletedTask}`);
   await go("#/history");
   const staleHistory = one(viewNode, (node) => node.id === "view-history", "stale history view").textContent;
   if (!staleHistory.includes("last known good completion history") || !staleHistory.includes("showing 3 of 90 completed records")) throw new Error(`History did not disclose stale bounded data: ${staleHistory}`);

@@ -62,7 +62,23 @@ function backlogRow(record) {
   // itself does when Done entries are pruned.
   if (text(record?.state) === "done") {
     const donePresentation = STATE_PRESENTATION.done;
-    return { id, title: text(record?.title) || id, state: "done", stateLabel: donePresentation.label, stateTone: donePresentation.tone, tone: donePresentation.tone, order: Number.isFinite(record?.order) ? record.order : Number.MAX_SAFE_INTEGER, reason: null, prio: null, kind: null, project: null, since: null, sinceAgeSeconds: null, age: null, ageHot: false };
+    return {
+      id,
+      title: text(record?.title) || id,
+      project: text(record?.repo) || null,
+      kind: text(record?.kind) || null,
+      since: text(record?.since) || null,
+      sinceAgeSeconds: null,
+      age: null,
+      ageHot: false,
+      prio: null,
+      state: "done",
+      stateLabel: donePresentation.label,
+      stateTone: donePresentation.tone,
+      tone: donePresentation.tone,
+      reason: null,
+      order: Number.isFinite(record?.order) ? record.order : Number.MAX_SAFE_INTEGER,
+    };
   }
   const held = text(record?.hold_reason) || record?.hold_reason != null;
   const blocked = record?.blocked_by != null || text(record?.blocked_reason);
@@ -164,7 +180,7 @@ export function buildBacklog(envelope, view = {}) {
       matched: filtered.length,
       total: queue.length,
     },
-    // Every current-queue row, unfiltered, for task-detail lookups.
     allRecords: queue,
+    taskRecords: allRows,
   };
 }

@@ -77,6 +77,7 @@ const mixed = buildBacklog(envelope([
   { id: "a5", title: "Running thing", state: "in_flight", order: 5 },
 ]), {});
 equal("a done row leaves the queue", mixed.queueTotal, 4);
+equal("a done transition remains available to task lookup", mixed.taskRecords.find((row) => row.id === "a2")?.state, "done");
 equal("the All tab counts the whole current queue", mixed.tabs.all, 4);
 equal("a held row lands on the Held tab", mixed.tabs.held, 1);
 equal("a blocked row lands on the Blocked tab", mixed.tabs.blocked, 1);

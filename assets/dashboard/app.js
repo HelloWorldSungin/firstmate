@@ -14,7 +14,7 @@
 
 import { buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
 import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
-import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, typeLabel } from "./events.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel } from "./events.js";
 import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
 import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
@@ -121,13 +121,52 @@ function viewRoot(name) {
   return node;
 }
 
-function rerenderInput(input) {
-  const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-  const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
-  render();
-  const restored = ui.view.querySelector(`#${input.id}`);
-  restored?.focus?.({ preventScroll: true });
-  restored?.setSelectionRange?.(start, end);
+function persistentControlIds(node) {
+  const ids = [];
+  if (node?.tagName === "INPUT" && node.type === "search" && node.id) ids.push(node.id);
+  for (const child of node?.childNodes || []) ids.push(...persistentControlIds(child));
+  return ids;
+}
+
+function refreshMountedView(current, fresh) {
+  current.className = fresh.className;
+  for (const key of Object.keys(current.dataset)) {
+    if (!(key in fresh.dataset)) delete current.dataset[key];
+  }
+  for (const [key, value] of Object.entries(fresh.dataset)) current.dataset[key] = value;
+
+  if (current.tagName === "INPUT" && current.type === "search" && current.id === fresh.id) {
+    current.value = fresh.value;
+    current.placeholder = fresh.placeholder;
+    current.maxLength = fresh.maxLength;
+    return;
+  }
+
+  let index = 0;
+  for (const freshChild of [...fresh.childNodes]) {
+    const ids = persistentControlIds(freshChild);
+    const children = [...current.childNodes];
+    if (ids.length) {
+      const match = children.slice(index).find((child) => {
+        const currentIds = persistentControlIds(child);
+        return ids.every((id) => currentIds.includes(id));
+      });
+      if (match) {
+        const cursor = current.childNodes[index] || null;
+        if (match !== cursor) current.insertBefore(match, cursor);
+        refreshMountedView(match, freshChild);
+      } else {
+        current.insertBefore(freshChild, current.childNodes[index] || null);
+      }
+    } else {
+      const cursor = current.childNodes[index] || null;
+      if (cursor && persistentControlIds(cursor).length) current.insertBefore(freshChild, cursor);
+      else if (cursor) current.replaceChild(freshChild, cursor);
+      else current.append(freshChild);
+    }
+    index += 1;
+  }
+  while (current.childNodes.length > index) current.removeChild(current.childNodes[index]);
 }
 
 function dot(tone) { return element("span", tone === "unknown" ? "ring" : `dot d-${tone}`); }
@@ -629,7 +668,7 @@ function renderBacklog() {
   search.placeholder = "Search title, project, id…";
   search.maxLength = BACKLOG_LIMITS.maxQueryChars;
   search.value = state.backlog.filters.query;
-  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; rerenderInput(search); });
+  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; render(); });
   toolbar.append(search);
   toolbar.append(backlogSelect("project", state.backlog.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
     state.backlog.filters.project = value; state.backlog.page = 0; render();
@@ -800,7 +839,7 @@ function renderHistory() {
   search.placeholder = "Search delivered work…";
   search.maxLength = HISTORY_LIMITS.maxQueryChars;
   search.value = state.history.filters.query;
-  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; rerenderInput(search); });
+  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; render(); });
   toolbar.append(search);
   toolbar.append(backlogSelect("project", state.history.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
     state.history.filters.project = value; state.history.page = 0; render();
@@ -1117,23 +1156,60 @@ function snapshotReadState() {
   return "ready";
 }
 
+function readStatus(readState) {
+  if (readState === "ready") return "fresh";
+  if (readState === "stale") return "stale";
+  if (readState === "unavailable") return "failed";
+  return "pending";
+}
+
+function taskReadSource(name, readState, envelope, records, conclusive = true) {
+  const status = readStatus(readState);
+  const error = envelope?.status?.error?.message || null;
+  const reason = status === "failed"
+    ? error || "the read failed"
+    : status === "stale"
+      ? error || "only a last known good read is available"
+      : status === "pending"
+        ? "the read has not completed"
+        : null;
+  return {
+    name,
+    status,
+    conclusive: status === "fresh" && conclusive,
+    records,
+    reason,
+    notice: status === "stale" ? `This task comes from the last known good ${name}: ${reason}.` : null,
+  };
+}
+
 function taskLookup(taskId) {
   const history = buildHistory(state.history.envelope, {});
   const backlog = buildBacklog(state.backlog.envelope, {});
-  const live = snapshotTasks().find((task) => task?.id === taskId);
-  const completed = history.allRecords.find((record) => record.id === taskId);
-  const queued = backlog.allRecords.find((record) => record.id === taskId);
-  if (live) return { phase: "found", task: liveTaskRecord(live) };
-  if (completed) return { phase: "found", task: historyTaskRecord(completed) };
-  if (queued) return { phase: "found", task: backlogTaskRecord(queued) };
-
   const sources = [
-    { name: "fleet snapshot", state: snapshotReadState(), error: state.envelope?.status?.error?.message },
-    { name: "completion history", state: history.readState, error: state.history.envelope?.status?.error?.message },
-    { name: "backlog", state: backlog.readState, error: state.backlog.envelope?.status?.error?.message },
+    taskReadSource("fleet snapshot", snapshotReadState(), state.envelope, snapshotTasks(), true),
+    taskReadSource("completion history", history.readState, state.history.envelope, history.allRecords, !history.truncated && history.malformed.length === 0),
+    taskReadSource("backlog", backlog.readState, state.backlog.envelope, backlog.taskRecords, true),
   ];
-  if (sources.some((source) => source.state === "pending")) return { phase: "pending", sources };
-  const uncertain = sources.filter((source) => source.state === "unavailable" || source.state === "stale");
+
+  const historySource = sources[1];
+  if (historySource.status === "fresh" && !historySource.conclusive) {
+    const reasons = [];
+    if (history.truncated) reasons.push("the archive read is truncated");
+    if (history.malformed.length) reasons.push("some completion records are unreadable");
+    historySource.reason = reasons.join(" and ");
+  }
+
+  const found = [
+    { source: sources[0], record: sources[0].records.find((task) => task?.id === taskId), normalize: liveTaskRecord },
+    { source: sources[1], record: sources[1].records.find((record) => record.id === taskId), normalize: historyTaskRecord },
+    { source: sources[2], record: sources[2].records.find((record) => record.id === taskId), normalize: backlogTaskRecord },
+  ].find((candidate) => candidate.record);
+  if (found) return { phase: "found", task: found.normalize(found.record), notice: found.source.notice };
+
+  const uncertain = sources.filter((source) => source.status !== "fresh" || !source.conclusive);
+  if (uncertain.some((source) => source.status === "failed" || source.status === "stale")) return { phase: "unavailable", sources: uncertain };
+  if (uncertain.some((source) => source.status === "pending")) return { phase: "pending", sources: uncertain };
   if (uncertain.length) return { phase: "unavailable", sources: uncertain };
   return { phase: "missing", sources };
 }
@@ -1171,6 +1247,7 @@ async function fetchTaskTimeline(taskId) {
 
 function reportPanel(taskId, present, live = null) {
   const panel = element("section", "panel");
+  panel.dataset.loadState = "settled";
   panel.append(element("div", "panel-h", "Report"));
   const entry = state.task.reports.get(taskId);
   if (!present) {
@@ -1180,11 +1257,13 @@ function reportPanel(taskId, present, live = null) {
     return panel;
   }
   if (!entry) {
+    panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the report…"));
     void fetchTaskReport(taskId);
     return panel;
   }
   if (entry.loading) {
+    panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the report…"));
     return panel;
   }
@@ -1204,14 +1283,17 @@ function reportPanel(taskId, present, live = null) {
 
 function activityPanel(taskId, task) {
   const panel = element("section", "panel");
+  panel.dataset.loadState = "settled";
   panel.append(element("div", "panel-h", "Activity"));
   const entry = state.task.timelines.get(taskId);
   if (!entry) {
+    panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the recorded events…"));
     void fetchTaskTimeline(taskId);
     return panel;
   }
   if (entry.loading) {
+    panel.dataset.loadState = "loading";
     panel.append(element("p", "state-reason", "Loading the recorded events…"));
     return panel;
   }
@@ -1222,8 +1304,10 @@ function activityPanel(taskId, task) {
   const merged = mergeTaskBackfill(Array.isArray(state.events?.events) ? state.events.events : [], backfill, taskId);
   const built = buildTimeline({ events: merged }, { task: taskId });
   if (!built.rows.length) {
-    const note = task ? sourceNotice(task, entry.envelope || state.events) : null;
-    panel.append(element("p", "state-reason", note || "No events are recorded for this task. The event feed only sees instrumented runtimes, so a task driven by an uninstrumented one has no timeline here."));
+    const status = timelineNotice(entry.envelope || state.events, merged.length, 0);
+    if (status.text) panel.append(notice(status.tone, null, status.text));
+    const source = task ? sourceNotice(task, entry.envelope || state.events) : null;
+    if (source) panel.append(element("p", "state-reason", source));
     return panel;
   }
   for (const row of built.rows) {
@@ -1270,6 +1354,7 @@ function prPanel(url, summary) {
 function renderTask() {
   const taskId = state.route.taskId;
   const view = viewRoot("task");
+  view.dataset.settled = "false";
 
   const back = element("button", "tk-back", "← Back");
   back.type = "button";
@@ -1283,10 +1368,11 @@ function renderTask() {
     return view;
   }
   if (lookup.phase === "unavailable") {
-    const detail = lookup.sources.map((source) => `${source.name}${source.error ? `: ${source.error}` : ""}`).join("; ");
+    const detail = lookup.sources.map((source) => `${source.name}${source.reason ? `: ${source.reason}` : ""}`).join("; ");
     view.append(pageHead("Task", "Task lookup unavailable"));
     view.append(notice("red", null, `This task cannot be ruled in or out because ${detail}.`));
-    view.append(emptyState({ ring: true, big: "Some fleet records cannot be read.", teach: "A failed or stale read is not evidence that a task does not exist. Retrying automatically." }));
+    view.append(emptyState({ ring: true, big: "The available records are not conclusive.", teach: "Incomplete, failed, or stale evidence is not proof that a task does not exist. The dashboard keeps refreshing these reads." }));
+    view.dataset.settled = "true";
     return view;
   }
   if (lookup.phase === "missing") {
@@ -1296,6 +1382,7 @@ function renderTask() {
       big: "This task is not in any record this dashboard reads.",
       teach: "It is not a live worker, not a completed record, and not a queued item. A task that was cleaned up before publishing a completion record leaves no trace to show.",
     }));
+    view.dataset.settled = "true";
     return view;
   }
 
@@ -1305,6 +1392,7 @@ function renderTask() {
   const head = view.querySelector(".page-h");
   head.textContent = title;
   head.closest(".page-hd").append(element("div", "card-id", taskId));
+  if (lookup.notice) view.append(notice("amber", null, lookup.notice));
 
   const strip = element("div", "kvstrip");
   strip.append(kvRow("Project", task.project ? label(task.project) : null));
@@ -1343,7 +1431,8 @@ function renderTask() {
   // exists only for a task that has one. A live scout still writes its report
   // to the task's own directory, but that is not exposed over HTTP until the
   // completion record publishes it - saying so beats a panel that 404s.
-  mainCol.append(reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null));
+  const report = reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null);
+  mainCol.append(report);
 
   if (task.pr) sideCol.append(prPanel(task.pr.url, task.pr));
 
@@ -1369,10 +1458,12 @@ function renderTask() {
     sideCol.append(panel);
   }
 
-  sideCol.append(activityPanel(taskId, task.source === "live" ? task.raw : null));
+  const activity = activityPanel(taskId, task.source === "live" ? task.raw : null);
+  sideCol.append(activity);
 
   grid.append(mainCol, sideCol);
   view.append(grid);
+  view.dataset.settled = String(report.dataset.loadState === "settled" && activity.dataset.loadState === "settled");
   return view;
 }
 
@@ -1409,9 +1500,14 @@ function render() {
   // the container must never match a [data-route] selector.
   ui.view.classList.toggle("settled", ui.view.dataset.view === route.view);
   ui.view.dataset.view = route.view;
-  // Mutual exclusivity is structural: the view container's children are
-  // replaced whole, so the previous view's DOM is gone, not hidden.
-  ui.view.replaceChildren(fresh);
+  const mounted = ui.view.firstElementChild;
+  const currentControls = mounted ? persistentControlIds(mounted) : [];
+  const freshControls = persistentControlIds(fresh);
+  if (mounted?.id === fresh.id && currentControls.length && currentControls.length === freshControls.length && currentControls.every((id) => freshControls.includes(id))) {
+    refreshMountedView(mounted, fresh);
+  } else {
+    ui.view.replaceChildren(fresh);
+  }
 }
 
 function onRouteChange() {

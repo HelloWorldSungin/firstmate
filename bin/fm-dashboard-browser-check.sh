@@ -1212,28 +1212,38 @@ task_open_probe_js() {
           pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
         };
       };
+      const settledTask = async () => {
+        for (let tick = 0; tick < 80; tick += 1) {
+          const view = document.getElementById("view-task");
+          if (view?.dataset.settled === "true") return view;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return null;
+      };
       const row = document.querySelector("#view-fleet .trow");
       if (!row) {
         location.hash = "#/task/dashboard-browser-check-missing";
-        for (let tick = 0; tick < 40; tick += 1) {
-          if (document.getElementById("view-task")) break;
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        return JSON.stringify({ clicked: false, reason: "no task row is on the Fleet board", ...scan() });
+        const task = await settledTask();
+        return JSON.stringify({
+          clicked: false,
+          reason: "no task row is on the Fleet board",
+          mounted: document.getElementById("view-task") !== null,
+          settled: task !== null,
+          ...(task ? scan() : {}),
+        });
       }
       row.click();
-      for (let tick = 0; tick < 40; tick += 1) {
-        if (document.getElementById("view-task")) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      const task = await settledTask();
       return JSON.stringify({
         clicked: true,
         reason: "",
         hash: location.hash,
         present: document.getElementById("view-task") !== null,
+        mounted: document.getElementById("view-task") !== null,
+        settled: task !== null,
         others: config.allIds.filter((id) => document.getElementById(id) !== null),
         othersChecked: config.allIds.length,
-        ...scan(),
+        ...(task ? scan() : {}),
       });
     }`);
   ' "$ALL_VIEW_IDS" "$LEAK_PATTERNS"
@@ -1761,7 +1771,7 @@ check_usage_cells() {  # <label> <rows> <cells>
 # on the Fleet board, clicked while that board is the active view.
 check_task_open() {  # <label>
   local label=$1 probe fields key value clicked reason hash present others others_checked
-  local leak_patterns leak_chars page_leaks
+  local mounted settled leak_patterns leak_chars page_leaks
   probe="$OUT_DIR/task-open-$label.json"
   console_collect "$label-before-task"
   if forced task-open unverified || ! browser_eval_json "$(task_open_probe_js)" "$probe"; then
@@ -1769,16 +1779,18 @@ check_task_open() {  # <label>
       "the page returned nothing readable about the board"
     return
   fi
-  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
+  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason mounted=mounted settled=settled leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the page did not say whether a board row was found"
     return
   fi
-  clicked=; reason=; leak_patterns=; leak_chars=; page_leaks=
+  clicked=; reason=; mounted=; settled=; leak_patterns=; leak_chars=; page_leaks=
   while IFS='=' read -r key value; do
     case "$key" in
       clicked) clicked=$value ;;
       reason) reason=$value ;;
+      mounted) mounted=$value ;;
+      settled) settled=$value ;;
       leakPatterns) leak_patterns=$value ;;
       leakChars) leak_chars=$value ;;
       pageLeaks) page_leaks=$value ;;
@@ -1786,7 +1798,7 @@ check_task_open() {  # <label>
   done <<CLICK
 $fields
 CLICK
-  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
+  if [ "$mounted" = true ] && [ "$settled" = true ] && is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
     LEAK_SCANS=$((LEAK_SCANS + 1))
     LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
     [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
