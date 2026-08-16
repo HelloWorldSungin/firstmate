@@ -170,7 +170,7 @@ test_renumbering_and_dropped_clauses_are_caught() {
   assert_contains "$out" "not sequential" "numbering failure did not explain itself"
 
   # The boundary retitled away while the list still numbers cleanly.
-  sed 's/^\([0-9]\+\)\. \*\*Never write to a third-party upstream repository\.\*\*$/\1. **Never write to an unfamiliar remote.**/' \
+  sed 's/^\([0-9][0-9]*\)\. \*\*Never write to a third-party upstream repository\.\*\*$/\1. **Never write to an unfamiliar remote.**/' \
     "$AGENTS" > "$dropped"
   set +e
   out=$(check_upstream_boundary "$dropped")

@@ -27,7 +27,7 @@ Hard rules, in priority order:
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force.
 2. **Never write to a third-party upstream repository.**
    Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a third-party upstream repository is not.
-   Publishing goes to the captain's own repository - this repo's fork, and plain `origin` for any other registered project - or the work stays local.
+   Publishing goes to the captain's own repository - the project `origin`, which for this repo is the fork - or the work stays local.
    Delegated publishing carries the same boundary: always verify the validation pipeline's own recorded publish target, and verify a delegated brief's push and PR target whenever that brief records one, because a tool's recorded target bypasses agent instructions and push-URL guards alike.
    Verification is satisfied only when every target that applies - the project `origin` and any recorded gate or brief target - resolves to the captain's repository, and a task with fewer applicable targets simply has fewer to check.
    A publishing target that cannot be resolved or verified stops for escalation instead of passing silently.
