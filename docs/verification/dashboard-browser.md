@@ -12,8 +12,10 @@ Every observation below is one of four verdicts, not two.
 `ok` means the thing it names was seen to happen, `FAIL` means it was seen not to happen, `????` means it could not be observed at all, and `n/a` means it does not apply to the target being checked in this mode.
 `????` exists because folding "I could not read the evidence" into `ok` is precisely how a harness comes to rubber-stamp a page nobody looked at, which is the failure this whole area exists to end; a run carrying any `????` exits non-zero.
 `n/a` exists because "I could not verify this" and "there was never anything here to verify" are different answers: the three task-timeline observations can only be proved by posting events into a dashboard the check does not own, so under `--url` they are `n/a` rather than unverified, and a healthy dashboard checked that way still exits 0.
-Under `--url` against an idle fleet the four task-destination observations join them, because a board with no live task has no row to click and so no task page to open or measure.
+Under `--url` against an idle fleet the four task-destination observations join them, because a board with no live task has no row to click and so no task page to open or measure, and the usage-cell observation joins them too, because a fleet that has delivered nothing renders History's designed empty state and has no completion row a cell could ever sit on.
+Both stay `????` in fixture mode, where the fixture always publishes rows and their absence means something broke.
 The leak scan is deliberately not among them: it reaches that destination in every mode by selecting a task address of its own, so an idle fleet does not reduce what it is required to have covered.
+Proven, not assumed: a real server over an idle home, checked with `--url` on 2026-08-16, recorded `125 passed, 0 failed, 0 could not be verified, 23 not applicable to this target` with all 148 declared observations reconciled, and exited 0.
 
 Which observations a run makes is not left to be kept in step by hand.
 Each mode declares its observation set up front, and before the run exits that list is reconciled against the verdicts actually recorded; a declared observation with no verdict, one carrying two, or a verdict for something never declared names the offending observation and exits 4.
@@ -38,6 +40,9 @@ The set grew from 136 to 148 because the task detail now owes the same three per
 What the run observed, with the load-bearing details:
 
 - The document loads with title `Firstmate Fleet`, the body painted `rgb(10, 11, 13)`, and this stylesheet's own `--amber-soft` resolving, at all four widths.
+- The rendered-page observation is structural, not a byte count: the router mounted a view root, the verdict strip carries its sentence, and the mounted view rendered its own designed content.
+  It was a 200-character body-text floor until the idle fleet falsified it: the designed all-clear landing is 105 characters, so the quietest healthy page this dashboard ships failed the very check that claims a healthy dashboard passes.
+  The structural form passes that page (observed: `the verdict strip reads [Nothing needs you] and #view-needs rendered 105 characters of its designed content`) and still fails the deliberately broken page, whose probe reads `mounted view [none], verdict [empty], 0 view characters`.
 - At 390x844 and 899x844 every destination was reached through the bottom tab bar; at 900x844 and 1440x900 every destination was reached through the rail.
   That is the 899/900 boundary observed from both sides in one run - navigation vanishing below 900px is the defect that started the rebuild, so it is pinned per width rather than assumed from the stylesheet.
 - At every width and every destination, the active view root was mounted and all 5 other view roots were absent from the DOM - absent, not hidden - and the address bar carried the destination's own hash.

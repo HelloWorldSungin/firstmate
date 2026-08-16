@@ -1186,9 +1186,20 @@ build_page_probe_js() {
 () => {
   const doc = document.documentElement;
   const bodyText = document.body.innerText;
+  // The landing render, identified structurally rather than by verbosity: the
+  // router mounted a view root, the verdict strip carries its one sentence,
+  // and the mounted view rendered its own designed content. A blank or broken
+  // render has none of these however many bytes it happens to carry, and the
+  // calmest healthy page - an idle fleet's all-clear - has all three however
+  // few. A byte floor over the whole body was only ever a proxy for this, and
+  // it misread that quiet healthy page as an empty one.
+  const mounted = document.querySelector("#view > [id^=\"view-\"]");
   return JSON.stringify({
     title: document.title,
     bodyTextLength: bodyText.length,
+    mountedView: mounted ? mounted.id : "",
+    mountedViewTextLength: mounted ? mounted.innerText.trim().length : 0,
+    verdictText: (document.getElementById("verdict") ? document.getElementById("verdict").innerText : "").trim(),
     clientWidth: doc.clientWidth,
     scrollWidth: doc.scrollWidth,
     innerWidth: window.innerWidth,
@@ -1469,10 +1480,13 @@ check_width() {  # <width> <height>
     return
   fi
 
-  local title body_length inner_width inner_height client_width scroll_width
+  local title body_length mounted_view mounted_view_text verdict_text
+  local inner_width inner_height client_width scroll_width
   local background accent error_page
   if forced probe unverified || ! scalars=$(probe_fields "$probe" \
-    title=title bodyTextLength=bodyTextLength innerWidth=innerWidth innerHeight=innerHeight \
+    title=title bodyTextLength=bodyTextLength mountedView=mountedView \
+    mountedViewTextLength=mountedViewTextLength verdictText=verdictText \
+    innerWidth=innerWidth innerHeight=innerHeight \
     clientWidth=clientWidth scrollWidth=scrollWidth background=background accent=accent \
     errorPage=errorPage); then
     record_unreached "$label" \
@@ -1483,6 +1497,9 @@ check_width() {  # <width> <height>
     case "$key" in
       title) title=$value ;;
       bodyTextLength) body_length=$value ;;
+      mountedView) mounted_view=$value ;;
+      mountedViewTextLength) mounted_view_text=$value ;;
+      verdictText) verdict_text=$value ;;
       innerWidth) inner_width=$value ;;
       innerHeight) inner_height=$value ;;
       clientWidth) client_width=$value ;;
@@ -1536,11 +1553,17 @@ EOF
       "the page reports ${inner_width} CSS px wide, not the ${width} this section is named after"
   fi
 
-  forced text fail && body_length=0
-  if [ "$body_length" -ge 200 ]; then
-    record ok "$label: the page rendered text rather than an empty document" "$body_length characters"
+  # Judged structurally, not by a byte floor: a healthy idle fleet's designed
+  # all-clear landing is the quietest page this dashboard ships and must pass,
+  # while a blank or broken render must fail however its byte count comes out.
+  forced text fail && { mounted_view=; verdict_text=; mounted_view_text=0; }
+  if [ -n "$mounted_view" ] && [ -n "$verdict_text" ] \
+    && is_number "$mounted_view_text" && [ "$mounted_view_text" -gt 0 ]; then
+    record ok "$label: the page rendered text rather than an empty document" \
+      "the verdict strip reads [$verdict_text] and #$mounted_view rendered $mounted_view_text characters of its designed content"
   else
-    record FAIL "$label: the page rendered text rather than an empty document" "only $body_length characters"
+    record FAIL "$label: the page rendered text rather than an empty document" \
+      "mounted view [${mounted_view:-none}], verdict [${verdict_text:-empty}], ${mounted_view_text:-0} view characters - a blank or broken render, not a quiet page"
   fi
 
   # A stylesheet that 404s leaves the document readable and completely
@@ -1912,8 +1935,19 @@ check_usage_cells() {  # <label> <rows> <cells>
   fi
   forced usage fail && cells=$((rows > 0 ? rows - 1 : 0))
   if [ "$rows" -eq 0 ]; then
-    record "$UNVERIFIED" "$label: every completed row shows its usage cell" \
-      "no completion row is on the page, so there is no usage cell to look at"
+    # The fixture always publishes completion records, so zero rows there means
+    # the fixture or the page broke and stays could-not-verify. Against a live
+    # dashboard, a fleet that has delivered nothing renders History's designed
+    # empty state - a conclusive observation with no cell there could ever be
+    # to look at, which is this check's n/a by definition, the same treatment
+    # the task destination gets on a fleet with no live task.
+    if [ "$MODE" = fixture ]; then
+      record "$UNVERIFIED" "$label: every completed row shows its usage cell" \
+        "no completion row is on the page, so there is no usage cell to look at"
+    else
+      record "$INAPPLICABLE" "$label: every completed row shows its usage cell" \
+        "this fleet has delivered nothing, so it has no completion row to carry a cell; nothing here can be observed until work lands"
+    fi
     return
   fi
   if [ "$cells" -eq "$rows" ]; then
