@@ -404,6 +404,27 @@ equal("an unreadable record is disclosed, not dropped", damaged.malformed.length
 check("an unreadable record explains itself in plain words",
   damaged.malformed.every((entry) => entry.explanation.length > 20), JSON.stringify(damaged.malformed));
 equal("a readable record still renders alongside", damaged.rows.length, 1);
+equal("one readable record is enough to be a page with rows", damaged.shape, "rows");
+
+// A history whose every manifest was unreadable is not a fleet that delivered
+// nothing - the same opposite-claims rule the Backlog page follows for a queue
+// it could not read. Deciding it here is what stops the reassuring sentence
+// from being rebuilt at the render site from a row count of zero.
+const allDamaged = buildHistory(envelope([], {
+  history: {
+    malformed: [
+      { id: "legacy-task", path: "/h/data/legacy-task/outcome.json", reason: "unexpected_fields" },
+      { id: "broken-task", path: "/h/data/broken-task/outcome.json", reason: "unreadable_or_wrong_schema" },
+    ],
+  },
+}));
+equal("a history whose every record was unreadable is not an empty history", allDamaged.shape, "unreadable");
+equal("the all-unreadable history carries the records it found", allDamaged.malformed.length, 2);
+equal("the all-unreadable history still reports a completed read", allDamaged.readState, "ready");
+equal("a genuinely empty history keeps its own shape", buildHistory(envelope([])).shape, "empty");
+equal("a first-run history with no document is absent", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run" }, history: null }).shape, "absent");
+equal("a filter hiding every readable record is filtered, not unreadable",
+  buildHistory(envelope([manifest("alpha")]), { query: "matches nothing at all" }).shape, "filtered");
 
 // --- filters, bounded search, and pagination ---------------------------------
 
@@ -481,10 +502,17 @@ equal("a captured report is counted for the search gate",
 
 const empty = buildHistory(envelope([]));
 equal("an empty history is empty", empty.empty, true);
+equal("an empty history is a completed ready read", empty.readState, "ready");
 equal("an empty history has no rows", empty.rows.length, 0);
 const missing = buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "unavailable", error: { kind: "command_missing", message: "gone" } }, history: null, usage: null });
 equal("an unavailable history has no rows either", missing.rows.length, 0);
+equal("an unavailable history has its own read state", missing.readState, "unavailable");
 equal("an unavailable history reports no records read", missing.record_total, null);
+equal("a missing envelope is still pending", buildHistory(null).readState, "pending");
+equal("first-run history is absent rather than empty", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run" }, history: null }).readState, "absent");
+equal("an in-progress first history read stays pending", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run", refreshing: true }, history: null }).readState, "pending");
+equal("last-good history is stale but usable", buildHistory({ ...envelope([manifest("stale")]), status: { phase: "last_good", stale: true } }).readState, "stale");
+equal("all normalized records remain available for task lookup", buildHistory(envelope([manifest("alpha"), manifest("beta")]), { query: "alpha" }).allRecords.map((row) => row.id).join(","), "alpha,beta");
 
 // The archive says when more completed work exists than was read, so the view
 // never implies the fleet has only ever finished this much.

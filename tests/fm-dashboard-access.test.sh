@@ -272,8 +272,14 @@ test_installing_from_a_worktree_is_refused() {
   fm_git_worktree "$case_root/checkout" "$case_root/scratch" dashboard-scratch
   local copy
   for copy in "$case_root/checkout" "$case_root/scratch"; do
-    mkdir -p "$copy/bin"
+    mkdir -p "$copy/bin" "$copy/assets/dashboard"
     cp "$INSTALLER" "$SERVER" "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$copy/bin/"
+    # These stand-ins are checkouts the installer probes and the unit will run,
+    # so they carry what the server loads, not only bin/. The server's module
+    # graph reaches assets/dashboard for the shared display-safe error funnel,
+    # and a copy without it cannot answer --event-store-path - which the
+    # installer reports as an unresolvable store rather than a missing file.
+    cp "$ROOT/assets/dashboard/"* "$copy/assets/dashboard/"
   done
 
   set +e

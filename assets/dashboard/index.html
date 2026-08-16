@@ -5,178 +5,80 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#0a0b0d">
-    <meta name="description" content="A read-only captain inbox, kanban view, and completed-work history of the Firstmate fleet.">
+    <meta name="description" content="A read-only view of the Firstmate fleet: what needs the captain, live workers, the backlog, delivered work, and captured knowledge.">
     <title>Firstmate Fleet</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" type="module"></script>
   </head>
   <body>
-    <div class="shell">
-      <aside class="sidebar" aria-label="Dashboard navigation">
-        <div class="brand"><strong>Firstmate</strong><span>Fleet</span></div>
-        <a class="nav-item active" href="#inbox" aria-current="page">Needs you <span class="nav-badge" id="nav-badge" hidden>0</span></a>
-        <a class="nav-item" href="#board">Board</a>
-        <a class="nav-item" href="#gbraintron">GBrain</a>
-        <a class="nav-item" href="#activity">Activity</a>
-        <a class="nav-item" href="#history">History</a>
-        <div class="sidebar-spacer"></div>
-        <button class="theme-button" id="notify-button" type="button" aria-pressed="false">Alerts off</button>
-        <button class="theme-button" id="theme-button" type="button">Light mode</button>
-      </aside>
-
-      <main tabindex="-1">
-        <header class="topbar">
-          <div class="phone-head">
-            <div class="phone-brand"><strong>Firstmate</strong> <span>Fleet</span></div>
-            <button class="theme-button icon-button" id="phone-notify-button" type="button" aria-pressed="false" aria-label="Enable desktop alerts for new inbox items">☾</button>
-            <button class="theme-button icon-button" id="phone-theme-button" type="button" aria-label="Switch color theme">◐</button>
-          </div>
-          <div class="badges" id="badges" aria-label="Captain inbox counts"></div>
-          <div class="signals" id="signals" aria-label="Fleet health"></div>
-        </header>
-
-        <section id="notice-region" aria-live="polite" aria-atomic="true"></section>
-
-        <div class="board-content">
-          <section class="inbox-section" id="inbox" tabindex="-1" aria-labelledby="inbox-title">
-            <div class="board-heading">
-              <div>
-                <p class="eyebrow">Captain inbox</p>
-                <h1 id="inbox-title">Needs you</h1>
-              </div>
-              <p class="refresh-note" id="refresh-note">Waiting for the first snapshot</p>
-            </div>
-            <div class="health-strip" id="health-strip" aria-label="Fleet health detail"></div>
-            <div class="inbox-list" id="inbox-list"></div>
-          </section>
-
-          <section class="board-section" id="board" tabindex="-1" aria-labelledby="board-title">
-            <div class="board-heading">
-              <div>
-                <p class="eyebrow">Read-only fleet snapshot</p>
-                <h2 class="page-title" id="board-title">Board</h2>
-              </div>
-            </div>
-
-            <details class="filters">
-              <summary>Filters <span id="filter-count"></span></summary>
-              <form id="filter-form" class="filter-grid">
-                <label>Project<select name="project"><option value="">All projects</option></select></label>
-                <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
-                <label>Model<select name="model"><option value="">All models</option></select></label>
-                <label>Kind<select name="kind"><option value="">All kinds</option></select></label>
-                <label>State<select name="state"><option value="">All states</option></select></label>
-                <button id="clear-filters" type="button">Clear</button>
-              </form>
-            </details>
-
-            <section class="secondmate-lane" aria-labelledby="secondmate-title">
-              <div class="lane-title"><span id="secondmate-title">Secondmates</span><span class="count" id="secondmate-count">0</span></div>
-              <div class="mate-list" id="secondmate-list"></div>
-            </section>
-
-            <section class="kanban" id="kanban" aria-label="Fleet kanban columns"></section>
-          </section>
-
-          <section class="gbraintron-section" id="gbraintron" tabindex="-1" aria-labelledby="gbraintron-title">
-            <div class="board-heading">
-              <div>
-                <p class="eyebrow">GBrain health and search</p>
-                <h2 class="page-title" id="gbraintron-title">GBrain</h2>
-              </div>
-              <p class="refresh-note" id="gbraintron-note">Waiting for the first health read</p>
-            </div>
-
-            <div class="gbraintron-notices" id="gbraintron-notices" aria-live="polite"></div>
-
-            <div class="health-strip gbraintron-strip" id="gbraintron-strip" aria-label="GBrain health"></div>
-
-            <details class="filters gbraintron-filters" open>
-              <summary>Search captured knowledge</summary>
-              <form id="gbraintron-search-form" class="filter-grid gbraintron-form">
-                <label class="wide">Query<input type="search" id="gbraintron-search-input" name="query" maxlength="1024" placeholder="search captured reports and notes" autocomplete="off"></label>
-                <label>Limit<select id="gbraintron-search-limit" name="limit">
-                  <option value="4">4</option>
-                  <option value="8" selected>8</option>
-                  <option value="16">16</option>
-                </select></label>
-                <button id="gbraintron-search-button" type="submit">Search</button>
-              </form>
-            </details>
-
-            <div class="gbraintron-results" id="gbraintron-results" aria-live="polite"></div>
-          </section>
-
-          <section class="activity-section" id="activity" tabindex="-1" aria-labelledby="activity-title">
-            <div class="board-heading">
-              <div>
-                <p class="eyebrow">Live agent events</p>
-                <h2 class="page-title" id="activity-title">Activity</h2>
-              </div>
-              <p class="refresh-note" id="activity-note">Waiting for the first activity read</p>
-            </div>
-
-            <div class="activity-notices" id="activity-notices" aria-live="polite"></div>
-
-            <details class="filters">
-              <summary>Filters <span id="activity-filter-count"></span></summary>
-              <form id="activity-form" class="filter-grid">
-                <label>Agent<select name="task"><option value="">All agents</option></select></label>
-                <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
-                <label>Event<select name="type"><option value="">All events</option></select></label>
-                <button id="activity-clear" type="button">Clear</button>
-              </form>
-            </details>
-
-            <ol class="activity-list" id="activity-list"></ol>
-          </section>
-
-          <section class="history-section" id="history" tabindex="-1" aria-labelledby="history-title">
-            <div class="board-heading">
-              <div>
-                <p class="eyebrow">Durable completion records</p>
-                <h2 class="page-title" id="history-title">History</h2>
-              </div>
-              <p class="refresh-note" id="history-note">Waiting for the first history read</p>
-            </div>
-
-            <div class="history-warnings" id="history-warnings" aria-live="polite"></div>
-
-            <details class="filters">
-              <summary>Filters and search <span id="history-filter-count"></span></summary>
-              <form id="history-form" class="filter-grid">
-                <label class="wide">Search<input type="search" name="query" maxlength="120" placeholder="Title, task, project, pull request, issue" autocomplete="off"></label>
-                <label>Project<select name="project"><option value="">All projects</option></select></label>
-                <label>Harness<select name="harness"><option value="">All harnesses</option></select></label>
-                <label>Model<select name="model"><option value="">All models</option></select></label>
-                <label>Kind<select name="kind"><option value="">All kinds</option></select></label>
-                <label>Outcome<select name="outcome"><option value="">All outcomes</option></select></label>
-                <label>Completed from<input type="date" name="from"></label>
-                <label>Completed to<input type="date" name="to"></label>
-                <label>Per page<select name="pageSize"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
-                <button id="history-clear" type="button">Clear</button>
-              </form>
-            </details>
-
-            <div class="history-summary" id="history-summary"></div>
-            <div class="history-list" id="history-list"></div>
-            <nav class="pager" id="history-pager" aria-label="History pages"></nav>
-          </section>
-        </div>
-      </main>
-    </div>
-
-    <dialog class="report-dialog" id="report-dialog" aria-labelledby="report-title">
-      <header class="report-head">
-        <div>
-          <p class="eyebrow" id="report-task"></p>
-          <h3 id="report-title">Report</h3>
-        </div>
-        <button class="theme-button" id="report-close" type="button">Close</button>
+    <div class="app" id="app" data-stale="false">
+      <header class="vstrip" aria-label="Fleet verdict">
+        <span class="vdot" id="vdot"></span>
+        <span class="verdict" id="verdict">Waiting for the first snapshot</span>
+        <div class="segbar" id="segbar" aria-hidden="true"></div>
+        <span class="stalenote" id="stalenote" hidden><span class="g g-unknown"></span><span id="staleno-txt">data age unknown</span></span>
       </header>
-      <div class="report-notices" id="report-notices"></div>
-      <article class="report-body" id="report-body"></article>
-    </dialog>
+      <div class="shell">
+        <nav class="rail" aria-label="Primary">
+          <div class="brand"><span class="bmark"></span><span class="btext">Firstmate</span></div>
+          <button class="navitem" id="nav-needs" type="button" data-route="needs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"></rect><path d="M3.5 13h5l2 3h3l2-3h5"></path></svg>
+            <span class="nlabel">Needs you</span>
+            <span class="navbadge" id="navbadge" hidden>0</span>
+          </button>
+          <button class="navitem" id="nav-fleet" type="button" data-route="fleet">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="4.4" height="15" rx="1"></rect><rect x="9.8" y="4.5" width="4.4" height="10" rx="1"></rect><rect x="16.1" y="4.5" width="4.4" height="7" rx="1"></rect></svg>
+            <span class="nlabel">Fleet</span>
+          </button>
+          <button class="navitem" id="nav-backlog" type="button" data-route="backlog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h9"></path></svg>
+            <span class="nlabel">Backlog</span>
+          </button>
+          <button class="navitem" id="nav-history" type="button" data-route="history">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5V12l3 2"></path></svg>
+            <span class="nlabel">History</span>
+          </button>
+          <button class="navitem" id="nav-knowledge" type="button" data-route="knowledge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M15.8 15.8L20 20"></path></svg>
+            <span class="nlabel">Knowledge</span>
+          </button>
+          <div class="rail-actions">
+            <button class="iconbtn" id="notify-button" type="button" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"></path><path d="M10 19a2.2 2.2 0 0 0 4 0"></path></svg>
+              <span class="nlabel">Alerts off</span>
+            </button>
+            <button class="iconbtn" id="theme-button" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 3.5v17M12 3.5a8.5 8.5 0 0 1 0 17" ></path></svg>
+              <span class="nlabel">Light mode</span>
+            </button>
+          </div>
+        </nav>
+        <main class="main" id="view" tabindex="-1"></main>
+      </div>
+      <nav class="tabbar" aria-label="Primary">
+        <button class="tabitem" id="tab-needs" type="button" data-route="needs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"></rect><path d="M3.5 13h5l2 3h3l2-3h5"></path></svg>
+          Needs you
+          <span class="tabbadge" id="tabbadge" hidden>0</span>
+        </button>
+        <button class="tabitem" id="tab-fleet" type="button" data-route="fleet">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="4.4" height="15" rx="1"></rect><rect x="9.8" y="4.5" width="4.4" height="10" rx="1"></rect><rect x="16.1" y="4.5" width="4.4" height="7" rx="1"></rect></svg>
+          Fleet
+        </button>
+        <button class="tabitem" id="tab-backlog" type="button" data-route="backlog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h9"></path></svg>
+          Backlog
+        </button>
+        <button class="tabitem" id="tab-history" type="button" data-route="history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5V12l3 2"></path></svg>
+          History
+        </button>
+        <button class="tabitem" id="tab-knowledge" type="button" data-route="knowledge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M15.8 15.8L20 20"></path></svg>
+          Knowledge
+        </button>
+      </nav>
+    </div>
   </body>
 </html>

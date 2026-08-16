@@ -135,7 +135,7 @@ Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free 
 `bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
 The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
 For the installed user service that means a systemd drop-in: [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) rewrites its environment file on every install and carries only the names [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) documents.
-An unannounced window degrades rather than breaks: the panel reports the retrieval and synthesis legs it could not reach, capture keeps queueing into the durable outbox and drains on a later run, and fleet supervision is unaffected either way ([dashboard.md](dashboard.md#gbrain) owns what each panel state means).
+An unannounced window degrades rather than breaks: the panel reports the retrieval and synthesis legs it could not reach, capture keeps queueing into the durable outbox and drains on a later run, and fleet supervision is unaffected either way ([dashboard.md](dashboard.md#knowledge) owns what each panel state means).
 
 ## Initialize and configure retrieval
 
@@ -246,7 +246,7 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 ```
 
 Stop every `gbrain serve` process before copying PGLite because it is a single-writer database.
-A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#gbrain)).
+A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#knowledge)).
 So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
 Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
 Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory:

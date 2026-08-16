@@ -1340,11 +1340,12 @@ const { pathToFileURL } = require("node:url");
     ...tail.slice(0, 199),
   ];
   const afterBroadcast = render(broadcast, backfill);
-  process.stdout.write(`${streamOnly},${selected},${afterBroadcast}`);
+  const cachedTasks = [...new Set(events.mergeTaskBackfill(broadcast, backfill, filters.task).map((event) => event.task_id))].join(",");
+  process.stdout.write(`${streamOnly},${selected},${afterBroadcast};${cachedTasks}`);
 })();
 NODE
   ) || fail "the timeline module could not merge a task backfill"
-  [ "$rows" = "0,1,1" ] \
+  [ "$rows" = "0,1,1;task-old" ] \
     || fail "the selected task's backfilled rows did not survive a broadcast (stream,selected,after): $rows"
 
   stop_server

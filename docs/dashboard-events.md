@@ -38,7 +38,7 @@ They are nevertheless two files, for one concrete reason: **the dashboard writes
 `tests/fm-dashboard.test.sh` proves that by fingerprinting `data/`, `state/`, and `projects/` around a live server that is accepting events, and the installed user service is hardened to match with `ProtectSystem=strict` and `ProtectHome=read-only`.
 Putting events in `data/usage.db` would require granting that service write access to the fleet's own records, which is the exact guarantee the dashboard is built without.
 
-That exception is one directory: the unit grants `data/gbrain/`, because a GBrain search updates the index it is reading and the [search affordance](dashboard.md#gbrain) would otherwise be refused by the same hardening that makes the rest of this true.
+That exception is one directory: the unit grants `data/gbrain/`, because a GBrain search updates the index it is reading and the [search affordance](dashboard.md#knowledge) would otherwise be refused by the same hardening that makes the rest of this true.
 That grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and it is tolerant because a home with no brain is normal.
 [`verification/dashboard-service-unit.md`](verification/dashboard-service-unit.md) pins what a search cannot do without it.
 
@@ -160,9 +160,11 @@ A view is not worth a stalled agent, so there is no retry and no spool.
 
 ## Reading the timeline
 
-The **Activity** view lists the fleet's events newest first, filterable by agent, harness, and event.
-Each task card carries a Timeline button that narrows the view to that one agent and backfills its own events from the store, because the live stream carries a bounded fleet-wide tail and a busy fleet can scroll one agent out of it.
+Each task detail page carries an Activity panel that lists only that task's events newest first.
+The panel backfills the task's events from the store because the live stream carries a bounded fleet-wide tail and a busy fleet can scroll one agent out of it.
 [`assets/dashboard/events.js`](../assets/dashboard/events.js) is the single executable copy of that policy.
+Merging that backfill with the live tail is also where the retained set is bounded - newest kept, oldest dropped, arrival order as the tie-break - because every union goes through that one function, and a page left open for a shift would otherwise accumulate the union of every broadcast for every task it ever opened, past the store's own per-task cap.
+The browser keeps a bounded number of task timelines for the same reason, dropping the earliest-cached first and never the task on screen, which costs no request because only the open task refetches.
 Every value reaches the page through `textContent`, which is the second independent reason a stored event can never become markup.
 
 ## Verification

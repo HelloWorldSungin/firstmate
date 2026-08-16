@@ -249,13 +249,18 @@ test_stale_transition_streams_without_refresh() {
   pass "configured freshness threshold streams a stale transition without waiting for the next poll"
 }
 
-test_browser_renders_contract_actions_and_liveness() {
-  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser contract rendering failed"
+test_browser_renders_exclusive_views_and_honest_states() {
+  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard exclusive-view rendering failed"
 const { pathToFileURL } = require("node:url");
 
+// A minimal DOM for the rebuilt shell: the static index.html nodes the app
+// wires itself to, plus enough of Node/Element for the render path. Parents
+// are tracked so closest() works, because the task page reads back up the
+// tree it just built.
 class FakeNode {
   constructor(tagName, text = "") {
-    this.tagName = tagName.toUpperCase();
+    this.tagName = String(tagName).toUpperCase();
+    this.nodeType = this.tagName === "#TEXT" ? 3 : 1;
     this.children = [];
     this.attributes = {};
     this.className = "";
@@ -263,121 +268,185 @@ class FakeNode {
     this.id = "";
     this.listeners = {};
     this.value = "";
-    // app.js publishes the sticky bar's measured height as a custom property on
-    // the document element, so a node has to be able to carry one.
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
+    this.focused = false;
+    this.hidden = false;
+    this.parent = null;
     this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
+    const node = this;
+    this.classList = {
+      add(...names) { for (const name of names) if (!node.classNames().includes(name)) node.className = `${node.className} ${name}`.trim(); },
+      remove(...names) { node.className = node.classNames().filter((existing) => !names.includes(existing)).join(" "); },
+      toggle(name, force) {
+        const has = node.classNames().includes(name);
+        const want = force === undefined ? !has : Boolean(force);
+        if (want && !has) node.classList.add(name);
+        if (!want && has) node.classList.remove(name);
+        return want;
+      },
+      contains(name) { return node.classNames().includes(name); },
+    };
   }
 
+  classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
+  get childNodes() { return this.children; }
+  get parentNode() { return this.parent; }
+  get firstElementChild() { return this.children.find((child) => child.tagName !== "#TEXT") ?? null; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
-  set textContent(value) {
-    this._text = String(value ?? "");
-    this.children = [];
-  }
+  set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
       const node = typeof child === "string" ? new FakeNode("#text", child) : child;
-      node.attached = true;
+      node.parent = this;
       this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
-    for (const child of this.children) child.detach();
     this._text = "";
+    for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
   }
 
-  setAttribute(name, value) {
-    this.attributes[name] = String(value);
+  insertBefore(child, before) {
+    if (child.parent) child.parent.removeChild(child);
+    const index = before ? this.children.indexOf(before) : this.children.length;
+    child.parent = this;
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    return child;
   }
 
-  addEventListener(name, listener) {
-    this.listeners[name] = listener;
+  replaceChild(child, replaced) {
+    const index = this.children.indexOf(replaced);
+    if (index < 0) throw new Error("replacement target is not a child");
+    if (child.parent) child.parent.removeChild(child);
+    replaced.parent = null;
+    child.parent = this;
+    this.children[index] = child;
+    return replaced;
   }
 
-  // The fold anchor reads real layout. These nodes carry whatever rectangle a
-  // case assigns them, which is what lets a reflow be simulated.
-  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
-
-  // The anchor refuses to move the page for a node a render has thrown away, so
-  // a replaced subtree has to really stop reporting itself connected. Standing
-  // nodes are never appended anywhere and stay connected by default.
-  detach() {
-    this.attached = false;
-    for (const child of this.children) child.detach();
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index < 0) throw new Error("removal target is not a child");
+    this.children.splice(index, 1);
+    child.parent = null;
+    return child;
   }
 
-  get isConnected() { return this.attached !== false; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
+  focus() { this.focused = true; activeElement = this; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  contains(node) { for (let cursor = node; cursor; cursor = cursor.parent) if (cursor === this) return true; return false; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
+
+  matchesSelector(selector) {
+    if (selector.startsWith("#")) return this.id === selector.slice(1);
+    if (selector.startsWith(".")) return this.classNames().includes(selector.slice(1));
+    return this.tagName === selector.toUpperCase();
+  }
+
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matchesSelector(selector)) return child;
+      const hit = child.querySelector(selector);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matchesSelector && node.matchesSelector(selector)) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  click() { this.listeners.click?.({ stopPropagation() {} }); }
 }
 
-const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
-  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
-  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close",
-  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
-  selectors.set(`#${id}`, new FakeNode("div"));
+let activeElement = null;
+const byId = new Map();
+function staticNode(tag, id, className = "") {
+  const node = new FakeNode(tag);
+  node.id = id;
+  node.className = className;
+  byId.set(id, node);
+  return node;
 }
-const filterForm = new FakeNode("form");
-filterForm.elements = {};
-for (const key of ["project", "harness", "model", "kind", "state"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  filterForm.elements[key] = select;
+const appNode = staticNode("div", "app", "app");
+const viewNode = staticNode("main", "view", "main");
+staticNode("span", "vdot", "vdot");
+staticNode("span", "verdict", "verdict");
+staticNode("div", "segbar", "segbar");
+staticNode("span", "stalenote", "stalenote");
+staticNode("span", "staleno-txt");
+staticNode("span", "navbadge", "navbadge");
+staticNode("span", "tabbadge", "tabbadge");
+for (const buttonId of ["theme-button", "notify-button"]) {
+  const button = staticNode("button", buttonId, "iconbtn");
+  button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
-selectors.set("#filter-form", filterForm);
-const historyForm = new FakeNode("form");
-historyForm.elements = {};
-for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
-  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
-  field.append(new FakeNode("option", `All ${key}`));
-  historyForm.elements[key] = field;
+const routeButtons = [];
+for (const route of ["needs", "fleet", "backlog", "history", "knowledge"]) {
+  for (const prefix of ["nav", "tab"]) {
+    const button = staticNode("button", `${prefix}-${route}`, prefix === "nav" ? "navitem" : "tabitem");
+    button.dataset.route = route;
+    routeButtons.push(button);
+  }
 }
-selectors.set("#history-form", historyForm);
-const activityForm = new FakeNode("form");
-activityForm.elements = {};
-for (const key of ["task", "harness", "type"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  activityForm.elements[key] = select;
-}
-selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
-  querySelector: (selector) => selectors.get(selector),
-  // The anchor selector matches the standing sections and the cards inside
-  // them alike. The cards are read live out of the rendered list rather than
-  // listed up front, so a render genuinely swaps the node under the anchor.
-  querySelectorAll: (selector) => (selector.includes("#inbox")
-    ? [...anchorSections, ...selectors.get("#inbox-list").children]
-    : []),
+  // Focus follows the tree: a node the renderer replaced is detached, and a
+  // detached node is not what the document considers focused.
+  get activeElement() {
+    if (!activeElement) return null;
+    let root = activeElement;
+    while (root.parent) root = root.parent;
+    return byId.get(root.id) === root ? activeElement : null;
+  },
+  getElementById: (id) => byId.get(id) ?? null,
+  querySelector: (selector) => {
+    const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
+    if (compound) return byId.get(compound[1])?.querySelector(`.${compound[2]}`) ?? null;
+    if (selector.startsWith("#")) return byId.get(selector.slice(1)) ?? null;
+    return null;
+  },
+  querySelectorAll: (selector) => (selector === "[data-route]" ? routeButtons : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
 
 const PR_URL = "https://github.com/HelloWorldSungin/firstmate/pull/31";
 const DECISION_TEXT = "Should the retention window stay at 40 records, or drop to 20 so the manifest history fits one screen? Either is defensible.";
+const TASK_ID = "waiting-on-you";
 
-function task(id, kind, status, exists, action) {
+function task(id, kind, column) {
   return {
     id,
     kind,
     project: "firstmate",
     harness: "codex",
     model: "gpt-5.6-sol",
-    effort: "high",
-    backlog: { title: id },
-    current_state: { state: kind === "secondmate" ? "idle" : "working", detail: "Visible detail" },
-    endpoint: { status, exists },
+    backlog: { title: `${id} title` },
+    current_state: { state: "working", detail: "Visible detail" },
+    endpoint: { status: "alive", exists: true },
     paths: { status_log: { last_event_age_seconds: 5 } },
     work_items: [],
-    card: { column: kind === "secondmate" ? "secondmate" : "active", action },
+    spawn_age_seconds: 120,
+    card: { column },
   };
 }
 
@@ -386,12 +455,10 @@ const envelope = {
   status: { phase: "ready", stale: false, last_success_at: "2026-08-04T00:00:00Z", last_success_age_seconds: 0 },
   snapshot: {
     tasks: [
-      task("unknown-worker", "ship", "unknown", true, "supervise"),
-      task("alive-mate", "secondmate", "alive", true, "route_work"),
-      task("dead-mate", "secondmate", "dead", true, "route_work"),
-      task("unknown-mate", "secondmate", "unknown", true, "route_work"),
+      task("busy-worker", "ship", "active"),
+      task("resting-mate", "secondmate", "secondmate"),
       {
-        ...task("waiting-on-you", "ship", "unknown", true, "decide"),
+        ...task(TASK_ID, "ship", "needs_decision"),
         current_state: { state: "parked", detail: "Parked at a gate" },
         hints: { open_decisions: [{ key: "retention", verb: "needs-decision", summary: DECISION_TEXT }] },
         pr: {
@@ -401,18 +468,71 @@ const envelope = {
           status_age_seconds: 12,
           status_freshness: "cached",
         },
-        card: { column: "needs_decision", action: "decide" },
       },
     ],
-    card_precedence: ["active", "secondmate"],
+    card_precedence: ["needs_decision", "active", "secondmate"],
     supervision: { watcher: { present: true, age_seconds: 1, grace_seconds: 120, stale: false }, afk: { active: false } },
     main_inventory: { valid: true, orphan_in_flight: [] },
   },
 };
 
-// The stream is how a live fleet redraws this page. A case that needs a render
-// to happen the way one really does pushes through the recorded listener.
+const recentIso = (hoursAgo) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+function completionRecord(id, state, hoursAgo) {
+  return {
+    schema: "fm-outcome-manifest.v1",
+    task_id: id,
+    title: `${id} delivered title`,
+    project: id === "delivered-one" ? "/home/captain/projects/firstmate" : "firstmate",
+    kind: "ship",
+    outcome: { state },
+    timestamps: { completed: recentIso(hoursAgo) },
+    pr: id === "delivered-one" ? {
+      url: "https://github.com/HelloWorldSungin/firstmate/pull/156",
+      status: { state: "merged", review: "approved", checks: "passing", mergeable: "mergeable", observed_at: recentIso(hoursAgo), source: "github" },
+    } : {},
+    report: id === "delivered-one" ? { present: true, path: `/home/captain/data/${id}/report.md` } : {},
+    work_items: id === "delivered-one" ? { references: [{ forge: "github", url: "https://github.com/HelloWorldSungin/firstmate/issues/156", enrichment: { title: "Dashboard rebuild" } }] } : { references: [] },
+  };
+}
+const historyEnvelope = {
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "ready", stale: false, last_success_at: recentIso(0), last_success_age_seconds: 0 },
+  history: {
+    present: true,
+    records: [
+      completionRecord("delivered-one", "done", 2),
+      completionRecord("delivered-two", "done", 5),
+      completionRecord("failed-one", "failed", 9),
+    ],
+    malformed: [],
+  },
+};
+const backlogEnvelope = {
+  schema: "fm-dashboard-backlog.v1",
+  status: { phase: "ready", stale: false, last_success_at: recentIso(0), last_success_age_seconds: 0 },
+  backlog: {
+    present: true,
+    records: [
+      { id: "queued-a", title: "Queued a", state: "queued", repo: "/home/captain/projects/firstmate", order: 1 },
+      { id: "held-b", title: "Held b", state: "queued", hold_reason: "waiting on the captain", order: 2 },
+    ],
+  },
+};
+const gbrainHealth = { schema: "fm-gbrain-health.v1", status: {}, config: {}, health: { configured: false } };
+let timelineEnvelope = {
+  schema: "fm-dashboard-timeline.v1",
+  events: [
+    { event_id: "e1", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", outcome: "ok", occurred_at: "2026-08-15T10:00:02Z", occurred_epoch: 2 },
+    { event_id: "e2", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", occurred_at: "2026-08-15T10:00:01Z", occurred_epoch: 1 },
+  ],
+};
+
 const eventSources = [];
+let timelineFetches = 0;
+let timelineFetchFailure = false;
+let reportFetches = 0;
+let reportFetchFailure = false;
+let reportText = "The delivered report body.";
 class FakeEventSource {
   constructor() {
     this.listeners = {};
@@ -423,186 +543,868 @@ class FakeEventSource {
   close() {}
 }
 
-// The browser app is an ES module that imports the inbox policy module beside
-// it, so it is loaded through a real module graph rather than a flat script
-// evaluation. Its DOM and platform dependencies are resolved from globals.
-
-// A fold or unfold reflows this page while it stays loaded. The dashboard
-// anchors the reader to what they were reading and puts it back at the same
-// place on screen; these fakes supply the viewport, the layout rectangles, and
-// the frame callback that behavior is expressed in terms of.
-const topbar = new FakeNode("header");
-topbar.className = "topbar";
-topbar.rect = { top: 0, bottom: 40 };
-selectors.set(".topbar", topbar);
-
-const offscreenSection = new FakeNode("section");
-offscreenSection.rect = { top: -500, bottom: -200 };
-const readingSection = new FakeNode("section");
-readingSection.rect = { top: 300, bottom: 900 };
-const anchorSections = [offscreenSection, readingSection];
-
-const frames = [];
 const scrollCalls = [];
+const openedUrls = [];
 const fakeWindow = {
-  innerWidth: 320,
-  innerHeight: 850,
+  innerWidth: 1440,
+  innerHeight: 900,
   scrollY: 0,
+  location: { hash: "" },
   listeners: {},
+  history: { back() {} },
   addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
-  scrollTo(options) { scrollCalls.push(options); fakeWindow.scrollY = options.top; },
+  scrollTo(options) { scrollCalls.push(options); },
+  open(url) { openedUrls.push(url); },
 };
-const flushFrames = () => { const queued = frames.splice(0); for (const frame of queued) frame(); };
 
 const storage = new Map();
+// The knowledge search is the one request the page must hold itself to one at
+// a time, so this fixture can keep a search in flight while a second Enter is
+// pressed.
+const knowledgeSearches = [];
+let knowledgeSearchGate = null;
 Object.assign(globalThis, {
   document,
   window: fakeWindow,
-  requestAnimationFrame: (frame) => frames.push(frame),
+  requestAnimationFrame: (frame) => { frame(); return 0; },
   EventSource: FakeEventSource,
-  fetch: async () => ({ ok: true, json: async () => envelope }),
+  fetch: async (url) => ({
+    ok: true,
+    json: async () => {
+      if (url.startsWith("/api/gbrain/search")) {
+        knowledgeSearches.push(url);
+        if (knowledgeSearchGate) await knowledgeSearchGate;
+        return {
+          schema: "fm-gbrain-search.v1",
+          results: [{ title: "A captured runbook", source: "gbrain", excerpt: "how the fleet did it" }],
+          sources: [{ source: "gbrain", state: "ok" }],
+        };
+      }
+      if (url.startsWith("/api/snapshot")) return envelope;
+      if (url.startsWith("/api/history")) return historyEnvelope;
+      if (url.startsWith("/api/backlog")) return backlogEnvelope;
+      if (url.startsWith("/api/gbrain/health")) return gbrainHealth;
+      if (url.startsWith("/api/timeline")) {
+        timelineFetches += 1;
+        if (timelineFetchFailure) throw new Error("the task timeline request failed");
+        return timelineEnvelope;
+      }
+      if (url.startsWith("/api/report")) {
+        reportFetches += 1;
+        if (reportFetchFailure) throw new Error("the report request failed");
+        return { schema: "fm-dashboard-report.v1", present: true, text: reportText };
+      }
+      return {};
+    },
+  }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-  matchMedia: () => ({ matches: false }),
 });
 
-import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+import(pathToFileURL(process.argv[2]).href).then(async () => {
+  await settle();
+  await settle();
+
   const all = (root, predicate, matches = []) => {
     if (predicate(root)) matches.push(root);
     for (const child of root.children) all(child, predicate, matches);
     return matches;
   };
-  const hasClass = (node, className) => node.className.split(/\s+/).includes(className);
+  const hasClass = (node, className) => node.classNames().includes(className);
+  // The words a control is known by: its text minus the regions the renderer
+  // marked as live values. Comparing raw textContent instead would make this
+  // harness disagree with the focus rule the moment a count or an age moved.
+  const stableWords = (node) => (node.nodeType === 3
+    ? node.textContent
+    : node.children.filter((child) => child.dataset?.volatile === undefined).map(stableWords).join(""));
   const one = (root, predicate, label) => {
     const matches = all(root, predicate);
     if (matches.length !== 1) throw new Error(`${label}: expected one match, received ${matches.length}`);
     return matches[0];
   };
 
-  const card = one(selectors.get("#kanban"), (node) => hasClass(node, "card"), "worker card");
-  const action = one(card, (node) => hasClass(node, "card-action"), "card action");
-  if (action.textContent !== "ACTIONsupervise") throw new Error(`card action was not literal: ${action.textContent}`);
-  const endpoint = one(card, (node) => hasClass(node, "endpoint"), "worker endpoint");
-  one(endpoint, (node) => hasClass(node, "dot") && hasClass(node, "grey"), "unknown endpoint tone");
-
-  const signal = one(selectors.get("#signals"), (node) => hasClass(node, "signal") && node.textContent.includes("SECONDMATES"), "secondmate signal");
-  if (!signal.textContent.includes("1 live · 1 dead · 1 unknown")) throw new Error(`liveness counts were collapsed: ${signal.textContent}`);
-  one(signal, (node) => hasClass(node, "dot") && hasClass(node, "red"), "dead secondmate signal tone");
-
-  for (const [id, tone] of [["alive-mate", "green"], ["dead-mate", "red"], ["unknown-mate", "grey"]]) {
-    const mate = one(selectors.get("#secondmate-list"), (node) => hasClass(node, "mate") && node.textContent.includes(id), `${id} row`);
-    one(mate, (node) => hasClass(node, "dot") && hasClass(node, tone), `${id} tone`);
-    const mateAction = one(mate, (node) => hasClass(node, "mate-action"), `${id} action`);
-    if (mateAction.textContent !== "ACTIONroute_work") throw new Error(`${id} action was not literal: ${mateAction.textContent}`);
-  }
-
-  const inboxCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "inbox card");
-  const reasonTexts = all(inboxCard, (node) => hasClass(node, "reason-text")).map((node) => node.textContent);
-  if (!reasonTexts.includes(DECISION_TEXT)) throw new Error(`decision text was not rendered in full: ${reasonTexts.join(" | ")}`);
-  const link = one(inboxCard, (node) => hasClass(node, "pr-link"), "inbox pull-request link");
-  if (link.textContent !== PR_URL || link.href !== PR_URL) {
-    throw new Error(`pull-request link was not the full https URL: ${link.textContent} / ${link.href}`);
-  }
-  const checks = one(inboxCard, (node) => hasClass(node, "pr-field") && node.textContent.startsWith("checks"), "checks field");
-  if (!hasClass(checks, "unknown") || checks.textContent !== "checksunknown") {
-    throw new Error(`an unreadable check state was not rendered as an explicit unknown: ${checks.textContent}`);
-  }
-  const prPanel = one(inboxCard, (node) => hasClass(node, "pr-panel"), "inbox pull-request panel");
-  if (!hasClass(prPanel, "unknown")) throw new Error("a pull request with an unreadable field was not toned unknown");
-  const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
-  if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
-  if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
-
-  // Folding and unfolding changes the width, and with it the number of columns
-  // and the whole document height. Keeping the scroll offset is not the same as
-  // keeping the reader's place, so the section they were reading has to be put
-  // back where it was on screen.
-  inboxCard.rect = { top: 800, bottom: 1400 };
-  flushFrames();
-  const anchorLine = topbar.rect.bottom + 1;
-  const wasAt = readingSection.rect.top - anchorLine;
-  readingSection.rect = { top: 5000, bottom: 5600 };
-  fakeWindow.innerWidth = 690;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 1) throw new Error(`a width change did not restore the reading position: ${scrollCalls.length} scrolls`);
-  const landed = 5000 - anchorLine - scrollCalls[0].top;
-  if (landed !== wasAt) throw new Error(`the anchor came back at ${landed}px instead of ${wasAt}px from the top`);
-  if (scrollCalls[0].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
-
-  // Mobile browser chrome sliding in and out changes only the height, and does
-  // so constantly. Moving the page under the reader for that would be worse
-  // than the problem being fixed.
-  // Both candidates move, so whichever one the re-capture anchored to has
-  // genuinely shifted and a missing width gate would have to scroll.
-  flushFrames();
-  offscreenSection.rect = { top: -3000, bottom: -2700 };
-  readingSection.rect = { top: 9000, bottom: 9600 };
-  fakeWindow.innerHeight = 700;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
-
-  // What a reader is actually holding is usually a card, not a whole section,
-  // and cards do not survive a render: every push from the fleet rebuilds the
-  // list they live in. So the anchor has to be re-derived on render as well as
-  // on scroll, or a fold after any push drops the reader exactly as far as it
-  // did before the anchor existed.
-  offscreenSection.rect = { top: -4000, bottom: -3700 };
-  readingSection.rect = { top: -2000, bottom: -1400 };
-  inboxCard.rect = { top: 200, bottom: 800 };
-  fakeWindow.listeners.scroll();
-  flushFrames();
-  const cardWasAt = inboxCard.rect.top - anchorLine;
-
-  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
-  const rebuiltCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "rebuilt inbox card");
-  if (rebuiltCard === inboxCard) throw new Error("a snapshot push left the same card node, so nothing was replaced to test");
-  if (inboxCard.isConnected) throw new Error("a card a render replaced still reported itself connected");
-  const capturesPerRender = frames.length;
-
-  // The push rebuilt the card in place: the reader has not scrolled and the
-  // width has not changed, so it sits exactly where the old one did.
-  rebuiltCard.rect = { top: 200, bottom: 800 };
-  flushFrames();
-
-  rebuiltCard.rect = { top: 6000, bottom: 6600 };
-  const scrollBefore = fakeWindow.scrollY;
-  fakeWindow.innerWidth = 950;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 2) throw new Error("the reading position was lost once a render had replaced the anchored card");
-  const cardLanded = 6000 - (scrollCalls[1].top - scrollBefore) - anchorLine;
-  if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
-  if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
-  if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
-
-  const staleUnitEnvelope = {
-    schema: "fm-dashboard-envelope.v1",
-    status: {
-      phase: "unavailable",
-      stale: false,
-      error: {
-        kind: "service_unit_outdated",
-        message: "rerun bin/fm-dashboard-install.sh",
-      },
-    },
-    snapshot: null,
+  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-knowledge", "view-task"];
+  // The exclusivity assertion the rebuild exists for: the active view's root
+  // is on the page AND every other view root is absent from the DOM - not
+  // hidden, absent. A check that only looked for the active view would pass
+  // against the old always-render-everything page.
+  const assertOnly = (activeId, when) => {
+    const present = VIEW_IDS.filter((id) => all(viewNode, (node) => node.id === id).length > 0);
+    if (present.length !== 1 || present[0] !== activeId) {
+      throw new Error(`${when}: expected only #${activeId} in the view container, found [${present.join(", ")}]`);
+    }
+    for (const id of VIEW_IDS) {
+      if (id === activeId) continue;
+      if (all(viewNode, (node) => node.id === id).length !== 0) throw new Error(`${when}: #${id} is on the page beside #${activeId}`);
+    }
   };
-  eventSources[0].listeners.snapshot({ data: JSON.stringify(staleUnitEnvelope) });
-  const staleUnitNotice = selectors.get("#notice-region").textContent;
-  if (!staleUnitNotice.includes("Snapshot polling is paused until the service is reinstalled.")) {
-    throw new Error(`snapshot notice did not explain the stale unit's paused polling: ${staleUnitNotice}`);
+  const go = async (hash) => {
+    fakeWindow.location.hash = hash;
+    fakeWindow.listeners.hashchange();
+    await settle();
+  };
+
+  // --- the default route renders Needs you, alone ---------------------------
+  assertOnly("view-needs", "initial render");
+  const verdict = byId.get("verdict");
+  if (verdict.textContent !== "1 decision waiting") throw new Error(`the verdict did not count the decision: ${verdict.textContent}`);
+  if (byId.get("vdot").className !== "vdot vd-amber") throw new Error(`the verdict dot missed its tone: ${byId.get("vdot").className}`);
+  for (const badgeId of ["navbadge", "tabbadge"]) {
+    const badge = byId.get(badgeId);
+    if (badge.hidden || badge.textContent !== "1") throw new Error(`${badgeId} did not carry the inbox count: hidden=${badge.hidden} text=${badge.textContent}`);
   }
-  if (staleUnitNotice.includes("Retrying automatically.")) {
-    throw new Error(`snapshot notice falsely claimed the stale unit would retry automatically: ${staleUnitNotice}`);
+  const card = one(viewNode, (node) => hasClass(node, "card"), "needs card");
+  const ask = one(card, (node) => hasClass(node, "card-ask"), "card ask");
+  if (ask.textContent !== DECISION_TEXT) throw new Error(`the decision text was not rendered in full: ${ask.textContent}`);
+
+  // --- a card opens only a URL the page's protocol allowlist admits ----------
+  //
+  // This is the one sink that opens a URL itself rather than handing the
+  // browser an href to judge, and the URL comes from a snapshot: a
+  // javascript: scheme reaching window.open is script running in the
+  // dashboard's own origin the moment a captain clicks. The card must still
+  // say a pull request exists - refusing the jump is not the same as hiding
+  // the work.
+  const prShortcut = one(card, (node) => hasClass(node, "card-linkline"), "card pull-request shortcut");
+  prShortcut.listeners.click({ stopPropagation() {} });
+  if (openedUrls.length !== 1 || openedUrls[0] !== PR_URL) throw new Error(`the card opened ${JSON.stringify(openedUrls)} rather than the recorded https PR URL`);
+  for (const hostile of ["javascript:alert(1)", "java\tscript:alert(1)", "JaVaScript:alert(1)", "//evil.example/pull/1", "data:text/html,<script>alert(1)</script>"]) {
+    const hostileEnvelope = {
+      ...envelope,
+      snapshot: {
+        ...envelope.snapshot,
+        tasks: envelope.snapshot.tasks.map((entry) => (entry.id === TASK_ID
+          ? { ...entry, pr: { ...entry.pr, url: hostile } }
+          : entry)),
+      },
+    };
+    eventSources[0].listeners.snapshot({ data: JSON.stringify(hostileEnvelope) });
+    await settle();
+    const hostileCard = one(viewNode, (node) => hasClass(node, "card"), `needs card carrying ${hostile}`);
+    if (all(hostileCard, (node) => hasClass(node, "card-linkline")).length !== 0) {
+      throw new Error(`a card kept an openable shortcut for a refused URL: ${hostile}`);
+    }
+    if (!hostileCard.textContent.includes("link not opened")) throw new Error(`a card silently dropped its refused pull request: ${hostile}`);
+    if (openedUrls.length !== 1) throw new Error(`a refused URL reached window.open: ${JSON.stringify(openedUrls)}`);
   }
-  const staleUnitBoard = selectors.get("#kanban").textContent;
-  if (!staleUnitBoard.includes("Snapshot polling will resume after the service is reinstalled.")) {
-    throw new Error(`board did not explain how stale-unit polling resumes: ${staleUnitBoard}`);
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+
+  // --- every route renders its view and only its view ------------------------
+  for (const route of ["fleet", "backlog", "history", "knowledge", "needs"]) {
+    await go(`#/${route}`);
+    assertOnly(`view-${route}`, `#/${route}`);
+    for (const button of routeButtons) {
+      const active = button.dataset.route === route;
+      if (hasClass(button, "is-active") !== active) throw new Error(`#/${route}: ${button.id} active state is wrong`);
+      if (active && button.attributes["aria-current"] !== "page") throw new Error(`#/${route}: ${button.id} lost aria-current`);
+      if (!active && "aria-current" in button.attributes) throw new Error(`#/${route}: ${button.id} kept a stale aria-current`);
+    }
   }
-  if (staleUnitBoard.includes("refreshes continue automatically.")) {
-    throw new Error(`board falsely claimed the stale unit would refresh automatically: ${staleUnitBoard}`);
+
+  // --- a data refresh never steals focus from a mounted control --------------
+  //
+  // Deliberately NOT a search input. The rule belongs to the reconciliation
+  // boundary rather than to a listed few controls, so it is pinned on a Fleet
+  // state chip - a plain button the renderer rebuilds on every push, on a view
+  // that has no search input at all. The server broadcasts twice per snapshot
+  // poll, so a chip that cannot hold focus drops a keyboard reader back to the
+  // top of the document every few seconds without anyone touching anything.
+  await go("#/fleet");
+  const fleetChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (fleetChips.length < 2) throw new Error(`the Fleet board rendered ${fleetChips.length} state chips, so there is none to hold focus`);
+  const stateChip = fleetChips[1];
+  stateChip.focus();
+  if (document.activeElement !== stateChip) throw new Error("the fake document did not accept focus on a Fleet state chip");
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+  const refreshedChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const refocused = document.activeElement;
+  if (!refocused || !hasClass(refocused, "fchip")) throw new Error("a snapshot push took focus off the Fleet state chip and left it nowhere");
+  if (refocused !== refreshedChips[1]) throw new Error("a snapshot push moved focus to a different control than the one the reader was on");
+  // And the same rule holds through the control's own click, which re-renders.
+  refreshedChips[1].listeners.click();
+  await settle();
+  const toggledChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (document.activeElement !== toggledChips[1]) throw new Error("acting on a state chip discarded the focus it was acting from");
+  if (!hasClass(toggledChips[1], "is-on")) throw new Error("the reconciled chip did not take the selected class its click asked for");
+  toggledChips[1].listeners.click();
+  await settle();
+
+  // --- a count ticking is the fleet changing, not the control changing --------
+  //
+  // Every one of these chips renders a live count inside its own label, and the
+  // count moves on a push nobody asked for. If the control's identity folded
+  // that number in, the chip the reader is on would stop being itself the
+  // moment a worker started or finished, and focus would land back on the
+  // document - the exact failure the identity rule exists to prevent, arriving
+  // through the label instead of through the position.
+  const countChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const activeCountChip = countChips.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!activeCountChip) throw new Error(`the Fleet board rendered no Active chip to focus: ${countChips.map((chip) => chip.textContent).join(", ")}`);
+  activeCountChip.focus();
+  const grown = {
+    ...envelope,
+    snapshot: { ...envelope.snapshot, tasks: [...envelope.snapshot.tasks, task("second-worker", "ship", "active")] },
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(grown) });
+  await settle();
+  const grownChips = all(viewNode, (node) => hasClass(node, "fchip"));
+  const grownActive = grownChips.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!grownActive || !grownActive.textContent.includes("2")) {
+    throw new Error(`the push did not change the Active chip's count, so this proves nothing: ${grownChips.map((chip) => chip.textContent).join(", ")}`);
   }
+  if (document.activeElement !== grownActive) {
+    throw new Error(`a ticking count took focus off the chip the reader was on: ${document.activeElement ? document.activeElement.textContent : "nothing"}`);
+  }
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+
+  // --- and a refresh that reshapes the list never re-aims it ------------------
+  //
+  // The reader is on "Active"; the next push moves the parked task into active,
+  // so the needs-decision column empties out, the chip list shrinks, and every
+  // chip after it shifts up one place. Resolving the focused control by its
+  // position would land on the chip that took over the index and the reader's
+  // next Enter would toggle a filter they never chose. Restoring nothing is the
+  // required answer: a refresh may drop focus, it may never move it.
+  const chipsBefore = all(viewNode, (node) => hasClass(node, "fchip"));
+  const activeChip = chipsBefore.find((chip) => chip.textContent.trim().startsWith("Active"));
+  if (!activeChip) throw new Error(`the Fleet board rendered no Active chip to focus: ${chipsBefore.map((chip) => chip.textContent).join(", ")}`);
+  activeChip.focus();
+  const shifted = {
+    ...envelope,
+    snapshot: {
+      ...envelope.snapshot,
+      tasks: envelope.snapshot.tasks.map((entry) => (entry.card?.column === "needs_decision"
+        ? { ...entry, card: { ...entry.card, column: "active" } }
+        : entry)),
+    },
+  };
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(shifted) });
+  await settle();
+  const chipsAfter = all(viewNode, (node) => hasClass(node, "fchip"));
+  if (chipsAfter.length >= chipsBefore.length) throw new Error("the shifted push did not actually shorten the chip list, so this proves nothing");
+  const landed = document.activeElement;
+  if (landed && chipsAfter.includes(landed) && stableWords(landed).trim() !== stableWords(activeChip).trim()) {
+    throw new Error(`a refresh moved focus to a control the reader never chose: ${landed.textContent}`);
+  }
+  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+  await settle();
+
+  // --- History displays every record it found --------------------------------
+  await go("#/history");
+  let historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (historyRows.length !== 3) throw new Error(`History found 3 completion records but displayed ${historyRows.length}`);
+  const shownTitles = historyRows.map((row) => row.textContent);
+  for (const id of ["delivered-one", "delivered-two", "failed-one"]) {
+    if (!shownTitles.some((title) => title.includes(`${id} delivered title`))) throw new Error(`the ${id} record is not on the page`);
+  }
+  const delivered = all(viewNode, (node) => hasClass(node, "stat")).map((node) => node.textContent).find((text) => text.startsWith("Delivered"));
+  if (delivered !== "Delivered2") throw new Error(`the Delivered stat did not count the done records: ${delivered}`);
+  let historySearch = one(viewNode, (node) => node.id === "history-search", "history search");
+  historySearch.focus();
+  historySearch.value = "del";
+  historySearch.selectionStart = 3;
+  historySearch.selectionEnd = 3;
+  historySearch.listeners.input();
+  const mountedHistorySearch = one(viewNode, (node) => node.id === "history-search", "mounted history search");
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  historySearch = one(viewNode, (node) => node.id === "history-search", "history search after refresh");
+  if (historySearch !== mountedHistorySearch || !historySearch.focused || historySearch.selectionStart !== 3) throw new Error("History search was replaced by a data refresh");
+  historySearch.value = "delivered-two";
+  historySearch.selectionStart = 13;
+  historySearch.selectionEnd = 13;
+  historySearch.listeners.input();
+  historySearch = one(viewNode, (node) => node.id === "history-search", "second restored history search");
+  historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (!historySearch.focused || historySearch.value !== "delivered-two" || historyRows.length !== 1) throw new Error("History search did not accept multiple characters continuously");
+  historySearch.value = "not-a-delivery";
+  historySearch.listeners.input();
+  const clearHistory = one(viewNode, (node) => node.tagName === "BUTTON" && node.textContent === "Clear search & filters", "History clear search");
+  clearHistory.listeners.click();
+  const clearedHistorySearch = one(viewNode, (node) => node.id === "history-search", "cleared history search");
+  historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (clearedHistorySearch !== historySearch || clearedHistorySearch.value !== "" || historyRows.length !== 3) throw new Error("History clear did not commit its value to the mounted search control");
+  clearedHistorySearch.value = "failed";
+  clearedHistorySearch.listeners.input();
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 1) throw new Error("History search resumed from the stale pre-clear query");
+
+  // --- Backlog renders the queue with its held reason -------------------------
+  await go("#/backlog");
+  let backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (backlogRows.length !== 2) throw new Error(`the backlog queue rendered ${backlogRows.length} of 2 rows`);
+  if (!backlogRows[1].textContent.includes("waiting on the captain")) throw new Error("the held reason is not on the page");
+  if (one(viewNode, (node) => node.id === "view-backlog", "backlog view").textContent.includes("/home/captain")) throw new Error("a backlog project path reached the page");
+  if (!all(viewNode, (node) => hasClass(node, "ronote")).length) throw new Error("the read-only note is missing from the Backlog page");
+  let backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "backlog search");
+  backlogSearch.focus();
+  backlogSearch.value = "he";
+  backlogSearch.selectionStart = 2;
+  backlogSearch.selectionEnd = 2;
+  backlogSearch.listeners.input();
+  const mountedBacklogSearch = one(viewNode, (node) => node.id === "backlog-search", "mounted backlog search");
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "backlog search after refresh");
+  if (backlogSearch !== mountedBacklogSearch || !backlogSearch.focused) throw new Error("Backlog search was replaced by a data refresh");
+  backlogSearch.value = "held";
+  backlogSearch.selectionStart = 4;
+  backlogSearch.selectionEnd = 4;
+  backlogSearch.listeners.input();
+  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "second restored backlog search");
+  backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (!backlogSearch.focused || backlogSearch.value !== "held" || backlogRows.length !== 1) throw new Error("Backlog search did not accept multiple characters continuously");
+
+  // A facet key is a record value and a record value is sometimes a clone
+  // path, so the option carries its position and never the key itself - an
+  // option value is a rendered attribute, which is on the page exactly as
+  // much as a text node is. Filtering still has to land on the raw value.
+  const projectFilterRuns = (when, searchId, expectedTotal, expectedCovered) => {
+    const search = one(viewNode, (node) => node.id === searchId, `${when} search`);
+    search.value = "";
+    search.listeners.input();
+    const projectSelect = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "project", `${when} project filter ${why}`);
+    const rowCount = () => all(viewNode, (node) => hasClass(node, "rrow")).length;
+    if (rowCount() !== expectedTotal) throw new Error(`${when} did not start from its unfiltered set: ${rowCount()} of ${expectedTotal}`);
+    const keyed = projectSelect("options").options.filter((option) => option.value !== "");
+    if (!keyed.length) throw new Error(`${when} rendered no project options to check`);
+    for (const option of projectSelect("labels").options) {
+      if (/[/\\]/.test(String(option.value))) throw new Error(`${when} rendered a path in an option value: ${option.value}`);
+      if (option.value !== "" && !/^\d+$/.test(String(option.value))) throw new Error(`${when} option value is not opaque: ${option.value}`);
+      if (/[/\\]/.test(option.textContent)) throw new Error(`${when} rendered a path as an option label: ${option.textContent}`);
+    }
+    // Every option must select a real, non-empty slice, and the slices must
+    // add back up: that is filtering landing on the raw key the option no
+    // longer carries. Selecting the "all" option has to give the set back.
+    let matched = 0;
+    for (const option of keyed) {
+      const live = projectSelect(`for ${option.value}`);
+      live.value = option.value;
+      live.listeners.change();
+      const rows = rowCount();
+      if (!rows) throw new Error(`${when} option ${option.value} (${option.textContent}) matched nothing, so its opaque value lost the raw key`);
+      matched += rows;
+      const reset = projectSelect("reset");
+      reset.value = "";
+      reset.listeners.change();
+      if (rowCount() !== expectedTotal) throw new Error(`${when} did not restore every row after selecting all projects`);
+    }
+    if (matched !== expectedCovered) throw new Error(`${when} project options covered ${matched} of ${expectedCovered} projected rows`);
+  };
+  projectFilterRuns("Backlog", "backlog-search", 2, 1);
+  await go("#/history");
+  projectFilterRuns("History", "history-search", 3, 3);
+  await go("#/backlog");
+
+  // The filter the reader sees has to keep naming what the rows are filtered
+  // by, and a control the renderer rebuilt takes the renderer's value - never
+  // the one it carried before the render. Clearing is exactly that case and the
+  // only one that can be told apart: option values are opaque indexes into a
+  // facet list built from the whole queue, so clearing changes what belongs on
+  // the select while leaving the options it is chosen from identical.
+  //
+  // The select is focused while that happens, and it is the MOUNTED select that
+  // is focused rather than a node an earlier render already detached - a
+  // detached node is not what the document reports as active, so focusing one
+  // would skip the reconciliation path this is here to hold.
+  const projectFilter = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "project", `backlog project filter ${why}`);
+  const chosen = projectFilter("before").options.find((option) => option.textContent === "firstmate");
+  if (!chosen) throw new Error("the Backlog project filter offered no firstmate option to choose");
+  const choosing = projectFilter("choosing");
+  choosing.value = chosen.value;
+  choosing.listeners.change();
+  const beforeClear = one(viewNode, (node) => node.id === "backlog-search", "backlog search before clearing");
+  beforeClear.value = "no-queued-item-says-this";
+  beforeClear.listeners.input();
+  const focusedFilter = projectFilter("focused");
+  if (focusedFilter.value !== chosen.value) throw new Error(`the mounted project filter lost the chosen project before clearing: ${focusedFilter.value}`);
+  focusedFilter.focus();
+  if (document.activeElement !== focusedFilter) throw new Error("the fake document did not report the mounted project filter as focused");
+  const clearBacklog = one(viewNode, (node) => node.tagName === "BUTTON" && node.textContent === "Clear search & filters", "Backlog clear search");
+  clearBacklog.listeners.click();
+  await settle();
+  const cleared = projectFilter("after clearing");
+  const shown = cleared.options.find((option) => option.value === cleared.value);
+  if (!shown || shown.textContent !== "All projects") {
+    throw new Error(`clearing left the project filter naming a project the rows are no longer filtered by: ${shown ? shown.textContent : "no option"}`);
+  }
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 2) throw new Error("clearing the Backlog filters did not bring the whole queue back");
+  // And the reader is still on the control they were on: it has no id, so this
+  // is the signature path carrying focus across a node the renderer rebuilt.
+  if (document.activeElement !== cleared) throw new Error("clearing the filters dropped the focus off the control the reader was on");
+
+  // --- what the queue may never do: hide a row, or keep a freed one red ------
+  //
+  // A facet value is a record value, so any key the select reserved for its
+  // placeholder is a real value somewhere - a kind named "all" belongs in the
+  // list, not swallowed by it. An unreadable current row is queued work, and
+  // the page says how much of it there is rather than dropping it. A blocker
+  // that has since been delivered leaves its id on the row, so the still-
+  // blocked answer has to come from the snapshot rather than from the token.
+  const backlogEdges = {
+    ...backlogEnvelope,
+    backlog: {
+      present: true,
+      records: [
+        ...backlogEnvelope.backlog.records,
+        { id: "kind-all", title: "Kind named all", state: "queued", kind: "all", order: 3 },
+        { id: "freed-c", title: "Freed c", state: "queued", blocked_by: "kind-all", blocked_by_ids: ["kind-all"], unresolved_blocker_ids: [], blocked_reason: "needed kind-all first", order: 4 },
+        { id: "blocked-d", title: "Blocked d", state: "queued", blocked_by: "not-yet", blocked_by_ids: ["not-yet"], unresolved_blocker_ids: ["not-yet"], blocked_reason: "needs not-yet first", order: 5 },
+        { structured: false, id: null, state: "queued", raw: "a row in a shape the parse could not read", order: 6 },
+      ],
+    },
+  };
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEdges) });
+  await settle();
+  const backlogText = one(viewNode, (node) => node.id === "view-backlog", "backlog view with an unreadable row").textContent;
+  if (!backlogText.includes("1 current backlog row could not be read")) throw new Error(`the Backlog page hid an unreadable queued row: ${backlogText}`);
+  const backlogRowText = (title) => {
+    const row = all(viewNode, (node) => hasClass(node, "rrow")).find((node) => node.textContent.includes(title));
+    if (!row) throw new Error(`the Backlog page did not render the ${title} row`);
+    return row.textContent;
+  };
+  if (!backlogRowText("Blocked d").includes("blocked") || !backlogRowText("Blocked d").includes("needs not-yet first")) {
+    throw new Error(`a row with an unresolved blocker lost its blocked state: ${backlogRowText("Blocked d")}`);
+  }
+  if (backlogRowText("Freed c").includes("blocked") || backlogRowText("Freed c").includes("needed kind-all first")) {
+    throw new Error(`a row whose blocker was delivered still reads as blocked: ${backlogRowText("Freed c")}`);
+  }
+  const blockedTab = all(viewNode, (node) => hasClass(node, "tab")).find((node) => node.textContent.startsWith("Blocked"));
+  if (!blockedTab || !blockedTab.textContent.includes("1")) throw new Error(`the Blocked tab counted more than the still-blocked row: ${blockedTab ? blockedTab.textContent : "no tab"}`);
+  const kindSelect = (why) => one(viewNode, (node) => node.tagName === "SELECT" && node.name === "kind", `backlog kind filter ${why}`);
+  const namedAll = kindSelect("options").options.find((option) => option.textContent === "all");
+  if (!namedAll || namedAll.value === "") throw new Error("a backlog kind literally named all was swallowed by the placeholder option");
+  const choosingKind = kindSelect("choosing");
+  choosingKind.value = namedAll.value;
+  choosingKind.listeners.change();
+  const kindRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (kindRows.length !== 1 || !kindRows[0].textContent.includes("Kind named all")) {
+    throw new Error(`filtering by the kind named all did not land on the raw value: ${kindRows.map((row) => row.textContent).join(" | ")}`);
+  }
+  const resetKind = kindSelect("reset");
+  resetKind.value = "";
+  resetKind.listeners.change();
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  await settle();
+  if (all(viewNode, (node) => hasClass(node, "rrow")).length !== 2) throw new Error("the Backlog page did not return to its own queue");
+
+  // --- a queue nobody could read never renders as a queue with nothing in it --
+  //
+  // Reachable whenever the only structured rows are Done and at least one
+  // current row is free-form. An amber notice above a confident "the queue is
+  // empty" does not undo the all-clear: the captain reads the big sentence and
+  // stops looking, while the work sits in the file unread.
+  eventSources[0].listeners.backlog({
+    data: JSON.stringify({
+      ...backlogEnvelope,
+      backlog: {
+        present: true,
+        records: [
+          { id: "delivered-x", title: "Delivered x", state: "done", order: 1 },
+          { structured: false, id: null, state: "queued", raw: "a row in a shape the parse could not read", order: 2 },
+          { structured: false, id: null, state: "in_flight", raw: "another unreadable row", order: 3 },
+        ],
+      },
+    }),
+  });
+  await settle();
+  const unreadableQueue = one(viewNode, (node) => node.id === "view-backlog", "backlog view with no readable row").textContent;
+  if (unreadableQueue.includes("The queue is empty.") || unreadableQueue.includes("contains no current work")) {
+    throw new Error(`the Backlog page claimed an empty queue while every row was unreadable: ${unreadableQueue}`);
+  }
+  if (!unreadableQueue.includes("The queue could not be read.")) throw new Error(`the all-unreadable queue lost its own state: ${unreadableQueue}`);
+  if (!unreadableQueue.includes("2 current backlog rows could not be read")) throw new Error(`the all-unreadable queue lost its count: ${unreadableQueue}`);
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+  await settle();
+
+  // --- and its twin: a history nobody could read is not a fleet with no work --
+  await go("#/history");
+  eventSources[0].listeners.history({
+    data: JSON.stringify({
+      ...historyEnvelope,
+      history: {
+        present: true,
+        records: [],
+        malformed: [
+          { id: "legacy-task", path: "/home/captain/data/legacy-task/outcome.json", reason: "unexpected_fields" },
+          { id: "broken-task", path: "/home/captain/data/broken-task/outcome.json", reason: "unreadable_or_wrong_schema" },
+        ],
+      },
+    }),
+  });
+  await settle();
+  const unreadableHistory = one(viewNode, (node) => node.id === "view-history", "history view with no readable record").textContent;
+  if (unreadableHistory.includes("Nothing delivered yet.")) {
+    throw new Error(`History claimed nothing was delivered while every record was unreadable: ${unreadableHistory}`);
+  }
+  if (!unreadableHistory.includes("Delivered work could not be read.")) throw new Error(`the all-unreadable history lost its own state: ${unreadableHistory}`);
+  if (!unreadableHistory.includes("2 completion records could not be read")) throw new Error(`the all-unreadable history lost its disclosure: ${unreadableHistory}`);
+  if (unreadableHistory.includes("/home/captain")) throw new Error("a malformed record path reached the page");
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  await settle();
+  await go("#/backlog");
+
+  // --- Knowledge without a brain is the quiet explanation page ----------------
+  await go("#/knowledge");
+  const knowledgeText = one(viewNode, (node) => node.id === "view-knowledge", "knowledge view").textContent;
+  if (!knowledgeText.includes("Knowledge is not configured.")) throw new Error(`the no-brain page lost its explanation: ${knowledgeText}`);
+  const configuredBrain = {
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      configured: true,
+      version: "test",
+      index: { state: "ok", detail: "/home/captain/data/gbrain/index" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: { enabled: true, archived: 1, pending: 0, failed: 1, last_error: "Remove /home/captain/data/.gbrain-lock" },
+      maintenance: { state: "ready" },
+    },
+  };
+  eventSources[0].listeners.gbrain_health({ data: JSON.stringify(configuredBrain) });
+  const knowledgeSearch = one(viewNode, (node) => node.id === "knowledge-search", "knowledge search");
+  knowledgeSearch.focus();
+  knowledgeSearch.value = "unsubmitted fleet draft";
+  knowledgeSearch.selectionStart = knowledgeSearch.value.length;
+  knowledgeSearch.selectionEnd = knowledgeSearch.value.length;
+  eventSources[0].listeners.gbrain_health({ data: JSON.stringify({ ...configuredBrain, status: { phase: "ready", last_success_age_seconds: 0 } }) });
+  const refreshedKnowledgeSearch = one(viewNode, (node) => node.id === "knowledge-search", "knowledge search after refresh");
+  if (refreshedKnowledgeSearch !== knowledgeSearch || refreshedKnowledgeSearch.value !== "unsubmitted fleet draft" || !refreshedKnowledgeSearch.focused) throw new Error("a health refresh reset the mounted Knowledge search draft");
+  const healthButton = one(viewNode, (node) => hasClass(node, "health-h"), "knowledge health disclosure");
+  healthButton.listeners.click();
+  const healthAttributes = all(viewNode, (node) => hasClass(node, "hsys")).map((node) => node.title || "").join(" ");
+  if (healthAttributes.includes("/home/") || healthAttributes.includes(".gbrain-lock")) throw new Error(`a raw GBrain diagnostic reached a health attribute: ${healthAttributes}`);
+  if (!healthAttributes.includes("the last capture attempt failed")) throw new Error(`the capture failure lost its display-safe detail: ${healthAttributes}`);
+
+  // --- one search at a time, and a landed answer is never masked -------------
+  //
+  // The brain accepts one search and refuses a second while the first runs, so
+  // a page that sent the second would race its own refusal against the first
+  // search's results and could replace answers the reader can see with an
+  // error about a search they never started. The refusal is made here instead,
+  // and the failed attempt before it must not survive the answer that lands.
+  const knowledgeView = (why) => one(viewNode, (node) => node.id === "view-knowledge", `knowledge view ${why}`);
+  const knowledgeInput = (why) => one(viewNode, (node) => node.id === "knowledge-search", `knowledge search ${why}`);
+  const tooShort = knowledgeInput("for the short query");
+  tooShort.value = "a";
+  tooShort.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (!knowledgeView("after the short query").textContent.includes("The query was too short to search.")) {
+    throw new Error("a query too short to search did not say so");
+  }
+  let releaseKnowledgeSearch;
+  knowledgeSearchGate = new Promise((resolve) => { releaseKnowledgeSearch = resolve; });
+  const firstSearch = knowledgeInput("for the first search");
+  firstSearch.value = "runbook";
+  firstSearch.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (!knowledgeView("while searching").textContent.includes("searching")) throw new Error("a search in flight did not say it was running");
+  const secondSearch = knowledgeInput("for the second search");
+  secondSearch.value = "runbook";
+  secondSearch.listeners.keydown({ key: "Enter" });
+  await settle();
+  if (knowledgeSearches.length !== 1) throw new Error(`a second Enter while a search was in flight sent ${knowledgeSearches.length} requests`);
+  releaseKnowledgeSearch();
+  await settle();
+  await settle();
+  const answered = knowledgeView("after the search landed").textContent;
+  if (!answered.includes("A captured runbook")) throw new Error(`the search results that landed are not on the page: ${answered}`);
+  if (answered.includes("The query was too short to search.")) throw new Error("an earlier failed search masked the results that landed");
+  knowledgeSearchGate = null;
+
+  // --- the task route: kv strip, full PR URL, and honest outcome chips -------
+  await go(`#/task/${TASK_ID}`);
+  assertOnly("view-task", "task route");
+  await settle();
+  await settle();
+  const taskView = one(viewNode, (node) => node.id === "view-task", "task view");
+  const prLink = one(taskView, (node) => node.tagName === "A" && node.textContent === PR_URL, "task PR link");
+  if (prLink.href !== PR_URL) throw new Error(`the PR link href is not the full https URL: ${prLink.href}`);
+  const chips = all(taskView, (node) => hasClass(node, "chip"));
+  if (chips.length !== 2) throw new Error(`expected two outcome chips on the timeline, found ${chips.length}`);
+  const okChip = chips.find((chip) => chip.textContent === "ok");
+  if (!okChip || !hasClass(okChip, "green")) throw new Error("an observed ok outcome did not render as a green chip");
+  const unknownChip = chips.find((chip) => chip.textContent === "unknown");
+  if (!unknownChip || !hasClass(unknownChip, "unknown")) throw new Error("an unobserved outcome did not render as an explicit unknown chip");
+  const beforeBroadcast = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    events: [{ event_id: "e3", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "git", outcome: "failed", occurred_at: "2026-08-15T10:00:03Z", occurred_epoch: 3 }],
+  }) });
+  await settle();
+  if (timelineFetches !== beforeBroadcast) throw new Error("an agent_events broadcast refetched the task timeline");
+  if (!one(viewNode, (node) => node.id === "view-task", "updated task view").textContent.includes("git")) throw new Error("the task-scoped event tail was not merged into the cached timeline");
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "disabled" },
+    events: [{ event_id: "revisit-event", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "revisit", outcome: "ok", occurred_at: "2026-08-15T10:00:04Z", occurred_epoch: 4 }],
+  };
+  const beforeRevisit = timelineFetches;
+  await go("#/needs");
+  await go(`#/task/${TASK_ID}`);
+  await settle();
+  await settle();
+  const revisitedTimeline = one(viewNode, (node) => node.id === "view-task", "revalidated task timeline").textContent;
+  if (timelineFetches !== beforeRevisit + 1) throw new Error("revisiting a cached task did not revalidate its timeline");
+  if (!revisitedTimeline.includes("Reporting is off in this home") || !revisitedTimeline.includes("revisit")) throw new Error(`a fresher per-task status did not replace the cached ready status: ${revisitedTimeline}`);
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "unavailable", reason: "the event store is unreadable" },
+    events: [],
+  };
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  const unavailableTimeline = one(viewNode, (node) => node.id === "view-task", "task with unavailable timeline");
+  if (!unavailableTimeline.textContent.includes("Activity cannot be recorded: the event store is unreadable")) throw new Error("an unavailable task timeline lost its failure notice");
+  if (unavailableTimeline.textContent.includes("No events are recorded for this task")) throw new Error("an unavailable task timeline rendered as calmly empty");
+
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    status: { ingestion: "ready" },
+    events: [],
+  }) });
+  timelineFetchFailure = true;
+  await go("#/task/busy-worker");
+  await settle();
+  await settle();
+  timelineFetchFailure = false;
+  const failedTimeline = one(viewNode, (node) => node.id === "view-task", "task with failed timeline fetch").textContent;
+  if (!failedTimeline.includes("Activity cannot be recorded: the stored task timeline could not be read")) throw new Error(`a failed task backfill fell through to the fleet stream: ${failedTimeline}`);
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "ready" },
+    events: [{ event_id: "recovered-event", task_id: "busy-worker", harness: "codex", type: "tool_finished", tool: "recover", outcome: "ok", occurred_at: "2026-08-15T10:00:05Z", occurred_epoch: 5 }],
+  };
+  const beforeRecovery = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    status: { ingestion: "ready" },
+    events: [],
+  }) });
+  await settle();
+  await settle();
+  const recoveredTimeline = one(viewNode, (node) => node.id === "view-task", "recovered task timeline").textContent;
+  if (timelineFetches !== beforeRecovery + 1) throw new Error("a healthy stream did not make one failed task timeline retryable");
+  if (recoveredTimeline.includes("stored task timeline could not be read") || !recoveredTimeline.includes("recover")) throw new Error(`a successful timeline retry kept the failed cache state: ${recoveredTimeline}`);
+  const afterRecovery = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+  await settle();
+  if (timelineFetches !== afterRecovery) throw new Error("healthy fleet broadcasts repeatedly refetched a recovered task timeline");
+
+  // A timeline that stays unreachable is worth one more read, not one per
+  // frame: busy fleet traffic must not become traffic against a dead endpoint.
+  timelineFetchFailure = true;
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  const beforeStorm = timelineFetches;
+  for (let frame = 0; frame < 5; frame += 1) {
+    eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+    await settle();
+    await settle();
+  }
+  if (timelineFetches !== beforeStorm + 1) throw new Error(`a persistently failing timeline retried per broadcast: ${timelineFetches - beforeStorm} requests over 5 healthy frames`);
+  timelineFetchFailure = false;
+  const stormedTimeline = one(viewNode, (node) => node.id === "view-task", "task with a persistently failing timeline").textContent;
+  if (!stormedTimeline.includes("Activity cannot be recorded: the stored task timeline could not be read")) throw new Error(`a spent retry lost the failed timeline disclosure: ${stormedTimeline}`);
+  timelineFetchFailure = true;
+  const beforeRearm = timelineFetches;
+  await go("#/needs");
+  await go("#/task/resting-mate");
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 1) throw new Error("revisiting a failed task timeline did not revalidate it");
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "unavailable", reason: "the event store is unreadable" }, events: [] }) });
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 1) throw new Error("a fleet frame that was not healthy spent the failed timeline's one retry");
+  timelineFetchFailure = false;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ schema: "fm-dashboard-events.v1", status: { ingestion: "ready" }, events: [] }) });
+  await settle();
+  await settle();
+  if (timelineFetches !== beforeRearm + 2) throw new Error("a route revisit did not rearm the failed task timeline's retry");
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "disabled" },
+    events: [{ event_id: "held-event", task_id: "held-b", harness: "codex", type: "tool_finished", tool: "read", outcome: "ok", occurred_at: "2026-08-15T10:00:04Z", occurred_epoch: 4 }],
+  };
+  await go("#/task/held-b");
+  await settle();
+  await settle();
+  const disabledTimeline = one(viewNode, (node) => node.id === "view-task", "task with retained disabled timeline").textContent;
+  if (!disabledTimeline.includes("Reporting is off in this home") || !disabledTimeline.includes("Tool finished · read")) throw new Error(`disabled ingestion with retained rows looked current or empty: ${disabledTimeline}`);
+
+  await go("#/task/delivered-one");
+  await settle();
+  await settle();
+  const completedTask = one(viewNode, (node) => node.id === "view-task", "completed task view");
+  if (completedTask.textContent.includes("/home/captain")) throw new Error("a completed task project path reached the page");
+  if (!completedTask.textContent.includes("merged") || !completedTask.textContent.includes("Dashboard rebuild")) throw new Error("the normalized completion PR or work item did not render");
+
+  // A retained report is a cache of the completion record, not of the last
+  // push: history broadcasts twice per poll with the records unchanged, and
+  // neither one may blink the rendered report out or spend a request on it.
+  const reportBody = () => one(viewNode, (node) => node.id === "view-task", "task with a report").textContent;
+  if (!reportBody().includes("The delivered report body.")) throw new Error(`the retained report did not render: ${reportBody()}`);
+  if (reportFetches !== 1) throw new Error(`opening a completed task read its report ${reportFetches} times`);
+  for (let push = 0; push < 4; push += 1) {
+    eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== 1) throw new Error(`unchanged history pushes refetched the report ${reportFetches - 1} extra times`);
+  if (!reportBody().includes("The delivered report body.")) throw new Error("an unchanged history push replaced the rendered report");
+  const reportPanelNode = all(viewNode, (node) => node.dataset.loadState !== undefined).find((node) => node.textContent.includes("The delivered report body."));
+  if (!reportPanelNode || reportPanelNode.dataset.loadState !== "settled") throw new Error("an unchanged history push flipped the settled report back to loading");
+  reportText = "The republished report body.";
+  const republishedHistory = {
+    ...historyEnvelope,
+    history: {
+      ...historyEnvelope.history,
+      records: historyEnvelope.history.records.map((record) => (record.task_id === "delivered-one"
+        ? { ...record, report: { present: true, path: "/home/captain/data/delivered-one/report-2.md" } }
+        : record)),
+    },
+  };
+  eventSources[0].listeners.history({ data: JSON.stringify(republishedHistory) });
+  await settle();
+  await settle();
+  if (reportFetches !== 2) throw new Error(`a republished completion record did not revalidate the report: ${reportFetches} reads`);
+  if (!reportBody().includes("The republished report body.")) throw new Error("the revalidated report kept the superseded body");
+
+  // A read that failed is a different fact from a record that changed: it
+  // stays on the page as the failure it was, it costs nothing per render, and
+  // the two things that can change the answer - revisiting the route and a
+  // later history push - each get one more read out of it.
+  const failingHistory = {
+    ...historyEnvelope,
+    history: {
+      ...historyEnvelope.history,
+      records: historyEnvelope.history.records.map((record) => (record.task_id === "delivered-one"
+        ? { ...record, report: { present: true, path: "/home/captain/data/delivered-one/report-3.md" } }
+        : record)),
+    },
+  };
+  reportFetchFailure = true;
+  const beforeFailure = reportFetches;
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (reportFetches !== beforeFailure + 1) throw new Error(`a republished record did not read its report: ${reportFetches - beforeFailure} reads`);
+  if (!reportBody().includes("The report could not be loaded.")) throw new Error(`a failed report read did not disclose itself: ${reportBody()}`);
+  const beforeIdleRenders = reportFetches;
+  for (let push = 0; push < 4; push += 1) {
+    eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== beforeIdleRenders) throw new Error(`a failed report refetched on every render: ${reportFetches - beforeIdleRenders} extra reads over 4 renders`);
+  await go("#/needs");
+  await go("#/task/delivered-one");
+  await settle();
+  await settle();
+  if (reportFetches !== beforeIdleRenders + 1) throw new Error(`revisiting the route did not retry the failed report exactly once: ${reportFetches - beforeIdleRenders} reads`);
+  const beforeFailedPush = reportFetches;
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (reportFetches !== beforeFailedPush + 1) throw new Error(`a history push did not retry the failed report exactly once: ${reportFetches - beforeFailedPush} reads`);
+  reportFetchFailure = false;
+  reportText = "The recovered report body.";
+  eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+  await settle();
+  await settle();
+  if (!reportBody().includes("The recovered report body.")) throw new Error(`a failed report read never recovered: ${reportBody()}`);
+  const afterReportRecovery = reportFetches;
+  for (let push = 0; push < 3; push += 1) {
+    eventSources[0].listeners.history({ data: JSON.stringify(failingHistory) });
+    await settle();
+    await settle();
+  }
+  if (reportFetches !== afterReportRecovery) throw new Error(`a recovered report resumed refetching on unchanged pushes: ${reportFetches - afterReportRecovery} extra reads`);
+
+  await go("#/task/queued-a");
+  const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");
+  if (!queuedTask.textContent.includes("firstmate") || queuedTask.textContent.includes("/home/captain")) throw new Error("the normalized queued project label did not render safely");
+
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    schema: "fm-dashboard-backlog.v1",
+    status: { phase: "ready" },
+    backlog: { present: false, records: [] },
+  }) });
+  await go("#/task/not-recorded");
+  const absentBacklogLookup = one(viewNode, (node) => node.id === "view-task", "task lookup with absent backlog");
+  if (!absentBacklogLookup.textContent.includes("No such task") || absentBacklogLookup.dataset.settled !== "true") throw new Error(`a ready absent backlog stayed pending: ${absentBacklogLookup.textContent}`);
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
+
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    ...backlogEnvelope,
+    backlog: { ...backlogEnvelope.backlog, records: [...backlogEnvelope.backlog.records, { id: "just-done", title: "Just delivered", state: "done", repo: "/home/captain/projects/firstmate", kind: "ship", order: 3 }] },
+  }) });
+  await go("#/task/just-done");
+  const doneTransition = one(viewNode, (node) => node.id === "view-task", "done backlog transition");
+  if (!doneTransition.textContent.includes("Just delivered") || doneTransition.textContent.includes("No such task") || doneTransition.textContent.includes("/home/captain")) throw new Error("a Done transition disappeared before History caught up");
+
+  eventSources[0].listeners.history({ data: JSON.stringify({
+    ...historyEnvelope,
+    history: { ...historyEnvelope.history, truncated: true, total: 90 },
+  }) });
+  await go("#/task/not-recorded");
+  const boundedLookup = one(viewNode, (node) => node.id === "view-task", "bounded task lookup").textContent;
+  if (!boundedLookup.includes("Task lookup unavailable") || boundedLookup.includes("No such task")) throw new Error(`a truncated completion read became conclusive negative evidence: ${boundedLookup}`);
+
+  eventSources[0].listeners.history({ data: JSON.stringify({
+    ...historyEnvelope,
+    status: { phase: "last_good", stale: true, error: { message: "history refresh failed" } },
+    history: { ...historyEnvelope.history, truncated: true, total: 90 },
+  }) });
+  await go("#/task/delivered-one");
+  const staleCompletedTask = one(viewNode, (node) => node.id === "view-task", "stale completed task").textContent;
+  if (!staleCompletedTask.includes("last known good completion history")) throw new Error(`a task found in stale History lost its disclosure: ${staleCompletedTask}`);
+  await go("#/history");
+  const staleHistory = one(viewNode, (node) => node.id === "view-history", "stale history view").textContent;
+  if (!staleHistory.includes("last known good completion history") || !staleHistory.includes("showing 3 of 90 completed records")) throw new Error(`History did not disclose stale bounded data: ${staleHistory}`);
+
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    schema: "fm-dashboard-backlog.v1",
+    status: { phase: "unavailable", stale: false, error: { message: "backlog refresh failed" } },
+    backlog: { present: false, records: [] },
+  }) });
+  await go("#/backlog");
+  const failedBacklog = one(viewNode, (node) => node.id === "view-backlog", "failed backlog view").textContent;
+  if (!failedBacklog.includes("Backlog unavailable") || failedBacklog.includes("Nothing queued yet")) throw new Error(`an unreadable backlog rendered as a calm empty queue: ${failedBacklog}`);
+
+  // --- an unreadable fleet is never the calm first-run page -------------------
+  const push = (payload) => eventSources[0].listeners.snapshot({ data: JSON.stringify(payload) });
+  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "spawn /home/captain/bin/fm-fleet-snapshot.sh ENOENT" } }, snapshot: null });
+  await go("#/task/not-recorded");
+  const failedLookup = one(viewNode, (node) => node.id === "view-task", "failed task lookup").textContent;
+  if (!failedLookup.includes("Task lookup unavailable") || failedLookup.includes("No such task")) throw new Error(`a failed source became negative task evidence: ${failedLookup}`);
+  await go("#/needs");
+  if (verdict.textContent !== "Fleet unavailable") throw new Error(`an unreachable fleet read as: ${verdict.textContent}`);
+  if (byId.get("vdot").className !== "vdot vd-unknown") throw new Error(`the unavailable verdict dot is not the hollow unknown: ${byId.get("vdot").className}`);
+  let needsText = one(viewNode, (node) => node.id === "view-needs", "needs view").textContent;
+  if (needsText.includes("Nothing has run yet") || needsText.includes("Nothing needs you")) throw new Error(`an unreachable fleet rendered as a calm page: ${needsText}`);
+  if (!needsText.includes("the dashboard server could not be reached") || !needsText.includes("Retrying automatically.")) throw new Error(`the failure was not disclosed with its retry story: ${needsText}`);
+  if (needsText.includes("/home/captain") || needsText.includes("ENOENT")) throw new Error(`a raw client-side failure reached the dashboard: ${needsText}`);
+
+  // --- a stale service unit says polling is paused, not retrying --------------
+  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "service_unit_outdated", message: "rerun bin/fm-dashboard-install.sh" } }, snapshot: null });
+  await settle();
+  needsText = one(viewNode, (node) => node.id === "view-needs", "needs view").textContent;
+  if (!needsText.includes("Snapshot polling is paused until the service is reinstalled.")) throw new Error(`the stale unit's paused polling was not explained: ${needsText}`);
+  if (needsText.includes("Retrying automatically.")) throw new Error(`the stale unit falsely claimed automatic retries: ${needsText}`);
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
+  pass "each route renders its view alone with the others absent, History displays every record, and an unreadable fleet is disclosed rather than rendered calm"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
@@ -615,84 +1417,158 @@ const { pathToFileURL } = require("node:url");
 
 class FakeNode {
   constructor(tagName, text = "") {
-    this.tagName = tagName.toUpperCase();
+    this.tagName = String(tagName).toUpperCase();
+    this.nodeType = this.tagName === "#TEXT" ? 3 : 1;
     this.children = [];
     this.attributes = {};
     this.className = "";
     this.dataset = {};
+    this.id = "";
     this.listeners = {};
     this.value = "";
-    // app.js publishes the sticky bar's measured height as a custom property on
-    // the document element, so a node has to be able to carry one.
+    this.hidden = false;
+    this.parent = null;
     this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
+    const node = this;
+    this.classList = {
+      add(...names) { for (const name of names) if (!node.classNames().includes(name)) node.className = `${node.className} ${name}`.trim(); },
+      remove(...names) { node.className = node.classNames().filter((existing) => !names.includes(existing)).join(" "); },
+      toggle(name, force) {
+        const has = node.classNames().includes(name);
+        const want = force === undefined ? !has : Boolean(force);
+        if (want && !has) node.classList.add(name);
+        if (!want && has) node.classList.remove(name);
+        return want;
+      },
+      contains(name) { return node.classNames().includes(name); },
+    };
   }
 
+  classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
+  get childNodes() { return this.children; }
+  get parentNode() { return this.parent; }
+  get firstElementChild() { return this.children.find((child) => child.tagName !== "#TEXT") ?? null; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
-  set textContent(value) {
-    this._text = String(value ?? "");
-    this.children = [];
-  }
+  set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
-      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      const node = typeof child === "string" ? new FakeNode("#text", child) : child;
+      node.parent = this;
+      this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
     this._text = "";
+    for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
   }
 
+  insertBefore(child, before) {
+    if (child.parent) child.parent.removeChild(child);
+    const index = before ? this.children.indexOf(before) : this.children.length;
+    child.parent = this;
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    return child;
+  }
+
+  replaceChild(child, replaced) {
+    const index = this.children.indexOf(replaced);
+    if (index < 0) throw new Error("replacement target is not a child");
+    if (child.parent) child.parent.removeChild(child);
+    replaced.parent = null;
+    child.parent = this;
+    this.children[index] = child;
+    return replaced;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index < 0) throw new Error("removal target is not a child");
+    this.children.splice(index, 1);
+    child.parent = null;
+    return child;
+  }
+
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; }
+  removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  focus() { this.focused = true; activeElement = this; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  contains(node) { for (let cursor = node; cursor; cursor = cursor.parent) if (cursor === this) return true; return false; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
+  matchesSelector(selector) {
+    if (selector.startsWith("#")) return this.id === selector.slice(1);
+    if (selector.startsWith(".")) return this.classNames().includes(selector.slice(1));
+    return this.tagName === selector.toUpperCase();
+  }
 
-  // The fold anchor reads real layout. These nodes carry whatever rectangle a
-  // case assigns them, which is what lets a reflow be simulated.
-  get isConnected() { return true; }
-  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matchesSelector(selector)) return child;
+      const hit = child.querySelector(selector);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matchesSelector && node.matchesSelector(selector)) return node;
+      node = node.parent;
+    }
+    return null;
+  }
 }
 
-const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
-  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
-  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close",
-  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
-  selectors.set(`#${id}`, new FakeNode("div"));
+let activeElement = null;
+const byId = new Map();
+function staticNode(tag, id, className = "") {
+  const node = new FakeNode(tag);
+  node.id = id;
+  node.className = className;
+  byId.set(id, node);
+  return node;
 }
-const filterForm = new FakeNode("form");
-filterForm.elements = {};
-for (const key of ["project", "harness", "model", "kind", "state"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  filterForm.elements[key] = select;
+staticNode("div", "app", "app");
+staticNode("main", "view", "main");
+staticNode("span", "vdot", "vdot");
+staticNode("span", "verdict", "verdict");
+staticNode("div", "segbar", "segbar");
+staticNode("span", "stalenote", "stalenote");
+staticNode("span", "staleno-txt");
+staticNode("span", "navbadge", "navbadge");
+staticNode("span", "tabbadge", "tabbadge");
+for (const buttonId of ["theme-button", "notify-button"]) {
+  const button = staticNode("button", buttonId, "iconbtn");
+  button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
-selectors.set("#filter-form", filterForm);
-const historyForm = new FakeNode("form");
-historyForm.elements = {};
-for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
-  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
-  field.append(new FakeNode("option", `All ${key}`));
-  historyForm.elements[key] = field;
-}
-selectors.set("#history-form", historyForm);
-const activityForm = new FakeNode("form");
-activityForm.elements = {};
-for (const key of ["task", "harness", "type"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  activityForm.elements[key] = select;
-}
-selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
-  querySelector: (selector) => selectors.get(selector),
+  // Focus follows the tree: a node the renderer replaced is detached, and a
+  // detached node is not what the document considers focused.
+  get activeElement() {
+    if (!activeElement) return null;
+    let root = activeElement;
+    while (root.parent) root = root.parent;
+    return byId.get(root.id) === root ? activeElement : null;
+  },
+  getElementById: (id) => byId.get(id) ?? null,
+  querySelector: (selector) => {
+    const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
+    if (compound) return byId.get(compound[1])?.querySelector(`.${compound[2]}`) ?? null;
+    if (selector.startsWith("#")) return byId.get(selector.slice(1)) ?? null;
+    return null;
+  },
+  querySelectorAll: () => [],
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -708,7 +1584,7 @@ function decisionTask(id) {
     paths: { status_log: { last_event_age_seconds: 5 } },
     work_items: [],
     hints: { open_decisions: [{ key: "shape", verb: "needs-decision", summary: `Decide the ${id} shape` }] },
-    card: { column: "needs_decision", action: "decide" },
+    card: { column: "needs_decision" },
   };
 }
 
@@ -749,19 +1625,18 @@ class FakeEventSource {
 const storage = new Map([["fm-dashboard-alerts", "on"]]);
 Object.assign(globalThis, {
   document,
-  window: { innerWidth: 320, innerHeight: 850, scrollY: 0, addEventListener() {}, scrollTo() {} },
-  requestAnimationFrame: () => 0,
+  window: { innerWidth: 390, innerHeight: 844, scrollY: 0, location: { hash: "" }, addEventListener() {}, scrollTo() {}, history: { back() {} } },
+  requestAnimationFrame: (frame) => { frame(); return 0; },
   EventSource: FakeEventSource,
   Notification: FakeNotification,
-  fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),
+  fetch: async (url) => ({ ok: true, json: async () => (url.startsWith("/api/snapshot") ? envelopeWith(["already-waiting"]) : {}) }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-  matchMedia: () => ({ matches: false }),
 });
 
 import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
   const push = (envelope) => streamed({ data: JSON.stringify(envelope) });
-  if (selectors.get("#notify-button").textContent !== "Alerts on") {
-    throw new Error(`a granted saved preference did not restore the alert control: ${selectors.get("#notify-button").textContent}`);
+  if (byId.get("notify-button").textContent !== "Alerts on") {
+    throw new Error(`a granted saved preference did not restore the alert control: ${byId.get("notify-button").textContent}`);
   }
   if (notifications.length) throw new Error(`the first render alerted for items already waiting: ${JSON.stringify(notifications)}`);
 
@@ -774,7 +1649,7 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   push(envelopeWith(["already-waiting", "just-arrived"]));
   if (notifications.length !== 1) throw new Error(`expected exactly one alert for the new item, received ${JSON.stringify(notifications)}`);
   const [alert] = notifications;
-  if (!alert.title.includes("Decision")) throw new Error(`the alert did not name what needs the captain: ${alert.title}`);
+  if (!alert.title.includes("needs you")) throw new Error(`the alert did not say something needs the captain: ${alert.title}`);
   if (!alert.body.includes("just-arrived title") || !alert.body.includes("Decide the just-arrived shape")) {
     throw new Error(`the alert did not carry the new item's title and reason: ${alert.body}`);
   }
@@ -851,11 +1726,14 @@ test_stale_service_unit_is_actionable() {
 }
 
 test_first_run_failures_are_explicit() {
-  local case_root
+  local case_root backlog error_message logged
   case_root=$(make_runtime malformed)
   printf 'malformed\n' > "$case_root/control/mode"
   start_fixture_server "$case_root" 1 1
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "malformed_json" and .snapshot == null'
+  backlog=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/backlog")
+  printf '%s' "$backlog" | jq -e '.status.phase == "unavailable" and .backlog == null' >/dev/null \
+    || fail "a failed snapshot fabricated an empty backlog: $backlog"
   stop_server
 
   case_root=$(make_runtime version)
@@ -867,8 +1745,48 @@ test_first_run_failures_are_explicit() {
   case_root=$(make_runtime missing no)
   start_fixture_server "$case_root" 1 1
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "command_missing"'
+  error_message=$(jq -r '.status.error.message' "$case_root/envelope.json")
+  [ "$error_message" = "a required dashboard command is unavailable" ] \
+    || fail "a missing command exposed an unsafe or unstable display message: $error_message"
+  case "$error_message" in
+    *"$case_root"*|*"/home/"*) fail "a command failure exposed its filesystem path: $error_message" ;;
+  esac
   stop_server
-  pass "malformed JSON, unsupported versions, and missing commands expose first-run errors"
+
+  # Raw error text is kept OUT of the browser payload, not thrown away. A source
+  # that exits non-zero with an explanation hands the page only the display-safe
+  # sentence, while its own message and stderr stay readable in the server's log
+  # - which is the only place an operator can learn why the snapshot failed.
+  case_root=$(make_runtime diagnosed)
+  printf 'fail\n' > "$case_root/control/mode"
+  start_fixture_server "$case_root" 1 1
+  wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "exit_nonzero"'
+  jq -e '.status.error | (has("stderr") | not) and (has("diagnostic") | not) and .message == "a dashboard data source reported a failure"' \
+    "$case_root/envelope.json" >/dev/null \
+    || fail "the browser payload lost its display-safe sentence or carried raw diagnostics: $(jq -c '.status.error' "$case_root/envelope.json")"
+  stop_server
+  grep -q '^fm-dashboard: snapshot: exit_nonzero: .*fixture snapshot failed' "$case_root/server.log" \
+    || fail "the failure reason was discarded instead of logged where an operator can read it: $(cat "$case_root/server.log")"
+
+  # And a failure that comes BACK after a recovery says so again. A long-lived
+  # service that remembers a reason forever reports the 02:00 outage and stays
+  # silent through the identical one at 05:00, which is the harder failure to
+  # diagnose and the one worth a line. The dedupe is per source and its own
+  # success is what clears it, so a source that is simply still broken stays
+  # quiet while a recurrence does not.
+  case_root=$(make_runtime recurrence)
+  printf 'fail\n' > "$case_root/control/mode"
+  start_fixture_server "$case_root" 1 1
+  wait_for_expression "$case_root" '.status.error.kind == "exit_nonzero"'
+  printf 'good\n' > "$case_root/control/mode"
+  wait_for_expression "$case_root" '.status.phase == "ready"'
+  printf 'fail\n' > "$case_root/control/mode"
+  wait_for_expression "$case_root" '.status.error.kind == "exit_nonzero"'
+  stop_server
+  logged=$(grep -c '^fm-dashboard: snapshot: exit_nonzero: ' "$case_root/server.log")
+  [ "$logged" -ge 2 ] \
+    || fail "a failure that recurred after a recovery was suppressed as a repeat: $(cat "$case_root/server.log")"
+  pass "malformed JSON, unsupported versions, and missing commands expose first-run errors, with the raw reason logged rather than discarded"
 }
 
 fleet_fingerprint() {  # <home>
@@ -1566,7 +2484,7 @@ SH
 test_the_bind_address_is_a_numeric_address
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
-test_browser_renders_contract_actions_and_liveness
+test_browser_renders_exclusive_views_and_honest_states
 test_browser_alerts_only_for_new_inbox_items
 test_timeout_is_single_flight
 test_stale_service_unit_is_actionable

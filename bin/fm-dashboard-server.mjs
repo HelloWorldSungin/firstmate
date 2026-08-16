@@ -34,6 +34,13 @@
 //   FM_DASHBOARD_EVENT_MAX_ROWS_PER_TASK,
 //   FM_DASHBOARD_EVENT_SKEW_SECONDS    agent-event retention and replay caps
 //
+// Endpoints: GET / (the app), GET /api/snapshot (fleet state), GET
+// /api/history (durable completion records with usage), GET /api/backlog
+// (the full backlog record set, read-only, derived from the same snapshot
+// parse), GET /api/report?task=<id> (a retained report from durable history),
+// GET /api/timeline (recorded agent events), GET /api/gbrain/health, POST
+// /api/gbrain/search, GET /api/events (SSE), POST /events (ingest).
+//
 // Every executable and flag list is fixed. This process never accepts a
 // command, a flag, a fleet path, or a shell fragment over HTTP. /api/report
 // takes a task id, and that id can only ever select among the ids the current
@@ -86,6 +93,7 @@ import {
   sanitizeEvent,
   WIRE_SCHEMA as EVENT_WIRE_SCHEMA,
 } from "./fm-event-store.mjs";
+import { displayError } from "../assets/dashboard/errors.js";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -97,6 +105,7 @@ const ASSET_DIR = path.join(ROOT, "assets", "dashboard");
 const EXPECTED_SCHEMA = "fm-fleet-snapshot.v1";
 const ENVELOPE_SCHEMA = "fm-dashboard-envelope.v1";
 const HISTORY_ENVELOPE_SCHEMA = "fm-dashboard-history.v1";
+const BACKLOG_ENVELOPE_SCHEMA = "fm-dashboard-backlog.v1";
 const HISTORY_SCHEMA = "fm-outcome-history.v1";
 const USAGE_SCHEMA = "fm-usage-report.v1";
 const REPORT_SCHEMA = "fm-dashboard-report.v1";
@@ -230,6 +239,8 @@ const GBRAIN_QUERY_MIN_LENGTH = 2;
 // that owns the main brain emits for the main corpus, and dropping it here
 // would rewrite a healthy read into "unknown" and paint a false failure.
 const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "same-as-local", "unknown"]);
+const GBRAIN_SOURCE_NAMES = new Set(["local", "main"]);
+const GBRAIN_NON_ERROR_SOURCE_STATES = new Set(["ok", "absent", "unconfigured", "same-as-local"]);
 
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -237,6 +248,10 @@ const STATIC_FILES = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/inbox.js", ["inbox.js", "text/javascript; charset=utf-8"]],
   ["/history.js", ["history.js", "text/javascript; charset=utf-8"]],
+  ["/backlog.js", ["backlog.js", "text/javascript; charset=utf-8"]],
+  ["/router.js", ["router.js", "text/javascript; charset=utf-8"]],
+  ["/display.js", ["display.js", "text/javascript; charset=utf-8"]],
+  ["/errors.js", ["errors.js", "text/javascript; charset=utf-8"]],
   ["/events.js", ["events.js", "text/javascript; charset=utf-8"]],
   ["/markdown.js", ["markdown.js", "text/javascript; charset=utf-8"]],
   ["/gbrain.js", ["gbrain.js", "text/javascript; charset=utf-8"]],
@@ -568,13 +583,41 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
   });
 }
 
-function errorRecord(error, fallback) {
-  return {
-    kind: error.kind || fallback,
-    message: safeText(error.message) || fallback,
-    stderr: safeText(error.stderr),
-    at: nowIso(),
-  };
+// Raw error text is kept OUT of every client payload, not thrown away.
+// displayError() carries the underlying message and stderr on a non-enumerable
+// `diagnostic`, so what a browser or a posting agent receives is only the
+// display-safe sentence, and this is the sink that keeps the reason readable by
+// an operator. Every server-side displayError call goes through here, the
+// per-source GBrain failures and the ingest refusal included, so the
+// retrievability rule holds on all of them rather than on the polling paths
+// alone.
+//
+// Remembered per SOURCE rather than per kind, and cleared by that source's own
+// next success. A source failing every poll therefore says so once, while the
+// same failure returning after a recovery says so again - on a service that
+// runs for weeks, that recurrence is the thing worth reading, and dedup that
+// never expires would have swallowed it.
+const loggedDiagnostics = new Map();
+
+function logDiagnostic(source, record) {
+  const diagnostic = record?.diagnostic || {};
+  const detail = [safeText(diagnostic.message, 500), safeText(diagnostic.stderr, 500)]
+    .filter(Boolean)
+    .join(" | ");
+  const line = `fm-dashboard: ${source}: ${record?.kind || "unknown"}: ${detail || record?.message || ""}`;
+  if (loggedDiagnostics.get(source) !== line) {
+    loggedDiagnostics.set(source, line);
+    console.error(line);
+  }
+  return record;
+}
+
+function clearDiagnostic(source) {
+  loggedDiagnostics.delete(source);
+}
+
+function errorRecord(source, error, fallback) {
+  return logDiagnostic(source, displayError(error, fallback, { at: nowIso() }));
 }
 
 // The one set of connected browsers. The snapshot and the history each push
@@ -726,9 +769,10 @@ class HistoryState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("history");
       this.usage = this.retainUsage(await this.readUsage());
     } catch (error) {
-      this.lastError = errorRecord(error, "history_refresh_failed");
+      this.lastError = errorRecord("history", error, "history_refresh_failed");
     } finally {
       this.refreshing = false;
       this.clients.send("history");
@@ -1297,8 +1341,9 @@ class GBrainState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("gbrain-health");
     } catch (error) {
-      this.lastError = errorRecord(error, "gbrain_health_unavailable");
+      this.lastError = errorRecord("gbrain-health", error, "gbrain_health_unavailable");
     } finally {
       this.refreshing = false;
       this.broadcast();
@@ -1376,13 +1421,24 @@ class GBrainState {
         excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
         stale: row?.stale === true,
       }));
-      const cleanedSources = sources.map((row) => ({
-        source: typeof row?.source === "string" ? row.source : null,
-        state: GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown",
-        brain: typeof row?.brain === "string" ? safeText(row.brain, 240) : null,
-        results: typeof row?.results === "number" && Number.isFinite(row.results) ? row.results : 0,
-        detail: typeof row?.detail === "string" ? safeText(row.detail, 240) : null,
-      }));
+      const cleanedSources = sources.map((row) => {
+        const source = GBRAIN_SOURCE_NAMES.has(row?.source) ? row.source : "unknown";
+        const state = GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown";
+        const kind = source === "local"
+          ? "gbrain_local_source_failed"
+          : source === "main" ? "gbrain_main_source_failed" : "gbrain_source_failed";
+        const path = `gbrain-source-${source}`;
+        let failure = null;
+        if (GBRAIN_NON_ERROR_SOURCE_STATES.has(state)) clearDiagnostic(path);
+        else failure = logDiagnostic(path, displayError({ kind, message: typeof row?.detail === "string" ? row.detail : null }, kind));
+        return {
+          source,
+          state,
+          brain: typeof row?.brain === "string" ? safeText(row.brain, 240) : null,
+          results: typeof row?.results === "number" && Number.isFinite(row.results) ? row.results : 0,
+          detail: failure?.message || (typeof row?.detail === "string" ? safeText(row.detail, 240) : null),
+        };
+      });
       return {
         schema: GBRAIN_SEARCH_SCHEMA,
         generated: nowIso(),
@@ -1394,10 +1450,6 @@ class GBrainState {
       };
     } catch (error) {
       const kind = error.kind || "search_failed";
-      // fm-recall exits non-zero when no corpus answered, which is a real
-      // signal rather than a transport failure; surface it verbatim with its
-      // per-source verdict, which is the operator's only way to see WHICH
-      // corpus was unreachable.
       if (kind === "exit_nonzero") {
         // fm-recall separates "every corpus was asked and none answered" from
         // "the search never started", and the panel has to keep them apart:
@@ -1509,10 +1561,11 @@ class EventsState {
         ? new EventStore(this.config.eventStorePath, this.config.eventLimits)
         : EventStore.openExisting(this.config.eventStorePath, this.config.eventLimits);
     } catch (error) {
-      this.storeError = errorRecord(error, "event_store_unavailable");
+      this.storeError = errorRecord("event-store", error, "event_store_unavailable");
       return this.store;
     }
     if (!this.store) return null;
+    clearDiagnostic("event-store");
     this.tail = this.store.tail();
     this.lastEventAt = this.tail[0]?.occurred_at ?? null;
     return this.store;
@@ -1623,7 +1676,7 @@ class DashboardState {
     this.stopped = false;
     this.activeChild = null;
     this.durablePending = false;
-    this.lastError = config.serviceUnitError ? errorRecord(config.serviceUnitError, "service_unit_outdated") : null;
+    this.lastError = config.serviceUnitError ? errorRecord("service-unit", config.serviceUnitError, "service_unit_outdated") : null;
   }
 
   envelope() {
@@ -1660,6 +1713,11 @@ class DashboardState {
 
   broadcast() {
     this.clients.send("snapshot");
+    // The backlog view is derived from the same fleet snapshot parse, so it
+    // moves exactly when the snapshot does. It has its own topic because the
+    // Backlog page consumes its own envelope: the full record set is queue
+    // data the inbox deliberately narrows to captain-actionable rows.
+    this.clients.send("backlog");
   }
 
   scheduleStaleTransition() {
@@ -1736,8 +1794,9 @@ class DashboardState {
       this.lastSuccessAtMs = Date.now();
       this.lastSuccessAt = new Date(this.lastSuccessAtMs).toISOString().replace(/\.\d{3}Z$/, "Z");
       this.lastError = null;
+      clearDiagnostic("snapshot");
     } catch (error) {
-      this.lastError = errorRecord(error, "snapshot_failed");
+      this.lastError = errorRecord("snapshot", error, "snapshot_failed");
     } finally {
       this.refreshing = false;
       this.scheduleStaleTransition();
@@ -2065,8 +2124,10 @@ async function serveIngest(request, response, events) {
   let stored;
   try {
     stored = events.accept(accepted, nowIso());
+    clearDiagnostic("event-ingest");
   } catch (error) {
-    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: "store_write_failed", detail: safeText(error.message) });
+    const failure = logDiagnostic("event-ingest", displayError(error, "store_write_failed"));
+    sendJson(response, 503, { schema: INGEST_SCHEMA, accepted: 0, reason: failure.kind, detail: failure.message });
     return;
   }
   if (!stored) {
@@ -2155,6 +2216,7 @@ async function serveGBrainSearch(request, response, gbraintron) {
   }
   try {
     const payload = await gbraintron.search(document.query, document.limit);
+    clearDiagnostic("gbrain-search");
     sendJson(response, 200, payload);
   } catch (error) {
     const status = error.kind === "timed_out" ? 504
@@ -2162,11 +2224,12 @@ async function serveGBrainSearch(request, response, gbraintron) {
         : error.kind === "query_too_short" || error.kind === "query_too_large" ? 400
           : error.kind === "no_corpus_answered" || error.kind === "search_setup_failed" ? 503
             : 502;
+    const failure = logDiagnostic("gbrain-search", displayError(error, error.kind || "search_failed"));
     sendJson(response, status, {
       schema: GBRAIN_SEARCH_SCHEMA,
       results: [],
-      reason: error.kind || "search_failed",
-      detail: safeText(error.message),
+      reason: failure.kind,
+      detail: failure.message,
     });
   }
 }
@@ -2209,6 +2272,21 @@ async function main() {
   const gbraintron = new GBrainState(config, clients);
   const state = new DashboardState(config, clients, history);
   clients.register("snapshot", () => state.envelope());
+  // The backlog envelope shares the snapshot's status and refresh cadence -
+  // it IS a view of the snapshot's backlog section, never a second parse of
+  // data/backlog.md. One owner for the file format, one freshness story.
+  const backlogEnvelope = () => {
+    const envelope = state.envelope();
+    return {
+      schema: BACKLOG_ENVELOPE_SCHEMA,
+      status: envelope.status,
+      config: envelope.config,
+      backlog: envelope.snapshot?.backlog && typeof envelope.snapshot.backlog === "object"
+        ? envelope.snapshot.backlog
+        : null,
+    };
+  };
+  clients.register("backlog", backlogEnvelope);
   clients.register("history", () => history.envelope());
   clients.register("agent_events", () => events.envelope());
   clients.register("gbrain_health", () => gbraintron.envelope());
@@ -2259,6 +2337,11 @@ async function main() {
     if (pathname === "/api/history") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       response.end(`${JSON.stringify(history.envelope())}\n`);
+      return;
+    }
+    if (pathname === "/api/backlog") {
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`${JSON.stringify(backlogEnvelope())}\n`);
       return;
     }
     if (pathname === "/api/report") {

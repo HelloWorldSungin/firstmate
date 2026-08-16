@@ -13,6 +13,11 @@ export const EVENT_LIMITS = {
   // bounded; this is the second bound, so a task with a long timeline cannot
   // make the page unresponsive.
   maxRows: 300,
+  // How many events a merged per-task set RETAINS between broadcasts. The
+  // drawn set above is bounded already; without this one the client would keep
+  // the union of every broadcast it ever saw for every task it ever opened,
+  // growing past the server's own per-task retention for the life of the tab.
+  maxRetained: 600,
 };
 
 // The lifecycle vocabulary, in the words a reader thinks in rather than the
@@ -136,16 +141,35 @@ export function sourceNotice(task, envelope) {
 // live in their own slot keyed by the task they were fetched for, and are
 // merged here instead - which also means a broadcast costs no HTTP request,
 // however busy the fleet is.
+//
+// The merge is also where the retained set is bounded, because it is the one
+// funnel every union goes through - the live push and the /api/timeline read
+// alike - so nothing that keeps a merged set can keep an unbounded one.
 export function mergeTaskBackfill(events, backfill, taskId) {
-  const rows = Array.isArray(events) ? [...events] : [];
-  if (!taskId || backfill?.task !== taskId || !Array.isArray(backfill.events)) return rows;
+  const rows = Array.isArray(events)
+    ? events.filter((event) => !taskId || event?.task_id === taskId)
+    : [];
+  if (!taskId || backfill?.task !== taskId || !Array.isArray(backfill.events)) return bounded(rows);
   const known = new Set(rows.map((event) => event?.event_id));
   for (const event of backfill.events) {
     if (!event || known.has(event.event_id)) continue;
     known.add(event.event_id);
     rows.push(event);
   }
-  return rows;
+  return bounded(rows);
+}
+
+// Newest kept, oldest dropped, with the arrival order as the tie-break so the
+// bound cannot shuffle two events recorded in the same second.
+function bounded(rows) {
+  if (rows.length <= EVENT_LIMITS.maxRetained) return rows;
+  return [...rows]
+    .sort((a, b) => eventEpoch(b) - eventEpoch(a))
+    .slice(0, EVENT_LIMITS.maxRetained);
+}
+
+function eventEpoch(event) {
+  return Number.isFinite(event?.occurred_epoch) ? event.occurred_epoch : 0;
 }
 
 export function buildTimeline(envelope, filters = {}) {

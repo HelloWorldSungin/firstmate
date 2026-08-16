@@ -34,7 +34,10 @@ const OUTCOME_TONES = {
   unknown: "unknown",
 };
 
-const OUTCOME_LABELS = {
+// The outcome vocabulary, owned here because this module is what stamps an
+// outcome onto a row. Exported so the History filter's own labels come from the
+// same map: a state added here must not leave the facet showing a raw key.
+export const OUTCOME_LABELS = {
   done: "Done",
   failed: "Failed",
   discarded: "Discarded",
@@ -276,6 +279,30 @@ export function normalizeQuery(raw) {
   return text(raw).slice(0, HISTORY_LIMITS.maxQueryChars).toLowerCase();
 }
 
+function historyReadState(envelope, document) {
+  if (!envelope) return "pending";
+  if (envelope.status?.phase === "unavailable") return "unavailable";
+  if (envelope.status?.phase === "first_run" && envelope.status?.refreshing === true) return "pending";
+  if (envelope.status?.phase === "last_good" && document) return "stale";
+  if (!document) return "absent";
+  return "ready";
+}
+
+// What the page must render, the twin of backlog.js's backlogShape and for the
+// same reason: "nothing has been delivered" and "every completion record found
+// was unreadable" are opposite claims made from the same zero rows, and a
+// renderer deriving the difference from a count would print the reassuring one
+// over the disclosure. The all-unreadable answer is asked first, because a
+// record that failed to load is still a record that exists.
+function historyShape({ readState, hasDocument, malformed, total, visible }) {
+  if (readState === "pending" || readState === "unavailable") return readState;
+  if (total === 0 && malformed > 0) return "unreadable";
+  if (!hasDocument) return "absent";
+  if (visible > 0) return "rows";
+  if (total > 0) return "filtered";
+  return "empty";
+}
+
 /**
  * Build the history view from the server's fm-dashboard-history.v1 envelope.
  * `view` carries the active filters, the search query, the page index, and the
@@ -286,6 +313,13 @@ export function buildHistory(envelope, view = {}) {
   const records = Array.isArray(document?.records) ? document.records : [];
   const usage = envelope?.usage && typeof envelope.usage === "object" ? envelope.usage : null;
   const rows = records.map((record) => historyRow(record, usage)).filter((row) => row.id);
+  const readState = historyReadState(envelope, document);
+  const malformed = (Array.isArray(document?.malformed) ? document.malformed : []).map((entry) => ({
+    id: text(entry?.id) || "unknown record",
+    path: text(entry?.path) || null,
+    reason: text(entry?.reason) || "unknown",
+    explanation: MALFORMED_REASONS[text(entry?.reason)] || "the completion record could not be used",
+  }));
 
   const facets = {
     project: facetValues(rows, "project"),
@@ -322,17 +356,44 @@ export function buildHistory(envelope, view = {}) {
   const start = index * size;
   const visible = filtered.slice(start, start + size);
 
-  const malformed = (Array.isArray(document?.malformed) ? document.malformed : []).map((entry) => ({
-    id: text(entry?.id) || "unknown record",
-    path: text(entry?.path) || null,
-    reason: text(entry?.reason) || "unknown",
-    explanation: MALFORMED_REASONS[text(entry?.reason)] || "the completion record could not be used",
-  }));
-
   const captured = rows.filter((row) => row.gbrain.status === "captured").length;
 
+  // The stat roll-up describes the FILTERED set, not the page slice: a reader
+  // who narrows to one project wants that project's totals, not the totals of
+  // whichever 25 rows happened to be on screen. Every aggregate follows the
+  // honest-state rules the rows follow - an unknown duration is excluded from
+  // the median rather than counted as zero, and token totals exist only when
+  // at least one attributed row exists, because zero-for-unknown is the one
+  // lie this view must never print.
+  const durationsOf = (set) => set.map((row) => row.duration).filter((entry) => entry?.known && Number.isFinite(entry.seconds)).map((entry) => entry.seconds).sort((a, b) => a - b);
+  const filteredDurations = durationsOf(filtered);
+  const attributed = filtered.filter((row) => row.usage?.available === true && Number.isFinite(row.usage?.totals?.total_tokens));
+  const stats = {
+    counts: {
+      done: filtered.filter((row) => row.outcome.state === "done").length,
+      failed: filtered.filter((row) => row.outcome.state === "failed").length,
+      discarded: filtered.filter((row) => row.outcome.state === "discarded").length,
+      retired: filtered.filter((row) => row.outcome.state === "retired").length,
+      unknown: filtered.filter((row) => row.outcome.state === "unknown").length,
+    },
+    median_duration_seconds: filteredDurations.length ? filteredDurations[Math.floor(filteredDurations.length / 2)] : null,
+    tokens: attributed.length
+      ? { available: true, total: attributed.reduce((sum, row) => sum + row.usage.totals.total_tokens, 0), attributed: attributed.length }
+      : { available: false, total: null, attributed: 0 },
+  };
+
   return {
+    readState,
+    shape: historyShape({
+      readState,
+      hasDocument: document !== null,
+      malformed: malformed.length,
+      total: rows.length,
+      visible: filtered.length,
+    }),
     rows: visible,
+    allRecords: rows,
+    stats,
     facets,
     filters: active,
     page: {

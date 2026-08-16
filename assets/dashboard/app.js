@@ -1,259 +1,408 @@
-import { buildHealth, buildInbox, formatAge } from "./inbox.js";
-import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS } from "./history.js";
-import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel, typeTone } from "./events.js";
-import { MARKDOWN_CLASSES, MARKDOWN_TAGS, noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
-import { buildGBrainHealth, paintGBrainPanel, paintGBrainSearchResults, searchFailure, searchReasonLabel } from "./gbrain.js";
+// app.js - the Firstmate fleet dashboard application.
+//
+// Six destinations behind a hash router (#/needs, #/fleet, #/backlog,
+// #/history, #/knowledge, #/task/<id>), rebuilt from the approved design in
+// data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered at a
+// time: the router resolves exactly one view (router.js owns that contract)
+// and this module mounts only that view's DOM, so the others are absent from
+// the document rather than hidden.
+//
+// The data policy lives in the sibling modules (inbox.js, history.js,
+// backlog.js, gbrain.js, events.js); this file owns presentation and wiring.
+// display.js owns the convention that record values become labels before they
+// reach the DOM, so no filesystem path renders on any view.
+
+import { buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
+import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS, OUTCOME_LABELS } from "./history.js";
+import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel } from "./events.js";
+import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
+import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
+import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
+import { label } from "./display.js";
+import { buildBacklog, BACKLOG_LIMITS, BACKLOG_TAB_KEYS } from "./backlog.js";
+import { displayError, displaySafeEnvelope } from "./errors.js";
 
 const ui = {
-  signals: document.querySelector("#signals"),
-  badges: document.querySelector("#badges"),
-  navBadge: document.querySelector("#nav-badge"),
-  healthStrip: document.querySelector("#health-strip"),
-  inboxList: document.querySelector("#inbox-list"),
-  notices: document.querySelector("#notice-region"),
-  refreshNote: document.querySelector("#refresh-note"),
-  filterForm: document.querySelector("#filter-form"),
-  filterCount: document.querySelector("#filter-count"),
-  clearFilters: document.querySelector("#clear-filters"),
-  mateList: document.querySelector("#secondmate-list"),
-  mateCount: document.querySelector("#secondmate-count"),
-  kanban: document.querySelector("#kanban"),
-  historyForm: document.querySelector("#history-form"),
-  historyFilterCount: document.querySelector("#history-filter-count"),
-  historyClear: document.querySelector("#history-clear"),
-  historyNote: document.querySelector("#history-note"),
-  historyWarnings: document.querySelector("#history-warnings"),
-  historySummary: document.querySelector("#history-summary"),
-  historyList: document.querySelector("#history-list"),
-  historyPager: document.querySelector("#history-pager"),
-  activityForm: document.querySelector("#activity-form"),
-  activityFilterCount: document.querySelector("#activity-filter-count"),
-  activityClear: document.querySelector("#activity-clear"),
-  activityNote: document.querySelector("#activity-note"),
-  activityNotices: document.querySelector("#activity-notices"),
-  activityList: document.querySelector("#activity-list"),
-  reportDialog: document.querySelector("#report-dialog"),
-  reportTask: document.querySelector("#report-task"),
-  reportTitle: document.querySelector("#report-title"),
-  reportNotices: document.querySelector("#report-notices"),
-  reportBody: document.querySelector("#report-body"),
-  reportClose: document.querySelector("#report-close"),
-  gbraintronNote: document.querySelector("#gbraintron-note"),
-  gbraintronNotices: document.querySelector("#gbraintron-notices"),
-  gbraintronStrip: document.querySelector("#gbraintron-strip"),
-  gbraintronSearchForm: document.querySelector("#gbraintron-search-form"),
-  gbraintronSearchInput: document.querySelector("#gbraintron-search-input"),
-  gbraintronSearchLimit: document.querySelector("#gbraintron-search-limit"),
-  gbraintronSearchButton: document.querySelector("#gbraintron-search-button"),
-  gbraintronResults: document.querySelector("#gbraintron-results"),
-  themeButtons: [document.querySelector("#theme-button"), document.querySelector("#phone-theme-button")],
-  notifyButtons: [document.querySelector("#notify-button"), document.querySelector("#phone-notify-button")],
+  app: document.getElementById("app"),
+  view: document.getElementById("view"),
+  vdot: document.getElementById("vdot"),
+  verdict: document.getElementById("verdict"),
+  segbar: document.getElementById("segbar"),
+  stalenote: document.getElementById("stalenote"),
+  staleText: document.getElementById("staleno-txt"),
+  navbadge: document.getElementById("navbadge"),
+  tabbadge: document.getElementById("tabbadge"),
+  navButtons: new Map(),
+  themeButton: document.getElementById("theme-button"),
+  notifyButton: document.getElementById("notify-button"),
 };
 
-const columnLabels = {
-  needs_decision: "Needs decision",
+for (const button of document.querySelectorAll("[data-route]")) {
+  const route = button.dataset.route;
+  if (!ui.navButtons.has(route)) ui.navButtons.set(route, []);
+  ui.navButtons.get(route).push(button);
+  button.addEventListener("click", () => { window.location.hash = hashFor(viewRoute(route)); });
+}
+
+// --- fleet column ladder ----------------------------------------------------
+//
+// The snapshot resolves every task to exactly one card.column against its own
+// card_precedence; these are the presentation facts for each column key. The
+// order here mirrors card_precedence so the board reads highest-priority first.
+
+const COLUMN_DEFS = [
+  { key: "needs_decision", label: "Needs decision", tone: "amber" },
+  { key: "blocked", label: "Blocked", tone: "red" },
+  { key: "parked", label: "Parked", tone: "grey" },
+  { key: "failed", label: "Failed", tone: "red" },
+  { key: "review", label: "In review", tone: "blue" },
+  { key: "done", label: "Done", tone: "green" },
+  { key: "waiting", label: "Waiting", tone: "grey" },
+  { key: "active", label: "Active", tone: "green" },
+  { key: "secondmate", label: "Secondmates", tone: "blue" },
+  { key: "idle", label: "Idle", tone: "grey" },
+];
+
+// Presentation for inbox reason kinds: shape carries the meaning, tone follows
+// the policy module's REASON_KINDS so the two cannot drift on severity.
+const REASON_PRESENTATION = {
+  decision: { glyph: "g-decision" },
+  credential: { glyph: "g-cred" },
+  blocked: { glyph: "g-blocked" },
+  failed: { glyph: "g-failed" },
+  pr_attention: { glyph: "g-blocked" },
+  merge_ready: { glyph: "g-review" },
+  review_ready: { glyph: "g-review" },
+  pr_unknown: { glyph: "g-unknown" },
+};
+
+// Labels for the tabs backlog.js counts. The keys are the queue policy's, so
+// the page cannot render a tab the policy never filled or miss one it did.
+const BACKLOG_TAB_LABELS = {
+  all: "All",
+  in_flight: "In flight",
+  queued: "Queued",
+  held: "Held",
   blocked: "Blocked",
-  parked: "Gate parked",
-  failed: "Failed",
-  review: "PR review",
-  done: "Done",
-  waiting: "Waiting",
-  active: "Active",
-  secondmate: "Secondmate",
-  idle: "Idle",
 };
 
-const columnTones = {
-  needs_decision: "amber",
-  blocked: "red",
-  parked: "amber",
-  failed: "red",
-  review: "green",
-  done: "grey",
-  waiting: "amber",
-  active: "blue",
-  secondmate: "blue",
-  idle: "grey",
-};
-
-const badgeOrder = [
-  ["decisions", "Decisions", "amber"],
-  ["credentials", "Credentials", "amber"],
-  ["blocked", "Blocked", "red"],
-  ["failed", "Needs attention", "red"],
-  ["merge_ready", "Merge ready", "green"],
-  ["review_ready", "Review ready", "blue"],
-  ["unknown", "PR unknown", "unknown"],
+const HISTORY_RANGES = [
+  { key: "7d", label: "7d", days: 7 },
+  { key: "30d", label: "30d", days: 30 },
+  { key: "90d", label: "90d", days: 90 },
+  { key: "all", label: "All time", days: null },
 ];
 
 const state = {
+  route: parseHash(window.location.hash),
   envelope: null,
-  filters: { project: "", harness: "", model: "", kind: "", state: "" },
-  eventSource: null,
-  reconnectTimer: null,
-  reconnectMs: 1_000,
+  history: { envelope: null, epoch: 0, filters: { query: "", project: "", outcome: "" }, range: "30d", page: 0 },
+  backlog: { envelope: null, filters: { query: "", project: "", kind: "", prio: "" }, tab: "all", page: 0 },
+  fleet: { filters: [] },
+  gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
+  task: { reports: new Map(), timelines: new Map() },
+  events: null,
+  routeEpoch: 0,
+  controlCommit: 0,
   notifyEnabled: false,
   seenInboxIds: null,
-  history: {
-    envelope: null,
-    filters: { query: "", project: "", harness: "", model: "", kind: "", outcome: "", from: "", to: "" },
-    page: 0,
-    pageSize: HISTORY_LIMITS.defaultPageSize,
-  },
-  activity: {
-    envelope: null,
-    filters: { task: "", harness: "", type: "" },
-    // The selected task's rows fetched from the store, kept out of the stream
-    // envelope so a broadcast cannot discard them. See mergeTaskBackfill.
-    backfill: { task: "", events: [] },
-  },
 };
+
+// --- dom helpers ------------------------------------------------------------
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = text;
+  if (text !== undefined && text !== null && text !== "") node.append(document.createTextNode(text));
   return node;
 }
 
-// The project pill is ellipsized to keep a card head on one line, so the full
-// name has to stay recoverable from the element itself.
-function projectPill(name) {
-  const pill = element("span", "pill project-pill", name);
-  pill.title = name;
-  return pill;
+// Every view's root carries a stable id (#view-needs, #view-fleet, ...) so a
+// test or browser check can assert the router's contract structurally: the
+// active view's id is on the page and every other view id is absent.
+function viewRoot(name) {
+  const node = element("div");
+  node.id = `view-${name}`;
+  return node;
 }
 
-// Folding and unfolding a device reflows this page between a single stacked
-// column and a multi-column grid, which changes the document height by
-// thousands of pixels. The browser keeps the scroll OFFSET across that, but the
-// offset no longer points at the same content, so the reader is dropped
-// somewhere else in the page. Anchor to whatever they were actually reading
-// instead, and put that back at the same place on the screen.
-//
-// Only a width change counts. Mobile browser chrome sliding in and out changes
-// the height alone, constantly, and moving the page under the reader for that
-// would be far worse than the problem being fixed.
-const ANCHOR_SELECTOR = "#inbox, #board, #activity, #history, .inbox-card, .history-card, .column, .health-card, .activity-row";
-let scrollAnchor = null;
-let anchorQueued = false;
-let lastViewportWidth = window.innerWidth;
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
 
-// The sticky bar covers the top of the viewport, so the first line the reader
-// can actually see is its lower edge.
-function anchorLine() {
-  const bar = document.querySelector(".topbar");
-  return bar ? bar.getBoundingClientRect().bottom + 1 : 1;
+function isElement(node) {
+  return node?.nodeType === ELEMENT_NODE;
 }
 
-// Anchor navigation is the other half of that same fact. Following a nav link,
-// or the board's Timeline button, scrolls the target section's top edge to the
-// top of the VIEWPORT - which is underneath the sticky bar, so the reader lands
-// part-way into the section with its eyebrow and heading hidden. The bar is
-// sized by its own content and rewraps with width, so its height is not a
-// constant the stylesheet could hold on its own; publishing it is what lets
-// every scroll target keep clear of it.
-function publishStickyHeight() {
-  const bar = document.querySelector(".topbar");
-  if (!bar) return;
-  const height = Math.ceil(bar.getBoundingClientRect().height);
-  document.documentElement.style.setProperty("--sticky-top", `${height}px`);
+// A value the page re-reads on every push - a count, an age, a duration, a
+// cost. Marked here, where it is made, so nothing downstream has to recognize
+// one by its class or by the control it sits in.
+function liveText(className, text) {
+  const node = element("span", className, text);
+  node.dataset.volatile = "1";
+  return node;
 }
 
-function captureAnchor() {
-  anchorQueued = false;
-  const line = anchorLine();
-  let best = null;
-  for (const candidate of document.querySelectorAll(ANCHOR_SELECTOR)) {
-    const top = candidate.getBoundingClientRect().top;
-    if (top > window.innerHeight) break;
-    if (!best || Math.abs(top - line) < Math.abs(best.top - line)) best = { element: candidate, top };
+// The reader's live value on a control, as opposed to the renderer's copy of
+// it. Whether an element carries one is asked of the element itself, so this
+// never becomes a list of which controls are worth protecting.
+function liveValue(node) {
+  return isElement(node) && typeof node.value === "string" ? node.value : null;
+}
+
+// Reconciliation identity: a node the renderer gave a stable id is kept and
+// updated in place rather than replaced. Nothing here names a tag or an input
+// type - a control added later is reconciled by giving it an id, not by
+// extending a list that would otherwise go stale behind it.
+function persistentControlIds(node) {
+  const ids = [];
+  if (isElement(node) && node.id) ids.push(node.id);
+  for (const child of node?.childNodes || []) ids.push(...persistentControlIds(child));
+  return ids;
+}
+
+function refreshMountedView(current, fresh) {
+  const committedValue = current.dataset.valueCommit !== fresh.dataset.valueCommit;
+  const live = liveValue(current);
+  current.className = fresh.className;
+  for (const key of Object.keys(current.dataset)) {
+    if (!(key in fresh.dataset)) delete current.dataset[key];
   }
-  scrollAnchor = best ? { element: best.element, offset: best.top - line } : null;
+  for (const [key, value] of Object.entries(fresh.dataset)) current.dataset[key] = value;
+
+  let index = 0;
+  for (const freshChild of [...fresh.childNodes]) {
+    const ids = persistentControlIds(freshChild);
+    const children = [...current.childNodes];
+    if (ids.length) {
+      const match = children.slice(index).find((child) => {
+        const currentIds = persistentControlIds(child);
+        return ids.every((id) => currentIds.includes(id));
+      });
+      if (match) {
+        const cursor = current.childNodes[index] || null;
+        if (match !== cursor) current.insertBefore(match, cursor);
+        refreshMountedView(match, freshChild);
+      } else {
+        current.insertBefore(freshChild, current.childNodes[index] || null);
+      }
+    } else {
+      const cursor = current.childNodes[index] || null;
+      if (cursor && persistentControlIds(cursor).length) current.insertBefore(freshChild, cursor);
+      else if (cursor) current.replaceChild(freshChild, cursor);
+      else current.append(freshChild);
+    }
+    index += 1;
+  }
+  while (current.childNodes.length > index) current.removeChild(current.childNodes[index]);
+
+  // A value under the reader's hand belongs to the reader until an explicit
+  // committed transition replaces it, so reconciliation reads the mounted value
+  // back rather than writing the renderer's copy over it.
+  if (live !== null) current.value = committedValue ? fresh.value : live;
 }
 
-function queueAnchorCapture() {
-  if (anchorQueued) return;
-  anchorQueued = true;
-  requestAnimationFrame(captureAnchor);
+function stampControlCommit(node) {
+  if (isElement(node) && node.id && liveValue(node) !== null) node.dataset.valueCommit = String(state.controlCommit);
+  for (const child of node?.childNodes || []) stampControlCommit(child);
 }
 
-function restoreAnchor() {
-  if (!scrollAnchor || !scrollAnchor.element.isConnected) return;
-  const drift = scrollAnchor.element.getBoundingClientRect().top - anchorLine() - scrollAnchor.offset;
-  if (Math.abs(drift) < 1) return;
-  // "instant" because the stylesheet asks for smooth scrolling, and a reflow
-  // is not a navigation the reader should have to watch animate.
-  window.scrollTo({ top: Math.max(0, Math.round(window.scrollY + drift)), behavior: "instant" });
+function eachElement(root, visit) {
+  if (isElement(root)) visit(root);
+  for (const child of root?.childNodes || []) eachElement(child, visit);
 }
 
-// Every render rebuilds the nodes of the section it renders, so a card the
-// reader is anchored to stops existing the moment a server push arrives - and
-// pushes arrive constantly. Re-derive the anchor here, where every render path
-// meets, so it always names something still on the page. The frame throttle
-// collapses the burst of section rebuilds in one render into a single capture.
-function replaceChildren(parent, children) {
-  parent.replaceChildren(...children.filter(Boolean));
-  queueAnchorCapture();
+// The words a control is known by, with the words that tick left out. A live
+// value - a filter chip's count, a row's age, a row's cost - is rendered
+// inside the control it belongs to and changes on its own between pushes, so
+// folding it into that control's identity would let it stop being itself while
+// nobody touched anything. Every such region is marked where it is built, by
+// liveText, which keeps this a rule about volatile content rather than a list
+// of which controls happen to carry one.
+function stableLabel(node) {
+  let out = "";
+  for (const child of node?.childNodes || []) {
+    if (child.nodeType === TEXT_NODE) out += child.nodeValue ?? child.textContent ?? "";
+    else if (isElement(child) && child.dataset?.volatile === undefined) out += stableLabel(child);
+  }
+  return out;
 }
 
-function dot(tone) {
-  return element("span", `dot ${tone || "grey"}`);
+// What a control IS, asked of the control rather than of where it sits. A
+// child index is a position: the moment a refresh adds or drops a sibling -
+// which every one of these lists does by design - the same index names a
+// different control. What survives that is the tag the renderer chose and the
+// words the reader was looking at, so a chip that moved is still the chip they
+// were on and a chip whose label changed is deliberately no longer a match.
+// The class name is left out on purpose: it carries selection state, and a
+// control must stay itself across the click that selects it.
+function focusSignature(node) {
+  const label = [node.getAttribute?.("aria-label"), node.getAttribute?.("title"), stableLabel(node)]
+    .find((value) => typeof value === "string" && value.trim() !== "") || "";
+  return `${node.tagName}\u0000${label.replace(/\s+/g, " ").trim()}`;
 }
 
-function titleFor(task) {
-  return task?.backlog?.title || task?.id || "Untitled task";
+function signatureMatches(root, signature) {
+  const matches = [];
+  eachElement(root, (node) => { if (focusSignature(node) === signature) matches.push(node); });
+  return matches;
 }
 
-function taskState(task) {
-  return task?.card?.column || "";
+function elementById(root, id) {
+  let found = null;
+  eachElement(root, (node) => { if (!found && node.id === id) found = node; });
+  return found;
 }
 
-function taskMatches(task) {
-  return Object.entries(state.filters).every(([key, selected]) => {
-    if (!selected) return true;
-    const actual = key === "state" ? taskState(task) : String(task?.[key] || "");
-    return actual === selected;
-  });
+// Reconciliation must not move the reader's focus, on any control rather than
+// on a listed few, and must not move it to a DIFFERENT control either - a
+// refresh that silently re-aims the keyboard at the neighbouring chip is worse
+// than one that drops focus, because the next Enter acts on something nobody
+// chose. So the focused control is found again by identity: its own id when the
+// renderer gave it one, otherwise its signature, and among several controls
+// that are genuinely indistinguishable, its occurrence among them. When the set
+// of matches is not the set that was captured, nothing is restored.
+function captureViewFocus() {
+  const active = document.activeElement;
+  if (!isElement(active) || active === ui.view || !ui.view.contains?.(active)) return null;
+  const signature = focusSignature(active);
+  const peers = signatureMatches(ui.view, signature);
+  const index = peers.indexOf(active);
+  if (index < 0) return null;
+  const capture = { node: active, id: active.id || null, signature, index, peers: peers.length, selection: null };
+  try {
+    if (Number.isInteger(active.selectionStart)) {
+      capture.selection = [active.selectionStart, Number.isInteger(active.selectionEnd) ? active.selectionEnd : active.selectionStart];
+    }
+  } catch {}
+  return capture;
 }
 
-function setTheme(theme) {
+function restoreViewFocus(capture) {
+  if (!capture || document.activeElement === capture.node) return;
+  let node = capture.id ? elementById(ui.view, capture.id) : null;
+  if (!node) {
+    const peers = signatureMatches(ui.view, capture.signature);
+    if (peers.length !== capture.peers) return;
+    node = peers[capture.index];
+  }
+  if (!isElement(node) || typeof node.focus !== "function") return;
+  node.focus({ preventScroll: true });
+  if (capture.selection && typeof node.setSelectionRange === "function") {
+    try { node.setSelectionRange(capture.selection[0], capture.selection[1]); } catch {}
+  }
+}
+
+function commitControlValues(update) {
+  update();
+  state.controlCommit += 1;
+  render();
+}
+
+function dot(tone) { return element("span", tone === "unknown" ? "ring" : `dot d-${tone}`); }
+
+function glyph(kind, tone) {
+  const presentation = REASON_PRESENTATION[kind] || REASON_PRESENTATION.decision;
+  const def = REASON_KINDS[kind] || { tone: "unknown", label: kind };
+  const useTone = tone || def.tone;
+  const wrap = element("span", `g ${presentation.glyph}`);
+  if (useTone && useTone !== "unknown") wrap.classList.add(`t-${useTone}`);
+  return { node: wrap, label: def.label, tone: useTone };
+}
+
+function fmtAge(seconds) {
+  if (!Number.isFinite(seconds)) return null;
+  return formatAge(seconds);
+}
+
+function ageChip(seconds, known = true) {
+  if (!known || !Number.isFinite(seconds)) return liveText("agechip age-unknown", "age unknown");
+  const minutes = seconds / 60;
+  const cls = minutes >= 240 ? "age-hot" : minutes >= 60 ? "age-warm" : "";
+  return liveText(`agechip ${cls}`.trim(), formatAge(seconds));
+}
+
+function pageHead(eyebrow, title, note) {
+  const head = element("div", "page-hd");
+  const row = element("div", "page-hd-row");
+  const text = element("div");
+  text.append(element("span", "page-eyebrow", eyebrow));
+  text.append(element("h1", "page-h", title));
+  row.append(text);
+  if (note) row.append(element("p", "refresh-note", note));
+  head.append(row);
+  return head;
+}
+
+function emptyState({ tone = "green", ring = false, big, facts, teach, action }) {
+  const box = element("div", "empty");
+  box.append(ring ? element("span", "ring") : dot(tone));
+  box.append(element("div", "empty-big", big));
+  if (facts) box.append(element("div", "empty-facts", facts));
+  if (teach) box.append(element("p", "empty-teach", teach));
+  if (action) box.append(action);
+  return box;
+}
+
+function notice(tone, heading, detail) {
+  const node = element("div", `notice${tone === "red" ? " error" : ""}`);
+  node.append(tone === "unknown" ? element("span", "ring") : dot(tone));
+  const body = element("div");
+  if (heading) body.append(element("span", "nhead", `${heading} `));
+  body.append(document.createTextNode(detail));
+  node.append(body);
+  return node;
+}
+
+function markdownDom(node) {
+  if (node.text !== undefined) return document.createTextNode(node.text);
+  const dom = element(node.tag, MARKDOWN_CLASS_FOR[node.tag] || "");
+  if (node.href) dom.setAttribute("href", safeUrl(node.href) || "#");
+  for (const child of node.children || []) dom.append(markdownDom(child));
+  return dom;
+}
+
+const MARKDOWN_CLASS_FOR = {
+  h1: "", h2: "", h3: "", h4: "", p: "", ul: "", ol: "", li: "",
+  code: "", pre: "", blockquote: "", a: "", strong: "", em: "", hr: "",
+};
+
+// --- theme, alerts ----------------------------------------------------------
+
+function setTheme(theme, persist = false) {
   document.documentElement.dataset.theme = theme;
-  try { localStorage.setItem("fm-dashboard-theme", theme); } catch {}
-  ui.themeButtons[0].textContent = theme === "dark" ? "Light mode" : "Dark mode";
-  ui.themeButtons[1].setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} mode`);
+  // Only an explicit toggle persists: initialization writes nothing, so "no
+  // stored preference" stays a real state and a later browser import of the
+  // operator's storage cannot fossilize a default they never chose.
+  if (persist) { try { localStorage.setItem("fm-dashboard-theme", theme); } catch {} }
+  const text = document.querySelector("#theme-button .nlabel");
+  if (text) text.textContent = theme === "dark" ? "Light mode" : "Dark mode";
 }
 
 function toggleTheme() {
-  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light", true);
 }
 
 function initializeTheme() {
+  // Dark is the root identity, and light is reached only by an explicit
+  // choice: with no stored preference the page is dark whatever the system
+  // says, the same default the fleet's shipped dashboard has always had.
   let saved = null;
   try { saved = localStorage.getItem("fm-dashboard-theme"); } catch {}
-  const preferred = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  setTheme(saved === "light" || saved === "dark" ? saved : preferred);
-  for (const button of ui.themeButtons) button.addEventListener("click", toggleTheme);
+  setTheme(saved === "light" || saved === "dark" ? saved : "dark");
+  ui.themeButton.addEventListener("click", toggleTheme);
 }
 
-// Notifications are entirely client-side: the server never learns that a
-// browser wants them, and a denied or unsupported permission simply leaves the
-// control off rather than degrading anything else on the page.
 function notificationsSupported() {
   return typeof Notification === "function";
 }
 
-function paintNotifyButtons() {
+function paintNotifyButton() {
   const supported = notificationsSupported();
   const label = !supported ? "Alerts unavailable" : state.notifyEnabled ? "Alerts on" : "Alerts off";
-  ui.notifyButtons[0].textContent = label;
-  ui.notifyButtons[0].disabled = !supported;
-  for (const button of ui.notifyButtons) {
-    button.setAttribute("aria-pressed", String(state.notifyEnabled));
-    if (button !== ui.notifyButtons[0]) button.setAttribute("aria-label", `${label}. Toggle desktop alerts for new inbox items.`);
-  }
-  ui.notifyButtons[1].disabled = !supported;
-  ui.notifyButtons[1].textContent = state.notifyEnabled ? "🔔" : "🔕";
+  const text = document.querySelector("#notify-button .nlabel");
+  if (text) text.textContent = label;
+  ui.notifyButton.disabled = !supported;
+  ui.notifyButton.setAttribute("aria-pressed", String(state.notifyEnabled));
 }
 
 async function toggleNotifications() {
@@ -268,25 +417,23 @@ async function toggleNotifications() {
     state.notifyEnabled = permission === "granted";
   }
   try { localStorage.setItem("fm-dashboard-alerts", state.notifyEnabled ? "on" : "off"); } catch {}
-  paintNotifyButtons();
+  paintNotifyButton();
 }
 
 function initializeNotifications() {
   let saved = null;
   try { saved = localStorage.getItem("fm-dashboard-alerts"); } catch {}
   state.notifyEnabled = saved === "on" && notificationsSupported() && Notification.permission === "granted";
-  for (const button of ui.notifyButtons) button.addEventListener("click", () => void toggleNotifications());
-  paintNotifyButtons();
+  ui.notifyButton.addEventListener("click", () => void toggleNotifications());
+  paintNotifyButton();
 }
 
 function announceNewItems(items, observed) {
   // A render that carried no snapshot saw nothing, so it cannot be the
-  // baseline: treating its empty inbox as "what was already there" would make
-  // every waiting item alert as new the moment the first snapshot arrives.
+  // baseline: its empty inbox must not turn every waiting item into an alert.
   if (!observed) return;
   const ids = new Set(items.map((item) => item.id));
   if (state.seenInboxIds === null) {
-    // The first render is the baseline; everything already waiting is not new.
     state.seenInboxIds = ids;
     return;
   }
@@ -295,1162 +442,1517 @@ function announceNewItems(items, observed) {
   if (!fresh.length || !state.notifyEnabled || !notificationsSupported() || Notification.permission !== "granted") return;
   for (const item of fresh.slice(0, 3)) {
     try {
-      new Notification(`Firstmate: ${item.label}`, { body: `${item.title}\n${item.reasons[0].text}`, tag: `fm-inbox-${item.id}` });
-    } catch {
-      return;
-    }
-  }
-  if (fresh.length > 3) {
-    try {
-      new Notification("Firstmate: more items need you", { body: `${fresh.length - 3} further inbox items appeared.`, tag: "fm-inbox-overflow" });
-    } catch {}
+      new Notification("Firstmate: an item needs you", { body: `${item.title}\n${item.reasons[0].text}`, tag: `fm-inbox-${item.id}` });
+    } catch { return; }
   }
 }
 
-function renderSignals(health) {
-  const overall = element("div", `signal overall ${health.overall.tone}`);
-  overall.append(dot(health.overall.tone), element("span", "label", "FLEET"), element("span", "", health.overall.label));
-  const chips = health.signals.map((signal) => {
-    const item = element("div", "signal");
-    item.title = `${signal.detail} ${signal.tooltip}`;
-    item.append(dot(signal.tone));
-    item.append(element("span", "label", signal.label.toUpperCase()));
-    item.append(element("span", "", signal.value));
-    return item;
+// --- verdict strip ----------------------------------------------------------
+
+function snapshotTasks() {
+  return Array.isArray(state.envelope?.snapshot?.tasks) ? state.envelope.snapshot.tasks : [];
+}
+
+function verdictFacts() {
+  const status = state.envelope?.status;
+  // An unreadable fleet is not a fleet that has done nothing: "unavailable"
+  // renders as its own explicit state, never as the calm first-run page.
+  const unavailable = status?.phase === "unavailable";
+  const firstRun = !unavailable && (!state.envelope?.snapshot || status?.phase === "first_run");
+  const inbox = firstRun || unavailable ? { items: [], counts: { total: 0, decisions: 0, credentials: 0, blocked: 0, failed: 0, review_ready: 0, merge_ready: 0, unknown: 0 } } : buildInbox(state.envelope.snapshot);
+  const amber = inbox.counts.decisions + inbox.counts.credentials + inbox.counts.review_ready + inbox.counts.merge_ready;
+  const red = inbox.counts.blocked + inbox.counts.failed;
+  return { firstRun, unavailable, inbox, amber, red, stale: status?.stale === true };
+}
+
+// The plain-words sentence for a snapshot that could not be read, with the one
+// error kind whose polling really does stop called out honestly.
+function snapshotFailureText(error) {
+  const failure = displayError(error, "snapshot_failed");
+  const detail = failure.message ? `: ${failure.message}` : "";
+  const followup = failure.kind === "service_unit_outdated"
+    ? " Snapshot polling is paused until the service is reinstalled."
+    : " Retrying automatically.";
+  return `The fleet snapshot could not be read${detail}.${followup}`;
+}
+
+function renderVerdict() {
+  const { firstRun, unavailable, inbox, amber, red, stale } = verdictFacts();
+  ui.app.dataset.stale = stale ? "true" : "false";
+
+  let text;
+  let tone;
+  // The specific sentences require a real count of their own kind: an inbox
+  // whose items are all unknown-toned (say, an unreadable PR state) must read
+  // as items needing you, never as "0 decisions waiting".
+  if (unavailable) { text = "Fleet unavailable"; tone = "unknown"; }
+  else if (firstRun) { text = "Nothing has run yet"; tone = "grey"; }
+  else if (inbox.counts.total === 0) { text = "Nothing needs you"; tone = "green"; }
+  else if (red === 0 && amber > 0) { text = `${amber} ${amber === 1 ? "decision" : "decisions"} waiting`; tone = "amber"; }
+  else if (amber === 0 && red > 0) { text = `${red} ${red === 1 ? "task" : "tasks"} blocked`; tone = "red"; }
+  else { text = `${inbox.counts.total} ${inbox.counts.total === 1 ? "item needs" : "items need"} you`; tone = "amber"; }
+
+  ui.vdot.className = `vdot ${stale || tone === "unknown" ? "vd-unknown" : `vd-${tone}`}`;
+  ui.verdict.className = `verdict${!stale && tone !== "grey" && tone !== "unknown" ? ` t-${tone}` : ""}`;
+  ui.verdict.textContent = text;
+
+  const tasks = snapshotTasks();
+  const segments = tasks.map((task) => {
+    const def = COLUMN_DEFS.find((column) => column.key === task?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
+    return element("span", `seg seg--${def.tone}`);
   });
-  replaceChildren(ui.signals, [overall, ...chips]);
-}
+  ui.segbar.replaceChildren(...(segments.length ? segments : [element("span", "seg")]));
 
-function renderHealthStrip(health) {
-  replaceChildren(ui.healthStrip, health.signals.map((signal) => {
-    const card = element("div", `health-card ${signal.tone}`);
-    card.title = signal.tooltip;
-    const head = element("div", "health-head");
-    head.append(dot(signal.tone), element("span", "label", signal.label.toUpperCase()));
-    card.append(head);
-    card.append(element("strong", "health-value", signal.value));
-    card.append(element("p", "health-detail", signal.detail));
-    return card;
-  }));
-}
+  const age = state.envelope?.status?.last_success_age_seconds;
+  ui.stalenote.hidden = !stale;
+  if (stale) ui.staleText.textContent = `data ${fmtAge(age) || "age unknown"} old · refresh failing`;
 
-function renderBadges(counts) {
-  const chips = badgeOrder
-    .filter(([key]) => counts[key] > 0)
-    .map(([key, label, tone]) => {
-      const badge = element("span", `badge ${tone}`);
-      badge.append(element("strong", "", String(counts[key])), element("span", "", label));
-      return badge;
-    });
-  if (!chips.length) chips.push(element("span", "badge quiet", "Nothing needs you"));
-  replaceChildren(ui.badges, chips);
-  ui.navBadge.textContent = String(counts.total);
-  ui.navBadge.hidden = counts.total === 0;
-}
-
-function fieldChips(readiness) {
-  const list = element("div", "pr-fields");
-  for (const name of ["state", "review", "checks", "mergeable"]) {
-    const value = readiness.fields[name];
-    const chip = element("span", `pr-field ${value === "unknown" ? "unknown" : ""}`.trim());
-    chip.append(element("span", "key", name), element("span", "value", value));
-    list.append(chip);
+  const badge = inbox.counts.total;
+  for (const node of [ui.navbadge, ui.tabbadge]) {
+    node.hidden = badge === 0;
+    node.textContent = String(badge);
   }
-  return list;
 }
 
-function prPanel(readiness) {
-  const panel = element("div", `pr-panel ${readiness.tone}`);
-  const head = element("div", "pr-head");
-  head.append(dot(readiness.tone), element("span", "label", readiness.label.toUpperCase()));
-  const observed = readiness.freshness === "cached" && readiness.age_seconds !== null
-    ? `observed ${formatAge(readiness.age_seconds)} ago`
-    : "never observed";
-  head.append(element("span", "pr-observed", observed));
-  panel.append(head);
-  panel.append(fieldChips(readiness));
-  const link = element("a", "pr-link", readiness.url);
-  link.href = readiness.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  panel.append(link);
-  for (const caveat of readiness.caveats) panel.append(element("p", "pr-caveat", `Caveat: ${caveat}`));
-  return panel;
+function publishStickyHeight() {
+  const height = ui.app.querySelector(".vstrip")?.getBoundingClientRect().height;
+  if (Number.isFinite(height) && height > 0) document.documentElement.style.setProperty("--vstrip-h", `${Math.ceil(height)}px`);
 }
 
-function inboxCard(item) {
-  const card = element("article", `inbox-card ${item.tone}`);
-  card.setAttribute("aria-label", `${item.label}: ${item.title}`);
-
-  const head = element("div", "inbox-head");
-  head.append(dot(item.tone));
-  head.append(element("span", "pill", item.label));
-  if (item.project) head.append(projectPill(item.project));
-  const age = element("span", `age ${item.age_known ? "" : "unknown"}`.trim(),
-    item.age_known ? `${formatAge(item.age_seconds)} · ${item.age_source}` : "age unknown");
-  head.append(age);
-  card.append(head);
-
-  card.append(element("h3", "", item.title));
-  card.append(element("div", "task-id", item.task_id ? item.task_id : `backlog item ${item.id}`));
-
-  const reasons = element("div", "reasons");
-  for (const reason of item.reasons) {
-    const row = element("div", `reason ${reason.tone}`);
-    const label = element("div", "reason-label");
-    label.append(dot(reason.tone), element("span", "", reason.label));
-    if (reason.key) label.append(element("code", "reason-key", reason.key));
-    label.append(element("span", "reason-source", reason.source));
-    row.append(label);
-    // Full text, never truncated: a half-shown decision is a decision the
-    // captain has to go and look up somewhere else.
-    row.append(element("p", "reason-text", reason.text));
-    reasons.append(row);
-  }
-  card.append(reasons);
-
-  if (item.pr) card.append(prPanel(item.pr));
-
-  for (const reference of item.work_items) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
-  }
-  if (item.action) {
-    const action = element("div", "card-action");
-    action.append(element("span", "label", "ACTION"), element("code", "", item.action));
-    card.append(action);
-  }
-  return card;
-}
-
-function renderInbox(inbox, envelope) {
-  if (!inbox.items.length) {
-    const empty = element("div", "inbox-empty");
-    const waiting = envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good";
-    empty.append(dot(waiting ? "amber" : "green"));
-    const copy = element("div");
-    copy.append(element("strong", "", waiting ? "No inbox yet" : "Nothing needs you"));
-    copy.append(element("p", "", waiting
-      ? "The captain inbox appears once a fleet snapshot is available. Until then this list is empty because nothing has been read, not because nothing is waiting."
-      : "No open decision, blocker, failure, credential request, or review-ready pull request is outstanding in this home."));
-    empty.append(copy);
-    replaceChildren(ui.inboxList, [empty]);
+// The rail's top and its height are both derived from --vstrip-h, so a strip
+// that grew without a re-render leaves the rail tucked under it or hanging past
+// the viewport, taking the alerts and theme controls pinned to its bottom with
+// it. The strip's own height is what is observed, because it changes for two
+// independent reasons - the viewport reflowing it, and its own counts and
+// notes rewrapping at a fixed width - and only one of those arrives with data.
+// Observing that box covers both, which is why the resize listener is the
+// fallback for a browser without ResizeObserver rather than a second path
+// republishing the same measurement on every frame of a drag.
+function observeStickyHeight() {
+  const strip = typeof ResizeObserver === "function" ? ui.app.querySelector(".vstrip") : null;
+  if (strip) {
+    new ResizeObserver(publishStickyHeight).observe(strip);
     return;
   }
-  replaceChildren(ui.inboxList, inbox.items.map(inboxCard));
+  window.addEventListener("resize", publishStickyHeight, { passive: true });
 }
 
-function renderNotices(envelope) {
-  const status = envelope?.status;
-  if (!status) {
-    replaceChildren(ui.notices, []);
-    return;
-  }
-  if (status.phase === "first_run") {
-    const notice = element("div", "notice");
-    notice.append(dot("amber"), element("div", "", "Waiting for the first fleet snapshot. The inbox and board will populate automatically."));
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  if (status.error) {
-    const notice = element("div", `notice ${envelope.snapshot ? "" : "error"}`.trim());
-    const copy = element("div");
-    const heading = status.stale ? "Showing the last known good snapshot" : "Fleet snapshot unavailable";
-    const followup = status.error.kind === "service_unit_outdated"
-      ? " Snapshot polling is paused until the service is reinstalled."
-      : " Retrying automatically.";
-    copy.append(element("strong", "", heading));
-    copy.append(document.createTextNode(`${status.error.kind}: ${status.error.message}.${followup}`));
-    if (status.error.stderr) copy.append(element("code", "", ` ${status.error.stderr}`));
-    notice.append(dot(status.stale ? "amber" : "red"), copy);
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  if (status.stale) {
-    const notice = element("div", "notice");
-    notice.append(dot("amber"), element("div", "", `Snapshot is ${formatAge(status.last_success_age_seconds)} old. Liveness and ages are unverified until refresh recovers.`));
-    replaceChildren(ui.notices, [notice]);
-    return;
-  }
-  replaceChildren(ui.notices, []);
-}
+// --- Needs you --------------------------------------------------------------
 
-function valuesFor(tasks, key) {
-  return [...new Set(tasks.map((task) => key === "state" ? taskState(task) : String(task?.[key] || "")).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-}
+function needsCard(item) {
+  const primary = item.reasons[0];
+  const def = REASON_KINDS[primary.kind] || { tone: "amber", label: "Decision" };
+  const card = element("article", "card");
+  card.setAttribute("data-task", item.id);
 
-function syncSelect(select, values, key) {
-  const selected = state.filters[key];
-  const first = select.options[0];
-  replaceChildren(select, [first, ...values.map((value) => {
-    const option = element("option", "", key === "state" ? (columnLabels[value] || value) : value);
-    option.value = value;
-    return option;
-  })]);
-  select.value = values.includes(selected) ? selected : "";
-  if (!values.includes(selected)) state.filters[key] = "";
-}
+  const top = element("div", "card-top");
+  const badge = element("span", `kind t-${def.tone === "unknown" ? "grey" : def.tone}`);
+  badge.append(glyph(primary.kind, def.tone).node, document.createTextNode(def.label));
+  top.append(badge);
+  if (item.project) top.append(element("span", "proj", label(item.project)));
+  top.append(ageChip(item.age_seconds, item.age_known));
+  card.append(top);
 
-function renderFilters(tasks) {
-  for (const key of Object.keys(state.filters)) {
-    syncSelect(ui.filterForm.elements[key], valuesFor(tasks, key), key);
-  }
-  const count = Object.values(state.filters).filter(Boolean).length;
-  ui.filterCount.textContent = count ? `(${count} active)` : "";
-}
+  card.append(element("h3", "card-title", item.title));
+  card.append(element("p", "card-ask", primary.text));
 
-function endpointLiveness(task) {
-  const status = task?.endpoint?.status;
-  if (status === "alive") return "alive";
-  if (status === "dead" || status === "absent") return "dead";
-  if (status === "unknown") return "unknown";
-  return task?.endpoint?.exists === false ? "dead" : "unknown";
-}
-
-function endpointTone(task) {
-  const liveness = endpointLiveness(task);
-  return liveness === "alive" ? "green" : liveness === "dead" ? "red" : "grey";
-}
-
-function endpointLabel(task) {
-  const status = task?.endpoint?.status;
-  if (["alive", "dead", "absent", "unknown"].includes(status)) return status;
-  if (task?.endpoint?.exists === true) return "present";
-  if (task?.endpoint?.exists === false) return "absent";
-  return "unknown";
-}
-
-function actionMetadata(task, className = "card-action") {
-  const action = task?.card?.action;
-  if (typeof action !== "string" || !action) return null;
-  const metadata = element("div", className);
-  metadata.append(element("span", "label", "ACTION"), element("code", "", action));
-  return metadata;
-}
-
-function workItemLabel(reference) {
-  const number = reference?.number ? `#${reference.number}` : "";
-  return [reference?.path || reference?.repo || reference?.owner, number].filter(Boolean).join("");
-}
-
-function workItemLink(reference) {
-  if (!reference?.url) return null;
-  const liveState = reference.forge !== "unknown" && ["open", "closed", "merged"].includes(reference?.enrichment?.state);
-  const link = element("a", `work-link ${liveState ? "" : "plain"}`.trim());
-  link.href = reference.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  link.title = reference?.enrichment?.title || reference.url;
-  link.append(element("span", "host", reference.host || reference.forge || "link"));
-  link.append(element("span", "path", workItemLabel(reference) || reference.url));
-  if (liveState) link.append(element("span", "item-state", reference.enrichment.state));
-  return link;
-}
-
-function taskCard(task) {
-  const column = taskState(task);
-  const card = element("article", `card ${column}`);
-  card.setAttribute("aria-label", `${task.id}: ${titleFor(task)}`);
-  const head = element("div", "card-head");
-  head.append(element("span", "pill", `${task.kind || "task"}`));
-  if (task.project) head.append(projectPill(task.project));
-  head.append(dot(endpointTone(task)));
-  head.append(element("span", "age", `${formatAge(task?.paths?.status_log?.last_event_age_seconds)} ago`));
-  card.append(head);
-  card.append(element("div", "task-id", task.id));
-  card.append(element("h3", "", titleFor(task)));
-
-  const dispatch = [task.harness, task.model, task.effort].filter(Boolean).join(" · ");
-  card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
-  const detail = task?.current_state?.detail || task?.current_state?.state || task?.card?.reason || "No state detail";
-  card.append(element("div", "detail", detail));
-  const action = actionMetadata(task);
-  if (action) card.append(action);
-
-  const endpoint = element("div", "endpoint");
-  endpoint.append(dot(endpointTone(task)));
-  endpoint.append(document.createTextNode(`endpoint ${endpointLabel(task)}`));
-  card.append(endpoint);
-
-  if (task?.pr?.url) {
-    const link = element("a", "pr-link", task.pr.url);
-    link.href = task.pr.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    card.append(link);
-  }
-
-  const references = Array.isArray(task.work_items) ? task.work_items : [];
-  for (const reference of references) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
-  }
-
-  // The per-agent timeline is one click from the card it belongs to, because a
-  // fleet-wide stream is where you look afterwards and a single agent's own
-  // sequence is what you want while it is working.
-  const timeline = element("button", "card-timeline", "Timeline");
-  timeline.type = "button";
-  timeline.addEventListener("click", () => showTaskTimeline(task.id));
-  card.append(timeline);
-  return card;
-}
-
-function renderSecondmates(tasks) {
-  const mates = tasks.filter((task) => task.kind === "secondmate" && taskMatches(task));
-  ui.mateCount.textContent = String(mates.length);
-  if (!mates.length) {
-    replaceChildren(ui.mateList, [element("div", "empty-inline", "None registered in this view")]);
-    return;
-  }
-  replaceChildren(ui.mateList, mates.map((task) => {
-    const mate = element("article", "mate");
-    mate.append(dot(endpointTone(task)));
-    mate.append(element("strong", "", task.id));
-    mate.append(element("span", "pill", columnLabels[taskState(task)] || taskState(task) || "unknown"));
-    const detail = [task.harness, task.model, task.effort, task.current_state?.detail].filter(Boolean).join(" · ");
-    mate.append(element("small", "", detail || "No current detail"));
-    const action = actionMetadata(task, "mate-action");
-    if (action) mate.append(action);
-    return mate;
-  }));
-}
-
-function emptyBoard(phase, errorKind = null) {
-  const panel = element("div", "empty-board");
-  panel.append(dot(phase === "first_run" || phase === "unavailable" ? "amber" : "green"));
-  panel.append(element("h2", "", phase === "first_run" ? "Waiting for the first snapshot" : phase === "unavailable" ? "Fleet unavailable" : "Fleet is empty"));
-  panel.append(element("p", "", phase === "first_run"
-    ? "The snapshot command has not completed yet. Tasks will appear here without a page reload."
-    : phase === "unavailable"
-      ? errorKind === "service_unit_outdated"
-        ? "The server cannot produce a valid fleet snapshot yet. Its error is shown above. Snapshot polling will resume after the service is reinstalled."
-        : "The server cannot produce a valid fleet snapshot yet. Its error is shown above and refreshes continue automatically."
-      : "No task metadata is present. The board is read-only and will show work as soon as Firstmate starts it."));
-  return panel;
-}
-
-function renderBoard(snapshot, envelope) {
-  const allTasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
-  renderFilters(allTasks);
-  renderSecondmates(allTasks);
-  const mainTasks = allTasks.filter((task) => task.kind !== "secondmate" && taskMatches(task));
-  const precedence = Array.isArray(snapshot?.card_precedence) ? snapshot.card_precedence.filter((column) => column !== "secondmate") : [];
-  if (!snapshot || (!allTasks.length && envelope?.status?.phase !== "ready" && envelope?.status?.phase !== "last_good")) {
-    replaceChildren(ui.kanban, [emptyBoard(envelope?.status?.phase, envelope?.status?.error?.kind)]);
-    return;
-  }
-  if (!allTasks.length) {
-    replaceChildren(ui.kanban, [emptyBoard("ready")]);
-    return;
-  }
-  replaceChildren(ui.kanban, precedence.map((columnName) => {
-    const tasks = mainTasks.filter((task) => taskState(task) === columnName);
-    const section = element("section", `column ${["needs_decision", "blocked", "failed"].includes(columnName) ? "attention" : ""}`.trim());
-    section.setAttribute("aria-labelledby", `column-${columnName}`);
-    const head = element("div", "column-head");
-    head.append(dot(columnTones[columnName]));
-    const title = element("h2", "", columnLabels[columnName] || columnName);
-    title.id = `column-${columnName}`;
-    head.append(title, element("span", "count", String(tasks.length)));
-    section.append(head);
-    if (tasks.length) section.append(...tasks.map(taskCard));
-    else section.append(element("div", "empty-column", mainTasks.length ? "Nothing here" : "No matching tasks"));
-    return section;
-  }));
-}
-
-// ---------------------------------------------------------------------------
-// Completed-work history
-// ---------------------------------------------------------------------------
-
-// The only path from report text to the page. Every node is built with
-// createElement and createTextNode against markdown.js's tag allowlist, the
-// class name must be one of its closed vocabulary, and `href` is re-validated
-// here even though the parser already applied the same policy. No other
-// attribute is ever set, so an `onerror` or `style` carried by a crafted node
-// cannot reach the DOM. There is no innerHTML on this path by construction.
-// --- activity -------------------------------------------------------------
-//
-// Every value below reaches the page through textContent. The server already
-// refuses anything that is not an allowlisted token, so this is the second of
-// two independent reasons a stored event can never become markup.
-
-function activityRow(row) {
-  const item = element("li", "activity-row");
-  item.title = row.at;
-  item.append(element("span", "activity-time", clockLabel(row.at)));
-
-  const body = element("div", "activity-body");
-  const head = element("div", "activity-head");
-  head.append(dot(typeTone(row.type)));
-  head.append(element("strong", "", typeLabel(row.type)));
-  if (row.tool) head.append(element("span", "activity-tool", row.tool));
-  if (row.outcome) {
-    const outcome = element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome);
-    head.append(outcome);
-  }
-  body.append(head);
-
-  const meta = [row.task, row.harness].filter(Boolean).join(" · ");
-  if (meta) body.append(element("div", "activity-meta", meta));
-  if (row.summary) body.append(element("div", "activity-summary", row.summary));
-  item.append(body);
-  return item;
-}
-
-// The activity filters are rebuilt from a stream that a broadcast replaces up
-// to four times a second, so replacing their options unconditionally would
-// close an open dropdown under the reader every quarter second - on a busy
-// fleet, which is exactly when the filter is wanted. Options are therefore
-// replaced only when the list has actually changed, and never while the reader
-// is in the control; the next render picks it up once focus leaves.
-function syncActivitySelect(key, values) {
-  const select = ui.activityForm.elements[key];
-  const selected = state.activity.filters[key];
-  // A filter whose value is no longer in the stream is kept in the list rather
-  // than silently cleared, so a reader watching one agent does not get pulled
-  // back to the whole fleet the moment that agent goes quiet.
-  const wanted = selected && !values.includes(selected) ? [...values, selected] : values;
-  const current = [...select.options].slice(1).map((option) => option.value);
-  const unchanged = current.length === wanted.length
-    && current.every((value, index) => value === wanted[index]);
-  if (!unchanged && document.activeElement !== select) {
-    const first = select.options[0];
-    replaceChildren(select, [first, ...wanted.map((value) => {
-      const option = element("option", "", key === "type" ? typeLabel(value) : value);
-      option.value = value;
-      return option;
-    })]);
-  }
-  if (select.value !== selected) select.value = selected;
-}
-
-function renderActivity() {
-  const envelope = state.activity.envelope;
-  // The stream and the selected task's backfill are two separate slots and are
-  // merged here rather than in either one, so a broadcast can replace the whole
-  // stream without discarding rows that were fetched from the store.
-  const merged = mergeTaskBackfill(envelope?.events, state.activity.backfill, state.activity.filters.task);
-  const view = buildTimeline({ events: merged }, state.activity.filters);
-  for (const key of Object.keys(state.activity.filters)) syncActivitySelect(key, view.choices[key]);
-  const active = Object.values(state.activity.filters).filter(Boolean).length;
-  ui.activityFilterCount.textContent = active ? `(${active} active)` : "";
-
-  const notices = [];
-  const notice = timelineNotice(envelope, merged.length, view.total);
-  if (notice.text) notices.push(historyWarning(notice.tone, "", notice.text));
-  if (view.truncated) {
-    notices.push(historyWarning("amber", "Showing the most recent events only",
-      ` ${view.total} events match and the newest ${view.rows.length} are drawn.`));
-  }
-  const selected = state.activity.filters.task;
-  if (selected) {
-    const task = (state.envelope?.snapshot?.tasks || []).find((entry) => entry?.id === selected);
-    const gap = sourceNotice(task, envelope);
-    if (gap) notices.push(historyWarning("amber", "", gap));
-  }
-  replaceChildren(ui.activityNotices, notices);
-  replaceChildren(ui.activityList, view.rows.map(activityRow));
-
-  // Same shape as every other refresh note on the page: a relative age, not a
-  // raw stamp. The exact instant stays on each row's own title.
-  const newest = view.rows[0]?.epoch;
-  ui.activityNote.textContent = newest
-    ? `${view.total} event${view.total === 1 ? "" : "s"} · newest ${formatAge(Math.max(0, Math.floor(Date.now() / 1000) - newest))} ago`
-    : "No events to show";
-}
-
-function markdownDom(node) {
-  if (typeof node?.text === "string") return document.createTextNode(node.text);
-  if (!node || !MARKDOWN_TAGS.has(node.tag)) return document.createTextNode("");
-  const el = document.createElement(node.tag);
-  if (typeof node.className === "string" && MARKDOWN_CLASSES.has(node.className)) el.className = node.className;
-  if (node.tag === "a") {
-    const href = safeUrl(node.href);
-    if (!href) return document.createTextNode(plainText(node));
-    el.setAttribute("href", href);
-    el.setAttribute("target", "_blank");
-    el.setAttribute("rel", "noreferrer noopener");
-  }
-  for (const child of Array.isArray(node.children) ? node.children : []) el.append(markdownDom(child));
-  return el;
-}
-
-function plainText(node) {
-  if (typeof node?.text === "string") return node.text;
-  return (Array.isArray(node?.children) ? node.children : []).map(plainText).join("");
-}
-
-function ageSince(millis) {
-  if (typeof millis !== "number") return null;
-  return Math.max(0, Math.floor((Date.now() - millis) / 1000));
-}
-
-// Red is a fault, amber is a warning, and everything else is information on a
-// neutral surface rather than on the warning strip. A heading is optional: an
-// empty one is left out entirely rather than drawn as an empty block, which
-// would give the notice a line of leading no other notice on the page has.
-function noticeVariant(tone) {
-  if (tone === "red") return "error";
-  if (tone === "amber") return "";
-  return "info";
-}
-
-function historyWarning(tone, heading, detail) {
-  const notice = element("div", `notice ${noticeVariant(tone)}`.trim());
-  const copy = element("div");
-  if (heading) copy.append(element("strong", "", heading));
-  copy.append(document.createTextNode(detail));
-  notice.append(dot(tone), copy);
-  return notice;
-}
-
-function renderHistoryWarnings(view, envelope) {
-  const notices = [];
-  const status = envelope?.status;
-  if (status?.error) {
-    notices.push(historyWarning(envelope?.history ? "amber" : "red",
-      envelope?.history ? "Showing the last completed-work records that could be read" : "Completed-work history unavailable",
-      ` ${status.error.kind}: ${status.error.message}. Retrying automatically.`));
-  }
-  if (view.truncated) {
-    notices.push(historyWarning("amber", "More completed work exists than is shown",
-      ` This view reads the most recent ${envelope?.config?.record_limit ?? "bounded set of"} completion records; ${view.record_total ?? "more"} are stored. Narrow the filters or raise the record limit to see older work.`));
-  }
-  if (view.malformed.length) {
-    const notice = element("div", "notice");
-    const copy = element("div");
-    copy.append(element("strong", "", `${view.malformed.length} completion record${view.malformed.length === 1 ? "" : "s"} could not be read`));
-    copy.append(document.createTextNode(" These tasks completed but their durable records are unusable, so they are missing from the list below rather than absent from history."));
-    const list = element("ul", "malformed-list");
-    for (const entry of view.malformed) {
-      const item = element("li");
-      item.append(element("code", "", entry.id));
-      item.append(document.createTextNode(` ${entry.explanation}`));
-      if (entry.path) item.append(element("code", "quiet-path", entry.path));
-      list.append(item);
+  const extra = [];
+  if (item.pr?.url) {
+    // Every URL this page can follow passes the same allowlist first, and this
+    // is the one sink that opens one itself rather than handing the browser an
+    // href to judge. A refused URL keeps the pull request on the card - the
+    // task page shows the recorded address - and only loses the jump.
+    const href = safeUrl(item.pr.url);
+    const verdict = item.pr.verdict || "pull request";
+    if (href) {
+      const line = element("button", "card-linkline", `${verdict} · open`);
+      line.type = "button";
+      line.addEventListener("click", (event) => { event.stopPropagation(); window.open(href, "_blank", "noopener"); });
+      extra.push(line);
+    } else {
+      extra.push(element("div", "card-id", `${verdict} · link not opened: not an http or https address`));
     }
-    copy.append(list);
-    notice.append(dot("amber"), copy);
-    notices.push(notice);
   }
-  replaceChildren(ui.historyWarnings, notices);
-}
-
-function usagePanel(row) {
-  const tone = row.usage.available
-    ? ""
-    : row.usage.collection === "operational"
-      ? "operational"
-      : "unknown";
-  const panel = element("div", `usage-panel ${tone}`.trim());
-  panel.append(element("span", "label", "USAGE"));
-  if (!row.usage.available) {
-    // Never a blank cell and never a zero: "unavailable" and "nothing happened"
-    // are different facts.
-    panel.append(element("span", "usage-total", "unavailable"));
-    panel.append(element("span", "usage-reason", row.usage.reason));
-    return panel;
+  if (item.reasons.length > 1) {
+    const more = item.reasons.slice(1).map((reason) => (REASON_KINDS[reason.kind] || { label: reason.kind }).label);
+    extra.push(element("div", "card-id", `also: ${more.join(", ")}`));
   }
-  panel.append(element("span", "usage-total", `${formatTokens(row.usage.totals.total_tokens)} tokens`));
-  const parts = [
-    ["in", row.usage.totals.input_tokens],
-    ["out", row.usage.totals.output_tokens],
-    ["cache read", row.usage.totals.cache_read_tokens],
-    ["reasoning", row.usage.totals.reasoning_tokens],
-  ].filter(([, value]) => typeof value === "number");
-  for (const [name, value] of parts) {
-    const chip = element("span", "usage-part");
-    chip.append(element("span", "key", name), element("span", "value", formatTokens(value)));
-    panel.append(chip);
-  }
-  if (row.usage.cost) {
-    panel.append(element("span", "usage-part", `≈ ${row.usage.cost.estimated.toFixed(2)} ${row.usage.cost.currency || ""}`.trim()));
-  }
-  return panel;
-}
+  extra.push(element("div", "card-id", item.id));
+  const wrap = element("div", "card-extra");
+  wrap.append(...extra);
+  card.append(wrap);
 
-function historyPrPanel(row) {
-  const panel = element("div", `pr-panel ${row.pr.tone}`);
-  const head = element("div", "pr-head");
-  head.append(dot(row.pr.tone), element("span", "label", row.pr.state.toUpperCase()));
-  head.append(element("span", "pr-observed", row.pr.observed
-    ? `recorded ${row.pr.observed_at}`
-    : "no status was recorded at completion"));
-  panel.append(head);
-  const fields = element("div", "pr-fields");
-  for (const field of row.pr.fields) {
-    const chip = element("span", `pr-field ${field.value === "unknown" ? "unknown" : ""}`.trim());
-    chip.append(element("span", "key", field.name), element("span", "value", field.value));
-    fields.append(chip);
-  }
-  panel.append(fields);
-  // Always the complete https URL, never a bare number.
-  const link = element("a", "pr-link", row.pr.url);
-  link.href = row.pr.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  panel.append(link);
-  return panel;
-}
-
-function historyCard(row) {
-  const card = element("article", `history-card ${row.outcome.tone}`);
-  card.setAttribute("aria-label", `${row.outcome.label}: ${row.title || row.id}`);
-
-  const head = element("div", "card-head");
-  head.append(dot(row.outcome.tone));
-  head.append(element("span", "pill", row.outcome.label));
-  head.append(element("span", "pill", row.kind));
-  if (row.project) head.append(projectPill(row.project));
-  const age = ageSince(row.completed_millis);
-  head.append(element("span", "age", row.timestamps.completed
-    ? `${row.timestamps.completed}${age === null ? "" : ` · ${formatAge(age)} ago`}`
-    : "completion time unknown"));
-  card.append(head);
-
-  card.append(element("div", "task-id", row.id));
-  card.append(element("h3", "", row.title || "No recorded title"));
-
-  const dispatch = [row.harness, row.model, row.effort].filter(Boolean).join(" · ");
-  card.append(element("div", "dispatch", dispatch || "dispatch metadata unavailable"));
-
-  const meta = element("div", "history-meta");
-  meta.append(element("span", "", `took ${formatDuration(row.duration)}`));
-  if (row.mode) meta.append(element("span", "", `delivery ${row.mode}`));
-  if (row.yolo) meta.append(element("span", "", `autonomy ${row.yolo}`));
-  if (row.outcome.forced) meta.append(element("span", "warn", "cleaned up with unlanded work discarded"));
-  if (row.outcome.state === "unknown") meta.append(element("span", "warn", `final result not recorded (${row.outcome.source})`));
-  card.append(meta);
-
-  if (row.outcome.detail) card.append(element("div", "detail", row.outcome.detail));
-
-  if (row.pr.present) card.append(historyPrPanel(row));
-
-  for (const reference of row.work_items) {
-    const link = workItemLink(reference);
-    if (link) card.append(link);
-  }
-
-  card.append(usagePanel(row));
-
-  const actions = element("div", "history-actions");
-  if (row.report.present) {
-    const button = element("button", "report-button", "Read report");
-    button.type = "button";
-    button.addEventListener("click", () => void openReport(row));
-    actions.append(button);
-  } else if (row.kind === "scout") {
-    actions.append(element("span", "quiet", "No report was retained for this investigation"));
-  }
-  if (row.gbrain.status === "captured") actions.append(element("span", "pill quiet", "captured for search"));
-  card.append(actions);
+  card.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: item.id }); });
   return card;
 }
 
-function renderHistoryPager(view) {
-  if (view.page.pages <= 1) {
-    replaceChildren(ui.historyPager, []);
-    return;
+function renderNeeds() {
+  const { firstRun, unavailable, inbox } = verdictFacts();
+  const status = state.envelope?.status;
+  const note = unavailable
+    ? "snapshot refresh failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
+
+  const view = viewRoot("needs");
+  view.append(pageHead("Queue · oldest first", "Needs you", note));
+
+  if (unavailable) {
+    view.append(notice("red", "Fleet snapshot unavailable.", snapshotFailureText(status?.error)));
+    view.append(emptyState({
+      ring: true,
+      big: "The fleet cannot be read.",
+      teach: "Until the snapshot can be read again, nothing on this page is a claim about the fleet.",
+    }));
+    return view;
   }
-  const previous = element("button", "pager-button", "Newer");
-  previous.type = "button";
-  previous.disabled = view.page.index === 0;
-  previous.addEventListener("click", () => { state.history.page = view.page.index - 1; renderHistory(); });
-  const next = element("button", "pager-button", "Older");
-  next.type = "button";
-  next.disabled = view.page.index >= view.page.pages - 1;
-  next.addEventListener("click", () => { state.history.page = view.page.index + 1; renderHistory(); });
-  replaceChildren(ui.historyPager, [
-    previous,
-    element("span", "pager-label", `Page ${view.page.index + 1} of ${view.page.pages}`),
-    next,
-  ]);
+
+  if (firstRun) {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing yet.",
+      teach: "When the fleet starts work, anything that needs your decision - approvals, credential requests, blocked tasks, review-ready pull requests - appears here as a card, oldest first. Everything else stays quiet.",
+    }));
+    return view;
+  }
+
+  if (inbox.items.length) {
+    const cards = element("div", "cards");
+    cards.append(...inbox.items.map(needsCard));
+    view.append(cards);
+    return view;
+  }
+
+  const activeCount = snapshotTasks().filter((task) => (task?.card?.column || "active") === "active").length;
+  view.append(emptyState({
+    big: "Nothing needs you.",
+    facts: `${activeCount || "No"} ${activeCount === 1 ? "task" : "tasks"} under way · last check ${formatAge(status?.last_success_age_seconds)} ago`,
+  }));
+  return view;
 }
 
-function renderHistoryFilters(view) {
-  for (const key of ["project", "harness", "model", "kind", "outcome"]) {
-    const select = ui.historyForm.elements[key];
-    const values = view.facets[key];
-    // buildHistory has already dropped a filter whose value left the facets, so
-    // the control shows exactly what the list below it was built from.
-    const selected = view.filters[key];
-    state.history.filters[key] = selected;
-    const first = select.options[0];
-    replaceChildren(select, [first, ...values.map((value) => {
-      const option = element("option", "", value);
-      option.value = value;
-      return option;
-    })]);
-    select.value = selected;
-  }
-  const count = Object.values(view.filters).filter(Boolean).length;
-  ui.historyFilterCount.textContent = count ? `(${count} active)` : "";
+// --- Fleet -------------------------------------------------------------------
+
+function taskRow(task) {
+  const def = COLUMN_DEFS.find((column) => column.key === task?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
+  const row = element("button", "trow");
+  row.type = "button";
+  row.append(element("div", "trow-title", task.backlog?.title || task.id));
+  const meta = element("div", "trow-meta");
+  const project = task.project ? label(task.project) : null;
+  if (project) meta.append(element("span", "", project));
+  const detail = [task.harness, task.model].filter(Boolean).join(" · ");
+  meta.append(element("span", "mid", detail || task.id));
+  meta.append(liveText("age", fmtAge(task.spawn_age_seconds) || "age unknown"));
+  row.append(meta);
+  row.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: task.id }); });
+  return row;
 }
+
+function fleetColumns() {
+  const tasks = snapshotTasks();
+  return COLUMN_DEFS
+    .map((def) => ({ def, items: tasks.filter((task) => (task?.card?.column || "idle") === def.key) }))
+    .filter((column) => column.items.length > 0);
+}
+
+function renderFleet() {
+  const view = viewRoot("fleet");
+  const { unavailable } = verdictFacts();
+  const status = state.envelope?.status;
+  const note = unavailable
+    ? "snapshot refresh failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
+  view.append(pageHead("Live board", "Fleet", note));
+
+  if (unavailable) {
+    view.append(notice("red", "Fleet snapshot unavailable.", snapshotFailureText(status?.error)));
+    view.append(emptyState({
+      ring: true,
+      big: "The fleet cannot be read.",
+      teach: "Until the snapshot can be read again, nothing on this page is a claim about the fleet.",
+    }));
+    return view;
+  }
+
+  const tasks = snapshotTasks();
+  if (!state.envelope?.snapshot) {
+    view.append(emptyState({
+      ring: true,
+      big: "No workers yet.",
+      teach: "Once workers pick up tasks, this board shows every one of them grouped by state - needs decision, blocked, parked, failed, in review, active, idle - with live counts on the filters above.",
+    }));
+    return view;
+  }
+
+  const columns = fleetColumns();
+  const counts = new Map(columns.map((column) => [column.def.key, column.items.length]));
+  const filters = state.fleet.filters;
+  const shown = columns.filter((column) => filters.length === 0 || filters.includes(column.def.key));
+  const visibleTotal = shown.reduce((sum, column) => sum + column.items.length, 0);
+
+  const chips = element("div", "filters");
+  const allChip = element("button", `fchip${filters.length === 0 ? " is-on" : ""}`);
+  allChip.type = "button";
+  allChip.append(document.createTextNode(`All `), liveText("cnt", String(tasks.length)));
+  allChip.addEventListener("click", () => { state.fleet.filters = []; render(); });
+  chips.append(allChip);
+  for (const column of columns) {
+    const chip = element("button", `fchip${filters.includes(column.def.key) ? " is-on" : ""}`);
+    chip.type = "button";
+    chip.append(dot(column.def.tone), document.createTextNode(` ${column.def.label} `), liveText("cnt", String(counts.get(column.def.key))));
+    chip.addEventListener("click", () => {
+      state.fleet.filters = filters.includes(column.def.key)
+        ? filters.filter((key) => key !== column.def.key)
+        : [...filters, column.def.key];
+      render();
+    });
+    chips.append(chip);
+  }
+  view.append(chips);
+
+  if (visibleTotal > 0) {
+    const board = element("div", "board");
+    for (const { def, items } of shown) {
+      const col = element("section", "col");
+      const head = element("div", "col-h");
+      head.append(dot(def.tone), document.createTextNode(def.label), liveText("cnt", String(items.length)));
+      col.append(head);
+      col.append(...items.map(taskRow));
+      if (def.key === "needs_decision") {
+        const link = element("button", "col-link", "Answer in Needs you →");
+        link.type = "button";
+        link.addEventListener("click", () => { window.location.hash = hashFor(viewRoute("needs")); });
+        col.append(link);
+      }
+      board.append(col);
+    }
+    view.append(board);
+    return view;
+  }
+
+  if (tasks.length === 0) {
+    view.append(emptyState({
+      ring: true,
+      big: "No workers yet.",
+      teach: "Once workers pick up tasks, this board shows every one of them grouped by state - needs decision, blocked, parked, failed, in review, active, idle - with live counts on the filters above.",
+    }));
+    return view;
+  }
+
+  const clear = element("button", "fchip", "Clear filter");
+  clear.type = "button";
+  clear.addEventListener("click", () => { state.fleet.filters = []; render(); });
+  view.append(emptyState({
+    big: "Filtered to nothing.",
+    facts: `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"} hidden by the current filter`,
+    action: clear,
+  }));
+  return view;
+}
+
+// --- Backlog -----------------------------------------------------------------
+
+// A facet key is a record value, and a record value is sometimes a clone path.
+// option.value reflects a content attribute, so writing the key there would put
+// that path in the document as surely as a text node would. The option carries
+// its position instead and the change handler resolves the key from the list
+// the options were built from, which keeps filtering exact on the raw value
+// while the only project string the page renders is the one label() returned.
+//
+// The placeholder is its own argument rather than a reserved key in that list,
+// because any key this function reserved would be a real facet value somewhere
+// - a project or a backlog kind literally named "all" would vanish from the
+// filter while its items stayed in the queue.
+function backlogSelect(name, value, placeholder, options, change) {
+  const select = element("select", "fsel");
+  select.name = name;
+  const all = element("option", "", placeholder);
+  all.value = "";
+  select.append(all);
+  options.forEach(([, optionLabel], index) => {
+    const opt = element("option", "", optionLabel);
+    opt.value = String(index);
+    select.append(opt);
+  });
+  const current = value === null || value === undefined ? "" : String(value);
+  const selected = options.findIndex(([key]) => String(key) === current);
+  select.value = selected === -1 ? "" : String(selected);
+  select.addEventListener("change", () => {
+    const chosen = select.value === "" ? null : options[Number(select.value)];
+    change(chosen ? String(chosen[0]) : "");
+  });
+  return select;
+}
+
+function renderBacklog() {
+  const view = viewRoot("backlog");
+  const status = state.backlog.envelope?.status;
+  const note = status?.phase === "unavailable"
+    ? "backlog read failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first backlog read" : "Waiting for the first backlog read";
+  view.append(pageHead("Queue · read-only", "Backlog", note));
+
+  const built = buildBacklog(state.backlog.envelope, { ...state.backlog.filters, tab: state.backlog.tab, page: state.backlog.page });
+  state.backlog.page = built.page.index;
+
+  if (built.shape === "pending") {
+    view.append(emptyState({ ring: true, big: "Reading the queue.", teach: "Waiting for the first backlog read to finish." }));
+    return view;
+  }
+  if (built.shape === "unavailable") {
+    view.append(notice("red", "Backlog unavailable.", built.error.text));
+    view.append(emptyState({
+      ring: true,
+      big: "The queue cannot be read.",
+      teach: "Until the backlog can be read again, nothing on this page is a claim about the queue.",
+    }));
+    return view;
+  }
+
+  if (built.error) view.append(notice(built.error.tone === "red" ? "red" : "amber", null, built.error.text));
+  // Counted and said out loud, never quietly skipped: queued work missing from
+  // the queue with nothing disclosing it is this page's worst failure.
+  if (built.unreadable) {
+    const rows = `${built.unreadable} current backlog ${built.unreadable === 1 ? "row" : "rows"}`;
+    view.append(notice("amber", null, `${rows} could not be read and ${built.unreadable === 1 ? "is" : "are"} not listed below: the backlog file records ${built.unreadable === 1 ? "it" : "them"} in a shape this page cannot read as a queue item.`));
+  }
+  if (built.shape === "absent") {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing queued yet.",
+      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
+    }));
+    return view;
+  }
+  if (built.shape === "unreadable") {
+    view.append(emptyState({
+      ring: true,
+      big: "The queue could not be read.",
+      facts: `${built.unreadable} current ${built.unreadable === 1 ? "row" : "rows"} found · none readable`,
+      teach: "The backlog file was read and every current row in it is written in a shape this page cannot read, so this page cannot say what is queued. Open the backlog file to see the work itself.",
+    }));
+    view.append(element("div", "ronote", "Read-only - ordering and state changes are Firstmate's"));
+    return view;
+  }
+
+  const toolbar = element("div", "toolbar");
+  const search = element("input", "search");
+  search.type = "search";
+  search.id = "backlog-search";
+  search.name = "backlog-search";
+  search.placeholder = "Search title, project, id…";
+  search.maxLength = BACKLOG_LIMITS.maxQueryChars;
+  search.value = state.backlog.filters.query;
+  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; render(); });
+  toolbar.append(search);
+  toolbar.append(backlogSelect("project", state.backlog.filters.project, "All projects", built.facets.project.map((value) => [value, label(value)]), (value) => {
+    state.backlog.filters.project = value; state.backlog.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("kind", state.backlog.filters.kind, "All kinds", built.facets.kind.map((value) => [value, value]), (value) => {
+    state.backlog.filters.kind = value; state.backlog.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("prio", state.backlog.filters.prio, "Any priority", built.facets.prio.map((value) => [value, `P${value}`]), (value) => {
+    state.backlog.filters.prio = value; state.backlog.page = 0; render();
+  }));
+  view.append(toolbar);
+
+  const tabs = element("div", "tabs");
+  for (const key of BACKLOG_TAB_KEYS) {
+    const button = element("button", `tab${state.backlog.tab === key ? " is-active" : ""}`);
+    button.type = "button";
+    button.append(document.createTextNode(`${BACKLOG_TAB_LABELS[key] || key} `), liveText("cnt", String(built.tabs[key])));
+    button.addEventListener("click", () => { state.backlog.tab = key; state.backlog.page = 0; render(); });
+    tabs.append(button);
+  }
+  view.append(tabs);
+
+  if (built.shape === "rows") {
+    const rows = element("div", "rows");
+    for (const row of built.rows) {
+      const rrow = element("button", "rrow");
+      rrow.type = "button";
+      rrow.append(dot(row.tone));
+      const main = element("div", "rmain");
+      main.append(element("div", "rtitle", row.title));
+      const meta = element("div", "rmeta");
+      meta.append(element("span", row.stateTone === "red" ? "t-red" : row.stateTone === "amber" ? "t-amber" : "t-grey", row.stateLabel));
+      if (row.project) meta.append(element("span", "", label(row.project)));
+      if (row.kind) meta.append(element("span", "", row.kind));
+      meta.append(element("span", "mid", row.id));
+      main.append(meta);
+      if (row.reason) main.append(element("div", `rreason ${row.stateTone === "red" ? "t-red" : "t-amber"}`, row.reason));
+      rrow.append(main);
+      const right = element("div", "rright");
+      if (row.prio !== null) right.append(element("span", `prio${row.prio === 0 ? " p0" : ""}`, `P${row.prio}`));
+      right.append(liveText(`rage${row.ageHot ? " age-hot" : ""}`, row.age || "age unknown"));
+      rrow.append(right);
+      rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
+      rows.append(rrow);
+    }
+    view.append(rows);
+    view.append(pager(built.page, (delta) => { state.backlog.page = built.page.index + delta; render(); }));
+  } else if (built.shape === "filtered") {
+    const clear = element("button", "fchip", "Clear search & filters");
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      commitControlValues(() => {
+        state.backlog.filters = { query: "", project: "", kind: "", prio: "" };
+        state.backlog.tab = "all";
+        state.backlog.page = 0;
+      });
+    });
+    view.append(emptyState({
+      big: "Filtered to nothing.",
+      facts: `${built.queueTotal} ${built.queueTotal === 1 ? "item" : "items"} hidden by search and filters`,
+      action: clear,
+    }));
+  } else {
+    view.append(emptyState({
+      ring: true,
+      big: "The queue is empty.",
+      teach: "The backlog was read successfully and contains no current work.",
+    }));
+  }
+
+  view.append(element("div", "ronote", "Read-only - ordering and state changes are Firstmate's"));
+  return view;
+}
+
+function pager(page, step) {
+  const nav = element("nav", "pager");
+  nav.setAttribute("aria-label", "Pages");
+  nav.append(element("span", "pginfo", page.matched ? `${page.first}–${page.last} of ${page.matched}` : `0 of ${page.matched}`));
+  const prev = element("button", `pgbtn${page.index === 0 ? " is-off" : ""}`, "← Prev");
+  prev.type = "button";
+  prev.addEventListener("click", () => step(-1));
+  const next = element("button", `pgbtn${page.index >= page.pages - 1 ? " is-off" : ""}`, "Next →");
+  next.type = "button";
+  next.addEventListener("click", () => step(1));
+  nav.append(prev, next);
+  return nav;
+}
+
+// --- History -----------------------------------------------------------------
 
 function renderHistory() {
-  const envelope = state.history.envelope;
-  const view = buildHistory(envelope, { ...state.history.filters, page: state.history.page, pageSize: state.history.pageSize });
-  state.history.page = view.page.index;
-  renderHistoryFilters(view);
-  renderHistoryWarnings(view, envelope);
+  const view = viewRoot("history");
+  const status = state.history.envelope?.status;
+  const range = HISTORY_RANGES.find((entry) => entry.key === state.history.range) || HISTORY_RANGES[1];
+  const from = range.days ? new Date(Date.now() - range.days * 86_400_000).toISOString().slice(0, 10) : "";
+  const built = buildHistory(state.history.envelope, { ...state.history.filters, from, page: state.history.page, pageSize: HISTORY_LIMITS.defaultPageSize });
+  state.history.page = built.page.index;
+  const unavailable = built.readState === "unavailable";
+  const note = unavailable
+    ? "history read failing"
+    : status?.last_success_at
+      ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+      : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
+  view.append(pageHead("Delivered · newest first", "History", note));
 
-  const status = envelope?.status;
-  ui.historyNote.textContent = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
+  if (built.shape === "pending") {
+    view.append(emptyState({ ring: true, big: "Reading completed work.", teach: "Waiting for the first history read to finish." }));
+    return view;
+  }
+  if (unavailable) {
+    view.append(notice("red", "Completed-work history unavailable.", `The completion records could not be read${status?.error?.message ? `: ${status.error.message}` : ""}. Retrying automatically.`));
+    view.append(emptyState({
+      ring: true,
+      big: "Delivered work cannot be read.",
+      teach: "Until the completion records can be read again, nothing on this page is a claim about what was delivered.",
+    }));
+    return view;
+  }
 
-  const summary = element("div", "summary-line");
-  if (view.page.matched) {
-    summary.append(element("strong", "", `${view.page.first}-${view.page.last} of ${view.page.matched}`));
-    summary.append(document.createTextNode(view.page.matched === view.page.total
-      ? " completed records"
-      : ` completed records matching, from ${view.page.total} read`));
+  if (built.readState === "stale") {
+    view.append(notice("amber", null, `Showing the last known good completion history: ${status?.error?.message || "the newest read did not land"}.`));
+  }
+  if (built.truncated) {
+    const total = built.record_total === null ? "more completed work" : `${built.record_total} completed records`;
+    view.append(notice("amber", null, `This read is bounded: showing ${built.page.total} of ${total}.`));
+  }
+  if (built.malformed.length) {
+    // Named, never a bare count: an unreadable record silently missing from
+    // the list is the failure this disclosure exists to end.
+    const named = built.malformed.map((entry) => `${entry.id} (${entry.explanation})`).join("; ");
+    view.append(notice("amber", null, `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} could not be read: ${named}.`));
+  }
+  if (built.usage.available && built.usage.stale) {
+    view.append(notice("amber", null, `Showing the last known good token usage read: ${built.usage.reason || "the newest read did not land"}.`));
+  }
+
+  if (built.shape === "absent") {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing delivered yet.",
+      teach: "Completed work lands here with its outcome, duration and what it cost - the fleet's receipt trail.",
+    }));
+    return view;
+  }
+  if (built.shape === "unreadable") {
+    view.append(emptyState({
+      ring: true,
+      big: "Delivered work could not be read.",
+      facts: `${built.malformed.length} completion ${built.malformed.length === 1 ? "record" : "records"} found · none readable`,
+      teach: "Every completion record this read found is listed above with the reason it could not be used, so this page cannot say what was delivered. It is not a claim that nothing was.",
+    }));
+    return view;
+  }
+
+  const delivered = built.stats.counts.done;
+  const stats = element("div", "stats");
+  for (const [key, value] of [
+    ["Delivered", String(delivered)],
+    ["Failed", String(built.stats.counts.failed)],
+    ["Tokens", built.stats.tokens.available ? formatTokens(built.stats.tokens.total) : "unavailable"],
+    ["Median duration", built.stats.median_duration_seconds !== null ? formatDuration({ known: true, seconds: built.stats.median_duration_seconds }) : "unknown"],
+  ]) {
+    const stat = element("div", "stat");
+    stat.append(element("span", "stat-k", key), element("span", "stat-v", value));
+    stats.append(stat);
+  }
+  view.append(stats);
+
+  const toolbar = element("div", "toolbar");
+  const search = element("input", "search");
+  search.type = "search";
+  search.id = "history-search";
+  search.name = "history-search";
+  search.placeholder = "Search delivered work…";
+  search.maxLength = HISTORY_LIMITS.maxQueryChars;
+  search.value = state.history.filters.query;
+  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; render(); });
+  toolbar.append(search);
+  toolbar.append(backlogSelect("project", state.history.filters.project, "All projects", built.facets.project.map((value) => [value, label(value)]), (value) => {
+    state.history.filters.project = value; state.history.page = 0; render();
+  }));
+  toolbar.append(backlogSelect("outcome", state.history.filters.outcome, "Any outcome", built.facets.outcome.map((value) => [value, (OUTCOME_LABELS[value] || value).toLowerCase()]), (value) => {
+    state.history.filters.outcome = value; state.history.page = 0; render();
+  }));
+  for (const entry of HISTORY_RANGES) {
+    const chip = element("button", `fchip${state.history.range === entry.key ? " is-on" : ""}`, entry.label);
+    chip.type = "button";
+    chip.addEventListener("click", () => { state.history.range = entry.key; state.history.page = 0; render(); });
+    toolbar.append(chip);
+  }
+  view.append(toolbar);
+
+  if (built.shape === "rows") {
+    const rows = element("div", "rows");
+    for (const row of built.rows) {
+      const rrow = element("button", "rrow");
+      rrow.type = "button";
+      const def = { done: "g-review", failed: "g-failed", discarded: "g-blocked", retired: "g-blocked", unknown: "g-unknown" }[row.outcome.state] || "g-unknown";
+      rrow.append(element("span", `g ${def} t-${row.outcome.tone === "unknown" ? "grey" : row.outcome.tone}`));
+      const main = element("div", "rmain");
+      main.append(element("div", "rtitle", row.title || row.id));
+      const meta = element("div", "rmeta");
+      meta.append(element("span", `t-${row.outcome.tone === "unknown" ? "grey" : row.outcome.tone}`, row.outcome.label.toLowerCase()));
+      if (row.kind) meta.append(element("span", "", row.kind));
+      meta.append(element("span", "mid", row.project ? label(row.project) : ""));
+      main.append(meta);
+      rrow.append(main);
+      const right = element("div", "rright");
+      right.append(liveText("hdur", formatDuration(row.duration)));
+      right.append(liveText("hcost", row.usage?.available && Number.isFinite(row.usage?.totals?.total_tokens) ? formatTokens(row.usage.totals.total_tokens) : "unavailable"));
+      right.append(liveText("rage", row.completed_millis ? formatAge((Date.now() - row.completed_millis) / 1000) : "unknown"));
+      rrow.append(right);
+      rrow.addEventListener("click", () => { window.location.hash = hashFor({ view: TASK_VIEW, taskId: row.id }); });
+      rows.append(rrow);
+    }
+    view.append(rows);
+    view.append(pager(built.page, (delta) => { state.history.page = built.page.index + delta; render(); }));
+  } else if (built.shape === "filtered") {
+    const clear = element("button", "fchip", "Clear search & filters");
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      commitControlValues(() => {
+        state.history.filters = { query: "", project: "", outcome: "" };
+        state.history.range = "all";
+        state.history.page = 0;
+      });
+    });
+    view.append(emptyState({
+      big: "Filtered to nothing.",
+      facts: `${built.page.total} completed ${built.page.total === 1 ? "item" : "items"} hidden by search and filters`,
+      action: clear,
+    }));
   } else {
-    summary.append(element("strong", "", "No matching completed records"));
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing delivered yet.",
+      teach: "Completed work lands here with its outcome, duration and what it cost - the fleet's receipt trail.",
+    }));
   }
-  // A retained read is still attributed usage, so it is stated as such rather
-  // than as a fault - the one thing it adds is that a writer held the store when
-  // this refresh tried, which is why a just-finished task may not be in it yet.
-  if (view.usage.available && view.usage.stale) {
-    summary.append(element("span", "quiet", `showing the last known good token usage read: ${view.usage.reason || "the newest read did not land"}`));
-  } else if (view.usage.available) summary.append(element("span", "quiet", "token usage attributed where collected"));
-  else if (view.usage.collection === "operational") {
-    summary.append(element("span", "quiet", `token usage needs attention: ${view.usage.reason || "the collector failed"}`));
-  } else summary.append(element("span", "quiet", `token usage unavailable: ${view.usage.reason || "not collected"}`));
-  if (view.semantic_search.captured_records) {
-    summary.append(element("span", "quiet", `${view.semantic_search.captured_records} report${view.semantic_search.captured_records === 1 ? "" : "s"} captured for semantic search, which this view does not yet offer`));
-  }
-  replaceChildren(ui.historySummary, [summary]);
-
-  if (!view.page.matched) {
-    const empty = element("div", "inbox-empty");
-    const waiting = !envelope?.history;
-    empty.append(dot(waiting ? "amber" : "green"));
-    const copy = element("div");
-    copy.append(element("strong", "", waiting ? "No history yet" : view.empty ? "Nothing has completed in this home" : "Nothing matches these filters"));
-    copy.append(element("p", "", waiting
-      ? "Completed work appears once the durable completion records have been read. Until then this list is empty because nothing has been read, not because nothing has finished."
-      : view.empty
-        ? "No task has published a completion record here yet. Completed work stays listed after cleanup and after the recent-work list is pruned."
-        : "Clear or widen the filters to see the rest of the retained history."));
-    empty.append(copy);
-    replaceChildren(ui.historyList, [empty]);
-  } else {
-    replaceChildren(ui.historyList, view.rows.map(historyCard));
-  }
-  renderHistoryPager(view);
+  return view;
 }
 
-function reportNotice(tone, message) {
-  const notice = element("div", `notice ${tone === "red" ? "error" : ""}`.trim());
-  notice.append(dot(tone), element("div", "", message));
-  return notice;
+// --- Knowledge ---------------------------------------------------------------
+
+function renderKnowledge() {
+  const view = viewRoot("knowledge");
+  const health = buildGBrainHealth(state.gbrain.health);
+  view.append(pageHead("Captured knowledge", "Knowledge"));
+
+  if (health.noBrain) {
+    view.append(emptyState({
+      ring: true,
+      big: "Knowledge is not configured.",
+      teach: "This install has no knowledge store attached. When one is configured, the fleet's accumulated notes - runbooks, postmortems, decisions and their reasons - become searchable here. Nothing is broken; there is simply nothing to search.",
+    }));
+    return view;
+  }
+
+  const hero = element("div", "khero");
+  hero.append(element("span", "page-eyebrow", "Search what the fleet knows"));
+  const search = element("input", "ksearch");
+  search.type = "search";
+  search.id = "knowledge-search";
+  search.name = "knowledge-search";
+  search.placeholder = "Search captured reports and notes…";
+  search.maxLength = 1024;
+  search.value = state.gbrain.query;
+  search.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { state.gbrain.query = search.value; void runKnowledgeSearch(); }
+  });
+  hero.append(search);
+  const hint = state.gbrain.busy
+    ? "searching…"
+    : state.gbrain.searched
+      ? `${state.gbrain.payload?.results?.length ?? 0} ${state.gbrain.error ? "results unavailable" : "matches"}`
+      : "the brain may take a few seconds on a cold index";
+  hero.append(element("span", "khint", hint));
+  view.append(hero);
+
+  const healthBox = element("div", "health");
+  const healthButton = element("button", "health-h");
+  healthButton.type = "button";
+  healthButton.setAttribute("aria-expanded", String(state.gbrain.healthOpen));
+  const nominal = health.cards.filter((card) => card.tone === "green").length;
+  const unreadable = health.cards.filter((card) => card.tone === "unknown").length;
+  // No cards means the health envelope never arrived, which is an unknown, not
+  // a clean bill: the hollow ring, never the green dot.
+  healthButton.append(
+    health.cards.length === 0 || health.cards.some((card) => card.tone === "unknown") ? element("span", "ring") : dot("green"),
+    document.createTextNode(` ${health.cards.length === 0 ? "health unread" : `${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`}`),
+    element("span", "chev", state.gbrain.healthOpen ? "▲" : "▼"),
+  );
+  healthButton.addEventListener("click", () => { state.gbrain.healthOpen = !state.gbrain.healthOpen; render(); });
+  healthBox.append(healthButton);
+  if (state.gbrain.healthOpen) {
+    const list = element("div", "health-list");
+    for (const card of health.cards) {
+      const row = element("div", "hsys");
+      row.append(card.tone === "unknown" ? element("span", "ring") : dot(card.tone));
+      row.append(document.createTextNode(card.label));
+      row.append(element("span", "hstat", card.value));
+      row.title = card.detail || "";
+      list.append(row);
+    }
+    healthBox.append(list);
+  }
+  view.append(healthBox);
+
+  const results = element("div", "krows");
+  if (state.gbrain.error) {
+    results.append(notice(state.gbrain.error.tone === "red" ? "red" : "amber", null, state.gbrain.error.text));
+  } else if (state.gbrain.searched && state.gbrain.payload) {
+    const payload = state.gbrain.payload;
+    const failed = (payload.sources || []).filter((row) => !GBRAIN_HEALTHY_SOURCE_STATES.has(row.state));
+    if (failed.length) {
+      results.append(notice(failed.some((row) => row.state === "failed") ? "red" : "amber", "Some corpora did not answer.", ` ${failed.map((row) => `${row.source}: ${row.detail || row.state}`).join("; ")}`));
+    }
+    for (const row of payload.results || []) {
+      const card = element("article", "krow");
+      card.append(element("div", "kk", row.title || "Untitled"));
+      if (row.excerpt) card.append(element("div", "ksnip", row.excerpt));
+      const meta = [row.source, row.stale === true ? "stale" : null, typeof row.score === "number" ? `score ${row.score.toFixed(3)}` : null].filter(Boolean);
+      card.append(element("div", "kmeta", meta.join(" · ")));
+      results.append(card);
+    }
+    if (!payload.results?.length) {
+      const clear = element("button", "fchip", "Clear search");
+      clear.type = "button";
+      clear.addEventListener("click", () => {
+        commitControlValues(() => {
+          state.gbrain.query = "";
+          state.gbrain.searched = false;
+          state.gbrain.payload = null;
+        });
+      });
+      results.append(emptyState({
+        big: "No notes match.",
+        facts: `searched the captured corpora · 0 matches`,
+        action: clear,
+      }));
+    }
+  } else if (state.gbrain.searched) {
+    results.append(notice("amber", null, "The search has not answered yet."));
+  } else {
+    results.append(emptyState({
+      ring: true,
+      big: "Nothing learned yet.",
+      teach: "As the fleet works it writes down what it learns - runbooks, postmortems, decisions and their reasons. Those notes become searchable here.",
+    }));
+  }
+  view.append(results);
+  return view;
 }
 
-const REPORT_FAILURES = {
-  invalid_task_id: "That task name is not one this dashboard will look up.",
-  history_unavailable: "The completed-work records have not been read yet, so the report cannot be located.",
-  unknown_task: "This task is no longer in the completed-work records that were read.",
-  no_retained_report: "This task's completion record says no report was retained.",
-  report_missing: "The completion record says a report was retained, but the file is missing or is no longer a plain file.",
-};
-
-async function openReport(row) {
-  ui.reportTask.textContent = `${row.id}${row.project ? ` · ${row.project}` : ""}`;
-  ui.reportTitle.textContent = row.title || row.id;
-  replaceChildren(ui.reportNotices, [reportNotice("amber", "Loading the report.")]);
-  replaceChildren(ui.reportBody, []);
-  if (typeof ui.reportDialog.showModal === "function") ui.reportDialog.showModal();
-  else ui.reportDialog.setAttribute("open", "");
-
-  let payload;
-  try {
-    const response = await fetch(`/api/report?task=${encodeURIComponent(row.id)}`, { cache: "no-store" });
-    payload = await response.json();
-  } catch (error) {
-    replaceChildren(ui.reportNotices, [reportNotice("red", `The report could not be loaded: ${error.message}`)]);
+// One search at a time, refused here rather than by the server: the brain
+// accepts a single search and answers a second with a busy refusal, and that
+// refusal landing after the first search's results would replace results the
+// reader can see with an error about a search they did not mean to start.
+async function runKnowledgeSearch() {
+  if (state.gbrain.busy) return;
+  const query = state.gbrain.query.trim();
+  if (query.length < 2) {
+    state.gbrain.error = { tone: "amber", text: searchReasonLabel("query_too_short") };
+    state.gbrain.searched = true;
+    state.gbrain.payload = null;
+    render();
     return;
   }
-  if (!payload || payload.schema !== "fm-dashboard-report.v1" || payload.present !== true) {
-    const reason = REPORT_FAILURES[payload?.reason] || "The report could not be loaded.";
-    const notices = [reportNotice("red", reason)];
-    if (payload?.recorded_path) notices.push(reportNotice("amber", `The completion record points at ${payload.recorded_path}.`));
-    replaceChildren(ui.reportNotices, notices);
-    return;
-  }
-
-  const rendered = renderMarkdown(payload.text);
-  const notices = [];
-  if (payload.truncated) {
-    notices.push(reportNotice("amber",
-      `This report is ${payload.bytes} bytes and only the first ${payload.max_bytes} are shown. The full file is at ${payload.recorded_path || "its recorded path"}.`));
-  }
-  for (const notice of rendered.notices) notices.push(reportNotice("amber", noticeSentence(notice)));
-  replaceChildren(ui.reportNotices, notices);
-  replaceChildren(ui.reportBody, rendered.nodes.map(markdownDom));
-}
-
-function closeReport() {
-  if (typeof ui.reportDialog.close === "function") ui.reportDialog.close();
-  else ui.reportDialog.removeAttribute("open");
-  replaceChildren(ui.reportBody, []);
-  replaceChildren(ui.reportNotices, []);
-}
-
-function render(envelope) {
-  state.envelope = envelope;
-  const snapshot = envelope?.snapshot;
-  const health = buildHealth(snapshot, envelope);
-  const inbox = buildInbox(snapshot);
-  renderSignals(health);
-  renderHealthStrip(health);
-  renderBadges(inbox.counts);
-  renderInbox(inbox, envelope);
-  announceNewItems(inbox.items, Boolean(snapshot));
-  renderNotices(envelope);
-  const status = envelope?.status;
-  ui.refreshNote.textContent = status?.last_success_at
-    ? `${status.refreshing ? "Refreshing · " : ""}updated ${formatAge(status.last_success_age_seconds)} ago`
-    : status?.refreshing ? "Taking the first snapshot" : "Waiting for the first snapshot";
-  renderBoard(snapshot, envelope);
-}
-
-async function fetchSnapshot() {
-  try {
-    const response = await fetch("/api/snapshot", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-dashboard-envelope.v1") throw new Error("unsupported dashboard envelope");
-    render(envelope);
-  } catch (error) {
-    render({
-      schema: "fm-dashboard-envelope.v1",
-      status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: error.message } },
-      snapshot: null,
-    });
-  }
-}
-
-function renderHistoryEnvelope(envelope) {
-  state.history.envelope = envelope;
-  renderHistory();
-}
-
-async function fetchHistory() {
-  try {
-    const response = await fetch("/api/history", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-dashboard-history.v1") throw new Error("unsupported history envelope");
-    renderHistoryEnvelope(envelope);
-  } catch (error) {
-    renderHistoryEnvelope({
-      schema: "fm-dashboard-history.v1",
-      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
-      history: null,
-      usage: null,
-    });
-  }
-}
-
-function renderActivityEnvelope(envelope) {
-  state.activity.envelope = envelope;
-  renderActivity();
-}
-
-async function fetchActivity() {
-  try {
-    const response = await fetch("/api/timeline", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.schema !== "fm-dashboard-timeline.v1") throw new Error("unsupported timeline envelope");
-    renderActivityEnvelope({
-      schema: "fm-dashboard-events.v1",
-      status: { ...payload.status, last_event_at: payload.events?.[0]?.occurred_at ?? null },
-      instrumented_harnesses: payload.instrumented_harnesses,
-      events: payload.events,
-    });
-  } catch (error) {
-    renderActivityEnvelope({
-      schema: "fm-dashboard-events.v1",
-      status: { ingestion: "unavailable", reason: error.message },
-      instrumented_harnesses: [],
-      events: [],
-    });
-  }
-}
-
-// One agent's own timeline. The live stream carries a bounded fleet-wide tail,
-// so a task whose events have already scrolled out of it is fetched from the
-// store rather than shown as empty. The fetched rows go into their own slot,
-// not into the stream: the stream is replaced whole by every broadcast, and one
-// fetch per selection is the point - a busy fleet must not turn each broadcast
-// into an HTTP request.
-async function showTaskTimeline(taskId) {
-  state.activity.filters = { task: taskId, harness: "", type: "" };
-  state.activity.backfill = { task: taskId, events: [] };
-  renderActivity();
-  window.location.hash = "#activity";
-  try {
-    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.schema !== "fm-dashboard-timeline.v1" || state.activity.filters.task !== taskId) return;
-    state.activity.backfill = { task: taskId, events: payload.events || [] };
-    renderActivity();
-  } catch {
-    // The live stream is still authoritative for what has arrived since; a
-    // failed backfill narrows the view rather than breaking it.
-  }
-}
-
-// --- GBrain panel -----------------------------------------------------------
-//
-// The panel reads its health envelope from /api/gbrain/health and submits
-// searches to /api/gbrain/search. Both pass through the same authorize()
-// gate as the rest of the surface, so the panel inherits the same
-// authentication and rate limiting without owning any of it. The render
-// path is independent of fetchSnapshot/fetchHistory: the brain is
-// optional, so its panel can render an empty state without ever blocking
-// the fleet view, and its own update cadence is the server's history-poll
-// interval rather than the faster snapshot poll.
-
-const gbraintronElements = {
-  panel: document.querySelector("#gbraintron"),
-  strip: ui.gbraintronStrip,
-  notice: ui.gbraintronNotices,
-  searchForm: ui.gbraintronSearchForm,
-  searchInput: ui.gbraintronSearchInput,
-  searchLimit: ui.gbraintronSearchLimit,
-  searchButton: ui.gbraintronSearchButton,
-  results: ui.gbraintronResults,
-  refreshNote: ui.gbraintronNote,
-  // The panel's cards are .health-card and .history-card nodes, both of which
-  // ANCHOR_SELECTOR names, and a health poll replaces every one of them twice.
-  // Hand the panel this module's anchor-aware replacer so a reader parked on a
-  // GBrain card is not silently dropped on the next push.
-  replaceChildren,
-};
-
-function paintGBraintronRefreshNote(envelope) {
-  if (!gbraintronElements.refreshNote) return;
-  const status = envelope?.status || {};
-  if (status.phase === "first_run") {
-    gbraintronElements.refreshNote.textContent = "Taking the first health read";
-  } else if (status.refreshing) {
-    gbraintronElements.refreshNote.textContent = "Refreshing";
-  } else if (status.last_success_at) {
-    gbraintronElements.refreshNote.textContent = `read ${formatAge(status.last_success_age_seconds)} ago`;
-  } else if (status.error) {
-    gbraintronElements.refreshNote.textContent = "Last read failed; retrying automatically";
-  } else {
-    gbraintronElements.refreshNote.textContent = "Waiting for the first health read";
-  }
-}
-
-function renderGBraintron(envelope) {
-  state.gbraintron = envelope;
-  if (!envelope) return;
-  paintGBraintronRefreshNote(envelope);
-  paintGBrainPanel(gbraintronElements, envelope);
-}
-
-async function fetchGBraintronHealth() {
-  try {
-    const response = await fetch("/api/gbrain/health", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const envelope = await response.json();
-    if (envelope.schema !== "fm-gbrain-health.v1") throw new Error("unsupported gbraintron health envelope");
-    renderGBraintron(envelope);
-  } catch (error) {
-    renderGBraintron({
-      schema: "fm-gbrain-health.v1",
-      status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable", message: error.message } },
-      config: { query_max_bytes: 1024, result_limit_max: 16 },
-      health: null,
-    });
-  }
-}
-
-// The body for /api/gbrain/search is one JSON object whose every field is
-// type-checked here before it goes over the wire. The dashboard never
-// constructs a request from anything other than the input field's current
-// textContent, so the server's byte cap and the page's maxLength together
-// keep the body small without further effort.
-async function runGBraintronSearch(query, limit) {
-  const elements = gbraintronElements;
-  if (elements.searchButton) elements.searchButton.disabled = true;
+  state.gbrain.busy = true;
+  state.gbrain.error = null;
+  render();
   try {
     const response = await fetch("/api/gbrain/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, limit: state.gbrain.limit }),
       cache: "no-store",
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.schema !== "fm-gbrain-search.v1") {
       const reason = payload?.reason || (response.ok ? "unsupported_schema" : `http_${response.status}`);
-      const detail = payload?.detail;
-      paintGBrainSearchResults(elements, null, searchFailure(reason, detail || searchReasonLabel(reason)));
-      return;
+      const failure = displayError({ kind: reason, message: payload?.detail }, reason);
+      state.gbrain.error = searchFailure(failure.kind) || { tone: "red", text: searchReasonLabel(failure.kind) };
+      state.gbrain.payload = null;
+    } else {
+      state.gbrain.error = null;
+      state.gbrain.payload = payload;
     }
-    paintGBrainSearchResults(elements, payload, null);
   } catch (error) {
-    paintGBrainSearchResults(elements, null, { tone: "red", text: `The search could not be sent: ${error.message}` });
+    const failure = displayError(error, "server_unreachable");
+    state.gbrain.error = { tone: "red", text: `The search could not be sent: ${failure.message}` };
+    state.gbrain.payload = null;
   } finally {
-    if (elements.searchButton) elements.searchButton.disabled = false;
+    state.gbrain.searched = true;
+    state.gbrain.busy = false;
+    render();
   }
+}
+
+// --- Task detail --------------------------------------------------------------
+
+function kvRow(key, value) {
+  const cell = element("div", "kv");
+  cell.append(element("span", "kv-k", key), element("span", "kv-v", value ?? "unknown"));
+  return cell;
+}
+
+function taskWorkItems(value) {
+  const references = Array.isArray(value) ? value : Array.isArray(value?.references) ? value.references : [];
+  return references.filter((reference) => reference && typeof reference === "object").map((reference) => ({
+    forge: reference.forge || null,
+    url: reference.url || null,
+    label: reference.label || reference.enrichment?.title || reference.url || null,
+  }));
+}
+
+function liveTaskRecord(task) {
+  const column = COLUMN_DEFS.find((entry) => entry.key === task?.card?.column);
+  const readiness = prReadiness(task);
+  return {
+    id: task.id,
+    source: "live",
+    raw: task,
+    title: task.backlog?.title || task.id,
+    project: task.project || null,
+    kind: task.kind || null,
+    harness: task.harness || null,
+    model: task.model || null,
+    mode: task.mode || null,
+    age: fmtAge(task.spawn_age_seconds) || null,
+    completed: null,
+    raised: null,
+    current: {
+      label: column?.label || "Unknown",
+      tone: column?.tone || "unknown",
+      reason: task.current_state?.detail || task.current_state?.raw || "The worker is live; no finer detail is recorded.",
+    },
+    pr: readiness.url ? { url: readiness.url, tone: readiness.tone, label: readiness.label, checks: readiness.fields?.checks || null } : null,
+    reportPresent: false,
+    reportKey: null,
+    workItems: taskWorkItems(task.work_items),
+  };
+}
+
+function historyTaskRecord(record) {
+  const checks = record.pr?.fields?.find((field) => field.name === "checks")?.value || null;
+  return {
+    id: record.id,
+    source: "history",
+    raw: record,
+    title: record.title || record.id,
+    project: record.project,
+    kind: record.kind,
+    harness: record.harness,
+    model: record.model,
+    mode: record.mode,
+    age: null,
+    completed: record.timestamps?.completed || null,
+    raised: null,
+    current: {
+      label: record.outcome?.label || "Outcome unknown",
+      tone: record.outcome?.tone || "unknown",
+      reason: record.outcome?.detail || "The completion record carries no outcome detail.",
+    },
+    pr: record.pr?.present ? { url: record.pr.url, tone: record.pr.tone || "unknown", label: record.pr.state || "unknown", checks } : null,
+    reportPresent: record.report?.present === true,
+    reportKey: reportKeyFor(record),
+    workItems: taskWorkItems(record.work_items),
+  };
+}
+
+// What a cached report is a cache OF. History republishes on every poll, twice,
+// with the records usually unchanged, so identity has to come from the record
+// rather than from the arrival of a push: the same key means the retained
+// report the server would serve is the same file, and the cached body stays on
+// the page untouched.
+function reportKeyFor(record) {
+  if (record?.report?.present !== true) return null;
+  return [record.report.path || "", record.timestamps?.completed || "", record.id || ""].join("|");
+}
+
+function backlogTaskRecord(record) {
+  return {
+    id: record.id,
+    source: "backlog",
+    raw: record,
+    title: record.title || record.id,
+    project: record.project,
+    kind: record.kind,
+    harness: null,
+    model: null,
+    mode: null,
+    age: null,
+    completed: null,
+    raised: record.since,
+    current: {
+      label: record.stateLabel,
+      tone: record.stateTone,
+      reason: record.reason || "This item is waiting in the queue.",
+    },
+    pr: null,
+    reportPresent: false,
+    reportKey: null,
+    workItems: [],
+  };
+}
+
+function snapshotReadState() {
+  if (!state.envelope) return "pending";
+  if (state.envelope.status?.phase === "unavailable") return "unavailable";
+  if (state.envelope.status?.phase === "first_run" && state.envelope.status?.refreshing === true) return "pending";
+  if (state.envelope.status?.phase === "last_good" && state.envelope.snapshot) return "stale";
+  if (!state.envelope.snapshot) return "absent";
+  return "ready";
+}
+
+function readStatus(readState, envelope) {
+  if (readState === "ready" || (readState === "absent" && envelope?.status?.phase === "ready")) return "fresh";
+  if (readState === "stale") return "stale";
+  if (readState === "unavailable") return "failed";
+  return "pending";
+}
+
+function taskReadSource(name, readState, envelope, records, conclusive = true) {
+  const status = readStatus(readState, envelope);
+  const error = envelope?.status?.error?.message || null;
+  const reason = status === "failed"
+    ? error || "the read failed"
+    : status === "stale"
+      ? error || "only a last known good read is available"
+      : status === "pending"
+        ? "the read has not completed"
+        : null;
+  return {
+    name,
+    status,
+    conclusive: status === "fresh" && conclusive,
+    records,
+    reason,
+    notice: status === "stale" ? `This task comes from the last known good ${name}: ${reason}.` : null,
+  };
+}
+
+function taskLookup(taskId) {
+  const history = buildHistory(state.history.envelope, {});
+  const backlog = buildBacklog(state.backlog.envelope, {});
+  const sources = [
+    taskReadSource("fleet snapshot", snapshotReadState(), state.envelope, snapshotTasks(), true),
+    taskReadSource("completion history", history.readState, state.history.envelope, history.allRecords, !history.truncated && history.malformed.length === 0),
+    taskReadSource("backlog", backlog.readState, state.backlog.envelope, backlog.taskRecords, true),
+  ];
+
+  const historySource = sources[1];
+  if (historySource.status === "fresh" && !historySource.conclusive) {
+    const reasons = [];
+    if (history.truncated) reasons.push("the archive read is truncated");
+    if (history.malformed.length) reasons.push("some completion records are unreadable");
+    historySource.reason = reasons.join(" and ");
+  }
+
+  const found = [
+    { source: sources[0], record: sources[0].records.find((task) => task?.id === taskId), normalize: liveTaskRecord },
+    { source: sources[1], record: sources[1].records.find((record) => record.id === taskId), normalize: historyTaskRecord },
+    { source: sources[2], record: sources[2].records.find((record) => record.id === taskId), normalize: backlogTaskRecord },
+  ].find((candidate) => candidate.record);
+  if (found) return { phase: "found", task: found.normalize(found.record), notice: found.source.notice };
+
+  const uncertain = sources.filter((source) => source.status !== "fresh" || !source.conclusive);
+  if (uncertain.some((source) => source.status === "failed" || source.status === "stale")) return { phase: "unavailable", sources: uncertain };
+  if (uncertain.some((source) => source.status === "pending")) return { phase: "pending", sources: uncertain };
+  if (uncertain.length) return { phase: "unavailable", sources: uncertain };
+  return { phase: "missing", sources };
+}
+
+// One retained report per task visited, each up to the server's report byte
+// limit, so the cache is bounded rather than growing for the life of the tab.
+// The open task is never the eviction candidate: it is the entry the page is
+// rendering from, and dropping it would refetch what is already on screen.
+const REPORT_CACHE_LIMIT = 12;
+
+function evictTaskReports() {
+  for (const taskId of state.task.reports.keys()) {
+    if (state.task.reports.size <= REPORT_CACHE_LIMIT) return;
+    if (taskId === state.route.taskId) continue;
+    state.task.reports.delete(taskId);
+  }
+}
+
+// A report is cached against the completion record it came from, so an
+// unchanged record never costs a request however often history republishes.
+// A read that FAILED is a different fact from a read that answered: it stays
+// on the page as the failure it was, but it is retryable, and the two things
+// that make it retryable are the two that can change the answer - revisiting
+// the route, and a later history push. Neither a re-render nor a fleet
+// broadcast spends a request, which is what keeps reportPanel's fetch-on-every
+// -render from becoming a loop against a server that is refusing.
+async function fetchTaskReport(taskId, reportKey = null, routeEpoch = state.routeEpoch) {
+  let entry = state.task.reports.get(taskId);
+  if (!entry) {
+    entry = { loading: false, payload: null, reportKey: null, failed: false, routeEpoch: -1, historyEpoch: -1 };
+    state.task.reports.set(taskId, entry);
+    evictTaskReports();
+  }
+  if (entry.loading) return entry;
+  if (entry.reportKey === reportKey) {
+    const retryable = entry.failed
+      && (entry.routeEpoch !== routeEpoch || entry.historyEpoch !== state.history.epoch);
+    if (!retryable) return entry;
+  }
+  entry.loading = true;
+  entry.reportKey = reportKey;
+  entry.routeEpoch = routeEpoch;
+  entry.historyEpoch = state.history.epoch;
+  try {
+    const response = await fetch(`/api/report?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    entry.payload = payload;
+    entry.failed = payload?.schema !== "fm-dashboard-report.v1" || payload.present !== true;
+  } catch (error) {
+    entry.payload = { schema: null, error: displayError(error, "server_unreachable") };
+    entry.failed = true;
+  }
+  entry.loading = false;
+  if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
+  return entry;
+}
+
+// One retained timeline per task visited, bounded the way the report cache is
+// and for the same reason: a tab left open for a shift visits many task pages,
+// and every agent_events broadcast merges over every retained entry. The open
+// task is never the eviction candidate - it is the entry the page is rendering
+// from - and eviction costs no request, because only the open task refetches.
+const TIMELINE_CACHE_LIMIT = 12;
+
+function evictTaskTimelines() {
+  for (const taskId of state.task.timelines.keys()) {
+    if (state.task.timelines.size <= TIMELINE_CACHE_LIMIT) return;
+    if (taskId === state.route.taskId) continue;
+    state.task.timelines.delete(taskId);
+  }
+}
+
+async function fetchTaskTimeline(taskId, routeEpoch = state.routeEpoch, force = false) {
+  let entry = state.task.timelines.get(taskId);
+  if (!entry) {
+    entry = { loading: false, envelope: null, failed: false, retryArmed: true, routeEpoch: -1 };
+    state.task.timelines.set(taskId, entry);
+    evictTaskTimelines();
+  }
+  if (entry.loading || (!force && entry.routeEpoch === routeEpoch)) return entry;
+  // Arriving here unforced means the route was (re)visited, which is one of the
+  // two things that hands a failed entry a fresh retry; the other is recovery.
+  if (!force) entry.retryArmed = true;
+  entry.loading = true;
+  entry.routeEpoch = routeEpoch;
+  try {
+    const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    const envelope = displaySafeEnvelope(await response.json().catch(() => null));
+    if (!response.ok || envelope?.schema !== "fm-dashboard-timeline.v1") throw new Error("timeline unavailable");
+    const retained = { task: taskId, events: Array.isArray(envelope.events) ? envelope.events : [] };
+    entry.envelope = {
+      ...envelope,
+      events: mergeTaskBackfill(Array.isArray(entry.envelope?.events) ? entry.envelope.events : [], retained, taskId),
+    };
+    entry.failed = false;
+    entry.retryArmed = true;
+  } catch {
+    entry.failed = true;
+  }
+  entry.loading = false;
+  if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
+  return entry;
+}
+
+// A failed backfill is worth one more read, not one per broadcast. The retry is
+// armed by a route visit or by a read that succeeded, spent by a single healthy
+// ready frame for the task currently open, and not rearmed by anything else, so
+// an endpoint that stays unreachable costs one request however busy the fleet
+// stream is - mergeTaskBackfill's no-HTTP-per-broadcast invariant survives the
+// failure path as well as the healthy one.
+function retryFailedTaskTimeline(taskId, entry, envelope) {
+  if (!entry.failed || !entry.retryArmed) return;
+  if (envelope?.status?.ingestion !== "ready") return;
+  if (state.route.view !== TASK_VIEW || state.route.taskId !== taskId) return;
+  entry.retryArmed = false;
+  void fetchTaskTimeline(taskId, state.routeEpoch, true);
+}
+
+function reportPanel(taskId, present, live = null, reportKey = null) {
+  const panel = element("section", "panel");
+  panel.dataset.loadState = "settled";
+  panel.append(element("div", "panel-h", "Report"));
+  if (!present) {
+    panel.append(element("p", "state-reason", live?.kind === "scout"
+      ? "This scout is still writing its report. The deliverable becomes readable here once the work completes and its completion record is published."
+      : "No report was retained for this task."));
+    return panel;
+  }
+  void fetchTaskReport(taskId, reportKey);
+  const entry = state.task.reports.get(taskId);
+  // A revalidation behind a report already on the page is not a load: the body
+  // stays rendered and the panel stays settled, so a history push that changed
+  // nothing cannot blink the report out and back twice a minute.
+  if (!entry || (entry.loading && !entry.payload)) {
+    panel.dataset.loadState = "loading";
+    panel.append(element("p", "state-reason", "Loading the report…"));
+    return panel;
+  }
+  const payload = entry.payload;
+  if (!payload || payload.schema !== "fm-dashboard-report.v1" || payload.present !== true) {
+    panel.append(element("p", "state-reason", "The report could not be loaded."));
+    return panel;
+  }
+  const rendered = renderMarkdown(payload.text);
+  const body = element("div", "report");
+  for (const noticeKind of rendered.notices) body.append(element("p", "state-reason", noticeSentence(noticeKind)));
+  if (payload.truncated === true) body.append(element("p", "state-reason", `This report is longer than what is shown here; the beginning is rendered.`));
+  for (const node of rendered.nodes) body.append(markdownDom(node));
+  panel.append(body);
+  return panel;
+}
+
+function activityPanel(taskId, task) {
+  const panel = element("section", "panel");
+  panel.dataset.loadState = "settled";
+  panel.append(element("div", "panel-h", "Activity"));
+  let entry = state.task.timelines.get(taskId);
+  if (!entry || entry.routeEpoch !== state.routeEpoch) {
+    void fetchTaskTimeline(taskId);
+    entry = state.task.timelines.get(taskId);
+  }
+  if (!entry || (entry.loading && !entry.envelope)) {
+    panel.dataset.loadState = "loading";
+    panel.append(element("p", "state-reason", "Loading the recorded events…"));
+    return panel;
+  }
+  // The durable backfill (/api/timeline reads the store) merged with the live
+  // fleet tail, so an event that arrived after the backfill was fetched is on
+  // the page before the next refetch lands. events.js owns the merge rule.
+  const backfill = { task: taskId, events: Array.isArray(entry.envelope?.events) ? entry.envelope.events : [] };
+  const merged = mergeTaskBackfill(Array.isArray(state.events?.events) ? state.events.events : [], backfill, taskId);
+  const built = buildTimeline({ events: merged }, { task: taskId });
+  const statusEnvelope = entry.failed
+    ? { status: { ingestion: "unavailable", reason: "the stored task timeline could not be read" } }
+    : entry.envelope;
+  const status = timelineNotice(statusEnvelope, merged.length, built.rows.length);
+  if (status.text) panel.append(notice(status.tone, null, status.text));
+  if (!built.rows.length) {
+    const source = task ? sourceNotice(task, statusEnvelope) : null;
+    if (source) panel.append(element("p", "state-reason", source));
+    return panel;
+  }
+  for (const row of built.rows) {
+    const line = element("div", "tl-row");
+    const clock = element("span", "tl-t", clockLabel(row.at));
+    clock.title = row.at;
+    const what = [typeLabel(row.type), row.tool, row.summary].filter(Boolean).join(" · ");
+    line.append(clock, element("span", "tl-e", what));
+    // An outcome-bearing row always shows its verdict, and an outcome nobody
+    // observed is an explicit dashed unknown, never a bare row that reads as
+    // fine beside a green one (events.js owns that normalization).
+    if (row.outcome) line.append(element("span", `chip ${outcomeTone(row.outcome)}`, row.outcome));
+    panel.append(line);
+  }
+  if (built.truncated) {
+    panel.append(element("p", "state-reason", `Showing the newest ${built.rows.length} of ${built.total} recorded events.`));
+  }
+  return panel;
+}
+
+function prPanel(url, summary) {
+  const panel = element("section", "panel");
+  panel.append(element("div", "panel-h", "Pull request"));
+  if (!url) {
+    panel.append(element("p", "state-reason", "No pull request is linked to this task."));
+    return panel;
+  }
+  const line = element("div", "pr-line");
+  const link = element("a", "", url);
+  link.href = safeUrl(url) || "#";
+  link.target = "_blank";
+  link.rel = "noopener";
+  line.append(link);
+  panel.append(line);
+  if (summary) {
+    const stateLine = element("div", "pr-line");
+    stateLine.append(element("span", `t-${summary.tone === "unknown" ? "grey" : summary.tone}`, summary.label));
+    if (summary.checks) stateLine.append(element("span", "", ` · checks ${summary.checks}`));
+    panel.append(stateLine);
+  }
+  return panel;
+}
+
+function renderTask() {
+  const taskId = state.route.taskId;
+  const view = viewRoot("task");
+  view.dataset.settled = "false";
+
+  const back = element("button", "tk-back", "← Back");
+  back.type = "button";
+  back.addEventListener("click", () => window.history.back());
+  view.append(back);
+
+  const lookup = taskLookup(taskId);
+  if (lookup.phase === "pending") {
+    view.append(pageHead("Task", "Looking this task up…"));
+    view.append(emptyState({ ring: true, big: "Reading the fleet records.", teach: "The live workers, the completed-work archive, and the queue are being read; this page fills in as each answers." }));
+    return view;
+  }
+  if (lookup.phase === "unavailable") {
+    const detail = lookup.sources.map((source) => `${source.name}${source.reason ? `: ${source.reason}` : ""}`).join("; ");
+    view.append(pageHead("Task", "Task lookup unavailable"));
+    view.append(notice("red", null, `This task cannot be ruled in or out because ${detail}.`));
+    view.append(emptyState({ ring: true, big: "The available records are not conclusive.", teach: "Incomplete, failed, or stale evidence is not proof that a task does not exist. The dashboard keeps refreshing these reads." }));
+    view.dataset.settled = "true";
+    return view;
+  }
+  if (lookup.phase === "missing") {
+    view.append(pageHead("Task", "No such task"));
+    view.append(emptyState({
+      ring: true,
+      big: "This task is not in any record this dashboard reads.",
+      teach: "It is not a live worker, not a completed record, and not a queued item. A task that was cleaned up before publishing a completion record leaves no trace to show.",
+    }));
+    view.dataset.settled = "true";
+    return view;
+  }
+
+  const task = lookup.task;
+  const title = task.title || taskId;
+  view.append(pageHead("Task", null));
+  const head = view.querySelector(".page-h");
+  head.textContent = title;
+  head.closest(".page-hd").append(element("div", "card-id", taskId));
+  if (lookup.notice) view.append(notice("amber", null, lookup.notice));
+
+  const strip = element("div", "kvstrip");
+  strip.append(kvRow("Project", task.project ? label(task.project) : null));
+  strip.append(kvRow("Kind", task.kind));
+  strip.append(kvRow("Runtime · model", [task.harness, task.model].filter(Boolean).join(" · ") || null));
+  strip.append(kvRow("Delivery", task.mode));
+  if (task.age) strip.append(kvRow("Age", task.age));
+  else if (task.completed) strip.append(kvRow("Completed", task.completed.slice(0, 10)));
+  else if (task.raised) strip.append(kvRow("Raised", task.raised));
+  view.append(strip);
+
+  const grid = element("div", "tk-grid");
+  const mainCol = element("div", "tkcol");
+  const sideCol = element("div", "tkcol");
+
+  const statePanel = element("section", "panel");
+  statePanel.append(element("div", "panel-h", "Current state"));
+  const statebar = element("div", "statebar");
+  const stateWord = task.current.label;
+  const stateTone = task.current.tone;
+  const stateReason = task.current.reason;
+  statebar.append(stateTone === "unknown" ? element("span", "ring") : dot(stateTone), element("span", `state-word t-${stateTone}`, stateWord));
+  statePanel.append(statebar);
+  statePanel.append(element("p", "state-reason", stateReason));
+
+  const inboxItem = verdictFacts().inbox.items.find((item) => item.id === taskId);
+  if (inboxItem) {
+    const answer = element("button", "inline-link", "Answer in Needs you →");
+    answer.type = "button";
+    answer.addEventListener("click", () => { window.location.hash = hashFor(viewRoute("needs")); });
+    statePanel.append(answer);
+  }
+  mainCol.append(statePanel);
+
+  // /api/report serves the durable completion records, so the report panel
+  // exists only for a task that has one. A live scout still writes its report
+  // to the task's own directory, but that is not exposed over HTTP until the
+  // completion record publishes it - saying so beats a panel that 404s.
+  const report = reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null, task.reportKey);
+  mainCol.append(report);
+
+  if (task.pr) sideCol.append(prPanel(task.pr.url, task.pr));
+
+  const workItems = task.workItems;
+  if (workItems.length) {
+    const panel = element("section", "panel");
+    panel.append(element("div", "panel-h", "Linked items"));
+    for (const reference of workItems) {
+      const row = element("div", "linkrow");
+      row.append(dot("grey"), document.createTextNode(reference.forge ? `${reference.forge}: ` : ""));
+      const label_ = reference.label || reference.url || "linked item";
+      if (reference.url && safeUrl(reference.url)) {
+        const link = element("a", "", label_);
+        link.href = safeUrl(reference.url);
+        link.target = "_blank";
+        link.rel = "noopener";
+        row.append(link);
+      } else {
+        row.append(document.createTextNode(label_));
+      }
+      panel.append(row);
+    }
+    sideCol.append(panel);
+  }
+
+  const activity = activityPanel(taskId, task.source === "live" ? task.raw : null);
+  sideCol.append(activity);
+
+  grid.append(mainCol, sideCol);
+  view.append(grid);
+  view.dataset.settled = String(report.dataset.loadState === "settled" && activity.dataset.loadState === "settled");
+  return view;
+}
+
+// --- router mounting ----------------------------------------------------------
+
+const VIEW_RENDERERS = {
+  needs: renderNeeds,
+  fleet: renderFleet,
+  backlog: renderBacklog,
+  history: renderHistory,
+  knowledge: renderKnowledge,
+  [TASK_VIEW]: renderTask,
+};
+
+function render() {
+  const route = state.route;
+  renderVerdict();
+  publishStickyHeight();
+
+  for (const [name, buttons] of ui.navButtons) {
+    for (const button of buttons) {
+      const active = route.view === name;
+      button.classList.toggle("is-active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
+  }
+
+  const renderer = VIEW_RENDERERS[route.view] || renderNeeds;
+  const fresh = renderer();
+  stampControlCommit(fresh);
+  // The entry animation belongs to arriving at a view, not to a data refresh:
+  // every push re-renders, and cards that re-fade on each one read as flicker.
+  // Tracked as data-view, because data-route names the navigation controls and
+  // the container must never match a [data-route] selector.
+  ui.view.classList.toggle("settled", ui.view.dataset.view === route.view);
+  ui.view.dataset.view = route.view;
+  // A data refresh reconciles the mounted view; only arriving at a different
+  // destination replaces it. Focus is carried across the reconciliation, which
+  // is the boundary that could steal it, and deliberately not across the
+  // replacement, where the control the reader was on is genuinely gone.
+  const mounted = ui.view.firstElementChild;
+  if (mounted?.id === fresh.id) {
+    const focus = captureViewFocus();
+    refreshMountedView(mounted, fresh);
+    restoreViewFocus(focus);
+  } else {
+    ui.view.replaceChildren(fresh);
+  }
+}
+
+function onRouteChange() {
+  const route = parseHash(window.location.hash);
+  if (route.view === state.route.view && route.taskId === state.route.taskId) return;
+  state.route = route;
+  state.routeEpoch += 1;
+  if (route.view !== TASK_VIEW) window.scrollTo({ top: 0 });
+  render();
+}
+
+// --- data plumbing -------------------------------------------------------------
+
+async function fetchJson(url, schema) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { kind: "http_error" });
+  const envelope = await response.json();
+  if (schema && envelope.schema !== schema) throw Object.assign(new Error(`unsupported envelope ${envelope.schema}`), { kind: "unsupported_envelope" });
+  return displaySafeEnvelope(envelope);
+}
+
+function unavailableEnvelope(schema, error) {
+  return { schema, status: { phase: "unavailable", refreshing: false, stale: false, error: displayError(error, "server_unreachable") } };
+}
+
+async function fetchSnapshot() {
+  try {
+    const envelope = await fetchJson("/api/snapshot", "fm-dashboard-envelope.v1");
+    state.envelope = envelope;
+    announceNewItems(buildInbox(envelope.snapshot).items, Boolean(envelope.snapshot));
+  } catch (error) {
+    state.envelope = unavailableEnvelope("fm-dashboard-envelope.v1", error);
+  }
+  render();
+}
+
+// Every history read enters through here, so the epoch that a failed report
+// read waits on cannot drift from the envelope it was derived against.
+function adoptHistory(envelope) {
+  state.history.envelope = envelope;
+  state.history.epoch += 1;
+}
+
+async function fetchHistory() {
+  try {
+    adoptHistory(await fetchJson("/api/history", "fm-dashboard-history.v1"));
+  } catch (error) {
+    adoptHistory(unavailableEnvelope("fm-dashboard-history.v1", error));
+  }
+  render();
+}
+
+async function fetchBacklog() {
+  try {
+    state.backlog.envelope = await fetchJson("/api/backlog", "fm-dashboard-backlog.v1");
+  } catch (error) {
+    state.backlog.envelope = unavailableEnvelope("fm-dashboard-backlog.v1", error);
+  }
+  render();
+}
+
+async function fetchGBrainHealth() {
+  try {
+    state.gbrain.health = await fetchJson("/api/gbrain/health", "fm-gbrain-health.v1");
+  } catch (error) {
+    state.gbrain.health = unavailableEnvelope("fm-gbrain-health.v1", error);
+  }
+  render();
 }
 
 function connectEvents() {
-  clearTimeout(state.reconnectTimer);
-  state.eventSource?.close();
-  const source = new EventSource("/api/events");
-  state.eventSource = source;
-  source.addEventListener("open", () => { state.reconnectMs = 1_000; });
-  source.addEventListener("snapshot", (event) => {
+  let events;
+  try {
+    events = new EventSource("/api/events");
+  } catch {
+    return;
+  }
+  events.addEventListener("snapshot", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-envelope.v1") render(envelope);
-    } catch {
-      source.close();
-    }
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
+      if (envelope.schema === "fm-dashboard-envelope.v1") {
+        state.envelope = envelope;
+        // A push that carried no snapshot saw nothing, so it must not become
+        // the alert baseline (announceNewItems owns that rule).
+        announceNewItems(buildInbox(envelope.snapshot).items, Boolean(envelope.snapshot));
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("history", (event) => {
+  events.addEventListener("history", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-history.v1") renderHistoryEnvelope(envelope);
-    } catch {
-      source.close();
-    }
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
+      if (envelope.schema === "fm-dashboard-history.v1") {
+        adoptHistory(envelope);
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("agent_events", (event) => {
+  events.addEventListener("backlog", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-dashboard-events.v1") renderActivityEnvelope(envelope);
-    } catch {
-      source.close();
-    }
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
+      if (envelope.schema === "fm-dashboard-backlog.v1") {
+        state.backlog.envelope = envelope;
+        render();
+      }
+    } catch {}
   });
-  source.addEventListener("gbrain_health", (event) => {
+  events.addEventListener("agent_events", (event) => {
     try {
-      const envelope = JSON.parse(event.data);
-      if (envelope.schema === "fm-gbrain-health.v1") renderGBraintron(envelope);
-    } catch {
-      source.close();
-    }
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
+      if (envelope.schema === "fm-dashboard-events.v1") {
+        state.events = envelope;
+        for (const [taskId, entry] of state.task.timelines) {
+          if (entry.loading) continue;
+          const backfill = { task: taskId, events: Array.isArray(entry.envelope?.events) ? entry.envelope.events : [] };
+          entry.envelope = {
+            ...(entry.envelope || {}),
+            task: taskId,
+            status: envelope.status || entry.envelope?.status,
+            instrumented_harnesses: envelope.instrumented_harnesses || entry.envelope?.instrumented_harnesses,
+            events: mergeTaskBackfill(Array.isArray(envelope.events) ? envelope.events : [], backfill, taskId),
+          };
+          retryFailedTaskTimeline(taskId, entry, envelope);
+        }
+        if (state.route.view === TASK_VIEW) render();
+      }
+    } catch {}
   });
-  source.addEventListener("error", () => {
-    source.close();
-    const delay = state.reconnectMs;
-    state.reconnectMs = Math.min(state.reconnectMs * 2, 30_000);
-    state.reconnectTimer = setTimeout(connectEvents, delay + Math.floor(Math.random() * 250));
+  events.addEventListener("gbrain_health", (event) => {
+    try {
+      const envelope = displaySafeEnvelope(JSON.parse(event.data));
+      if (envelope.schema === "fm-gbrain-health.v1") {
+        state.gbrain.health = envelope;
+        render();
+      }
+    } catch {}
   });
 }
 
-ui.filterForm.addEventListener("change", () => {
-  for (const key of Object.keys(state.filters)) state.filters[key] = ui.filterForm.elements[key].value;
-  renderBoard(state.envelope?.snapshot, state.envelope);
-});
+// --- start ----------------------------------------------------------------------
 
-ui.clearFilters.addEventListener("click", () => {
-  for (const key of Object.keys(state.filters)) state.filters[key] = "";
-  renderBoard(state.envelope?.snapshot, state.envelope);
-});
-
-function readHistoryForm() {
-  for (const key of Object.keys(state.history.filters)) {
-    state.history.filters[key] = ui.historyForm.elements[key].value;
-  }
-  const size = Number(ui.historyForm.elements.pageSize.value);
-  state.history.pageSize = HISTORY_LIMITS.pageSizes.includes(size) ? size : HISTORY_LIMITS.defaultPageSize;
-  // Any change to what is being asked for restarts at the newest page, so the
-  // reader is never left looking at page 7 of a three-page result.
-  state.history.page = 0;
-  renderHistory();
-}
-
-ui.historyForm.addEventListener("change", readHistoryForm);
-ui.historyForm.addEventListener("input", (event) => {
-  if (event.target?.name === "query") readHistoryForm();
-});
-ui.historyForm.addEventListener("submit", (event) => event.preventDefault());
-
-ui.historyClear.addEventListener("click", () => {
-  for (const key of Object.keys(state.history.filters)) {
-    state.history.filters[key] = "";
-    ui.historyForm.elements[key].value = "";
-  }
-  state.history.pageSize = HISTORY_LIMITS.defaultPageSize;
-  ui.historyForm.elements.pageSize.value = String(HISTORY_LIMITS.defaultPageSize);
-  state.history.page = 0;
-  renderHistory();
-});
-
-ui.reportClose.addEventListener("click", closeReport);
-ui.reportDialog.addEventListener("close", () => {
-  replaceChildren(ui.reportBody, []);
-  replaceChildren(ui.reportNotices, []);
-});
-
-// Submitting the search form fires one read-only GBrain search. The submit
-// handler is bound even on a configured home with no input: an empty form
-// submission is the same as a no-op for the wrapper, and the form's
-// novalidate state lets Enter inside the input box fire the search without
-// needing a click.
-if (ui.gbraintronSearchForm) {
-  ui.gbraintronSearchForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const query = ui.gbraintronSearchInput?.value || "";
-    const limit = Number(ui.gbraintronSearchLimit?.value || 8);
-    void runGBraintronSearch(query, limit);
-  });
-}
-
-ui.activityForm.addEventListener("change", () => {
-  for (const key of Object.keys(state.activity.filters)) {
-    state.activity.filters[key] = ui.activityForm.elements[key].value;
-  }
-  renderActivity();
-});
-ui.activityForm.addEventListener("submit", (event) => event.preventDefault());
-
-ui.activityClear.addEventListener("click", () => {
-  for (const key of Object.keys(state.activity.filters)) {
-    state.activity.filters[key] = "";
-    ui.activityForm.elements[key].value = "";
-  }
-  renderActivity();
-});
-
-// Observed rather than recomputed on resize alone: the bar's height also
-// changes when its own counts and health chips rewrap, which happens on a fleet
-// update at a fixed width.
-publishStickyHeight();
-if (typeof ResizeObserver === "function") {
-  const stickyBar = document.querySelector(".topbar");
-  if (stickyBar) new ResizeObserver(publishStickyHeight).observe(stickyBar);
-}
-
-window.addEventListener("scroll", queueAnchorCapture, { passive: true });
-window.addEventListener("resize", () => {
-  if (window.innerWidth === lastViewportWidth) return;
-  lastViewportWidth = window.innerWidth;
-  restoreAnchor();
-  queueAnchorCapture();
-});
-queueAnchorCapture();
-
+window.addEventListener("hashchange", onRouteChange);
 initializeTheme();
 initializeNotifications();
+render();
+observeStickyHeight();
 void fetchSnapshot();
 void fetchHistory();
-void fetchActivity();
-void fetchGBraintronHealth();
-renderHistory();
-renderActivity();
-renderGBraintron(state.gbraintron);
+void fetchBacklog();
+void fetchGBrainHealth();
 connectEvents();
