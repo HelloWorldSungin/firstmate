@@ -250,11 +250,15 @@
 #   apply here" are different answers and collapsing them costs the run its
 #   signal. ???? means something that should have been observable was not, and
 #   it fails the run. n/a means the observation is out of this mode's reach by
-#   design - the three task-timeline observations under --url, which can only be
-#   proved by posting events into a dashboard this command does not own, and,
-#   under --url against an idle fleet, opening a task from the board and the
-#   three measurements of the page that would have opened: a board with no live
-#   task has no row to click, so no run against that fleet could observe them.
+#   design - under --url, the three task-timeline observations, which can only
+#   be proved by posting events into a dashboard this command does not own, and
+#   the retained-report exclusion, which needs a completed task carrying a
+#   report body this command authored. The checked fleet's own state reaches
+#   the same verdict: against a fleet with no live task, opening a task from
+#   the board and the three measurements of the page that would have opened,
+#   because a board with no live task has no row to click, and against one that
+#   has delivered nothing, the usage cell, because no completion row is there
+#   for it to sit on. No run against that fleet could observe any of them.
 #   The leak scan is deliberately NOT among them - it reaches that destination
 #   in every mode, by selecting a task address of its own - so its coverage
 #   requirement is unchanged by an idle fleet. An n/a is reported and counted
@@ -297,11 +301,10 @@
 # any observation is FAIL or ????, 2 on a usage or setup problem, 3 when
 # FM_DASHBOARD_BROWSER_FORCE injected a fault, 4 when this run did not emit the
 # observation set it declared. An n/a observation never fails the run, so a
-# healthy dashboard checked with --url exits 0 with its three task-timeline
-# observations recorded as n/a - and, if that fleet is idle, its four task
-# destination observations too; every other observation is made identically in
-# both modes. The full per-observation result is printed and written to
-# <out>/result.txt either way.
+# healthy dashboard checked with --url exits 0 with the observations that mode
+# cannot reach recorded as n/a - an idle fleet included, per the list above;
+# every other observation is made identically in both modes. The full
+# per-observation result is printed and written to <out>/result.txt either way.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -429,8 +432,9 @@ Drives the real dashboard page in a real browser and records what it renders.
                           the URL the browser opens
   --out <dir>             evidence directory (default: a temp directory, kept
                           and named on exit)
-  --width <w>x<h>         a viewport to check, repeatable
-                          (default: 390x844 and 1440x900)
+  --width <w>x<h>         a viewport to check, repeatable (default: 390x844,
+                          899x844, 900x844 and 1440x900 - the phone width, both
+                          sides of the 899/900 navigation boundary, and desktop)
   --keep                  leave the fixture server running
   --negative              prove the check can fail, by running the same
                           assertions against a page that renders nothing

@@ -100,9 +100,12 @@ Ordering is the reason this matters more than the label does.
 An age no item carries is an age every item ties on, and the order then collapses to reason severity and identity - which for a queue of captain decisions means alphabetical.
 An inbox that cannot put the three-week-old decision above this morning's is not doing the one job an inbox has.
 
-## Health strip
+## Health signals
 
-The strip carries seven signals plus one overall verdict.
+No view renders these signals today.
+The routed rebuild shipped the approved design with the verdict strip [`dashboard.md`](dashboard.md#navigation-and-reading-it-on-a-phone) owns as the shell's one sticky element, and nothing mounts the seven-signal strip that preceded it; `buildHealth()` in [`assets/dashboard/inbox.js`](../assets/dashboard/inbox.js) still computes them and `tests/fm-dashboard-inbox.test.sh` still pins them, so this section stays the statement of what each one means.
+
+The signals are seven, plus one overall verdict.
 
 | Signal | Green | Amber | Red | Unknown |
 | --- | --- | --- | --- | --- |
@@ -218,9 +221,8 @@ Red readings survive the demotion: an old alarm is still an alarm.
 
 ## Badges and alerts
 
-The header shows one badge per non-empty inbox category and the sidebar shows the total.
-When nothing is outstanding the header says so in words rather than showing an empty row.
-One badge covers every attention state at once - a reported failure, failing checks, a conflict, or requested changes - and is labelled "Needs attention" rather than "Failing", because requested changes are amber and calling them a failure overstates them.
+The inbox total reaches the reader twice: as the count badge on the Needs you control in both the rail and the bottom tab bar, and as the verdict strip's plain-words sentence that [`dashboard.md`](dashboard.md#navigation-and-reading-it-on-a-phone) owns.
+A total of zero hides the badge rather than drawing a zero, because the strip already says so in words, and no badge is split by category: what an item is waiting on is carried by its own card, in the reason tones above.
 
 Desktop alerts are entirely client-side and off by default.
 The toggle requests browser notification permission on click and nothing else; the server never learns that a browser wants them, and a denied or unsupported permission leaves the control off without affecting anything else on the page.

@@ -73,6 +73,7 @@ Nothing is placed behind a horizontal page swipe: the document itself never scro
 Two regions scroll inside their own box instead of stretching the page: the Fleet board's column strip at desktop widths, and worker-written content inside a rendered report.
 Page edges respect safe-area insets, and a route change puts the reader at the top of the destination they asked for.
 Folding or unfolding a device reflows the current view while the page stays loaded; the address carries the route, so the selected view and its filter state survive.
+The page loads dark whatever the system prefers, and the navigation's theme toggle is the only thing that changes it: loading stores nothing, so a browser holding no choice is a reader who has not made one rather than one who accepted a default.
 
 ## Needs you
 
@@ -201,7 +202,8 @@ On a host with other tenants that is worth weighing before running `--url`.
 Each observation is recorded as `ok`, `FAIL`, `????`, or `n/a`.
 `????` is not a pass: it means the observation could not be made at all, because a probe would not decode, a browser command failed, or a scan cannot be shown to have run, and a run carrying any `????` exits non-zero for the same reason a failing one does - a check that could not look is not a check that saw nothing wrong.
 `n/a` is the separate case of an observation this mode was never able to make: under `--url`, the three task-timeline observations, which can only be proved by posting events into a dashboard this command does not own, and the retained-report exclusion, which needs a completed task this command authored.
-It is reported and counted but does not fail the run, so a healthy dashboard checked with `--url` exits 0; every other observation is made identically in both modes.
+The checked fleet's own state puts observations out of reach the same way: a fleet with no live task has no board row to open, so the four task-destination observations are `n/a` there, and one that has delivered nothing has no completion row for a usage cell to sit on.
+Each is reported and counted but does not fail the run, so a healthy dashboard checked with `--url` exits 0 even when its fleet is idle; every observation outside that set is made identically in both modes.
 
 That last claim is structural rather than a promise anyone has to keep by hand.
 Each mode declares the observations it makes and reconciles that list against the verdicts it recorded before it exits, so an observation left unrecorded, recorded twice, or recorded without having been declared fails the run by name and exits 4 rather than showing up as a quietly smaller result.

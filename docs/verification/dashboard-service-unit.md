@@ -250,6 +250,10 @@ A refusal that only exited non-zero would move the false absence rather than rem
 Against a running dashboard with that fault injected, the panel renders "No history yet" under a red "Completed-work history unavailable" notice, whose copy reads "this list is empty because nothing has been read, not because nothing has finished".
 The three genuine empty states were each demonstrated on their own instance and still render: a home with no completions says "Nothing has completed in this home", 61 records under a filter matching none say "Nothing matches these filters", and the read that did not land says "No history yet".
 
+Note, 2026-08-16: the router rebuild rewrote the empty-state copy quoted in the two observations above, so read those strings as the copy of their own date.
+A failed read now renders "Delivered work cannot be read." under the same red "Completed-work history unavailable." notice, a home with no completions renders "Nothing delivered yet.", and a filter matching none renders "Filtered to nothing.".
+The distinction those runs were evidence for - a read that was lost never rendering as a fleet that delivered nothing - is what survives, and [`../dashboard.md`](../dashboard.md#history) owns the History page that renders it.
+
 ## That the fix is not bought with the fleet view
 
 `PrivateTmp=yes` clears the same failures by giving the service a private writable `/tmp`, and it is the obvious reach, so the reason the unit does not use it is recorded here rather than left to be rediscovered.
