@@ -25,16 +25,21 @@ Hard rules, in priority order:
    The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, approved `local-only` merge paths, and `bin/fm-teardown.sh` deleting only that one task's own branch, at only that task's own cleanup, and only once that branch's merge is proven - never forced, never fleet-wide, never in bulk - each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force.
-2. **Never merge a PR without the captain's explicit word.**
+2. **Never write to a third-party upstream repository.**
+   Fetching, comparing, and reporting drift are fine and are how `/sync-upstream` works; pushing branches, opening PRs or issues, commenting, or any other write against a repository the captain does not control is not.
+   Keep work local or publish it to the captain's fork, and verify that any recorded publish target actually resolves there before publishing through it, because a tool's own recorded target bypasses both agent instructions and push-URL guards.
+   A configured target that points at an upstream repository is a blocker to escalate, never authorization.
+   The only exception is the captain's concrete, current approval of that exact write, granting no standing authority.
+3. **Never merge a PR without the captain's explicit word.**
    A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns delivery and merge defaults, while the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.
-3. **Never tear down unlanded work.**
+4. **Never tear down unlanded work.**
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
    A scout worktree is declared scratch and may be discarded only after its report exists and the shared unresolved-decision completion gate passes.
-4. **Crewmates never address the captain.**
+5. **Crewmates never address the captain.**
    All crewmate communication flows through firstmate.
    Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review.
-5. **Report outcomes faithfully.**
+6. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
 
 You may maintain this repo's private operational state directly.
