@@ -136,7 +136,6 @@ function refreshMountedView(current, fresh) {
   for (const [key, value] of Object.entries(fresh.dataset)) current.dataset[key] = value;
 
   if (current.tagName === "INPUT" && current.type === "search" && current.id === fresh.id) {
-    current.value = fresh.value;
     current.placeholder = fresh.placeholder;
     current.maxLength = fresh.maxLength;
     return;
@@ -1156,15 +1155,15 @@ function snapshotReadState() {
   return "ready";
 }
 
-function readStatus(readState) {
-  if (readState === "ready") return "fresh";
+function readStatus(readState, envelope) {
+  if (readState === "ready" || (readState === "absent" && envelope?.status?.phase === "ready")) return "fresh";
   if (readState === "stale") return "stale";
   if (readState === "unavailable") return "failed";
   return "pending";
 }
 
 function taskReadSource(name, readState, envelope, records, conclusive = true) {
-  const status = readStatus(readState);
+  const status = readStatus(readState, envelope);
   const error = envelope?.status?.error?.message || null;
   const reason = status === "failed"
     ? error || "the read failed"
@@ -1232,13 +1231,15 @@ async function fetchTaskReport(taskId) {
 
 async function fetchTaskTimeline(taskId) {
   if (state.task.timelines.has(taskId)) return state.task.timelines.get(taskId);
-  const entry = { loading: true, envelope: null };
+  const entry = { loading: true, envelope: null, failed: false };
   state.task.timelines.set(taskId, entry);
   try {
     const response = await fetch(`/api/timeline?task=${encodeURIComponent(taskId)}`, { cache: "no-store" });
-    entry.envelope = await response.json().catch(() => null);
+    const envelope = await response.json().catch(() => null);
+    if (!response.ok || envelope?.schema !== "fm-dashboard-timeline.v1") throw new Error("timeline unavailable");
+    entry.envelope = envelope;
   } catch {
-    entry.envelope = null;
+    entry.failed = true;
   }
   entry.loading = false;
   if (state.route.view === TASK_VIEW && state.route.taskId === taskId) render();
@@ -1303,10 +1304,13 @@ function activityPanel(taskId, task) {
   const backfill = { task: taskId, events: Array.isArray(entry.envelope?.events) ? entry.envelope.events : [] };
   const merged = mergeTaskBackfill(Array.isArray(state.events?.events) ? state.events.events : [], backfill, taskId);
   const built = buildTimeline({ events: merged }, { task: taskId });
+  const statusEnvelope = entry.failed
+    ? { status: { ingestion: "unavailable", reason: "the stored task timeline could not be read" } }
+    : state.events?.status ? state.events : entry.envelope;
+  const status = timelineNotice(statusEnvelope, merged.length, built.rows.length);
+  if (status.text) panel.append(notice(status.tone, null, status.text));
   if (!built.rows.length) {
-    const status = timelineNotice(entry.envelope || state.events, merged.length, 0);
-    if (status.text) panel.append(notice(status.tone, null, status.text));
-    const source = task ? sourceNotice(task, entry.envelope || state.events) : null;
+    const source = task ? sourceNotice(task, statusEnvelope) : null;
     if (source) panel.append(element("p", "state-reason", source));
     return panel;
   }

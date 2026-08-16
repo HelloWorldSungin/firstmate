@@ -579,13 +579,33 @@ function runJsonCommand(command, args, { timeoutMs, env, register = () => {} }) 
   });
 }
 
+const DISPLAY_ERROR_MESSAGES = {
+  command_missing: "a required dashboard command is unavailable",
+  command_error: "a dashboard command could not be started",
+  timed_out: "a dashboard data source did not answer before its deadline",
+  output_too_large: "a dashboard data source returned too much data",
+  exit_nonzero: "a dashboard data source reported a failure",
+  malformed_json: "a dashboard data source returned unreadable data",
+  unsupported_schema: "a dashboard data source returned an unsupported format",
+  service_unit_outdated: "the installed dashboard service is out of date; rerun bin/fm-dashboard-install.sh",
+  history_refresh_failed: "the completion history could not be read",
+  gbrain_health_unavailable: "GBrain health could not be read",
+  event_store_unavailable: "the activity store could not be opened",
+  snapshot_failed: "the fleet snapshot could not be read",
+};
+
+function displayErrorMessage(kind) {
+  return DISPLAY_ERROR_MESSAGES[kind] || "a dashboard data source could not be read";
+}
+
 function errorRecord(error, fallback) {
-  return {
-    kind: error.kind || fallback,
-    message: safeText(error.message) || fallback,
-    stderr: safeText(error.stderr),
-    at: nowIso(),
-  };
+  const kind = error.kind || fallback;
+  const record = { kind, message: displayErrorMessage(kind), at: nowIso() };
+  Object.defineProperty(record, "diagnostic", {
+    value: { message: safeText(error.message), stderr: safeText(error.stderr) },
+    enumerable: false,
+  });
+  return record;
 }
 
 // The one set of connected browsers. The snapshot and the history each push

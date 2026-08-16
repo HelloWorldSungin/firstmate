@@ -507,6 +507,7 @@ const backlogEnvelope = {
 };
 const gbrainHealth = { schema: "fm-gbrain-health.v1", status: {}, config: {}, health: { configured: false } };
 let timelineEnvelope = {
+  schema: "fm-dashboard-timeline.v1",
   events: [
     { event_id: "e1", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", outcome: "ok", occurred_at: "2026-08-15T10:00:02Z", occurred_epoch: 2 },
     { event_id: "e2", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", occurred_at: "2026-08-15T10:00:01Z", occurred_epoch: 1 },
@@ -515,6 +516,7 @@ let timelineEnvelope = {
 
 const eventSources = [];
 let timelineFetches = 0;
+let timelineFetchFailure = false;
 class FakeEventSource {
   constructor() {
     this.listeners = {};
@@ -551,7 +553,11 @@ Object.assign(globalThis, {
       if (url.startsWith("/api/history")) return historyEnvelope;
       if (url.startsWith("/api/backlog")) return backlogEnvelope;
       if (url.startsWith("/api/gbrain/health")) return gbrainHealth;
-      if (url.startsWith("/api/timeline")) { timelineFetches += 1; return timelineEnvelope; }
+      if (url.startsWith("/api/timeline")) {
+        timelineFetches += 1;
+        if (timelineFetchFailure) throw new Error("the task timeline request failed");
+        return timelineEnvelope;
+      }
       return {};
     },
   }),
@@ -679,6 +685,29 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await go("#/knowledge");
   const knowledgeText = one(viewNode, (node) => node.id === "view-knowledge", "knowledge view").textContent;
   if (!knowledgeText.includes("Knowledge is not configured.")) throw new Error(`the no-brain page lost its explanation: ${knowledgeText}`);
+  const configuredBrain = {
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      configured: true,
+      version: "test",
+      index: { state: "ok", detail: "/home/captain/data/gbrain/index" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: { enabled: true, archived: 1, pending: 0, failed: 0 },
+      maintenance: { state: "ready" },
+    },
+  };
+  eventSources[0].listeners.gbrain_health({ data: JSON.stringify(configuredBrain) });
+  const knowledgeSearch = one(viewNode, (node) => node.id === "knowledge-search", "knowledge search");
+  knowledgeSearch.focus();
+  knowledgeSearch.value = "unsubmitted fleet draft";
+  knowledgeSearch.selectionStart = knowledgeSearch.value.length;
+  knowledgeSearch.selectionEnd = knowledgeSearch.value.length;
+  eventSources[0].listeners.gbrain_health({ data: JSON.stringify({ ...configuredBrain, status: { phase: "ready", last_success_age_seconds: 0 } }) });
+  const refreshedKnowledgeSearch = one(viewNode, (node) => node.id === "knowledge-search", "knowledge search after refresh");
+  if (refreshedKnowledgeSearch !== knowledgeSearch || refreshedKnowledgeSearch.value !== "unsubmitted fleet draft" || !refreshedKnowledgeSearch.focused) throw new Error("a health refresh reset the mounted Knowledge search draft");
 
   // --- the task route: kv strip, full PR URL, and honest outcome chips -------
   await go(`#/task/${TASK_ID}`);
@@ -704,6 +733,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (!one(viewNode, (node) => node.id === "view-task", "updated task view").textContent.includes("git")) throw new Error("the task-scoped event tail was not merged into the cached timeline");
 
   timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
     status: { ingestion: "unavailable", reason: "the event store is unreadable" },
     events: [],
   };
@@ -714,6 +744,31 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (!unavailableTimeline.textContent.includes("Activity cannot be recorded: the event store is unreadable")) throw new Error("an unavailable task timeline lost its failure notice");
   if (unavailableTimeline.textContent.includes("No events are recorded for this task")) throw new Error("an unavailable task timeline rendered as calmly empty");
 
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    status: { ingestion: "ready" },
+    events: [],
+  }) });
+  timelineFetchFailure = true;
+  await go("#/task/busy-worker");
+  await settle();
+  await settle();
+  timelineFetchFailure = false;
+  const failedTimeline = one(viewNode, (node) => node.id === "view-task", "task with failed timeline fetch").textContent;
+  if (!failedTimeline.includes("Activity cannot be recorded: the stored task timeline could not be read")) throw new Error(`a failed task backfill fell through to the fleet stream: ${failedTimeline}`);
+
+  timelineEnvelope = {
+    schema: "fm-dashboard-timeline.v1",
+    status: { ingestion: "disabled" },
+    events: [{ event_id: "held-event", task_id: "held-b", harness: "codex", type: "tool_finished", tool: "read", outcome: "ok", occurred_at: "2026-08-15T10:00:04Z", occurred_epoch: 4 }],
+  };
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({ ...timelineEnvelope, schema: "fm-dashboard-events.v1" }) });
+  await go("#/task/held-b");
+  await settle();
+  await settle();
+  const disabledTimeline = one(viewNode, (node) => node.id === "view-task", "task with retained disabled timeline").textContent;
+  if (!disabledTimeline.includes("Reporting is off in this home") || !disabledTimeline.includes("Tool finished · read")) throw new Error(`disabled ingestion with retained rows looked current or empty: ${disabledTimeline}`);
+
   await go("#/task/delivered-one");
   const completedTask = one(viewNode, (node) => node.id === "view-task", "completed task view");
   if (completedTask.textContent.includes("/home/captain")) throw new Error("a completed task project path reached the page");
@@ -722,6 +777,17 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await go("#/task/queued-a");
   const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");
   if (!queuedTask.textContent.includes("firstmate") || queuedTask.textContent.includes("/home/captain")) throw new Error("the normalized queued project label did not render safely");
+
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    schema: "fm-dashboard-backlog.v1",
+    status: { phase: "ready" },
+    backlog: { present: false, records: [] },
+  }) });
+  await go("#/task/not-recorded");
+  const absentBacklogLookup = one(viewNode, (node) => node.id === "view-task", "task lookup with absent backlog");
+  if (!absentBacklogLookup.textContent.includes("No such task") || absentBacklogLookup.dataset.settled !== "true") throw new Error(`a ready absent backlog stayed pending: ${absentBacklogLookup.textContent}`);
+  eventSources[0].listeners.backlog({ data: JSON.stringify(backlogEnvelope) });
 
   eventSources[0].listeners.backlog({ data: JSON.stringify({
     ...backlogEnvelope,
@@ -1060,7 +1126,7 @@ test_stale_service_unit_is_actionable() {
 }
 
 test_first_run_failures_are_explicit() {
-  local case_root backlog
+  local case_root backlog error_message
   case_root=$(make_runtime malformed)
   printf 'malformed\n' > "$case_root/control/mode"
   start_fixture_server "$case_root" 1 1
@@ -1079,6 +1145,12 @@ test_first_run_failures_are_explicit() {
   case_root=$(make_runtime missing no)
   start_fixture_server "$case_root" 1 1
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "command_missing"'
+  error_message=$(jq -r '.status.error.message' "$case_root/envelope.json")
+  [ "$error_message" = "a required dashboard command is unavailable" ] \
+    || fail "a missing command exposed an unsafe or unstable display message: $error_message"
+  case "$error_message" in
+    *"$case_root"*|*"/home/"*) fail "a command failure exposed its filesystem path: $error_message" ;;
+  esac
   stop_server
   pass "malformed JSON, unsupported versions, and missing commands expose first-run errors"
 }

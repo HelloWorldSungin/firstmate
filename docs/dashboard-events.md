@@ -160,8 +160,8 @@ A view is not worth a stalled agent, so there is no retry and no spool.
 
 ## Reading the timeline
 
-The **Activity** view lists the fleet's events newest first, filterable by agent, harness, and event.
-Each task's detail page carries that task's own timeline and backfills its events from the store, because the live stream carries a bounded fleet-wide tail and a busy fleet can scroll one agent out of it.
+Each task detail page carries an Activity panel that lists only that task's events newest first.
+The panel backfills the task's events from the store because the live stream carries a bounded fleet-wide tail and a busy fleet can scroll one agent out of it.
 [`assets/dashboard/events.js`](../assets/dashboard/events.js) is the single executable copy of that policy.
 Every value reaches the page through `textContent`, which is the second independent reason a stored event can never become markup.
 
