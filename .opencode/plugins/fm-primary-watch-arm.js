@@ -227,19 +227,29 @@ async function retireArm(armChild) {
   if (!closed) return false;
   return new Promise((resolve) => {
     let expiry = null;
+    let grace = null;
+    let graceExpiry = null;
     const timer = setTimeout(() => {
       // Judge the deadline against the observable exit, not the close event:
       // close propagates through stream teardown a few turns after exit, so a
       // wall-clock verdict on close alone reports an already-exited arm as
       // unretired on a contended runner. The one-turn settle lets a queued
       // exit event land first; an exited arm then gets one bounded grace
-      // period for its close, while a still-running arm fails retirement.
+      // period for its close, while a still-running arm fails retirement. The
+      // grace verdict also settles through the following check turn so a close
+      // already queued for either poll or close callbacks wins too.
       expiry = setImmediate(() => {
         if (armChild.exitCode === null && armChild.signalCode === null) {
           resolve(false);
           return;
         }
-        const grace = setTimeout(() => resolve(false), ARM_RETIRE_TIMEOUT_MS);
+        grace = setTimeout(() => {
+          graceExpiry = setImmediate(() => {
+            graceExpiry = setImmediate(() => resolve(false));
+            graceExpiry.unref();
+          });
+          graceExpiry.unref();
+        }, ARM_RETIRE_TIMEOUT_MS);
         grace.unref();
       });
       expiry.unref();
@@ -248,6 +258,8 @@ async function retireArm(armChild) {
     void closed.then(() => {
       clearTimeout(timer);
       if (expiry) clearImmediate(expiry);
+      if (grace) clearTimeout(grace);
+      if (graceExpiry) clearImmediate(graceExpiry);
       resolve(true);
     });
   });

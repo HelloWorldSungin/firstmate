@@ -345,19 +345,29 @@ export default function (pi: ExtensionAPI) {
     if (!closed) return false;
     return new Promise((resolveRetired) => {
       let expiry: ReturnType<typeof setImmediate> | null = null;
+      let grace: ReturnType<typeof setTimeout> | null = null;
+      let graceExpiry: ReturnType<typeof setImmediate> | null = null;
       const timer = setTimeout(() => {
         // Judge the deadline against the observable exit, not the close event:
         // close propagates through stream teardown a few turns after exit, so a
         // wall-clock verdict on close alone reports an already-exited arm as
         // unretired on a contended runner. The one-turn settle lets a queued
         // exit event land first; an exited arm then gets one bounded grace
-        // period for its close, while a still-running arm fails retirement.
+        // period for its close, while a still-running arm fails retirement. The
+        // grace verdict also settles through the following check turn so a close
+        // already queued for either poll or close callbacks wins too.
         expiry = setImmediate(() => {
           if (armChild.exitCode === null && armChild.signalCode === null) {
             resolveRetired(false);
             return;
           }
-          const grace = setTimeout(() => resolveRetired(false), armRetireTimeoutMs);
+          grace = setTimeout(() => {
+            graceExpiry = setImmediate(() => {
+              graceExpiry = setImmediate(() => resolveRetired(false));
+              graceExpiry.unref();
+            });
+            graceExpiry.unref();
+          }, armRetireTimeoutMs);
           grace.unref();
         });
         expiry.unref();
@@ -366,6 +376,8 @@ export default function (pi: ExtensionAPI) {
       void closed.then(() => {
         clearTimeout(timer);
         if (expiry) clearImmediate(expiry);
+        if (grace) clearTimeout(grace);
+        if (graceExpiry) clearImmediate(graceExpiry);
         resolveRetired(true);
       });
     });

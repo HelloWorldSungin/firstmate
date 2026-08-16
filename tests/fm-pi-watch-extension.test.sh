@@ -623,23 +623,21 @@ EOF
   pass "Pi unretired successor falls back without an overlapping retry"
 }
 
-# Deterministic regression for the retirement deadline race: a successor that
-# exits while the event loop is stalled across the retire deadline has its
-# close event queued but undelivered when the deadline timer fires. Judging
-# the deadline on the close event alone reports that already-exited arm as
-# unretired and tears down continuity. The harness holds the successor until
-# the retire request, then blocks the loop from a check-phase callback until
-# the successor has provably exited and the deadline has passed, so the next
-# iteration's timers phase always races the queued close - the interleaving a
-# contended CI runner produces by starvation.
+# Deterministic regression for the retirement deadline races: a successor exits
+# across the retire deadline while an inherited stdio pipe keeps its close
+# pending, then the pipe closes while the event loop is stalled across the grace
+# deadline. The next timers phase always races the queued close at both verdicts
+# - the interleaving a contended CI runner produces by starvation.
 test_pi_retired_successor_close_at_deadline_keeps_continuity() {
-  local repo home plugin log term_seen retire_release exit_marker stop out status
+  local repo home plugin log term_seen retire_release exit_marker stdio_release stdio_exit stop out status
   repo="$TMP_ROOT/pi-retire-settle-root"
   home="$TMP_ROOT/pi-retire-settle-home"
   log="$TMP_ROOT/pi-retire-settle.log"
   term_seen="$TMP_ROOT/pi-retire-settle.term-seen"
   retire_release="$TMP_ROOT/pi-retire-settle.retire-release"
   exit_marker="$TMP_ROOT/pi-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/pi-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/pi-retire-settle.stdio-exit"
   stop="$TMP_ROOT/pi-retire-settle.stop"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
@@ -657,6 +655,10 @@ if [ "$count" -eq 2 ]; then
   on_term() {
     printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
     while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
     printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
     exit 0
   }
@@ -668,7 +670,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -691,14 +693,31 @@ childProcess.spawn = (...args) => {
       if (signal === "SIGTERM" && !retireStalled) {
         retireStalled = true;
         // The retire timer is armed synchronously after this kill call
-        // returns. From the check phase, release the held successor, spin
-        // until it has provably exited, then spin past the retire deadline,
-        // so its close event is queued when the deadline fires.
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
         setImmediate(() => {
           writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
-          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) { /* spin */ }
-          const settle = Date.now() + 450;
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
           while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
         });
       }
       return delivered;
@@ -2318,7 +2337,12 @@ if (armSpawns < 1) throw new Error("arm child never spawned");
 // phase, so the deadline always fires while readiness output is queued.
 await new Promise((resolve) => setImmediate(() => {
   writeFileSync(process.env.FM_GO_FILE, "go\n");
-  while (!existsSync(process.env.FM_READY_MARKER)) { /* spin */ }
+  const markerDeadline = Date.now() + 5000;
+  while (!existsSync(process.env.FM_READY_MARKER)) {
+    if (Date.now() >= markerDeadline) {
+      throw new Error(`fixture timed out waiting for readiness marker: ${process.env.FM_READY_MARKER}`);
+    }
+  }
   const settle = Date.now() + 350;
   while (Date.now() < settle) { /* spin */ }
   resolve();
@@ -2341,7 +2365,7 @@ EOF
 # deadline must be reported retired so restoration continues, instead of the
 # false unretired verdict that tears down continuity.
 test_opencode_retired_successor_close_at_deadline_keeps_continuity() {
-  local plugin repo home log term_seen retire_release exit_marker stop out status
+  local plugin repo home log term_seen retire_release exit_marker stdio_release stdio_exit stop out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-retire-settle-root"
   home="$TMP_ROOT/opencode-retire-settle-home"
@@ -2349,6 +2373,8 @@ test_opencode_retired_successor_close_at_deadline_keeps_continuity() {
   term_seen="$TMP_ROOT/opencode-retire-settle.term-seen"
   retire_release="$TMP_ROOT/opencode-retire-settle.retire-release"
   exit_marker="$TMP_ROOT/opencode-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/opencode-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/opencode-retire-settle.stdio-exit"
   stop="$TMP_ROOT/opencode-retire-settle.stop"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
@@ -2367,6 +2393,10 @@ if [ "$count" -eq 2 ]; then
   on_term() {
     printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
     while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
     printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
     exit 0
   }
@@ -2378,7 +2408,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -2400,14 +2430,31 @@ childProcess.spawn = (...args) => {
       if (signal === "SIGTERM" && !retireStalled) {
         retireStalled = true;
         // The retire timer is armed synchronously after this kill call
-        // returns. From the check phase, release the held successor, spin
-        // until it has provably exited, then spin past the retire deadline,
-        // so its close event is queued when the deadline fires.
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
         setImmediate(() => {
           writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
-          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) { /* spin */ }
-          const settle = Date.now() + 450;
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
           while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
         });
       }
       return delivered;
