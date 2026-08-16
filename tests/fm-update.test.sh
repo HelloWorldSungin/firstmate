@@ -2,7 +2,8 @@
 # Tests for bin/fm-update.sh: fast-forward-only self-update of a running
 # firstmate repo and every registered secondmate home.
 #
-# The guarantees under test mirror fm-fleet-sync.sh and prime directive #3:
+# The guarantees under test mirror fm-fleet-sync.sh and AGENTS.md's hard rule
+# against tearing down unlanded work:
 #   - The running firstmate repo (on its default branch) fast-forwards from
 #     origin; a leased secondmate home (detached HEAD on the default branch)
 #     fast-forwards the same way.

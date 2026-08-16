@@ -66,7 +66,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
 - **Fast-forward only.**
   A target that has diverged, is dirty, is offline, or is on a non-default branch is skipped and reported, never forced or stashed.
   Upstream drift is reported read-only and is never merged by this skill.
-  Nothing with unlanded work is ever discarded - this is prime directive #3.
+  Nothing with unlanded work is ever discarded - this is `AGENTS.md`'s hard rule against tearing down unlanded work.
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.
 - **Secondmates are never disrupted.**
