@@ -40,11 +40,13 @@
 #                    every view at every width, the console transcript, and
 #                    result.txt.
 #   --width          a viewport to check, repeatable, as <css-px>x<css-px>.
-#                    Default: 390x844 (phone) and 1440x900 (desktop). The phone
-#                    width is not an afterthought - this dashboard is read on
-#                    one. Naming the same viewport twice is a usage error:
-#                    every observation is labelled with its width, so the run
-#                    would owe two verdicts for each of them.
+#                    Default: 390x844 (phone), 899x844 and 900x844 (the two
+#                    sides of the navigation boundary - the rail appears at 900
+#                    and the bottom tab bar below it, and navigation vanishing
+#                    below 900 is the defect that motivated the rebuild), and
+#                    1440x900 (desktop). Naming the same viewport twice is a
+#                    usage error: every observation is labelled with its width,
+#                    so the run would owe two verdicts for each of them.
 #   --keep           leave the fixture server running and print its URL.
 #   --negative       prove the check can fail. Runs the identical assertions
 #                    against a deliberately broken page and exits non-zero
@@ -84,7 +86,7 @@
 #                      stylesheet:fail      the stylesheet was applied
 #                      swipe:fail           nothing behind a horizontal swipe
 #                      swipe:unverified     ... never measured at this width
-#                      view-present:fail    the view is on the page
+#                      view-present:fail    only the active view is on the page
 #                      view-present:unverified
 #                      view-height:fail     the view rendered with real height
 #                      view-height:unverified
@@ -92,16 +94,20 @@
 #                      view-legible:unverified
 #                      leak:fail            a credential- or path-shaped value
 #                      leak:unverified      the scan cannot be shown to have run
-#                      usage:fail           a completed record with no panel
-#                      usage:unverified     no completion record to look at
-#                      nav:fail             the link lands under the sticky bar
-#                      nav:unverified       the landing could not be read
+#                      usage:fail           a completed row with no usage cell
+#                      usage:unverified     no completion row to look at
+#                      history:fail         records read but not displayed
+#                      history:unverified   the history view could not be read
+#                      nav:fail             the destination's control went unfound
+#                      nav:unverified       the navigation could not be read
+#                      task-open:fail       a board row did not open its task
+#                      task-open:unverified
 #                      live-event:fail      the event never reached the page
 #                      live-event:unverified
-#                      tail:fail            earlier events never left the stream
-#                      tail:unverified
-#                      backfill:fail        backfilled history was discarded
-#                      backfill:unverified
+#                      isolation:fail       unrelated traffic reached the timeline
+#                      isolation:unverified
+#                      persist:fail         earlier events vanished from the timeline
+#                      persist:unverified
 #                      console:fail         the console printed something
 #                      console:unverified   a console window could not be read
 #                      reconcile:drop       an observation left unrecorded
@@ -151,24 +157,28 @@
 #
 #   The failure this exists to catch is a page that came up empty or broken
 #   while something claimed it was fine, so no assertion here is satisfied by a
-#   page that loaded. Each view must be present, must have real rendered
-#   height, and must contain its own landmark text; the browser must be proven
-#   to be at the width the section is named after; the document must carry no
-#   sideways scroll at any width, because reaching a fleet signal by horizontal
-#   swipe is a defect this dashboard specifically promises against; following a
-#   nav link must actually navigate and land the section's heading clear of the
-#   sticky bar; every completed record must carry its usage panel; no part of
-#   the rendered page - not only the view sections, but the topbar, the notice
-#   region that carries a failed command's raw stderr, the sidebar and the
-#   report dialog - may contain a credential-shaped or absolute-path-shaped
-#   value; and the console must be clean. The fixture run additionally proves the live
-#   stream: an event posted while the page is open appears with no reload, and a
-#   selected agent's backfilled history survives the next event rather than
-#   being discarded with the stream that gets replaced.
+#   page that loaded. The page is a hash router with mutually exclusive views,
+#   and the assertions are shaped for that: every destination must be reachable
+#   through the navigation control that is actually visible at the width being
+#   checked (the rail at >=900 CSS px, the bottom tab bar below it - navigation
+#   existing at every width is the defect that motivated the rebuild); the
+#   active view must be on the page with real rendered height and its own
+#   landmark text while EVERY OTHER view is absent from the DOM, not hidden;
+#   the browser must be proven to be at the width the section is named after;
+#   no destination may scroll sideways; the History view must display the
+#   completion records it read, each displayed row carrying its usage cell;
+#   opening a task from the Fleet board must land on that task's detail page
+#   alone; no destination's rendered page may contain a credential-shaped or
+#   absolute-path-shaped value; and the console must be clean. The fixture run
+#   additionally proves the task timeline: an event posted while a task's page
+#   is open appears with no reload, the task's earlier events survive unrelated
+#   fleet traffic, and that unrelated traffic stays off the task's own
+#   timeline.
 #
 #   The structural assertions are written against the page's own contract, not
 #   against fixture data, so this same command is what you point at a live
-#   dashboard. Extending it for a new view means adding a row to VIEWS below.
+#   dashboard. Extending it for a new destination means adding a row to VIEWS
+#   below.
 #
 # The four verdicts, and why there are four
 #
@@ -191,7 +201,7 @@
 #   apply here" are different answers and collapsing them costs the run its
 #   signal. ???? means something that should have been observable was not, and
 #   it fails the run. n/a means the observation is out of this mode's reach by
-#   design - the three live-stream observations under --url, which can only be
+#   design - the three task-timeline observations under --url, which can only be
 #   proved by posting events into a dashboard this command does not own - so it
 #   is reported and counted but does not fail the run. Without the distinction
 #   --url could never exit 0 however healthy the page was, which would leave
@@ -201,10 +211,11 @@
 # The declared observation set, and why it is reconciled
 #
 #   Every mode declares up front the observations it makes: the per-width ones
-#   once per --width, the three per-view ones and the nav one once per VIEWS row
-#   inside each of those, and the live-stream and console ones once for the run.
-#   That list is derived from VIEWS and WIDTHS rather than written out, so a new
-#   view row or a new width extends it without anyone remembering to.
+#   once per --width, the five per-destination ones once per VIEWS row inside
+#   each of those, the task-detail, leak, usage and history-display ones once
+#   per width, and the timeline and console ones once for the run. That list is
+#   derived from VIEWS and WIDTHS rather than written out, so a new view row or
+#   a new width extends it without anyone remembering to.
 #
 #   Every declared observation must resolve to exactly one verdict, and at the
 #   end of every run - fixture, --url, --negative, injected - the declared set is
@@ -231,7 +242,7 @@
 # any observation is FAIL or ????, 2 on a usage or setup problem, 3 when
 # FM_DASHBOARD_BROWSER_FORCE injected a fault, 4 when this run did not emit the
 # observation set it declared. An n/a observation never fails the run, so a
-# healthy dashboard checked with --url exits 0 with its three live-stream
+# healthy dashboard checked with --url exits 0 with its three task-timeline
 # observations recorded as n/a; every other observation is made identically in
 # both modes. The full per-observation result is printed and written to
 # <out>/result.txt either way.
@@ -241,17 +252,28 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 FRONT="$ROOT/bin/fm-dashboard-browser-front.mjs"
 BROWSER=${FM_DASHBOARD_BROWSER_CLI:-chrome-devtools-axi}
 
-# Each row is: <section id>|<label>|<landmark>;<landmark>...
-# The landmarks are the view's own furniture - its eyebrow, its heading, the
-# controls it owns - so they hold against fixture data and against a live fleet
-# alike. A new view is a new row here and nothing else.
-VIEWS='inbox|Captain inbox|Captain inbox;Needs you
-board|Board|Read-only fleet snapshot;Board;Secondmates;Filters
-gbraintron|GBrain|GBrain health and search;Search captured knowledge
-activity|Activity|Live agent events;Activity;Filters
-history|History|Durable completion records;History;Filters and search'
+# Each row is: <route>|<view root id>|<label>|<landmark>;<landmark>...
+# The route is the [data-route] value on the navigation controls and the hash
+# path (#/<route>); the id is the root the router mounts for it, and the id
+# every OTHER route must NOT have on its page. The landmarks are the view's own
+# furniture - its eyebrow and its heading - chosen to hold against fixture
+# data, a live fleet, and the designed empty states alike. A new destination is
+# a new row here and nothing else.
+VIEWS='needs|view-needs|Needs you|Needs you
+fleet|view-fleet|Fleet|Live board;Fleet
+backlog|view-backlog|Backlog|Queue · read-only;Backlog
+history|view-history|History|Delivered · newest first;History
+knowledge|view-knowledge|Knowledge|Knowledge'
 
-DEFAULT_WIDTHS='390x844 1440x900'
+DEFAULT_WIDTHS='390x844 899x844 900x844 1440x900'
+
+# Every view root id the router can mount, the task detail included: the
+# absence half of the exclusivity assertion looks for all of them by name.
+ALL_VIEW_IDS="$(printf '%s\n' "$VIEWS" | cut -d'|' -f2 | paste -sd, -),view-task"
+
+# How many completion records the fixture publishes, so the History display
+# assertion can hold the page to the exact record set this run controls.
+FIXTURE_HISTORY_COUNT=2
 
 # The verdict for an observation that could not be made. Counted and reported
 # separately from a pass and from a failure, and it fails the run: a check that
@@ -263,13 +285,6 @@ UNVERIFIED='????'
 # run - it is not a thing that went unobserved through some fault, it is a
 # thing there was never anything here to observe.
 INAPPLICABLE='n/a'
-
-# styles.css asks for scroll-margin-top: var(--sticky-top) + 12px on every
-# scroll target, so a section that was really navigated to lands its heading a
-# few pixels below the sticky bar. This is how much further down than that the
-# landing may sit and still count as an arrival; anything beyond it is a scroll
-# that never finished or never happened.
-NAV_LANDING_BAND=48
 
 MODE=fixture
 TARGET_URL=
@@ -312,9 +327,6 @@ CONSOLE_UNNAMED=0
 CONSOLE_UNREAD=
 CONSOLE_PAGE_OPENED=no
 
-# Leak matches seen across the views at the width being checked, reset per
-# width by the caller.
-ALL_LEAKS=
 
 usage() {
   cat <<'TEXT'
@@ -342,7 +354,7 @@ Drives the real dashboard page in a real browser and records what it renders.
 Each observation is recorded as ok, FAIL, ???? or n/a. ???? means it could not
 be observed at all, which is not a pass and fails the run. n/a means it does
 not apply to the target being checked in this mode, which does not fail the
-run; the three live-stream observations are n/a under --url, because proving
+run; the three task-timeline observations are n/a under --url, because proving
 them means posting events into a dashboard this command does not own.
 
 Every mode declares the observations it makes and reconciles that list against
@@ -420,14 +432,6 @@ is_number() {  # <candidate>
   esac
 }
 
-is_integer() {  # <candidate>, which may be negative
-  case "${1:-}" in
-    ''|-) return 1 ;;
-    -*) is_number "${1#-}" ;;
-    *) is_number "$1" ;;
-  esac
-}
-
 [ -n "$WIDTHS" ] || WIDTHS=$DEFAULT_WIDTHS
 # A viewport this check cannot parse is a usage error, not something to hand to
 # the browser and then measure against: the width assertion below compares the
@@ -493,16 +497,18 @@ leak:fail
 leak:unverified
 usage:fail
 usage:unverified
-usage:tokens
-usage:operational
+history:fail
+history:unverified
 nav:fail
 nav:unverified
+task-open:fail
+task-open:unverified
 live-event:fail
 live-event:unverified
-tail:fail
-tail:unverified
-backfill:fail
-backfill:unverified
+isolation:fail
+isolation:unverified
+persist:fail
+persist:unverified
 console:fail
 console:unverified
 reconcile:drop
@@ -546,35 +552,31 @@ EMITTED_LOG="$WORK_DIR/emitted.txt"
 # the widths, before the live stream and the console, because the property it
 # proves is about the assertions that read what rendered.
 declared_observations() {
-  local spec id name _landmarks
+  local spec _route _id name _landmarks
   for spec in $WIDTHS; do
     printf '%s: the dashboard document loaded\n' "$spec"
     printf '%s: the browser really is at this viewport\n' "$spec"
     printf '%s: the page rendered text rather than an empty document\n' "$spec"
     printf '%s: the stylesheet was applied\n' "$spec"
-    printf '%s: nothing is placed behind a horizontal swipe\n' "$spec"
-    while IFS='|' read -r id name _landmarks; do
-      [ -n "$id" ] || continue
-      printf '%s: the %s view is on the page\n' "$spec" "$name"
+    while IFS='|' read -r _route _id name _landmarks; do
+      [ -n "$_route" ] || continue
+      printf '%s: the %s destination is reachable from the visible navigation\n' "$spec" "$name"
+      printf '%s: only the %s view is on the page\n' "$spec" "$name"
       printf '%s: the %s view rendered with real height\n' "$spec" "$name"
       printf '%s: the %s view is legible\n' "$spec" "$name"
+      printf '%s: nothing is placed behind a horizontal swipe on %s\n' "$spec" "$name"
     done <<VIEWROWS
 $VIEWS
 VIEWROWS
-    printf '%s: no credential-shaped or path-shaped value on the page\n' "$spec"
-    printf '%s: every completed record shows its usage panel\n' "$spec"
-    printf '%s: collected usage shows token totals where attributed\n' "$spec"
-    while IFS='|' read -r id name _landmarks; do
-      [ -n "$id" ] || continue
-      printf '%s: the %s link lands on that section'"'"'s heading\n' "$spec" "$name"
-    done <<NAVROWS
-$VIEWS
-NAVROWS
+    printf '%s: opening a task from the Fleet board lands on its detail page alone\n' "$spec"
+    printf '%s: the History view displays the completion records it read\n' "$spec"
+    printf '%s: every completed row shows its usage cell\n' "$spec"
+    printf '%s: no credential-shaped or path-shaped value on any destination\n' "$spec"
   done
   [ "$NEGATIVE" = yes ] && return 0
-  printf 'a live event appears without a reload\n'
-  printf 'the agent'"'"'s earlier events really did leave the live stream\n'
-  printf 'backfilled history survives a subsequent event\n'
+  printf 'a live event appears on the open task page without a reload\n'
+  printf 'the task'"'"'s earlier events survive unrelated fleet traffic\n'
+  printf 'unrelated traffic stays off the task'"'"'s own timeline\n'
   printf 'the browser console is clean\n'
   return 0
 }
@@ -785,7 +787,15 @@ write_fixture_snapshot() {  # <path>
     }
   ],
   "card_precedence": ["needs_decision","blocked","parked","failed","review","done","waiting","active","secondmate","idle"],
-  "supervision": {"watcher":{"present":true,"age_seconds":3,"grace_seconds":300,"quiet_allowance_seconds":3600,"stale":false},"afk":{"active":false}}
+  "supervision": {"watcher":{"present":true,"age_seconds":3,"grace_seconds":300,"quiet_allowance_seconds":3600,"stale":false},"afk":{"active":false}},
+  "backlog": {
+    "path": "data/backlog.md",
+    "present": true,
+    "records": [
+      {"order":1,"state":"queued","structured":true,"id":"fixture-queued-fix","title":"Fix the stale badge count","repo":"firstmate","kind":"fix","priority":"1","since":"2026-08-01","since_age_seconds":86400},
+      {"order":2,"state":"queued","structured":true,"id":"fixture-queued-held","title":"Design token sync from the studio site","repo":"arknodestudio-website","kind":"chore","priority":"2","hold_reason":"waiting on vault token rotation","since":"2026-08-02","since_age_seconds":43200}
+    ]
+  }
 }
 JSON
 }
@@ -828,6 +838,20 @@ build_fixture() {
   # missing helper at a time, which of them the server happens to need.
   cp -R "$ROOT/bin" "$ROOT/assets" "$runtime/" || die "could not stage the dashboard runtime"
   write_fixture_snapshot "$WORK_DIR/control/snapshot.json"
+
+  # A real sectioned backlog, so the Backlog destination renders queue rows
+  # rather than only its first-run empty state. Done stays the last section:
+  # seed_completed_task appends its "- [x]" rows to the end of this file, and
+  # they have to land under Done for the snapshot parse to read them as such.
+  cat > "$home/data/backlog.md" <<'MD'
+## In flight
+
+## Queued
+- [ ] fixture-queued-fix - Fix the stale badge count (repo: firstmate, kind: fix, priority: 1, since 2026-08-01)
+- [ ] fixture-queued-held - Design token sync from the studio site (repo: arknodestudio-website, kind: chore, hold: waiting on vault token rotation, since 2026-08-02)
+
+## Done
+MD
 
   cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
@@ -1030,97 +1054,168 @@ count_landmarks() {  # <semicolon-separated landmarks>
   printf '%s' "${1:-}" | tr ';' '\n' | grep -c . || true
 }
 
-# The one probe every observation at a width is read from.
+# The document-level probe each width starts from: identity, geometry, and the
+# stylesheet, before any route is visited.
+build_page_probe_js() {
+  cat <<'JS'
+() => {
+  const doc = document.documentElement;
+  const bodyText = document.body.innerText;
+  return JSON.stringify({
+    title: document.title,
+    bodyTextLength: bodyText.length,
+    clientWidth: doc.clientWidth,
+    scrollWidth: doc.scrollWidth,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    background: getComputedStyle(document.body).backgroundColor,
+    // Defined by the dashboard's own stylesheet and by nothing else on the
+    // page, so a painted body that lacks it is some other stylesheet.
+    accent: getComputedStyle(doc).getPropertyValue("--amber-soft").trim(),
+    // Chrome renders its own error document, with a 200 from the tool's
+    // point of view, when the server is not there to answer.
+    errorPage: document.getElementById("main-frame-error") !== null,
+  });
+}
+JS
+}
+
+# The one probe every observation about a destination is read from: it clicks
+# the route's visible navigation control, waits for the router to mount the
+# view, and measures - the click, the settle, and every judgment in one
+# evaluation inside the page.
 #
 # Every judgment about text - which landmarks are present, whether anything
-# leak-shaped is on the page - is made INSIDE the page and comes back as a short
-# list, rather than shipping the rendered text out to be searched here. That is
-# not an optimization, and it is not a workaround for a limit either: the
-# browser tool truncates an eval result at about 8000 characters and says so,
-# offering --full to lift it, so a probe that shipped the text out could be made
-# to work. It is that a verdict is a fixed small result whatever the fleet is
-# doing, so it cannot be broken by page size at all, while a probe returning the
-# rendered text sits a page growth away from coming back truncated on exactly
-# the pages worth checking - and a check that breaks on real data and works on
-# fixtures is the failure this whole command exists to end.
+# leak-shaped is on the page - is made INSIDE the page and comes back as a
+# short list, rather than shipping the rendered text out to be searched here:
+# a verdict is a fixed small result whatever the fleet is doing, while a probe
+# returning the rendered text sits a page growth away from coming back
+# truncated on exactly the pages worth checking.
 #
 # The counts alongside each verdict are what make the verdict readable as
-# evidence: how many landmarks this view was actually asked about, how many leak
-# patterns compiled, how many characters they ran over, how many completion
-# records were on the page. An empty "missing" list means nothing at all unless
-# something was checked, so the caller requires those counts before it will
-# read an empty list as a pass.
-build_probe_js() {
+# evidence: how many landmarks were asked about, how many other view ids were
+# looked for, how many leak patterns compiled and how many characters they ran
+# over, how many history rows were on the page. An empty "missing" or "others"
+# list means nothing at all unless something was checked, so the caller
+# requires those counts before it will read an empty list as a pass.
+route_probe_js() {  # <route> <view id> <semicolon landmarks>
   # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
   node -e '
-    const views = process.argv[1].trim().split("\n").map((row) => {
-      const [id, name, landmarks] = row.split("|");
-      return { id, name, landmarks: (landmarks || "").split(";").filter(Boolean) };
-    });
-    const leaks = process.argv[2].split(";").filter(Boolean);
-    process.stdout.write(`() => {
-      const config = ${JSON.stringify({ views, leaks })};
+    const [route, viewId, landmarksRaw, allIdsRaw, leaksRaw] = process.argv.slice(1);
+    const config = {
+      route,
+      viewId,
+      landmarks: landmarksRaw.split(";").filter(Boolean),
+      allIds: allIdsRaw.split(",").filter(Boolean),
+      leaks: leaksRaw.split(";").filter(Boolean),
+    };
+    process.stdout.write(`async () => {
+      const config = ${JSON.stringify(config)};
+      const out = { clicked: false, control: "", reason: "" };
+      // A control is only worth finding on a page that has finished becoming
+      // the dashboard: the router must have mounted a view (which proves the
+      // module ran and the click listeners exist) and the dashboard stylesheet
+      // must be applied (which is what makes the visibility test below mean
+      // anything - before it, the rail is "visible" at every width). Probing
+      // earlier clicks a listener-less button and reads a layout the container
+      // queries have not shaped yet.
+      for (let tick = 0; tick < 60; tick += 1) {
+        const mounted = document.querySelector("#view > [id^=" + JSON.stringify("view-") + "]");
+        const styled = getComputedStyle(document.documentElement).getPropertyValue("--amber-soft").trim() !== "";
+        if (mounted && styled) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const controls = [...document.querySelectorAll("[data-route=" + JSON.stringify(config.route) + "]")];
+      if (!controls.length) {
+        out.reason = "no navigation control on the page carries this route";
+        return JSON.stringify(out);
+      }
+      const visible = controls.find((control) => {
+        const box = control.getBoundingClientRect();
+        return box.width > 0 && box.height > 0 && getComputedStyle(control).display !== "none";
+      });
+      if (!visible) {
+        out.reason = "the route has " + controls.length + " controls but none is visible at this width";
+        return JSON.stringify(out);
+      }
+      out.control = visible.classList.contains("tabitem") ? "the bottom tab bar" : "the rail";
+      visible.click();
+      for (let tick = 0; tick < 40; tick += 1) {
+        if (document.getElementById(config.viewId)) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      out.clicked = true;
+      out.hash = location.hash;
       const doc = document.documentElement;
-      const style = getComputedStyle(doc);
+      out.clientWidth = doc.clientWidth;
+      out.scrollWidth = doc.scrollWidth;
+      const element = document.getElementById(config.viewId);
+      out.present = element !== null;
+      // The exclusivity evidence: every other view id, looked for by name, and
+      // the count of how many were looked for so an empty list is checkable.
+      out.others = config.allIds.filter((id) => id !== config.viewId && document.getElementById(id) !== null);
+      out.othersChecked = config.allIds.length - 1;
       const patterns = [];
       for (const source of config.leaks) {
         try { patterns.push({ source, expression: new RegExp(source) }); } catch { /* only a pattern that compiles is one this scan ran */ }
       }
-      const historyCards = [...document.querySelectorAll("#history .history-card")];
-      // The whole rendered page, because that is what the observation claims.
-      // The five view sections are not all of it: the notice region, the
-      // topbar, the sidebar and the report dialog all sit outside them, and
-      // the notice region is where a failed snapshot command'"'"'s raw stderr is
-      // rendered - the likeliest carrier of an absolute host path anywhere on
-      // the page. The per-view lists below stay, for attribution.
+      // The whole rendered page at this destination, because that is what the
+      // leak observation claims: the verdict strip, the navigation, and any
+      // notice carrying a failed command'"'"'s stderr sit outside the view root.
       const bodyText = document.body.innerText;
-      const out = {
-        title: document.title,
-        bodyTextLength: bodyText.length,
-        clientWidth: doc.clientWidth,
-        scrollWidth: doc.scrollWidth,
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        background: getComputedStyle(document.body).backgroundColor,
-        // Defined by the dashboard'"'"'s own stylesheet and by nothing else on
-        // the page, so a painted body that lacks it is some other stylesheet.
-        gutter: style.getPropertyValue("--gutter").trim(),
-        // Chrome renders its own error document, with a 200 from the tool'"'"'s
-        // point of view, when the server is not there to answer.
-        errorPage: document.getElementById("main-frame-error") !== null,
-        historyCards: historyCards.length,
-        usagePanels: historyCards.filter((card) => {
-          const panel = card.querySelector(".usage-panel");
-          return panel !== null && panel.innerText.includes("USAGE");
-        }).length,
-        usageTokenPanels: historyCards.filter((card) => {
-          const total = card.querySelector(".usage-total");
-          return total !== null && /\\btokens\\b/i.test(total.textContent);
-        }).length,
-        usageOperationalPanels: historyCards.filter((card) => card.querySelector(".usage-panel.operational") !== null).length,
-        leakPatterns: patterns.length,
-        leakChars: bodyText.length,
-        pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
-        views: {},
-      };
-      for (const view of config.views) {
-        const element = document.getElementById(view.id);
-        if (!element) { out.views[view.id] = { present: false }; continue; }
-        const box = element.getBoundingClientRect();
+      out.leakPatterns = patterns.length;
+      out.leakChars = bodyText.length;
+      out.pageLeaks = patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source);
+      if (element) {
         const text = element.innerText;
         const lower = text.toLowerCase();
-        out.views[view.id] = {
-          present: true,
-          height: Math.round(box.height),
-          textLength: text.length,
-          landmarksChecked: view.landmarks.length,
-          missing: view.landmarks.filter((landmark) => !lower.includes(landmark.toLowerCase())),
-          leaks: patterns.filter((pattern) => pattern.expression.test(text)).map((pattern) => pattern.source),
-        };
+        out.height = Math.round(element.getBoundingClientRect().height);
+        out.landmarksChecked = config.landmarks.length;
+        out.missing = config.landmarks.filter((landmark) => !lower.includes(landmark.toLowerCase()));
+        if (config.route === "history") {
+          const rows = [...element.querySelectorAll(".rrow")];
+          out.historyRows = rows.length;
+          out.usageCells = rows.filter((row) => {
+            const cell = row.querySelector(".hcost");
+            return cell !== null && cell.textContent.trim() !== "";
+          }).length;
+          const pginfo = element.querySelector(".pginfo");
+          out.pageInfo = pginfo ? pginfo.textContent : "";
+          const emptyBig = element.querySelector(".empty-big");
+          out.emptyBig = emptyBig ? emptyBig.textContent : "";
+        }
       }
       return JSON.stringify(out);
     }`);
-  ' "$VIEWS" "$LEAK_PATTERNS"
+  ' "$1" "$2" "$3" "$ALL_VIEW_IDS" "$LEAK_PATTERNS"
+}
+
+# Clicks the first task row on the Fleet board and reads where it landed, so
+# the detail route is proven through the interaction that reaches it rather
+# than by writing a hash by hand.
+task_open_probe_js() {
+  # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
+  node -e '
+    const allIds = process.argv[1].split(",").filter(Boolean);
+    process.stdout.write(`async () => {
+      const allIds = ${JSON.stringify(allIds)};
+      const row = document.querySelector("#view-fleet .trow");
+      if (!row) return JSON.stringify({ clicked: false, reason: "no task row is on the Fleet board" });
+      row.click();
+      for (let tick = 0; tick < 40; tick += 1) {
+        if (document.getElementById("view-task")) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return JSON.stringify({
+        clicked: true,
+        reason: "",
+        hash: location.hash,
+        present: document.getElementById("view-task") !== null,
+        others: allIds.filter((id) => document.getElementById(id) !== null),
+        othersChecked: allIds.length,
+      });
+    }`);
+  ' "$ALL_VIEW_IDS"
 }
 
 # A bounded slice of each view, saved so a human can read what the check saw.
@@ -1130,9 +1225,41 @@ capture_view_text() {  # <label> <view id>
     "$OUT_DIR/text-$1-$2.txt" 2>/dev/null || true
 }
 
+# Aggregates the per-destination probes feed. Reset at the top of every width.
+WIDTH_TRUSTED=no
+LEAK_SCANS=0
+LEAK_CHARS_TOTAL=0
+LEAK_PATTERNS_SHORT=no
+LEAK_MATCHES=
+
+# ???? for any observation declared at this width that no path above recorded.
+# The width still counts as reached - unlike record_unreached, which marks the
+# whole width unrendered and thereby fails the negative proof - so this is the
+# backstop for observations whose carrier (a route, a board row) was itself
+# unreachable while the page as a whole was rendered and read.
+record_missing() {  # <label>
+  local label=$1 observation
+  while IFS= read -r observation; do
+    case "$observation" in
+      "$label: "*) ;;
+      *) continue ;;
+    esac
+    grep -Fxq "$observation" "$EMITTED_LOG" && continue
+    record "$UNVERIFIED" "$observation" \
+      "this observation was never reached at this width; the verdicts above say why"
+  done < "$DECLARED_FILE"
+}
+
 check_width() {  # <width> <height>
   local width=$1 height=$2 label="${1}x${2}" probe scalars key value
+  local route id name landmarks
   probe="$OUT_DIR/probe-${width}x${height}.json"
+
+  WIDTH_TRUSTED=no
+  LEAK_SCANS=0
+  LEAK_CHARS_TOTAL=0
+  LEAK_PATTERNS_SHORT=no
+  LEAK_MATCHES=
 
   # A viewport that would not move is a failure of the observation that the
   # browser really is at this width, and every other observation at this width
@@ -1159,29 +1286,27 @@ check_width() {  # <width> <height>
     return
   fi
   CONSOLE_PAGE_OPENED=yes
-  # The page fills itself from its first snapshot poll and its history poll, so
-  # give both a chance to land before reading it.
+  # The page fills itself from its first snapshot, history, and backlog polls,
+  # so give them a chance to land before reading it.
   sleep 4
 
-  # Read the load and render window here rather than only in check_navigation,
-  # because every path out of this function below can return early and the
-  # first nav click would then be the thing that discards it unread.
+  # Read the load and render window here rather than only before the first
+  # route click, because every path out of this function below can return early
+  # and the first click would then be the thing that discards it unread.
   console_collect "$label-load"
 
-  if forced probe fail || ! browser_eval_json "$(build_probe_js)" "$probe"; then
+  if forced probe fail || ! browser_eval_json "$(build_page_probe_js)" "$probe"; then
     record_unreached "$label" \
       "the probe returned nothing the browser could decode, so nothing at this width was judged"
     return
   fi
 
   local title body_length inner_width inner_height client_width scroll_width
-  local background gutter error_page history_cards usage_panels usage_token_panels usage_operational_panels leak_patterns leak_chars page_leaks
+  local background accent error_page
   if forced probe unverified || ! scalars=$(probe_fields "$probe" \
     title=title bodyTextLength=bodyTextLength innerWidth=innerWidth innerHeight=innerHeight \
-    clientWidth=clientWidth scrollWidth=scrollWidth background=background gutter=gutter \
-    errorPage=errorPage historyCards=historyCards usagePanels=usagePanels \
-    usageTokenPanels=usageTokenPanels usageOperationalPanels=usageOperationalPanels \
-    leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
+    clientWidth=clientWidth scrollWidth=scrollWidth background=background accent=accent \
+    errorPage=errorPage); then
     record_unreached "$label" \
       "the probe result carried none of the measurements this check reads, so nothing at this width was judged"
     return
@@ -1195,20 +1320,12 @@ check_width() {  # <width> <height>
       clientWidth) client_width=$value ;;
       scrollWidth) scroll_width=$value ;;
       background) background=$value ;;
-      gutter) gutter=$value ;;
+      accent) accent=$value ;;
       errorPage) error_page=$value ;;
-      historyCards) history_cards=$value ;;
-      usagePanels) usage_panels=$value ;;
-      usageTokenPanels) usage_token_panels=$value ;;
-      usageOperationalPanels) usage_operational_panels=$value ;;
-      leakPatterns) leak_patterns=$value ;;
-      leakChars) leak_chars=$value ;;
-      pageLeaks) page_leaks=$value ;;
     esac
   done <<EOF
 $scalars
 EOF
-  page_leaks=${page_leaks:-}
 
   if [ "$error_page" = true ]; then
     record FAIL "$label: the dashboard document loaded" \
@@ -1239,12 +1356,11 @@ EOF
   # Resizing reports success without proving anything about the page. Without
   # this, a run that silently stayed at the previous size reports a whole green
   # section named after a width it was never at - and every width-sensitive
-  # measurement under it, the sideways-scroll one most of all, was taken at the
-  # wrong viewport.
-  local at_width=no
+  # measurement under it, the per-destination sideways-swipe ones most of all,
+  # was taken at the wrong viewport.
   forced viewport fail && inner_width=$((inner_width + 7))
   if [ "$inner_width" = "$width" ]; then
-    at_width=yes
+    WIDTH_TRUSTED=yes
     record ok "$label: the browser really is at this viewport" \
       "the page reports ${inner_width}x${inner_height} CSS px"
   else
@@ -1263,433 +1379,471 @@ EOF
   # unstyled, which is a real regression that every text assertion would
   # otherwise pass. Two things are required rather than one: the page sets its
   # own surface colour, so an unpainted body is the tell that nothing arrived,
-  # and --gutter is declared by this dashboard's stylesheet and by nothing else,
-  # so a painted body without it is some other stylesheet. Both hold in either
-  # theme, which a fixed colour would not.
+  # and --amber-soft is declared by this dashboard's stylesheet and by nothing
+  # else, so a painted body without it is some other stylesheet. Both hold in
+  # either theme, which a fixed colour would not.
   local painted=yes
-  forced stylesheet fail && background="rgba(0, 0, 0, 0)"
+  forced stylesheet fail && { background="rgba(0, 0, 0, 0)"; accent=; }
   case "$background" in
     ""|"rgba(0, 0, 0, 0)"|transparent) painted=no ;;
   esac
-  if [ "$painted" = yes ] && [ -n "$gutter" ]; then
+  if [ "$painted" = yes ] && [ -n "$accent" ]; then
     record ok "$label: the stylesheet was applied" \
-      "body surface $background, and this stylesheet's own --gutter resolves to $gutter"
+      "body surface $background, and this stylesheet's own --amber-soft resolves to $accent"
   elif [ "$painted" != yes ]; then
     record FAIL "$label: the stylesheet was applied" \
       "the body is unpainted [$background], so the page is rendering unstyled"
   else
     record FAIL "$label: the stylesheet was applied" \
-      "the body is painted $background but the dashboard's own --gutter is undefined, so this is not its stylesheet"
+      "the body is painted $background but the dashboard's own --amber-soft is undefined, so this is not its stylesheet"
   fi
 
-  # The injected width moves too, not just the flag: this branch only ever
-  # happens because the page is at a width other than the one the section is
-  # named after, so leaving the real width in place would print "the page was
-  # 390 CSS px wide, so this was never measured at 390" - a sentence no real
-  # run can produce, from an injection whose whole job is to reproduce one.
-  forced swipe unverified && { at_width=no; inner_width=$((width + 7)); }
-  forced swipe fail && scroll_width=$((client_width + 240))
-  if [ "$at_width" != yes ]; then
-    record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe" \
-      "the page was ${inner_width} CSS px wide, so this was never measured at ${width}"
-  elif [ "$scroll_width" -le "$((client_width + 1))" ]; then
-    record ok "$label: nothing is placed behind a horizontal swipe" "scrollWidth $scroll_width <= viewport $client_width"
-  else
-    record FAIL "$label: nothing is placed behind a horizontal swipe" \
-      "the document scrolls sideways: scrollWidth $scroll_width > viewport $client_width"
-  fi
-
-  check_views "$label" "$probe"
-  check_leak_scan "$label" "$leak_patterns" "$leak_chars" "$page_leaks"
-  check_usage_panels "$label" "$history_cards" "$usage_panels"
-  check_usage_token_totals "$label" "$history_cards" "$usage_token_panels" "$usage_operational_panels"
-
-  browser screenshot "$OUT_DIR/screen-$label.png" > /dev/null 2>&1 \
-    && note "screenshot: $OUT_DIR/screen-$label.png"
-
-  check_navigation "$label"
-}
-
-check_views() {  # <label> <probe file>
-  local label=$1 probe=$2 id name landmarks expected fields key value
-  local present height checked missing leaks
-  while IFS='|' read -r id name landmarks; do
-    [ -n "$id" ] || continue
-    expected=$(count_landmarks "$landmarks")
-
-    # All three observations are recorded on every path out of this loop, not
-    # only the one that decided it. A view that is absent was seen not to render
-    # with real height and seen not to be legible, and a run that silently
-    # stopped recording those two would be a quietly smaller run - which is the
-    # shape of failure this whole command exists to end, and is exactly what the
-    # negative proof below needs to be able to see.
-    #
-    # That includes the presence observation on the path where the view IS
-    # present, which had no verdict at all until the reconciliation pass asked
-    # for one: an absent view recorded FAIL and an unreadable probe recorded
-    # ????, so on a healthy page the observation this run claims to make was the
-    # only one of the three that produced nothing.
-    if forced view-present unverified || ! present=$(probe_fields "$probe" "present=views.$id.present"); then
-      record "$UNVERIFIED" "$label: the $name view is on the page" \
-        "the probe said nothing about this view, so it was not looked at"
-      record "$UNVERIFIED" "$label: the $name view rendered with real height" \
-        "the probe said nothing about this view"
-      record "$UNVERIFIED" "$label: the $name view is legible" \
-        "the probe said nothing about this view"
-      continue
-    fi
-    forced view-present fail && present="present=false"
-    if [ "${present#*=}" != true ]; then
-      record FAIL "$label: the $name view is on the page"
-      record FAIL "$label: the $name view rendered with real height" \
-        "the view is not on the page, so it rendered no height at all"
-      record FAIL "$label: the $name view is legible" \
-        "the view is not on the page, so none of its headings or controls are"
-      continue
-    fi
-    record ok "$label: the $name view is on the page" "the page carries a #$id section"
-
-    if ! fields=$(probe_fields "$probe" \
-      "height=views.$id.height" "checked=views.$id.landmarksChecked" \
-      "missing=views.$id.missing" "leaks=views.$id.leaks"); then
-      record "$UNVERIFIED" "$label: the $name view rendered with real height" \
-        "the probe carried no measurement for this view"
-      record "$UNVERIFIED" "$label: the $name view is legible" \
-        "the probe carried no landmark verdict for this view"
-      continue
-    fi
-    height=; checked=; missing=; leaks=
-    while IFS='=' read -r key value; do
-      case "$key" in
-        height) height=$value ;;
-        checked) checked=$value ;;
-        missing) missing=$value ;;
-        leaks) leaks=$value ;;
-      esac
-    done <<INNER
-$fields
-INNER
-    capture_view_text "$label" "$id"
-
-    forced view-height unverified && height="not a measurement"
-    forced view-height fail && height=10
-    forced view-legible unverified && checked=0
-    forced view-legible fail && missing="$name"
-
-    # A section that exists but occupies almost nothing is exactly the "it
-    # loaded" answer this check refuses to accept.
-    if ! is_number "$height"; then
-      record "$UNVERIFIED" "$label: the $name view rendered with real height" \
-        "the probe reported its height as [$height]"
-    elif [ "$height" -ge 60 ]; then
-      record ok "$label: the $name view rendered with real height" "${height}px"
-    else
-      record FAIL "$label: the $name view rendered with real height" "only ${height}px tall"
-    fi
-
-    # An empty "missing" list is only evidence of legibility if landmarks were
-    # actually looked for. A view row with no landmarks, or a verdict the probe
-    # never filled in, produces the same empty list as a view that has every
-    # heading it should - so the count of landmarks the page evaluated has to
-    # match the count this check asked about before the empty list means
-    # anything.
-    if ! is_number "$checked" || [ "$checked" -eq 0 ]; then
-      record "$UNVERIFIED" "$label: the $name view is legible" \
-        "no landmark was evaluated for this view, so nothing about its legibility was judged"
-    elif [ "$checked" != "$expected" ]; then
-      record "$UNVERIFIED" "$label: the $name view is legible" \
-        "the page evaluated $checked landmarks, but this check names $expected of them"
-    elif [ -z "$missing" ]; then
-      record ok "$label: the $name view is legible" "all $checked of its own headings and controls are on the page"
-    else
-      record FAIL "$label: the $name view is legible" "$checked landmarks checked, missing: $missing"
-    fi
-
-    [ -n "$leaks" ] && ALL_LEAKS="${ALL_LEAKS}${ALL_LEAKS:+; }$name: $leaks"
-  done <<EOF
-$VIEWS
-EOF
-}
-
-# The higher-stakes empty list. "No leaks found" is worth nothing unless the
-# scan can be shown to have run, so the page reports how many patterns compiled
-# and how many characters they ran over, and both have to be real before an
-# empty result is read as a clean page.
-#
-# The coverage is stated on every branch, the failing one included. A failure
-# that cannot say what it covered is the same defect as a pass that verified
-# nothing wearing the other mask: the reader cannot tell a scan that covered the
-# whole page and found one thing from a scan that covered almost none of it and
-# found one thing. The character count is the whole rendered page, so a scan
-# that narrowed back to some convenient part of it shows up here as a smaller
-# number rather than as an unchanged green line.
-check_leak_scan() {  # <label> <patterns evaluated> <characters scanned> <page-wide matches>
-  local label=$1 patterns=$2 chars=$3 matched=$4 coverage
-  if ! is_number "$patterns" || ! is_number "$chars"; then
-    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on the page" \
-      "the page did not report what the scan covered"
-    return
-  fi
-  forced leak unverified && chars=0
-  coverage="$patterns patterns over $chars rendered characters"
-  if [ "$patterns" -eq 0 ] || [ "$chars" -eq 0 ]; then
-    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on the page" \
-      "$patterns pattern(s) over $chars characters - the scan cannot be shown to have run"
-    return
-  fi
-  if [ "$patterns" != "$LEAK_PATTERN_COUNT" ]; then
-    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on the page" \
-      "the page ran $patterns of this check's $LEAK_PATTERN_COUNT patterns, so the scan was incomplete"
-    return
-  fi
-  forced leak fail && matched="${matched:+$matched, }/home/"
-  if [ -z "$matched" ]; then
-    record ok "$label: no credential-shaped or path-shaped value on the page" "$coverage"
-    return
-  fi
-  # The verdict is the page-wide scan; the per-view list only says where. A
-  # match the views do not account for is a match somewhere the views are not -
-  # the notice region, the topbar, the sidebar, the report dialog - and saying
-  # so is more useful than an empty attribution.
-  if [ -n "$ALL_LEAKS" ]; then
-    record FAIL "$label: no credential-shaped or path-shaped value on the page" \
-      "$coverage; matched $matched - in $ALL_LEAKS"
-  else
-    record FAIL "$label: no credential-shaped or path-shaped value on the page" \
-      "$coverage; matched $matched - outside the named views, so in the topbar, the notice region, the sidebar or the report dialog"
-  fi
-}
-
-# Token usage is not a view of its own: it renders as a USAGE panel inside every
-# completed-work card in History. A home with no completed work therefore has no
-# panel to look at, which is neither a pass nor a failure - it is an observation
-# this run could not make, and saying so is the difference between covering
-# usage and assuming it.
-check_usage_panels() {  # <label> <history cards> <usage panels>
-  local label=$1 cards=$2 panels=$3
-  if ! is_number "$cards" || ! is_number "$panels"; then
-    record "$UNVERIFIED" "$label: every completed record shows its usage panel" \
-      "the page did not report how many completion records it rendered"
-    return
-  fi
-  forced usage unverified && cards=0
-  forced usage fail && panels=$((cards > 0 ? cards - 1 : 0))
-  if [ "$cards" -eq 0 ]; then
-    record "$UNVERIFIED" "$label: every completed record shows its usage panel" \
-      "no completion record is on the page, so there is no usage panel to look at"
-    return
-  fi
-  if [ "$panels" -eq "$cards" ]; then
-    record ok "$label: every completed record shows its usage panel" \
-      "$panels labelled panel(s) across $cards completed record(s)"
-    return
-  fi
-  record FAIL "$label: every completed record shows its usage panel" \
-    "only $panels of $cards completed records rendered one"
-}
-
-check_usage_token_totals() {  # <label> <history cards> <token panels> <operational panels>
-  local label=$1 cards=$2 token_panels=$3 operational_panels=$4
-  if ! is_number "$cards" || ! is_number "$token_panels" || ! is_number "$operational_panels"; then
-    record "$UNVERIFIED" "$label: collected usage shows token totals where attributed" \
-      "the page did not report usage totals"
-    return
-  fi
-  forced usage unverified && cards=0
-  # A forced branch has to be the branch that actually runs. These two are
-  # judged after the "no completion record" and "totals rendered" answers above
-  # them, so forcing one means supplying the state it is reached from: a page
-  # with a completion record on it, and - for the operational branch - no totals
-  # left to answer first. Setting the operational count alone on a page whose
-  # usage really did render would return ok above and prove nothing.
-  if forced usage tokens; then
-    cards=1
-    token_panels=1
-  fi
-  if forced usage operational; then
-    cards=1
-    token_panels=0
-    operational_panels=1
-  fi
-  if [ "$cards" -eq 0 ]; then
-    record "$UNVERIFIED" "$label: collected usage shows token totals where attributed" \
-      "no completion record is on the page, so there is no usage total to look at"
-    return
-  fi
-  if [ "$token_panels" -gt 0 ]; then
-    record ok "$label: collected usage shows token totals where attributed" \
-      "$token_panels completion record(s) rendered token totals"
-    return
-  fi
-  if [ "$operational_panels" -gt 0 ]; then
-    record FAIL "$label: collected usage shows token totals where attributed" \
-      "$operational_panels completion record(s) show an operational usage failure instead of totals"
-    return
-  fi
-  record ok "$label: collected usage shows token totals where attributed" \
-    "no record on the page shows attributed totals; the home may not collect usage yet"
-}
-
-# Following a nav link must put the reader at the top of the section they asked
-# for. The bar is sticky, so a target scrolled to the top of the viewport is a
-# target underneath it, and the reader lands part-way in with the heading hidden
-# - which is what this dashboard did at every width until it was looked at.
-#
-# The click, the settle and the measurement are one evaluation in the page, so
-# what is judged is the landing of the click that was just made rather than
-# whatever the page happened to be showing. The page is first scrolled to the
-# far end from the target: a section that is already where it should be proves
-# nothing about following a link to it.
-check_navigation() {  # <label>
-  local label=$1 id name _landmarks followed landing key value
-  local clicked reason hash bar_bottom head_top viewport_height at_limit moved
-  local probe="$WORK_DIR/nav-landing.json"
-  while IFS='|' read -r id name _landmarks; do
-    [ -n "$id" ] || continue
-    # Last thing before the click, because the click is a fragment navigation
-    # and the browser tool discards the console bucket this reads. On the first
-    # pass that bucket is everything the page printed while loading and first
-    # rendering, which is the output most worth having.
-    console_collect "$label-before-$id"
-    if forced nav unverified || ! browser_eval_json "$(nav_js "$id")" "$probe"; then
-      record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
-        "the page returned nothing readable about where following the link landed"
-      continue
-    fi
-    # The click verdict is read on its own first: a link that was never
-    # followed carries no landing to measure, and reporting that as
-    # "could not measure" would hide a broken nav behind an unread probe.
-    if ! followed=$(probe_fields "$probe" clicked=clicked reason=reason); then
-      record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
-        "the page did not say whether the link was followed"
-      continue
-    fi
-    clicked=; reason=
-    while IFS='=' read -r key value; do
-      case "$key" in
-        clicked) clicked=$value ;;
-        reason) reason=$value ;;
-      esac
-    done <<CLICK
-$followed
-CLICK
-    # A link that was never followed is a failure of the thing this observation
-    # names, not a reason to skip it.
-    if [ "$clicked" != true ]; then
-      record FAIL "$label: the $name link lands on that section's heading" "$reason"
-      continue
-    fi
-
-    if ! landing=$(probe_fields "$probe" hash=hash \
-      barBottom=barBottom headTop=headTop viewportHeight=viewportHeight \
-      atLimit=atLimit moved=moved); then
-      record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
-        "the landing measurement could not be read"
-      continue
-    fi
-    hash=; bar_bottom=; head_top=; viewport_height=; at_limit=; moved=
-    while IFS='=' read -r key value; do
-      case "$key" in
-        hash) hash=$value ;;
-        barBottom) bar_bottom=$value ;;
-        headTop) head_top=$value ;;
-        viewportHeight) viewport_height=$value ;;
-        atLimit) at_limit=$value ;;
-        moved) moved=$value ;;
-      esac
-    done <<INNER
-$landing
-INNER
-
-    if ! is_integer "$bar_bottom" || ! is_integer "$head_top" || ! is_number "$viewport_height"; then
-      record "$UNVERIFIED" "$label: the $name link lands on that section's heading" \
-        "the landing position could not be measured"
-      continue
-    fi
-    # The defect this observation exists to catch, reproduced on demand: the
-    # section's heading 119px above the sticky bar's lower edge is what the
-    # shipped dashboard did at desktop width before this was measured.
-    forced nav fail && head_top=$((bar_bottom - 119))
-    if [ "$hash" != "#$id" ]; then
-      record FAIL "$label: the $name link lands on that section's heading" \
-        "following the link did not select the section: the address bar reads [$hash]"
-      continue
-    fi
-    if [ "$head_top" -lt "$bar_bottom" ]; then
-      record FAIL "$label: the $name link lands on that section's heading" \
-        "the sticky bar hides the top of the section by $((bar_bottom - head_top))px"
-      continue
-    fi
-    if [ "$head_top" -ge "$viewport_height" ]; then
-      record FAIL "$label: the $name link lands on that section's heading" \
-        "the heading is ${head_top}px down a ${viewport_height}px viewport, so it is off screen"
-      continue
-    fi
-    if [ "$((head_top - bar_bottom))" -le "$NAV_LANDING_BAND" ]; then
-      record ok "$label: the $name link lands on that section's heading" \
-        "the heading came to rest $((head_top - bar_bottom))px below the bar (scrolled ${moved}px)"
-    elif [ "$at_limit" = true ]; then
-      record ok "$label: the $name link lands on that section's heading" \
-        "the page reached its scroll limit with the heading $((head_top - bar_bottom))px below the bar and on screen"
-    else
-      record FAIL "$label: the $name link lands on that section's heading" \
-        "the heading came to rest $((head_top - bar_bottom))px below the bar, further than the ${NAV_LANDING_BAND}px an arrival leaves"
-    fi
+  # Every destination in turn, through the navigation control that is actually
+  # visible at this width, with the task detail proven from the Fleet board's
+  # own rows while that board is the active view.
+  while IFS='|' read -r route id name landmarks; do
+    [ -n "$route" ] || continue
+    check_route "$label" "$route" "$id" "$name" "$landmarks"
+    [ "$route" = fleet ] && check_task_open "$label"
   done <<EOF
 $VIEWS
 EOF
   # The bucket the last click opened. Without this, whatever the page printed
-  # while landing on the final section would be in no window anyone read.
+  # while rendering the final destination would be in no window anyone read.
   console_collect "$label-after-nav"
+
+  check_leak_aggregate "$label"
+
+  browser screenshot "$OUT_DIR/screen-$label.png" > /dev/null 2>&1 \
+    && note "screenshot: $OUT_DIR/screen-$label.png"
+
+  record_missing "$label"
 }
 
-# Scroll away from the target, follow the link, wait for the scroll to stop
-# moving, then measure - all inside the page, so nothing here is judging a
-# scroll that has not finished or a section that was already in place.
-nav_js() {  # <section id>
-  cat <<JS
-async () => {
-  const id = "$1";
-  const link = [...document.querySelectorAll(".nav-item")].find((a) => a.getAttribute("href") === "#" + id);
-  if (!link) return JSON.stringify({ clicked: false, reason: "no .nav-item on the page links to #" + id });
-  const section = document.getElementById(id);
-  if (!section) return JSON.stringify({ clicked: false, reason: "there is no #" + id + " section to land on" });
-  const doc = document.documentElement;
-  const maximum = Math.max(0, doc.scrollHeight - window.innerHeight);
-  const target = section.getBoundingClientRect().top + window.scrollY;
-  const from = target > maximum / 2 ? 0 : maximum;
-  window.scrollTo({ top: from, behavior: "instant" });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const started = Math.round(window.scrollY);
-  link.click();
-  let previous = NaN;
-  let stable = 0;
-  for (let tick = 0; tick < 60; tick += 1) {
-    const y = Math.round(window.scrollY);
-    stable = y === previous ? stable + 1 : 0;
-    previous = y;
-    if (stable >= 3) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const bar = document.querySelector(".topbar");
-  if (!bar) return JSON.stringify({ clicked: false, reason: "the sticky .topbar is not on the page to measure against" });
-  const heading = section.querySelector(".board-heading") || section;
-  const ended = Math.round(window.scrollY);
-  return JSON.stringify({
-    clicked: true,
-    reason: "",
-    hash: location.hash,
-    barBottom: Math.round(bar.getBoundingClientRect().bottom),
-    headTop: Math.round(heading.getBoundingClientRect().top),
-    viewportHeight: window.innerHeight,
-    atLimit: ended <= 0 || Math.ceil(ended + window.innerHeight) >= doc.scrollHeight - 2,
-    moved: Math.abs(ended - started),
-  });
-}
-JS
+# ???? for the four view observations of a destination that was never reached.
+route_unobserved() {  # <label> <name> <reason>
+  local label=$1 name=$2 reason=$3
+  record "$UNVERIFIED" "$label: only the $name view is on the page" "$reason"
+  record "$UNVERIFIED" "$label: the $name view rendered with real height" "$reason"
+  record "$UNVERIFIED" "$label: the $name view is legible" "$reason"
+  record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe on $name" "$reason"
 }
 
-# --- live stream -------------------------------------------------------------
+check_route() {  # <width label> <route> <view id> <name> <landmarks>
+  local label=$1 route=$2 id=$3 name=$4 landmarks=$5 expected probe fields key value
+  local clicked control reason hash present others others_checked
+  local client_width scroll_width leak_patterns leak_chars page_leaks
+  expected=$(count_landmarks "$landmarks")
+  probe="$OUT_DIR/route-$label-$route.json"
+
+  # Last thing before the click, because the click is a fragment navigation
+  # and the browser tool discards the console bucket this reads.
+  console_collect "$label-before-$route"
+
+  if forced nav unverified || ! browser_eval_json "$(route_probe_js "$route" "$id" "$landmarks")" "$probe"; then
+    record "$UNVERIFIED" "$label: the $name destination is reachable from the visible navigation" \
+      "the page returned nothing readable about the navigation"
+    route_unobserved "$label" "$name" "the destination was never reached, so nothing about its view was observed"
+    return 1
+  fi
+  # The click verdict is read on its own first: a control that was never found
+  # carries no view to measure, and reporting that as "could not measure" would
+  # hide a missing navigation behind an unread probe.
+  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason); then
+    record "$UNVERIFIED" "$label: the $name destination is reachable from the visible navigation" \
+      "the page did not say whether the navigation control was found"
+    route_unobserved "$label" "$name" "the destination was never reached, so nothing about its view was observed"
+    return 1
+  fi
+  clicked=; reason=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      clicked) clicked=$value ;;
+      reason) reason=$value ;;
+    esac
+  done <<CLICK
+$fields
+CLICK
+  # The founding defect, reproduced on demand: a width at which no visible
+  # control leads to this destination.
+  forced nav fail && { clicked=false; reason="the route has 2 controls but none is visible at this width"; }
+  if [ "$clicked" != true ]; then
+    record FAIL "$label: the $name destination is reachable from the visible navigation" "$reason"
+    route_unobserved "$label" "$name" "the destination could not be reached, so nothing about its view was observed"
+    return 1
+  fi
+
+  if ! fields=$(probe_fields "$probe" hash=hash control=control present=present \
+    others=others othersChecked=othersChecked clientWidth=clientWidth scrollWidth=scrollWidth \
+    leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
+    record "$UNVERIFIED" "$label: the $name destination is reachable from the visible navigation" \
+      "the landing could not be read out of the probe"
+    route_unobserved "$label" "$name" "the landing could not be read, so nothing about the view was observed"
+    return 1
+  fi
+  hash=; control=; present=; others=; others_checked=; client_width=; scroll_width=
+  leak_patterns=; leak_chars=; page_leaks=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      hash) hash=$value ;;
+      control) control=$value ;;
+      present) present=$value ;;
+      others) others=$value ;;
+      othersChecked) others_checked=$value ;;
+      clientWidth) client_width=$value ;;
+      scrollWidth) scroll_width=$value ;;
+      leakPatterns) leak_patterns=$value ;;
+      leakChars) leak_chars=$value ;;
+      pageLeaks) page_leaks=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+
+  if [ "$hash" != "#/$route" ]; then
+    record FAIL "$label: the $name destination is reachable from the visible navigation" \
+      "following the control did not select the destination: the address reads [$hash]"
+    route_unobserved "$label" "$name" "the destination was never selected, so nothing about its view was observed"
+    return 1
+  fi
+  record ok "$label: the $name destination is reachable from the visible navigation" \
+    "reached through $control, and the address reads $hash"
+
+  # Fold this destination's page-wide leak scan into the width's aggregate.
+  # A scan over zero characters is a scan that cannot be shown to have run.
+  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
+    LEAK_SCANS=$((LEAK_SCANS + 1))
+    LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
+    [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
+    [ -n "$page_leaks" ] && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }$name: $page_leaks"
+  fi
+
+  # The exclusivity assertion this rebuild exists for: the active view mounted,
+  # and every other view root absent from the DOM - not hidden, absent. Both
+  # halves are required, because "the others are absent" is vacuously true of a
+  # page that rendered nothing at all.
+  if forced view-present unverified; then
+    record "$UNVERIFIED" "$label: only the $name view is on the page" \
+      "the probe said nothing about this view, so it was not looked at"
+    record "$UNVERIFIED" "$label: the $name view rendered with real height" \
+      "the probe said nothing about this view"
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "the probe said nothing about this view"
+  else
+    forced view-present fail && { present=true; others="view-fleet"; }
+    if [ "$present" != true ]; then
+      record FAIL "$label: only the $name view is on the page" \
+        "the active view is missing entirely, so there is no view exclusivity could be claimed about"
+      record FAIL "$label: the $name view rendered with real height" \
+        "the view is not on the page, so it rendered no height at all"
+      record FAIL "$label: the $name view is legible" \
+        "the view is not on the page, so none of its headings or controls are"
+    else
+      if [ -n "$others" ]; then
+        record FAIL "$label: only the $name view is on the page" \
+          "another view is in the DOM beside it rather than absent: $others"
+      elif ! is_number "$others_checked" || [ "$others_checked" -eq 0 ]; then
+        record "$UNVERIFIED" "$label: only the $name view is on the page" \
+          "no other view id was looked for, so the empty list proves nothing"
+      else
+        record ok "$label: only the $name view is on the page" \
+          "#$id is mounted and all $others_checked other view roots are absent from the DOM"
+      fi
+      check_route_body "$label" "$name" "$id" "$probe" "$expected"
+    fi
+  fi
+
+  # The swipe verdict is a page property at this destination, judged only at a
+  # width the run proved, because a sideways scroll measured at the wrong
+  # viewport says nothing about this one.
+  local trusted=$WIDTH_TRUSTED
+  forced swipe unverified && trusted=no
+  forced swipe fail && scroll_width=$((client_width + 240))
+  if [ "$trusted" != yes ]; then
+    record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe on $name" \
+      "the page is not proven to be at ${label%%x*} CSS px, so this was never measured at it"
+  elif ! is_number "$scroll_width" || ! is_number "$client_width"; then
+    record "$UNVERIFIED" "$label: nothing is placed behind a horizontal swipe on $name" \
+      "the probe returned no usable geometry for this destination"
+  elif [ "$scroll_width" -le "$((client_width + 1))" ]; then
+    record ok "$label: nothing is placed behind a horizontal swipe on $name" \
+      "scrollWidth $scroll_width <= viewport $client_width"
+  else
+    record FAIL "$label: nothing is placed behind a horizontal swipe on $name" \
+      "the document scrolls sideways at this destination: scrollWidth $scroll_width > viewport $client_width"
+  fi
+  return 0
+}
+
+# The height and legibility of a view the probe confirmed present, plus the
+# History display and usage observations while that view is the one on stage.
+check_route_body() {  # <label> <name> <view id> <probe> <expected landmark count>
+  local label=$1 name=$2 id=$3 probe=$4 expected=$5 fields key value
+  local height checked missing history_rows usage_cells page_info empty_big
+  capture_view_text "$label" "$id"
+  if ! fields=$(probe_fields "$probe" height=height checked=landmarksChecked missing=missing); then
+    record "$UNVERIFIED" "$label: the $name view rendered with real height" \
+      "the probe carried no measurement for this view"
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "the probe carried no landmark verdict for this view"
+    return
+  fi
+  height=; checked=; missing=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      height) height=$value ;;
+      checked) checked=$value ;;
+      missing) missing=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+
+  forced view-height unverified && height="not a measurement"
+  forced view-height fail && height=10
+
+  # A view that exists but occupies almost nothing is exactly the "it loaded"
+  # answer this check refuses to accept.
+  if ! is_number "$height"; then
+    record "$UNVERIFIED" "$label: the $name view rendered with real height" \
+      "the probe reported its height as [$height]"
+  elif [ "$height" -ge 60 ]; then
+    record ok "$label: the $name view rendered with real height" "${height}px"
+  else
+    record FAIL "$label: the $name view rendered with real height" "only ${height}px tall"
+  fi
+
+  forced view-legible unverified && checked=0
+  forced view-legible fail && missing="$name"
+
+  # An empty "missing" list is only evidence of legibility if landmarks were
+  # actually looked for, and as many of them as this check names.
+  if ! is_number "$checked" || [ "$checked" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "no landmark was evaluated for this view, so nothing about its legibility was judged"
+  elif [ "$checked" != "$expected" ]; then
+    record "$UNVERIFIED" "$label: the $name view is legible" \
+      "the page evaluated $checked landmarks, but this check names $expected of them"
+  elif [ -z "$missing" ]; then
+    record ok "$label: the $name view is legible" "all $checked of its own headings and controls are on the page"
+  else
+    record FAIL "$label: the $name view is legible" "$checked landmarks checked, missing: $missing"
+  fi
+
+  [ "$id" = view-history ] || return 0
+  if ! fields=$(probe_fields "$probe" historyRows=historyRows usageCells=usageCells \
+    pageInfo=pageInfo emptyBig=emptyBig); then
+    record "$UNVERIFIED" "$label: the History view displays the completion records it read" \
+      "the probe carried no row measurement for the History view"
+    record "$UNVERIFIED" "$label: every completed row shows its usage cell" \
+      "the probe carried no row measurement for the History view"
+    return
+  fi
+  history_rows=; usage_cells=; page_info=; empty_big=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      historyRows) history_rows=$value ;;
+      usageCells) usage_cells=$value ;;
+      pageInfo) page_info=$value ;;
+      emptyBig) empty_big=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+  check_history_display "$label" "$history_rows" "$page_info" "$empty_big"
+  check_usage_cells "$label" "$history_rows" "$usage_cells"
+}
+
+# The assertion the old dashboard failed for months: it found completion
+# records and displayed none of them. The displayed rows must agree with the
+# pager's own account of the list, the fixture's known record count where this
+# run controls the records, and zero rows may stand only behind one of the
+# page's designed, disclosed empty states - never silently.
+check_history_display() {  # <label> <rows> <pager text> <empty-state text>
+  local label=$1 rows=$2 info=$3 empty=$4 bounds first last matched
+  if forced history unverified; then
+    record "$UNVERIFIED" "$label: the History view displays the completion records it read" \
+      "the History view could not be read"
+    return
+  fi
+  forced history fail && { rows=0; info=; empty=; }
+  if ! is_number "$rows"; then
+    record "$UNVERIFIED" "$label: the History view displays the completion records it read" \
+      "the probe reported the row count as [$rows]"
+    return
+  fi
+  if [ "$rows" -gt 0 ]; then
+    bounds=$(printf '%s' "$info" | sed -n 's/^\([0-9][0-9]*\)[^0-9][^0-9]*\([0-9][0-9]*\) of \([0-9][0-9]*\)$/\1 \2 \3/p')
+    if [ -z "$bounds" ]; then
+      record "$UNVERIFIED" "$label: the History view displays the completion records it read" \
+        "$rows rows are on the page but the pager did not state what the list holds: [$info]"
+      return
+    fi
+    # shellcheck disable=SC2086  # bounds is three numbers this function just built
+    set -- $bounds
+    first=$1; last=$2; matched=$3
+    if [ "$rows" -ne $((last - first + 1)) ]; then
+      record FAIL "$label: the History view displays the completion records it read" \
+        "the pager says rows $first-$last of $matched are shown, but $rows are on the page"
+      return
+    fi
+    if [ "$MODE" = fixture ] && [ "$rows" -ne "$FIXTURE_HISTORY_COUNT" ]; then
+      record FAIL "$label: the History view displays the completion records it read" \
+        "the fixture published $FIXTURE_HISTORY_COUNT completion records but $rows are displayed"
+      return
+    fi
+    record ok "$label: the History view displays the completion records it read" \
+      "$rows rows displayed, agreeing with the pager's $first-$last of $matched"
+    return
+  fi
+  if [ "$MODE" = fixture ]; then
+    record FAIL "$label: the History view displays the completion records it read" \
+      "the fixture published $FIXTURE_HISTORY_COUNT completion records but the page displays none${empty:+ - the page says [$empty]}"
+    return
+  fi
+  if [ -n "$empty" ]; then
+    record ok "$label: the History view displays the completion records it read" \
+      "no row is displayed, and the page discloses why in its designed empty state: [$empty]"
+  else
+    record FAIL "$label: the History view displays the completion records it read" \
+      "no row, no pager, and no empty state - the records vanished silently"
+  fi
+}
+
+# Usage is a cell on every completed row: a token total, or an explicit
+# "unavailable" - never a blank. A page with no completed row has no cell to
+# look at, which is neither a pass nor a failure.
+check_usage_cells() {  # <label> <rows> <cells>
+  local label=$1 rows=$2 cells=$3
+  forced usage unverified && rows=0
+  if ! is_number "$rows" || ! is_number "$cells"; then
+    record "$UNVERIFIED" "$label: every completed row shows its usage cell" \
+      "the page did not report how many completion rows it rendered"
+    return
+  fi
+  forced usage fail && cells=$((rows > 0 ? rows - 1 : 0))
+  if [ "$rows" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: every completed row shows its usage cell" \
+      "no completion row is on the page, so there is no usage cell to look at"
+    return
+  fi
+  if [ "$cells" -eq "$rows" ]; then
+    record ok "$label: every completed row shows its usage cell" \
+      "$cells non-empty cell(s) across $rows displayed row(s)"
+  else
+    record FAIL "$label: every completed row shows its usage cell" \
+      "only $cells of $rows displayed rows rendered one"
+  fi
+}
+
+# The task detail route, proven through the interaction that reaches it: a row
+# on the Fleet board, clicked while that board is the active view.
+check_task_open() {  # <label>
+  local label=$1 probe fields key value clicked reason hash present others others_checked
+  probe="$OUT_DIR/task-open-$label.json"
+  console_collect "$label-before-task"
+  if forced task-open unverified || ! browser_eval_json "$(task_open_probe_js)" "$probe"; then
+    record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "the page returned nothing readable about the board"
+    return
+  fi
+  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason); then
+    record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "the page did not say whether a board row was found"
+    return
+  fi
+  clicked=; reason=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      clicked) clicked=$value ;;
+      reason) reason=$value ;;
+    esac
+  done <<CLICK
+$fields
+CLICK
+  if [ "$clicked" != true ]; then
+    if [ "$MODE" = fixture ]; then
+      record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" "$reason"
+    else
+      # A healthy fleet can be idle. A board with no row is not a defect of the
+      # detail route, and no run against it could observe this.
+      record "$INAPPLICABLE" "$label: opening a task from the Fleet board lands on its detail page alone" \
+        "$reason - a fleet with no live task has no row to open"
+    fi
+    return
+  fi
+  if ! fields=$(probe_fields "$probe" hash=hash present=present others=others othersChecked=othersChecked); then
+    record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "the landing could not be read out of the probe"
+    return
+  fi
+  hash=; present=; others=; others_checked=
+  while IFS='=' read -r key value; do
+    case "$key" in
+      hash) hash=$value ;;
+      present) present=$value ;;
+      others) others=$value ;;
+      othersChecked) others_checked=$value ;;
+    esac
+  done <<INNER
+$fields
+INNER
+  forced task-open fail && present=false
+  case "$hash" in
+    "#/task/"*) ;;
+    *)
+      record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" \
+        "clicking a board row did not navigate: the address reads [$hash]"
+      return ;;
+  esac
+  if [ "$present" != true ]; then
+    record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "the task view is not on the page after opening a task"
+    return
+  fi
+  if ! is_number "$others_checked" || [ "$others_checked" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "no view id was looked for, so nothing about exclusivity was judged"
+    return
+  fi
+  if [ "$others" != "view-task" ]; then
+    record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" \
+      "other views are on the page beside the task detail: $others"
+    return
+  fi
+  record ok "$label: opening a task from the Fleet board lands on its detail page alone" \
+    "the row's own task page is mounted alone at $hash, with all $others_checked view roots checked"
+}
+
+# The higher-stakes empty list, aggregated across every destination this width
+# reached. "No leaks found" is worth nothing unless the scan can be shown to
+# have run over every destination's rendered page, so the verdict requires one
+# completed scan per VIEWS row and a real character count before an empty
+# result is read as a clean page.
+check_leak_aggregate() {  # <label>
+  local label=$1 route_total
+  route_total=$(printf '%s\n' "$VIEWS" | grep -c .)
+  forced leak unverified && LEAK_SCANS=0
+  if [ "$LEAK_SCANS" -ne "$route_total" ] || [ "$LEAK_CHARS_TOTAL" -eq 0 ]; then
+    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
+      "the scan ran on $LEAK_SCANS of $route_total destinations over $LEAK_CHARS_TOTAL characters, so it cannot be shown to have covered the page"
+    return
+  fi
+  if [ "$LEAK_PATTERNS_SHORT" = yes ]; then
+    record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \
+      "a destination evaluated fewer than this check's $LEAK_PATTERN_COUNT patterns, so the scan was incomplete"
+    return
+  fi
+  forced leak fail && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }forced: /home/"
+  if [ -z "$LEAK_MATCHES" ]; then
+    record ok "$label: no credential-shaped or path-shaped value on any destination" \
+      "$LEAK_PATTERN_COUNT patterns over $LEAK_CHARS_TOTAL rendered characters across $route_total destinations"
+  else
+    record FAIL "$label: no credential-shaped or path-shaped value on any destination" \
+      "matched $LEAK_MATCHES"
+  fi
+}
+# --- task timeline ------------------------------------------------------------
 #
 # Fixture mode only. Injecting events into a live dashboard would mean writing
 # into the operator's own event store, which this command has no business doing.
@@ -1730,58 +1884,36 @@ wait_for_page_text() {  # <needle> <seconds>; 0 present, 1 confirmed absent, 2 n
   return 2
 }
 
-# The nearest enclosing element that names the agent, not the first one found
-# walking up: every card shares a board container, so a generous walk matches
-# whichever card happens to come first and silently selects the wrong agent.
-timeline_click_js() {  # <task id>
-  cat <<JS
-() => {
-  const wanted = "$1";
-  let best = null;
-  for (const button of document.querySelectorAll("button")) {
-    if (button.textContent.trim() !== "Timeline") continue;
-    let node = button.parentElement;
-    let depth = 1;
-    while (node && depth < 8) {
-      if (node.textContent.includes(wanted)) break;
-      node = node.parentElement;
-      depth += 1;
-    }
-    if (node && depth < 8 && (!best || depth < best.depth)) best = { button, depth };
-  }
-  if (!best) return "not-found";
-  best.button.click();
-  return "clicked";
-}
-JS
-}
-
 check_live_stream() {
   browser resize 1440 900 > /dev/null || true
   # Before the open, because the open is a navigation and discards the bucket
   # the last width left behind.
   [ "$CONSOLE_PAGE_OPENED" = yes ] && console_collect "live-before-open"
-  # All three live-stream observations are recorded on every path out of this
-  # function, the ones that give up early included. Two of them are the reason
-  # the third can be believed, and a path that recorded only some of them would
-  # be the quietly smaller run this command exists to end.
-  if forced open fail || ! browser open "$PAGE_URL#activity" > /dev/null; then
-    record FAIL "a live event appears without a reload" "the browser refused to open the page"
-    record "$UNVERIFIED" "the agent's earlier events really did leave the live stream" \
+  # All three task-timeline observations are recorded on every path out of this
+  # function, the ones that give up early included. The second and third are
+  # what make the first worth having - a timeline that is only the live tail
+  # would pass it - so a path that recorded only some of them would be the
+  # quietly smaller run this command exists to end.
+  if forced open fail || ! browser open "$PAGE_URL#/task/fixture-ship" > /dev/null; then
+    record FAIL "a live event appears on the open task page without a reload" \
+      "the browser refused to open the page"
+    record "$UNVERIFIED" "the task's earlier events survive unrelated fleet traffic" \
       "the page never opened, so this was never reached"
-    record "$UNVERIFIED" "backfilled history survives a subsequent event" \
+    record "$UNVERIFIED" "unrelated traffic stays off the task's own timeline" \
       "the page never opened, so this was never reached"
     return
   fi
+  CONSOLE_PAGE_OPENED=yes
   sleep 3
 
-  # 1. The page is open and has not been reloaded since. An event posted now
-  #    must arrive on it by itself.
+  # 1. The task page is open and has not been reloaded since. An event posted
+  #    for this task now must arrive on it by itself.
   if ! post_event fixture-ship tool_started fmcheck-live-now; then
-    record FAIL "a live event appears without a reload" "the fixture dashboard refused the event"
-    record "$UNVERIFIED" "the agent's earlier events really did leave the live stream" \
+    record FAIL "a live event appears on the open task page without a reload" \
+      "the fixture dashboard refused the event"
+    record "$UNVERIFIED" "the task's earlier events survive unrelated fleet traffic" \
       "the fixture dashboard refused an event, so this was never reached"
-    record "$UNVERIFIED" "backfilled history survives a subsequent event" \
+    record "$UNVERIFIED" "unrelated traffic stays off the task's own timeline" \
       "the fixture dashboard refused an event, so this was never reached"
     return
   fi
@@ -1795,107 +1927,69 @@ check_live_stream() {
     arrival=$?
   fi
   case $arrival in
-    0) record ok "a live event appears without a reload" \
-         "posted after the page was open, and it arrived on that same page" ;;
-    1) record FAIL "a live event appears without a reload" "the posted event never reached the open page" ;;
-    *) record "$UNVERIFIED" "a live event appears without a reload" \
+    0) record ok "a live event appears on the open task page without a reload" \
+         "posted after the task page was open, and it arrived on that same page" ;;
+    1) record FAIL "a live event appears on the open task page without a reload" \
+         "the posted event never reached the open page" ;;
+    *) record "$UNVERIFIED" "a live event appears on the open task page without a reload" \
          "the page could not be read while waiting for the event" ;;
   esac
 
-  # 2. Give one agent some earlier history, then push it out of the live tail
-  #    with unrelated traffic. Without this the next assertion would be
-  #    satisfied by the tail alone and would prove nothing about backfill.
+  # 2. Give this task some earlier events, then replace the fleet-wide live
+  #    tail several times over with another task's traffic. The task page reads
+  #    its own timeline from the durable store, so its earlier events must
+  #    still be on the page after the tail has long since dropped them.
   local index
   for index in 1 2 3; do
-    post_event fixture-ship tool_started "fmcheck-backfill-$index" >/dev/null 2>&1
+    post_event fixture-ship tool_started "fmcheck-persist-$index" >/dev/null 2>&1
   done
   for index in $(seq 1 8); do
     post_event_batch fixture-filler "fmcheck-filler-$index" 30 >/dev/null 2>&1
     sleep 0.3
   done
-  sleep 3
-
-  local left_tail
-  if forced tail fail; then
-    left_tail=present
-  elif forced tail unverified; then
-    left_tail=unreadable
-  else
-    left_tail=$(page_contains "fmcheck-backfill-1")
-  fi
-  case "$left_tail" in
-    present)
-      record FAIL "the agent's earlier events really did leave the live stream" \
-        "they are still in the fleet-wide tail, so the backfill assertion below would prove nothing"
-      record "$UNVERIFIED" "backfilled history survives a subsequent event" \
-        "the earlier events never left the tail, so there was nothing to fetch back"
-      return ;;
-    unreadable)
-      record "$UNVERIFIED" "the agent's earlier events really did leave the live stream" \
-        "the page could not be read, so their absence was never confirmed"
-      record "$UNVERIFIED" "backfilled history survives a subsequent event" \
-        "the page could not be read, so this was never reached"
-      return ;;
-  esac
-  record ok "the agent's earlier events really did leave the live stream" \
-    "confirmed absent from the page after later traffic, so selecting that agent has to fetch them back"
-
-  # 3. Selecting that agent's own timeline is what fetches them back.
-  #
-  # Through the same reader every other interaction here uses, which parses the
-  # tool's own result line and fails when the browser command did. Matching the
-  # raw tool output instead would read a diagnostic that echoed the expression
-  # back - the expression contains the word it looks for - as a successful
-  # click, and would record a browser command that failed outright as a FAIL of
-  # the observation rather than as the ???? this script's header requires.
-  local clicked
-  if ! browser_eval_text "$(timeline_click_js fixture-ship)" "$WORK_DIR/timeline-click.txt"; then
-    record "$UNVERIFIED" "backfilled history survives a subsequent event" \
-      "the browser could not be asked to select the agent's own timeline, so nothing about the backfill was observed"
-    return
-  fi
-  clicked=$(cat "$WORK_DIR/timeline-click.txt")
-  if [ "$clicked" != clicked ]; then
-    record FAIL "backfilled history survives a subsequent event" \
-      "the agent's own timeline control could not be found on the board [$clicked], so nothing was backfilled"
-    return
-  fi
-  sleep 3
-
-  case "$(page_contains "fmcheck-backfill-1")" in
-    absent)
-      record FAIL "backfilled history survives a subsequent event" \
-        "selecting the agent did not bring its earlier events back, so there was nothing to survive"
-      return ;;
-    unreadable)
-      record "$UNVERIFIED" "backfilled history survives a subsequent event" \
-        "the page could not be read after selecting the agent"
-      return ;;
-  esac
-
-  # 4. The next accepted event replaces the live stream wholesale. The
-  #    backfilled rows must survive that - which is exactly the failure the
-  #    timeline's own design note says it is built to avoid.
-  post_event fixture-scout turn_ended fmcheck-after-event >/dev/null 2>&1
   sleep 4
+
   local survived
-  if forced backfill fail; then
+  if forced persist fail; then
     survived=absent
-  elif forced backfill unverified; then
+  elif forced persist unverified; then
     survived=unreadable
   else
-    survived=$(page_contains "fmcheck-backfill-1")
+    survived=$(page_contains "fmcheck-persist-1")
   fi
   case "$survived" in
     present)
-      record ok "backfilled history survives a subsequent event" \
-        "the fetched earlier events are still on the page after a newer event replaced the stream" ;;
+      record ok "the task's earlier events survive unrelated fleet traffic" \
+        "240 unrelated events later, the task's own earlier events are still on its page" ;;
     absent)
-      record FAIL "backfilled history survives a subsequent event" \
-        "the fetched earlier events were discarded when the stream was replaced" ;;
+      record FAIL "the task's earlier events survive unrelated fleet traffic" \
+        "the earlier events are gone from the task page, so its timeline is only the live tail" ;;
     *)
-      record "$UNVERIFIED" "backfilled history survives a subsequent event" \
-        "the page could not be read after the next event arrived" ;;
+      record "$UNVERIFIED" "the task's earlier events survive unrelated fleet traffic" \
+        "the page could not be read after the unrelated traffic" ;;
+  esac
+
+  # 3. And none of that unrelated traffic may appear on this task's timeline:
+  #    a per-task page that renders the fleet-wide stream would have passed
+  #    both observations above while showing the reader someone else's work.
+  local strayed
+  if forced isolation fail; then
+    strayed=present
+  elif forced isolation unverified; then
+    strayed=unreadable
+  else
+    strayed=$(page_contains "fmcheck-filler-1-0")
+  fi
+  case "$strayed" in
+    absent)
+      record ok "unrelated traffic stays off the task's own timeline" \
+        "none of the other task's 240 events is on this task's page" ;;
+    present)
+      record FAIL "unrelated traffic stays off the task's own timeline" \
+        "another task's events are rendered on this task's page" ;;
+    *)
+      record "$UNVERIFIED" "unrelated traffic stays off the task's own timeline" \
+        "the page could not be read" ;;
   esac
 }
 
@@ -2101,12 +2195,13 @@ FRESH
 # happened, never from the absence of a contrary signal.
 EVIDENCE_ASSERTIONS='the page rendered text rather than an empty document
 the stylesheet was applied
+destination is reachable from the visible navigation
 view is on the page
 view rendered with real height
 view is legible
-no credential-shaped or path-shaped value on the page
-lands on that section'"'"'s heading
-every completed record shows its usage panel'
+no credential-shaped or path-shaped value on any destination
+the History view displays the completion records it read
+every completed row shows its usage cell'
 
 start_negative_page() {
   NEGATIVE_PORT=$(free_port)
@@ -2202,7 +2297,6 @@ if [ "$NEGATIVE" = yes ]; then
   PAGE_URL="http://127.0.0.1:$NEGATIVE_PORT/"
   printf 'negative proof: the same assertions, against a page that renders nothing\n' | tee -a "$RESULT_FILE"
   for spec in $WIDTHS; do
-    ALL_LEAKS=
     check_width "${spec%%x*}" "${spec#*x}"
   done
   summarize
@@ -2250,11 +2344,10 @@ fi
 
 for spec in $WIDTHS; do
   printf '\n-- %s --\n' "$spec" | tee -a "$RESULT_FILE"
-  ALL_LEAKS=
   check_width "${spec%%x*}" "${spec#*x}"
 done
 
-printf '\n-- live stream --\n' | tee -a "$RESULT_FILE"
+printf '\n-- task timeline --\n' | tee -a "$RESULT_FILE"
 if [ "$MODE" = fixture ]; then
   check_live_stream
   console_collect live
@@ -2270,12 +2363,12 @@ else
   # the live tail, so it is as much an observation as they are, and leaving it
   # to be emitted nowhere in this mode was how a --url result came out one
   # observation shorter than a fixture one with nothing saying so.
-  record "$INAPPLICABLE" "a live event appears without a reload" \
+  record "$INAPPLICABLE" "a live event appears on the open task page without a reload" \
     "not applicable to a dashboard this command does not own: proving it means posting an event into that dashboard's own store. Run without --url."
-  record "$INAPPLICABLE" "the agent's earlier events really did leave the live stream" \
-    "same reason: pushing them out of the tail means posting unrelated events into that dashboard's own store. Run without --url."
-  record "$INAPPLICABLE" "backfilled history survives a subsequent event" \
-    "same reason: it needs events written into that dashboard's own store. Run without --url."
+  record "$INAPPLICABLE" "the task's earlier events survive unrelated fleet traffic" \
+    "same reason: it needs unrelated events posted into that dashboard's own store. Run without --url."
+  record "$INAPPLICABLE" "unrelated traffic stays off the task's own timeline" \
+    "same reason: it needs another task's events posted into that dashboard's own store. Run without --url."
 fi
 
 printf '\n-- console --\n' | tee -a "$RESULT_FILE"

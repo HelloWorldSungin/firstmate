@@ -19,7 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
-| `fm-dashboard-server.mjs` | Serve the read-only captain inbox, kanban, completed-work history, versioned snapshot envelope, presence-gated GBrain health and search, and the authenticated agent-event ingest and live timeline |
+| `fm-dashboard-server.mjs` | Serve the read-only fleet dashboard - the routed Needs you, Fleet, Backlog, History, and Knowledge destinations with per-task detail - over the versioned snapshot envelope, plus presence-gated GBrain health and search and the authenticated agent-event ingest and per-task timeline |
 | `fm-dashboard-install.sh` | Install and configure the dashboard as a boot-persistent user systemd service        |
 | `fm-dashboard-instrument.sh` | Turn the dashboard's per-agent event timeline on or off by writing or removing its private ingest configuration pair |
 | `fm-event-emit.sh`       | The single producer boundary every harness event adapter posts through, redacting by allowlist and never blocking the agent |

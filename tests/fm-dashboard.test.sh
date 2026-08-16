@@ -249,13 +249,17 @@ test_stale_transition_streams_without_refresh() {
   pass "configured freshness threshold streams a stale transition without waiting for the next poll"
 }
 
-test_browser_renders_contract_actions_and_liveness() {
-  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard browser contract rendering failed"
+test_browser_renders_exclusive_views_and_honest_states() {
+  node - "$ROOT/assets/dashboard/app.js" <<'NODE' || fail "dashboard exclusive-view rendering failed"
 const { pathToFileURL } = require("node:url");
 
+// A minimal DOM for the rebuilt shell: the static index.html nodes the app
+// wires itself to, plus enough of Node/Element for the render path. Parents
+// are tracked so closest() works, because the task page reads back up the
+// tree it just built.
 class FakeNode {
   constructor(tagName, text = "") {
-    this.tagName = tagName.toUpperCase();
+    this.tagName = String(tagName).toUpperCase();
     this.children = [];
     this.attributes = {};
     this.className = "";
@@ -263,121 +267,140 @@ class FakeNode {
     this.id = "";
     this.listeners = {};
     this.value = "";
-    // app.js publishes the sticky bar's measured height as a custom property on
-    // the document element, so a node has to be able to carry one.
+    this.hidden = false;
+    this.parent = null;
     this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
+    const node = this;
+    this.classList = {
+      add(...names) { for (const name of names) if (!node.classNames().includes(name)) node.className = `${node.className} ${name}`.trim(); },
+      remove(...names) { node.className = node.classNames().filter((existing) => !names.includes(existing)).join(" "); },
+      toggle(name, force) {
+        const has = node.classNames().includes(name);
+        const want = force === undefined ? !has : Boolean(force);
+        if (want && !has) node.classList.add(name);
+        if (!want && has) node.classList.remove(name);
+        return want;
+      },
+      contains(name) { return node.classNames().includes(name); },
+    };
   }
 
+  classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
-  set textContent(value) {
-    this._text = String(value ?? "");
-    this.children = [];
-  }
+  set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
       const node = typeof child === "string" ? new FakeNode("#text", child) : child;
-      node.attached = true;
+      node.parent = this;
       this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
-    for (const child of this.children) child.detach();
     this._text = "";
+    for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
   }
 
-  setAttribute(name, value) {
-    this.attributes[name] = String(value);
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
+
+  matchesSelector(selector) {
+    if (selector.startsWith("#")) return this.id === selector.slice(1);
+    if (selector.startsWith(".")) return this.classNames().includes(selector.slice(1));
+    return this.tagName === selector.toUpperCase();
   }
 
-  addEventListener(name, listener) {
-    this.listeners[name] = listener;
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matchesSelector(selector)) return child;
+      const hit = child.querySelector(selector);
+      if (hit) return hit;
+    }
+    return null;
   }
 
-  // The fold anchor reads real layout. These nodes carry whatever rectangle a
-  // case assigns them, which is what lets a reflow be simulated.
-  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
-
-  // The anchor refuses to move the page for a node a render has thrown away, so
-  // a replaced subtree has to really stop reporting itself connected. Standing
-  // nodes are never appended anywhere and stay connected by default.
-  detach() {
-    this.attached = false;
-    for (const child of this.children) child.detach();
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matchesSelector && node.matchesSelector(selector)) return node;
+      node = node.parent;
+    }
+    return null;
   }
 
-  get isConnected() { return this.attached !== false; }
+  click() { this.listeners.click?.({ stopPropagation() {} }); }
 }
 
-const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
-  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
-  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close",
-  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
-  selectors.set(`#${id}`, new FakeNode("div"));
+const byId = new Map();
+function staticNode(tag, id, className = "") {
+  const node = new FakeNode(tag);
+  node.id = id;
+  node.className = className;
+  byId.set(id, node);
+  return node;
 }
-const filterForm = new FakeNode("form");
-filterForm.elements = {};
-for (const key of ["project", "harness", "model", "kind", "state"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  filterForm.elements[key] = select;
+const appNode = staticNode("div", "app", "app");
+const viewNode = staticNode("main", "view", "main");
+staticNode("span", "vdot", "vdot");
+staticNode("span", "verdict", "verdict");
+staticNode("div", "segbar", "segbar");
+staticNode("span", "stalenote", "stalenote");
+staticNode("span", "staleno-txt");
+staticNode("span", "navbadge", "navbadge");
+staticNode("span", "tabbadge", "tabbadge");
+for (const buttonId of ["theme-button", "notify-button"]) {
+  const button = staticNode("button", buttonId, "iconbtn");
+  button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
-selectors.set("#filter-form", filterForm);
-const historyForm = new FakeNode("form");
-historyForm.elements = {};
-for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
-  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
-  field.append(new FakeNode("option", `All ${key}`));
-  historyForm.elements[key] = field;
+const routeButtons = [];
+for (const route of ["needs", "fleet", "backlog", "history", "knowledge"]) {
+  for (const prefix of ["nav", "tab"]) {
+    const button = staticNode("button", `${prefix}-${route}`, prefix === "nav" ? "navitem" : "tabitem");
+    button.dataset.route = route;
+    routeButtons.push(button);
+  }
 }
-selectors.set("#history-form", historyForm);
-const activityForm = new FakeNode("form");
-activityForm.elements = {};
-for (const key of ["task", "harness", "type"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  activityForm.elements[key] = select;
-}
-selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
-  querySelector: (selector) => selectors.get(selector),
-  // The anchor selector matches the standing sections and the cards inside
-  // them alike. The cards are read live out of the rendered list rather than
-  // listed up front, so a render genuinely swaps the node under the anchor.
-  querySelectorAll: (selector) => (selector.includes("#inbox")
-    ? [...anchorSections, ...selectors.get("#inbox-list").children]
-    : []),
+  getElementById: (id) => byId.get(id) ?? null,
+  querySelector: (selector) => {
+    const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
+    if (compound) return byId.get(compound[1])?.querySelector(`.${compound[2]}`) ?? null;
+    if (selector.startsWith("#")) return byId.get(selector.slice(1)) ?? null;
+    return null;
+  },
+  querySelectorAll: (selector) => (selector === "[data-route]" ? routeButtons : []),
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
 
 const PR_URL = "https://github.com/HelloWorldSungin/firstmate/pull/31";
 const DECISION_TEXT = "Should the retention window stay at 40 records, or drop to 20 so the manifest history fits one screen? Either is defensible.";
+const TASK_ID = "waiting-on-you";
 
-function task(id, kind, status, exists, action) {
+function task(id, kind, column) {
   return {
     id,
     kind,
     project: "firstmate",
     harness: "codex",
     model: "gpt-5.6-sol",
-    effort: "high",
-    backlog: { title: id },
-    current_state: { state: kind === "secondmate" ? "idle" : "working", detail: "Visible detail" },
-    endpoint: { status, exists },
+    backlog: { title: `${id} title` },
+    current_state: { state: "working", detail: "Visible detail" },
+    endpoint: { status: "alive", exists: true },
     paths: { status_log: { last_event_age_seconds: 5 } },
     work_items: [],
-    card: { column: kind === "secondmate" ? "secondmate" : "active", action },
+    spawn_age_seconds: 120,
+    card: { column },
   };
 }
 
@@ -386,12 +409,10 @@ const envelope = {
   status: { phase: "ready", stale: false, last_success_at: "2026-08-04T00:00:00Z", last_success_age_seconds: 0 },
   snapshot: {
     tasks: [
-      task("unknown-worker", "ship", "unknown", true, "supervise"),
-      task("alive-mate", "secondmate", "alive", true, "route_work"),
-      task("dead-mate", "secondmate", "dead", true, "route_work"),
-      task("unknown-mate", "secondmate", "unknown", true, "route_work"),
+      task("busy-worker", "ship", "active"),
+      task("resting-mate", "secondmate", "secondmate"),
       {
-        ...task("waiting-on-you", "ship", "unknown", true, "decide"),
+        ...task(TASK_ID, "ship", "needs_decision"),
         current_state: { state: "parked", detail: "Parked at a gate" },
         hints: { open_decisions: [{ key: "retention", verb: "needs-decision", summary: DECISION_TEXT }] },
         pr: {
@@ -401,17 +422,60 @@ const envelope = {
           status_age_seconds: 12,
           status_freshness: "cached",
         },
-        card: { column: "needs_decision", action: "decide" },
       },
     ],
-    card_precedence: ["active", "secondmate"],
+    card_precedence: ["needs_decision", "active", "secondmate"],
     supervision: { watcher: { present: true, age_seconds: 1, grace_seconds: 120, stale: false }, afk: { active: false } },
     main_inventory: { valid: true, orphan_in_flight: [] },
   },
 };
 
-// The stream is how a live fleet redraws this page. A case that needs a render
-// to happen the way one really does pushes through the recorded listener.
+const recentIso = (hoursAgo) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+function completionRecord(id, state, hoursAgo) {
+  return {
+    schema: "fm-outcome-manifest.v1",
+    task_id: id,
+    title: `${id} delivered title`,
+    project: "firstmate",
+    kind: "ship",
+    outcome: { state },
+    timestamps: { completed: recentIso(hoursAgo) },
+    pr: {},
+    report: {},
+  };
+}
+const historyEnvelope = {
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "ready", stale: false, last_success_at: recentIso(0), last_success_age_seconds: 0 },
+  history: {
+    present: true,
+    records: [
+      completionRecord("delivered-one", "done", 2),
+      completionRecord("delivered-two", "done", 5),
+      completionRecord("failed-one", "failed", 9),
+    ],
+    malformed: [],
+  },
+};
+const backlogEnvelope = {
+  schema: "fm-dashboard-backlog.v1",
+  status: { phase: "ready", stale: false, last_success_at: recentIso(0), last_success_age_seconds: 0 },
+  backlog: {
+    present: true,
+    records: [
+      { id: "queued-a", title: "Queued a", state: "queued", order: 1 },
+      { id: "held-b", title: "Held b", state: "queued", hold_reason: "waiting on the captain", order: 2 },
+    ],
+  },
+};
+const gbrainHealth = { schema: "fm-gbrain-health.v1", status: {}, config: {}, health: { configured: false } };
+const timelineEnvelope = {
+  events: [
+    { event_id: "e1", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", outcome: "ok", occurred_at: "2026-08-15T10:00:02Z", occurred_epoch: 2 },
+    { event_id: "e2", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "bash", occurred_at: "2026-08-15T10:00:01Z", occurred_epoch: 1 },
+  ],
+};
+
 const eventSources = [];
 class FakeEventSource {
   constructor() {
@@ -423,186 +487,160 @@ class FakeEventSource {
   close() {}
 }
 
-// The browser app is an ES module that imports the inbox policy module beside
-// it, so it is loaded through a real module graph rather than a flat script
-// evaluation. Its DOM and platform dependencies are resolved from globals.
-
-// A fold or unfold reflows this page while it stays loaded. The dashboard
-// anchors the reader to what they were reading and puts it back at the same
-// place on screen; these fakes supply the viewport, the layout rectangles, and
-// the frame callback that behavior is expressed in terms of.
-const topbar = new FakeNode("header");
-topbar.className = "topbar";
-topbar.rect = { top: 0, bottom: 40 };
-selectors.set(".topbar", topbar);
-
-const offscreenSection = new FakeNode("section");
-offscreenSection.rect = { top: -500, bottom: -200 };
-const readingSection = new FakeNode("section");
-readingSection.rect = { top: 300, bottom: 900 };
-const anchorSections = [offscreenSection, readingSection];
-
-const frames = [];
 const scrollCalls = [];
 const fakeWindow = {
-  innerWidth: 320,
-  innerHeight: 850,
+  innerWidth: 1440,
+  innerHeight: 900,
   scrollY: 0,
+  location: { hash: "" },
   listeners: {},
+  history: { back() {} },
   addEventListener(name, listener) { fakeWindow.listeners[name] = listener; },
-  scrollTo(options) { scrollCalls.push(options); fakeWindow.scrollY = options.top; },
+  scrollTo(options) { scrollCalls.push(options); },
+  open() {},
 };
-const flushFrames = () => { const queued = frames.splice(0); for (const frame of queued) frame(); };
 
 const storage = new Map();
 Object.assign(globalThis, {
   document,
   window: fakeWindow,
-  requestAnimationFrame: (frame) => frames.push(frame),
+  requestAnimationFrame: (frame) => { frame(); return 0; },
   EventSource: FakeEventSource,
-  fetch: async () => ({ ok: true, json: async () => envelope }),
+  fetch: async (url) => ({
+    ok: true,
+    json: async () => {
+      if (url.startsWith("/api/snapshot")) return envelope;
+      if (url.startsWith("/api/history")) return historyEnvelope;
+      if (url.startsWith("/api/backlog")) return backlogEnvelope;
+      if (url.startsWith("/api/gbrain/health")) return gbrainHealth;
+      if (url.startsWith("/api/timeline")) return timelineEnvelope;
+      return {};
+    },
+  }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-  matchMedia: () => ({ matches: false }),
 });
 
-import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+import(pathToFileURL(process.argv[2]).href).then(async () => {
+  await settle();
+  await settle();
+
   const all = (root, predicate, matches = []) => {
     if (predicate(root)) matches.push(root);
     for (const child of root.children) all(child, predicate, matches);
     return matches;
   };
-  const hasClass = (node, className) => node.className.split(/\s+/).includes(className);
+  const hasClass = (node, className) => node.classNames().includes(className);
   const one = (root, predicate, label) => {
     const matches = all(root, predicate);
     if (matches.length !== 1) throw new Error(`${label}: expected one match, received ${matches.length}`);
     return matches[0];
   };
 
-  const card = one(selectors.get("#kanban"), (node) => hasClass(node, "card"), "worker card");
-  const action = one(card, (node) => hasClass(node, "card-action"), "card action");
-  if (action.textContent !== "ACTIONsupervise") throw new Error(`card action was not literal: ${action.textContent}`);
-  const endpoint = one(card, (node) => hasClass(node, "endpoint"), "worker endpoint");
-  one(endpoint, (node) => hasClass(node, "dot") && hasClass(node, "grey"), "unknown endpoint tone");
-
-  const signal = one(selectors.get("#signals"), (node) => hasClass(node, "signal") && node.textContent.includes("SECONDMATES"), "secondmate signal");
-  if (!signal.textContent.includes("1 live · 1 dead · 1 unknown")) throw new Error(`liveness counts were collapsed: ${signal.textContent}`);
-  one(signal, (node) => hasClass(node, "dot") && hasClass(node, "red"), "dead secondmate signal tone");
-
-  for (const [id, tone] of [["alive-mate", "green"], ["dead-mate", "red"], ["unknown-mate", "grey"]]) {
-    const mate = one(selectors.get("#secondmate-list"), (node) => hasClass(node, "mate") && node.textContent.includes(id), `${id} row`);
-    one(mate, (node) => hasClass(node, "dot") && hasClass(node, tone), `${id} tone`);
-    const mateAction = one(mate, (node) => hasClass(node, "mate-action"), `${id} action`);
-    if (mateAction.textContent !== "ACTIONroute_work") throw new Error(`${id} action was not literal: ${mateAction.textContent}`);
-  }
-
-  const inboxCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "inbox card");
-  const reasonTexts = all(inboxCard, (node) => hasClass(node, "reason-text")).map((node) => node.textContent);
-  if (!reasonTexts.includes(DECISION_TEXT)) throw new Error(`decision text was not rendered in full: ${reasonTexts.join(" | ")}`);
-  const link = one(inboxCard, (node) => hasClass(node, "pr-link"), "inbox pull-request link");
-  if (link.textContent !== PR_URL || link.href !== PR_URL) {
-    throw new Error(`pull-request link was not the full https URL: ${link.textContent} / ${link.href}`);
-  }
-  const checks = one(inboxCard, (node) => hasClass(node, "pr-field") && node.textContent.startsWith("checks"), "checks field");
-  if (!hasClass(checks, "unknown") || checks.textContent !== "checksunknown") {
-    throw new Error(`an unreadable check state was not rendered as an explicit unknown: ${checks.textContent}`);
-  }
-  const prPanel = one(inboxCard, (node) => hasClass(node, "pr-panel"), "inbox pull-request panel");
-  if (!hasClass(prPanel, "unknown")) throw new Error("a pull request with an unreadable field was not toned unknown");
-  const badge = one(selectors.get("#badges"), (node) => hasClass(node, "badge") && node.textContent.includes("Decisions"), "decision badge");
-  if (!badge.textContent.startsWith("1")) throw new Error(`decision badge count was wrong: ${badge.textContent}`);
-  if (selectors.get("#nav-badge").textContent !== "1") throw new Error("navigation badge did not carry the inbox total");
-
-  // Folding and unfolding changes the width, and with it the number of columns
-  // and the whole document height. Keeping the scroll offset is not the same as
-  // keeping the reader's place, so the section they were reading has to be put
-  // back where it was on screen.
-  inboxCard.rect = { top: 800, bottom: 1400 };
-  flushFrames();
-  const anchorLine = topbar.rect.bottom + 1;
-  const wasAt = readingSection.rect.top - anchorLine;
-  readingSection.rect = { top: 5000, bottom: 5600 };
-  fakeWindow.innerWidth = 690;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 1) throw new Error(`a width change did not restore the reading position: ${scrollCalls.length} scrolls`);
-  const landed = 5000 - anchorLine - scrollCalls[0].top;
-  if (landed !== wasAt) throw new Error(`the anchor came back at ${landed}px instead of ${wasAt}px from the top`);
-  if (scrollCalls[0].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
-
-  // Mobile browser chrome sliding in and out changes only the height, and does
-  // so constantly. Moving the page under the reader for that would be worse
-  // than the problem being fixed.
-  // Both candidates move, so whichever one the re-capture anchored to has
-  // genuinely shifted and a missing width gate would have to scroll.
-  flushFrames();
-  offscreenSection.rect = { top: -3000, bottom: -2700 };
-  readingSection.rect = { top: 9000, bottom: 9600 };
-  fakeWindow.innerHeight = 700;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 1) throw new Error("a height-only change moved the page under the reader");
-
-  // What a reader is actually holding is usually a card, not a whole section,
-  // and cards do not survive a render: every push from the fleet rebuilds the
-  // list they live in. So the anchor has to be re-derived on render as well as
-  // on scroll, or a fold after any push drops the reader exactly as far as it
-  // did before the anchor existed.
-  offscreenSection.rect = { top: -4000, bottom: -3700 };
-  readingSection.rect = { top: -2000, bottom: -1400 };
-  inboxCard.rect = { top: 200, bottom: 800 };
-  fakeWindow.listeners.scroll();
-  flushFrames();
-  const cardWasAt = inboxCard.rect.top - anchorLine;
-
-  eventSources[0].listeners.snapshot({ data: JSON.stringify(envelope) });
-  const rebuiltCard = one(selectors.get("#inbox-list"), (node) => hasClass(node, "inbox-card"), "rebuilt inbox card");
-  if (rebuiltCard === inboxCard) throw new Error("a snapshot push left the same card node, so nothing was replaced to test");
-  if (inboxCard.isConnected) throw new Error("a card a render replaced still reported itself connected");
-  const capturesPerRender = frames.length;
-
-  // The push rebuilt the card in place: the reader has not scrolled and the
-  // width has not changed, so it sits exactly where the old one did.
-  rebuiltCard.rect = { top: 200, bottom: 800 };
-  flushFrames();
-
-  rebuiltCard.rect = { top: 6000, bottom: 6600 };
-  const scrollBefore = fakeWindow.scrollY;
-  fakeWindow.innerWidth = 950;
-  fakeWindow.listeners.resize();
-  if (scrollCalls.length !== 2) throw new Error("the reading position was lost once a render had replaced the anchored card");
-  const cardLanded = 6000 - (scrollCalls[1].top - scrollBefore) - anchorLine;
-  if (cardLanded !== cardWasAt) throw new Error(`the rebuilt card came back at ${cardLanded}px instead of ${cardWasAt}px from the top`);
-  if (scrollCalls[1].behavior !== "instant") throw new Error("a reflow correction was animated rather than instant");
-  if (capturesPerRender !== 1) throw new Error(`one render queued ${capturesPerRender} anchor captures instead of collapsing into one`);
-
-  const staleUnitEnvelope = {
-    schema: "fm-dashboard-envelope.v1",
-    status: {
-      phase: "unavailable",
-      stale: false,
-      error: {
-        kind: "service_unit_outdated",
-        message: "rerun bin/fm-dashboard-install.sh",
-      },
-    },
-    snapshot: null,
+  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-knowledge", "view-task"];
+  // The exclusivity assertion the rebuild exists for: the active view's root
+  // is on the page AND every other view root is absent from the DOM - not
+  // hidden, absent. A check that only looked for the active view would pass
+  // against the old always-render-everything page.
+  const assertOnly = (activeId, when) => {
+    const present = VIEW_IDS.filter((id) => all(viewNode, (node) => node.id === id).length > 0);
+    if (present.length !== 1 || present[0] !== activeId) {
+      throw new Error(`${when}: expected only #${activeId} in the view container, found [${present.join(", ")}]`);
+    }
+    for (const id of VIEW_IDS) {
+      if (id === activeId) continue;
+      if (all(viewNode, (node) => node.id === id).length !== 0) throw new Error(`${when}: #${id} is on the page beside #${activeId}`);
+    }
   };
-  eventSources[0].listeners.snapshot({ data: JSON.stringify(staleUnitEnvelope) });
-  const staleUnitNotice = selectors.get("#notice-region").textContent;
-  if (!staleUnitNotice.includes("Snapshot polling is paused until the service is reinstalled.")) {
-    throw new Error(`snapshot notice did not explain the stale unit's paused polling: ${staleUnitNotice}`);
+  const go = async (hash) => {
+    fakeWindow.location.hash = hash;
+    fakeWindow.listeners.hashchange();
+    await settle();
+  };
+
+  // --- the default route renders Needs you, alone ---------------------------
+  assertOnly("view-needs", "initial render");
+  const verdict = byId.get("verdict");
+  if (verdict.textContent !== "1 decision waiting") throw new Error(`the verdict did not count the decision: ${verdict.textContent}`);
+  if (byId.get("vdot").className !== "vdot vd-amber") throw new Error(`the verdict dot missed its tone: ${byId.get("vdot").className}`);
+  for (const badgeId of ["navbadge", "tabbadge"]) {
+    const badge = byId.get(badgeId);
+    if (badge.hidden || badge.textContent !== "1") throw new Error(`${badgeId} did not carry the inbox count: hidden=${badge.hidden} text=${badge.textContent}`);
   }
-  if (staleUnitNotice.includes("Retrying automatically.")) {
-    throw new Error(`snapshot notice falsely claimed the stale unit would retry automatically: ${staleUnitNotice}`);
+  const card = one(viewNode, (node) => hasClass(node, "card"), "needs card");
+  const ask = one(card, (node) => hasClass(node, "card-ask"), "card ask");
+  if (ask.textContent !== DECISION_TEXT) throw new Error(`the decision text was not rendered in full: ${ask.textContent}`);
+
+  // --- every route renders its view and only its view ------------------------
+  for (const route of ["fleet", "backlog", "history", "knowledge", "needs"]) {
+    await go(`#/${route}`);
+    assertOnly(`view-${route}`, `#/${route}`);
+    for (const button of routeButtons) {
+      const active = button.dataset.route === route;
+      if (hasClass(button, "is-active") !== active) throw new Error(`#/${route}: ${button.id} active state is wrong`);
+      if (active && button.attributes["aria-current"] !== "page") throw new Error(`#/${route}: ${button.id} lost aria-current`);
+      if (!active && "aria-current" in button.attributes) throw new Error(`#/${route}: ${button.id} kept a stale aria-current`);
+    }
   }
-  const staleUnitBoard = selectors.get("#kanban").textContent;
-  if (!staleUnitBoard.includes("Snapshot polling will resume after the service is reinstalled.")) {
-    throw new Error(`board did not explain how stale-unit polling resumes: ${staleUnitBoard}`);
+
+  // --- History displays every record it found --------------------------------
+  await go("#/history");
+  const historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (historyRows.length !== 3) throw new Error(`History found 3 completion records but displayed ${historyRows.length}`);
+  const shownTitles = historyRows.map((row) => row.textContent);
+  for (const id of ["delivered-one", "delivered-two", "failed-one"]) {
+    if (!shownTitles.some((title) => title.includes(`${id} delivered title`))) throw new Error(`the ${id} record is not on the page`);
   }
-  if (staleUnitBoard.includes("refreshes continue automatically.")) {
-    throw new Error(`board falsely claimed the stale unit would refresh automatically: ${staleUnitBoard}`);
-  }
+  const delivered = all(viewNode, (node) => hasClass(node, "stat")).map((node) => node.textContent).find((text) => text.startsWith("Delivered"));
+  if (delivered !== "Delivered2") throw new Error(`the Delivered stat did not count the done records: ${delivered}`);
+
+  // --- Backlog renders the queue with its held reason -------------------------
+  await go("#/backlog");
+  const backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (backlogRows.length !== 2) throw new Error(`the backlog queue rendered ${backlogRows.length} of 2 rows`);
+  if (!backlogRows[1].textContent.includes("waiting on the captain")) throw new Error("the held reason is not on the page");
+  if (!all(viewNode, (node) => hasClass(node, "ronote")).length) throw new Error("the read-only note is missing from the Backlog page");
+
+  // --- Knowledge without a brain is the quiet explanation page ----------------
+  await go("#/knowledge");
+  const knowledgeText = one(viewNode, (node) => node.id === "view-knowledge", "knowledge view").textContent;
+  if (!knowledgeText.includes("Knowledge is not configured.")) throw new Error(`the no-brain page lost its explanation: ${knowledgeText}`);
+
+  // --- the task route: kv strip, full PR URL, and honest outcome chips -------
+  await go(`#/task/${TASK_ID}`);
+  assertOnly("view-task", "task route");
+  await settle();
+  await settle();
+  const taskView = one(viewNode, (node) => node.id === "view-task", "task view");
+  const prLink = one(taskView, (node) => node.tagName === "A" && node.textContent === PR_URL, "task PR link");
+  if (prLink.href !== PR_URL) throw new Error(`the PR link href is not the full https URL: ${prLink.href}`);
+  const chips = all(taskView, (node) => hasClass(node, "chip"));
+  if (chips.length !== 2) throw new Error(`expected two outcome chips on the timeline, found ${chips.length}`);
+  const okChip = chips.find((chip) => chip.textContent === "ok");
+  if (!okChip || !hasClass(okChip, "green")) throw new Error("an observed ok outcome did not render as a green chip");
+  const unknownChip = chips.find((chip) => chip.textContent === "unknown");
+  if (!unknownChip || !hasClass(unknownChip, "unknown")) throw new Error("an unobserved outcome did not render as an explicit unknown chip");
+
+  // --- an unreadable fleet is never the calm first-run page -------------------
+  const push = (payload) => eventSources[0].listeners.snapshot({ data: JSON.stringify(payload) });
+  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "HTTP 503" } }, snapshot: null });
+  await go("#/needs");
+  if (verdict.textContent !== "Fleet unavailable") throw new Error(`an unreachable fleet read as: ${verdict.textContent}`);
+  if (byId.get("vdot").className !== "vdot vd-unknown") throw new Error(`the unavailable verdict dot is not the hollow unknown: ${byId.get("vdot").className}`);
+  let needsText = one(viewNode, (node) => node.id === "view-needs", "needs view").textContent;
+  if (needsText.includes("Nothing has run yet") || needsText.includes("Nothing needs you")) throw new Error(`an unreachable fleet rendered as a calm page: ${needsText}`);
+  if (!needsText.includes("HTTP 503") || !needsText.includes("Retrying automatically.")) throw new Error(`the failure was not disclosed with its retry story: ${needsText}`);
+
+  // --- a stale service unit says polling is paused, not retrying --------------
+  push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "service_unit_outdated", message: "rerun bin/fm-dashboard-install.sh" } }, snapshot: null });
+  await settle();
+  needsText = one(viewNode, (node) => node.id === "view-needs", "needs view").textContent;
+  if (!needsText.includes("Snapshot polling is paused until the service is reinstalled.")) throw new Error(`the stale unit's paused polling was not explained: ${needsText}`);
+  if (needsText.includes("Retrying automatically.")) throw new Error(`the stale unit falsely claimed automatic retries: ${needsText}`);
 }).catch((error) => { console.error(error); process.exit(1); });
 NODE
-  pass "browser renders literal contract actions, distinct liveness, full decision text, explicit unknown pull-request fields, and holds the reading position across a fold-width reflow including one whose anchor a render had replaced"
+  pass "each route renders its view alone with the others absent, History displays every record, and an unreadable fleet is disclosed rather than rendered calm"
 }
 
 # Desktop alerts are entirely client-side and must fire only for items the
@@ -615,84 +653,115 @@ const { pathToFileURL } = require("node:url");
 
 class FakeNode {
   constructor(tagName, text = "") {
-    this.tagName = tagName.toUpperCase();
+    this.tagName = String(tagName).toUpperCase();
     this.children = [];
     this.attributes = {};
     this.className = "";
     this.dataset = {};
+    this.id = "";
     this.listeners = {};
     this.value = "";
-    // app.js publishes the sticky bar's measured height as a custom property on
-    // the document element, so a node has to be able to carry one.
+    this.hidden = false;
+    this.parent = null;
     this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
     this._text = String(text);
+    const node = this;
+    this.classList = {
+      add(...names) { for (const name of names) if (!node.classNames().includes(name)) node.className = `${node.className} ${name}`.trim(); },
+      remove(...names) { node.className = node.classNames().filter((existing) => !names.includes(existing)).join(" "); },
+      toggle(name, force) {
+        const has = node.classNames().includes(name);
+        const want = force === undefined ? !has : Boolean(force);
+        if (want && !has) node.classList.add(name);
+        if (!want && has) node.classList.remove(name);
+        return want;
+      },
+      contains(name) { return node.classNames().includes(name); },
+    };
   }
 
+  classNames() { return this.className.split(/\s+/).filter(Boolean); }
   get options() { return this.children; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
-  set textContent(value) {
-    this._text = String(value ?? "");
-    this.children = [];
-  }
+  set textContent(value) { this._text = String(value ?? ""); this.children = []; }
 
   append(...children) {
     for (const child of children) {
       if (child === null || child === undefined) continue;
-      this.children.push(typeof child === "string" ? new FakeNode("#text", child) : child);
+      const node = typeof child === "string" ? new FakeNode("#text", child) : child;
+      node.parent = this;
+      this.children.push(node);
     }
   }
 
   replaceChildren(...children) {
     this._text = "";
+    for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
   }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
+  matchesSelector(selector) {
+    if (selector.startsWith("#")) return this.id === selector.slice(1);
+    if (selector.startsWith(".")) return this.classNames().includes(selector.slice(1));
+    return this.tagName === selector.toUpperCase();
+  }
 
-  // The fold anchor reads real layout. These nodes carry whatever rectangle a
-  // case assigns them, which is what lets a reflow be simulated.
-  get isConnected() { return true; }
-  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0 }; }
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matchesSelector(selector)) return child;
+      const hit = child.querySelector(selector);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matchesSelector && node.matchesSelector(selector)) return node;
+      node = node.parent;
+    }
+    return null;
+  }
 }
 
-const selectors = new Map();
-for (const id of ["signals", "badges", "nav-badge", "health-strip", "inbox-list", "notice-region", "refresh-note", "filter-count", "clear-filters", "secondmate-list", "secondmate-count", "kanban", "theme-button", "phone-theme-button", "notify-button", "phone-notify-button",
-  "history-filter-count", "history-clear", "history-note", "history-warnings", "history-summary",
-  "history-list", "history-pager", "report-dialog", "report-task", "report-title", "report-notices",
-  "report-body", "report-close",
-  "activity-filter-count", "activity-clear", "activity-note", "activity-notices", "activity-list"]) {
-  selectors.set(`#${id}`, new FakeNode("div"));
+const byId = new Map();
+function staticNode(tag, id, className = "") {
+  const node = new FakeNode(tag);
+  node.id = id;
+  node.className = className;
+  byId.set(id, node);
+  return node;
 }
-const filterForm = new FakeNode("form");
-filterForm.elements = {};
-for (const key of ["project", "harness", "model", "kind", "state"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  filterForm.elements[key] = select;
+staticNode("div", "app", "app");
+staticNode("main", "view", "main");
+staticNode("span", "vdot", "vdot");
+staticNode("span", "verdict", "verdict");
+staticNode("div", "segbar", "segbar");
+staticNode("span", "stalenote", "stalenote");
+staticNode("span", "staleno-txt");
+staticNode("span", "navbadge", "navbadge");
+staticNode("span", "tabbadge", "tabbadge");
+for (const buttonId of ["theme-button", "notify-button"]) {
+  const button = staticNode("button", buttonId, "iconbtn");
+  button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
-selectors.set("#filter-form", filterForm);
-const historyForm = new FakeNode("form");
-historyForm.elements = {};
-for (const key of ["query", "project", "harness", "model", "kind", "outcome", "from", "to", "pageSize"]) {
-  const field = new FakeNode(key === "query" || key === "from" || key === "to" ? "input" : "select");
-  field.append(new FakeNode("option", `All ${key}`));
-  historyForm.elements[key] = field;
-}
-selectors.set("#history-form", historyForm);
-const activityForm = new FakeNode("form");
-activityForm.elements = {};
-for (const key of ["task", "harness", "type"]) {
-  const select = new FakeNode("select");
-  select.append(new FakeNode("option", `All ${key}`));
-  activityForm.elements[key] = select;
-}
-selectors.set("#activity-form", activityForm);
 
 const document = {
   documentElement: new FakeNode("html"),
-  querySelector: (selector) => selectors.get(selector),
+  getElementById: (id) => byId.get(id) ?? null,
+  querySelector: (selector) => {
+    const compound = selector.match(/^#([\w-]+)\s+\.([\w-]+)$/);
+    if (compound) return byId.get(compound[1])?.querySelector(`.${compound[2]}`) ?? null;
+    if (selector.startsWith("#")) return byId.get(selector.slice(1)) ?? null;
+    return null;
+  },
+  querySelectorAll: () => [],
   createElement: (tagName) => new FakeNode(tagName),
   createTextNode: (text) => new FakeNode("#text", text),
 };
@@ -708,7 +777,7 @@ function decisionTask(id) {
     paths: { status_log: { last_event_age_seconds: 5 } },
     work_items: [],
     hints: { open_decisions: [{ key: "shape", verb: "needs-decision", summary: `Decide the ${id} shape` }] },
-    card: { column: "needs_decision", action: "decide" },
+    card: { column: "needs_decision" },
   };
 }
 
@@ -749,19 +818,18 @@ class FakeEventSource {
 const storage = new Map([["fm-dashboard-alerts", "on"]]);
 Object.assign(globalThis, {
   document,
-  window: { innerWidth: 320, innerHeight: 850, scrollY: 0, addEventListener() {}, scrollTo() {} },
-  requestAnimationFrame: () => 0,
+  window: { innerWidth: 390, innerHeight: 844, scrollY: 0, location: { hash: "" }, addEventListener() {}, scrollTo() {}, history: { back() {} } },
+  requestAnimationFrame: (frame) => { frame(); return 0; },
   EventSource: FakeEventSource,
   Notification: FakeNotification,
-  fetch: async () => ({ ok: true, json: async () => envelopeWith(["already-waiting"]) }),
+  fetch: async (url) => ({ ok: true, json: async () => (url.startsWith("/api/snapshot") ? envelopeWith(["already-waiting"]) : {}) }),
   localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-  matchMedia: () => ({ matches: false }),
 });
 
 import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
   const push = (envelope) => streamed({ data: JSON.stringify(envelope) });
-  if (selectors.get("#notify-button").textContent !== "Alerts on") {
-    throw new Error(`a granted saved preference did not restore the alert control: ${selectors.get("#notify-button").textContent}`);
+  if (byId.get("notify-button").textContent !== "Alerts on") {
+    throw new Error(`a granted saved preference did not restore the alert control: ${byId.get("notify-button").textContent}`);
   }
   if (notifications.length) throw new Error(`the first render alerted for items already waiting: ${JSON.stringify(notifications)}`);
 
@@ -774,7 +842,7 @@ import(pathToFileURL(process.argv[2]).href).then(() => new Promise((resolve) => 
   push(envelopeWith(["already-waiting", "just-arrived"]));
   if (notifications.length !== 1) throw new Error(`expected exactly one alert for the new item, received ${JSON.stringify(notifications)}`);
   const [alert] = notifications;
-  if (!alert.title.includes("Decision")) throw new Error(`the alert did not name what needs the captain: ${alert.title}`);
+  if (!alert.title.includes("needs you")) throw new Error(`the alert did not say something needs the captain: ${alert.title}`);
   if (!alert.body.includes("just-arrived title") || !alert.body.includes("Decide the just-arrived shape")) {
     throw new Error(`the alert did not carry the new item's title and reason: ${alert.body}`);
   }
@@ -1566,7 +1634,7 @@ SH
 test_the_bind_address_is_a_numeric_address
 test_sse_poll_and_last_good
 test_stale_transition_streams_without_refresh
-test_browser_renders_contract_actions_and_liveness
+test_browser_renders_exclusive_views_and_honest_states
 test_browser_alerts_only_for_new_inbox_items
 test_timeout_is_single_flight
 test_stale_service_unit_is_actionable
