@@ -121,6 +121,15 @@ function viewRoot(name) {
   return node;
 }
 
+function rerenderInput(input) {
+  const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+  const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+  render();
+  const restored = ui.view.querySelector(`#${input.id}`);
+  restored?.focus?.({ preventScroll: true });
+  restored?.setSelectionRange?.(start, end);
+}
+
 function dot(tone) { return element("span", tone === "unknown" ? "ring" : `dot d-${tone}`); }
 
 function glyph(kind, tone) {
@@ -580,18 +589,20 @@ function renderBacklog() {
   const built = buildBacklog(state.backlog.envelope, { ...state.backlog.filters, tab: state.backlog.tab, page: state.backlog.page });
   state.backlog.page = built.page.index;
 
-  if (!built.present) {
-    // An unreadable queue is disclosed as unreadable; only a genuinely absent
-    // backlog gets the calm first-run explanation.
-    if (built.error) {
-      view.append(notice(built.error.tone === "red" ? "red" : "amber", "Backlog unavailable.", built.error.text));
-      view.append(emptyState({
-        ring: true,
-        big: "The queue cannot be read.",
-        teach: "Until the backlog can be read again, nothing on this page is a claim about the queue.",
-      }));
-      return view;
-    }
+  if (built.readState === "pending") {
+    view.append(emptyState({ ring: true, big: "Reading the queue.", teach: "Waiting for the first backlog read to finish." }));
+    return view;
+  }
+  if (built.readState === "unavailable") {
+    view.append(notice("red", "Backlog unavailable.", built.error.text));
+    view.append(emptyState({
+      ring: true,
+      big: "The queue cannot be read.",
+      teach: "Until the backlog can be read again, nothing on this page is a claim about the queue.",
+    }));
+    return view;
+  }
+  if (built.readState === "absent") {
     view.append(emptyState({
       ring: true,
       big: "Nothing queued yet.",
@@ -601,6 +612,14 @@ function renderBacklog() {
   }
 
   if (built.error) view.append(notice(built.error.tone === "red" ? "red" : "amber", null, built.error.text));
+  if (!built.present) {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing queued yet.",
+      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
+    }));
+    return view;
+  }
 
   const toolbar = element("div", "toolbar");
   const search = element("input", "search");
@@ -610,9 +629,9 @@ function renderBacklog() {
   search.placeholder = "Search title, project, id…";
   search.maxLength = BACKLOG_LIMITS.maxQueryChars;
   search.value = state.backlog.filters.query;
-  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; render(); });
+  search.addEventListener("input", () => { state.backlog.filters.query = search.value; state.backlog.page = 0; rerenderInput(search); });
   toolbar.append(search);
-  toolbar.append(backlogSelect("project", state.backlog.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, value])) }, (value) => {
+  toolbar.append(backlogSelect("project", state.backlog.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
     state.backlog.filters.project = value; state.backlog.page = 0; render();
   }));
   toolbar.append(backlogSelect("kind", state.backlog.filters.kind, { all: "All kinds", ...Object.fromEntries(built.facets.kind.map((value) => [value, value])) }, (value) => {
@@ -645,7 +664,7 @@ function renderBacklog() {
       main.append(element("div", "rtitle", row.title));
       const meta = element("div", "rmeta");
       meta.append(element("span", row.stateTone === "red" ? "t-red" : row.stateTone === "amber" ? "t-amber" : "t-grey", row.stateLabel));
-      if (row.project) meta.append(element("span", "", row.project));
+      if (row.project) meta.append(element("span", "", label(row.project)));
       if (row.kind) meta.append(element("span", "", row.kind));
       meta.append(element("span", "mid", row.id));
       main.append(meta);
@@ -679,8 +698,8 @@ function renderBacklog() {
   } else {
     view.append(emptyState({
       ring: true,
-      big: "Nothing queued yet.",
-      teach: "As Firstmate plans work, every queued item lands here with its project, kind, priority and - for anything held or blocked - the reason. The queue is read-only: ordering is Firstmate's job.",
+      big: "The queue is empty.",
+      teach: "The backlog was read successfully and contains no current work.",
     }));
   }
 
@@ -707,7 +726,11 @@ function pager(page, step) {
 function renderHistory() {
   const view = viewRoot("history");
   const status = state.history.envelope?.status;
-  const unavailable = status?.phase === "unavailable" && !state.history.envelope?.history;
+  const range = HISTORY_RANGES.find((entry) => entry.key === state.history.range) || HISTORY_RANGES[1];
+  const from = range.days ? new Date(Date.now() - range.days * 86_400_000).toISOString().slice(0, 10) : "";
+  const built = buildHistory(state.history.envelope, { ...state.history.filters, from, page: state.history.page, pageSize: HISTORY_LIMITS.defaultPageSize });
+  state.history.page = built.page.index;
+  const unavailable = built.readState === "unavailable";
   const note = unavailable
     ? "history read failing"
     : status?.last_success_at
@@ -715,6 +738,10 @@ function renderHistory() {
       : status?.refreshing ? "Taking the first history read" : "Waiting for the first history read";
   view.append(pageHead("Delivered · newest first", "History", note));
 
+  if (built.readState === "pending") {
+    view.append(emptyState({ ring: true, big: "Reading completed work.", teach: "Waiting for the first history read to finish." }));
+    return view;
+  }
   if (unavailable) {
     view.append(notice("red", "Completed-work history unavailable.", `The completion records could not be read${status?.error?.message ? `: ${status.error.message}` : ""}. Retrying automatically.`));
     view.append(emptyState({
@@ -725,11 +752,13 @@ function renderHistory() {
     return view;
   }
 
-  const range = HISTORY_RANGES.find((entry) => entry.key === state.history.range) || HISTORY_RANGES[1];
-  const from = range.days ? new Date(Date.now() - range.days * 86_400_000).toISOString().slice(0, 10) : "";
-  const built = buildHistory(state.history.envelope, { ...state.history.filters, from, page: state.history.page, pageSize: HISTORY_LIMITS.defaultPageSize });
-  state.history.page = built.page.index;
-
+  if (built.readState === "stale") {
+    view.append(notice("amber", null, `Showing the last known good completion history: ${status?.error?.message || "the newest read did not land"}.`));
+  }
+  if (built.truncated) {
+    const total = built.record_total === null ? "more completed work" : `${built.record_total} completed records`;
+    view.append(notice("amber", null, `This read is bounded: showing ${built.page.total} of ${total}.`));
+  }
   if (built.malformed.length) {
     // Named, never a bare count: an unreadable record silently missing from
     // the list is the failure this disclosure exists to end.
@@ -771,9 +800,9 @@ function renderHistory() {
   search.placeholder = "Search delivered work…";
   search.maxLength = HISTORY_LIMITS.maxQueryChars;
   search.value = state.history.filters.query;
-  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; render(); });
+  search.addEventListener("input", () => { state.history.filters.query = search.value; state.history.page = 0; rerenderInput(search); });
   toolbar.append(search);
-  toolbar.append(backlogSelect("project", state.history.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, value])) }, (value) => {
+  toolbar.append(backlogSelect("project", state.history.filters.project, { all: "All projects", ...Object.fromEntries(built.facets.project.map((value) => [value, label(value)])) }, (value) => {
     state.history.filters.project = value; state.history.page = 0; render();
   }));
   toolbar.append(backlogSelect("outcome", state.history.filters.outcome, { all: "Any outcome", ...Object.fromEntries(built.facets.outcome.map((value) => [value, (OUTCOME_LABELS[value] || value).toLowerCase()])) }, (value) => {
@@ -992,19 +1021,121 @@ function kvRow(key, value) {
   return cell;
 }
 
-function historyRecordFor(taskId) {
-  const records = Array.isArray(state.history.envelope?.history?.records) ? state.history.envelope.history.records : [];
-  return records.find((record) => record?.task_id === taskId) || null;
+function taskWorkItems(value) {
+  const references = Array.isArray(value) ? value : Array.isArray(value?.references) ? value.references : [];
+  return references.filter((reference) => reference && typeof reference === "object").map((reference) => ({
+    forge: reference.forge || null,
+    url: reference.url || null,
+    label: reference.label || reference.enrichment?.title || reference.url || null,
+  }));
 }
 
-function backlogRecordFor(taskId) {
-  const built = buildBacklog(state.backlog.envelope, {});
-  if (!built.present) return null;
-  return built.allRecords.find((record) => record.id === taskId) || null;
+function liveTaskRecord(task) {
+  const column = COLUMN_DEFS.find((entry) => entry.key === task?.card?.column);
+  const readiness = prReadiness(task);
+  return {
+    id: task.id,
+    source: "live",
+    raw: task,
+    title: task.backlog?.title || task.id,
+    project: task.project || null,
+    kind: task.kind || null,
+    harness: task.harness || null,
+    model: task.model || null,
+    mode: task.mode || null,
+    age: fmtAge(task.spawn_age_seconds) || null,
+    completed: null,
+    raised: null,
+    current: {
+      label: column?.label || "Unknown",
+      tone: column?.tone || "unknown",
+      reason: task.current_state?.detail || task.current_state?.raw || "The worker is live; no finer detail is recorded.",
+    },
+    pr: readiness.url ? { url: readiness.url, tone: readiness.tone, label: readiness.label, checks: readiness.fields?.checks || null } : null,
+    reportPresent: false,
+    workItems: taskWorkItems(task.work_items),
+  };
 }
 
-function liveTaskFor(taskId) {
-  return snapshotTasks().find((task) => task?.id === taskId) || null;
+function historyTaskRecord(record) {
+  const checks = record.pr?.fields?.find((field) => field.name === "checks")?.value || null;
+  return {
+    id: record.id,
+    source: "history",
+    raw: record,
+    title: record.title || record.id,
+    project: record.project,
+    kind: record.kind,
+    harness: record.harness,
+    model: record.model,
+    mode: record.mode,
+    age: null,
+    completed: record.timestamps?.completed || null,
+    raised: null,
+    current: {
+      label: record.outcome?.label || "Outcome unknown",
+      tone: record.outcome?.tone || "unknown",
+      reason: record.outcome?.detail || "The completion record carries no outcome detail.",
+    },
+    pr: record.pr?.present ? { url: record.pr.url, tone: record.pr.tone || "unknown", label: record.pr.state || "unknown", checks } : null,
+    reportPresent: record.report?.present === true,
+    workItems: taskWorkItems(record.work_items),
+  };
+}
+
+function backlogTaskRecord(record) {
+  return {
+    id: record.id,
+    source: "backlog",
+    raw: record,
+    title: record.title || record.id,
+    project: record.project,
+    kind: record.kind,
+    harness: null,
+    model: null,
+    mode: null,
+    age: null,
+    completed: null,
+    raised: record.since,
+    current: {
+      label: record.stateLabel,
+      tone: record.stateTone,
+      reason: record.reason || "This item is waiting in the queue.",
+    },
+    pr: null,
+    reportPresent: false,
+    workItems: [],
+  };
+}
+
+function snapshotReadState() {
+  if (!state.envelope) return "pending";
+  if (state.envelope.status?.phase === "unavailable") return "unavailable";
+  if (state.envelope.status?.phase === "first_run" && state.envelope.status?.refreshing === true) return "pending";
+  if (state.envelope.status?.phase === "last_good" && state.envelope.snapshot) return "stale";
+  if (!state.envelope.snapshot) return "absent";
+  return "ready";
+}
+
+function taskLookup(taskId) {
+  const history = buildHistory(state.history.envelope, {});
+  const backlog = buildBacklog(state.backlog.envelope, {});
+  const live = snapshotTasks().find((task) => task?.id === taskId);
+  const completed = history.allRecords.find((record) => record.id === taskId);
+  const queued = backlog.allRecords.find((record) => record.id === taskId);
+  if (live) return { phase: "found", task: liveTaskRecord(live) };
+  if (completed) return { phase: "found", task: historyTaskRecord(completed) };
+  if (queued) return { phase: "found", task: backlogTaskRecord(queued) };
+
+  const sources = [
+    { name: "fleet snapshot", state: snapshotReadState(), error: state.envelope?.status?.error?.message },
+    { name: "completion history", state: history.readState, error: state.history.envelope?.status?.error?.message },
+    { name: "backlog", state: backlog.readState, error: state.backlog.envelope?.status?.error?.message },
+  ];
+  if (sources.some((source) => source.state === "pending")) return { phase: "pending", sources };
+  const uncertain = sources.filter((source) => source.state === "unavailable" || source.state === "stale");
+  if (uncertain.length) return { phase: "unavailable", sources: uncertain };
+  return { phase: "missing", sources };
 }
 
 async function fetchTaskReport(taskId) {
@@ -1145,17 +1276,20 @@ function renderTask() {
   back.addEventListener("click", () => window.history.back());
   view.append(back);
 
-  const live = liveTaskFor(taskId);
-  const record = historyRecordFor(taskId);
-  const backlog = live || record ? null : backlogRecordFor(taskId);
-  const sourcesLoaded = Boolean(state.envelope?.snapshot) && Boolean(state.history.envelope);
-
-  if (!live && !record && !backlog) {
-    if (!sourcesLoaded) {
-      view.append(pageHead("Task", "Looking this task up…"));
-      view.append(emptyState({ ring: true, big: "Reading the fleet records.", teach: "The live workers, the completed-work archive, and the queue are being read; this page fills in as each answers." }));
-      return view;
-    }
+  const lookup = taskLookup(taskId);
+  if (lookup.phase === "pending") {
+    view.append(pageHead("Task", "Looking this task up…"));
+    view.append(emptyState({ ring: true, big: "Reading the fleet records.", teach: "The live workers, the completed-work archive, and the queue are being read; this page fills in as each answers." }));
+    return view;
+  }
+  if (lookup.phase === "unavailable") {
+    const detail = lookup.sources.map((source) => `${source.name}${source.error ? `: ${source.error}` : ""}`).join("; ");
+    view.append(pageHead("Task", "Task lookup unavailable"));
+    view.append(notice("red", null, `This task cannot be ruled in or out because ${detail}.`));
+    view.append(emptyState({ ring: true, big: "Some fleet records cannot be read.", teach: "A failed or stale read is not evidence that a task does not exist. Retrying automatically." }));
+    return view;
+  }
+  if (lookup.phase === "missing") {
     view.append(pageHead("Task", "No such task"));
     view.append(emptyState({
       ring: true,
@@ -1165,21 +1299,21 @@ function renderTask() {
     return view;
   }
 
-  const title = live?.backlog?.title || record?.title || backlog?.title || taskId;
+  const task = lookup.task;
+  const title = task.title || taskId;
   view.append(pageHead("Task", null));
   const head = view.querySelector(".page-h");
   head.textContent = title;
   head.closest(".page-hd").append(element("div", "card-id", taskId));
 
   const strip = element("div", "kvstrip");
-  const project = live?.project || record?.project || (backlog?.repo ? backlog.repo : null);
-  strip.append(kvRow("Project", project ? label(project) : null));
-  strip.append(kvRow("Kind", live?.kind || record?.kind || backlog?.kind || null));
-  strip.append(kvRow("Runtime · model", [live?.harness, live?.model].filter(Boolean).join(" · ") || [record?.harness, record?.model].filter(Boolean).join(" · ") || null));
-  strip.append(kvRow("Delivery", live?.mode || record?.mode || null));
-  if (live) strip.append(kvRow("Age", fmtAge(live.spawn_age_seconds) || "unknown"));
-  else if (record?.timestamps?.completed) strip.append(kvRow("Completed", record.timestamps.completed.slice(0, 10)));
-  else if (backlog?.since) strip.append(kvRow("Raised", backlog.since));
+  strip.append(kvRow("Project", task.project ? label(task.project) : null));
+  strip.append(kvRow("Kind", task.kind));
+  strip.append(kvRow("Runtime · model", [task.harness, task.model].filter(Boolean).join(" · ") || null));
+  strip.append(kvRow("Delivery", task.mode));
+  if (task.age) strip.append(kvRow("Age", task.age));
+  else if (task.completed) strip.append(kvRow("Completed", task.completed.slice(0, 10)));
+  else if (task.raised) strip.append(kvRow("Raised", task.raised));
   view.append(strip);
 
   const grid = element("div", "tk-grid");
@@ -1189,23 +1323,9 @@ function renderTask() {
   const statePanel = element("section", "panel");
   statePanel.append(element("div", "panel-h", "Current state"));
   const statebar = element("div", "statebar");
-  let stateWord = "Unknown";
-  let stateTone = "grey";
-  let stateReason = "No state detail is recorded for this task.";
-  if (live) {
-    const def = COLUMN_DEFS.find((column) => column.key === live?.card?.column) || COLUMN_DEFS[COLUMN_DEFS.length - 1];
-    stateWord = def.label;
-    stateTone = def.tone;
-    stateReason = live.current_state?.detail || live.current_state?.raw || "The worker is live; no finer detail is recorded.";
-  } else if (record) {
-    stateWord = OUTCOME_LABELS[record.outcome?.state] || "Outcome unknown";
-    stateTone = { done: "green", failed: "red", discarded: "amber", retired: "grey" }[record.outcome?.state] || "grey";
-    stateReason = record.outcome?.detail || "The completion record carries no outcome detail.";
-  } else if (backlog) {
-    stateWord = backlog.stateLabel;
-    stateTone = backlog.stateTone;
-    stateReason = backlog.reason || "This item is waiting in the queue.";
-  }
+  const stateWord = task.current.label;
+  const stateTone = task.current.tone;
+  const stateReason = task.current.reason;
   statebar.append(stateTone === "unknown" ? element("span", "ring") : dot(stateTone), element("span", `state-word t-${stateTone}`, stateWord));
   statePanel.append(statebar);
   statePanel.append(element("p", "state-reason", stateReason));
@@ -1223,17 +1343,11 @@ function renderTask() {
   // exists only for a task that has one. A live scout still writes its report
   // to the task's own directory, but that is not exposed over HTTP until the
   // completion record publishes it - saying so beats a panel that 404s.
-  const hasReport = record?.report?.present === true;
-  mainCol.append(reportPanel(taskId, hasReport, live));
+  mainCol.append(reportPanel(taskId, task.reportPresent, task.source === "live" ? task : null));
 
-  if (live) {
-    const readiness = prReadiness(live);
-    sideCol.append(prPanel(readiness.url, { tone: readiness.tone, label: readiness.verdict || readiness.label, checks: readiness.checks || null }));
-  } else if (record?.pr?.url) {
-    sideCol.append(prPanel(record.pr.url, { tone: { merged: "green", open: "blue", draft: "grey", closed: "grey" }[record.pr.state] || "grey", label: record.pr.state || "unknown", checks: record.pr.checks || null }));
-  }
+  if (task.pr) sideCol.append(prPanel(task.pr.url, task.pr));
 
-  const workItems = live?.work_items || record?.work_items || [];
+  const workItems = task.workItems;
   if (workItems.length) {
     const panel = element("section", "panel");
     panel.append(element("div", "panel-h", "Linked items"));
@@ -1255,7 +1369,7 @@ function renderTask() {
     sideCol.append(panel);
   }
 
-  sideCol.append(activityPanel(taskId, live));
+  sideCol.append(activityPanel(taskId, task.source === "live" ? task.raw : null));
 
   grid.append(mainCol, sideCol);
   view.append(grid);
@@ -1403,10 +1517,15 @@ function connectEvents() {
       const envelope = JSON.parse(event.data);
       if (envelope.schema === "fm-dashboard-events.v1") {
         state.events = envelope;
-        // The stored timelines predate this broadcast, so the next task render
-        // refetches its complete store-backed timeline rather than trusting a
-        // snapshot the fleet has already moved past.
-        state.task.timelines.clear();
+        for (const [taskId, entry] of state.task.timelines) {
+          if (entry.loading) continue;
+          const backfill = { task: taskId, events: Array.isArray(entry.envelope?.events) ? entry.envelope.events : [] };
+          entry.envelope = {
+            ...(entry.envelope || {}),
+            task: taskId,
+            events: mergeTaskBackfill(Array.isArray(envelope.events) ? envelope.events : [], backfill, taskId),
+          };
+        }
         if (state.route.view === TASK_VIEW) render();
       }
     } catch {}

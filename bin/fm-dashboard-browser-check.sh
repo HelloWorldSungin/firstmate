@@ -1196,11 +1196,31 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
 task_open_probe_js() {
   # shellcheck disable=SC2016  # the node program interpolates its own argv, not the shell's
   node -e '
-    const allIds = process.argv[1].split(",").filter(Boolean);
+    const [allIdsRaw, leaksRaw] = process.argv.slice(1);
+    const config = { allIds: allIdsRaw.split(",").filter(Boolean), leaks: leaksRaw.split(";").filter(Boolean) };
     process.stdout.write(`async () => {
-      const allIds = ${JSON.stringify(allIds)};
+      const config = ${JSON.stringify(config)};
+      const scan = () => {
+        const patterns = [];
+        for (const source of config.leaks) {
+          try { patterns.push({ source, expression: new RegExp(source) }); } catch {}
+        }
+        const bodyText = document.body.innerText;
+        return {
+          leakPatterns: patterns.length,
+          leakChars: bodyText.length,
+          pageLeaks: patterns.filter((pattern) => pattern.expression.test(bodyText)).map((pattern) => pattern.source),
+        };
+      };
       const row = document.querySelector("#view-fleet .trow");
-      if (!row) return JSON.stringify({ clicked: false, reason: "no task row is on the Fleet board" });
+      if (!row) {
+        location.hash = "#/task/dashboard-browser-check-missing";
+        for (let tick = 0; tick < 40; tick += 1) {
+          if (document.getElementById("view-task")) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return JSON.stringify({ clicked: false, reason: "no task row is on the Fleet board", ...scan() });
+      }
       row.click();
       for (let tick = 0; tick < 40; tick += 1) {
         if (document.getElementById("view-task")) break;
@@ -1211,11 +1231,12 @@ task_open_probe_js() {
         reason: "",
         hash: location.hash,
         present: document.getElementById("view-task") !== null,
-        others: allIds.filter((id) => document.getElementById(id) !== null),
-        othersChecked: allIds.length,
+        others: config.allIds.filter((id) => document.getElementById(id) !== null),
+        othersChecked: config.allIds.length,
+        ...scan(),
       });
     }`);
-  ' "$ALL_VIEW_IDS"
+  ' "$ALL_VIEW_IDS" "$LEAK_PATTERNS"
 }
 
 # A bounded slice of each view, saved so a human can read what the check saw.
@@ -1740,6 +1761,7 @@ check_usage_cells() {  # <label> <rows> <cells>
 # on the Fleet board, clicked while that board is the active view.
 check_task_open() {  # <label>
   local label=$1 probe fields key value clicked reason hash present others others_checked
+  local leak_patterns leak_chars page_leaks
   probe="$OUT_DIR/task-open-$label.json"
   console_collect "$label-before-task"
   if forced task-open unverified || ! browser_eval_json "$(task_open_probe_js)" "$probe"; then
@@ -1747,20 +1769,29 @@ check_task_open() {  # <label>
       "the page returned nothing readable about the board"
     return
   fi
-  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason); then
+  if ! fields=$(probe_fields "$probe" clicked=clicked reason=reason leakPatterns=leakPatterns leakChars=leakChars pageLeaks=pageLeaks); then
     record "$UNVERIFIED" "$label: opening a task from the Fleet board lands on its detail page alone" \
       "the page did not say whether a board row was found"
     return
   fi
-  clicked=; reason=
+  clicked=; reason=; leak_patterns=; leak_chars=; page_leaks=
   while IFS='=' read -r key value; do
     case "$key" in
       clicked) clicked=$value ;;
       reason) reason=$value ;;
+      leakPatterns) leak_patterns=$value ;;
+      leakChars) leak_chars=$value ;;
+      pageLeaks) page_leaks=$value ;;
     esac
   done <<CLICK
 $fields
 CLICK
+  if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ]; then
+    LEAK_SCANS=$((LEAK_SCANS + 1))
+    LEAK_CHARS_TOTAL=$((LEAK_CHARS_TOTAL + leak_chars))
+    [ "$leak_patterns" != "$LEAK_PATTERN_COUNT" ] && LEAK_PATTERNS_SHORT=yes
+    [ -n "$page_leaks" ] && LEAK_MATCHES="${LEAK_MATCHES}${LEAK_MATCHES:+; }Task: $page_leaks"
+  fi
   if [ "$clicked" != true ]; then
     if [ "$MODE" = fixture ]; then
       record FAIL "$label: opening a task from the Fleet board lands on its detail page alone" "$reason"
@@ -1818,11 +1849,12 @@ INNER
 # The higher-stakes empty list, aggregated across every destination this width
 # reached. "No leaks found" is worth nothing unless the scan can be shown to
 # have run over every destination's rendered page, so the verdict requires one
-# completed scan per VIEWS row and a real character count before an empty
-# result is read as a clean page.
+# completed scan per primary destination plus the task detail and a real
+# character count before an empty result is read as a clean page.
 check_leak_aggregate() {  # <label>
   local label=$1 route_total
   route_total=$(printf '%s\n' "$VIEWS" | grep -c .)
+  route_total=$((route_total + 1))
   forced leak unverified && LEAK_SCANS=0
   if [ "$LEAK_SCANS" -ne "$route_total" ] || [ "$LEAK_CHARS_TOTAL" -eq 0 ]; then
     record "$UNVERIFIED" "$label: no credential-shaped or path-shaped value on any destination" \

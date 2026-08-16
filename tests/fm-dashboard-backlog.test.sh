@@ -55,10 +55,18 @@ function envelope(records, status = { phase: "ready" }) {
 
 // --- the three empty shapes stay distinct ------------------------------------
 equal("no envelope at all is not a present backlog", buildBacklog(null, {}).present, false);
+equal("no envelope is a pending read", buildBacklog(null, {}).readState, "pending");
 check("no envelope carries no error", buildBacklog(null, {}).error === null);
 const unavailable = buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "unavailable", error: { message: "the read failed" } } }, {});
 equal("an unreadable backlog is not a present backlog", unavailable.present, false);
+equal("an unreadable backlog has its own read state", unavailable.readState, "unavailable");
 check("an unreadable backlog is disclosed as unreadable", unavailable.error !== null && unavailable.error.text.includes("the read failed"));
+const absent = buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "first_run" }, backlog: { present: false, records: [] } }, {});
+equal("a first-run absent backlog has its own read state", absent.readState, "absent");
+equal("an in-progress first read stays pending", buildBacklog({ schema: "fm-dashboard-backlog.v1", status: { phase: "first_run", refreshing: true }, backlog: null }).readState, "pending");
+const genuinelyEmpty = buildBacklog(envelope([]), {});
+equal("a successfully read empty backlog stays present", genuinelyEmpty.present, true);
+equal("a successfully read empty backlog is ready", genuinelyEmpty.readState, "ready");
 
 // --- done rows belong to History, not the queue ------------------------------
 const mixed = buildBacklog(envelope([
@@ -108,6 +116,13 @@ const ages = buildBacklog(envelope([
 ]), {});
 equal("a known age renders", ages.rows[0].age, "1h");
 equal("an unknown age is null, not zero", ages.rows[1].age, null);
+const priorities = buildBacklog(envelope([
+  { id: "p0", title: "Explicit", state: "queued", priority: 0, order: 1 },
+  { id: "missing", title: "Missing", state: "queued", priority: null, order: 2 },
+  { id: "blank", title: "Blank", state: "queued", priority: "", order: 3 },
+]), {});
+equal("only an explicit zero becomes P0", priorities.rows.map((row) => row.prio), [0, null, null]);
+equal("the priority facet excludes missing values", priorities.facets.prio, [0]);
 
 // --- pagination bounds -------------------------------------------------------
 const many = envelope(Array.from({ length: BACKLOG_LIMITS.pageSize * 2 + 3 }, (_, index) => (
@@ -192,7 +207,7 @@ test_backlog_endpoint_serves_the_full_record_set() {
   esac
   [ "$(printf '%s' "$body" | jq -r '[.backlog.records[] | select(.id == "held-1")] | .[0].hold_reason')" = "waiting on the captain" ] \
     || fail "the held record lost its hold reason through the endpoint"
-  [ "$(printf '%s' "$body" | jq -r '[.backlog.records[] | select(.id == "done-1")] | .[0].state')" = done ] \
+  [ "$(printf '%s' "$body" | jq -r '[.backlog.records[] | select(.id == "done-1")] | .[0].state')" = "done" ] \
     || fail "the done record lost its section state through the endpoint"
 
   kill "$SERVER_PID" 2>/dev/null

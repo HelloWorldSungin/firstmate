@@ -20,7 +20,7 @@ That pass exists because the same defect shape kept recurring in this harness - 
 ## The router-rebuild run
 
 Host: Linux 6.14.11, Chrome via `chrome-devtools-axi`, fixture dashboard started by the check from this checkout.
-Date: 2026-08-16, after the rebuild of the page into five destinations behind a hash router (issue 156).
+Date: 2026-08-16, after the rebuild of the page into six destinations behind a hash router (issue 156).
 Widths: 390x844 (phone), 899x844 and 900x844 (the two sides of the navigation boundary), 1440x900 (desktop).
 
 The page under check is no longer one scrolling document, so the observation set changed shape with it: at every width, every destination is visited through the navigation control actually visible there, and the active view must be the only view in the DOM.
@@ -41,7 +41,7 @@ What the run observed, with the load-bearing details:
 - The History view displayed both of the fixture's completion records, agreeing with its own pager (`1-2 of 2`), each row carrying a non-empty usage cell.
   The fixture publishes those records through the real manifest writer, so this is the production record format rendering, not a lookalike envelope.
 - No destination scrolls sideways: `scrollWidth <= viewport` on every route at every width.
-- The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (5 scans per width) and matched nothing.
+- The credential- and path-leak scan ran all 11 patterns over every destination's rendered page (6 scans per width) and matched nothing.
 - The console was clean across all 37 windows read - one immediately before every navigation the run made and one after the last of each.
 
 ## The task timeline

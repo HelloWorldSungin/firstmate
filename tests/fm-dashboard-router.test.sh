@@ -60,6 +60,12 @@ check("a traversal-shaped task id does not parse as a task route", parseHash("#/
 equal("taskRoute refuses an empty id", taskRoute(""), null);
 equal("taskRoute refuses a dot-leading id", taskRoute(".hidden"), null);
 equal("taskRoute accepts a real id", taskRoute("fm-x1"), { view: TASK_VIEW, taskId: "fm-x1" });
+equal("taskRoute accepts a dash-leading id", taskRoute("-fm-x1"), { view: TASK_VIEW, taskId: "-fm-x1" });
+equal("taskRoute accepts an underscore-leading id", taskRoute("_fm-x1"), { view: TASK_VIEW, taskId: "_fm-x1" });
+equal("parseHash accepts a dash-leading id", parseHash("#/task/-fm-x1"), { view: TASK_VIEW, taskId: "-fm-x1" });
+equal("taskRoute accepts the 128-character limit", taskRoute(`_${"a".repeat(127)}`)?.view, TASK_VIEW);
+equal("taskRoute refuses 129 characters", taskRoute(`_${"a".repeat(128)}`), null);
+equal("taskRoute refuses traversal pairs", taskRoute("fm..x"), null);
 
 // --- canonical hashes round-trip ---------------------------------------------
 for (const view of VIEWS) equal(`hashFor round-trips #/${view}`, hashFor(parseHash(`#/${view}`)), `#/${view}`);

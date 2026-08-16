@@ -17,7 +17,11 @@ export const VIEWS = ["needs", "fleet", "backlog", "history", "knowledge"];
 export const DEFAULT_VIEW = "needs";
 export const TASK_VIEW = "task";
 
-const TASK_PATTERN = /^#\/task\/([A-Za-z0-9][A-Za-z0-9._-]*)$/;
+const TASK_PATTERN = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
+
+function validTaskId(taskId) {
+  return TASK_PATTERN.test(taskId) && !taskId.includes("..");
+}
 
 /** The route object for a view destination, or null for anything else. */
 export function viewRoute(view) {
@@ -27,7 +31,7 @@ export function viewRoute(view) {
 /** The route object for a task detail destination. */
 export function taskRoute(taskId) {
   const id = typeof taskId === "string" ? taskId : "";
-  return TASK_PATTERN.test(`#/task/${id}`) ? { view: TASK_VIEW, taskId: id } : null;
+  return validTaskId(id) ? { view: TASK_VIEW, taskId: id } : null;
 }
 
 /**
@@ -37,8 +41,8 @@ export function taskRoute(taskId) {
  */
 export function parseHash(hash) {
   const raw = typeof hash === "string" ? hash : "";
-  const match = TASK_PATTERN.exec(raw);
-  if (match) return { view: TASK_VIEW, taskId: match[1] };
+  const match = /^#\/task\/([^/?#]+)$/.exec(raw);
+  if (match && validTaskId(match[1])) return { view: TASK_VIEW, taskId: match[1] };
   const view = raw.replace(/^#\/?/, "").split(/[/?]/)[0];
   return viewRoute(view) || { view: DEFAULT_VIEW };
 }

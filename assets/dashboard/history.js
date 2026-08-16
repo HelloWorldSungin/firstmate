@@ -276,6 +276,15 @@ export function normalizeQuery(raw) {
   return text(raw).slice(0, HISTORY_LIMITS.maxQueryChars).toLowerCase();
 }
 
+function historyReadState(envelope, document) {
+  if (!envelope) return "pending";
+  if (envelope.status?.phase === "unavailable") return "unavailable";
+  if (envelope.status?.phase === "first_run" && envelope.status?.refreshing === true) return "pending";
+  if (envelope.status?.phase === "last_good" && document) return "stale";
+  if (!document) return "absent";
+  return "ready";
+}
+
 /**
  * Build the history view from the server's fm-dashboard-history.v1 envelope.
  * `view` carries the active filters, the search query, the page index, and the
@@ -286,6 +295,7 @@ export function buildHistory(envelope, view = {}) {
   const records = Array.isArray(document?.records) ? document.records : [];
   const usage = envelope?.usage && typeof envelope.usage === "object" ? envelope.usage : null;
   const rows = records.map((record) => historyRow(record, usage)).filter((row) => row.id);
+  const readState = historyReadState(envelope, document);
 
   const facets = {
     project: facetValues(rows, "project"),
@@ -356,7 +366,9 @@ export function buildHistory(envelope, view = {}) {
   };
 
   return {
+    readState,
     rows: visible,
+    allRecords: rows,
     stats,
     facets,
     filters: active,

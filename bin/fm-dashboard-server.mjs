@@ -2236,7 +2236,7 @@ async function main() {
       config: envelope.config,
       backlog: envelope.snapshot?.backlog && typeof envelope.snapshot.backlog === "object"
         ? envelope.snapshot.backlog
-        : { present: false, records: [] },
+        : null,
     };
   };
   clients.register("backlog", backlogEnvelope);

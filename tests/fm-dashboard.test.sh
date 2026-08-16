@@ -267,6 +267,9 @@ class FakeNode {
     this.id = "";
     this.listeners = {};
     this.value = "";
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
+    this.focused = false;
     this.hidden = false;
     this.parent = null;
     this.style = { properties: {}, setProperty(name, value) { this.properties[name] = value; } };
@@ -310,6 +313,8 @@ class FakeNode {
   setAttribute(name, value) { this.attributes[name] = String(value); }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  focus() { this.focused = true; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 0, height: 0 }; }
 
   matchesSelector(selector) {
@@ -436,12 +441,16 @@ function completionRecord(id, state, hoursAgo) {
     schema: "fm-outcome-manifest.v1",
     task_id: id,
     title: `${id} delivered title`,
-    project: "firstmate",
+    project: id === "delivered-one" ? "/home/captain/projects/firstmate" : "firstmate",
     kind: "ship",
     outcome: { state },
     timestamps: { completed: recentIso(hoursAgo) },
-    pr: {},
+    pr: id === "delivered-one" ? {
+      url: "https://github.com/HelloWorldSungin/firstmate/pull/156",
+      status: { state: "merged", review: "approved", checks: "passing", mergeable: "mergeable", observed_at: recentIso(hoursAgo), source: "github" },
+    } : {},
     report: {},
+    work_items: id === "delivered-one" ? { references: [{ forge: "github", url: "https://github.com/HelloWorldSungin/firstmate/issues/156", enrichment: { title: "Dashboard rebuild" } }] } : { references: [] },
   };
 }
 const historyEnvelope = {
@@ -463,7 +472,7 @@ const backlogEnvelope = {
   backlog: {
     present: true,
     records: [
-      { id: "queued-a", title: "Queued a", state: "queued", order: 1 },
+      { id: "queued-a", title: "Queued a", state: "queued", repo: "/home/captain/projects/firstmate", order: 1 },
       { id: "held-b", title: "Held b", state: "queued", hold_reason: "waiting on the captain", order: 2 },
     ],
   },
@@ -477,6 +486,7 @@ const timelineEnvelope = {
 };
 
 const eventSources = [];
+let timelineFetches = 0;
 class FakeEventSource {
   constructor() {
     this.listeners = {};
@@ -513,7 +523,7 @@ Object.assign(globalThis, {
       if (url.startsWith("/api/history")) return historyEnvelope;
       if (url.startsWith("/api/backlog")) return backlogEnvelope;
       if (url.startsWith("/api/gbrain/health")) return gbrainHealth;
-      if (url.startsWith("/api/timeline")) return timelineEnvelope;
+      if (url.startsWith("/api/timeline")) { timelineFetches += 1; return timelineEnvelope; }
       return {};
     },
   }),
@@ -586,7 +596,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
 
   // --- History displays every record it found --------------------------------
   await go("#/history");
-  const historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  let historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
   if (historyRows.length !== 3) throw new Error(`History found 3 completion records but displayed ${historyRows.length}`);
   const shownTitles = historyRows.map((row) => row.textContent);
   for (const id of ["delivered-one", "delivered-two", "failed-one"]) {
@@ -594,13 +604,41 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   }
   const delivered = all(viewNode, (node) => hasClass(node, "stat")).map((node) => node.textContent).find((text) => text.startsWith("Delivered"));
   if (delivered !== "Delivered2") throw new Error(`the Delivered stat did not count the done records: ${delivered}`);
+  let historySearch = one(viewNode, (node) => node.id === "history-search", "history search");
+  historySearch.value = "del";
+  historySearch.selectionStart = 3;
+  historySearch.selectionEnd = 3;
+  historySearch.listeners.input();
+  historySearch = one(viewNode, (node) => node.id === "history-search", "restored history search");
+  if (!historySearch.focused || historySearch.selectionStart !== 3) throw new Error("History search lost focus or selection after its first input event");
+  historySearch.value = "delivered-two";
+  historySearch.selectionStart = 13;
+  historySearch.selectionEnd = 13;
+  historySearch.listeners.input();
+  historySearch = one(viewNode, (node) => node.id === "history-search", "second restored history search");
+  historyRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (!historySearch.focused || historySearch.value !== "delivered-two" || historyRows.length !== 1) throw new Error("History search did not accept multiple characters continuously");
 
   // --- Backlog renders the queue with its held reason -------------------------
   await go("#/backlog");
-  const backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  let backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
   if (backlogRows.length !== 2) throw new Error(`the backlog queue rendered ${backlogRows.length} of 2 rows`);
   if (!backlogRows[1].textContent.includes("waiting on the captain")) throw new Error("the held reason is not on the page");
+  if (one(viewNode, (node) => node.id === "view-backlog", "backlog view").textContent.includes("/home/captain")) throw new Error("a backlog project path reached the page");
   if (!all(viewNode, (node) => hasClass(node, "ronote")).length) throw new Error("the read-only note is missing from the Backlog page");
+  let backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "backlog search");
+  backlogSearch.value = "he";
+  backlogSearch.selectionStart = 2;
+  backlogSearch.selectionEnd = 2;
+  backlogSearch.listeners.input();
+  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "restored backlog search");
+  backlogSearch.value = "held";
+  backlogSearch.selectionStart = 4;
+  backlogSearch.selectionEnd = 4;
+  backlogSearch.listeners.input();
+  backlogSearch = one(viewNode, (node) => node.id === "backlog-search", "second restored backlog search");
+  backlogRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (!backlogSearch.focused || backlogSearch.value !== "held" || backlogRows.length !== 1) throw new Error("Backlog search did not accept multiple characters continuously");
 
   // --- Knowledge without a brain is the quiet explanation page ----------------
   await go("#/knowledge");
@@ -621,10 +659,48 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (!okChip || !hasClass(okChip, "green")) throw new Error("an observed ok outcome did not render as a green chip");
   const unknownChip = chips.find((chip) => chip.textContent === "unknown");
   if (!unknownChip || !hasClass(unknownChip, "unknown")) throw new Error("an unobserved outcome did not render as an explicit unknown chip");
+  const beforeBroadcast = timelineFetches;
+  eventSources[0].listeners.agent_events({ data: JSON.stringify({
+    schema: "fm-dashboard-events.v1",
+    events: [{ event_id: "e3", task_id: TASK_ID, harness: "codex", type: "tool_finished", tool: "git", outcome: "failed", occurred_at: "2026-08-15T10:00:03Z", occurred_epoch: 3 }],
+  }) });
+  await settle();
+  if (timelineFetches !== beforeBroadcast) throw new Error("an agent_events broadcast refetched the task timeline");
+  if (!one(viewNode, (node) => node.id === "view-task", "updated task view").textContent.includes("git")) throw new Error("the task-scoped event tail was not merged into the cached timeline");
+
+  await go("#/task/delivered-one");
+  const completedTask = one(viewNode, (node) => node.id === "view-task", "completed task view");
+  if (completedTask.textContent.includes("/home/captain")) throw new Error("a completed task project path reached the page");
+  if (!completedTask.textContent.includes("merged") || !completedTask.textContent.includes("Dashboard rebuild")) throw new Error("the normalized completion PR or work item did not render");
+
+  await go("#/task/queued-a");
+  const queuedTask = one(viewNode, (node) => node.id === "view-task", "queued task view");
+  if (!queuedTask.textContent.includes("firstmate") || queuedTask.textContent.includes("/home/captain")) throw new Error("the normalized queued project label did not render safely");
+
+  eventSources[0].listeners.history({ data: JSON.stringify({
+    ...historyEnvelope,
+    status: { phase: "last_good", stale: true, error: { message: "history refresh failed" } },
+    history: { ...historyEnvelope.history, truncated: true, total: 90 },
+  }) });
+  await go("#/history");
+  const staleHistory = one(viewNode, (node) => node.id === "view-history", "stale history view").textContent;
+  if (!staleHistory.includes("last known good completion history") || !staleHistory.includes("showing 3 of 90 completed records")) throw new Error(`History did not disclose stale bounded data: ${staleHistory}`);
+
+  eventSources[0].listeners.backlog({ data: JSON.stringify({
+    schema: "fm-dashboard-backlog.v1",
+    status: { phase: "unavailable", stale: false, error: { message: "backlog refresh failed" } },
+    backlog: { present: false, records: [] },
+  }) });
+  await go("#/backlog");
+  const failedBacklog = one(viewNode, (node) => node.id === "view-backlog", "failed backlog view").textContent;
+  if (!failedBacklog.includes("Backlog unavailable") || failedBacklog.includes("Nothing queued yet")) throw new Error(`an unreadable backlog rendered as a calm empty queue: ${failedBacklog}`);
 
   // --- an unreadable fleet is never the calm first-run page -------------------
   const push = (payload) => eventSources[0].listeners.snapshot({ data: JSON.stringify(payload) });
   push({ schema: "fm-dashboard-envelope.v1", status: { phase: "unavailable", stale: false, error: { kind: "server_unreachable", message: "HTTP 503" } }, snapshot: null });
+  await go("#/task/not-recorded");
+  const failedLookup = one(viewNode, (node) => node.id === "view-task", "failed task lookup").textContent;
+  if (!failedLookup.includes("Task lookup unavailable") || failedLookup.includes("No such task")) throw new Error(`a failed source became negative task evidence: ${failedLookup}`);
   await go("#/needs");
   if (verdict.textContent !== "Fleet unavailable") throw new Error(`an unreachable fleet read as: ${verdict.textContent}`);
   if (byId.get("vdot").className !== "vdot vd-unknown") throw new Error(`the unavailable verdict dot is not the hollow unknown: ${byId.get("vdot").className}`);
@@ -919,11 +995,14 @@ test_stale_service_unit_is_actionable() {
 }
 
 test_first_run_failures_are_explicit() {
-  local case_root
+  local case_root backlog
   case_root=$(make_runtime malformed)
   printf 'malformed\n' > "$case_root/control/mode"
   start_fixture_server "$case_root" 1 1
   wait_for_expression "$case_root" '.status.phase == "unavailable" and .status.error.kind == "malformed_json" and .snapshot == null'
+  backlog=$(curl -fsS "http://127.0.0.1:$TEST_PORT/api/backlog")
+  printf '%s' "$backlog" | jq -e '.status.phase == "unavailable" and .backlog == null' >/dev/null \
+    || fail "a failed snapshot fabricated an empty backlog: $backlog"
   stop_server
 
   case_root=$(make_runtime version)

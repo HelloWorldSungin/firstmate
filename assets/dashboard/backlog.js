@@ -44,6 +44,15 @@ function formatAge(seconds) {
   return `${Math.floor(seconds / 86_400)}d`;
 }
 
+function backlogReadState(envelope, document) {
+  if (!envelope) return "pending";
+  if (envelope.status?.phase === "unavailable") return "unavailable";
+  if (envelope.status?.phase === "first_run" && envelope.status?.refreshing === true) return "pending";
+  if (envelope.status?.phase === "last_good" && document) return "stale";
+  if (!document || document.present !== true) return "absent";
+  return "ready";
+}
+
 /** The display row for one backlog record, or null for one with no id. */
 function backlogRow(record) {
   const id = text(record?.id);
@@ -60,7 +69,10 @@ function backlogRow(record) {
   const key = held ? "held" : blocked ? "blocked" : (text(record?.state) === "in_flight" ? "in_flight" : "queued");
   const presentation = STATE_PRESENTATION[key];
   const reason = text(record?.hold_reason) || text(record?.blocked_reason) || null;
-  const prioRaw = Number.isFinite(Number(record?.priority)) ? Number(record?.priority) : null;
+  const priority = record?.priority;
+  const prioRaw = priority !== null && priority !== undefined && priority !== "" && Number.isFinite(Number(priority))
+    ? Number(priority)
+    : null;
   const ageSeconds = finiteAge(record?.since_age_seconds);
   return {
     id,
@@ -100,8 +112,11 @@ export function buildBacklog(envelope, view = {}) {
     .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 
   const status = envelope?.status;
-  const error = status && status.phase === "unavailable" && !document
+  const readState = backlogReadState(envelope, document);
+  const error = readState === "unavailable"
     ? { tone: "red", text: `The backlog could not be read: ${text(status.error?.message) || "unknown reason"}. Retrying automatically.` }
+    : readState === "stale"
+      ? { tone: "amber", text: `Showing the last known good backlog read: ${text(status.error?.message) || "the newest read did not land"}.` }
     : null;
 
   const query = text(view.query).slice(0, BACKLOG_LIMITS.maxQueryChars).toLowerCase();
@@ -129,7 +144,8 @@ export function buildBacklog(envelope, view = {}) {
   const rows = filtered.slice(start, start + BACKLOG_LIMITS.pageSize);
 
   return {
-    present: document?.present === true && allRows.length > 0,
+    readState,
+    present: document?.present === true,
     error,
     queueTotal: queue.length,
     total: base.length,

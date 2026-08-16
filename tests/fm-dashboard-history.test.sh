@@ -481,10 +481,17 @@ equal("a captured report is counted for the search gate",
 
 const empty = buildHistory(envelope([]));
 equal("an empty history is empty", empty.empty, true);
+equal("an empty history is a completed ready read", empty.readState, "ready");
 equal("an empty history has no rows", empty.rows.length, 0);
 const missing = buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "unavailable", error: { kind: "command_missing", message: "gone" } }, history: null, usage: null });
 equal("an unavailable history has no rows either", missing.rows.length, 0);
+equal("an unavailable history has its own read state", missing.readState, "unavailable");
 equal("an unavailable history reports no records read", missing.record_total, null);
+equal("a missing envelope is still pending", buildHistory(null).readState, "pending");
+equal("first-run history is absent rather than empty", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run" }, history: null }).readState, "absent");
+equal("an in-progress first history read stays pending", buildHistory({ schema: "fm-dashboard-history.v1", status: { phase: "first_run", refreshing: true }, history: null }).readState, "pending");
+equal("last-good history is stale but usable", buildHistory({ ...envelope([manifest("stale")]), status: { phase: "last_good", stale: true } }).readState, "stale");
+equal("all normalized records remain available for task lookup", buildHistory(envelope([manifest("alpha"), manifest("beta")]), { query: "alpha" }).allRecords.map((row) => row.id).join(","), "alpha,beta");
 
 // The archive says when more completed work exists than was read, so the view
 // never implies the fleet has only ever finished this much.
