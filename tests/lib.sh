@@ -457,6 +457,24 @@ expect_code() {
   [ "$actual" = "$expected" ] || fail "$label: expected exit $expected, got $actual"
 }
 
+# fm_test_wait_absent <path> <description> [ceiling_secs]: poll <path> until it
+# stops existing, with a [ceiling_secs] ceiling (default 15). The disappearance
+# of <path> is the observable event the test is checking, so the wait is bounded
+# by that event rather than by a wall-clock bound on the cleanup mechanism
+# itself: a genuinely missing cleanup still fails (the ceiling elapses with the
+# path still present), and a slow cleanup simply waits its real duration. Use
+# this when the assertion is that some side effect has settled, not when the
+# assertion is "this finished in N seconds".
+fm_test_wait_absent() {
+  local path=$1 description=$2 ceiling_secs=${3:-15}
+  local remaining_polls=$(( ceiling_secs * 20 ))
+  while [ -e "$path" ] && [ "$remaining_polls" -gt 0 ]; do
+    sleep 0.05
+    remaining_polls=$(( remaining_polls - 1 ))
+  done
+  [ ! -e "$path" ] || fail "$description (still present after ${ceiling_secs}s ceiling)"
+}
+
 # assert_grep <pattern> <file> <msg>: fixed-string grep must match in <file>.
 # `--` guards patterns that begin with '-' (e.g. backlog/registry lines).
 assert_grep() {
