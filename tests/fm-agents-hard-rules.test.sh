@@ -8,12 +8,12 @@
 # trim of the always-loaded surface can drop a boundary outright, which reads
 # as ordinary prose churn in a diff.
 #
-# This suite pins that seam rather than the wording: the numbering shape, the
-# numeric citations resolving, and the presence and required clauses of the
-# upstream write boundary - whose whole job is to be in force at the moment a
-# recorded publish target would otherwise route a write to a third-party
-# upstream repository, where an agent instruction alone and a push-URL guard
-# alone both miss.
+# This suite pins that seam rather than the wording: the numbering shape, every
+# numeric citation still resolving to the boundary it was written for, and the
+# presence and required clauses of the upstream write boundary - whose whole
+# job is to be in force at the moment a recorded publish target would otherwise
+# route a write to a third-party upstream repository, where an agent
+# instruction alone and a push-URL guard alone both miss.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -84,29 +84,51 @@ EOF
   return 0
 }
 
-# Every current citation names hard rule 1, and names it for the project-write
-# boundary whose exception it relies on. A future rule taking number 1 has to
-# re-check all of them, and this is the assertion that forces that.
-check_cited_identity() {  # <agents-md>
-  local title
-  title=$(hard_rules "$1" | awk -F'\t' '$1 == "1" { print $2 }')
-  if [ "$title" != "Never write to a project." ]; then
-    echo "hard rule 1 is now '$title'; every 'hard rule 1' citation needs re-checking"
-    return 1
-  fi
+# Every distinct rule number cited by tracked prose, ascending. The one place
+# that decides what counts as a citation, so range and identity never disagree
+# about the set they are checking.
+cited_numbers() {  # <repo-root>
+  git -C "$1" grep -hIoiE 'hard rule [0-9]+' | awk '{ print $NF }' | LC_ALL=C sort -un
+}
+
+# The boundary each cited number is expected to name, as "<number>\t<title>".
+# A citation is a number, so a rule inserted above one retargets it at the
+# boundary that inherited the number while the prose still reads correctly.
+# Registering a number here is what makes that shift fail instead of pass, and
+# a citation to an unregistered number fails until its boundary is pinned too.
+cited_identities() {
+  printf '%s\t%s\n' \
+    1 'Never write to a project.' \
+    2 'Never write to a third-party upstream repository.'
+}
+
+check_cited_identity() {  # <repo-root> <agents-md>
+  local root=$1 agents=$2 number expected actual
+  while IFS= read -r number; do
+    [ -n "$number" ] || continue
+    expected=$(cited_identities | awk -F'\t' -v n="$number" '$1 == n { print $2 }')
+    if [ -z "$expected" ]; then
+      echo "tracked prose cites rule $number, whose expected boundary this suite does not pin yet"
+      return 1
+    fi
+    actual=$(hard_rules "$agents" | awk -F'\t' -v n="$number" '$1 == n { print $2 }')
+    if [ "$actual" != "$expected" ]; then
+      echo "rule $number is now '$actual' rather than '$expected'; every citation naming that number needs re-checking"
+      return 1
+    fi
+  done < <(cited_numbers "$root")
   return 0
 }
 
 check_citations() {  # <repo-root> <rule-count>
-  local root=$1 count=$2 reference number
-  while IFS= read -r reference; do
-    [ -n "$reference" ] || continue
-    number=${reference##* }
+  local root=$1 count=$2 number
+  while IFS= read -r number; do
+    [ -n "$number" ] || continue
     if [ "$number" -lt 1 ] || [ "$number" -gt "$count" ]; then
-      echo "tracked prose cites '$reference', outside the 1..$count hard rules"
+      echo "tracked prose cites rule $number, outside the 1..$count hard rules"
       return 1
     fi
-  done < <(git -C "$root" grep -hIoiE 'hard rule [0-9]+' | LC_ALL=C sort -u)
+  done < <(cited_numbers "$root")
   return 0
 }
 
@@ -142,10 +164,10 @@ check_upstream_boundary() {  # <agents-md>
 test_repository_hard_rules_are_well_formed() {
   local out count
   out=$(check_numbering "$AGENTS") || fail "AGENTS.md hard rules: $out"
-  out=$(check_cited_identity "$AGENTS") || fail "AGENTS.md hard rules: $out"
   count=$(hard_rules "$AGENTS" | wc -l | tr -d '[:space:]')
   out=$(check_citations "$ROOT" "$count") || fail "AGENTS.md hard rules: $out"
-  pass "hard rules number 1..$count and every numeric citation resolves"
+  out=$(check_cited_identity "$ROOT" "$AGENTS") || fail "AGENTS.md hard rules: $out"
+  pass "hard rules number 1..$count and every citation resolves to its expected boundary"
 }
 
 test_upstream_write_boundary_is_always_loaded() {
@@ -155,8 +177,9 @@ test_upstream_write_boundary_is_always_loaded() {
 }
 
 test_renumbering_and_dropped_clauses_are_caught() {
-  local renumbered dropped weakened out rc
+  local renumbered retargeted dropped weakened out rc
   renumbered="$TMP_ROOT/renumbered.md"
+  retargeted="$TMP_ROOT/retargeted.md"
   dropped="$TMP_ROOT/dropped.md"
   weakened="$TMP_ROOT/weakened.md"
 
@@ -168,6 +191,16 @@ test_renumbering_and_dropped_clauses_are_caught() {
   set -e
   [ "$rc" -ne 0 ] || fail "a renumbered hard-rule list passed the numbering check"
   assert_contains "$out" "not sequential" "numbering failure did not explain itself"
+
+  # A cited number left naming a boundary other than the one it was written
+  # for, which is what an insertion above that number produces.
+  sed 's/^\([0-9][0-9]*\)\. \*\*.*\*\*$/\1. **Some other boundary.**/' "$AGENTS" > "$retargeted"
+  set +e
+  out=$(check_cited_identity "$ROOT" "$retargeted")
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a cited number naming a different boundary passed the identity check"
+  assert_contains "$out" "needs re-checking" "retargeted-citation failure did not explain itself"
 
   # The boundary retitled away while the list still numbers cleanly.
   sed 's/^\([0-9][0-9]*\)\. \*\*Never write to a third-party upstream repository\.\*\*$/\1. **Never write to an unfamiliar remote.**/' \
@@ -188,7 +221,7 @@ test_renumbering_and_dropped_clauses_are_caught() {
   [ "$rc" -ne 0 ] || fail "a boundary without its recorded-target clause passed"
   assert_contains "$out" "recorded publish target" "weakened-boundary failure did not explain itself"
 
-  pass "renumbering, a dropped boundary, and a dropped clause each fail loudly"
+  pass "renumbering, a retargeted citation, a dropped boundary, and a dropped clause each fail loudly"
 }
 
 test_repository_hard_rules_are_well_formed

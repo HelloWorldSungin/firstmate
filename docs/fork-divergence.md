@@ -37,7 +37,8 @@ The fork keeps `.no-mistakes.yaml` `test.evidence.store_in_repo` set to `false`,
 The fork adds a sixth [`AGENTS.md`](../AGENTS.md) hard rule, "Never write to a third-party upstream repository", adopted on 2026-08-16.
 It is inserted as rule 2 rather than appended, so the previous rules 2 through 5 are renumbered to 3 through 6.
 That renumbering is a guaranteed collision surface in every future sync round because upstream's list keeps the pre-insertion numbering, and the next person merging should expect a conflict in the whole hard-rule block rather than discovering it mid-merge.
-[`tests/fm-agents-hard-rules.test.sh`](../tests/fm-agents-hard-rules.test.sh) pins the numbering shape, the resolution of every numeric `hard rule N` citation in tracked prose, and the boundary's required clauses, so a merge that flattens the rule away or drops one of its clauses fails loudly instead of silently.
+[`tests/fm-agents-hard-rules.test.sh`](../tests/fm-agents-hard-rules.test.sh) pins the numbering shape, the boundary each numeric `hard rule N` citation in tracked prose is expected to name, and the boundary's required clauses, so a merge that flattens the rule away, drops one of its clauses, or leaves a citation pointing at the rule that inherited its number fails loudly instead of silently.
+The citation below is registered in that test, so a future insertion above the upstream boundary cannot quietly retarget it.
 The rule is written for this fork specifically because the fork is the case that has a third-party upstream at all.
 
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) drops upstream's instruction to clone the parent or point a local `origin` back at `git@github.com:kunchenguid/firstmate.git`, and tells a contributor to clone this repository so `origin` is the repository their PR opens against.
