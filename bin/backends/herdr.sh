@@ -1289,9 +1289,10 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 }
 
 # fm_backend_herdr_pane_agent_free_proof: true (0) only when <pane-id>
-# provably hosts NO agent process at all - the pane's entire process tree,
-# rooted at its shell pid, is nothing but recognized idle shells plus the
-# resident treehouse worktree wrapper, and the foreground process is a shell.
+# provably hosts NO agent process at all - every process attached to the
+# pane's terminal belongs to the tree rooted at its shell pid, that tree is
+# nothing but recognized idle shells plus the resident treehouse worktree
+# wrapper, and the foreground process is a shell.
 #
 # This is a deliberately SEPARATE predicate from the lone-idle-shell proof
 # above, because the two license different actions. The lone-shell proof
@@ -1309,17 +1310,19 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # screen: pane process-info round-trips the pane id; exactly one foreground
 # process, itself a recognized shell whose argv0 resolves to its own name and
 # its own process group leader; the operating-system process table shows the
-# pane's shell pid exactly once; the foreground process is a member of the
-# tree rooted at that shell pid; every tree member is sleeping or idle with
-# an unambiguous single-word name; EVERY LEAF of the tree is the foreground
-# shell itself; and every non-leaf member is a recognized shell or the
-# treehouse worktree wrapper fm-spawn launches through. Those last two rules
-# are what make the chain shape safe without weakening refusal: a live agent
-# owns the foreground (fails the foreground-shell rule), a suspended or
-# backgrounded agent is a stopped or extra leaf (fails the stat or
-# every-leaf-is-the-foreground-shell rule), and an agent hosting an
-# interactive escape shell is a non-shell NON-LEAF ancestor (fails the
-# wrapper allowlist), so no reachable live-agent shape can classify
+# pane's shell pid exactly once with a readable terminal; the foreground
+# process is a member of the tree rooted at that shell pid; every process on
+# the shell's terminal belongs to that tree; every tree member is sleeping or
+# idle with an unambiguous single-word name; EVERY LEAF of the tree is the
+# foreground shell itself; and every non-leaf member is a recognized shell or
+# the treehouse worktree wrapper fm-spawn launches through. These rules make
+# the chain shape safe without weakening refusal: a live agent owns the
+# foreground (fails the foreground-shell rule), a suspended or backgrounded
+# agent is a stopped or extra leaf (fails the stat or every-leaf-is-the-
+# foreground-shell rule), a reparented agent remains on the pane terminal but
+# outside the shell tree (fails the terminal-membership rule), and an agent
+# hosting an interactive escape shell is a non-shell NON-LEAF ancestor (fails
+# the wrapper allowlist), so no reachable live-agent shape can classify
 # agent-free. Every unreadable or ambiguous field also fails, so the caller's
 # fail-safe direction is refusal. Retryable samples retain the same bounded
 # settle window as the lone-shell proof to absorb a transient prompt helper
@@ -1375,12 +1378,11 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
   [ "$fg_pgid" = "$fg_pid" ] || return 1
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
-  rows=$("$ps_bin" -axo pid=,ppid=,stat=,comm= 2>/dev/null) || return 1
-  # Close the descendant set of shell_pid, then enforce the tree rules from
-  # the header: fg is a member, every member sleeps, every leaf IS fg, and
-  # every non-leaf is a recognized shell or the treehouse wrapper. A member
-  # row with extra fields (a comm containing whitespace) can never be a plain
-  # shell or the wrapper and fails rather than matching on its first word.
+  rows=$("$ps_bin" -axo pid=,ppid=,stat=,comm=,tty= 2>/dev/null) || return 1
+  # Close the descendant set of shell_pid, then enforce the terminal and tree
+  # rules from the header. A member row with extra fields (a comm containing
+  # whitespace) can never be a plain shell or the wrapper and fails rather
+  # than matching on its first word.
   printf '%s\n' "$rows" | LC_ALL=C awk -v shell="$shell_pid" -v fg="$fg_pid" '
     function normname(c) {
       sub(/^-/, "", c)
@@ -1390,11 +1392,25 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
     function isshell(c) {
       return (c == "sh" || c == "bash" || c == "zsh" || c == "dash" || c == "ksh" || c == "fish")
     }
-    { pid[NR] = $1; ppid[NR] = $2; stat[NR] = $3; comm[NR] = $4; fields[NR] = NF }
+    {
+      pid[NR] = $1
+      ppid[NR] = $2
+      stat[NR] = $3
+      comm[NR] = $4
+      tty[NR] = $NF
+      fields[NR] = NF
+    }
     END {
       found = 0
-      for (i = 1; i <= NR; i++) if (pid[i] == shell) found++
+      for (i = 1; i <= NR; i++) {
+        if (fields[i] < 5) exit 1
+        if (pid[i] == shell) {
+          found++
+          pane_tty = tty[i]
+        }
+      }
       if (found != 1) exit 1
+      if (pane_tty == "" || pane_tty ~ /^\?+$/) exit 1
       inset[shell] = 1
       changed = 1
       while (changed) {
@@ -1405,11 +1421,14 @@ fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
       }
       if (!(fg in inset)) exit 1
       for (i = 1; i <= NR; i++) {
+        if (tty[i] == pane_tty && !(pid[i] in inset)) exit 1
+      }
+      for (i = 1; i <= NR; i++) {
         if ((pid[i] in inset) && (ppid[i] in inset)) kids[ppid[i]]++
       }
       for (i = 1; i <= NR; i++) {
         if (!(pid[i] in inset)) continue
-        if (fields[i] != 4) exit 1
+        if (fields[i] != 5) exit 1
         c = normname(comm[i])
         if (!isshell(c) && c != "treehouse") exit 1
         if (stat[i] !~ /^[SI]/) exit 1

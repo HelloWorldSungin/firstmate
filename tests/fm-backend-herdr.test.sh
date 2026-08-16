@@ -2058,13 +2058,13 @@ agent_free_process_info_fixture() {  # <fg-pid>
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":4242,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv":["/home/u/.nix-profile/bin/zsh"]}]}}}\n' "$1" "$1"
 }
 
-# make_agent_free_lab <dir>: a fake ps serving the four-column tree query
+# make_agent_free_lab <dir>: a fake ps serving the five-column tree query
 # from <dir>/pstable, which each case writes to model its process tree.
 make_agent_free_lab() {  # <dir>
   cat > "$1/ps" <<SH
 #!/usr/bin/env bash
 case "\$*" in
-  "-axo pid=,ppid=,stat=,comm=") cat "$1/pstable" ;;
+  "-axo pid=,ppid=,stat=,comm=,tty=") cat "$1/pstable" ;;
   *) exit 1 ;;
 esac
 SH
@@ -2075,7 +2075,7 @@ make_agent_free_sequence_lab() {  # <dir>
   cat > "$1/ps" <<SH
 #!/usr/bin/env bash
 case "\$*" in
-  "-axo pid=,ppid=,stat=,comm=")
+  "-axo pid=,ppid=,stat=,comm=,tty=")
     count_file="$1/ps-count"
     next=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
     printf '%s\n' "\$next" > "\$count_file"
@@ -2089,7 +2089,7 @@ SH
 
 # The verified dead treehouse chain: every leaf is the foreground subshell.
 agent_free_chain_pstable() {  # <dir>
-  printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n' > "$1/pstable"
+  printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n' > "$1/pstable"
 }
 
 run_agent_state() {  # <fakebin> <log> <resp> <ps-bin> <polls>
@@ -2131,7 +2131,7 @@ test_agent_state_stale_registration_lone_shell_reads_dead() {
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   agent_state_registration_fixtures "$resp" idle
   agent_free_process_info_fixture 4242 > "$resp/3.out"
-  printf '1 0 Ss init\n4242 1 Ss+ zsh\n' > "$dir/pstable"
+  printf '1 0 Ss init ?\n4242 1 Ss+ zsh pts/7\n' > "$dir/pstable"
   make_agent_free_lab "$dir"
   fb=$(make_herdr_fakebin "$dir")
   out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
@@ -2174,19 +2174,19 @@ test_agent_state_live_agent_shapes_stay_alive() {
     case "$shape" in
       foreground)
         printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":4242,"foreground_process_group_id":5001,"foreground_processes":[{"pid":5001,"name":"pi","argv0":"pi"}]}}}\n' > "$resp/3.out"
-        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S zsh\n5001 4646 Sl+ pi\n' > "$dir/pstable"
+        printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S zsh pts/7\n5001 4646 Sl+ pi pts/7\n' > "$dir/pstable"
         ;;
       suspended)
         agent_free_process_info_fixture 4646 > "$resp/3.out"
-        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n5001 4646 T pi\n' > "$dir/pstable"
+        printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n5001 4646 T pi pts/7\n' > "$dir/pstable"
         ;;
       background)
         agent_free_process_info_fixture 4646 > "$resp/3.out"
-        printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n5001 4646 Sl pi\n' > "$dir/pstable"
+        printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n5001 4646 Sl pi pts/7\n' > "$dir/pstable"
         ;;
       escape)
         agent_free_process_info_fixture 4646 > "$resp/3.out"
-        printf '1 0 Ss init\n4242 1 Ss zsh\n5001 4242 Sl pi\n4646 5001 S+ zsh\n' > "$dir/pstable"
+        printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n5001 4242 Sl pi pts/7\n4646 5001 S+ zsh pts/7\n' > "$dir/pstable"
         ;;
     esac
     cp "$resp/3.out" "$resp/4.out"
@@ -2201,6 +2201,42 @@ test_agent_state_live_agent_shapes_stay_alive() {
     fi
   done
   pass "fm_backend_herdr_agent_state: foreground, suspended, backgrounded, and escape-shell live agents all stay alive"
+}
+
+test_agent_state_reparented_same_tty_agent_stays_alive() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-state-live-reparented"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  agent_state_registration_fixtures "$resp" idle
+  agent_free_process_info_fixture 4646 > "$resp/3.out"
+  cp "$resp/3.out" "$resp/4.out"
+  printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n5001 1 T pi pts/7\n' > "$dir/pstable"
+  make_agent_free_lab "$dir"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+  [ "$out" = alive ] || fail "a reparented agent attached to the pane terminal must stay alive, got '$out'"
+  pass "fm_backend_herdr_agent_state: a reparented same-terminal agent stays alive"
+}
+
+test_agent_state_ambiguous_tty_inventory_stays_alive() {
+  local shape dir log resp fb out
+  for shape in unknown missing; do
+    dir="$TMP_ROOT/agent-state-tty-$shape"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    agent_state_registration_fixtures "$resp" idle
+    agent_free_process_info_fixture 4646 > "$resp/3.out"
+    cp "$resp/3.out" "$resp/4.out"
+    if [ "$shape" = unknown ]; then
+      printf '1 0 Ss init ?\n4242 1 Ss zsh ?\n4444 4242 Sl treehouse ?\n4646 4444 S+ zsh ?\n' > "$dir/pstable"
+    else
+      printf '1 0 Ss init ?\n4242 1 Ss zsh\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n' > "$dir/pstable"
+    fi
+    make_agent_free_lab "$dir"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$(run_agent_state "$fb" "$log" "$resp" "$dir/ps" 2)
+    [ "$out" = alive ] || fail "an $shape shell terminal inventory must keep a registered agent alive, got '$out'"
+  done
+  pass "fm_backend_herdr_agent_state: ambiguous terminal inventories stay alive"
 }
 
 test_agent_state_inconclusive_process_read_stays_alive() {
@@ -2250,7 +2286,7 @@ test_agent_state_cross_snapshot_prompt_helper_settles_to_dead() {
   agent_state_registration_fixtures "$resp" idle
   agent_free_process_info_fixture 4646 > "$resp/3.out"
   agent_free_process_info_fixture 4646 > "$resp/4.out"
-  printf '1 0 Ss init\n4242 1 Ss zsh\n4444 4242 Sl treehouse\n4646 4444 S+ zsh\n99998 4646 Sl starship\n' > "$dir/pstable.1"
+  printf '1 0 Ss init ?\n4242 1 Ss zsh pts/7\n4444 4242 Sl treehouse pts/7\n4646 4444 S+ zsh pts/7\n99998 4646 Sl starship pts/7\n' > "$dir/pstable.1"
   agent_free_chain_pstable "$dir"
   mv "$dir/pstable" "$dir/pstable.2"
   make_agent_free_sequence_lab "$dir"
@@ -4716,6 +4752,8 @@ test_agent_state_stale_registration_treehouse_chain_reads_dead
 test_agent_state_stale_registration_lone_shell_reads_dead
 test_agent_state_stale_working_registration_reads_dead
 test_agent_state_live_agent_shapes_stay_alive
+test_agent_state_reparented_same_tty_agent_stays_alive
+test_agent_state_ambiguous_tty_inventory_stays_alive
 test_agent_state_inconclusive_process_read_stays_alive
 test_agent_state_transient_prompt_helper_settles_to_dead
 test_agent_state_cross_snapshot_prompt_helper_settles_to_dead
