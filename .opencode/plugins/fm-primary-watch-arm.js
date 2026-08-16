@@ -37,10 +37,17 @@ function waitForArmReady(armChild) {
   const readiness = armReadiness.get(armChild);
   if (!readiness) return Promise.resolve("failed");
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve("timeout"), ARM_READY_TIMEOUT_MS);
+    let expiry = null;
+    const timer = setTimeout(() => {
+      // Give stdout/stderr already queued in the poll phase one turn to
+      // settle readiness before treating the wall-clock deadline as final.
+      expiry = setImmediate(() => resolve("timeout"));
+      expiry.unref();
+    }, ARM_READY_TIMEOUT_MS);
     timer.unref();
     void readiness.then((status) => {
       clearTimeout(timer);
+      if (expiry) clearImmediate(expiry);
       resolve(status);
     });
   });
@@ -219,10 +226,40 @@ async function retireArm(armChild) {
   const closed = armClose.get(armChild);
   if (!closed) return false;
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), ARM_RETIRE_TIMEOUT_MS);
+    let expiry = null;
+    let grace = null;
+    let graceExpiry = null;
+    const timer = setTimeout(() => {
+      // Judge the deadline against the observable exit, not the close event:
+      // close propagates through stream teardown a few turns after exit, so a
+      // wall-clock verdict on close alone reports an already-exited arm as
+      // unretired on a contended runner. The one-turn settle lets a queued
+      // exit event land first; an exited arm then gets one bounded grace
+      // period for its close, while a still-running arm fails retirement. The
+      // grace verdict also settles through the following check turn so a close
+      // already queued for either poll or close callbacks wins too.
+      expiry = setImmediate(() => {
+        if (armChild.exitCode === null && armChild.signalCode === null) {
+          resolve(false);
+          return;
+        }
+        grace = setTimeout(() => {
+          graceExpiry = setImmediate(() => {
+            graceExpiry = setImmediate(() => resolve(false));
+            graceExpiry.unref();
+          });
+          graceExpiry.unref();
+        }, ARM_RETIRE_TIMEOUT_MS);
+        grace.unref();
+      });
+      expiry.unref();
+    }, ARM_RETIRE_TIMEOUT_MS);
     timer.unref();
     void closed.then(() => {
       clearTimeout(timer);
+      if (expiry) clearImmediate(expiry);
+      if (grace) clearTimeout(grace);
+      if (graceExpiry) clearImmediate(graceExpiry);
       resolve(true);
     });
   });
@@ -246,7 +283,7 @@ async function restoreAfterActionableClose(paths, sessionID, client, predecessor
     failure = restorationFailure(status);
     if (!(await retireArm(armChild))) {
       setArmStatus("failed");
-      return `${failure}\nwatcher: FAILED - OpenCode could not restore watcher continuity because the unready successor arm did not exit within ${ARM_RETIRE_TIMEOUT_MS}ms`;
+      return `${failure}\nwatcher: FAILED - OpenCode could not restore watcher continuity because the unready successor arm was still running when the ${ARM_RETIRE_TIMEOUT_MS}ms retirement deadline settled or did not close within the additional ${ARM_RETIRE_TIMEOUT_MS}ms grace after exit`;
     }
     if (status === "read-only" || status === "not-primary" || status === "skipped") break;
     if (attempt === REARM_RETRY_LIMIT) break;

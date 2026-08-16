@@ -344,10 +344,40 @@ export default function (pi: ExtensionAPI) {
     const closed = armClose.get(armChild);
     if (!closed) return false;
     return new Promise((resolveRetired) => {
-      const timer = setTimeout(() => resolveRetired(false), armRetireTimeoutMs);
+      let expiry: ReturnType<typeof setImmediate> | null = null;
+      let grace: ReturnType<typeof setTimeout> | null = null;
+      let graceExpiry: ReturnType<typeof setImmediate> | null = null;
+      const timer = setTimeout(() => {
+        // Judge the deadline against the observable exit, not the close event:
+        // close propagates through stream teardown a few turns after exit, so a
+        // wall-clock verdict on close alone reports an already-exited arm as
+        // unretired on a contended runner. The one-turn settle lets a queued
+        // exit event land first; an exited arm then gets one bounded grace
+        // period for its close, while a still-running arm fails retirement. The
+        // grace verdict also settles through the following check turn so a close
+        // already queued for either poll or close callbacks wins too.
+        expiry = setImmediate(() => {
+          if (armChild.exitCode === null && armChild.signalCode === null) {
+            resolveRetired(false);
+            return;
+          }
+          grace = setTimeout(() => {
+            graceExpiry = setImmediate(() => {
+              graceExpiry = setImmediate(() => resolveRetired(false));
+              graceExpiry.unref();
+            });
+            graceExpiry.unref();
+          }, armRetireTimeoutMs);
+          grace.unref();
+        });
+        expiry.unref();
+      }, armRetireTimeoutMs);
       timer.unref();
       void closed.then(() => {
         clearTimeout(timer);
+        if (expiry) clearImmediate(expiry);
+        if (grace) clearTimeout(grace);
+        if (graceExpiry) clearImmediate(graceExpiry);
         resolveRetired(true);
       });
     });
@@ -367,7 +397,7 @@ export default function (pi: ExtensionAPI) {
       if (replacement.ok) {
         failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
         if (!(await retireArm(successorChild))) {
-          return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm did not exit within ${armRetireTimeoutMs}ms`;
+          return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm was still running when the ${armRetireTimeoutMs}ms retirement deadline settled or did not close within the additional ${armRetireTimeoutMs}ms grace after exit`;
         }
       } else {
         failure = /(?:read-only|no live session)/.test(replacement.message)

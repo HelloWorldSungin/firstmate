@@ -612,7 +612,7 @@ if (!prompt) throw new Error("unretired-successor prompt did not arrive within c
 if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
 if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
@@ -621,6 +621,171 @@ EOF
   expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor${out:+: $out}"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
+}
+
+# Deterministic regression for the retirement deadline races: a successor exits
+# across the retire deadline while an inherited stdio pipe keeps its close
+# pending, then the pipe closes while the event loop is stalled across the grace
+# deadline. The next timers phase always races the queued close at both verdicts
+# - the interleaving a contended CI runner produces by starvation.
+test_pi_retired_successor_close_at_deadline_keeps_continuity() {
+  local repo home plugin log retire_ready recovery_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  repo="$TMP_ROOT/pi-retire-settle-root"
+  home="$TMP_ROOT/pi-retire-settle-home"
+  log="$TMP_ROOT/pi-retire-settle.log"
+  retire_ready="$TMP_ROOT/pi-retire-settle.ready"
+  recovery_ready="$TMP_ROOT/pi-retire-settle.recovery-ready"
+  term_seen="$TMP_ROOT/pi-retire-settle.term-seen"
+  retire_release="$TMP_ROOT/pi-retire-settle.retire-release"
+  exit_marker="$TMP_ROOT/pi-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/pi-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/pi-retire-settle.stdio-exit"
+  stop="$TMP_ROOT/pi-retire-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: synthetic wake\n'
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  on_term() {
+    printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
+    while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
+    printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
+    exit 0
+  }
+  trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
+  while :; do sleep 0.02; done
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_RECOVERY_READY_FILE:?}"
+trap 'exit 0' TERM INT
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_RECOVERY_READY_FILE="$recovery_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+let prompt = "";
+let successorAttempts = 0;
+let retireStalled = false;
+// Barriers that establish the test setup, so runner scheduling never decides
+// it: the arm child has provably reached the marked point before the plugin
+// gets to arm any deadline against it. The event-loop stalls below still
+// decide the retirement verdict.
+const awaitFixture = (path, what) => {
+  const deadline = Date.now() + 5000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`fixture timed out ${what}: ${path}`);
+  }
+};
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const successor = Boolean(args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID);
+  const child = originalSpawn(...args);
+  if (successor) {
+    successorAttempts += 1;
+    if (successorAttempts === 1) {
+      // SIGTERM must not arrive before the retiring successor installs its handler.
+      awaitFixture(process.env.FM_RETIRE_READY_FILE, "installing retirement handler");
+    } else {
+      // The readiness deadline is armed once this spawn returns, so the recovery
+      // arm's readiness line must already be written. Otherwise a starved runner
+      // that cannot start bash within the readiness deadline spends an extra
+      // retry here and the retirement verdict under test is no longer what the
+      // successor count measures.
+      awaitFixture(process.env.FM_RECOVERY_READY_FILE, "producing recovery readiness");
+    }
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      const delivered = originalKill(signal, ...killArgs);
+      if (signal === "SIGTERM" && !retireStalled) {
+        retireStalled = true;
+        // The retire timer is armed synchronously after this kill call
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
+        setImmediate(() => {
+          writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
+          while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
+        });
+      }
+      return delivered;
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt += message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-retire-settle", {}, undefined, undefined, {});
+for (let i = 0; i < 2000 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+try {
+  if (!prompt) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+  // Match the failure by what it means, not by one release's phrasing: any
+  // wording of a lost-continuity verdict must fail this regression.
+  if (prompt.includes("could not restore watcher continuity")) throw new Error(`retired successor lost continuity: ${prompt}`);
+  if (successorAttempts !== 2) throw new Error(`restoration did not continue after retirement: ${successorAttempts} successor attempts`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi must honor a successor that exited by the retire deadline${out:+: $out}"
+  [ -z "$out" ] || fail "Pi retire-settle test printed output: $out"
+  pass "Pi retirement honors a queued close at the deadline and keeps continuity"
 }
 
 test_pi_late_unretired_close_resumes_supervision() {
@@ -1982,7 +2147,7 @@ if (!prompt) throw new Error("unretired-successor prompt did not arrive within c
 if (successorAttemptsAtPrompt !== 1) throw new Error(`fallback observed ${successorAttemptsAtPrompt} successor attempts`);
 if (retireRequestsAtPrompt !== 1) throw new Error(`fallback observed ${retireRequestsAtPrompt} retirement requests`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm was still running when the 20ms retirement deadline settled or did not close within the additional 20ms grace after exit")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
@@ -2022,6 +2187,14 @@ if [ "$count" -eq 1 ]; then
 fi
 if [ "$count" -eq 2 ]; then
   trap '' TERM INT
+  # Announce unreadiness instead of waiting out the readiness deadline. This
+  # case also needs the restored arm below to be observed ready, so a
+  # compressed readiness budget would have to cover a real bash login-shell
+  # start: that measures runner speed, not behavior. Exactly that happened on
+  # CI - a slow start made the plugin declare a spurious readiness timeout on
+  # the continuity retry and surface a second wake. An observed unready line
+  # keeps the same restoration path without any wall-clock verdict.
+  printf 'watcher: FAILED - successor arm cannot confirm a watcher\n'
   printf 'ready\n' > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
@@ -2032,7 +2205,12 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    # No compressed FM_OPENCODE_ARM_READY_TIMEOUT_MS: every arm here settles
+    # readiness from its own output, so the shipped budget is never waited out
+    # and can never be the oracle. The retirement budget stays compressed
+    # because that verdict is deterministic - the successor is held alive by
+    # the release event until well after the deadline settles.
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_INITIAL_READY_FILE="$initial_ready" FM_INITIAL_RELEASE_FILE="$initial_release" FM_UNRETIRED_READY_FILE="$ready" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -2141,6 +2319,246 @@ EOF
     [ -z "$out" ] || fail "OpenCode late-$kind test printed output: $out"
   done
   pass "OpenCode late unretired closes resume classified supervision"
+}
+
+# Deterministic regression for the readiness deadline race: readiness output
+# already queued in the poll phase when the deadline timer fires must settle
+# the verdict, not be discarded for a spurious timeout. The arm child holds
+# its readiness line until the go file exists; the harness releases it from a
+# check-phase callback and spins until the output is provably written and the
+# deadline has passed, so the next iteration's timers phase always races the
+# queued output - the interleaving a contended CI runner produces by
+# starvation.
+test_opencode_queued_readiness_at_deadline_reports_armed() {
+  local plugin repo home go marker stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-ready-settle-root"
+  home="$TMP_ROOT/opencode-ready-settle-home"
+  go="$TMP_ROOT/opencode-ready-settle.go"
+  marker="$TMP_ROOT/opencode-ready-settle.marker"
+  stop="$TMP_ROOT/opencode-ready-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+while [ ! -e "${FM_GO_FILE:?}" ]; do sleep 0.01; done
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_READY_MARKER:?}"
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_GO_FILE="$go" FM_READY_MARKER="$marker" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=200 node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let armSpawns = 0;
+const prompts = [];
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  return originalSpawn(...args);
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async (request) => { prompts.push(request.body.parts[0].text); } } };
+await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const statusPromise = globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+for (let i = 0; i < 2000 && armSpawns < 1; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (armSpawns < 1) throw new Error("arm child never spawned");
+// The readiness timer is armed in the same macrotask as the spawn. From a
+// check-phase callback, release the child, spin until its readiness line is
+// provably written (the marker file follows it), then spin past the
+// deadline. The next loop iteration runs its timers phase before its poll
+// phase, so the deadline always fires while readiness output is queued.
+await new Promise((resolve) => setImmediate(() => {
+  writeFileSync(process.env.FM_GO_FILE, "go\n");
+  const markerDeadline = Date.now() + 5000;
+  while (!existsSync(process.env.FM_READY_MARKER)) {
+    if (Date.now() >= markerDeadline) {
+      throw new Error(`fixture timed out waiting for readiness marker: ${process.env.FM_READY_MARKER}`);
+    }
+  }
+  const settle = Date.now() + 350;
+  while (Date.now() < settle) { /* spin */ }
+  resolve();
+}));
+const status = await statusPromise;
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+if (status !== "armed") throw new Error(`queued readiness was discarded at the deadline: ${status}`);
+if (prompts.length !== 0) throw new Error(`readiness deadline surfaced a spurious failure: ${prompts.join(" | ")}`);
+await new Promise((resolve) => setTimeout(resolve, 80));
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must honor readiness output queued when the deadline fires${out:+: $out}"
+  [ -z "$out" ] || fail "OpenCode readiness-settle test printed output: $out"
+  pass "OpenCode readiness queued at the deadline reports armed"
+}
+
+# Deterministic regression for the retirement deadline race, mirroring the Pi
+# case: a successor that exits while the loop is stalled across the retire
+# deadline must be reported retired so restoration continues, instead of the
+# false unretired verdict that tears down continuity.
+test_opencode_retired_successor_close_at_deadline_keeps_continuity() {
+  local plugin repo home log retire_ready recovery_ready term_seen retire_release exit_marker stdio_release stdio_exit stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-retire-settle-root"
+  home="$TMP_ROOT/opencode-retire-settle-home"
+  log="$TMP_ROOT/opencode-retire-settle.log"
+  retire_ready="$TMP_ROOT/opencode-retire-settle.ready"
+  recovery_ready="$TMP_ROOT/opencode-retire-settle.recovery-ready"
+  term_seen="$TMP_ROOT/opencode-retire-settle.term-seen"
+  retire_release="$TMP_ROOT/opencode-retire-settle.retire-release"
+  exit_marker="$TMP_ROOT/opencode-retire-settle.exit-marker"
+  stdio_release="$TMP_ROOT/opencode-retire-settle.stdio-release"
+  stdio_exit="$TMP_ROOT/opencode-retire-settle.stdio-exit"
+  stop="$TMP_ROOT/opencode-retire-settle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: original wake\n'
+  exit 0
+fi
+if [ "$count" -eq 2 ]; then
+  on_term() {
+    printf 'seen\n' > "${FM_TERM_SEEN_FILE:?}"
+    while [ ! -e "${FM_RETIRE_RELEASE_FILE:?}" ]; do sleep 0.02; done
+    (
+      while [ ! -e "${FM_STDIO_RELEASE_FILE:?}" ]; do sleep 0.02; done
+      printf 'gone\n' > "${FM_STDIO_EXIT_FILE:?}"
+    ) &
+    printf 'gone\n' > "${FM_EXIT_MARKER_FILE:?}"
+    exit 0
+  }
+  trap on_term TERM
+  printf 'ready\n' > "${FM_RETIRE_READY_FILE:?}"
+  while :; do sleep 0.02; done
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_RECOVERY_READY_FILE:?}"
+trap 'exit 0' TERM INT
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RETIRE_READY_FILE="$retire_ready" FM_RECOVERY_READY_FILE="$recovery_ready" FM_TERM_SEEN_FILE="$term_seen" FM_RETIRE_RELEASE_FILE="$retire_release" FM_EXIT_MARKER_FILE="$exit_marker" FM_STDIO_RELEASE_FILE="$stdio_release" FM_STDIO_EXIT_FILE="$stdio_exit" FM_STOP_FILE="$stop" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=200 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
+
+let armSpawns = 0;
+let successorSpawns = 0;
+let retireStalled = false;
+const prompts = [];
+// Barriers that establish the test setup, so runner scheduling never decides
+// it: the arm child has provably reached the marked point before the plugin
+// gets to arm any deadline against it. The event-loop stalls below still
+// decide the retirement verdict.
+const awaitFixture = (path, what) => {
+  const deadline = Date.now() + 5000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`fixture timed out ${what}: ${path}`);
+  }
+};
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  const successor = Boolean(args[2]?.env?.FM_WATCH_PREDECESSOR_ARM_PID);
+  if (args[2]?.env && "FM_WATCH_PREDECESSOR_ARM_PID" in args[2].env) armSpawns += 1;
+  const child = originalSpawn(...args);
+  if (successor) {
+    successorSpawns += 1;
+    if (successorSpawns === 1) {
+      // SIGTERM must not arrive before the retiring successor installs its handler.
+      awaitFixture(process.env.FM_RETIRE_READY_FILE, "installing retirement handler");
+    } else {
+      // The readiness deadline is armed once this spawn returns, so the recovery
+      // arm's readiness line must already be written. Otherwise a starved runner
+      // that cannot start bash within the readiness deadline spends an extra
+      // retry here and the retirement verdict under test is no longer what the
+      // arm-launch count measures.
+      awaitFixture(process.env.FM_RECOVERY_READY_FILE, "producing recovery readiness");
+    }
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal, ...killArgs) => {
+      const delivered = originalKill(signal, ...killArgs);
+      if (signal === "SIGTERM" && !retireStalled) {
+        retireStalled = true;
+        // The retire timer is armed synchronously after this kill call
+        // returns. From the check phase, release the held successor and spin
+        // past the retire deadline while its inherited stdio remains open.
+        // After the first settle arms the grace timer, release that pipe and
+        // spin past grace so the queued close races its deadline too.
+        setImmediate(() => {
+          writeFileSync(process.env.FM_RETIRE_RELEASE_FILE, "release\n");
+          const exitDeadline = Date.now() + 5000;
+          while (!existsSync(process.env.FM_EXIT_MARKER_FILE)) {
+            if (Date.now() >= exitDeadline) {
+              throw new Error(`fixture timed out waiting for exit marker: ${process.env.FM_EXIT_MARKER_FILE}`);
+            }
+          }
+          const settle = Date.now() + 350;
+          while (Date.now() < settle) { /* spin */ }
+          setImmediate(() => setImmediate(() => {
+            writeFileSync(process.env.FM_STDIO_RELEASE_FILE, "release\n");
+            const stdioDeadline = Date.now() + 5000;
+            while (!existsSync(process.env.FM_STDIO_EXIT_FILE)) {
+              if (Date.now() >= stdioDeadline) {
+                throw new Error(`fixture timed out waiting for stdio-exit marker: ${process.env.FM_STDIO_EXIT_FILE}`);
+              }
+            }
+            const graceSettle = Date.now() + 350;
+            while (Date.now() < graceSettle) { /* spin */ }
+          }));
+        });
+      }
+      return delivered;
+    };
+  }
+  return child;
+};
+syncBuiltinESMExports();
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async (request) => { prompts.push(request.body.parts[0].text); } } };
+const hooks = await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let i = 0; i < 2000 && prompts.length < 1; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+try {
+  if (prompts.length < 1) throw new Error("restored wake was not delivered");
+  if (!existsSync(process.env.FM_TERM_SEEN_FILE)) throw new Error("successor was never asked to retire");
+  if (!prompts[0].includes("original wake")) throw new Error(`missing original wake: ${prompts.join(" | ")}`);
+  // Match the failure by what it means, not by one release's phrasing: any
+  // wording of a lost-continuity verdict must fail this regression.
+  if (prompts[0].includes("could not restore watcher continuity")) throw new Error(`retired successor lost continuity: ${prompts[0]}`);
+  if (armSpawns !== 3) throw new Error(`restoration did not continue after retirement: ${armSpawns} arm launches`);
+} finally {
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must honor a successor that exited by the retire deadline${out:+: $out}"
+  [ -z "$out" ] || fail "OpenCode retire-settle test printed output: $out"
+  pass "OpenCode retirement honors a queued close at the deadline and keeps continuity"
 }
 
 test_opencode_empty_close_retries_instead_of_disappearing() {
@@ -2638,6 +3056,7 @@ test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
+test_pi_retired_successor_close_at_deadline_keeps_continuity
 test_pi_late_unretired_close_resumes_supervision
 test_pi_empty_close_retries_instead_of_disappearing
 test_pi_established_empty_close_honors_retry_limit
@@ -2656,6 +3075,8 @@ test_opencode_pre_ready_actionable_close_preserves_its_successor
 test_opencode_hung_successor_falls_back_to_typed_wake
 test_opencode_unretired_successor_falls_back_without_retry
 test_opencode_late_unretired_close_resumes_supervision
+test_opencode_queued_readiness_at_deadline_reports_armed
+test_opencode_retired_successor_close_at_deadline_keeps_continuity
 test_opencode_empty_close_retries_instead_of_disappearing
 test_opencode_established_empty_close_honors_retry_limit
 test_opencode_actionable_close_rechecks_session_lock
