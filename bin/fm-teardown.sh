@@ -1045,7 +1045,7 @@ branch_reap_pr_proof() {  # <branch-head>
       return 1
       ;;
   esac
-  TASK_BRANCH_REAP_PROOF=recorded-pr
+  TASK_BRANCH_REAP_PROOF='recorded-pr'
   TASK_BRANCH_REAP_PR_REF=$remote_ref
   return 0
 }

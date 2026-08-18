@@ -198,7 +198,7 @@ test_no_profile_keeps_claude_profile_defaults() {
 
 test_non_cursor_launch_clears_inherited_cursor_markers() {
   local rec id out status launch
-  id=profile-claude-cursor-markers-z1b
+  id='profile-claude-cursor-markers-z1b'
   rec=$(make_spawn_case profile-claude-cursor-markers claude "$id")
   read_case_record "$rec"
 
@@ -632,7 +632,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
 
 test_cursor_threads_model_workspace_and_omits_effort_axis() {
   local rec id out status launch
-  id=profile-cursor-z6c
+  id='profile-cursor-z6c'
   rec=$(make_spawn_case profile-cursor cursor "$id")
   read_case_record "$rec"
 
@@ -666,7 +666,7 @@ test_cursor_threads_model_workspace_and_omits_effort_axis() {
 
 test_cursor_refuses_model_absent_from_live_catalog() {
   local rec id out status
-  id=profile-cursor-unsupported-z6d
+  id='profile-cursor-unsupported-z6d'
   rec=$(make_spawn_case profile-cursor-unsupported cursor "$id")
   read_case_record "$rec"
 
@@ -684,7 +684,7 @@ test_cursor_refuses_model_absent_from_live_catalog() {
 
 test_cursor_failed_catalog_probe_does_not_block_spawn() {
   local rec id out status launch
-  id=profile-cursor-catalog-unreachable-z6e
+  id='profile-cursor-catalog-unreachable-z6e'
   rec=$(make_spawn_case profile-cursor-catalog-unreachable cursor "$id")
   read_case_record "$rec"
 

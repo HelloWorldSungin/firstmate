@@ -995,3 +995,31 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
+
+## Antigravity CLI (agy) control mechanics
+
+Measured 2026-08-18 on agy 1.1.14, in a throwaway tmux pane on a temporary worktree whose exact path was seeded through `fm_agy_trust_add` and removed afterward through `fm_agy_trust_remove`.
+agy is a crew-only, Herdr-only spawn adapter, but its interrupt and exit mechanics are properties of the CLI rather than of a session provider, so a plain pane is the correct place to read them.
+This record exists because `bin/fm-control-lib.sh` refuses any lifecycle verb on a harness with no rows, which is what an agy task got before these values were measured.
+
+| Fact | Measured value |
+|---|---|
+| Workspace trust | `--dangerously-skip-permissions` does NOT cover it: an unseeded launch renders `Do you trust the contents of this project?` with `> Yes, I trust this folder`. A seeded exact path launches straight into the session. |
+| Mid-turn footer | `esc to cancel` (the idle footer reads `? for shortcuts`). |
+| Interrupt | A SINGLE Escape. The turn closes with `⎿  Interrupted · What should Antigravity CLI do instead?`. |
+| Interrupt clear key | None. After the interrupt the composer is a bare `>` with no restored prompt text, so nothing has to be cleared before the next send. |
+| Interrupt acknowledgement source | None. The `Interrupted` line is rendered text, not a durable typed close, and agy's busy state comes from Herdr's native agent-state only. |
+| Exit command | `/exit` (`/exit  Exit the CLI` in the slash-command popup). One Enter selects it and the process exits. |
+
+The exact commands that produced the values above:
+
+```sh
+tmux -L agyverify new-session -d -s v -x 200 -y 50 -c "$WT" \
+  "agy --dangerously-skip-permissions --effort high --prompt-interactive '<long prompt>'"
+tmux -L agyverify send-keys -t v:0.0 Escape
+tmux -L agyverify capture-pane -p -t v:0.0
+tmux -L agyverify send-keys -t v:0.0 '/exit' Enter
+```
+
+The portable regression that pins the resulting rows is `test_agy_has_verified_control_rows` in `tests/fm-control.test.sh`.
+The end-to-end agy lane on its real backend stays in the Herdr-gated `tests/fm-agy-smoke.test.sh`.

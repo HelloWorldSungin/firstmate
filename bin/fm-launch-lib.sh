@@ -211,11 +211,10 @@ fm_launch_raw_restricted_harness() {  # <raw-command> -> agy|unresolved|<empty>
 # require execve-level interception (LD_PRELOAD/seccomp) that is platform-specific
 # and disproportionate.
 fm_launch_write_raw_guard() {  # <dir>
-  local dir=$1 name
+  local dir=$1
   [ -n "$dir" ] || return 1
   mkdir -p "$dir" || return 1
-  for name in agy; do
-    cat > "$dir/$name" <<'SHIM'
+  cat > "$dir/agy" <<'SHIM'
 #!/usr/bin/env bash
 # firstmate raw-launch guard shim (bin/fm-launch-lib.sh fm_launch_write_raw_guard).
 # Reached only when a raw launch command resolved the crew-only agy binary
@@ -228,8 +227,7 @@ esac
 printf 'firstmate: refusing to run "%s" from a raw launch command - %s is a crew-only, herdr-only adapter that must be launched via `--harness %s` so firstmate can seed its workspace trust and supervise it (harness-adapters skill). Aborting.\n' "$prog" "$canon" "$canon" >&2
 exit 127
 SHIM
-    chmod +x "$dir/$name" || return 1
-  done
+  chmod +x "$dir/agy" || return 1
 }
 
 # fm_launch_template: print the verified launch command for <harness> (<kind>

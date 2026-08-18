@@ -384,6 +384,35 @@ test_harness_kind_capability() {
   pass "fm-control-lib: adapter capability is per task kind, not per adapter alone"
 }
 
+# agy is the fork-local crew-only, herdr-only adapter, so it never reaches the
+# tmux-endpoint cases above; its end-to-end control path is covered by the
+# herdr-gated smoke. What must hold here is that it has rows at all: before they
+# existed, every lifecycle verb on an agy task refused as unverified. The values
+# were measured on agy 1.1.14 (docs/verification/runtime-backends.md).
+test_agy_has_verified_control_rows() {
+  fm_control_harness_supported agy \
+    || fail "agy must have verified control mechanics, or every lifecycle verb on an agy task refuses"
+  [ "$(fm_control_harness_family agy-1.1.14)" = agy ] \
+    || fail "a recorded agy harness value must resolve to the agy adapter"
+  [ "$(fm_control_interrupt_key agy)" = Escape ] \
+    || fail "agy cancels its turn on Escape"
+  [ "$(fm_control_interrupt_repeat agy)" = 1 ] \
+    || fail "a single Escape is enough for agy"
+  [ -z "$(fm_control_interrupt_clear_key agy)" ] \
+    || fail "agy does not repollute its composer, so it must declare no clear key"
+  fm_control_interrupt_clear_key agy \
+    || fail "agy must still be a known adapter to the clear-key table, not an error"
+  [ "$(fm_control_interrupt_ack_source agy)" = none ] \
+    || fail "agy exposes no durable typed close, so it must claim no acknowledgement source"
+  [ "$(fm_control_exit_command agy)" = '/exit' ] \
+    || fail "agy exits on /exit"
+  fm_control_harness_supports_kind agy ship \
+    || fail "agy should be able to run a ship task"
+  fm_control_harness_supports_kind agy secondmate \
+    && fail "agy is crew-only and must not claim a secondmate"
+  pass "fm-control-lib: agy carries verified control rows and stays crew-only"
+}
+
 test_orca_refuses_an_escape_harness_interrupt() {
   local dir out rc
   dir=$(new_case orca-escape)
@@ -879,6 +908,7 @@ test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
 test_harness_kind_capability
 test_orca_refuses_an_escape_harness_interrupt
+test_agy_has_verified_control_rows
 test_unverified_state_backends_refuse_stop_verbs
 test_state_verified_backends_are_exactly_tmux_and_herdr
 test_window_label_is_refused_with_the_exact_id
