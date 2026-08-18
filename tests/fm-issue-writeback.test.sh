@@ -53,8 +53,9 @@
 #       reconciles against a real issue listing rather than a
 #       pull-request-inflated count, walks every page, reports a missing option
 #       instead of creating one, bounds and announces its own truncation at the
-#       same point a dry run rehearses - including a budget spent while READING,
-#       which is announced as truncation and never as one more broken board -
+#       same point a dry run rehearses - including a budget spent while reading
+#       or writing, announced as truncation and never as one more broken board,
+#       down to the last row of a plan, with no failure inside the loop silent -
 #       never mistakes a listing that could not say where it stopped for one
 #       that ended, is not disabled by a malformed home fallback it never reads,
 #       resolves a project's declared board however the registry spells the
@@ -279,6 +280,11 @@ emit_page() {  # <nodes-json> <wrapper-jq>
 
 if [ "$GRAPHQL" = 1 ]; then
   printf '%s\n' "$QUERY" >> "$STORE/graphql.log"
+  # A host that answers a MUTATION slowly, so a budget can be observed running
+  # out on the write path with the reads left fast enough to complete.
+  case "$QUERY" in
+    mutation*) [ -z "${FM_FAKE_GH_WRITE_DELAY:-}" ] || sleep "$FM_FAKE_GH_WRITE_DELAY" ;;
+  esac
   case "$QUERY" in
     *updateProjectV2ItemFieldValue*)
       fail_with graphql-status "board status update refused"
@@ -2010,6 +2016,49 @@ test_a_budget_spent_while_reading_truncates_the_sweep_out_loud() {
 # if it stops the sweep anyway: bin/fm-bootstrap.sh drops the warning and has
 # already stamped the interval, so the whole fleet goes unreconciled for a full
 # interval over a file the sweep does not use.
+# The same rule on the WRITE path, and the position that has no second chance to
+# state it: the plan's LAST row. A call refused mid-row leaves the plan loop
+# through its own tail rather than through the top-of-iteration guard, so unless
+# the failure itself is classified the sweep ends with the budget flag unset, the
+# registry loop never breaks, and the run reports only what it managed - complete
+# coverage, over a correction that was silently dropped. With four declared boards
+# the last row of the last board is an ordinary position, not an exotic one.
+test_a_budget_spent_while_writing_truncates_the_sweep_out_loud() {
+  local dir out
+  dir=$(sweep_case sweepbudgetwrite)
+  seed_tracker "$dir" '1 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  # The reads are instant and the one planned write is not, so the budget is
+  # still unspent when the row starts and gone by the time its call returns.
+  out=$(FM_WRITE_BACK_BUDGET=2 FM_FAKE_GH_WRITE_DELAY=4 run_board "$dir" reconcile --quiet) \
+    || fail "a spent budget must not fail the sweep: $out"
+  assert_contains "$out" 'BOARD_SWEEP:' \
+    "a sweep truncated by its budget on the last row of its plan announced nothing the session start would relay"
+  assert_contains "$out" 'whole-operation budget' \
+    "the truncation was not named as the budget running out"
+  assert_not_contains "$out" 'warning:' \
+    "a spent budget was reported as an ordinary board failure, which the relay drops as transient"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] \
+    || fail "a status was written by a call the budget refused, got '$(item_status "$dir" acme widget 1)'"
+  pass "a budget spent while writing truncates the sweep out loud, even on the last row of its plan"
+}
+
+# No failure inside the plan loop may be silent: a planned membership add that
+# resolves to no issue, and an add GitHub answers without an item id, each drop a
+# change the sweep had decided to make, and a dropped change that says nothing
+# reads afterwards as a board that had no drift.
+test_no_failure_inside_the_sweep_goes_unreported() {
+  local dir out
+  dir=$(sweep_case sweepsilentskip)
+  seed_tracker "$dir" '1 OPEN'
+  out=$(FM_FAKE_GH_MISSING_ISSUE=1 run_board "$dir" reconcile) \
+    || fail "an unresolvable issue must not fail the sweep: $out"
+  assert_contains "$out" 'could not add acme/widget#1' \
+    "a planned membership add was dropped without a word about why"
+  [ "$(log_count "$dir" add)" = 0 ] || fail "an issue that does not resolve was added anyway"
+  pass "a planned change dropped inside the sweep says why, rather than reading as no drift"
+}
+
 test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep() {
   local dir out
   dir=$(sweep_case sweepbadfallback)
@@ -2204,6 +2253,8 @@ test_the_sweep_walks_every_page_of_a_board_and_a_tracker
 test_an_unfinishable_item_listing_is_not_read_as_an_empty_board
 test_a_registry_typed_in_another_case_still_matches_and_converges
 test_a_budget_spent_while_reading_truncates_the_sweep_out_loud
+test_a_budget_spent_while_writing_truncates_the_sweep_out_loud
+test_no_failure_inside_the_sweep_goes_unreported
 test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep
 test_sync_resolves_a_declared_board_however_the_registry_is_cased
 test_a_board_with_no_done_option_is_reported_never_given_one

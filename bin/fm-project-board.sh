@@ -72,9 +72,12 @@
 # contains it. Every bound that actually truncates something says so on a
 # BOARD_SWEEP: line, because a silent cap reads as "everything was covered", and
 # the whole-operation budget says so wherever it truncates - on a read as much as
-# on a write, since the reads are where nearly all of a bounded sweep's time
-# goes. A budget that ran out is announced as the truncation it is, never relayed
-# as one more board this run could not reach.
+# on a write, down to a call refused on the last row of the last project. Every
+# call `reconcile` makes reports its failure through one function, which is the
+# only thing that decides whether a failure was that board's problem or the
+# budget's: a budget that ran out is announced as the truncation it is, never
+# relayed as one more board this run could not reach, and no failure inside the
+# sweep goes unreported.
 #
 # THE WRITE PATH FAILS CLOSED ON A PARTIAL VIEW, and this is the property that
 # matters most in this script. Every write `reconcile` plans is an inference from
@@ -485,23 +488,30 @@ SWEEP_BUDGET_SPENT=0
 # complete coverage, which is the one thing this script's own header and
 # docs/configuration.md both promise it never does.
 #
-# This is the single owner of "is the budget gone", and every place a spent
-# budget can cut the sweep short consults it: the per-row write loop below, and
-# every READ that can be refused for it - the board read and both listing walks.
-# The reads matter more, not less: they are where nearly all of a bounded sweep's
-# time goes, and the budget is derived from the session-start network stage, so
-# it is typically a few seconds rather than the flat default.
+# This is the single owner of "is the budget gone". Nothing else asks the
+# question, because the same fix arriving in three instalments - the write loop's
+# own guard, then the reads, then the writes' failure branches - is what a rule
+# every call site has to remember always ends up costing.
 sweep_budget_spent() {
   [ "$(fm_call_bound 1)" -le 0 ]
 }
 
-# A read that failed means one of two different things, and reporting them as one
-# would hide the truncation inside a noise line the relay drops. A board this run
-# could not reach is that board's problem and the sweep moves on; the budget
-# running out mid-read is the SWEEP's problem, so it stops the sweep and is
-# announced on the sweep's own BOARD_SWEEP line instead of being relayed as one
-# more broken board.
-sweep_read_failed() {  # <warning-text>
+# EVERY CALL THE SWEEP MAKES REPORTS ITS FAILURE HERE, READ OR WRITE, AND THIS IS
+# THE ONLY PLACE THAT CLASSIFIES ONE. A failed call means one of two different
+# things, and reporting them as one would hide a truncation inside a noise line
+# the session-start relay drops on purpose: a board this run could not reach is
+# that board's problem and the sweep carries on to the next one, while the budget
+# running out is the SWEEP's problem, so it stops the sweep and is announced on
+# the sweep's own BOARD_SWEEP line rather than relayed as one more broken board.
+#
+# Setting SWEEP_BUDGET_SPENT here is what makes that announcement fire from
+# ANYWHERE: the plan loop's own guard catches it before the next row, and the
+# registry loop reads the same flag, so a call refused on the very last row of
+# the very last project still stops the sweep out loud. Callers therefore need no
+# conditional of their own - they warn through this and carry on as they would
+# for any other failure - which is what lets a call site added later inherit the
+# rule instead of having to remember it.
+sweep_call_failed() {  # <warning-text>
   if sweep_budget_spent; then
     SWEEP_BUDGET_SPENT=1
     return 0
@@ -568,7 +578,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     return 0
   }
   if ! fm_board_read "$WORKDIR/board" "$FM_BOARD_OWNER_TYPE" "$FM_BOARD_OWNER" "$FM_BOARD_NUMBER"; then
-    sweep_read_failed "could not read $board_url for $project: $FM_BOARD_GQL_REASON"
+    sweep_call_failed "could not read $board_url for $project: $FM_BOARD_GQL_REASON"
     return 0
   fi
   project_id=$(awk '$1 == "project" { print $2; exit }' "$WORKDIR/board")
@@ -579,7 +589,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   fi
 
   if ! read_all_pages "$WORKDIR/items" fm_board_items_page "$project_id"; then
-    sweep_read_failed "could not list the items on $board_url: $FM_BOARD_GQL_REASON"
+    sweep_call_failed "could not list the items on $board_url: $FM_BOARD_GQL_REASON"
     return 0
   fi
   items_state=$LISTING_STATE
@@ -588,7 +598,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     unfinishable) echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds" ;;
   esac
   if ! read_all_pages "$WORKDIR/issues" fm_board_tracker_issues_page "$owner" "$repo"; then
-    sweep_read_failed "could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON"
+    sweep_call_failed "could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON"
     return 0
   fi
   issues_state=$LISTING_STATE
@@ -674,20 +684,26 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
         status=-
       else
         if ! fm_board_issue_id "$WORKDIR/issue" "$owner" "$repo" "$number"; then
-          echo "warning: could not read $owner/$repo#$number: $FM_BOARD_GQL_REASON" >&2
+          sweep_call_failed "could not read $owner/$repo#$number: $FM_BOARD_GQL_REASON"
           continue
         fi
         content_id=$(head -n 1 "$WORKDIR/issue")
-        [ -n "$content_id" ] || continue
+        if [ -z "$content_id" ]; then
+          sweep_call_failed "could not add $owner/$repo#$number to $board_url: the issue does not exist or is not readable"
+          continue
+        fi
         if ! fm_board_item_add "$WORKDIR/item" "$project_id" "$content_id"; then
-          echo "warning: could not add $owner/$repo#$number to $board_url: $FM_BOARD_GQL_REASON" >&2
+          sweep_call_failed "could not add $owner/$repo#$number to $board_url: $FM_BOARD_GQL_REASON"
           continue
         fi
         item_id=$(head -n 1 "$WORKDIR/item")
         status=-
         added=$((added + 1))
         SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
-        [ -n "$item_id" ] || continue
+        if [ -z "$item_id" ]; then
+          sweep_call_failed "could not drive the status of $owner/$repo#$number on $board_url: GitHub returned no board item"
+          continue
+        fi
       fi
     fi
 
@@ -709,7 +725,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
       elif fm_board_item_status_set "$WORKDIR/status" "$project_id" "$item_id" "$status_field" "$done_option"; then
         :
       else
-        echo "warning: could not set $owner/$repo#$number to Done on $board_url: $FM_BOARD_GQL_REASON" >&2
+        sweep_call_failed "could not set $owner/$repo#$number to Done on $board_url: $FM_BOARD_GQL_REASON"
         continue
       fi
       corrected=$((corrected + 1))
@@ -727,7 +743,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     elif fm_board_item_status_set "$WORKDIR/status" "$project_id" "$item_id" "$status_field" "$open_option"; then
       :
     else
-      echo "warning: could not move $owner/$repo#$number out of Done on $board_url: $FM_BOARD_GQL_REASON" >&2
+      sweep_call_failed "could not move $owner/$repo#$number out of Done on $board_url: $FM_BOARD_GQL_REASON"
       continue
     fi
     corrected=$((corrected + 1))
