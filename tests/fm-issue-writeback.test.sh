@@ -280,8 +280,11 @@ emit_page() {  # <nodes-json> <wrapper-jq>
 
 if [ "$GRAPHQL" = 1 ]; then
   printf '%s\n' "$QUERY" >> "$STORE/graphql.log"
-  # A host that answers a MUTATION slowly, so a budget can be observed running
-  # out on the write path with the reads left fast enough to complete.
+  # A host that never answers a MUTATION, so a caller's whole-operation budget is
+  # spent by that one call rather than by a race with everything before it: set
+  # this longer than the budget and the call is always cut off by the caller's
+  # own remaining share, whatever the reads took. The query is recorded above
+  # BEFORE the wait, so a case can prove the mutation was attempted at all.
   case "$QUERY" in
     mutation*) [ -z "${FM_FAKE_GH_WRITE_DELAY:-}" ] || sleep "$FM_FAKE_GH_WRITE_DELAY" ;;
   esac
@@ -2028,10 +2031,19 @@ test_a_budget_spent_while_writing_truncates_the_sweep_out_loud() {
   dir=$(sweep_case sweepbudgetwrite)
   seed_tracker "$dir" '1 CLOSED'
   seed_item "$dir" acme widget 1 'Todo'
-  # The reads are instant and the one planned write is not, so the budget is
-  # still unspent when the row starts and gone by the time its call returns.
-  out=$(FM_WRITE_BACK_BUDGET=2 FM_FAKE_GH_WRITE_DELAY=4 run_board "$dir" reconcile --quiet) \
+  # WHICH PATH THIS TEST TAKES IS NOT DECIDED BY A RACE. The fake never answers
+  # the one planned mutation, so that call is always cut off by whatever share of
+  # the budget is left when it starts, and the budget is therefore spent when it
+  # returns however long the reads took - the mutation alone consumes the
+  # remainder by construction rather than by being slower than something else.
+  # The reads must not spend it FIRST, though: that takes the read path and turns
+  # this into a second copy of the test above, which would report the write path
+  # as covered while never entering it. So the mutation being attempted at all is
+  # ASSERTED below rather than assumed, and this goes red if it stops happening.
+  out=$(FM_WRITE_BACK_BUDGET=4 FM_FAKE_GH_WRITE_DELAY=9 run_board "$dir" reconcile --quiet) \
     || fail "a spent budget must not fail the sweep: $out"
+  assert_grep 'updateProjectV2ItemFieldValue' "$dir/store/graphql.log" \
+    "the sweep never attempted the write this test exists to cover: the reads spent the budget first, so this proved nothing about the write path"
   assert_contains "$out" 'BOARD_SWEEP:' \
     "a sweep truncated by its budget on the last row of its plan announced nothing the session start would relay"
   assert_contains "$out" 'whole-operation budget' \
@@ -2040,6 +2052,8 @@ test_a_budget_spent_while_writing_truncates_the_sweep_out_loud() {
     "a spent budget was reported as an ordinary board failure, which the relay drops as transient"
   [ "$(item_status "$dir" acme widget 1)" = Todo ] \
     || fail "a status was written by a call the budget refused, got '$(item_status "$dir" acme widget 1)'"
+  [ "$(log_count "$dir" status)" = 0 ] \
+    || fail "a status write the budget cut off still landed, got $(log_count "$dir" status)"
   pass "a budget spent while writing truncates the sweep out loud, even on the last row of its plan"
 }
 
