@@ -60,6 +60,10 @@
 #       that ended, is not disabled by a malformed home fallback it never reads,
 #       resolves a project's declared board however the registry spells the
 #       repository, and fails open on every board failure mode
+#   (o) the sweep walks a FLEET rather than one project: one broken board never
+#       stops it reaching the next, one change limit is shared across all of
+#       them, and a truncated run names the entries it did not reach and resumes
+#       there next time instead of starving the registry's tail
 #   (m) no lookup that could not PROVE there is no status comment ever resolves
 #       itself by creating one: discovery walks past a host that clamps its page
 #       size below the limit asked for, and both a list longer than the walk and
@@ -243,8 +247,13 @@ items_json() {
   done | jq -s '.'
 }
 
+# A fleet has several trackers, so a case can seed one listing per repository and
+# fall back to the single shared one when it only ever names a single project.
 tracker_json() {
-  if [ -f "$STORE/tracker" ]; then
+  if [ -f "$STORE/tracker-${V_owner}-${V_name}" ]; then
+    jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {number:(.[0]|tonumber), state:.[1]})' \
+      < "$STORE/tracker-${V_owner}-${V_name}"
+  elif [ -f "$STORE/tracker" ]; then
     jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {number:(.[0]|tonumber), state:.[1]})' < "$STORE/tracker"
   else
     printf '[]'
@@ -350,7 +359,15 @@ if [ "$GRAPHQL" = 1 ]; then
       ;;
     *projectV2\(*)
       fail_with graphql-board "board lookup refused"
-      printf 'board\n' >> "$LOG"
+      # One board of several refusing, so a fleet case can prove that one
+      # project's broken board never stops the sweep reaching the next. The
+      # board's number is logged because the ORDER boards are contacted in is
+      # the only observable that says where a walk started.
+      printf 'board %s\n' "$V_number" >> "$LOG"
+      if [ -n "${FM_FAKE_GH_FAIL_BOARD_NUMBER:-}" ] && [ "$V_number" = "${FM_FAKE_GH_FAIL_BOARD_NUMBER}" ]; then
+        echo "gh: that board is unreachable" >&2
+        exit 1
+      fi
       root=user
       case "$QUERY" in *organization\(*) root=organization ;; esac
       emit "{\"data\":{\"$root\":{\"projectV2\":{\"id\":\"PVT_1\",\"title\":\"Fleet\",\"field\":$(status_field_json)}}}}"
@@ -1663,6 +1680,38 @@ sweep_case() {  # <name> [board-token] [tracker-token]
   printf '%s\n' "$dir"
 }
 
+# A registry declaring SEVERAL projects, which is the shape the fleet sweep
+# exists for and the one sweep_case cannot build: every behaviour that spans
+# projects - a broken board not stopping the walk, one change limit shared
+# across all of them, a truncation stopping the whole sweep, and where the next
+# sweep resumes - is invisible to a fixture with a single entry.
+#
+# Each project tracks acme/<name> and declares board <n>, so the boards are
+# distinguishable in the fake's call log and one of them can refuse on its own.
+sweep_multi_case() {  # <name> <project>:<board-number>...
+  local name=$1 dir entry project number
+  shift
+  dir=$(case_dir "$name")
+  mkdir -p "$dir/data"
+  {
+    printf '# Projects\n\n'
+    for entry in "$@"; do
+      project=${entry%%:*}
+      number=${entry##*:}
+      printf -- '- %s [no-mistakes +yolo tracker=github:github.com/acme/%s board=https://github.com/users/captain/projects/%s] - fixture (added 2026-08-18)\n' \
+        "$project" "$project" "$number"
+    done
+  } > "$dir/data/projects.md"
+  printf '%s\n' "$dir"
+}
+
+seed_repo_tracker() {  # <case-dir> <owner> <repo> <"<number> <OPEN|CLOSED>">...
+  local dir=$1 owner=$2 repo=$3 line
+  shift 3
+  : > "$dir/store/tracker-$owner-$repo"
+  for line in "$@"; do printf '%s\n' "$line" >> "$dir/store/tracker-$owner-$repo"; done
+}
+
 # seed_item <case-dir> <owner> <repo> <number> <status> [<field>=<value>...]
 # An empty <status> seeds an item the captain has left with no status set.
 seed_item() {
@@ -2124,6 +2173,100 @@ test_sync_resolves_a_declared_board_however_the_registry_is_cased() {
   pass "lifecycle sync resolves a project's declared board however the registry spells the repository"
 }
 
+# --- the fleet, which is more than one project -------------------------------
+#
+# Every case above declares a single board, so the loop that makes this a FLEET
+# sweep has never been walked more than once. What follows covers the behaviours
+# that only exist between projects.
+
+# Fail open is a per-project property, not a per-run one: a board this run cannot
+# read costs that project its reconciliation and costs the fleet nothing.
+test_one_projects_broken_board_never_stops_the_sweep_reaching_the_next() {
+  local dir out
+  dir=$(sweep_multi_case sweepmultibroken alpha:7 beta:8)
+  seed_repo_tracker "$dir" acme alpha '1 CLOSED'
+  seed_repo_tracker "$dir" acme beta '1 CLOSED'
+  seed_item "$dir" acme alpha 1 'Todo'
+  seed_item "$dir" acme beta 1 'Todo'
+  out=$(FM_FAKE_GH_FAIL_BOARD_NUMBER=7 run_board "$dir" reconcile) \
+    || fail "a broken board must not fail the sweep: $out"
+  assert_contains "$out" 'could not read' "the board this run could not read was not reported"
+  [ "$(item_status "$dir" acme alpha 1)" = Todo ] \
+    || fail "a project whose board could not be read was reconciled from a view the sweep never had"
+  [ "$(item_status "$dir" acme beta 1)" = Done ] \
+    || fail "one project's broken board stopped the sweep reaching the next, got '$(item_status "$dir" acme beta 1)'"
+  pass "one project's broken board never stops the sweep reaching the next"
+}
+
+# The change limit bounds the RUN, not each project in it, because a per-project
+# limit would multiply by however many boards the registry happens to declare -
+# which is the opposite of a bound.
+test_the_change_limit_is_one_budget_across_the_whole_fleet() {
+  local dir out
+  dir=$(sweep_multi_case sweepmultilimit alpha:7 beta:8)
+  seed_repo_tracker "$dir" acme alpha '1 CLOSED' '2 CLOSED'
+  seed_repo_tracker "$dir" acme beta '1 CLOSED'
+  seed_item "$dir" acme alpha 1 'Todo'
+  seed_item "$dir" acme alpha 2 'Todo'
+  seed_item "$dir" acme beta 1 'Todo'
+  out=$(run_board "$dir" reconcile --limit 2) || fail "the sweep failed: $out"
+  [ "$(log_count "$dir" status)" = 2 ] \
+    || fail "the change limit was spent per project rather than per run, got $(log_count "$dir" status) writes"
+  [ "$(item_status "$dir" acme beta 1)" = Todo ] \
+    || fail "the sweep wrote past its shared change limit once it reached the next project"
+  assert_contains "$out" 'change limit' "the sweep truncated the whole fleet without saying so"
+  pass "one change limit is shared across every project the sweep walks"
+}
+
+# THE REGISTRY'S TAIL MUST NOT STARVE. A bounded sweep that always began at the
+# first entry would reconcile the same head projects on every session start and
+# reach the tail on none of them, while printing a line promising the next sweep
+# would pick them up. Two truncated runs in a row are what makes that visible:
+# the second must take up where the first stopped, not start over.
+test_a_truncated_sweep_reaches_the_registry_tail_on_the_next_run() {
+  local dir out
+  dir=$(sweep_multi_case sweepmultiresume alpha:7 beta:8)
+  seed_repo_tracker "$dir" acme alpha '1 CLOSED' '2 CLOSED'
+  seed_repo_tracker "$dir" acme beta '1 CLOSED'
+  seed_item "$dir" acme alpha 1 'Todo'
+  seed_item "$dir" acme alpha 2 'Todo'
+  seed_item "$dir" acme beta 1 'Todo'
+  out=$(run_board "$dir" reconcile --limit 1) || fail "the first sweep failed: $out"
+  [ "$(item_status "$dir" acme alpha 1)" = Done ] || fail "the first run corrected nothing at all"
+  [ "$(item_status "$dir" acme beta 1)" = Todo ] \
+    || fail "the first run was not truncated before the tail, so the second run proves nothing"
+  out=$(run_board "$dir" reconcile --limit 1) || fail "the second sweep failed: $out"
+  [ "$(item_status "$dir" acme beta 1)" = Done ] \
+    || fail "the registry's tail is starved: a second truncated run walked from the top again instead of resuming where the first stopped"
+  pass "a truncated sweep resumes at the registry's tail rather than walking the head forever"
+}
+
+# The same resume point under the bound that cannot converge on its own: the
+# change limit costs nothing next run once its writes have landed, but reading a
+# board and its tracker costs the same every run, so a budget too small for the
+# fleet would starve the tail permanently. A budget already spent before the
+# first read makes which entry the run stops on a fixed fact rather than a race.
+test_a_budget_truncated_sweep_names_what_it_missed_and_starts_there_next_time() {
+  local dir out first
+  dir=$(sweep_multi_case sweepmultibudget alpha:7 beta:8)
+  seed_repo_tracker "$dir" acme alpha '1 CLOSED'
+  seed_repo_tracker "$dir" acme beta '1 CLOSED'
+  seed_item "$dir" acme alpha 1 'Todo'
+  seed_item "$dir" acme beta 1 'Todo'
+  out=$(FM_WRITE_BACK_BUDGET=0 run_board "$dir" reconcile --quiet) \
+    || fail "a spent budget must not fail the sweep: $out"
+  assert_contains "$out" 'did not reach beta' \
+    "the truncated run reported drift may remain without naming the entry it never looked at"
+  assert_absent "$dir/store/calls.log" "a sweep with no budget left still contacted a board"
+  out=$(run_board "$dir" reconcile --quiet) || fail "the resumed sweep failed: $out"
+  first=$(awk '$1 == "board" { print $2; exit }' "$dir/store/calls.log")
+  [ "$first" = 8 ] \
+    || fail "the resumed sweep started at the top instead of after the entry the budget stopped it on, first board read was '${first:-none}'"
+  [ "$(item_status "$dir" acme beta 1)" = Done ] || fail "the resumed sweep did not reconcile the tail it had missed"
+  [ "$(item_status "$dir" acme alpha 1)" = Done ] || fail "the resumed sweep did not wrap back to the head"
+  pass "a budget-truncated sweep names what it missed, and the next run starts there and wraps"
+}
+
 test_a_board_with_no_done_option_is_reported_never_given_one() {
   local dir out
   dir=$(sweep_case sweepnooption)
@@ -2269,6 +2412,10 @@ test_a_registry_typed_in_another_case_still_matches_and_converges
 test_a_budget_spent_while_reading_truncates_the_sweep_out_loud
 test_a_budget_spent_while_writing_truncates_the_sweep_out_loud
 test_no_failure_inside_the_sweep_goes_unreported
+test_one_projects_broken_board_never_stops_the_sweep_reaching_the_next
+test_the_change_limit_is_one_budget_across_the_whole_fleet
+: # skipped for red proof
+test_a_budget_truncated_sweep_names_what_it_missed_and_starts_there_next_time
 test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep
 test_sync_resolves_a_declared_board_however_the_registry_is_cased
 test_a_board_with_no_done_option_is_reported_never_given_one

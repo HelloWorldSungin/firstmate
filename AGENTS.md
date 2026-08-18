@@ -137,6 +137,7 @@ state/               runtime records and signals; gitignored
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  deferred network stage records owned by bin/fm-startup-network.sh
   .board-sweep       last fleet-wide project-board reconciliation sweep; its mtime is the interval, safe to delete (forces one sweep)
+  .board-sweep-cursor  the last registry entry that sweep reached; the next one starts after it, wrapping, so a truncated sweep cannot starve the registry's tail (safe to delete: the next sweep starts at the top)
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .<id>.open-decisions-cursor  per-task OPEN DECISIONS scan cursor written only by fm-classify-lib.sh; removed by teardown, safe to delete (forces one full re-fold)

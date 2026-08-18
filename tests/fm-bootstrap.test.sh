@@ -1511,6 +1511,55 @@ SH
   pass "bootstrap: a slow board is cut off by a budget derived from the stage, not by its own"
 }
 
+# THE SWEEP'S RESUME POINT IS NOT THE INTERVAL MARKER, AND BOOTSTRAP MUST NOT
+# TREAT IT AS ONE. bin/fm-bootstrap.sh truncates state/.board-sweep with `: >`
+# every time it starts a sweep, because that file's mtime is the interval. A
+# resume point kept in it - or cleared alongside it - would be erased just before
+# the walk that reads it, the registry's tail would starve again, and it would
+# look fixed. The observable that proves the two are independently owned is WHERE
+# the sweep starts: with the cursor naming the first entry, the second entry's
+# board is the one that has to be contacted first.
+test_the_board_sweep_resume_point_survives_bootstrap() {
+  local case_dir fakebin log first
+  case_dir="$TMP_ROOT/board-sweep-cursor"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- alpha [no-mistakes tracker=github:github.com/acme/alpha board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+    printf -- '- beta [no-mistakes tracker=github:github.com/acme/beta board=https://github.com/users/captain/projects/8] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  printf 'alpha\n' > "$case_dir/home/state/.board-sweep-cursor"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  log="$case_dir/board-calls.log"
+  # Every board refuses, so the only thing this case reads out of the run is the
+  # ORDER the boards were asked for, which is exactly the resume point's effect.
+  cat > "$fakebin/gh" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = status ]; then exit 0; fi
+if [ "\${1:-}" = api ]; then
+  printf '%s\n' "\$*" >> "$log"
+  echo "gh: the board is unreachable" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+
+  assert_present "$log" "the sweep never reached a board, so the resume point proved nothing"
+  first=$(grep -o 'number=[0-9][0-9]*' "$log" | head -n 1)
+  [ "$first" = 'number=8' ] \
+    || fail "the sweep walked from the top of the registry instead of after the entry its cursor names, first board read was '${first:-none}'"
+  assert_present "$case_dir/home/state/.board-sweep-cursor" \
+    "bootstrap left the sweep no resume point at all, so the next one starts over"
+  pass "bootstrap stamps its interval marker without destroying the sweep's separate resume point"
+}
+
 # A stage with almost nothing left must not start a sweep it cannot finish, and
 # must leave the interval unstamped so the next session start retries rather than
 # recording a sweep that never ran.
@@ -1720,6 +1769,7 @@ test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
 test_a_board_problem_never_becomes_a_fleet_problem
 test_the_board_sweep_is_bounded_by_the_stage_that_contains_it
+test_the_board_sweep_resume_point_survives_bootstrap
 test_a_stage_with_no_room_left_skips_the_sweep_without_stamping_it
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
