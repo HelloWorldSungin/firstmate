@@ -1484,17 +1484,28 @@ SH
   # so it cannot be what cuts the call short. That leaves the stage-derived
   # budget as the ONLY thing that can, which is what makes this test able to
   # fail: without the derivation the sweep runs to the board's own 30s.
+  #
+  # THE STAGE IS 24s SO THE MARGIN IS FIFTEEN SECONDS, NOT TWO - DO NOT NARROW
+  # IT. The derived budget is half of what is left of the stage when the sweep
+  # starts, and board_sweep refuses to start one below BOARD_SWEEP_MIN_BUDGET
+  # (5s), so a 12s stage would have required bootstrap to reach the sweep within
+  # 2 seconds of starting - reachable to miss on a loaded box, where the run then
+  # failed as a false negative rather than a real regression. At 24s the sweep
+  # still starts with up to 14 seconds of preamble behind it, and elapsed is
+  # 12 + preamble/2, so it stays under the ceiling below for every preamble that
+  # starts a sweep at all.
   started=$(date +%s)
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
-    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=12 \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=24 \
     FM_PROJECT_BOARD_TIMEOUT=90 FM_BOARD_SWEEP_TIMEOUT=240 \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   elapsed=$(( $(date +%s) - started ))
 
   assert_present "$log" "the sweep never reached the board at all, so the bound proved nothing"
-  # Derived budget is half of what remains of a 12s stage, so the sweep is cut
-  # off in single-digit seconds; unbounded it would wait out the board's 30s.
+  # The ceiling stays below the 24s stage as well as below the board's own 30s,
+  # so it is still the derivation being proved: without it the stage itself would
+  # kill the run at 24s and this would go red, which is how it was proved.
   [ "$elapsed" -lt 20 ] \
     || fail "the sweep was not bounded by its stage: it ran ${elapsed}s against a board that answers in 30s, with a 90s per-call bound that cannot have been what stopped it"
   pass "bootstrap: a slow board is cut off by a budget derived from the stage, not by its own"

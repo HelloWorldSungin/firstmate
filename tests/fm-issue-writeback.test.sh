@@ -53,9 +53,12 @@
 #       reconciles against a real issue listing rather than a
 #       pull-request-inflated count, walks every page, reports a missing option
 #       instead of creating one, bounds and announces its own truncation at the
-#       same point a dry run rehearses, never mistakes a listing that could not
-#       say where it stopped for one that ended, and fails open on every board
-#       failure mode
+#       same point a dry run rehearses - including a budget spent while READING,
+#       which is announced as truncation and never as one more broken board -
+#       never mistakes a listing that could not say where it stopped for one
+#       that ended, is not disabled by a malformed home fallback it never reads,
+#       resolves a project's declared board however the registry spells the
+#       repository, and fails open on every board failure mode
 #   (m) no lookup that could not PROVE there is no status comment ever resolves
 #       itself by creating one: discovery walks past a host that clamps its page
 #       size below the limit asked for, and both a list longer than the walk and
@@ -93,6 +96,10 @@ STORE=${FM_FAKE_GH_STORE:?fake gh needs FM_FAKE_GH_STORE}
 mkdir -p "$STORE/comments" "$STORE/items"
 LOG="$STORE/calls.log"
 FAIL=" ${FM_FAKE_GH_FAIL:-} "
+
+# A host that answers slowly, so a caller running out of its own whole-operation
+# budget mid-call is something a case can OBSERVE rather than assert about.
+[ -z "${FM_FAKE_GH_DELAY:-}" ] || sleep "$FM_FAKE_GH_DELAY"
 
 fail_with() {  # <token> <message>
   case "$FAIL" in
@@ -1969,6 +1976,91 @@ test_a_registry_typed_in_another_case_still_matches_and_converges() {
     || fail "the sweep never converges: a re-run wrote again ($(log_count "$dir" add) adds, $(log_count "$dir" status) status writes)"
   pass "a registry entry spelled in another case matches the board's canonical casing, and the sweep converges"
 }
+# A sweep that runs out of its whole-operation budget while READING stops just as
+# surely as one that runs out while writing, and the reads - the board and both
+# listings - are where nearly all of a bounded sweep's time goes. That budget is
+# derived from the session-start network stage, so it is a few seconds rather
+# than the flat default, and bin/fm-bootstrap.sh drops this script's stderr on
+# purpose: a truncation travelling only as a `warning:` line reaches the session
+# start as nothing at all, and a sweep that covered no board at all then reads
+# exactly like a sweep that found no drift.
+test_a_budget_spent_while_reading_truncates_the_sweep_out_loud() {
+  local dir out
+  dir=$(sweep_case sweepbudgetread)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  # One second of budget against a board that takes two to answer: the board read
+  # is cut off, and the budget is gone by the time it returns.
+  out=$(FM_WRITE_BACK_BUDGET=1 FM_FAKE_GH_DELAY=2 run_board "$dir" reconcile --quiet) \
+    || fail "a spent budget must not fail the sweep: $out"
+  assert_contains "$out" 'BOARD_SWEEP:' \
+    "a sweep truncated by its budget while reading announced nothing the session start would relay"
+  assert_contains "$out" 'whole-operation budget' \
+    "the truncation was not named as the budget running out"
+  assert_not_contains "$out" 'could not read' \
+    "a spent budget was reported as a board this run could not reach, which the relay drops as transient"
+  [ "$(log_count "$dir" add)" = 0 ] && [ "$(log_count "$dir" status)" = 0 ] \
+    || fail "a sweep with no budget left still wrote to the board"
+  pass "a budget spent while reading truncates the sweep out loud, and is never reported as a board failure"
+}
+
+# A command must only be stopped by configuration it actually DEPENDS on. The
+# sweep resolves every board it touches from a declared board= token and never
+# reads config/project-board, and a typo there fails in the worst configuration
+# if it stops the sweep anyway: bin/fm-bootstrap.sh drops the warning and has
+# already stamped the interval, so the whole fleet goes unreconciled for a full
+# interval over a file the sweep does not use.
+test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep() {
+  local dir out
+  dir=$(sweep_case sweepbadfallback)
+  # The URL a captain gets by copying the board straight out of the browser.
+  printf '%s\n' 'https://github.com/orgs/ark/projects/12/views/1' > "$dir/config/project-board"
+  seed_tracker "$dir" '1 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  out=$(run_board "$dir" reconcile) || fail "the sweep failed: $out"
+  [ "$(item_status "$dir" acme widget 1)" = Done ] \
+    || fail "a typo in a fallback the sweep never reads stopped it reconciling a declared board"
+  assert_contains "$out" '1 status corrected' "the sweep did not reconcile the declared board"
+
+  # And the commands that DO resolve the fallback still report it and stop.
+  out=$(run_board "$dir" show) || fail "show must not fail on a malformed fallback: $out"
+  assert_contains "$out" 'config/project-board must hold one board URL' \
+    "a command that does resolve the fallback stopped reporting a malformed one"
+  pass "a malformed home fallback stops only the commands that resolve it, never the fleet sweep"
+}
+
+# Which board a PROJECT's work belongs on is the registry's to name, and
+# lifecycle sync finds it by matching the issue's own tracker against the
+# registry's tracker= token. The two spellings come from different places - the
+# issue URL was recorded verbatim, the token is however the captain typed it - so
+# matching byte-exactly loses the declared board on one capital letter and lets
+# the home fallback answer for it, which is the same root cause the sweep's join
+# was redesigned around. board=none is the sharper case: a casing miss makes the
+# project look undeclared, so the fallback resurrects a board for a project that
+# declared it has none.
+test_sync_resolves_a_declared_board_however_the_registry_is_cased() {
+  local dir out
+  dir=$(case_dir syncboardcasing)
+  mkdir -p "$dir/data"
+  printf '%s\n' 'https://github.com/users/captain/projects/9' > "$dir/config/project-board"
+  printf -- '- widget [no-mistakes tracker=github:github.com/ACME/Widget board=%s] - fixture (added 2026-08-18)\n' \
+    "$BOARD_URL_FIXTURE" > "$dir/data/projects.md"
+  out=$(run_board "$dir" sync --task task-1 --milestone dispatched --dry-run) \
+    || fail "the sync rehearsal failed: $out"
+  assert_contains "$out" "board: $BOARD_URL_FIXTURE" \
+    "the project's declared board was lost because the registry spells the repository in another case"
+  assert_not_contains "$out" 'projects/9' \
+    "the home fallback answered for a project that declares its own board"
+
+  printf -- '- widget [no-mistakes tracker=github:github.com/ACME/Widget board=none] - fixture (added 2026-08-18)\n' \
+    > "$dir/data/projects.md"
+  out=$(run_board "$dir" sync --task task-1 --milestone dispatched) \
+    || fail "board=none must not fail sync: $out"
+  [ -z "$out" ] || fail "a project declaring board=none still resolved a board: $out"
+  assert_absent "$dir/store/calls.log" "a project declaring board=none contacted GitHub"
+  pass "lifecycle sync resolves a project's declared board however the registry spells the repository"
+}
+
 test_a_board_with_no_done_option_is_reported_never_given_one() {
   local dir out
   dir=$(sweep_case sweepnooption)
@@ -2032,6 +2124,7 @@ test_the_board_library_exports_only_its_named_operations() {
   added=$(LC_ALL=C comm -13 <(printf '%s\n' "$base") <(printf '%s\n' "$surface") \
     | grep -v '^_' || true)
   expected=$(printf '%s\n' \
+    fm_board_identity_key \
     fm_board_issue_id \
     fm_board_issue_parent \
     fm_board_item_add \
@@ -2110,6 +2203,9 @@ test_the_sweep_reconciles_against_issues_not_the_pull_request_inflated_count
 test_the_sweep_walks_every_page_of_a_board_and_a_tracker
 test_an_unfinishable_item_listing_is_not_read_as_an_empty_board
 test_a_registry_typed_in_another_case_still_matches_and_converges
+test_a_budget_spent_while_reading_truncates_the_sweep_out_loud
+test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep
+test_sync_resolves_a_declared_board_however_the_registry_is_cased
 test_a_board_with_no_done_option_is_reported_never_given_one
 test_the_change_limit_truncates_loudly
 test_a_dry_run_reports_the_drift_and_writes_nothing

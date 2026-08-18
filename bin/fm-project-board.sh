@@ -70,7 +70,11 @@
 # as FM_WRITE_BACK_BUDGET, which always wins over the default; bin/fm-bootstrap.sh
 # does exactly that, so a slow board cannot outlive the session-start stage that
 # contains it. Every bound that actually truncates something says so on a
-# BOARD_SWEEP: line, because a silent cap reads as "everything was covered".
+# BOARD_SWEEP: line, because a silent cap reads as "everything was covered", and
+# the whole-operation budget says so wherever it truncates - on a read as much as
+# on a write, since the reads are where nearly all of a bounded sweep's time
+# goes. A budget that ran out is announced as the truncation it is, never relayed
+# as one more board this run could not reach.
 #
 # THE WRITE PATH FAILS CLOSED ON A PARTIAL VIEW, and this is the property that
 # matters most in this script. Every write `reconcile` plans is an inference from
@@ -274,8 +278,20 @@ if [ -f "$BOARD_CONFIG" ] && [ ! -L "$BOARD_CONFIG" ]; then
   HOME_BOARD_URL=$(head -n 1 "$BOARD_CONFIG" | tr -d '\r')
   HOME_BOARD_URL=${HOME_BOARD_URL%"${HOME_BOARD_URL##*[![:space:]]}"}
   if [ -n "$HOME_BOARD_URL" ] && ! fm_board_url_parse "$HOME_BOARD_URL"; then
-    warn "config/project-board must hold one board URL of the form https://github.com/orgs/<org>/projects/<n> or https://github.com/users/<login>/projects/<n>"
-    exit 0
+    # A COMMAND IS ONLY EVER STOPPED BY CONFIGURATION IT ACTUALLY DEPENDS ON.
+    # `reconcile` resolves every board it touches from a declared board= token
+    # and never reads this fallback, so a typo here - a URL pasted straight from
+    # the browser with a /views/1 suffix, say - must not disable the fleet-wide
+    # sweep. It would fail in the worst configuration if it did: bin/fm-bootstrap.sh
+    # drops the warning and has already stamped the interval, so the sweep would
+    # be skipped for a whole interval over a file it does not use. `sync` and
+    # `show` do resolve the fallback, so for them it stays a stop-and-report.
+    if [ "$COMMAND" = reconcile ]; then
+      HOME_BOARD_URL=
+    else
+      warn "config/project-board must hold one board URL of the form https://github.com/orgs/<org>/projects/<n> or https://github.com/users/<login>/projects/<n>"
+      exit 0
+    fi
   fi
 fi
 
@@ -461,14 +477,36 @@ SWEEP_CHANGES=0
 SWEEP_TRUNCATED=0
 SWEEP_BUDGET_SPENT=0
 
-# THE WHOLE-OPERATION BUDGET ANNOUNCES ITSELF LIKE EVERY OTHER BOUND. It used to
-# be the one cap that could truncate the sweep in silence: the calls simply began
-# refusing with a reason that goes to stderr, which the session-start relay drops
-# on purpose, so a sweep that stopped half way looked exactly like one that found
-# nothing to do. A silent cap reads as complete coverage, which is the one thing
-# this script's own header and docs/configuration.md both promise it never does.
+# THE WHOLE-OPERATION BUDGET ANNOUNCES ITSELF LIKE EVERY OTHER BOUND, WHEREVER
+# IT CAN TRUNCATE THE SWEEP. It was once the one cap that could stop the sweep in
+# silence: the calls simply began refusing with a reason that goes to stderr,
+# which the session-start relay drops on purpose, so a sweep that stopped half
+# way looked exactly like one that found nothing to do. A silent cap reads as
+# complete coverage, which is the one thing this script's own header and
+# docs/configuration.md both promise it never does.
+#
+# This is the single owner of "is the budget gone", and every place a spent
+# budget can cut the sweep short consults it: the per-row write loop below, and
+# every READ that can be refused for it - the board read and both listing walks.
+# The reads matter more, not less: they are where nearly all of a bounded sweep's
+# time goes, and the budget is derived from the session-start network stage, so
+# it is typically a few seconds rather than the flat default.
 sweep_budget_spent() {
   [ "$(fm_call_bound 1)" -le 0 ]
+}
+
+# A read that failed means one of two different things, and reporting them as one
+# would hide the truncation inside a noise line the relay drops. A board this run
+# could not reach is that board's problem and the sweep moves on; the budget
+# running out mid-read is the SWEEP's problem, so it stops the sweep and is
+# announced on the sweep's own BOARD_SWEEP line instead of being relayed as one
+# more broken board.
+sweep_read_failed() {  # <warning-text>
+  if sweep_budget_spent; then
+    SWEEP_BUDGET_SPENT=1
+    return 0
+  fi
+  echo "warning: $1" >&2
 }
 
 # Read every page of a listing into <output-file>, up to the page cap. Returns 1
@@ -530,7 +568,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     return 0
   }
   if ! fm_board_read "$WORKDIR/board" "$FM_BOARD_OWNER_TYPE" "$FM_BOARD_OWNER" "$FM_BOARD_NUMBER"; then
-    echo "warning: could not read $board_url for $project: $FM_BOARD_GQL_REASON" >&2
+    sweep_read_failed "could not read $board_url for $project: $FM_BOARD_GQL_REASON"
     return 0
   fi
   project_id=$(awk '$1 == "project" { print $2; exit }' "$WORKDIR/board")
@@ -541,7 +579,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   fi
 
   if ! read_all_pages "$WORKDIR/items" fm_board_items_page "$project_id"; then
-    echo "warning: could not list the items on $board_url: $FM_BOARD_GQL_REASON" >&2
+    sweep_read_failed "could not list the items on $board_url: $FM_BOARD_GQL_REASON"
     return 0
   fi
   items_state=$LISTING_STATE
@@ -550,7 +588,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     unfinishable) echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds" ;;
   esac
   if ! read_all_pages "$WORKDIR/issues" fm_board_tracker_issues_page "$owner" "$repo"; then
-    echo "warning: could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON" >&2
+    sweep_read_failed "could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON"
     return 0
   fi
   issues_state=$LISTING_STATE
@@ -577,27 +615,24 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   # issue is deliberately absent from the output: a card a human added by hand
   # is never removed, and reconciliation has nothing to say about it.
   #
-  # THE JOIN KEY IS NORMALIZED ONCE PER SIDE, WHERE IT IS CONSTRUCTED. The two
-  # sides learn the repository's name from different places and cannot be assumed
-  # to spell it the same way: this side comes from the captain-typed tracker=
-  # token in data/projects.md, while the item's own reference is assembled in
-  # bin/fm-board-lib.sh from GitHub's `repository.owner.login` and
-  # `repository.name`. GitHub resolves an owner/repo pair case-insensitively and
-  # answers in ITS canonical casing - asking it for `helloworldsungin/FIRSTMATE`
-  # returns `HelloWorldSungin/firstmate` - so the board side is always canonical
-  # while the registry side is however it was typed. Case-folding both once is
-  # therefore sound as well as necessary, because that same case-insensitive
-  # resolution is what makes `Foo/Bar` and `foo/bar` one repository rather than
-  # two. Compared byte-exactly, one capital letter would make every issue look
-  # absent, and the sweep would re-add all of them on every run forever without
-  # ever converging.
+  # THE JOIN KEY IS NORMALIZED ONCE PER SIDE, WHERE IT IS CONSTRUCTED, THROUGH
+  # THE ONE FUNCTION THAT OWNS THAT RULE. The two sides learn the repository's
+  # name from different places and cannot be assumed to spell it the same way:
+  # this side comes from the captain-typed tracker= token in data/projects.md,
+  # while the item's own reference is assembled in bin/fm-board-lib.sh from
+  # GitHub's `repository.owner.login` and `repository.name`, which is always
+  # GitHub's canonical casing. fm_board_identity_key states why folding both is
+  # sound as well as necessary, and lifecycle sync's registry lookup builds its
+  # key through the same function, so the two cannot drift apart. Compared
+  # byte-exactly, one capital letter would make every issue look absent, and the
+  # sweep would re-add all of them on every run forever without ever converging.
   #
   # The side of the join is decided by FILENAME, never by a record count: a board
   # holding no issue items at all - a fresh one, or one carrying only draft and
   # pull-request cards - contributes zero records, and a count-keyed join would
   # then read the tracker as if it were the board and plan nothing at all, which
   # is exactly the board a new board= token is pointed at first.
-  join_key=$(printf '%s/%s' "$owner" "$repo" | tr '[:upper:]' '[:lower:]')
+  join_key=$(fm_board_identity_key "$owner/$repo")
   awk -v key="$join_key" -v itemsfile="$WORKDIR/items" '
     FILENAME == itemsfile {
       if ($1 == "item" && index(tolower($3), key "#") == 1) {

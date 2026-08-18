@@ -77,6 +77,23 @@ fm_board_url_parse() {  # <url>
   FM_BOARD_NUMBER=${BASH_REMATCH[3]}
 }
 
+# THE ONE OWNER OF HOW A REPOSITORY IDENTITY IS COMPARED. GitHub resolves an
+# owner/repo pair case-insensitively and answers in ITS canonical casing - asking
+# it for `helloworldsungin/FIRSTMATE` returns `HelloWorldSungin/firstmate` - so
+# `Foo/Bar` and `foo/bar` name one repository rather than two, while a captain
+# typing a tracker= or board= token into data/projects.md spells it however they
+# like. Any identity firstmate matches against another is therefore normalized
+# through this one function, at the point its key is built.
+#
+# It is a single owner on purpose rather than a fold repeated at each comparison:
+# byte-exact matching was the root cause of two separate defects - every issue
+# looking absent from its board, and a project's declared board being lost so
+# lifecycle sync wrote to the home fallback instead - and fixing them separately
+# is what would let a third path diverge from the other two later.
+fm_board_identity_key() {  # <identity>
+  printf '%s\n' "${1-}" | tr '[:upper:]' '[:lower:]'
+}
+
 # Print every registry entry's declaration as "<project> <board> <tracker>",
 # with "-" standing in for an absent token and "!" for a malformed one. One
 # parser reads both tokens because they are two tokens of the same annotation,
@@ -146,11 +163,23 @@ fm_board_registry_board() {  # <registry-file> <project>
 # Return 1 when no entry declares the tracker or the matching entry declares no
 # board, and 2 with a detail phrase when the match is ambiguous or malformed.
 # Several entries agreeing on one board is not ambiguity; disagreeing is.
+#
+# The tracker spec is matched through fm_board_identity_key rather than
+# byte-exactly, for the reason stated there: the key on this side is built from
+# an issue URL recorded verbatim, and the registry side is however the captain
+# typed it, so one capital letter would otherwise lose the project's declared
+# board and let the home fallback answer for it - including for a project that
+# declared board=none, which must never be given a board at all.
 fm_board_registry_board_for_tracker() {  # <registry-file> <tracker-spec>
-  local registry=${1-} tracker=${2-} boards
+  local registry=${1-} tracker=${2-} key boards board declared
   [ -n "$tracker" ] && [ "$tracker" != none ] || return 1
+  key=$(fm_board_identity_key "$tracker")
   boards=$(fm_board_registry_scan "$registry" 2>/dev/null \
-    | awk -v t="$tracker" '$3 == t && $2 != "-" { print $2 }' | LC_ALL=C sort -u) || return 1
+    | while read -r _ board declared; do
+        [ "$board" != - ] || continue
+        [ "$(fm_board_identity_key "$declared")" = "$key" ] || continue
+        printf '%s\n' "$board"
+      done | LC_ALL=C sort -u) || return 1
   [ -n "$boards" ] || return 1
   if [ "$(printf '%s\n' "$boards" | wc -l | tr -d ' ')" -ne 1 ]; then
     printf 'several projects declare tracker=%s with different boards (%s), so no one board owns it\n' \
