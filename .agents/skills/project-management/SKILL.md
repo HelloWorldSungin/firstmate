@@ -31,6 +31,7 @@ If the owning second mate cannot accept the route, report that concrete blocker 
 
 Resolve the project name, destination, delivery posture, autonomy posture, and declared issue tracker before changing local or remote state.
 The captain supplies the tracker mapping explicitly as `tracker=<forge>:<host>/<path>` or `tracker=none`; never infer it from the git remote, clone name, or repository-creation host.
+Ask for the project's board the same way, as `board=<url>` or `board=none` beside that tracker, and never infer one either: a declared board is what authorizes the fleet-wide drift sweep to write to it, so an unasked-for guess would put Firstmate on a board the captain never named ([`docs/configuration.md`](../../../docs/configuration.md) "Project issue trackers").
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
 

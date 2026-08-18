@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -50,6 +50,16 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `FLEET_SYNC: <repo>: recovered: <detail>` - the clone had drifted onto a clean detached HEAD holding no unique commits and the sync self-healed it (re-attached the default branch and fast-forwarded); no action needed, it is reported only so the self-heal is visible.
 - `FLEET_SYNC: <repo>: STUCK: on <state>, N commits behind <base> - needs attention` - the clone is dirty, on a non-default branch, detached with unique commits, or diverged, so the sync left it untouched (never forcing or discarding); it will keep falling behind until you look.
   A loud STUCK, especially a growing N across bootstraps, means that clone needs hands-on attention; dispatch a crewmate or resolve it before it strands work.
+- `BOARD_SWEEP: <project>: <n> added, <m> status corrected` - the fleet-wide board drift sweep corrected a board for work firstmate never dispatched; no action needed, it is reported only so the correction is visible.
+- `BOARD_SWEEP: <project>: <n> closed issue(s) ... have no Done-class Status option` (or the open-class counterpart) - the board's Status field configures no option the sweep can move those items to, and creating one would clear the status of every item on the board, so it was left alone.
+  This is the captain's to add by hand: relay it as a board that cannot show those items correctly until they add that status option, and never add it yourself.
+- `BOARD_SWEEP: <project>: ... more items than the <n>-page cap reads`, `... more issues than the <n>-page cap reads`, `... stopped at its <n>-change limit`, or `... ran out of its <n>s whole-operation budget` - the sweep bounded itself and says what it left undone.
+  The last two also name the registry entries the run did not finish, and the next sweep starts at those rather than at the top, so the tail is covered within a few runs; act only if the same line keeps naming the same entries, which means the bound is too small for that fleet rather than that one run was unlucky.
+- `BOARD_SWEEP: <project>: the item listing for <url> stopped without saying where it had got to`, or its `the issue listing for <owner>/<repo> ...` counterpart - a listing answered in a way the walk could not follow, so the sweep cannot tell what is really there.
+  It is paired with the line below and needs no action on its own; a board that keeps producing it is worth looking at by hand.
+- `BOARD_SWEEP: <project>: this sweep saw only part of ... so it planned no changes at all` - the write path deliberately failed closed: a partial view cannot tell an item that is missing from one the walk never read, so nothing was written.
+  Nothing is wrong and nothing was skipped that should not have been; the sweep did the safe thing.
+- `BOARD_SWEEP: <project>: ... declares more than one board=` / `is not a board URL` / `tracker=... is malformed` / `no usable tracker` - the project's `data/projects.md` entry cannot be resolved, so its board was skipped; fix the registry entry (docs/configuration.md "Project issue trackers").
 - `PR_CHECK_MIGRATION: canonical polls rebuilt and armed; resume supervision for this home` - the non-executing migration rebuilt canonical task polls from validated metadata, and those polls are already armed.
   Independently verify the private per-task outcome record, then resume the emitted supervision protocol after finishing the session-start wake handling.
 - `PR_CHECK_MIGRATION: validated replacement polls armed; resume supervision for this home` - a retry proved canonical publication provenance, metadata identity binding, and single-link integrity for a replacement poll resolving an earlier ambiguous migration outcome.

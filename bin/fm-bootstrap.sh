@@ -12,6 +12,7 @@
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "CREW_DISPATCH: backend mismatch - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
+#                 "BOARD_SWEEP: <project>: <board drift the sweep corrected, or a status option the captain must add by hand>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>",
 #                 "RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup",
@@ -110,10 +111,10 @@
 #          one that timed out, could not be bounded on this host, or ran and
 #          exited non-zero reports itself on a single USAGE_STORE line rather
 #          than degrading silently.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the nine MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the ten MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, run-attribution
 #          transition, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync,
+#          secondmate_handoff_resume, x_mode_setup, fleet_sync, board_sweep,
 #          usage_store_refresh)
 #          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
@@ -133,7 +134,7 @@
 #                 must never silently skip a safety sweep.
 #            skip - every LOCAL step, and none of the network ones. Skips
 #                 `gh auth status`, secondmate_liveness_sweep, secondmate_sync,
-#                 secondmate_handoff_resume, and fleet_sync.
+#                 secondmate_handoff_resume, fleet_sync, and board_sweep.
 #            only - ONLY those network steps and nothing else. No tool detection,
 #                 no version floors, no tangle check, no PR-check migration, no
 #                 x_mode_setup: those already ran on the local pass.
@@ -312,6 +313,91 @@ usage_store_refresh() {
       echo "USAGE_STORE: failed: bootstrap refresh ran but exited $status (elapsed=${elapsed}s)"
       ;;
   esac
+  return 0
+}
+
+# The fleet-wide board drift sweep, run where it is cheap: once per locked
+# session start, at most every FM_BOARD_SWEEP_INTERVAL seconds (default 6h), and
+# only for projects whose data/projects.md entry DECLARES a board. A home that
+# declares none - which is every home until the captain adds the token - does
+# nothing here and contacts no host.
+#
+# bin/fm-project-board.sh owns what the sweep may write, and its own bounds hold
+# for a direct run. Inside the deferred network stage it gets a TIGHTER one, for
+# the reason board_sweep_budget states.
+#
+# Only its actionable lines are relayed: a board this run could not reach is not
+# a fleet diagnostic, because the next sweep re-derives exactly the same drift,
+# and a session start that reported every transient network hiccup would train
+# the reader to skip the section that also carries the destructive one - a board
+# missing the status option a closed issue needs, which is the captain's to add
+# by hand.
+board_sweep_due() {
+  local marker="$STATE/.board-sweep" interval=${FM_BOARD_SWEEP_INTERVAL:-21600} mtime now
+  case "$interval" in
+    ''|*[!0-9]*) interval=21600 ;;
+  esac
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 0
+  mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null) || return 0
+  now=$(date +%s)
+  [ $((now - mtime)) -ge "$interval" ]
+}
+
+# The sweep's share of the stage that contains it, or 0 when there is too little
+# of that stage left to be worth starting one.
+#
+# fm-startup-network.sh bounds the whole deferred network stage and kills it by
+# process group, so a sweep carrying only its own larger default would take the
+# checks that run after it down with it - a board problem becoming a fleet
+# problem, which is the one thing this sweep may never do. The bound is handed
+# down rather than repeated here, so the two cannot drift apart when either
+# default changes; an unset value means this is a direct run outside the stage,
+# where the script's own FM_BOARD_SWEEP_TIMEOUT is the right bound.
+#
+# Half of what is left, because upstream_status_check and vault_drift_check
+# still have to run after this and are owed the other half.
+BOARD_SWEEP_GRACE=2
+BOARD_SWEEP_MIN_BUDGET=5
+board_sweep_budget() {
+  local stage=${FM_STARTUP_NETWORK_TIMEOUT:-} left
+  case "$stage" in ''|*[!0-9]*|0) echo ''; return 0 ;; esac
+  left=$((stage - SECONDS))
+  [ "$left" -gt 0 ] || { echo 0; return 0; }
+  echo $((left / 2))
+}
+
+board_sweep() {
+  local tmp budget
+  [ -x "$FM_ROOT/bin/fm-project-board.sh" ] || return 0
+  [ -f "$DATA/projects.md" ] || return 0
+  grep -q '\[[^]]*board=' "$DATA/projects.md" 2>/dev/null || return 0
+  board_sweep_due || return 0
+  budget=$(board_sweep_budget)
+  # Checked before the marker is stamped, so a session start that had no room
+  # for the sweep leaves the next one free to run it rather than burning the
+  # interval on a sweep that never happened.
+  [ -z "$budget" ] || [ "$budget" -ge "$BOARD_SWEEP_MIN_BUDGET" ] || return 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-board-sweep.XXXXXX" 2>/dev/null) || return 0
+  # The marker is stamped BEFORE the run, so a sweep that dies part-way through
+  # waits out its interval like any other rather than retrying on every session
+  # start against a board that is already refusing it.
+  : > "$STATE/.board-sweep" 2>/dev/null || true
+  if [ -n "$budget" ]; then
+    # The budget is what the sweep spends across its own calls and reports on;
+    # the bound around it is a backstop with a little grace, for the case a
+    # budget cannot cover. Both are scoped to this one call so no other sweep
+    # inherits either.
+    (
+      export FM_WRITE_BACK_BUDGET=$budget
+      fm_run_timed "$((budget + BOARD_SWEEP_GRACE))" \
+        "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet
+    ) >"$tmp" 2>/dev/null || true
+  else
+    "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet >"$tmp" 2>/dev/null || true
+  fi
+  grep '^BOARD_SWEEP:' "$tmp" || true
+  awk '/^board: /{ sub(/^board: /, ""); print "BOARD_SWEEP: " $0 }' "$tmp" || true
+  rm -f "$tmp"
   return 0
 }
 
@@ -1368,6 +1454,11 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     __fm_timing_stamp=$(fm_timing_now_ms)
     fleet_sync
     fm_timing_record phase fleet-sync "$__fm_timing_stamp"
+  fi
+  if network_phase && network_sweep_authorized 'project board reconciliation'; then
+    __fm_timing_stamp=$(fm_timing_now_ms)
+    board_sweep
+    fm_timing_record phase board-sweep "$__fm_timing_stamp"
   fi
 fi
 # Fork-upstream drift can fetch into a disposable repository, so the deferred

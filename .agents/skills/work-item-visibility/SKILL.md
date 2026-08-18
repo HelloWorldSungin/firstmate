@@ -48,7 +48,8 @@ The same separation `AGENTS.md` section 6 draws for a project's `AGENTS.md` appl
 
 ## The board
 
-`config/project-board` names the captain's board and nothing happens without it.
+Which board a task's work reaches is the `board=` token its project declares in `data/projects.md`, falling back to `config/project-board` for a project that declares nothing; a home with neither does nothing at all and contacts no host.
+[`docs/configuration.md`](../../../docs/configuration.md) "Project issue trackers" owns that rule, and `bin/fm-board-lib.sh` owns it in code.
 Firstmate keeps that board true; it does not reshape it.
 Never delete or rewrite the captain's views, filters, layouts, or fields, and never remove an item they added.
 When reflecting reality would need a structural change - a status option that does not exist yet - `bin/fm-project-board.sh` reports it and leaves the board alone; raise it with the captain rather than adding it, and never add one by hand either.

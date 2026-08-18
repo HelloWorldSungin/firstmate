@@ -1,67 +1,124 @@
 #!/usr/bin/env bash
-# The captain's GitHub Projects board, kept true.
+# The captain's GitHub Projects boards, kept true.
 #
 # Usage: fm-project-board.sh sync --task <task-id> --milestone <token> [--dry-run]
 #        fm-project-board.sh sync --issue <url> [--milestone <token>] [--dry-run]
-#        fm-project-board.sh show [--dry-run]
+#        fm-project-board.sh reconcile [--project <name>] [--limit <n>] [--dry-run] [--quiet]
+#        fm-project-board.sh show [--project <name>] [--dry-run]
 #
-# The board is the captain's visualization of current status across individual
+# A board is the captain's visualization of current status across individual
 # works and across epics. It is a second surface over the same issues, not a
-# second source of truth: its status is driven by the SAME milestone vocabulary
-# that drives the living status comment (bin/fm-issue-comment.sh), so the two
-# surfaces cannot disagree about where a task stands.
+# second source of truth.
 #
-# This script is the single owner of everything firstmate writes to that board.
+# TWO BEHAVIOURS, AND ONLY ONE OF THEM COVERS THE FLEET.
 #
-# OWNERSHIP MEANS KEEPING IT TRUE, NOT RESHAPING IT. Nothing here creates,
-# renames, or deletes a view, a filter, a field, or a status option, and nothing
-# removes an item. It adds membership and sets the Status field of items it
-# added, and that is the whole of its write surface.
+# `sync` is the LIFECYCLE update: it moves the item for a task firstmate is
+# running as that task progresses, driven by the SAME milestone vocabulary that
+# drives the living status comment (bin/fm-issue-comment.sh), so the two surfaces
+# cannot disagree about where a task stands. It only ever knows about work
+# firstmate dispatched.
+#
+# `reconcile` is the DRIFT sweep, and it is the one the fleet actually needs.
+# Most items on these boards were never firstmate tasks, so no amount of
+# lifecycle updating can find their drift: on 2026-08-04 the Ark-Signal board
+# carried 222 ArkNode-AI items, 146 of them closed, and three had drifted - two
+# closed issues still sitting in `In progress` and one in `Backlog` - all of them
+# work firstmate never touched. The sweep reconciles what is knowable for such an
+# item and no more: every tracker issue is a board member, a closed issue reads
+# `Done`, and an open issue never does. Closed-versus-open is the ONLY truth
+# available for work firstmate did not dispatch, so no finer state is invented.
+#
+# OWNERSHIP MEANS KEEPING A BOARD TRUE, NOT RESHAPING IT. bin/fm-board-lib.sh is
+# the single owner of the complete wire surface, and its two write operations -
+# board membership, and the Status field's value on an item - are the whole of
+# what this script can do to a board. Nothing creates, renames, or deletes a
+# view, filter, field, or status option, and nothing removes an item, including
+# an item a human added by hand that no tracker issue matches: the sweep leaves
+# it exactly where it is.
 #
 # A FIELD'S OPTION SET IS NEVER TOUCHED, AND THAT IS A HARD SAFETY RULE RATHER
 # THAN A MATTER OF TASTE. `updateProjectV2Field` replaces a single-select field's
 # WHOLE option set and reassigns every option id, which detaches every item
 # already using them: adding one `Blocked` option to the real firstmate board
-# blanked the status of all twenty items instantly. So when the board's Status
-# field has no option matching a milestone, this reports it and leaves the status
-# alone. A future reconciliation sweep that "helpfully" adds the missing option
-# would silently blank a whole board, which is why the missing option is the
-# captain's to add by hand, deliberately and visibly.
+# blanked the status of all twenty items instantly. So a board whose Status field
+# has no option matching the status a milestone or a closed issue calls for is
+# REPORTED and left alone, and the option is the captain's to add by hand.
 #
 # MEMBERSHIP AND EPICS. Every work item firstmate tracks belongs on the board,
 # because an issue missing from it makes the board lie by omission. When a story
-# has a parent issue, that parent is ensured as a board member too, so the
+# has a parent issue, `sync` ensures that parent is a board member too, so the
 # captain can read the epic level through the parent/sub-issue relationship
 # GitHub already models. No epic status is computed here: rolling story states up
 # into an epic's status is its own design question, and GitHub's native sub-issue
 # progress already answers the common form of it without a parallel scheme.
 #
-# INERT UNTIL CONFIGURED. Without config/project-board this script does nothing
-# at all and contacts no host, so a home that has no board is unaffected. The
-# file holds one line, the board URL:
-#   https://github.com/orgs/<org>/projects/<n>
-#   https://github.com/users/<login>/projects/<n>
+# WHICH BOARD. bin/fm-board-lib.sh owns board identity and states the rule in
+# full: a project declares its own board with a board= token beside tracker= in
+# data/projects.md, and config/project-board is this home's fallback for a
+# project that declares nothing. `sync` resolves the board from the issue's own
+# tracker through that registry and falls back to the home default;
+# `reconcile` uses DECLARED boards only, never the fallback, so a fleet-wide
+# sweep can only reach a board somebody named for that project by hand.
+# A home with neither does nothing at all and contacts no host.
 #
-# CREDENTIAL. Projects v2 is GraphQL-only and gh-axi does not implement it - its
-# command surface is issue, pr, run, release, repo, label, secret, and variable -
-# so this is a deliberate exception to the usual prefer-gh-axi rule and uses
-# `gh api graphql` directly. The token additionally needs the `project` scope,
-# which the ordinary `repo` scope does not imply; without it the board simply
-# reports that and every task proceeds untouched.
+# BOUNDED. `sync` is one item and is bounded by FM_PROJECT_BOARD_TIMEOUT seconds
+# per call (default 15). `reconcile` reads whole boards and whole trackers, so it
+# is additionally bounded as a whole operation by FM_BOARD_SWEEP_TIMEOUT seconds
+# (default 240), reads at most FM_BOARD_SWEEP_MAX_PAGES pages of 100 per listing
+# (default 20), and performs at most FM_BOARD_SWEEP_MAX_CHANGES writes per run
+# (default 50). A caller that is itself bounded hands its own tighter share down
+# as FM_WRITE_BACK_BUDGET, which always wins over the default; bin/fm-bootstrap.sh
+# does exactly that, so a slow board cannot outlive the session-start stage that
+# contains it. Every bound that actually truncates something says so on a
+# BOARD_SWEEP: line, because a silent cap reads as "everything was covered", and
+# the whole-operation budget says so wherever it truncates - on a read as much as
+# on a write, down to a call refused on the last row of the last project. Every
+# call `reconcile` makes reports its failure through one function, which is the
+# only thing that decides whether a failure was that board's problem or the
+# budget's: a budget that ran out is announced as the truncation it is, never
+# relayed as one more board this run could not reach, and no failure inside the
+# sweep goes unreported.
+#
+# A TRUNCATED SWEEP RESUMES RATHER THAN RESTARTING. The run records the last
+# registry entry it FINISHED in state/.board-sweep-cursor and the next one starts
+# after it, wrapping, so a budget too small to cover the whole fleet in one run
+# still covers all of it across a bounded number of runs instead of reconciling
+# the same first projects forever. An entry the run was cut short inside is the
+# one the next run starts AT, because it was not reconciled. A run that stops
+# early also NAMES the entries it did not finish, because "drift may remain
+# somewhere" and "these three boards were not looked at" are different facts to
+# the captain reading it.
+#
+# THE WRITE PATH FAILS CLOSED ON A PARTIAL VIEW, and this is the property that
+# matters most in this script. Every write `reconcile` plans is an inference from
+# comparing two listings, and no such comparison means anything unless both are
+# whole: "this issue is on no page of the board" is not knowable from a page that
+# was never read. So a listing that is short for ANY reason - the page cap, or a
+# walk that could not say where it stopped - plans NO changes at all for that
+# project and says so, rather than confidently writing the part it believes. The
+# sweep may do nothing; it must never do the wrong thing to a real board.
+#
+# Three separate correctness defects came from carrying that view as two plain
+# listings and inferring what they meant, so the join now carries the three facts
+# it depends on explicitly: identity normalized once per side (see the join
+# itself), completeness as a state a listing reports rather than a shape inferred
+# from it (see read_all_pages), and no writes when completeness is anything but
+# `complete`.
 #
 # FAIL OPEN. A board that is unreachable, unauthorized, rate-limited, or missing
 # prints one "warning:" line on stderr and exits 0. It can never block or fail
-# dispatch, validation, merge, or cleanup. A non-zero exit means the CALLER
-# passed something invalid, never that GitHub misbehaved.
+# dispatch, validation, merge, or cleanup, and one project's broken board never
+# stops the sweep reaching the next one. A non-zero exit means the CALLER passed
+# something invalid, never that GitHub misbehaved.
 #
 # IDEMPOTENCY. Membership is added through addProjectV2ItemById, which returns
 # the existing item when the content is already on the board, so a repeated sync
-# cannot produce a second card. The item id that mutation returns is the same id
-# the status update targets, so both halves of a sync address one card.
+# or sweep cannot produce a second card, and a re-run with nothing drifted writes
+# nothing at all.
 #
-# CONTENT. Nothing fleet-private is ever written: this script sends only an issue
-# node id and a status option id that already exist on GitHub. There is no
-# free-text field to leak into.
+# CONTENT. Nothing fleet-private is ever written: this script sends only node ids
+# and status option ids that already exist on GitHub. There is no free-text field
+# to leak into.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,10 +126,24 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 BOARD_CONFIG="$CONFIG/project-board"
+REGISTRY="$DATA/projects.md"
 CALL_TIMEOUT=${FM_PROJECT_BOARD_TIMEOUT:-15}
 case "$CALL_TIMEOUT" in
   ''|*[!0-9]*|0) CALL_TIMEOUT=15 ;;
+esac
+SWEEP_TIMEOUT=${FM_BOARD_SWEEP_TIMEOUT:-240}
+case "$SWEEP_TIMEOUT" in
+  ''|*[!0-9]*|0) SWEEP_TIMEOUT=240 ;;
+esac
+SWEEP_MAX_PAGES=${FM_BOARD_SWEEP_MAX_PAGES:-20}
+case "$SWEEP_MAX_PAGES" in
+  ''|*[!0-9]*|0) SWEEP_MAX_PAGES=20 ;;
+esac
+SWEEP_MAX_CHANGES=${FM_BOARD_SWEEP_MAX_CHANGES:-50}
+case "$SWEEP_MAX_CHANGES" in
+  ''|*[!0-9]*) SWEEP_MAX_CHANGES=50 ;;
 esac
 
 # shellcheck source=bin/fm-issue-lib.sh
@@ -81,6 +152,8 @@ esac
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-milestone-lib.sh
 . "$SCRIPT_DIR/fm-milestone-lib.sh"
+# shellcheck source=bin/fm-board-lib.sh
+. "$SCRIPT_DIR/fm-board-lib.sh"
 
 usage() {
   awk '
@@ -110,6 +183,13 @@ status_candidates() {  # <milestone>
   esac
 }
 
+# The two classes the drift sweep reasons in, expressed through the same map so
+# a board configured for one surface is configured for both. A closed issue
+# belongs in the landed class; an open issue belongs anywhere that is not it, and
+# the sweep moves one there only when it has drifted INTO the landed class.
+done_class_candidates() { status_candidates landed; }
+open_class_candidates() { status_candidates queued; status_candidates dispatched; }
+
 # --- arguments --------------------------------------------------------------
 
 case "${1:-}" in
@@ -117,14 +197,17 @@ case "${1:-}" in
 esac
 COMMAND=${1:-}
 case "$COMMAND" in
-  sync|show) shift ;;
+  sync|show|reconcile) shift ;;
   *) usage >&2; exit 1 ;;
 esac
 
 TASK=
 ISSUE_ARG=
 MILESTONE=
+PROJECT_ARG=
+LIMIT_ARG=
 DRY_RUN=0
+QUIET=0
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -135,6 +218,8 @@ for a in "$@"; do
       task) TASK=$a ;;
       issue) ISSUE_ARG=$a ;;
       milestone) MILESTONE=$a ;;
+      project) PROJECT_ARG=$a ;;
+      limit) LIMIT_ARG=$a ;;
     esac
     want_value=
     continue
@@ -146,57 +231,100 @@ for a in "$@"; do
     --issue=*) ISSUE_ARG=${a#--issue=} ;;
     --milestone) want_value=milestone ;;
     --milestone=*) MILESTONE=${a#--milestone=} ;;
+    --project) want_value=project ;;
+    --project=*) PROJECT_ARG=${a#--project=} ;;
+    --limit) want_value=limit ;;
+    --limit=*) LIMIT_ARG=${a#--limit=} ;;
     --dry-run) DRY_RUN=1 ;;
+    --quiet) QUIET=1 ;;
     *) echo "error: unknown argument $a" >&2; exit 1 ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 
-if [ "$COMMAND" = show ]; then
-  [ -z "$TASK" ] && [ -z "$ISSUE_ARG" ] && [ -z "$MILESTONE" ] \
-    || { echo "error: show reports the configured board and takes no target" >&2; exit 1; }
-else
-  [ -n "$TASK" ] || [ -n "$ISSUE_ARG" ] \
-    || { echo "error: sync requires --task <task-id> or --issue <url>" >&2; exit 1; }
-  [ -z "$TASK" ] || [ -z "$ISSUE_ARG" ] \
-    || { echo "error: --task and --issue are mutually exclusive" >&2; exit 1; }
-  if [ -n "$TASK" ]; then
-    [ -n "$MILESTONE" ] || { echo "error: --task requires --milestone (one of: $FM_MILESTONE_TOKENS)" >&2; exit 1; }
-    case "$TASK" in
-      ''|.*|*[!A-Za-z0-9._-]*) echo "error: invalid task id" >&2; exit 1 ;;
-    esac
-  fi
-  if [ -n "$MILESTONE" ] && ! fm_milestone_label "$MILESTONE" >/dev/null; then
-    echo "error: --milestone must be one of: $FM_MILESTONE_TOKENS (got '$MILESTONE')" >&2
-    exit 1
-  fi
-fi
-
-# --- configured board -------------------------------------------------------
-
-if [ ! -f "$BOARD_CONFIG" ] || [ -L "$BOARD_CONFIG" ]; then
-  # No board configured is the ordinary case for a home that has none, so it is
-  # silent: nothing is wrong and nothing was skipped.
-  exit 0
-fi
-BOARD_URL=$(head -n 1 "$BOARD_CONFIG" | tr -d '\r')
-BOARD_URL=${BOARD_URL%"${BOARD_URL##*[![:space:]]}"}
-BOARD_OWNER_TYPE=
-BOARD_OWNER=
-BOARD_NUMBER=
-board_url_parse() {  # <url>
-  local pattern
-  pattern='^https://github\.com/(orgs|users)/([A-Za-z0-9._-]{1,64})/projects/([1-9][0-9]{0,9})$'
-  [[ "$1" =~ $pattern ]] || return 1
-  case "${BASH_REMATCH[1]}" in
-    orgs) BOARD_OWNER_TYPE=organization ;;
-    users) BOARD_OWNER_TYPE=user ;;
+case "$COMMAND" in
+  reconcile)
+    [ -z "$TASK" ] && [ -z "$ISSUE_ARG" ] && [ -z "$MILESTONE" ] \
+      || { echo "error: reconcile sweeps declared boards and takes no task, issue, or milestone" >&2; exit 1; }
+    if [ -n "$LIMIT_ARG" ]; then
+      case "$LIMIT_ARG" in
+        ''|*[!0-9]*) echo "error: --limit must be a whole number of changes" >&2; exit 1 ;;
+      esac
+      SWEEP_MAX_CHANGES=$LIMIT_ARG
+    fi
+    ;;
+  show)
+    [ -z "$TASK" ] && [ -z "$ISSUE_ARG" ] && [ -z "$MILESTONE" ] && [ -z "$LIMIT_ARG" ] \
+      || { echo "error: show reports a configured board and takes no target" >&2; exit 1; }
+    ;;
+  sync)
+    [ -z "$PROJECT_ARG" ] && [ -z "$LIMIT_ARG" ] \
+      || { echo "error: sync addresses one work item and takes no --project or --limit" >&2; exit 1; }
+    [ -n "$TASK" ] || [ -n "$ISSUE_ARG" ] \
+      || { echo "error: sync requires --task <task-id> or --issue <url>" >&2; exit 1; }
+    [ -z "$TASK" ] || [ -z "$ISSUE_ARG" ] \
+      || { echo "error: --task and --issue are mutually exclusive" >&2; exit 1; }
+    if [ -n "$TASK" ]; then
+      [ -n "$MILESTONE" ] || { echo "error: --task requires --milestone (one of: $FM_MILESTONE_TOKENS)" >&2; exit 1; }
+      case "$TASK" in
+        ''|.*|*[!A-Za-z0-9._-]*) echo "error: invalid task id" >&2; exit 1 ;;
+      esac
+    fi
+    if [ -n "$MILESTONE" ] && ! fm_milestone_label "$MILESTONE" >/dev/null; then
+      echo "error: --milestone must be one of: $FM_MILESTONE_TOKENS (got '$MILESTONE')" >&2
+      exit 1
+    fi
+    ;;
+esac
+if [ -n "$PROJECT_ARG" ]; then
+  case "$PROJECT_ARG" in
+    ''|*[[:space:]]*) echo "error: --project must be one registry project name" >&2; exit 1 ;;
   esac
-  BOARD_OWNER=${BASH_REMATCH[2]}
-  BOARD_NUMBER=${BASH_REMATCH[3]}
+fi
+
+# --- board identity ---------------------------------------------------------
+
+# The home's fallback board, or empty when this home has none. Read once so
+# every command answers the same question the same way.
+HOME_BOARD_URL=
+if [ -f "$BOARD_CONFIG" ] && [ ! -L "$BOARD_CONFIG" ]; then
+  HOME_BOARD_URL=$(head -n 1 "$BOARD_CONFIG" | tr -d '\r')
+  HOME_BOARD_URL=${HOME_BOARD_URL%"${HOME_BOARD_URL##*[![:space:]]}"}
+  if [ -n "$HOME_BOARD_URL" ] && ! fm_board_url_parse "$HOME_BOARD_URL"; then
+    # A COMMAND IS ONLY EVER STOPPED BY CONFIGURATION IT ACTUALLY DEPENDS ON.
+    # `reconcile` resolves every board it touches from a declared board= token
+    # and never reads this fallback, so a typo here - a URL pasted straight from
+    # the browser with a /views/1 suffix, say - must not disable the fleet-wide
+    # sweep. It would fail in the worst configuration if it did: bin/fm-bootstrap.sh
+    # drops the warning and has already stamped the interval, so the sweep would
+    # be skipped for a whole interval over a file it does not use. `sync` and
+    # `show` do resolve the fallback, so for them it stays a stop-and-report.
+    if [ "$COMMAND" = reconcile ]; then
+      HOME_BOARD_URL=
+    else
+      warn "config/project-board must hold one board URL of the form https://github.com/orgs/<org>/projects/<n> or https://github.com/users/<login>/projects/<n>"
+      exit 0
+    fi
+  fi
+fi
+
+# Does this home have ANY board - a fallback, or a registry entry that declares
+# one? A malformed declaration counts as declaring something, because a typo must
+# still be reported rather than read as "this home has no boards".
+registry_declares_a_board() {
+  fm_board_registry_scan "$REGISTRY" 2>/dev/null \
+    | awk '$2 != "-" { found = 1; exit } END { exit !found }'
 }
-if ! board_url_parse "$BOARD_URL"; then
-  warn "config/project-board must hold one board URL of the form https://github.com/orgs/<org>/projects/<n> or https://github.com/users/<login>/projects/<n>"
+
+# A home with no board anywhere has nothing any target could resolve to, so it
+# says nothing and fails at nothing - the ordinary case for a home that has none,
+# and the one this command answered first before a project could declare its own
+# board. It is asked here, ahead of the target, because it is the one question
+# that needs no target: resolving a board FROM the issue's tracker is what forces
+# the target to be parsed at all, and a home with no boards has nothing to
+# resolve. `reconcile` is excluded because it reports a named --project that
+# declares no board rather than exiting silently.
+if [ "$COMMAND" != reconcile ] && [ -z "$HOME_BOARD_URL" ] && ! registry_declares_a_board; then
   exit 0
 fi
 
@@ -206,29 +334,29 @@ ISSUE_URL=
 ISSUE_OWNER=
 ISSUE_REPO=
 ISSUE_NUMBER=
-if [ -n "$ISSUE_ARG" ]; then
-  if ! fm_issue_url_parse "$ISSUE_ARG" github || [ "$FM_ISSUE_FORGE" != github ]; then
-    echo "error: --issue requires a canonical GitHub issue URL" >&2
-    exit 1
-  fi
-elif [ -n "$TASK" ]; then
-  META="$STATE/$TASK.meta"
-  if [ ! -f "$META" ] || [ -L "$META" ]; then
-    warn "task metadata is unavailable"
-    exit 0
-  fi
-  RECORDS=$(grep '^work_item=' "$META" 2>/dev/null | cut -d= -f2- || true)
-  [ -n "$RECORDS" ] || exit 0
-  if [ "$(printf '%s\n' "$RECORDS" | wc -l)" -ne 1 ]; then
-    notice "the task records several work items, so none of them owns a board card"
-    exit 0
-  fi
-  if ! fm_issue_work_item_parse "$RECORDS"; then
-    warn "the recorded work item is malformed"
-    exit 0
-  fi
-fi
 if [ "$COMMAND" = sync ]; then
+  if [ -n "$ISSUE_ARG" ]; then
+    if ! fm_issue_url_parse "$ISSUE_ARG" github || [ "$FM_ISSUE_FORGE" != github ]; then
+      echo "error: --issue requires a canonical GitHub issue URL" >&2
+      exit 1
+    fi
+  else
+    META="$STATE/$TASK.meta"
+    if [ ! -f "$META" ] || [ -L "$META" ]; then
+      warn "task metadata is unavailable"
+      exit 0
+    fi
+    RECORDS=$(grep '^work_item=' "$META" 2>/dev/null | cut -d= -f2- || true)
+    [ -n "$RECORDS" ] || exit 0
+    if [ "$(printf '%s\n' "$RECORDS" | wc -l)" -ne 1 ]; then
+      notice "the task records several work items, so none of them owns a board card"
+      exit 0
+    fi
+    if ! fm_issue_work_item_parse "$RECORDS"; then
+      warn "the recorded work item is malformed"
+      exit 0
+    fi
+  fi
   if [ "$FM_ISSUE_FORGE" != github ] || [ "$FM_ISSUE_HOST" != github.com ]; then
     notice "$FM_ISSUE_URL lives on $FM_ISSUE_FORGE host $FM_ISSUE_HOST, and a GitHub project can only hold GitHub items"
     exit 0
@@ -239,7 +367,60 @@ if [ "$COMMAND" = sync ]; then
   ISSUE_NUMBER=$FM_ISSUE_NUMBER
 fi
 
-if [ "$DRY_RUN" -eq 1 ]; then
+# Resolve the board a target belongs on. Sets BOARD_URL, or leaves it empty when
+# the target deliberately has no board.
+BOARD_URL=
+resolve_declared_board() {  # <lookup-kind> <key>
+  local kind=$1 key=$2 declared rc=0
+  BOARD_URL=
+  if [ "$kind" = project ]; then
+    declared=$(fm_board_registry_board "$REGISTRY" "$key") || rc=$?
+  else
+    declared=$(fm_board_registry_board_for_tracker "$REGISTRY" "$key") || rc=$?
+  fi
+  case "$rc" in
+    0)
+      # A project that declares board=none has no board on purpose, and the home
+      # fallback must not resurrect one for it.
+      [ "$declared" = none ] || BOARD_URL=$declared
+      return 0
+      ;;
+    2)
+      warn "data/projects.md declares a board this run cannot use: $declared"
+      return 1
+      ;;
+  esac
+  return 3
+}
+
+if [ "$COMMAND" = sync ] || [ "$COMMAND" = show ]; then
+  RESOLVE_RC=0
+  if [ "$COMMAND" = sync ]; then
+    resolve_declared_board tracker "github:github.com/$ISSUE_OWNER/$ISSUE_REPO" || RESOLVE_RC=$?
+  elif [ -n "$PROJECT_ARG" ]; then
+    resolve_declared_board project "$PROJECT_ARG" || RESOLVE_RC=$?
+  else
+    RESOLVE_RC=3
+  fi
+  case "$RESOLVE_RC" in
+    # A malformed declaration was already reported, and guessing past it would
+    # write to a board the captain did not name.
+    1) exit 0 ;;
+    # An undeclared project falls back to this home's board, which is the whole
+    # of what config/project-board still decides.
+    3) BOARD_URL=$HOME_BOARD_URL ;;
+  esac
+  # No board for this target is the ordinary case for a home or a project that
+  # has none, so it is silent: nothing is wrong and nothing was skipped.
+  [ -n "$BOARD_URL" ] || exit 0
+  fm_board_url_parse "$BOARD_URL" || { warn "the resolved board URL is not a board URL: $BOARD_URL"; exit 0; }
+fi
+
+# `sync` and `show` rehearse from configuration alone and contact no host, which
+# is what makes --dry-run answerable on a machine with no network or no board
+# access. `reconcile` is the exception: drift is only knowable from the board and
+# the tracker, so its dry run still READS both and writes nothing.
+if [ "$DRY_RUN" -eq 1 ] && [ "$COMMAND" != reconcile ]; then
   printf 'board: %s\n' "$BOARD_URL"
   if [ "$COMMAND" = sync ]; then
     printf 'item: %s\n' "$ISSUE_URL"
@@ -256,66 +437,503 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-command -v gh >/dev/null 2>&1 || { warn "gh is not installed, so $BOARD_URL cannot be reached"; exit 0; }
+command -v gh >/dev/null 2>&1 || {
+  warn "gh is not installed, so ${BOARD_URL:-the declared boards} cannot be reached"
+  exit 0
+}
 
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-project-board.XXXXXX") || {
   warn "could not create a temporary working directory"
   exit 0
 }
 trap 'rm -rf -- "$WORKDIR"' EXIT
-# The caller bounds this whole script (bin/fm-work-item-milestone.sh), so being
+# A caller bounds this whole script (bin/fm-work-item-milestone.sh), so being
 # terminated mid-call is an ordinary outcome rather than a crash, and it must not
 # leave a working directory behind each time it happens.
 trap 'rm -rf -- "$WORKDIR"; trap - EXIT; exit 143' HUP INT TERM
+FM_BOARD_WORKDIR=$WORKDIR
+FM_BOARD_TIMEOUT=$CALL_TIMEOUT
 
-GQL_REASON=
-gql() {  # <output-file> <jq> <query> [-F name=value]...
-  local out=$1 filter=$2 query=$3 rc=0 bound
-  shift 3
-  # Each call takes the smaller of its own bound and whatever is left of the
-  # overall budget a caller set, so this script finishes and reports rather than
-  # being killed part-way through by the bound around it.
-  bound=$(fm_call_bound "$CALL_TIMEOUT")
-  if [ "$bound" -le 0 ]; then
-    GQL_REASON="the milestone budget was already spent, so nothing was sent"
-    return 1
-  fi
-  fm_run_timed "$bound" gh api graphql -f query="$query" "$@" --jq "$filter" \
-    > "$out" 2>"$WORKDIR/err" || rc=$?
-  case "$rc" in
-    0) return 0 ;;
-    124|137) GQL_REASON="GitHub did not answer within ${bound}s" ;;
-    125) GQL_REASON="no bounded timeout runner could start, so nothing was sent" ;;
-    *)
-      if grep -qi 'scope\|INSUFFICIENT_SCOPES\|Resource not accessible' "$WORKDIR/err" 2>/dev/null; then
-        GQL_REASON="the GitHub token is missing the 'project' scope that Projects boards require"
-      else
-        GQL_REASON="GitHub rejected the request (the board may be missing, or the credential may lack access)"
-      fi
-      ;;
-  esac
+# The first configured option whose name matches one of the candidates, matched
+# case-insensitively. Prints nothing when the board configures none of them,
+# which is the signal to report the gap rather than create the option.
+option_id_for() {  # <board-file> <candidates-on-stdin>
+  local board=$1 candidate id
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    id=$(awk -v want="$candidate" '
+      $1 == "option" {
+        id = $2
+        name = $0
+        sub(/^option [^ ]+ /, "", name)
+        if (tolower(name) == want) { print id; exit }
+      }' "$board")
+    [ -z "$id" ] || { printf '%s\n' "$id"; return 0; }
+  done
   return 1
 }
 
-# A user board and an organization board are the same query under a different
-# root field, and GraphQL has no way to pick a root field by variable, so the one
-# placeholder is substituted from the two values board_url_parse can produce.
-# shellcheck disable=SC2016  # $login/$owner/$project and friends are GraphQL variables sent verbatim; shell expansion here would break the query.
-BOARD_QUERY='query($login:String!,$number:Int!){
-  OWNER_ROOT(login:$login){
-    projectV2(number:$number){
-      id
-      title
-      field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } }
-    }
-  }
-}'
-BOARD_QUERY=${BOARD_QUERY/OWNER_ROOT/$BOARD_OWNER_TYPE}
-BOARD_FILTER=".data.$BOARD_OWNER_TYPE.projectV2 | \"project \" + .id, \"title \" + .title, \"field \" + (.field.id // \"\"), (.field.options[]? | \"option \" + .id + \" \" + .name)"
+status_in_class() {  # <status-name> <candidates-on-stdin>
+  local status candidate
+  status=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  [ -n "$status" ] && [ "$status" != - ] || return 1
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    [ "$status" != "$candidate" ] || return 0
+  done
+  return 1
+}
 
-if ! gql "$WORKDIR/board" "$BOARD_FILTER" "$BOARD_QUERY" \
-  -f "login=$BOARD_OWNER" -F "number=$BOARD_NUMBER"; then
-  warn "could not read $BOARD_URL: $GQL_REASON"
+# --- reconcile --------------------------------------------------------------
+
+SWEEP_CHANGES=0
+SWEEP_TRUNCATED=0
+SWEEP_BUDGET_SPENT=0
+
+# THE WHOLE-OPERATION BUDGET ANNOUNCES ITSELF LIKE EVERY OTHER BOUND, WHEREVER
+# IT CAN TRUNCATE THE SWEEP. It was once the one cap that could stop the sweep in
+# silence: the calls simply began refusing with a reason that goes to stderr,
+# which the session-start relay drops on purpose, so a sweep that stopped half
+# way looked exactly like one that found nothing to do. A silent cap reads as
+# complete coverage, which is the one thing this script's own header and
+# docs/configuration.md both promise it never does.
+#
+# This is the single owner of "is the budget gone". Nothing else asks the
+# question, because the same fix arriving in three instalments - the write loop's
+# own guard, then the reads, then the writes' failure branches - is what a rule
+# every call site has to remember always ends up costing.
+sweep_budget_spent() {
+  [ "$(fm_call_bound 1)" -le 0 ]
+}
+
+# EVERY CALL THE SWEEP MAKES REPORTS ITS FAILURE HERE, READ OR WRITE, AND THIS IS
+# THE ONLY PLACE THAT CLASSIFIES ONE. A failed call means one of two different
+# things, and reporting them as one would hide a truncation inside a noise line
+# the session-start relay drops on purpose: a board this run could not reach is
+# that board's problem and the sweep carries on to the next one, while the budget
+# running out is the SWEEP's problem, so it stops the sweep and is announced on
+# the sweep's own BOARD_SWEEP line rather than relayed as one more broken board.
+#
+# Setting SWEEP_BUDGET_SPENT here is what makes that announcement fire from
+# ANYWHERE: the plan loop's own guard catches it before the next row, and the
+# registry loop reads the same flag, so a call refused on the very last row of
+# the very last project still stops the sweep out loud. Callers therefore need no
+# conditional of their own - they warn through this and carry on as they would
+# for any other failure - which is what lets a call site added later inherit the
+# rule instead of having to remember it.
+sweep_call_failed() {  # <warning-text>
+  if sweep_budget_spent; then
+    SWEEP_BUDGET_SPENT=1
+    return 0
+  fi
+  echo "warning: $1" >&2
+}
+
+# Read every page of a listing into <output-file>, up to the page cap. Returns 1
+# when a page could not be read at all, and otherwise sets LISTING_STATE to the
+# one fact the write path depends on:
+#
+#   complete      a page said `end`, so the walk saw the whole listing
+#   capped        the page cap stopped the walk at a known point
+#   unfinishable  the walk cannot say where it stopped
+#
+# THAT STATE IS CARRIED, NEVER INFERRED, and this function is the only thing that
+# sets it. Three separate defects came from inferring it instead: a listing with
+# no records read as "the tracker side", a listing that stopped early read as "the
+# board holds nothing", and both of those looked downstream exactly like the
+# genuinely empty board the membership requirement exists to serve.
+#
+# ONLY A PAGE THAT SAYS `end` PROVES THE LISTING ENDED. A page carrying no cursor
+# line at all, or one that promises `more` and then names no cursor to follow, is
+# a walk that cannot say where it stopped - which is not the same fact as an
+# empty listing, however identical the two look downstream. Reading it as "the
+# listing ended here" is what would let a board that answered badly be mistaken
+# for a board that holds nothing.
+LISTING_STATE=complete
+read_all_pages() {  # <output-file> <reader> [reader-args...]
+  local out=$1 reader=$2
+  shift 2
+  local cursor='' page=0 line more
+  LISTING_STATE=unfinishable
+  : > "$out"
+  while [ "$page" -lt "$SWEEP_MAX_PAGES" ]; do
+    "$reader" "$WORKDIR/page" "$@" ${cursor:+"$cursor"} || return 1
+    grep -v '^cursor ' "$WORKDIR/page" >> "$out" || true
+    line=$(awk '$1 == "cursor" { print; exit }' "$WORKDIR/page")
+    [ -n "$line" ] || return 0
+    more=${line##* }
+    case "$more" in
+      end) LISTING_STATE=complete; return 0 ;;
+      more) ;;
+      *) return 0 ;;
+    esac
+    cursor=$(printf '%s' "$line" | awk '{ print $2 }')
+    if [ -z "$cursor" ] || [ "$cursor" = - ]; then
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  LISTING_STATE=capped
+  return 0
+}
+
+reconcile_project() {  # <project> <board-url> <owner> <repo>
+  local project=$1 board_url=$2 owner=$3 repo=$4
+  local project_id status_field added=0 corrected=0 blocked_done=0 blocked_open=0
+  local items_state issues_state join_key
+  local action number state item_id status content_id done_option open_option
+
+  fm_board_url_parse "$board_url" || {
+    echo "warning: $project declares a board that is not a board URL: $board_url" >&2
+    return 0
+  }
+  if ! fm_board_read "$WORKDIR/board" "$FM_BOARD_OWNER_TYPE" "$FM_BOARD_OWNER" "$FM_BOARD_NUMBER"; then
+    sweep_call_failed "could not read $board_url for $project: $FM_BOARD_GQL_REASON"
+    return 0
+  fi
+  project_id=$(awk '$1 == "project" { print $2; exit }' "$WORKDIR/board")
+  status_field=$(awk '$1 == "field" { print $2; exit }' "$WORKDIR/board")
+  if [ -z "$project_id" ]; then
+    echo "warning: $board_url did not resolve to a project this credential can read" >&2
+    return 0
+  fi
+
+  if ! read_all_pages "$WORKDIR/items" fm_board_items_page "$project_id"; then
+    sweep_call_failed "could not list the items on $board_url: $FM_BOARD_GQL_REASON"
+    return 0
+  fi
+  items_state=$LISTING_STATE
+  case "$items_state" in
+    capped) echo "BOARD_SWEEP: $project: $board_url has more items than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))" ;;
+    unfinishable) echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds" ;;
+  esac
+  if ! read_all_pages "$WORKDIR/issues" fm_board_tracker_issues_page "$owner" "$repo"; then
+    sweep_call_failed "could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON"
+    return 0
+  fi
+  issues_state=$LISTING_STATE
+  case "$issues_state" in
+    capped) echo "BOARD_SWEEP: $project: $owner/$repo has more issues than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))" ;;
+    unfinishable) echo "BOARD_SWEEP: $project: the issue listing for $owner/$repo stopped without saying where it had got to, so this sweep saw only part of it" ;;
+  esac
+
+  # THE WRITE PATH FAILS CLOSED ON AN INCOMPLETE VIEW, and this is the property
+  # that matters most here: the sweep may do nothing, but it must never
+  # confidently do the wrong thing to a real board. Every write it plans is an
+  # inference from comparing two listings, and neither comparison means anything
+  # unless both listings are whole - an issue is missing from a board only if it
+  # is on no page of it, and an item's status is only drift if the issue it
+  # matches was really in the tracker. So a view that is short for ANY reason
+  # plans nothing at all and says so, rather than writing the part it believes.
+  if [ "$items_state" != complete ] || [ "$issues_state" != complete ]; then
+    echo "BOARD_SWEEP: $project: this sweep saw only part of $board_url or of $owner/$repo, so it planned no changes at all; a partial view cannot tell a missing item from an unread one"
+    [ "$QUIET" -eq 0 ] && printf 'board: %s %s: 0 added, 0 status corrected (incomplete view, nothing planned)\n' "$project" "$board_url"
+    return 0
+  fi
+
+  # Join the board's items onto the tracker's issues. An item with no matching
+  # issue is deliberately absent from the output: a card a human added by hand
+  # is never removed, and reconciliation has nothing to say about it.
+  #
+  # THE JOIN KEY IS NORMALIZED ONCE PER SIDE, WHERE IT IS CONSTRUCTED, THROUGH
+  # THE ONE FUNCTION THAT OWNS THAT RULE. The two sides learn the repository's
+  # name from different places and cannot be assumed to spell it the same way:
+  # this side comes from the captain-typed tracker= token in data/projects.md,
+  # while the item's own reference is assembled in bin/fm-board-lib.sh from
+  # GitHub's `repository.owner.login` and `repository.name`, which is always
+  # GitHub's canonical casing. fm_board_identity_key states why folding both is
+  # sound as well as necessary, and lifecycle sync's registry lookup builds its
+  # key through the same function, so the two cannot drift apart. Compared
+  # byte-exactly, one capital letter would make every issue look absent, and the
+  # sweep would re-add all of them on every run forever without ever converging.
+  #
+  # The side of the join is decided by FILENAME, never by a record count: a board
+  # holding no issue items at all - a fresh one, or one carrying only draft and
+  # pull-request cards - contributes zero records, and a count-keyed join would
+  # then read the tracker as if it were the board and plan nothing at all, which
+  # is exactly the board a new board= token is pointed at first.
+  join_key=$(fm_board_identity_key "$owner/$repo")
+  awk -v key="$join_key" -v itemsfile="$WORKDIR/items" '
+    FILENAME == itemsfile {
+      if ($1 == "item" && index(tolower($3), key "#") == 1) {
+        n = $3; sub(/.*#/, "", n)
+        id[n] = $2
+        s = ""
+        for (i = 4; i <= NF; i++) s = s (i > 4 ? " " : "") $i
+        status[n] = s
+      }
+      next
+    }
+    $1 == "issue" {
+      if ($2 in id) print "have", $2, $3, id[$2], status[$2]
+      else print "add", $2, $3, "-", "-"
+    }
+  ' "$WORKDIR/items" "$WORKDIR/issues" > "$WORKDIR/plan"
+
+  done_option=$(done_class_candidates | option_id_for "$WORKDIR/board") || done_option=
+  open_option=$(open_class_candidates | option_id_for "$WORKDIR/board") || open_option=
+
+  while read -r action number state item_id status <&3; do
+    if [ "$SWEEP_CHANGES" -ge "$SWEEP_MAX_CHANGES" ]; then
+      SWEEP_TRUNCATED=1
+      break
+    fi
+    if sweep_budget_spent; then
+      SWEEP_BUDGET_SPENT=1
+      break
+    fi
+    # An added item carries no status yet, so it falls through to the status
+    # block exactly as the real run does: a closed issue that is also absent is
+    # two changes, and a dry run that charged one would rehearse a different
+    # truncation point from the run it is previewing.
+    if [ "$action" = add ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'would add: %s/%s#%s to %s\n' "$owner" "$repo" "$number" "$board_url"
+        added=$((added + 1))
+        SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
+        status=-
+      else
+        if ! fm_board_issue_id "$WORKDIR/issue" "$owner" "$repo" "$number"; then
+          sweep_call_failed "could not read $owner/$repo#$number: $FM_BOARD_GQL_REASON"
+          continue
+        fi
+        content_id=$(head -n 1 "$WORKDIR/issue")
+        if [ -z "$content_id" ]; then
+          sweep_call_failed "could not add $owner/$repo#$number to $board_url: the issue does not exist or is not readable"
+          continue
+        fi
+        if ! fm_board_item_add "$WORKDIR/item" "$project_id" "$content_id"; then
+          sweep_call_failed "could not add $owner/$repo#$number to $board_url: $FM_BOARD_GQL_REASON"
+          continue
+        fi
+        item_id=$(head -n 1 "$WORKDIR/item")
+        status=-
+        added=$((added + 1))
+        SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
+        if [ -z "$item_id" ]; then
+          sweep_call_failed "could not drive the status of $owner/$repo#$number on $board_url: GitHub returned no board item"
+          continue
+        fi
+      fi
+    fi
+
+    # Status is coarse on purpose. A closed issue reads Done; an open issue that
+    # has drifted INTO Done is moved back out. An open issue reading anything
+    # else - including nothing at all - is left exactly as the captain has it,
+    # because closed-versus-open is the only truth available for work firstmate
+    # did not dispatch.
+    if [ "$state" = CLOSED ]; then
+      if status_in_class "$status" < <(done_class_candidates); then
+        continue
+      fi
+      if [ -z "$status_field" ] || [ -z "$done_option" ]; then
+        blocked_done=$((blocked_done + 1))
+        continue
+      fi
+      if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'would set Done: %s/%s#%s on %s\n' "$owner" "$repo" "$number" "$board_url"
+      elif fm_board_item_status_set "$WORKDIR/status" "$project_id" "$item_id" "$status_field" "$done_option"; then
+        :
+      else
+        sweep_call_failed "could not set $owner/$repo#$number to Done on $board_url: $FM_BOARD_GQL_REASON"
+        continue
+      fi
+      corrected=$((corrected + 1))
+      SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
+      continue
+    fi
+
+    status_in_class "$status" < <(done_class_candidates) || continue
+    if [ -z "$status_field" ] || [ -z "$open_option" ]; then
+      blocked_open=$((blocked_open + 1))
+      continue
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf 'would move out of Done: %s/%s#%s on %s\n' "$owner" "$repo" "$number" "$board_url"
+    elif fm_board_item_status_set "$WORKDIR/status" "$project_id" "$item_id" "$status_field" "$open_option"; then
+      :
+    else
+      sweep_call_failed "could not move $owner/$repo#$number out of Done on $board_url: $FM_BOARD_GQL_REASON"
+      continue
+    fi
+    corrected=$((corrected + 1))
+    SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
+  done 3< "$WORKDIR/plan"
+
+  # A board with no option for a status the sweep needs is REPORTED, never
+  # helpfully given one: creating a single-select option rewrites the field's
+  # whole option set and blanks every item already using it.
+  [ "$blocked_done" -eq 0 ] || echo "BOARD_SWEEP: $project: $blocked_done closed issue(s) on $board_url have no Done-class Status option to move to; add one by hand, because creating one would clear the status of every item on the board"
+  [ "$blocked_open" -eq 0 ] || echo "BOARD_SWEEP: $project: $blocked_open open issue(s) read Done on $board_url and there is no open-class Status option to move them to; add one by hand, for the same reason"
+
+  if [ "$added" -gt 0 ] || [ "$corrected" -gt 0 ] || [ "$QUIET" -eq 0 ]; then
+    printf 'board: %s %s: %d added, %d status corrected\n' "$project" "$board_url" "$added" "$corrected"
+  fi
+}
+
+# --- where the next sweep starts --------------------------------------------
+
+# A TRUNCATED SWEEP RECORDS WHERE IT STOPPED, BECAUSE A REGISTRY WALKED FROM THE
+# TOP EVERY TIME STARVES ITS OWN TAIL. The budget is derived from the session
+# start's network stage and is typically single-digit seconds, so a sweep that
+# always began at the first entry would reconcile projects 1..k on every session
+# start and reach k+1 on none of them, forever, while reporting that the next
+# sweep would pick them up. The change limit converges - the writes it made cost
+# nothing next time - but a budget does not, because reading a board and its
+# tracker costs the same whether or not anything drifted.
+#
+# So the run persists the last entry it FINISHED and the next one starts after
+# it, wrapping. Every entry is then reconciled within a bounded number of
+# intervals however tight the budget gets, which is a property of the walk rather
+# than of how generous a particular session start happened to be.
+#
+# FINISHED, NOT REACHED, AND THE DIFFERENCE IS THE WHOLE POINT. An entry the
+# budget died inside was not reconciled - the flags are set from inside
+# reconcile_project, which can return having read nothing and written nothing -
+# so recording it would make the one entry a bounded sweep cannot afford the one
+# entry it never retries. That is the starvation this resume point exists to end,
+# relocated rather than removed.
+#
+# THE ONE EXCEPTION IS A RUN THAT FINISHED NOTHING AT ALL, and it exists for the
+# same reason. If the first entry a run attempts is by itself too expensive for
+# the budget, holding the cursor still would retry that same entry on every
+# session start and no other entry would ever be read, so a run that finished
+# none advances past the entry it died in and the rest of the registry gets its
+# turn. That entry waits one pass; it does not wait forever.
+#
+# THIS IS NOT state/.board-sweep, AND THAT SEPARATION IS THE POINT.
+# bin/fm-bootstrap.sh truncates that marker with `: >` every time it starts a
+# sweep, because its mtime is the interval. A resume point kept in it would be
+# erased just before the walk that reads it, and the starvation would come back
+# looking fixed.
+SWEEP_CURSOR="$STATE/.board-sweep-cursor"
+
+# A rehearsal changes nothing that outlives it, and a run naming one project is
+# not walking the fleet, so neither moves the fleet's resume point.
+sweep_walks_the_fleet() {
+  [ -z "$PROJECT_ARG" ] && [ "$DRY_RUN" -eq 0 ]
+}
+
+sweep_record_cursor() {  # <entry>
+  sweep_walks_the_fleet || return 0
+  printf '%s\n' "${1-}" > "$SWEEP_CURSOR" 2>/dev/null || true
+}
+
+sweep_resume_after() {
+  [ -f "$SWEEP_CURSOR" ] && [ ! -L "$SWEEP_CURSOR" ] || return 0
+  head -n 1 "$SWEEP_CURSOR" 2>/dev/null | tr -d '\r'
+}
+
+# The registry's entries, rotated so the walk starts after the entry the last run
+# finished. A cursor naming an entry that is no longer there matches nothing and
+# the walk starts at the top, which is the right answer for a registry the
+# captain has since edited.
+sweep_registry_order() {  # <resume-after>
+  fm_board_registry_scan "$REGISTRY" | awk -v after="${1-}" '
+    { line[NR] = $0; name[NR] = $1 }
+    END {
+      start = 0
+      if (after != "") { for (i = 1; i <= NR; i++) if (name[i] == after) { start = i; break } }
+      for (i = start + 1; i <= NR; i++) print line[i]
+      for (i = 1; i <= start; i++) print line[i]
+    }
+  '
+}
+
+# The declared boards this run did not finish: the entry it stopped in, which it
+# may have reconciled only part of or not at all, and everything after it. A
+# truncated run that could not name what it had left would report the same
+# silence a complete one does, which is the whole defect this sweep exists not to
+# have.
+sweep_unfinished() {  # <row-it-stopped-in>
+  awk -v from="${1-1}" '
+    NR >= from && $2 != "-" && $2 != "none" { names = names (names == "" ? "" : ", ") $1 }
+    END { print names }
+  ' "$WORKDIR/registry"
+}
+
+if [ "$COMMAND" = reconcile ]; then
+  # The sweep is bounded as one whole operation, not only per call, because a
+  # per-call bound alone adds up to minutes across four boards on a slow network.
+  # An inherited budget can only TIGHTEN that bound: a larger one would enlarge
+  # what FM_BOARD_SWEEP_TIMEOUT promises, and an unusable one would remove it
+  # outright, because fm_call_bound ignores a budget it cannot read.
+  SWEEP_BUDGET=$SWEEP_TIMEOUT
+  case "${FM_WRITE_BACK_BUDGET:-}" in
+    ''|*[!0-9]*) ;;
+    *) [ "$FM_WRITE_BACK_BUDGET" -ge "$SWEEP_BUDGET" ] || SWEEP_BUDGET=$FM_WRITE_BACK_BUDGET ;;
+  esac
+  FM_WRITE_BACK_BUDGET=$SWEEP_BUDGET
+  export FM_WRITE_BACK_BUDGET
+  if [ ! -f "$REGISTRY" ] || [ -L "$REGISTRY" ]; then
+    exit 0
+  fi
+  SWEPT=0
+  SWEEP_ROW=0
+  SWEEP_FINISHED=0
+  sweep_registry_order "$(sweep_resume_after)" > "$WORKDIR/registry"
+  while read -r name board tracker <&3; do
+    SWEEP_ROW=$((SWEEP_ROW + 1))
+    [ -n "$name" ] || continue
+    [ -z "$PROJECT_ARG" ] || [ "$PROJECT_ARG" = "$name" ] || continue
+    case "$board" in
+      -|none) continue ;;
+      '!')
+        echo "BOARD_SWEEP: $name: its data/projects.md entry declares more than one board=, or one with an empty value, so it was skipped"
+        continue
+        ;;
+    esac
+    if ! fm_board_url_parse "$board"; then
+      echo "BOARD_SWEEP: $name: board=$board is not a board URL, so it was skipped"
+      continue
+    fi
+    case "$tracker" in
+      -|none|'!')
+        echo "BOARD_SWEEP: $name declares a board but no usable tracker to reconcile it against, so it was skipped"
+        continue
+        ;;
+    esac
+    if ! fm_issue_tracker_parse "$tracker"; then
+      echo "BOARD_SWEEP: $name: tracker=$tracker is malformed, so its board was skipped"
+      continue
+    fi
+    if [ "$FM_ISSUE_TRACKER_FORGE" != github ] || [ "$FM_ISSUE_TRACKER_HOST" != github.com ]; then
+      echo "BOARD_SWEEP: $name tracks its work on $FM_ISSUE_TRACKER_FORGE host $FM_ISSUE_TRACKER_HOST, and a GitHub project can only hold GitHub items, so its board was skipped"
+      continue
+    fi
+    SWEPT=$((SWEPT + 1))
+    reconcile_project "$name" "$board" "${FM_ISSUE_TRACKER_PATH%%/*}" "${FM_ISSUE_TRACKER_PATH#*/}"
+    if [ "$SWEEP_TRUNCATED" -eq 1 ] || [ "$SWEEP_BUDGET_SPENT" -eq 1 ]; then
+      [ "$SWEEP_FINISHED" -gt 0 ] || sweep_record_cursor "$name"
+      break
+    fi
+    SWEEP_FINISHED=$((SWEEP_FINISHED + 1))
+    sweep_record_cursor "$name"
+  done 3< "$WORKDIR/registry"
+  if [ "$SWEEP_BUDGET_SPENT" -eq 1 ] || [ "$SWEEP_TRUNCATED" -eq 1 ]; then
+    SWEEP_UNFINISHED=$(sweep_unfinished "$SWEEP_ROW")
+    if ! sweep_walks_the_fleet; then
+      SWEEP_RESUME="this run was not the fleet walk, so it moved no resume point"
+    elif [ "$SWEEP_FINISHED" -eq 0 ]; then
+      SWEEP_RESUME="it finished none of $SWEEP_UNFINISHED, and because it could not finish even the first of them the next sweep starts after that one rather than retrying an entry this bound cannot cover"
+    else
+      SWEEP_RESUME="it did not finish $SWEEP_UNFINISHED, and the next sweep starts there"
+    fi
+    [ "$SWEEP_BUDGET_SPENT" -eq 0 ] \
+      || echo "BOARD_SWEEP: this sweep ran out of its ${SWEEP_BUDGET}s whole-operation budget before it finished, so drift may remain: $SWEEP_RESUME"
+    [ "$SWEEP_TRUNCATED" -eq 0 ] \
+      || echo "BOARD_SWEEP: this sweep stopped at its ${SWEEP_MAX_CHANGES}-change limit, so drift may remain: $SWEEP_RESUME"
+  fi
+  if [ -n "$PROJECT_ARG" ] && [ "$SWEPT" -eq 0 ] && [ "$QUIET" -eq 0 ]; then
+    printf 'board: %s declares no board to reconcile\n' "$PROJECT_ARG"
+  fi
+  exit 0
+fi
+
+# --- the configured board ---------------------------------------------------
+
+if ! fm_board_read "$WORKDIR/board" "$FM_BOARD_OWNER_TYPE" "$FM_BOARD_OWNER" "$FM_BOARD_NUMBER"; then
+  warn "could not read $BOARD_URL: $FM_BOARD_GQL_REASON"
   exit 0
 fi
 PROJECT_ID=$(awk '$1 == "project" { print $2; exit }' "$WORKDIR/board")
@@ -340,29 +958,21 @@ fi
 # --- membership -------------------------------------------------------------
 
 # Sets MEMBER_ITEM_ID rather than printing it: the failure reason travels in
-# GQL_REASON, which a command substitution's subshell would discard.
+# FM_BOARD_GQL_REASON, which a command substitution's subshell would discard.
 MEMBER_ITEM_ID=
 ensure_member() {  # <owner> <repo> <number>
   local owner=$1 repo=$2 number=$3 content_id
   MEMBER_ITEM_ID=
-  # shellcheck disable=SC2016  # GraphQL variables, sent verbatim.
-  gql "$WORKDIR/issue" '.data.repository.issue.id // empty' \
-    'query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ issue(number:$number){ id } } }' \
-    -f "owner=$owner" -f "name=$repo" -F "number=$number" || return 1
+  fm_board_issue_id "$WORKDIR/issue" "$owner" "$repo" "$number" || return 1
   content_id=$(head -n 1 "$WORKDIR/issue")
-  [ -n "$content_id" ] || { GQL_REASON="the issue does not exist or is not readable"; return 1; }
-  # addProjectV2ItemById returns the EXISTING item when the content is already on
-  # the board, so this is the idempotent membership call rather than a blind add.
-  # shellcheck disable=SC2016  # GraphQL variables, sent verbatim.
-  gql "$WORKDIR/item" '.data.addProjectV2ItemById.item.id // empty' \
-    'mutation($project:ID!,$content:ID!){ addProjectV2ItemById(input:{projectId:$project,contentId:$content}){ item { id } } }' \
-    -f "project=$PROJECT_ID" -f "content=$content_id" || return 1
+  [ -n "$content_id" ] || { FM_BOARD_GQL_REASON="the issue does not exist or is not readable"; return 1; }
+  fm_board_item_add "$WORKDIR/item" "$PROJECT_ID" "$content_id" || return 1
   MEMBER_ITEM_ID=$(head -n 1 "$WORKDIR/item")
-  [ -n "$MEMBER_ITEM_ID" ] || { GQL_REASON="GitHub returned no board item"; return 1; }
+  [ -n "$MEMBER_ITEM_ID" ] || { FM_BOARD_GQL_REASON="GitHub returned no board item"; return 1; }
 }
 
 if ! ensure_member "$ISSUE_OWNER" "$ISSUE_REPO" "$ISSUE_NUMBER"; then
-  warn "could not put $ISSUE_URL on $BOARD_URL: $GQL_REASON"
+  warn "could not put $ISSUE_URL on $BOARD_URL: $FM_BOARD_GQL_REASON"
   exit 0
 fi
 ITEM_ID=$MEMBER_ITEM_ID
@@ -371,17 +981,13 @@ ITEM_ID=$MEMBER_ITEM_ID
 # the captain reads epic progress from native sub-issue rollup rather than from a
 # field firstmate invented. A forge that does not expose the relationship is not
 # a failure: the story card is already correct without it.
-# shellcheck disable=SC2016  # GraphQL variables, sent verbatim.
-if gql "$WORKDIR/parent" \
-  '.data.repository.issue.parent | select(. != null) | "\(.repository.owner.login) \(.repository.name) \(.number)"' \
-  'query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ issue(number:$number){ parent { number repository { name owner { login } } } } } }' \
-  -f "owner=$ISSUE_OWNER" -f "name=$ISSUE_REPO" -F "number=$ISSUE_NUMBER"; then
+if fm_board_issue_parent "$WORKDIR/parent" "$ISSUE_OWNER" "$ISSUE_REPO" "$ISSUE_NUMBER"; then
   PARENT_LINE=$(head -n 1 "$WORKDIR/parent")
   if [ -n "$PARENT_LINE" ]; then
     # shellcheck disable=SC2086  # the three fields are GitHub-validated identifiers
     set -- $PARENT_LINE
     ensure_member "$1" "$2" "$3" \
-      || echo "warning: $ISSUE_URL is on $BOARD_URL but its epic could not be added: $GQL_REASON" >&2
+      || echo "warning: $ISSUE_URL is on $BOARD_URL but its epic could not be added: $FM_BOARD_GQL_REASON" >&2
   fi
 fi
 
@@ -398,21 +1004,7 @@ if [ -z "$STATUS_FIELD_ID" ]; then
   exit 0
 fi
 
-OPTION_ID=
-while IFS= read -r candidate; do
-  [ -n "$candidate" ] || continue
-  OPTION_ID=$(awk -v want="$candidate" '
-    $1 == "option" {
-      id = $2
-      name = $0
-      sub(/^option [^ ]+ /, "", name)
-      if (tolower(name) == want) { print id; exit }
-    }' "$WORKDIR/board")
-  [ -z "$OPTION_ID" ] || break
-done <<EOF
-$CANDIDATES
-EOF
-
+OPTION_ID=$(printf '%s\n' "$CANDIDATES" | option_id_for "$WORKDIR/board") || OPTION_ID=
 if [ -z "$OPTION_ID" ]; then
   # Adding the option would rewrite the field's whole option set and detach every
   # item already using one, so the gap is reported and the board left alone.
@@ -420,12 +1012,9 @@ if [ -z "$OPTION_ID" ]; then
   exit 0
 fi
 
-# shellcheck disable=SC2016  # GraphQL variables, sent verbatim.
-if gql "$WORKDIR/status" '.data.updateProjectV2ItemFieldValue.projectV2Item.id // empty' \
-  'mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){ updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){ projectV2Item { id } } }' \
-  -f "project=$PROJECT_ID" -f "item=$ITEM_ID" -f "field=$STATUS_FIELD_ID" -f "option=$OPTION_ID"; then
+if fm_board_item_status_set "$WORKDIR/status" "$PROJECT_ID" "$ITEM_ID" "$STATUS_FIELD_ID" "$OPTION_ID"; then
   printf 'board: %s tracks %s\n' "$BOARD_URL" "$ISSUE_URL"
   exit 0
 fi
-echo "warning: $ISSUE_URL is on $BOARD_URL, but its status could not be set: $GQL_REASON" >&2
+echo "warning: $ISSUE_URL is on $BOARD_URL, but its status could not be set: $FM_BOARD_GQL_REASON" >&2
 exit 0
