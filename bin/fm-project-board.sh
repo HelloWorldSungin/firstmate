@@ -66,8 +66,16 @@
 # is additionally bounded as a whole operation by FM_BOARD_SWEEP_TIMEOUT seconds
 # (default 240), reads at most FM_BOARD_SWEEP_MAX_PAGES pages of 100 per listing
 # (default 20), and performs at most FM_BOARD_SWEEP_MAX_CHANGES writes per run
-# (default 50). Every bound that actually truncates something says so on a
+# (default 50). A caller that is itself bounded hands its own tighter share down
+# as FM_WRITE_BACK_BUDGET, which always wins over the default; bin/fm-bootstrap.sh
+# does exactly that, so a slow board cannot outlive the session-start stage that
+# contains it. Every bound that actually truncates something says so on a
 # BOARD_SWEEP: line, because a silent cap reads as "everything was covered".
+#
+# What a bound truncates it does not then guess past: a walk that saw only part
+# of a board's items reconciles the status of what it saw and adds no membership
+# at all, because "this issue is on no page" is not knowable from a page that was
+# never read.
 #
 # FAIL OPEN. A board that is unreachable, unauthorized, rate-limited, or missing
 # prints one "warning:" line on stderr and exits 0. It can never block or fail
@@ -260,6 +268,26 @@ if [ -f "$BOARD_CONFIG" ] && [ ! -L "$BOARD_CONFIG" ]; then
   fi
 fi
 
+# Does this home have ANY board - a fallback, or a registry entry that declares
+# one? A malformed declaration counts as declaring something, because a typo must
+# still be reported rather than read as "this home has no boards".
+registry_declares_a_board() {
+  fm_board_registry_scan "$REGISTRY" 2>/dev/null \
+    | awk '$2 != "-" { found = 1; exit } END { exit !found }'
+}
+
+# A home with no board anywhere has nothing any target could resolve to, so it
+# says nothing and fails at nothing - the ordinary case for a home that has none,
+# and the one this command answered first before a project could declare its own
+# board. It is asked here, ahead of the target, because it is the one question
+# that needs no target: resolving a board FROM the issue's tracker is what forces
+# the target to be parsed at all, and a home with no boards has nothing to
+# resolve. `reconcile` is excluded because it reports a named --project that
+# declares no board rather than exiting silently.
+if [ "$COMMAND" != reconcile ] && [ -z "$HOME_BOARD_URL" ] && ! registry_declares_a_board; then
+  exit 0
+fi
+
 # --- target issue -----------------------------------------------------------
 
 ISSUE_URL=
@@ -422,34 +450,55 @@ SWEEP_CHANGES=0
 SWEEP_TRUNCATED=0
 
 # Read every page of a listing into <output-file>, up to the page cap. Returns 1
-# when a page could not be read, and sets PAGES_COMPLETE to 0 when the cap
-# stopped the walk before the listing ended, so a partial view is reported rather
-# than mistaken for a complete one.
+# when a page could not be read, and sets PAGES_COMPLETE to 0 when the walk
+# stopped short of the listing's end, so a partial view is reported rather than
+# mistaken for a complete one. PAGES_TRUNCATED_BY_CAP says which kind of short it
+# was, because the two have different things to tell the captain.
+#
+# ONLY A PAGE THAT SAYS `end` PROVES THE LISTING ENDED. A page carrying no cursor
+# line at all, or one that promises `more` and then names no cursor to follow, is
+# a walk that cannot say where it stopped - which is not the same fact as an
+# empty listing, however identical the two look downstream. Reading it as "the
+# listing ended here" is what would let a board that answered badly be mistaken
+# for a board that holds nothing.
 PAGES_COMPLETE=1
+PAGES_TRUNCATED_BY_CAP=0
 read_all_pages() {  # <output-file> <reader> [reader-args...]
   local out=$1 reader=$2
   shift 2
   local cursor='' page=0 line more
   PAGES_COMPLETE=1
+  PAGES_TRUNCATED_BY_CAP=0
   : > "$out"
   while [ "$page" -lt "$SWEEP_MAX_PAGES" ]; do
     "$reader" "$WORKDIR/page" "$@" ${cursor:+"$cursor"} || return 1
     grep -v '^cursor ' "$WORKDIR/page" >> "$out" || true
     line=$(awk '$1 == "cursor" { print; exit }' "$WORKDIR/page")
-    [ -n "$line" ] || return 0
+    if [ -z "$line" ]; then
+      PAGES_COMPLETE=0
+      return 0
+    fi
     more=${line##* }
-    [ "$more" = more ] || return 0
+    case "$more" in
+      end) return 0 ;;
+      more) ;;
+      *) PAGES_COMPLETE=0; return 0 ;;
+    esac
     cursor=$(printf '%s' "$line" | awk '{ print $2 }')
-    [ -n "$cursor" ] && [ "$cursor" != - ] || return 0
+    if [ -z "$cursor" ] || [ "$cursor" = - ]; then
+      PAGES_COMPLETE=0
+      return 0
+    fi
     page=$((page + 1))
   done
   PAGES_COMPLETE=0
+  PAGES_TRUNCATED_BY_CAP=1
   return 0
 }
 
 reconcile_project() {  # <project> <board-url> <owner> <repo>
   local project=$1 board_url=$2 owner=$3 repo=$4
-  local project_id status_field added=0 corrected=0 blocked_done=0 blocked_open=0
+  local project_id status_field added=0 corrected=0 blocked_done=0 blocked_open=0 items_complete=1
   local action number state item_id status content_id done_option open_option
 
   fm_board_url_parse "$board_url" || {
@@ -471,16 +520,31 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     echo "warning: could not list the items on $board_url: $FM_BOARD_GQL_REASON" >&2
     return 0
   fi
-  [ "$PAGES_COMPLETE" -eq 1 ] || {
-    echo "BOARD_SWEEP: $project: $board_url has more items than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))"
-  }
+  # MEMBERSHIP NEEDS THE WHOLE ITEM LISTING, AND NOTHING LESS PROVES ANYTHING.
+  # An issue is missing from a board only if it is on no page of it, so a walk
+  # that saw part of the board cannot tell membership from a page it never read,
+  # and adding on that basis would spend the whole change budget re-adding items
+  # that were already there. Status for the items the walk DID see is still
+  # sound, so those are reconciled as usual.
+  items_complete=$PAGES_COMPLETE
+  if [ "$PAGES_COMPLETE" -eq 0 ]; then
+    if [ "$PAGES_TRUNCATED_BY_CAP" -eq 1 ]; then
+      echo "BOARD_SWEEP: $project: $board_url has more items than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100)) and left membership alone"
+    else
+      echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds and left membership alone"
+    fi
+  fi
   if ! read_all_pages "$WORKDIR/issues" fm_board_tracker_issues_page "$owner" "$repo"; then
     echo "warning: could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON" >&2
     return 0
   fi
-  [ "$PAGES_COMPLETE" -eq 1 ] || {
-    echo "BOARD_SWEEP: $project: $owner/$repo has more issues than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))"
-  }
+  if [ "$PAGES_COMPLETE" -eq 0 ]; then
+    if [ "$PAGES_TRUNCATED_BY_CAP" -eq 1 ]; then
+      echo "BOARD_SWEEP: $project: $owner/$repo has more issues than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))"
+    else
+      echo "BOARD_SWEEP: $project: the issue listing for $owner/$repo stopped without saying where it had got to, so this sweep saw only part of it"
+    fi
+  fi
 
   # Join the board's items onto the tracker's issues. An item with no matching
   # issue is deliberately absent from the output: a card a human added by hand
@@ -491,7 +555,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   # pull-request cards - contributes zero records, and a count-keyed join would
   # then read the tracker as if it were the board and plan nothing at all, which
   # is exactly the board a new board= token is pointed at first.
-  awk -v key="$owner/$repo" -v itemsfile="$WORKDIR/items" '
+  awk -v key="$owner/$repo" -v itemsfile="$WORKDIR/items" -v membership="$items_complete" '
     FILENAME == itemsfile {
       if ($1 == "item" && index($3, key "#") == 1) {
         n = $3; sub(/.*#/, "", n)
@@ -504,7 +568,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     }
     $1 == "issue" {
       if ($2 in id) print "have", $2, $3, id[$2], status[$2]
-      else print "add", $2, $3, "-", "-"
+      else if (membership == 1) print "add", $2, $3, "-", "-"
     }
   ' "$WORKDIR/items" "$WORKDIR/issues" > "$WORKDIR/plan"
 

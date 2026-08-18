@@ -446,12 +446,18 @@ EOF
       downgraded=1
     fi
   fi
+  # The bound is handed DOWN as well as enforced, so a phase that carries its own
+  # whole-operation budget can take a share of what contains it instead of
+  # standing beside it as a second constant. stage_budget stays the one owner of
+  # the number; nothing downstream repeats its default.
   if [ "$sweep_locked" -eq 1 ]; then
     fm_run_timed "$budget" env FM_BOOTSTRAP_NETWORK=only \
+      FM_STARTUP_NETWORK_TIMEOUT="$budget" \
       FM_BOOTSTRAP_NETWORK_LOCK_PID="$lock_pid" \
       "$SCRIPT_DIR/fm-bootstrap.sh" >"$out" 2>&1 || rc=$?
   else
     fm_run_timed "$budget" env FM_BOOTSTRAP_NETWORK=only FM_BOOTSTRAP_DETECT_ONLY=1 \
+      FM_STARTUP_NETWORK_TIMEOUT="$budget" \
       "$SCRIPT_DIR/fm-bootstrap.sh" >"$out" 2>&1 || rc=$?
   fi
   [ "$lease_held" -eq 0 ] || fm_lock_release "$STATE/.lock.acquire"

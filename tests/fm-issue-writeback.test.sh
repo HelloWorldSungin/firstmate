@@ -24,7 +24,8 @@
 #   (g) a note carrying a credential, an absolute path, a firstmate marker, or a
 #       value the task's own record marks private is withheld before anything is
 #       published, while the milestone itself still lands
-#   (h) the board is inert without configuration, idempotent with it, never
+#   (h) the board is inert without configuration - silently, and without being
+#       able to fail, whatever target it is handed - idempotent with it, never
 #       reshapes the captain's board to fit a milestone, and never touches a
 #       field's option set, which would detach every item already using one
 #   (i) the fan-out updates both surfaces, one broken surface never stops the
@@ -52,8 +53,9 @@
 #       reconciles against a real issue listing rather than a
 #       pull-request-inflated count, walks every page, reports a missing option
 #       instead of creating one, bounds and announces its own truncation at the
-#       same point a dry run rehearses, and fails open on every board failure
-#       mode
+#       same point a dry run rehearses, never mistakes a listing that could not
+#       say where it stopped for one that ended, and fails open on every board
+#       failure mode
 #   (m) no lookup that could not PROVE there is no status comment ever resolves
 #       itself by creating one: discovery walks past a host that clamps its page
 #       size below the limit asked for, and both a list longer than the walk and
@@ -253,6 +255,15 @@ emit_page() {  # <nodes-json> <wrapper-jq>
   total=$(printf '%s' "$nodes" | jq 'length')
   slice=$(printf '%s' "$nodes" | jq --argjson s "$start" --argjson n "$size" '.[$s:($s+$n)]')
   if [ $((start + size)) -lt "$total" ]; then more=true; else more=false; fi
+  # A page that promises more and then names no cursor to follow is a real
+  # answer a host can give, and it is the one a caller must not read as "the
+  # listing ended here". Nothing else about the page changes, so the difference
+  # between an unfinishable walk and a finished one is the only variable.
+  if [ -n "${FM_FAKE_GH_ITEMS_CURSOR_LOST:-}" ] && [ "$wrapper" = items ]; then
+    emit "$(jq -n --argjson nodes "$slice" --argjson more "$more" \
+      '{pageInfo:{hasNextPage:$more, endCursor:null}, nodes:$nodes} | {data:{node:{items:.}}}')"
+    return 0
+  fi
   emit "$(jq -n --argjson nodes "$slice" --argjson more "$more" \
     --arg cursor "c$((start + size))" --arg wrapper "$wrapper" \
     '{pageInfo:{hasNextPage:$more, endCursor:$cursor}, nodes:$nodes}' \
@@ -1243,6 +1254,39 @@ test_the_board_is_inert_without_configuration() {
   pass "without config/project-board nothing is written and no host is contacted"
 }
 
+# A home with no board anywhere is the ordinary case, and today it is EVERY home
+# until a captain adds the first board= token. It has to stay completely inert
+# there: silent on a work item no GitHub board could hold, and unable to fail at
+# all, because a board this home does not have cannot be a reason a milestone
+# reports a problem.
+test_a_home_with_no_board_is_inert_whatever_it_is_handed() {
+  local dir out rc
+  dir=$(board_case boardlessgitea '')
+  printf 'work_item=declared|gitea|https://git.example.com/acme/widget/issues/7\n' >> "$dir/state/task-1.meta"
+  sed -i.bak '/^work_item=declared|github/d' "$dir/state/task-1.meta" && rm -f "$dir/state/task-1.meta.bak"
+  out=$(run_board "$dir" sync --task task-1 --milestone dispatched) \
+    || fail "a boardless home must not fail on a non-GitHub work item"
+  [ -z "$out" ] || fail "a boardless home reported a board it does not have, got: $out"
+
+  rc=0
+  out=$(run_board "$dir" sync --issue not-a-url --milestone dispatched) || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "a boardless home failed the command over a target no board would have read, exit $rc: $out"
+  [ -z "$out" ] || fail "a boardless home reported a target it never had a board for, got: $out"
+  assert_absent "$dir/store/calls.log" "a boardless home contacted GitHub"
+
+  # The same home once a project declares a board: now the target genuinely
+  # matters again, so the checks above cannot be passing because sync went quiet
+  # everywhere.
+  mkdir -p "$dir/data"
+  printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n' \
+    > "$dir/data/projects.md"
+  rc=0
+  out=$(run_board "$dir" sync --issue not-a-url --milestone dispatched) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a home that declares a board accepted a malformed --issue: $out"
+  pass "a home with no board anywhere stays silent and cannot fail, whatever target it is handed"
+}
+
 test_board_membership_and_status_are_idempotent() {
   local dir out
   dir=$(board_case boardsync)
@@ -1876,6 +1920,29 @@ test_the_sweep_walks_every_page_of_a_board_and_a_tracker() {
   pass "the walk reaches the last page of both listings, so late drift is found and late items are not re-added"
 }
 
+# An item listing that stops without saying where it got to looks exactly like a
+# board that holds nothing, and the two have opposite consequences: one means
+# every tracker issue is missing membership, the other means the sweep cannot
+# tell. Reading the first as the second spends the whole change budget re-adding
+# items that were already there and reports it as drift it found.
+test_an_unfinishable_item_listing_is_not_read_as_an_empty_board() {
+  local dir out
+  dir=$(sweep_case sweeplostcursor)
+  seed_tracker "$dir" '1 CLOSED' '2 OPEN' '3 OPEN'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'Todo'
+  seed_item "$dir" acme widget 3 'Todo'
+  out=$(FM_FAKE_GH_PAGE_SIZE=2 FM_FAKE_GH_ITEMS_CURSOR_LOST=1 run_board "$dir" reconcile) \
+    || fail "an unfinishable listing must not fail the sweep: $out"
+  [ "$(log_count "$dir" add)" = 0 ] \
+    || fail "membership was re-added for an issue on a page the walk never read, got $(log_count "$dir" add) adds"
+  assert_contains "$out" 'left membership alone' \
+    "the sweep did not report that it could not tell what the board holds"
+  [ "$(item_status "$dir" acme widget 1)" = Done ] \
+    || fail "drift on an item the walk DID see was skipped, got '$(item_status "$dir" acme widget 1)'"
+  pass "a listing that cannot say where it stopped is reported, and never mistaken for an empty board"
+}
+
 test_a_board_with_no_done_option_is_reported_never_given_one() {
   local dir out
   dir=$(sweep_case sweepnooption)
@@ -1989,6 +2056,7 @@ test_gitea_symlinked_token_is_refused_before_any_call
 test_gitea_dry_run_renders_without_a_credential_or_a_call
 test_gitea_milestone_fanout_updates_the_comment
 test_the_board_is_inert_without_configuration
+test_a_home_with_no_board_is_inert_whatever_it_is_handed
 test_board_membership_and_status_are_idempotent
 test_the_board_is_never_reshaped_to_fit_a_milestone
 test_the_board_never_mutates_the_captains_field_schema
@@ -2014,6 +2082,7 @@ test_the_sweep_writes_only_membership_and_a_status_value
 test_every_board_failure_mode_leaves_the_fleet_work_unaffected
 test_the_sweep_reconciles_against_issues_not_the_pull_request_inflated_count
 test_the_sweep_walks_every_page_of_a_board_and_a_tracker
+test_an_unfinishable_item_listing_is_not_read_as_an_empty_board
 test_a_board_with_no_done_option_is_reported_never_given_one
 test_the_change_limit_truncates_loudly
 test_a_dry_run_reports_the_drift_and_writes_nothing

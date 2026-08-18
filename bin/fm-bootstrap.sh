@@ -322,7 +322,10 @@ usage_store_refresh() {
 # declares none - which is every home until the captain adds the token - does
 # nothing here and contacts no host.
 #
-# bin/fm-project-board.sh owns what the sweep may write and every bound on it.
+# bin/fm-project-board.sh owns what the sweep may write, and its own bounds hold
+# for a direct run. Inside the deferred network stage it gets a TIGHTER one, for
+# the reason board_sweep_budget states.
+#
 # Only its actionable lines are relayed: a board this run could not reach is not
 # a fleet diagnostic, because the next sweep re-derives exactly the same drift,
 # and a session start that reported every transient network hiccup would train
@@ -340,18 +343,58 @@ board_sweep_due() {
   [ $((now - mtime)) -ge "$interval" ]
 }
 
+# The sweep's share of the stage that contains it, or 0 when there is too little
+# of that stage left to be worth starting one.
+#
+# fm-startup-network.sh bounds the whole deferred network stage and kills it by
+# process group, so a sweep carrying only its own larger default would take the
+# checks that run after it down with it - a board problem becoming a fleet
+# problem, which is the one thing this sweep may never do. The bound is handed
+# down rather than repeated here, so the two cannot drift apart when either
+# default changes; an unset value means this is a direct run outside the stage,
+# where the script's own FM_BOARD_SWEEP_TIMEOUT is the right bound.
+#
+# Half of what is left, because upstream_status_check and vault_drift_check
+# still have to run after this and are owed the other half.
+BOARD_SWEEP_GRACE=2
+BOARD_SWEEP_MIN_BUDGET=5
+board_sweep_budget() {
+  local stage=${FM_STARTUP_NETWORK_TIMEOUT:-} left
+  case "$stage" in ''|*[!0-9]*|0) echo ''; return 0 ;; esac
+  left=$((stage - SECONDS))
+  [ "$left" -gt 0 ] || { echo 0; return 0; }
+  echo $((left / 2))
+}
+
 board_sweep() {
-  local tmp
+  local tmp budget
   [ -x "$FM_ROOT/bin/fm-project-board.sh" ] || return 0
   [ -f "$DATA/projects.md" ] || return 0
   grep -q '\[[^]]*board=' "$DATA/projects.md" 2>/dev/null || return 0
   board_sweep_due || return 0
+  budget=$(board_sweep_budget)
+  # Checked before the marker is stamped, so a session start that had no room
+  # for the sweep leaves the next one free to run it rather than burning the
+  # interval on a sweep that never happened.
+  [ -z "$budget" ] || [ "$budget" -ge "$BOARD_SWEEP_MIN_BUDGET" ] || return 0
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-board-sweep.XXXXXX" 2>/dev/null) || return 0
   # The marker is stamped BEFORE the run, so a sweep that dies part-way through
   # waits out its interval like any other rather than retrying on every session
   # start against a board that is already refusing it.
   : > "$STATE/.board-sweep" 2>/dev/null || true
-  "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet >"$tmp" 2>/dev/null || true
+  if [ -n "$budget" ]; then
+    # The budget is what the sweep spends across its own calls and reports on;
+    # the bound around it is a backstop with a little grace, for the case a
+    # budget cannot cover. Both are scoped to this one call so no other sweep
+    # inherits either.
+    (
+      export FM_WRITE_BACK_BUDGET=$budget
+      fm_run_timed "$((budget + BOARD_SWEEP_GRACE))" \
+        "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet
+    ) >"$tmp" 2>/dev/null || true
+  else
+    "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet >"$tmp" 2>/dev/null || true
+  fi
   grep '^BOARD_SWEEP:' "$tmp" || true
   awk '/^board: /{ sub(/^board: /, ""); print "BOARD_SWEEP: " $0 }' "$tmp" || true
   rm -f "$tmp"
