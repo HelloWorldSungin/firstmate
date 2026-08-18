@@ -1455,34 +1455,50 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
 }
 
 test_crew_dispatch_backend_mismatch() {
-  # S2: a valid cursor/agy dispatch profile on a NON-herdr backend is unusable
-  # (every matching task is refused at spawn), so bootstrap must diagnose it here
-  # rather than deferring the surprise to task intake. On herdr it stays silent.
+  # S2: a valid agy dispatch profile on a NON-herdr backend is unusable (every
+  # matching task is refused at spawn), so bootstrap must diagnose it here rather
+  # than deferring the surprise to task intake. On herdr it stays silent. cursor
+  # is deliberately excluded: it is an ordinary verified harness on every spawn
+  # backend, and the case below proves it draws no mismatch warning on tmux.
   local case_dir fakebin out h
-  for h in cursor agy; do
-    case_dir="$TMP_ROOT/dispatch-mismatch-$h"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    printf '%s\n' tmux > "$case_dir/home/config/backend"
-    printf '{"rules":[{"when":"paid sub work","use":{"harness":"%s","model":"m1"}}]}\n' "$h" \
-      > "$case_dir/home/config/crew-dispatch.json"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    add_real_jq "$fakebin"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
-      || fail "$h on tmux backend should warn of a backend mismatch, got: $out"
-    printf '%s\n' "$out" | grep -q "($h)" \
-      || fail "$h backend-mismatch warning should name the harness, got: $out"
+  h=agy
+  case_dir="$TMP_ROOT/dispatch-mismatch-$h"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' tmux > "$case_dir/home/config/backend"
+  printf '{"rules":[{"when":"paid sub work","use":{"harness":"%s","model":"m1"}}]}\n' "$h" \
+    > "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    || fail "$h on tmux backend should warn of a backend mismatch, got: $out"
+  printf '%s\n' "$out" | grep -q "($h)" \
+    || fail "$h backend-mismatch warning should name the harness, got: $out"
 
-    # Same config on herdr must NOT warn of a mismatch (cursor/agy are usable there).
-    printf '%s\n' herdr > "$case_dir/home/config/backend"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
-      && fail "$h on the herdr backend must NOT warn of a backend mismatch, got: $out"
-  done
-  pass "bootstrap warns when a cursor/agy dispatch profile is configured on a non-herdr backend"
+  # Same config on herdr must NOT warn of a mismatch (agy is usable there).
+  printf '%s\n' herdr > "$case_dir/home/config/backend"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    && fail "$h on the herdr backend must NOT warn of a backend mismatch, got: $out"
+
+  # cursor is no longer backend-restricted, so the identical profile on tmux must
+  # stay silent. Without this the check could quietly go back to warning on it.
+  case_dir="$TMP_ROOT/dispatch-mismatch-cursor-ok"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' tmux > "$case_dir/home/config/backend"
+  printf '{"rules":[{"when":"composer work","use":{"harness":"cursor","model":"m1"}}]}\n' \
+    > "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    && fail "cursor is an ordinary verified harness and must not warn of a backend mismatch on tmux, got: $out"
+  pass "bootstrap warns for an agy dispatch profile on a non-herdr backend and leaves cursor alone"
 }
 
 test_crew_dispatch_validation() {

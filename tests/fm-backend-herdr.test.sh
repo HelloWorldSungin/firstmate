@@ -3844,15 +3844,22 @@ test_send_text_submit_blocked_baseline_never_reaches_the_busy_queue_conversion()
   local dir log resp fb out enter_count read_count agent_gets
   dir="$TMP_ROOT/submit-blocked-baseline"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   # 1: send-text  2: baseline blocked (submit-active -> composer branch)
-  # 3: enter  4: pane read -> pending  5: enter  6: pane read -> pending
+  # 3: rendered footer baseline, taken before the first Enter and carrying no
+  #    busy token, because the approval dialog is not a turn in flight
+  # 4: enter  5: composer -> pending  6: footer -> still no busy token
+  # 7: enter  8: composer -> pending  9: footer -> still no busy token
+  # No turn ever starts, so the rendered-footer conversion cannot fire either.
   # The Enter retry budget is now spent. A blocked baseline stops here, so
-  # 7.out/8.out are deliberately canned as the shape that WOULD convert
+  # 10.out/11.out are deliberately canned as the shape that WOULD convert
   # (still-pending composer, still-blocked agent) and must never be consumed.
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
-  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/3.out"
+  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/5.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/8.out"
+  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/8.out"
+  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/9.out"
+  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/10.out"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "needs approval" 2 0.01 0.01' "$ROOT" )
@@ -3860,7 +3867,7 @@ test_send_text_submit_blocked_baseline_never_reaches_the_busy_queue_conversion()
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 2 ] || fail "a blocked baseline should still spend the full Enter retry budget, sent $enter_count Enter(s)"
   read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 2 ] || fail "a blocked baseline must short-circuit before the tail composer re-read, made $read_count read(s)"
+  [ "$read_count" -eq 5 ] || fail "a blocked baseline must short-circuit before the tail composer re-read, made $read_count read(s)"
   agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
   [ "$agent_gets" -eq 1 ] || fail "a blocked baseline must never consult native agent-state again after the baseline read, made $agent_gets agent get(s)"
   pass "fm_backend_herdr_send_text_submit: a target already blocked before the send keeps the honest 'pending' verdict instead of reading its retained composer text as a queued Enter"

@@ -350,28 +350,38 @@ test_herdr_native_busy_only() {
   pass "herdr's native busy verdict never masks a trusted or invalid converted-harness record"
 }
 
-test_cursor_agy_native_busy_requires_live_identity() {
-  local state out harness other id
-  state=$(new_state_dir herdr-cursor-agy-identity)
+# agy is the one adapter whose Herdr busy verdict still rests on native
+# agent-state, so its identity gate is what keeps another harness's turn from
+# being read as agy's. cursor left this arm when it moved to its own transcript
+# source; the cursor case below proves it no longer reaches native state at all,
+# which is what makes narrowing the arm to agy safe rather than a silent loss.
+test_agy_native_busy_requires_live_identity() {
+  local state out id
+  state=$(new_state_dir herdr-agy-identity)
   # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
   fm_backend_busy_state() { printf 'busy'; }
   # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
   fm_backend_agent_identity_busy_state() { printf '%s\tbusy' "$FAKE_AGENT_IDENTITY"; }
-  for harness in cursor agy; do
-    case "$harness" in cursor) other=agy ;; *) other=cursor ;; esac
-    id="t-$harness"
-    "$EV" arm "$state" "$id" >/dev/null
-    FAKE_AGENT_IDENTITY=$harness
-    out=$(fm_busy_classify herdr s:p "$harness" "$id" "$state")
-    [ "$out" = "busy herdr-native" ] \
-      || fail "matching live $harness identity did not override source mismatch, got '$out'"
-    FAKE_AGENT_IDENTITY=$other
-    out=$(fm_busy_classify herdr s:p "$harness" "$id" "$state")
-    [ "$out" = "unknown source-mismatch" ] \
-      || fail "mismatched live identity was masked by native busy for $harness, got '$out'"
-  done
+  id=t-agy
+  "$EV" arm "$state" "$id" >/dev/null
+  FAKE_AGENT_IDENTITY=agy
+  out=$(fm_busy_classify herdr s:p agy "$id" "$state")
+  [ "$out" = "busy herdr-native" ] \
+    || fail "matching live agy identity did not override source mismatch, got '$out'"
+  FAKE_AGENT_IDENTITY=cursor
+  out=$(fm_busy_classify herdr s:p agy "$id" "$state")
+  [ "$out" = "unknown source-mismatch" ] \
+    || fail "mismatched live identity was masked by native busy for agy, got '$out'"
+
+  # cursor on the same backend with the same native busy signal: it must fold its
+  # own transcript instead, so a herdr-native busy can never speak for it.
+  "$EV" arm "$state" t-cursor >/dev/null
+  FAKE_AGENT_IDENTITY=cursor
+  out=$(fm_busy_classify herdr s:p cursor t-cursor "$state")
+  [ "$out" = "unknown cursor-transcript" ] \
+    || fail "cursor must classify from its own transcript, never herdr-native busy, got '$out'"
   unset -f fm_backend_busy_state fm_backend_agent_identity_busy_state
-  pass "cursor and agy native busy requires matching live identity"
+  pass "agy native busy requires matching live identity, and cursor never reaches it"
 }
 
 # The record parser runs inside sourcing callers (the watcher, the daemon, the
@@ -435,7 +445,7 @@ test_kimi_unverified_gate
 test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
-test_cursor_agy_native_busy_requires_live_identity
+test_agy_native_busy_requires_live_identity
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

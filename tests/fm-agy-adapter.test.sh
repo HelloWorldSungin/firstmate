@@ -164,11 +164,11 @@ SH
 }
 
 test_raw_command_bypass_refused() {
-  # B1: the raw launch-command escape hatch must not slip a cursor/agy launch past
-  # the crew-only/herdr-only gates. A raw command that RESOLVES to cursor-agent or
-  # agy - directly, via env, or behind assignment prefixes - is refused outright,
-  # on every dimension (the raw hatch cannot provide the trust seed / native
-  # supervision cursor/agy need). Each variant is tried on a forbidden dimension.
+  # B1: the raw launch-command escape hatch must not slip an agy launch past the
+  # crew-only/herdr-only gates. A raw command that RESOLVES to agy - directly, via
+  # env, or behind assignment prefixes - is refused outright, on every dimension
+  # (the raw hatch cannot provide the trust seed / native supervision agy needs).
+  # Each variant is tried on a forbidden dimension.
   local variant extra want id home proj fakebin out status ship_flags n=0
   # <raw command>|<extra spawn args>|<expected-restricted-harness>
   while IFS='|' read -r variant extra want; do
@@ -208,7 +208,7 @@ AGY=agy bash -lc '$AGY --dangerously-skip-permissions'||unresolved
 bash -lc 'x=agy; eval "$x --dangerously-skip-permissions"'||unresolved
 bash -lc 'a=a; g=gy; $a$g --x'||unresolved
 ROWS
-  pass "raw launch commands resolving to cursor-agent/agy are refused (direct, env, assignment, wrapper, and variable indirection)"
+  pass "raw launch commands resolving to agy are refused (direct, env, assignment, wrapper, and variable indirection)"
 }
 
 # --- exec-time raw guard installed by a real raw spawn ----------------------
@@ -269,15 +269,17 @@ test_raw_spawn_installs_exec_time_guard() {
 
   guard="/tmp/fm-$id/raw-guard"
   assert_present "$guard/agy" "raw spawn did not install the agy exec-time guard shim"
-  assert_present "$guard/cursor-agent" "raw spawn did not install the cursor-agent guard shim"
-  assert_present "$guard/cursor" "raw spawn did not install the cursor guard shim"
   [ -x "$guard/agy" ] || fail "installed agy guard shim is not executable"
+  # cursor is an ordinary verified harness now, so it gets no shim: a raw cursor
+  # launch bypasses no gate and must not be blocked.
+  [ -e "$guard/cursor-agent" ] && fail "cursor-agent must no longer be guarded from the raw hatch"
+  [ -e "$guard/cursor" ] && fail "cursor must no longer be guarded from the raw hatch"
   # The refusing shim, when run, must block and exit non-zero.
   "$guard/agy" >/dev/null 2>&1 && fail "the installed agy guard shim did not refuse"
   # fm-spawn must have prepended the guard dir to the pane PATH before the launch.
   assert_grep "export PATH='$guard'" "$sendlog" "fm-spawn did not prepend the raw-guard dir to the pane PATH"
   rm -rf "/tmp/fm-$id"
-  pass "a real raw spawn installs the exec-time cursor/agy guard and prepends it to the pane PATH"
+  pass "a real raw spawn installs the exec-time agy guard and prepends it to the pane PATH"
 }
 
 # --- teardown workspace-trust cleanup ---------------------------------------

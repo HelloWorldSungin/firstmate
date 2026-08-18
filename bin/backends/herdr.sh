@@ -3232,8 +3232,13 @@ EOF
     "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
   baseline=$(fm_backend_herdr_classify_submit_agent_status "$baseline_raw")
   # Typing never starts a turn, so a footer read taken after the literal send
-  # and before the first Enter is still a pre-submission baseline.
-  [ "$baseline" = idle ] || footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
+  # and before the first Enter is still a pre-submission baseline. It is only
+  # ever consulted by the rendered-footer conversion below, which refuses a
+  # native `working` baseline outright, so skip the read entirely in that case
+  # rather than spending a pane read no verdict can use.
+  if [ "$baseline" != idle ] && [ "$baseline_raw" != working ]; then
+    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
+  fi
   i=0
   while :; do
     if ! fm_backend_herdr_send_key "$target" Enter; then
