@@ -390,6 +390,38 @@ equal("a task the retained read lacks is still unavailable", staleMissingRow.usa
 check("a task the retained read lacks says the read is the old one, not that nothing was attributed",
   /last good/.test(staleMissingRow.usage.reason), staleMissingRow.usage.reason);
 
+// A read that MISSED on a home that does collect usage is a fault someone can
+// fix, and the panel has to be able to say so. The three envelopes below are
+// the ones that render identically per row - every cost cell reads
+// `unavailable` in all of them - so the summary flag is the only thing that can
+// tell a breakage from a home where collecting nothing is correct. Absence and
+// a switched-off dashboard must stay silent, or the disclosure becomes a
+// standing false alarm and stops being read.
+const faulted = buildHistory(envelope([manifest("alpha")], {
+  usage: { available: false, collection: "operational", reason: "token usage could not be read (exit_nonzero)", tasks: {} },
+}));
+equal("a failed read on a collecting home is disclosed as a fault", faulted.usage.fault, true);
+equal("a failed read still renders its cost cell as unavailable", faulted.rows[0].usage.available, false);
+check("a disclosed fault carries the reason the view prints",
+  /exit_nonzero/.test(faulted.usage.reason || ""), JSON.stringify(faulted.usage));
+const unsupportedSchema = buildHistory(envelope([manifest("alpha")], {
+  usage: { available: false, collection: "operational", reason: "the token usage report is not a supported schema version", tasks: {} },
+}));
+equal("an unrecognized report shape is the same class of fault", unsupportedSchema.usage.fault, true);
+const notCollected = buildHistory(envelope([manifest("alpha")], {
+  usage: { available: false, collection: "absent", reason: "token usage is not collected in this home", tasks: {} },
+}));
+equal("a home that collects nothing raises no fault", notCollected.usage.fault, false);
+const switchedOff = buildHistory(envelope([manifest("alpha")], {
+  usage: { available: false, collection: "disabled", reason: "token usage reads are disabled for this dashboard", tasks: {} },
+}));
+equal("a dashboard with usage reads switched off raises no fault", switchedOff.usage.fault, false);
+const noEnvelope = buildHistory(envelope([manifest("alpha")]));
+equal("a dashboard that has not reported usage at all raises no fault", noEnvelope.usage.fault, false);
+// A retained last-good read is already disclosed as stale. Flagging it again
+// would put two notices on the page for one failure.
+equal("a retained read is disclosed as stale rather than as a fault", staleUsage.usage.fault, false);
+
 // --- corrupt and old-schema records are isolated with a warning ---------------
 
 const damaged = buildHistory(envelope([manifest("alpha")], {

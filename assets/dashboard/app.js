@@ -985,6 +985,13 @@ function renderHistory() {
   if (built.usage.available && built.usage.stale) {
     view.append(notice("amber", null, `Showing the last known good token usage read: ${built.usage.reason || "the newest read did not land"}.`));
   }
+  // history.js owns which reads earn this: only a home that DOES collect usage
+  // and whose read failed anyway. It stays amber rather than red because the
+  // rest of the page is still true, and it says the cost cells are the thing
+  // affected so a reader knows what to distrust rather than the whole view.
+  if (built.usage.fault) {
+    view.append(notice("amber", "Token usage is not being read.", `The read reported: ${built.usage.reason || "no detail"}. The collector and its store are both present on this home, so this is a failure to fix rather than a home that collects nothing - every cost below reads as unavailable until it is.`));
+  }
 
   if (built.shape === "absent") {
     view.append(emptyState({
