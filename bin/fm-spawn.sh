@@ -117,8 +117,12 @@
 #   overrides it for this spawn (either kind); cursor and agy also override it but
 #   are crew-only and herdr-only. A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
-#   new adapters. pi-signed launches that exact executable name from PATH and
-#   refuses before endpoint creation when it is unavailable; it never falls back to pi.
+#   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
+#   name from PATH once, probes that concrete path with --help, and launches the
+#   same path. It adds --tui-mode regular only when that help advertises the flag;
+#   a failed or inconclusive probe omits it so older Pi versions remain launchable.
+#   A missing selected executable refuses before endpoint creation, and pi-signed
+#   never falls back to pi.
 #   The raw path refuses detectable cursor/agy spellings at spawn
 #   and installs PATH guard shims as execution-time defense; use --harness for
 #   either restricted adapter so the required gates, trust setup, and supervision apply.
@@ -157,6 +161,10 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/design/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   Before a fresh ship or scout worker starts, its clean task worktree fetches
+#   origin, resolves the current remote default branch, and resets to its tip.
+#   An unreachable origin, unresolved default branch, or non-clean worktree
+#   refuses the spawn rather than risking a PR based on stale history.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--design|--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -169,6 +177,8 @@
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in bin/fm-launch-lib.sh (fm_launch_template); placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
+#     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
+#     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
@@ -190,6 +200,8 @@
 # A ship or design task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
+# Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
+# consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -1107,6 +1119,28 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
+resolve_pi_executable() {
+  local candidate dir
+  candidate=$(type -P -- "$1" 2>/dev/null) || return 1
+  [ -x "$candidate" ] || return 1
+  case "$candidate" in
+    /*) printf '%s\n' "$candidate" ;;
+    *)
+      dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || return 1
+      printf '%s/%s\n' "$dir" "$(basename "$candidate")"
+      ;;
+  esac
+}
+
+# Pi's CLI surface is version-dependent, so probe the resolved executable's help
+# before composing the optional regular-TUI flag. An absent or inconclusive probe
+# omits the flag so older Pi versions can still spawn.
+pi_supports_tui_mode() {
+  local executable=$1 help
+  help=$("$executable" --help 2>&1) || return 1
+  printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--tui-mode([[:space:]=]|$)'
+}
+
 # The verified launch command per adapter lives in bin/fm-launch-lib.sh
 # (fm_launch_template), sourced above - including origin/main #909's __OPINPUT__
 # operational-input encoding threaded into each template there.
@@ -1193,7 +1227,20 @@ case "$HARNESS" in
 esac
 
 case "$HARNESS" in
-  pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
+  pi|pi-signed)
+    PI_BIN=$(resolve_pi_executable "$HARNESS") || {
+      echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
+      exit 1
+    }
+    PI_TUI_MODE=
+    if pi_supports_tui_mode "$PI_BIN"; then
+      PI_TUI_MODE=' --tui-mode regular'
+    fi
+    # __PIBIN__/__PITUIMODE__ are substituted after fm_launch_render, which
+    # passes them through untouched, so the resolved executable path never sits
+    # in the template while earlier placeholders are still being rendered.
+    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
 esac
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
@@ -1204,14 +1251,6 @@ esac
 # secondmate whose supervision cycle could never be armed.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# pi-signed is an explicitly selected executable identity, not an alias that may
-# silently fall back to pi. Resolve it from PATH before creating an endpoint and
-# retain the literal name in the launch command and task metadata.
-if [ "$HARNESS" = pi-signed ] && ! command -v pi-signed >/dev/null 2>&1; then
-  echo "error: pi-signed executable not found on PATH; install the signed Pi wrapper or select a different verified harness" >&2
   exit 1
 fi
 
@@ -1760,6 +1799,48 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+freshen_spawn_worktree_base() {  # <worktree>
+  local worktree=$1 default target expected actual status
+  if ! git -C "$worktree" fetch --quiet origin; then
+    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
+    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  default=$(default_branch "$worktree") || {
+    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  }
+  target="origin/$default"
+  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
+    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
+    echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+    return 1
+  }
+  status=$(git -C "$worktree" status --porcelain) || {
+    echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
+    return 1
+  }
+  if [ -n "$status" ]; then
+    echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    return 1
+  fi
+  if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
+    echo "error: could not reset pooled worktree '$worktree' to '$target'; refusing to launch from a potentially stale base" >&2
+    return 1
+  fi
+  actual=$(git -C "$worktree" rev-parse --verify --quiet HEAD 2>/dev/null || true)
+  if [ "$actual" != "$expected" ]; then
+    echo "error: pooled worktree '$worktree' is at '${actual:-unknown}', not current '$target' ('$expected'); refusing to launch" >&2
+    return 1
+  fi
+}
+
 herdr_projection_meta_field_exact() {  # <meta> <key>
   local meta=$1 key=$2 count
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -2131,9 +2212,16 @@ kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
-kimi_capture_has_empty_composer() {  # <plain-pane-capture>
-  printf '%s\n' "$1" \
-    | grep -Eq '^[[:space:]]*(│|┃|\|)[[:space:]]*>[[:space:]]*(│|┃|\|)[[:space:]]*$'
+# Kimi launch-readiness and delivery route their composer-emptiness half
+# through the shared classifier (bin/fm-composer-lib.sh via
+# fm_backend_composer_state), the same owner every steer and injection guard
+# reads. This retired a fourth, spawn-local copy of composer shape knowledge -
+# a hardcoded bordered `│ > │` regex that would have silently broken kimi
+# spawn readiness fleet-wide the day kimi's TUI goes borderless the way
+# claude's did. The banner and brief-echo greps below are launch-progress
+# signals, not composer shapes, so they stay here.
+kimi_composer_is_empty() {
+  [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]
 }
 
 kimi_wait_for_ready() {
@@ -2141,7 +2229,7 @@ kimi_wait_for_ready() {
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_capture)
     if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' \
-       || kimi_capture_has_empty_composer "$pane"; then
+       || kimi_composer_is_empty; then
       return 0
     fi
     i=$((i + 1))
@@ -2152,7 +2240,7 @@ kimi_wait_for_ready() {
 
 kimi_delivery_is_confirmed() {  # <plain-pane-capture>
   local pane=$1
-  kimi_capture_has_empty_composer "$pane" || return 1
+  kimi_composer_is_empty || return 1
   if { printf '%s\n' "$pane" | grep -Fq '✨' \
        && printf '%s\n' "$pane" | grep -Fq 'Read the brief at'; } \
      || printf '%s\n' "$pane" \
@@ -2243,6 +2331,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2696,6 +2787,7 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
@@ -2707,7 +2799,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2736,6 +2828,7 @@ preserve_relaunch_meta() {
   done
   # Written before any pr= line, which bin/fm-pr-lib.sh requires to stay last.
   [ -z "$PR_TARGET" ] || echo "pr_target=$PR_TARGET"
+  echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -2828,6 +2921,12 @@ LAUNCH=$(fm_launch_render \
   echo "error: could not render launch command for harness '$HARNESS'" >&2
   exit 1
 }
+case "$HARNESS" in
+  pi|pi-signed)
+    LAUNCH=${LAUNCH//__PIBIN__/$(fm_launch_shell_quote "$PI_BIN")}
+    LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
+    ;;
+esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment. Forward an explicit config directory
 # so the worker uses the same credential/config store as firstmate. The default

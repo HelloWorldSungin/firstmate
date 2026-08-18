@@ -118,6 +118,7 @@ let nextGenerationId = 0;
 let activeGeneration: SessionGeneration | null = null;
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();
 const armClose = new WeakMap<ChildProcess, Promise<void>>();
+const armRecovery = new WeakMap<ChildProcess, { generation: string; watcherPid: string }>();
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -261,13 +262,28 @@ export default function (pi: ExtensionAPI) {
     !calmPresentation.stockExportRendering &&
     !calmTranscriptClassIsVisible(itemClass);
 
-  async function sendWake(owner: SessionGeneration, message: string): Promise<void> {
+  async function sendWake(
+    owner: SessionGeneration,
+    message: string,
+    recovery?: { generation: string; watcherPid: string },
+  ): Promise<void> {
     if (!generationIsLive(owner)) return;
     const content = encodeFirstmateOperationalInput(
       "watcher",
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
+    if (recovery) {
+      const result = spawnSync(
+        "bash",
+        [armScript, "--handling-delivered", recovery.generation, "--watcher-pid", recovery.watcherPid],
+        {
+          cwd: fmRoot,
+          env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
+        },
+      );
+      if (result.status !== 0) throw new Error("watcher recovery delivery could not be confirmed");
+    }
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
@@ -383,21 +399,28 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<string> {
+  async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<{
+    failure: string;
+    recovery?: { generation: string; watcherPid: string };
+  }> {
     let failure = "";
     for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-      if (!generationIsLive(owner)) return "";
+      if (!generationIsLive(owner)) return { failure: "" };
       if (awayModeActive()) {
         owner.awayStandby = true;
-        return "";
+        return { failure: "" };
       }
       const replacement = startArm(owner, predecessorArmPid);
       const successorChild = owner.child;
-      if (replacement.ok && successorChild && await waitForReadiness(successorChild)) return "";
+      if (replacement.ok && successorChild && await waitForReadiness(successorChild)) {
+        return { failure: "", recovery: armRecovery.get(successorChild) };
+      }
       if (replacement.ok) {
         failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
         if (!(await retireArm(successorChild))) {
-          return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm was still running when the ${armRetireTimeoutMs}ms retirement deadline settled or did not close within the additional ${armRetireTimeoutMs}ms grace after exit`;
+          return {
+            failure: `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm was still running when the ${armRetireTimeoutMs}ms retirement deadline settled or did not close within the additional ${armRetireTimeoutMs}ms grace after exit`,
+          };
         }
       } else {
         failure = /(?:read-only|no live session)/.test(replacement.message)
@@ -408,7 +431,7 @@ export default function (pi: ExtensionAPI) {
       if (attempt === retryLimit) break;
       await waitForRetry(attempt + 1);
     }
-    return `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries`;
+    return { failure: `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries` };
   }
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
@@ -502,7 +525,10 @@ export default function (pi: ExtensionAPI) {
       resolveReadiness(ready);
     };
     const observeEstablishedArm = (): void => {
-      if (/^watcher: (?:started|attached)\b/m.test(`${stdout}\n${stderr}`)) {
+      const combined = `${stdout}\n${stderr}`;
+      const recovery = combined.match(/^watcher: started pid=([0-9]+).* recovery-generation=([A-Za-z0-9._-]+)$/m);
+      if (recovery) armRecovery.set(armChild, { watcherPid: recovery[1], generation: recovery[2] });
+      if (/^watcher: (?:started|attached)\b/m.test(combined)) {
         settleReadiness(true);
       }
     };
@@ -539,14 +565,14 @@ export default function (pi: ExtensionAPI) {
         owner.restoring = true;
         const previousRestoration = owner.restorationInFlight;
         const restoration = (previousRestoration ?? Promise.resolve()).catch(() => {}).then(async () => {
-          const failure = await restoreAfterActionableClose(owner, predecessor);
+          const restored = await restoreAfterActionableClose(owner, predecessor);
           if (!generationIsLive(owner)) return;
           if (awayModeActive()) {
             owner.awayStandby = true;
             return;
           }
-          const message = failure ? `${classification.message}\n\n${failure}` : classification.message;
-          await sendWake(owner, message);
+          const message = restored.failure ? `${classification.message}\n\n${restored.failure}` : classification.message;
+          await sendWake(owner, message, restored.recovery);
         });
         owner.restorationInFlight = restoration;
         void restoration.finally(() => {
