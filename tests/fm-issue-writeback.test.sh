@@ -45,12 +45,15 @@
 #       is resolved, every forge failure warns and exits 0, and the github path
 #       never reads a forge token or invokes curl at all
 #   (n) the fleet-wide drift sweep reads a project's board from the registry,
-#       adds only missing membership, moves a closed issue to Done and an open
-#       one out of it, invents no finer state, removes nothing a human added,
-#       writes no field but Status, reconciles against a real issue listing
-#       rather than a pull-request-inflated count, walks every page, reports a
-#       missing option instead of creating one, bounds and announces its own
-#       truncation, and fails open on every board failure mode
+#       adds only missing membership - including onto a board holding no items
+#       at all, which is the board a new declaration is pointed at first - moves
+#       a closed issue to Done and an open one out of it, invents no finer
+#       state, removes nothing a human added, writes no field but Status,
+#       reconciles against a real issue listing rather than a
+#       pull-request-inflated count, walks every page, reports a missing option
+#       instead of creating one, bounds and announces its own truncation at the
+#       same point a dry run rehearses, and fails open on every board failure
+#       mode
 #   (m) no lookup that could not PROVE there is no status comment ever resolves
 #       itself by creating one: discovery walks past a host that clamps its page
 #       size below the limit asked for, and both a list longer than the walk and
@@ -1669,6 +1672,28 @@ test_an_issue_absent_from_its_board_is_added() {
   pass "an issue absent from its board is added, and a closed one lands on Done"
 }
 
+# The board a new board= token is pointed at first is EMPTY, and a board holding
+# only draft or pull-request cards carries no issue items either. Both are the
+# case the membership requirement exists to serve, and both are the case a join
+# keyed on record counts rather than on which file a record came from drops
+# whole: it would report "0 added" over a board that never populates itself.
+test_an_empty_board_is_populated_from_its_tracker() {
+  local dir out
+  dir=$(sweep_case sweepemptyboard)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+  out=$(run_board "$dir" reconcile) || fail "the sweep failed: $out"
+  assert_present "$dir/store/items/PVTI_I_acme_widget_1" \
+    "an open tracker issue was not added to a board with no items at all"
+  assert_present "$dir/store/items/PVTI_I_acme_widget_2" \
+    "a closed tracker issue was not added to a board with no items at all"
+  [ "$(item_status "$dir" acme widget 2)" = Done ] \
+    || fail "a closed issue added to an empty board did not land on Done, got '$(item_status "$dir" acme widget 2)'"
+  [ -z "$(item_status "$dir" acme widget 1)" ] \
+    || fail "an open issue added to an empty board was given a status the sweep cannot know"
+  assert_contains "$out" '2 added' "the sweep did not report the membership it added to an empty board"
+  pass "a board with no items at all is populated from its tracker rather than reported complete"
+}
+
 test_an_open_issue_never_reads_done() {
   local dir
   dir=$(sweep_case sweepreopen)
@@ -1892,7 +1917,19 @@ test_a_dry_run_reports_the_drift_and_writes_nothing() {
   [ "$(log_count "$dir" status)" = 0 ] || fail "a dry run wrote a status"
   [ "$(log_count "$dir" add)" = 0 ] || fail "a dry run wrote membership"
   [ "$(item_status "$dir" acme widget 1)" = Todo ] || fail "a dry run changed the board"
-  pass "a dry run rehearses the whole sweep and writes nothing"
+
+  # An issue that is both absent and closed costs the real run two writes, so a
+  # dry run must charge two against --limit and stop where the real run stops.
+  # A preview that truncates somewhere else is announcing the wrong coverage.
+  dir=$(sweep_case sweepdrylimit)
+  seed_tracker "$dir" '1 CLOSED' '2 CLOSED' '3 CLOSED'
+  out=$(run_board "$dir" reconcile --dry-run --limit 2) || fail "the bounded dry run failed"
+  assert_contains "$out" 'change limit' "the bounded dry run truncated without saying so"
+  [ "$(printf '%s\n' "$out" | grep -c 'would add')" = 1 ] \
+    || fail "a dry run previewed more adds than a 2-change limit allows: $out"
+  [ "$(printf '%s\n' "$out" | grep -c 'would set Done')" = 1 ] \
+    || fail "a dry run did not charge the Done that follows an add: $out"
+  pass "a dry run rehearses the whole sweep, writes nothing, and stops where the real run would"
 }
 
 test_the_board_library_exports_only_its_named_operations() {
@@ -1967,6 +2004,7 @@ test_the_merge_path_posts_its_own_milestones
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable
 test_a_closed_issue_reads_done_and_an_open_one_is_left_alone
 test_an_issue_absent_from_its_board_is_added
+test_an_empty_board_is_populated_from_its_tracker
 test_an_open_issue_never_reads_done
 test_a_sweep_with_no_drift_writes_nothing
 test_a_project_with_no_declared_board_is_unaffected_silently

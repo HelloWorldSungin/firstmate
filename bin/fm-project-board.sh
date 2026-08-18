@@ -348,16 +348,22 @@ if [ "$COMMAND" = sync ] || [ "$COMMAND" = show ]; then
   fm_board_url_parse "$BOARD_URL" || { warn "the resolved board URL is not a board URL: $BOARD_URL"; exit 0; }
 fi
 
-if [ "$DRY_RUN" -eq 1 ] && [ "$COMMAND" = sync ]; then
+# `sync` and `show` rehearse from configuration alone and contact no host, which
+# is what makes --dry-run answerable on a machine with no network or no board
+# access. `reconcile` is the exception: drift is only knowable from the board and
+# the tracker, so its dry run still READS both and writes nothing.
+if [ "$DRY_RUN" -eq 1 ] && [ "$COMMAND" != reconcile ]; then
   printf 'board: %s\n' "$BOARD_URL"
-  printf 'item: %s\n' "$ISSUE_URL"
-  printf 'membership: ensured (with its parent issue, when it has one)\n'
-  if [ -n "$MILESTONE" ]; then
-    CANDIDATES=$(status_candidates "$MILESTONE")
-    if [ -n "$CANDIDATES" ]; then
-      printf 'status: first configured option matching %s\n' "$(printf '%s' "$CANDIDATES" | tr '\n' '/' | sed 's:/$::')"
-    else
-      printf 'status: left unchanged for milestone %s\n' "$MILESTONE"
+  if [ "$COMMAND" = sync ]; then
+    printf 'item: %s\n' "$ISSUE_URL"
+    printf 'membership: ensured (with its parent issue, when it has one)\n'
+    if [ -n "$MILESTONE" ]; then
+      CANDIDATES=$(status_candidates "$MILESTONE")
+      if [ -n "$CANDIDATES" ]; then
+        printf 'status: first configured option matching %s\n' "$(printf '%s' "$CANDIDATES" | tr '\n' '/' | sed 's:/$::')"
+      else
+        printf 'status: left unchanged for milestone %s\n' "$MILESTONE"
+      fi
     fi
   fi
   exit 0
@@ -479,8 +485,14 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   # Join the board's items onto the tracker's issues. An item with no matching
   # issue is deliberately absent from the output: a card a human added by hand
   # is never removed, and reconciliation has nothing to say about it.
-  awk -v key="$owner/$repo" '
-    NR == FNR {
+  #
+  # The side of the join is decided by FILENAME, never by a record count: a board
+  # holding no issue items at all - a fresh one, or one carrying only draft and
+  # pull-request cards - contributes zero records, and a count-keyed join would
+  # then read the tracker as if it were the board and plan nothing at all, which
+  # is exactly the board a new board= token is pointed at first.
+  awk -v key="$owner/$repo" -v itemsfile="$WORKDIR/items" '
+    FILENAME == itemsfile {
       if ($1 == "item" && index($3, key "#") == 1) {
         n = $3; sub(/.*#/, "", n)
         id[n] = $2
@@ -504,28 +516,33 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
       SWEEP_TRUNCATED=1
       break
     fi
+    # An added item carries no status yet, so it falls through to the status
+    # block exactly as the real run does: a closed issue that is also absent is
+    # two changes, and a dry run that charged one would rehearse a different
+    # truncation point from the run it is previewing.
     if [ "$action" = add ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
         printf 'would add: %s/%s#%s to %s\n' "$owner" "$repo" "$number" "$board_url"
         added=$((added + 1))
         SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
-        continue
+        status=-
+      else
+        if ! fm_board_issue_id "$WORKDIR/issue" "$owner" "$repo" "$number"; then
+          echo "warning: could not read $owner/$repo#$number: $FM_BOARD_GQL_REASON" >&2
+          continue
+        fi
+        content_id=$(head -n 1 "$WORKDIR/issue")
+        [ -n "$content_id" ] || continue
+        if ! fm_board_item_add "$WORKDIR/item" "$project_id" "$content_id"; then
+          echo "warning: could not add $owner/$repo#$number to $board_url: $FM_BOARD_GQL_REASON" >&2
+          continue
+        fi
+        item_id=$(head -n 1 "$WORKDIR/item")
+        status=-
+        added=$((added + 1))
+        SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
+        [ -n "$item_id" ] || continue
       fi
-      if ! fm_board_issue_id "$WORKDIR/issue" "$owner" "$repo" "$number"; then
-        echo "warning: could not read $owner/$repo#$number: $FM_BOARD_GQL_REASON" >&2
-        continue
-      fi
-      content_id=$(head -n 1 "$WORKDIR/issue")
-      [ -n "$content_id" ] || continue
-      if ! fm_board_item_add "$WORKDIR/item" "$project_id" "$content_id"; then
-        echo "warning: could not add $owner/$repo#$number to $board_url: $FM_BOARD_GQL_REASON" >&2
-        continue
-      fi
-      item_id=$(head -n 1 "$WORKDIR/item")
-      status=-
-      added=$((added + 1))
-      SWEEP_CHANGES=$((SWEEP_CHANGES + 1))
-      [ -n "$item_id" ] || continue
     fi
 
     # Status is coarse on purpose. A closed issue reads Done; an open issue that
@@ -585,7 +602,15 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
 if [ "$COMMAND" = reconcile ]; then
   # The sweep is bounded as one whole operation, not only per call, because a
   # per-call bound alone adds up to minutes across four boards on a slow network.
-  [ -n "${FM_WRITE_BACK_BUDGET:-}" ] || FM_WRITE_BACK_BUDGET=$SWEEP_TIMEOUT
+  # An inherited budget can only TIGHTEN that bound: a larger one would enlarge
+  # what FM_BOARD_SWEEP_TIMEOUT promises, and an unusable one would remove it
+  # outright, because fm_call_bound ignores a budget it cannot read.
+  SWEEP_BUDGET=$SWEEP_TIMEOUT
+  case "${FM_WRITE_BACK_BUDGET:-}" in
+    ''|*[!0-9]*) ;;
+    *) [ "$FM_WRITE_BACK_BUDGET" -ge "$SWEEP_BUDGET" ] || SWEEP_BUDGET=$FM_WRITE_BACK_BUDGET ;;
+  esac
+  FM_WRITE_BACK_BUDGET=$SWEEP_BUDGET
   export FM_WRITE_BACK_BUDGET
   if [ ! -f "$REGISTRY" ] || [ -L "$REGISTRY" ]; then
     exit 0
