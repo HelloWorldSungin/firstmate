@@ -80,12 +80,14 @@
 # sweep goes unreported.
 #
 # A TRUNCATED SWEEP RESUMES RATHER THAN RESTARTING. The run records the last
-# registry entry it reached in state/.board-sweep-cursor and the next one starts
+# registry entry it FINISHED in state/.board-sweep-cursor and the next one starts
 # after it, wrapping, so a budget too small to cover the whole fleet in one run
 # still covers all of it across a bounded number of runs instead of reconciling
-# the same first projects forever. A run that stops early also NAMES the entries
-# it did not reach, because "drift may remain somewhere" and "these three boards
-# were not looked at" are different facts to the captain reading it.
+# the same first projects forever. An entry the run was cut short inside is the
+# one the next run starts AT, because it was not reconciled. A run that stops
+# early also NAMES the entries it did not finish, because "drift may remain
+# somewhere" and "these three boards were not looked at" are different facts to
+# the captain reading it.
 #
 # THE WRITE PATH FAILS CLOSED ON A PARTIAL VIEW, and this is the property that
 # matters most in this script. Every write `reconcile` plans is an inference from
@@ -780,10 +782,24 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
 # nothing next time - but a budget does not, because reading a board and its
 # tracker costs the same whether or not anything drifted.
 #
-# So the run persists the last entry it REACHED and the next one starts after it,
-# wrapping. Every entry is then reconciled within a bounded number of intervals
-# however tight the budget gets, which is a property of the walk rather than of
-# how generous a particular session start happened to be.
+# So the run persists the last entry it FINISHED and the next one starts after
+# it, wrapping. Every entry is then reconciled within a bounded number of
+# intervals however tight the budget gets, which is a property of the walk rather
+# than of how generous a particular session start happened to be.
+#
+# FINISHED, NOT REACHED, AND THE DIFFERENCE IS THE WHOLE POINT. An entry the
+# budget died inside was not reconciled - the flags are set from inside
+# reconcile_project, which can return having read nothing and written nothing -
+# so recording it would make the one entry a bounded sweep cannot afford the one
+# entry it never retries. That is the starvation this resume point exists to end,
+# relocated rather than removed.
+#
+# THE ONE EXCEPTION IS A RUN THAT FINISHED NOTHING AT ALL, and it exists for the
+# same reason. If the first entry a run attempts is by itself too expensive for
+# the budget, holding the cursor still would retry that same entry on every
+# session start and no other entry would ever be read, so a run that finished
+# none advances past the entry it died in and the rest of the registry gets its
+# turn. That entry waits one pass; it does not wait forever.
 #
 # THIS IS NOT state/.board-sweep, AND THAT SEPARATION IS THE POINT.
 # bin/fm-bootstrap.sh truncates that marker with `: >` every time it starts a
@@ -794,8 +810,13 @@ SWEEP_CURSOR="$STATE/.board-sweep-cursor"
 
 # A rehearsal changes nothing that outlives it, and a run naming one project is
 # not walking the fleet, so neither moves the fleet's resume point.
-sweep_records_cursor() {
+sweep_walks_the_fleet() {
   [ -z "$PROJECT_ARG" ] && [ "$DRY_RUN" -eq 0 ]
+}
+
+sweep_record_cursor() {  # <entry>
+  sweep_walks_the_fleet || return 0
+  printf '%s\n' "${1-}" > "$SWEEP_CURSOR" 2>/dev/null || true
 }
 
 sweep_resume_after() {
@@ -804,7 +825,7 @@ sweep_resume_after() {
 }
 
 # The registry's entries, rotated so the walk starts after the entry the last run
-# reached. A cursor naming an entry that is no longer there matches nothing and
+# finished. A cursor naming an entry that is no longer there matches nothing and
 # the walk starts at the top, which is the right answer for a registry the
 # captain has since edited.
 sweep_registry_order() {  # <resume-after>
@@ -819,12 +840,14 @@ sweep_registry_order() {  # <resume-after>
   '
 }
 
-# The declared boards past the row the walk stopped on. A truncated run that
-# could not name what it had left would report the same silence a complete one
-# does, which is the whole defect this sweep exists not to have.
-sweep_unreached() {  # <rows-consumed>
-  awk -v from="${1-0}" '
-    NR > from && $2 != "-" && $2 != "none" { names = names (names == "" ? "" : ", ") $1 }
+# The declared boards this run did not finish: the entry it stopped in, which it
+# may have reconciled only part of or not at all, and everything after it. A
+# truncated run that could not name what it had left would report the same
+# silence a complete one does, which is the whole defect this sweep exists not to
+# have.
+sweep_unfinished() {  # <row-it-stopped-in>
+  awk -v from="${1-1}" '
+    NR >= from && $2 != "-" && $2 != "none" { names = names (names == "" ? "" : ", ") $1 }
     END { print names }
   ' "$WORKDIR/registry"
 }
@@ -847,6 +870,7 @@ if [ "$COMMAND" = reconcile ]; then
   fi
   SWEPT=0
   SWEEP_ROW=0
+  SWEEP_FINISHED=0
   sweep_registry_order "$(sweep_resume_after)" > "$WORKDIR/registry"
   while read -r name board tracker <&3; do
     SWEEP_ROW=$((SWEEP_ROW + 1))
@@ -879,20 +903,21 @@ if [ "$COMMAND" = reconcile ]; then
     fi
     SWEPT=$((SWEPT + 1))
     reconcile_project "$name" "$board" "${FM_ISSUE_TRACKER_PATH%%/*}" "${FM_ISSUE_TRACKER_PATH#*/}"
-    if sweep_records_cursor; then
-      printf '%s\n' "$name" > "$SWEEP_CURSOR" 2>/dev/null || true
+    if [ "$SWEEP_TRUNCATED" -eq 1 ] || [ "$SWEEP_BUDGET_SPENT" -eq 1 ]; then
+      [ "$SWEEP_FINISHED" -gt 0 ] || sweep_record_cursor "$name"
+      break
     fi
-    [ "$SWEEP_TRUNCATED" -eq 0 ] || break
-    [ "$SWEEP_BUDGET_SPENT" -eq 0 ] || break
+    SWEEP_FINISHED=$((SWEEP_FINISHED + 1))
+    sweep_record_cursor "$name"
   done 3< "$WORKDIR/registry"
   if [ "$SWEEP_BUDGET_SPENT" -eq 1 ] || [ "$SWEEP_TRUNCATED" -eq 1 ]; then
-    SWEEP_UNREACHED=$(sweep_unreached "$SWEEP_ROW")
-    if ! sweep_records_cursor; then
+    SWEEP_UNFINISHED=$(sweep_unfinished "$SWEEP_ROW")
+    if ! sweep_walks_the_fleet; then
       SWEEP_RESUME="this run was not the fleet walk, so it moved no resume point"
-    elif [ -n "$SWEEP_UNREACHED" ]; then
-      SWEEP_RESUME="it did not reach $SWEEP_UNREACHED, and the next sweep starts there"
+    elif [ "$SWEEP_FINISHED" -eq 0 ]; then
+      SWEEP_RESUME="it finished none of $SWEEP_UNFINISHED, and because it could not finish even the first of them the next sweep starts after that one rather than retrying an entry this bound cannot cover"
     else
-      SWEEP_RESUME="it reached every other entry, and the next sweep starts after the one it stopped in"
+      SWEEP_RESUME="it did not finish $SWEEP_UNFINISHED, and the next sweep starts there"
     fi
     [ "$SWEEP_BUDGET_SPENT" -eq 0 ] \
       || echo "BOARD_SWEEP: this sweep ran out of its ${SWEEP_BUDGET}s whole-operation budget before it finished, so drift may remain: $SWEEP_RESUME"

@@ -2253,18 +2253,56 @@ test_a_budget_truncated_sweep_names_what_it_missed_and_starts_there_next_time() 
   seed_repo_tracker "$dir" acme beta '1 CLOSED'
   seed_item "$dir" acme alpha 1 'Todo'
   seed_item "$dir" acme beta 1 'Todo'
+  # This run finishes NOTHING - the budget is gone before alpha's first read - so
+  # it takes the one exception to "resume at the entry you were cut short in":
+  # retrying alpha forever would mean beta is never read at all, so the cursor
+  # advances past alpha and alpha waits one pass instead of waiting for ever.
   out=$(FM_WRITE_BACK_BUDGET=0 run_board "$dir" reconcile --quiet) \
     || fail "a spent budget must not fail the sweep: $out"
-  assert_contains "$out" 'did not reach beta' \
-    "the truncated run reported drift may remain without naming the entry it never looked at"
+  assert_contains "$out" 'finished none of alpha, beta' \
+    "the truncated run reported drift may remain without naming the entries it left unfinished"
   assert_absent "$dir/store/calls.log" "a sweep with no budget left still contacted a board"
   out=$(run_board "$dir" reconcile --quiet) || fail "the resumed sweep failed: $out"
   first=$(awk '$1 == "board" { print $2; exit }' "$dir/store/calls.log")
   [ "$first" = 8 ] \
-    || fail "the resumed sweep started at the top instead of after the entry the budget stopped it on, first board read was '${first:-none}'"
+    || fail "a run that could finish nothing did not move on, so one unaffordable entry blocks every other one, first board read was '${first:-none}'"
   [ "$(item_status "$dir" acme beta 1)" = Done ] || fail "the resumed sweep did not reconcile the tail it had missed"
   [ "$(item_status "$dir" acme alpha 1)" = Done ] || fail "the resumed sweep did not wrap back to the head"
-  pass "a budget-truncated sweep names what it missed, and the next run starts there and wraps"
+  pass "a budget-truncated sweep names what it missed, and a run that finished nothing still lets the rest have a turn"
+}
+
+# THE RESUME POINT RECORDS WHAT WAS FINISHED, NOT WHAT WAS TOUCHED, and this is
+# the case that tells the two apart. A run that reconciles alpha and is then cut
+# short inside beta has not reconciled beta, so beta must be the FIRST entry the
+# next run attempts. Recording beta instead - the entry merely reached - inverts
+# the invariant: the one entry a bounded sweep cannot afford becomes the one
+# entry it never retries, which is the starvation this resume point exists to end
+# rather than to move one place along.
+test_a_sweep_truncated_inside_an_entry_starts_the_next_run_at_that_entry() {
+  local dir out first
+  dir=$(sweep_multi_case sweepmultifinished alpha:7 beta:8 gamma:9)
+  seed_repo_tracker "$dir" acme alpha '1 CLOSED'
+  seed_repo_tracker "$dir" acme beta '1 CLOSED'
+  seed_repo_tracker "$dir" acme gamma '1 CLOSED'
+  seed_item "$dir" acme alpha 1 'Todo'
+  seed_item "$dir" acme beta 1 'Todo'
+  seed_item "$dir" acme gamma 1 'Todo'
+  # One change is exactly alpha's worth, so alpha finishes and the limit stops
+  # the run on beta's first row - the entry reached but not reconciled.
+  out=$(run_board "$dir" reconcile --limit 1) || fail "the first sweep failed: $out"
+  [ "$(item_status "$dir" acme alpha 1)" = Done ] || fail "the first run did not finish alpha"
+  [ "$(item_status "$dir" acme beta 1)" = Todo ] \
+    || fail "the first run was not cut short inside beta, so this proves nothing"
+  assert_contains "$out" 'did not finish beta, gamma' \
+    "the run named the wrong entries as unfinished, so it is not counting the entry it stopped in"
+  : > "$dir/store/calls.log"
+  out=$(run_board "$dir" reconcile --limit 1) || fail "the second sweep failed: $out"
+  first=$(awk '$1 == "board" { print $2; exit }' "$dir/store/calls.log")
+  [ "$first" = 8 ] \
+    || fail "the entry the first run was cut short inside was skipped rather than retried, first board read was '${first:-none}'"
+  [ "$(item_status "$dir" acme beta 1)" = Done ] \
+    || fail "beta was reconciled on neither run, which is the starvation the resume point exists to end"
+  pass "a sweep cut short inside an entry makes that entry the first one the next run attempts"
 }
 
 test_a_board_with_no_done_option_is_reported_never_given_one() {
@@ -2414,7 +2452,8 @@ test_a_budget_spent_while_writing_truncates_the_sweep_out_loud
 test_no_failure_inside_the_sweep_goes_unreported
 test_one_projects_broken_board_never_stops_the_sweep_reaching_the_next
 test_the_change_limit_is_one_budget_across_the_whole_fleet
-: # skipped for red proof
+test_a_truncated_sweep_reaches_the_registry_tail_on_the_next_run
+test_a_sweep_truncated_inside_an_entry_starts_the_next_run_at_that_entry
 test_a_budget_truncated_sweep_names_what_it_missed_and_starts_there_next_time
 test_a_malformed_home_fallback_does_not_disable_the_fleet_sweep
 test_sync_resolves_a_declared_board_however_the_registry_is_cased
@@ -2424,4 +2463,5 @@ test_a_dry_run_reports_the_drift_and_writes_nothing
 test_the_board_library_exports_only_its_named_operations
 test_the_shared_contracts_have_exactly_one_owner
 test_the_forge_library_exports_only_its_named_operations
+fm_test_every_defined_test_ran
 printf '\nall fm-issue-writeback tests passed\n'

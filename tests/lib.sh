@@ -76,8 +76,38 @@ fail() {
   exit 1
 }
 
+# --- a suite must actually run what it defines -------------------------------
+#
+# A test that is defined and never invoked reports safety it never checked, and
+# it is invisible while it does: the suite still exits 0 and prints nothing about
+# it. That has happened here, from red-proof scaffolding left behind in an
+# invocation list, so it is enforced rather than reviewed for.
+#
+# What is compared is what actually RAN against what the shell says is DEFINED,
+# never two greps over the file: `pass` records the test it was called from, and
+# fm_test_every_defined_test_ran reads the definitions from `declare -F`. A
+# renamed function, a commented-out call, and a test that returns before its own
+# `pass` are all caught by that, and none of them would be by matching text.
+FM_TEST_RAN=
+
 pass() {
+  case "${FUNCNAME[1]:-}" in
+    test_*) FM_TEST_RAN="$FM_TEST_RAN ${FUNCNAME[1]} " ;;
+  esac
   printf 'ok - %s\n' "$1"
+}
+
+# Call last, after the invocation list, in any suite that wants the guarantee.
+fm_test_every_defined_test_ran() {
+  local name missing=
+  for name in $(declare -F | awk '$3 ~ /^test_/ { print $3 }' | LC_ALL=C sort); do
+    case "$FM_TEST_RAN" in
+      *" $name "*) ;;
+      *) missing="$missing $name" ;;
+    esac
+  done
+  [ -z "$missing" ] \
+    || fail "defined but never ran, so this suite reported green over them:$missing"
 }
 
 # --- self-cleaning temp root ------------------------------------------------
