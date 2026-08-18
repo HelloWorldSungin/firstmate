@@ -76,13 +76,50 @@ A page shorter than the one it asked for never ends that lookup, because a forge
 A comment is created only where the lookup proved there is none to edit; wherever it could not prove that - the page cap ran out, the host re-served a page the walk had already seen, a page carried no readable comment id, or the comment was found under an id that cannot be addressed - nothing is written and the uncertainty is reported, because guessing in the create direction is what accumulates a comment per milestone.
 `bin/fm-pr-merge.sh` bounds each of its own per-host verify and close calls by `FM_ISSUE_CLOSE_TIMEOUT` seconds (default 10).
 
-`config/project-board` optionally names the captain's GitHub Projects board as one line, `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`; absent, `bin/fm-project-board.sh` does nothing and contacts no host.
-It adds board membership for each tracked work item and drives the board's existing Status field from the same milestones, and it ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
-It never creates, renames, or deletes a view, filter, field, status option, or item: a milestone with no matching status option is reported and the status left alone.
-That last one is a hard safety rule rather than a matter of taste, because `updateProjectV2Field` replaces a single-select field's whole option set and reassigns every option id, which detaches every item already using them: adding one option to the real Firstmate board blanked the status of all twenty items instantly.
-A missing option is therefore the captain's to add by hand, and each call is bounded by `FM_PROJECT_BOARD_TIMEOUT` seconds (default 15).
+Firstmate also keeps the captain's GitHub Projects boards true, and two different facts name a board, each with one owner.
+A project declares its own board with a `board=` token beside `tracker=` in the same bracket annotation, and `config/project-board` is this home's fallback for a project that declares nothing:
+
+```
+- <name> [<mode> +yolo tracker=<forge>:<host>/<path> board=https://github.com/orgs/<org>/projects/<n>] - <desc> (added <date>)
+- <name> [<mode> tracker=<forge>:<host>/<path> board=none] - <desc> (added <date>)
+```
+
+The board URL is `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`, and `config/project-board` holds one such line and nothing else.
+`board=none` declares that a project has no board, which is distinct from an absent token meaning undeclared: the first skips even where a home fallback exists, and the second falls back to it.
+`bin/fm-board-lib.sh` is the single owner of board identity, of that resolution rule, and of every request Firstmate can send to a board; a home with neither declaration nor fallback does nothing and contacts no host.
+A home with no board anywhere is answered before any target is looked at, so `sync` there prints nothing and exits 0 whatever it was handed.
+
+`bin/fm-project-board.sh sync` is the lifecycle update for a task Firstmate is running.
+It resolves the board from the issue's own tracker through the registry and falls back to the home board, adds board membership for the tracked work item, drives the board's existing Status field from the same milestones, and ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
+Each call is bounded by `FM_PROJECT_BOARD_TIMEOUT` seconds (default 15).
+
+`bin/fm-project-board.sh reconcile` is the fleet-wide drift sweep, and it is the one that catches work Firstmate never dispatched: on 2026-08-04 the Ark-Signal board carried 222 items that no lifecycle update could ever have corrected, three of which had drifted.
+It uses DECLARED boards only and never the home fallback, so a sweep can only reach a board somebody named for that project by hand.
+Because it never reads that fallback, a malformed `config/project-board` does not stop it either: only `sync` and `show` resolve the fallback, and only they report it and stop.
+For each such project every tracker issue is made a board member, a closed issue is moved to `Done`, and an open issue is moved out of `Done`; nothing finer is invented, because closed-versus-open is the only truth available for work Firstmate did not dispatch.
+Membership is reconciled against a real issue listing rather than a repository's REST `open_issues_count`, which includes pull requests and once had Firstmate reporting a missing item on a board that was already complete at 76 of 76.
+An item no tracker issue matches is left exactly where it is, because a card a human added by hand is not drift.
+The repository identity the two sides are matched on is normalized once per side rather than compared byte-exactly, because the board's own reference always carries GitHub's canonical casing while the registry carries whatever was typed, and GitHub resolves an owner/repo pair case-insensitively.
+One function in `bin/fm-board-lib.sh` owns that normalization, and both this join and the tracker lookup `sync` resolves its board through build their key with it, so a project's declared board cannot be lost on one path while the other matches.
+A listing reports whether it is complete rather than having that inferred from its shape, and a sweep that saw only part of a board or of a tracker plans no changes at all for that project and says so: an issue is missing from a board only if it is on no page of it, so a partial view cannot tell a missing item from an unread one.
+The sweep is bounded as a whole operation by `FM_BOARD_SWEEP_TIMEOUT` seconds (default 240) - a tighter inherited `FM_WRITE_BACK_BUDGET` wins, a larger or unreadable one cannot loosen it - reads at most `FM_BOARD_SWEEP_MAX_PAGES` pages of 100 per listing (default 20), and performs at most `FM_BOARD_SWEEP_MAX_CHANGES` writes per run (default 50); a bound that truncates anything says so, because a silent cap reads as complete coverage.
+The whole-operation budget says so wherever it truncates, on a read as much as on a write, down to a call refused on the last row of the last project.
+Every call the sweep makes reports its failure through one function that is the only thing deciding whether the board or the budget was at fault, so a budget that runs out is reported as the truncation it is rather than as one more board the run could not reach, and no failure inside the sweep goes unreported.
+A run that stops early records the last registry entry it FINISHED in `state/.board-sweep-cursor` and the next run starts after it, wrapping, so a budget too small to cover the whole fleet at once still covers all of it across a bounded number of runs rather than reconciling the same first projects forever.
+Finished rather than reached: an entry the run was cut short inside was not reconciled, so the next run starts AT it rather than skipping it, which would make the one entry a bounded sweep cannot afford the one entry it never retries.
+The single exception is a run that finished nothing at all, which advances past the entry it died in so that one pathologically expensive entry cannot block every other entry from ever being read.
+That cursor is deliberately a different file from the `state/.board-sweep` interval marker, which `bin/fm-bootstrap.sh` truncates every time it starts a sweep; a resume point kept there would be erased just before the walk that reads it.
+A truncated run also names the entries it did not finish, because "drift may remain" and "these boards were not looked at" are different facts.
+A listing the walk could not follow to its end - the page cap reached, or a page that promised more and then named no cursor to follow - is reported the same way and is never mistaken for a listing that ended; where that listing is the board's items, membership is left alone entirely, because an issue is missing from a board only if it is on no page of it and a page that was never read cannot say.
+`--dry-run` charges each rehearsed write against `--limit` exactly as the run it previews would, so an issue that is both absent and closed counts as two and the preview truncates where the real sweep truncates.
+`bin/fm-bootstrap.sh` runs it once per locked session start, at most every `FM_BOARD_SWEEP_INTERVAL` seconds (default 21600), and relays only its actionable `BOARD_SWEEP:` lines - a board one run could not reach is not a fleet diagnostic, because the next sweep re-derives exactly the same drift.
+That run takes half of what is left of the deferred network stage's own `FM_STARTUP_NETWORK_TIMEOUT` bound rather than its own larger default, and is skipped outright when too little of the stage remains, because a sweep the stage kills part-way through takes every check after it down too, and a board problem is never allowed to become a fleet problem.
+
+Neither command ever creates, renames, or deletes a view, filter, field, status option, or item, and neither writes any field but Status: a milestone or a closed issue with no matching status option is reported and the status left alone.
+That is a hard safety rule rather than a matter of taste, because `updateProjectV2Field` replaces a single-select field's whole option set and reassigns every option id, which detaches every item already using them: adding one option to the real Firstmate board blanked the status of all twenty items instantly.
+A missing option is therefore the captain's to add by hand.
 Projects v2 is GraphQL-only and `gh-axi` does not implement it, so that one path uses `gh api graphql` directly and additionally needs the token's `project` scope, which `repo` does not imply.
-The file is inherited by secondmate homes, so their work appears on the same board.
+`config/project-board` is inherited by secondmate homes, so a secondmate's work reaches the same fallback board.
 
 Every write-back path fails open exactly as enrichment does: an unreachable, unauthenticated, rate-limited, or missing target prints one warning on stderr and exits 0, so it can never block or fail dispatch, validation, merge, or cleanup.
 What it is never allowed to be is silent, which is why each non-write reports its own reason rather than passing quietly.
@@ -511,6 +548,7 @@ If bootstrap kills a timed-out clone refresh, it replays any completed `fm-fleet
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
+That same stage runs the fleet-wide project-board drift sweep straight after the clone refresh; "Project issue trackers" above owns its declaration gate, its bounds, its resume point, and its `BOARD_SWEEP:` reporting.
 The same deferred network stage runs bootstrap's guarded secondmate sync for recorded live homes, then propagates declared inherited local material into each validated live home.
 Local routes use direct guarded filesystem operations, while remote routes delegate sync and allowlisted transfer through their configured SSH host without probing any unconfigured fleet.
 It emits `SECONDMATE_SYNC:` only when a home was skipped for an actionable sync reason, inheritance failed, or a divergent shared captain-preference copy was quarantined.
@@ -739,6 +777,10 @@ FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per forge call fm-issue-comment.sh makes for the living status comment, on GitHub and on a per-host forge alike
 FM_ISSUE_CLOSE_TIMEOUT=10   # seconds allowed per per-host forge call fm-pr-merge.sh makes to verify and close a landed work item
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
+FM_BOARD_SWEEP_TIMEOUT=240   # seconds bounding the whole fleet-wide board reconciliation sweep; a tighter inherited FM_WRITE_BACK_BUDGET wins and a larger one cannot loosen it (see "Project issue trackers")
+FM_BOARD_SWEEP_MAX_PAGES=20   # pages of 100 that sweep reads per board or tracker listing; a listing it could not finish reading plans no changes for that project and says so
+FM_BOARD_SWEEP_MAX_CHANGES=50   # board writes one sweep may make before it stops, names the entries it did not finish, and leaves them to the next run
+FM_BOARD_SWEEP_INTERVAL=21600   # minimum seconds between sweeps, measured from state/.board-sweep by bin/fm-bootstrap.sh
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
 FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, by fm-recall.sh to read this home's own brain, by fm-gbrain-capture.sh to deliver a captured document, by fm-gbrain-eval.sh to read the version, brain-plane configuration, and corpus counts an evaluation run records, and by fm-gbrain-health.sh to resolve the brain root and validate the configured planes; see "Brain scoping"
 FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either surface, and per reachability probe in fm-gbrain.sh check

@@ -1389,6 +1389,201 @@ test_network_phases_record_per_step_elapsed_times() {
   pass "bootstrap: each deferred network phase, secondmate, and clone records its own elapsed time"
 }
 
+# A board is decoration over work that already exists, so a board firstmate
+# cannot reach must cost the fleet nothing at all: the rest of the network phase
+# still runs and still reports, and the session start is not handed a diagnostic
+# about a transient host it will simply retry at its next interval.
+test_a_board_problem_never_becomes_a_fleet_problem() {
+  local case_dir fakebin log out rc
+  case_dir="$TMP_ROOT/board-sweep"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data" "$case_dir/home/projects"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # Every board call refuses. `gh auth status` still succeeds, so the only thing
+  # broken in this run is the board.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  exit 0
+fi
+if [ "${1:-}" = api ] && [ "${2:-}" = graphql ]; then
+  echo "gh: the board is unreachable" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+  fm_git_init_commit "$case_dir/home/projects/alpha"
+  fm_git_add_origin "$case_dir/home/projects/alpha" "$case_dir/alpha-origin"
+
+  log="$case_dir/timings.tsv"
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_TIMING_LOG="$log" FM_TIMING_EPOCH_MS=0 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an unreachable board failed the whole network phase"
+  assert_timing_record "$log" phase board-sweep '' "the board sweep never ran"
+  assert_timing_record "$log" phase fleet-sync '' "the clone refresh was lost when the board refused"
+  assert_not_contains "$out" "BOARD_SWEEP:" "a transient board failure became a session-start diagnostic"
+  assert_present "$case_dir/home/state/.board-sweep" "the sweep did not record its interval"
+
+  # And a home whose projects declare no board contacts no host at all, which is
+  # every home until the captain adds the token by hand.
+  rm -rf "$case_dir/home/state/.board-sweep"
+  printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget] - fixture (added 2026-08-18)\n' \
+    >> "$case_dir/home/data/projects.md.undeclared"
+  mv "$case_dir/home/data/projects.md.undeclared" "$case_dir/home/data/projects.md"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_absent "$case_dir/home/state/.board-sweep" "a home that declares no board still swept one"
+  pass "bootstrap: an unreachable board costs the fleet nothing, and an undeclared home sweeps nothing"
+}
+
+# The sweep's budget is derived from the stage that contains it, so a slow board
+# can never eat the deferred network stage - the task's own non-negotiable, that
+# a board problem must never become a fleet problem. Round 2 added that
+# derivation and nothing exercised it, which left the safety bound resting on an
+# unexercised branch.
+test_the_board_sweep_is_bounded_by_the_stage_that_contains_it() {
+  local case_dir fakebin log out
+  case_dir="$TMP_ROOT/board-sweep-budget"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  log="$case_dir/board-calls.log"
+  # A board that answers only after longer than the whole stage would allow. The
+  # sweep must be cut off by its derived budget rather than running to its own.
+  cat > "$fakebin/gh" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = status ]; then exit 0; fi
+if [ "\${1:-}" = api ]; then
+  printf 'called\n' >> "$log"
+  sleep 30
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  local started elapsed
+  # The per-call bound is deliberately raised far above the board's answer time,
+  # so it cannot be what cuts the call short. That leaves the stage-derived
+  # budget as the ONLY thing that can, which is what makes this test able to
+  # fail: without the derivation the sweep runs to the board's own 30s.
+  #
+  # THE ARITHMETIC THE CEILING BELOW IS CHOSEN FROM - DO NOT NARROW IT.
+  # board_sweep_budget gives the sweep (24 - preamble)/2 seconds and
+  # bin/fm-bootstrap.sh runs it under that budget plus BOARD_SWEEP_GRACE, so this
+  # run takes at most preamble + (24 - preamble)/2 + 2, which is 14 + preamble/2.
+  # board_sweep refuses to start below BOARD_SWEEP_MIN_BUDGET (5s), which caps
+  # the preamble that can start a sweep at all at 14 seconds, so 21 is the
+  # slowest a run that starts one can be. The ceiling is 25: above every case
+  # that starts a sweep, so a loaded box cannot fail it, and far below what this
+  # run takes with the derivation disabled - nothing kills it at the stage bound,
+  # because bin/fm-bootstrap.sh is invoked directly here rather than under
+  # fm-startup-network.sh, so the fake simply answers after its 30-second sleep.
+  # An earlier 12s stage left only 2 seconds of that margin and failed under load
+  # as a false negative rather than a real regression.
+  started=$(date +%s)
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=24 \
+    FM_PROJECT_BOARD_TIMEOUT=90 FM_BOARD_SWEEP_TIMEOUT=240 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  elapsed=$(( $(date +%s) - started ))
+
+  assert_present "$log" "the sweep never reached the board at all, so the bound proved nothing"
+  [ "$elapsed" -lt 25 ] \
+    || fail "the sweep was not bounded by its stage: it ran ${elapsed}s against a board that answers in 30s, with a 90s per-call bound that cannot have been what stopped it"
+  pass "bootstrap: a slow board is cut off by a budget derived from the stage, not by its own"
+}
+
+# THE SWEEP'S RESUME POINT IS NOT THE INTERVAL MARKER, AND BOOTSTRAP MUST NOT
+# TREAT IT AS ONE. bin/fm-bootstrap.sh truncates state/.board-sweep with `: >`
+# every time it starts a sweep, because that file's mtime is the interval. A
+# resume point kept in it - or cleared alongside it - would be erased just before
+# the walk that reads it, the registry's tail would starve again, and it would
+# look fixed. The observable that proves the two are independently owned is WHERE
+# the sweep starts: with the cursor naming the first entry, the second entry's
+# board is the one that has to be contacted first.
+test_the_board_sweep_resume_point_survives_bootstrap() {
+  local case_dir fakebin log first
+  case_dir="$TMP_ROOT/board-sweep-cursor"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- alpha [no-mistakes tracker=github:github.com/acme/alpha board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+    printf -- '- beta [no-mistakes tracker=github:github.com/acme/beta board=https://github.com/users/captain/projects/8] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  printf 'alpha\n' > "$case_dir/home/state/.board-sweep-cursor"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  log="$case_dir/board-calls.log"
+  # Every board refuses, so the only thing this case reads out of the run is the
+  # ORDER the boards were asked for, which is exactly the resume point's effect.
+  cat > "$fakebin/gh" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = status ]; then exit 0; fi
+if [ "\${1:-}" = api ]; then
+  printf '%s\n' "\$*" >> "$log"
+  echo "gh: the board is unreachable" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+
+  assert_present "$log" "the sweep never reached a board, so the resume point proved nothing"
+  first=$(grep -o 'number=[0-9][0-9]*' "$log" | head -n 1)
+  [ "$first" = 'number=8' ] \
+    || fail "the sweep walked from the top of the registry instead of after the entry its cursor names, first board read was '${first:-none}'"
+  assert_present "$case_dir/home/state/.board-sweep-cursor" \
+    "bootstrap left the sweep no resume point at all, so the next one starts over"
+  pass "bootstrap stamps its interval marker without destroying the sweep's separate resume point"
+}
+
+# A stage with almost nothing left must not start a sweep it cannot finish, and
+# must leave the interval unstamped so the next session start retries rather than
+# recording a sweep that never ran.
+test_a_stage_with_no_room_left_skips_the_sweep_without_stamping_it() {
+  local case_dir fakebin
+  case_dir="$TMP_ROOT/board-sweep-noroom"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=1 \
+    "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_absent "$case_dir/home/state/.board-sweep" \
+    "a sweep that had no room to run still stamped its interval, so the next session start would skip it too"
+  pass "bootstrap: a stage with no room left skips the sweep and leaves it due"
+}
+
 test_tasks_axi_verdict_handoff_is_consumed_once() {
   local case_dir fakebin log out
   case_dir="$TMP_ROOT/tasks-axi-handoff"
@@ -1591,8 +1786,13 @@ test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
+test_a_board_problem_never_becomes_a_fleet_problem
+test_the_board_sweep_is_bounded_by_the_stage_that_contains_it
+test_the_board_sweep_resume_point_survives_bootstrap
+test_a_stage_with_no_room_left_skips_the_sweep_without_stamping_it
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_backend_mismatch
 test_crew_dispatch_validation
+fm_test_every_defined_test_ran
 printf '\nall fm-bootstrap tests passed\n'

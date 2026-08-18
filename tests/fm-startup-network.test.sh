@@ -45,8 +45,9 @@ new_world() {
 #!/usr/bin/env bash
 # Scriptable stand-in: records how it was invoked, then behaves as the test asks.
 set -u
-printf 'network=%s detect_only=%s\n' \
+printf 'network=%s detect_only=%s stage=%s\n' \
   "${FM_BOOTSTRAP_NETWORK:-all}" "${FM_BOOTSTRAP_DETECT_ONLY:-0}" \
+  "${FM_STARTUP_NETWORK_TIMEOUT:-unset}" \
   >> "${FM_FAKE_BOOTSTRAP_LOG:?}"
 # The real sweeps record their elapsed times through fm-timing-lib.sh, which
 # reaches them as an exported FM_TIMING_LOG. Recording the same way here proves
@@ -315,6 +316,47 @@ EOF
   assert_grep 'check	startup-network' "$home/state/.wake-queue" \
     "a timed-out stage did not surface to the agent"
   pass "fm-startup-network: an aggregate bound turns a wedged sweep into an actionable line"
+}
+
+# The stage bounds its whole network half and kills it by process group, so a
+# phase carrying its own whole-operation budget - bin/fm-bootstrap.sh's board
+# sweep does - takes a SHARE of this bound instead of standing beside it as a
+# second, larger constant. That derivation is only reachable if the stage hands
+# its bound DOWN to the run it launches, which is this suite's half of the
+# contract: without the handover the sweep silently falls back to a budget bigger
+# than the stage containing it, and the stage kills the sweep and every check
+# after it part-way through, which is exactly a board problem becoming a fleet
+# problem. tests/fm-bootstrap.test.sh owns what the child then does with it.
+test_the_stage_hands_its_bound_down_to_the_run_it_launches() {
+  local rec home root log
+  rec=$(new_world stage-bound-handed-down)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  printf '%s\n' $$ > "$home/state/.lock"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_STARTUP_NETWORK_TIMEOUT=37 \
+    run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  assert_grep 'network=only detect_only=0 stage=37' "$log" \
+    "the mutating deferred run was not told the bound of the stage that contains it"
+
+  # An UNUSABLE value is what tells a bound that was handed down apart from one
+  # that was merely inherited: the stage falls back to its own default, so the
+  # child must read that default, while a child that only inherited the ambient
+  # environment would read the unusable value the stage itself refused.
+  : > "$log"
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_STARTUP_NETWORK_TIMEOUT=not-a-number \
+    run_stage "$home" "$root" run --locked 1 --lock-pid $$
+  assert_grep 'network=only detect_only=0 stage=120' "$log" \
+    "the mutating deferred run inherited an unusable bound instead of the stage's effective one"
+
+  # The read-only probe is bounded by the same stage and must be told the same.
+  : > "$log"
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_STARTUP_NETWORK_TIMEOUT=not-a-number \
+    run_stage "$home" "$root" run --locked 0
+  assert_grep 'network=only detect_only=1 stage=120' "$log" \
+    "the read-only deferred run inherited an unusable bound instead of the stage's effective one"
+  pass "fm-startup-network: the deferred run is told the bound of the stage that contains it"
 }
 
 # A worker killed before publication leaves a `running` record behind.
@@ -618,6 +660,7 @@ test_a_claimant_crash_after_publish_still_queues_the_wake
 test_a_report_publication_failure_is_failed_and_still_wakes
 test_mutating_sweeps_are_refused_when_the_lock_changed_hands
 test_the_stage_bound_is_reported_not_swallowed
+test_the_stage_hands_its_bound_down_to_the_run_it_launches
 test_an_abandoned_run_reads_as_needing_a_rerun
 test_start_is_single_flight
 test_start_reserves_its_generation_before_returning

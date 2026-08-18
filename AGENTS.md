@@ -81,7 +81,7 @@ config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inhe
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Startup memory budget")
 config/herdr-presentation-spaces  Herdr visual-projection opt-out or opt-in; LOCAL, gitignored; inherited by secondmate homes (docs/herdr-backend.md "Presentation spaces")
 config/trace-context  optional default-off trace-context propagation flag; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Trace context propagation")
-config/project-board  the captain's GitHub Projects board URL; LOCAL, gitignored; absent means no board traffic at all; inherited by secondmate homes (docs/configuration.md "Project issue trackers")
+config/project-board  this home's FALLBACK GitHub Projects board URL for a project whose registry entry declares no board=; LOCAL, gitignored; absent means no fallback; inherited by secondmate homes (docs/configuration.md "Project issue trackers")
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored (docs/cmux-backend.md "Setup")
 config/forge-tokens/<host>  per-host issue-tracker credential; LOCAL, gitignored, must be mode 0600, and deliberately NOT inherited (docs/configuration.md "Project issue trackers")
 config/gbrain.json  fleet-shared brain endpoints, addresses, and credential NAMES; LOCAL, gitignored, closed schema, inherited by secondmate homes (docs/configuration.md "Brain scoping")
@@ -96,7 +96,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   gbrain/            this home's OWN GBrain brain, and the only brain this home writes (docs/gbrain-scoping.md)
   gbrain-outbox/     durable redacted task-knowledge records awaiting capture into that brain; retried by bin/fm-gbrain-capture.sh (docs/gbrain-capture.md)
   learnings.md       curated fleet-local operational facts and gotchas; created lazily (docs/configuration.md "Operational learnings")
-  projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture and issue-tracker schemas (section 6)
+  projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture, issue-tracker, and project-board schemas (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
@@ -137,6 +137,8 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  deferred network stage records owned by bin/fm-startup-network.sh
+  .board-sweep       last fleet-wide project-board reconciliation sweep; its mtime is the interval, safe to delete (forces one sweep)
+  .board-sweep-cursor  the last registry entry that sweep FINISHED; the next one starts after it, wrapping, so a truncated sweep cannot starve the registry's tail (safe to delete: the next sweep starts at the top)
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
@@ -551,7 +553,7 @@ When the captain asks to check or update this fleet's toolchain ("check tool upd
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
