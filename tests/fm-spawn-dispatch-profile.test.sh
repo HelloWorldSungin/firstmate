@@ -73,9 +73,21 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" treehouse
+  # A pass-through `timeout` for the bounded calls fm-spawn makes (the cursor
+  # catalog probe, the work-item milestone). It must accept BOTH shapes: the
+  # plain `timeout <seconds> <cmd>` and this fork's
+  # `timeout -k <grace> <seconds> <cmd>` (bin/fm-timeout-lib.sh). A shim that
+  # strips only one leading argument would try to exec the duration and every
+  # bounded call would silently fail.
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
-shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -k|--kill-after) shift 2 ;;
+    -*) shift ;;
+    *) shift; break ;;
+  esac
+done
 exec "$@"
 SH
   cat > "$fakebin/cursor-agent" <<'SH'

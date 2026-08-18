@@ -262,7 +262,12 @@ report_row() { # report_row <tool> <grep-ERE> <label>
 pass "report: $3"
 }
 report_row gh-axi '0\.1\.30 +0\.1\.2[0-9] +0\.1\.30 +npm +current$' "current tool reported current"
-report_row quota-axi '0\.1\.21 +0\.1\.1[0-9] +0\.1\.28 +npm +behind$' "behind tool reported behind with floor beside install"
+# quota-axi also carries the below-floor annotation: upstream raised
+# FM_QUOTA_AXI_MIN to 0.1.25 in kunchenguid/firstmate#2300, which is above this
+# stub's installed 0.1.21. The plain `behind` shape stays covered by the
+# treehouse, gbrain and pi rows below. The floor-reading mechanism itself is
+# pinned independently by the floor_row cases above, against a fixture floor.
+report_row quota-axi '0\.1\.21 +0\.1\.25 +0\.1\.28 +npm +behind; below floor$' "behind-and-below-floor tool reports both, with the floor beside the install"
 report_row no-mistakes '1\.41\.2 +1\.31\.2 +1\.48\.0 +github +behind; pre-releases up to v1\.51\.0 excluded$' "GA latest, pre-releases above it named"
 report_row treehouse '2\.1\.0 +none +2\.1\.1 +github +behind$' "github channel latest parsed"
 report_row gbrain '0\.45\.9\.0 +none +0\.45\.14\.0 +github +behind$' "four-segment versions compared"
