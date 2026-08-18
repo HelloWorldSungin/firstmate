@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/fm-cursor-agy-smoke.test.sh - live herdr smoke for the crew-only,
+# tests/fm-agy-smoke.test.sh - live herdr smoke for the crew-only,
 # herdr-only cursor/agy adapters. It launches each CLI through the EXACT
 # bin/fm-launch-lib.sh template in an isolated Herdr lab pane and confirms herdr
 # NATIVELY recognizes it, which is the load-bearing generic-detection claim that
@@ -226,4 +226,4 @@ if jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTI
 fi
 pass "agy workspace trust is seeded before launch and removed afterward"
 
-echo "# all fm-cursor-agy-smoke tests passed"
+echo "# all fm-agy-smoke tests passed"

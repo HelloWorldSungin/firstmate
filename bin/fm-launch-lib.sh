@@ -17,12 +17,12 @@
 # canonical operational-input encoder that every template pipes the brief
 # through, #909) after a template is chosen.
 #
-# cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence,
-# data/captain.md; verification data/cursor-agy-verify/report.md). They are never
-# a primary runtime and never a secondmate launcher, and firstmate refuses them
+# agy is a CREW-ONLY, herdr-ONLY adapter (captain-approved divergence,
+# data/captain.md; verification data/cursor-agy-verify/report.md). It is never
+# a primary runtime and never a secondmate launcher, and firstmate refuses it
 # on any non-herdr backend. bin/fm-spawn.sh enforces both gates before launch;
-# the templates below are the ship/design/scout launch string only. Harness token
-# `cursor` launches the `cursor-agent` CLI; `agy` launches the `agy` CLI.
+# the agy template below is the ship/design/scout launch string only.
+# Harness token `agy` launches the `agy` CLI.
 
 # fm_launch_shell_quote: single-quote <text> for safe reuse inside a launch
 # command that is itself sent to the crewmate's pane shell.
@@ -86,7 +86,7 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
       __PITURNEND__)  out=$out$pi_turnend ;;
       __PIWATCH__)    out=$out$pi_watch ;;
       __OPINPUT__)    out=$out$op_input ;;
-      __PIBIN__|__PITUIMODE__) out=$out$token ;;
+      __PIBIN__|__PITUIMODE__|__CURSORBIN__|__WORKTREE__) out=$out$token ;;
       *)
         if [ "$allow_unresolved" = 1 ]; then
           out=$out$token
@@ -102,23 +102,24 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
 
 # fm_launch_restricted_harness_of_word: map one command word (an executable path
 # or name) to the crew-only restricted harness it launches, or nothing.
-# cursor-agent and cursor -> cursor; agy -> agy.
+# agy -> agy. cursor is deliberately absent: it became an ordinary verified
+# harness with no crew-only or backend gate, so a raw cursor launch bypasses no
+# gate and needs no refusal.
 fm_launch_restricted_harness_of_word() {  # <word>
   case "$(basename -- "${1:-}")" in
-    cursor-agent|cursor) printf 'cursor' ;;
     agy) printf 'agy' ;;
   esac
 }
 
 # fm_launch_raw_restricted_harness: given a RAW launch command string (the
 # unverified-adapter escape hatch), decide whether firstmate must REFUSE it
-# because it could launch the crew-only cursor/agy CLIs outside their canonical
-# --harness path. Prints one of:
-#   cursor | agy - a restricted executable basename is present (literal case).
-#   unresolved   - the command uses shell INDIRECTION ($ expansion, backtick or
-#                  $() command substitution, or the `eval` builtin) that could
-#                  resolve to cursor-agent/agy but cannot be cleared statically.
-#   <empty>      - safe to allow through the raw hatch.
+# because it could launch the crew-only agy CLI outside its canonical --harness
+# path. Prints one of:
+#   agy        - the restricted executable basename is present (literal case).
+#   unresolved - the command uses shell INDIRECTION ($ expansion, backtick or
+#                $() command substitution, or the `eval` builtin) that could
+#                resolve to agy but cannot be cleared statically.
+#   <empty>    - safe to allow through the raw hatch.
 #
 # WHY the indirection rule: the raw command is ultimately executed by the
 # crewmate PANE's shell, so `AGY=agy bash -lc '$AGY ...'`, `bash -lc 'x=agy;
@@ -127,10 +128,10 @@ fm_launch_restricted_harness_of_word() {  # <word>
 # any unresolved shell expansion makes the command unverifiable, and firstmate
 # refuses it. This over-approximates (a raw command that merely uses `$FOO` for
 # an unrelated reason is also refused), which is acceptable: the raw hatch exists
-# for UNVERIFIED adapters, cursor/agy are verified with a canonical --harness path
-# (that also installs the trust seed and native supervision), and a refusal here
-# only sends the operator to that path or to an expansion-free spelling.
-fm_launch_raw_restricted_harness() {  # <raw-command> -> cursor|agy|unresolved|<empty>
+# for UNVERIFIED adapters, agy is verified with a canonical --harness path (that
+# also installs the trust seed and native supervision), and a refusal here only
+# sends the operator to that path or to an expansion-free spelling.
+fm_launch_raw_restricted_harness() {  # <raw-command> -> agy|unresolved|<empty>
   local cmd=$1 word found normalized
   # shellcheck disable=SC2086  # deliberate word-splitting of the raw command string
   set -- $cmd
@@ -188,12 +189,12 @@ fm_launch_raw_restricted_harness() {  # <raw-command> -> cursor|agy|unresolved|<
   esac
 }
 
-# fm_launch_write_raw_guard: write executable guard shims named `cursor-agent`,
-# `cursor`, and `agy` into <dir>. bin/fm-spawn.sh prepends <dir> to the PATH of a
-# RAW launch command's pane, making these shims the EXEC-TIME gate for B1: when
-# any shell spelling in the raw command resolves one of those restricted binaries
+# fm_launch_write_raw_guard: write an executable guard shim named `agy` into
+# <dir>. bin/fm-spawn.sh prepends <dir> to the PATH of a
+# RAW launch command's pane, making this shim the EXEC-TIME gate for B1: when
+# any shell spelling in the raw command resolves that restricted binary
 # through PATH, the shim runs instead of the real CLI, refuses loudly, and exits
-# non-zero, so cursor/agy never launch outside the sanctioned `--harness` path
+# non-zero, so agy never launches outside the sanctioned `--harness` path
 # (which does NOT use this guard and reaches the real binary directly). Because
 # the shell performs the expansion before exec, this uniformly defeats quote
 # concatenation, brace/alias/process-substitution expansion, and even a wrapper
@@ -213,15 +214,14 @@ fm_launch_write_raw_guard() {  # <dir>
   local dir=$1 name
   [ -n "$dir" ] || return 1
   mkdir -p "$dir" || return 1
-  for name in cursor-agent cursor agy; do
+  for name in agy; do
     cat > "$dir/$name" <<'SHIM'
 #!/usr/bin/env bash
 # firstmate raw-launch guard shim (bin/fm-launch-lib.sh fm_launch_write_raw_guard).
-# Reached only when a raw launch command resolved a crew-only cursor/agy binary
+# Reached only when a raw launch command resolved the crew-only agy binary
 # through PATH; the sanctioned --harness path never routes through here.
 prog=$(basename -- "$0")
 case "$prog" in
-  cursor-agent|cursor) canon=cursor ;;
   agy) canon=agy ;;
   *) canon=$prog ;;
 esac
@@ -277,17 +277,6 @@ fm_launch_template() {
     # launch command - it is a Stop-event hook installed by fm-spawn (global hook +
     # per-task pointer), so the template is identical for ship/design/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
-    # cursor (Cursor Agent CLI, harness token `cursor`, binary `cursor-agent`):
-    # a positional prompt starts the supervised interactive session. --trust
-    # bypasses the interactive workspace-trust modal (verified: the modal blocks
-    # an unattended launch and --force does NOT cover it); --force (alias --yolo)
-    # auto-approves every command, the equivalent of claude's
-    # --dangerously-skip-permissions. cursor has NO standalone effort flag: parameterized
-    # models accept bracket overrides (e.g. 'claude-opus-4-8[context=1m,effort=high,fast=false]'),
-    # but bare models like 'composer-2.5' reject bracketed effort, so the template
-    # carries __MODELFLAG__ but no __EFFORTFLAG__. Turn-end notification is the watcher's
-    # debounced native-idle detector (fm-watch.sh maybe_native_turnend), so
-    # no launch-time turn-end hook is installed.
     # Kimi Code rejects a positional prompt, so it launches bare and receives only
     # an absolute brief pointer after fm-spawn's TUI readiness gate. Its turn-end
     # signal is a globally configured Stop hook plus a guarded per-task worktree
@@ -299,7 +288,20 @@ fm_launch_template() {
     # placeholder here. The foreign-context kill switch keeps operator-private
     # Claude rules out of Meta-hosted inference while preserving project rules.
     muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
-    cursor) printf '%s' 'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # Cursor Agent CLI. --trust suppresses the workspace-trust prompt, which
+    # --yolo does NOT cover and which would otherwise block every spawn, since
+    # each task gets a fresh worktree path cursor has never seen. --yolo is the
+    # --force alias whose TUI label is "Run Everything". --workspace pins the
+    # exact worktree. -w/--worktree is deliberately never passed: it allocates a
+    # SECOND worktree under ~/.cursor/worktrees and would break firstmate's
+    # isolation contract. __CURSORBIN__ is resolved by fm-spawn through
+    # fm_cursor_resolve_binary rather than named here, because `cursor` is not the
+    # CLI (the installed names are cursor-agent and the legacy alias agent), and
+    # the foreign primary markers are cleared so an inherited CLAUDECODE cannot
+    # outrank cursor's own marker in a process that only reads the environment.
+    # Cursor exposes no effort flag, so the shared effort axis is deliberately
+    # omitted and stays in task metadata only.
+    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
     # --dangerously-skip-permissions auto-approves tool use. Workspace trust is a
@@ -376,9 +378,9 @@ fm_launch_effort_flag() {
         max) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote ultra)" ;;
       esac
       ;;
-    # cursor has no standalone effort flag. Parameterized models may carry their
-    # own bracket overrides (see fm_launch_template), but no generic effort value
-    # is rendered here.
+    # cursor has no effort flag at all: it encodes effort in model ids such as
+    # cursor-grok-4.5-high, validated against `cursor-agent --list-models`. The
+    # requested effort stays in task metadata and never reaches the launch.
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.

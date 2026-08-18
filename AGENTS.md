@@ -115,9 +115,10 @@ state/               runtime records and signals; gitignored
   <id>.gbrain        GBrain capture receipt written by bin/fm-gbrain-capture.sh; absent means the home has no brain, never an error; removed by teardown
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
+  <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.meta          task metadata written by fm-spawn; bin/fm-spawn.sh's header owns its base fields, docs/configuration.md "Runtime backend" owns backend-specific fields, and fm-promote, bin/fm-run-attribution-legacy-transition.sh, fm-pr-check, fm-pr-merge, and fm-x-link own the fields they add (sections 7 and 14)
-  <id>.herdr-presentation  Herdr visual-projection attempt journal; never task or endpoint authority (docs/herdr-backend.md "Presentation spaces")
-  <id>.check.sh      authenticated slow poll; the watcher runs only validated trusted or registered check content and rejects every other state check without execution (section 7; bin/fm-watch.sh)
+  <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority (docs/herdr-backend.md "Presentation spaces")
+  <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution (section 7; bin/fm-watch.sh)
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record for the static poll publication (bin/fm-pr-lib.sh)
@@ -138,10 +139,12 @@ state/               runtime records and signals; gitignored
   .startup-network.*  deferred network stage records owned by bin/fm-startup-network.sh
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
-  .<id>.open-decisions-cursor  per-task OPEN DECISIONS scan cursor written only by fm-classify-lib.sh; removed by teardown, safe to delete (forces one full re-fold)
+  .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
+  .status-presentation-cursor .status-presentation-lock  fleet-wide per-task status identity/byte-offset manifest and serialization lock preventing already-presented status lines from being replayed as new; owned by fm-classify-lib.sh, with each task's row retired by teardown
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
+  .cursor-park-owner .cursor-park-owner.lock .turnend-cursor-blocks   Cursor stop-hook owner record, publication and commit lock, and bounded repair-nag budget; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .wedge-holds-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak .nativeturnend-*   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
@@ -175,6 +178,7 @@ When that section reports its checks still in progress it names exactly what is 
 The digest's ordered sections are lock, bootstrap, wake queue, supervision operating instructions, fleet-state digest, network checks, and context digest with its closing reminder; `bin/fm-session-start.sh`'s header owns each section's exact contents, bounds, and ordering rationale.
 Bootstrap's detect-only checks always run, while its mutating sweeps and the wake-queue presentation run only when this session actually holds the lock.
 A locked drain presents the raw wake records prominently as this turn's first work queue, plus a bounded fleet-wide `OPEN DECISIONS` section whenever durable decision records remain open, even when the queue itself is empty; reconcile those entries before continuing.
+The same drain prints every still-unread `note:` line and pending-reply resolution in an `UNREAD STATUS` section so an answer buried under a later routine line is not dropped, and does not re-print those lines afterwards.
 Presented records stay durable until the handling turn runs the generation-bound acknowledgement the drain prints, so an interrupted turn re-handles them idempotently rather than losing them.
 When the lock could not be acquired and verified, the queue is left untouched because no session mutation is authorized, and the guard's tangle/watcher-liveness alarms still print in read-only advisory mode without drain, supervision repair, or checkout repair commands.
 The fleet-state digest's endpoint-liveness line is a fast presence check only, not a full state read; when you need a crew's actual current state (a run-step, not just "is the pane there"), read it with `bin/fm-crew-state.sh <id>` as before.
@@ -190,8 +194,8 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
-`cursor` and `agy` are additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns their operating guidance and routes each mechanism to its implementation owner, and `fm-spawn` fail-closes both gates.
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, and `cursor`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
+`agy` is additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns its operating guidance and routes each mechanism to its implementation owner, and `fm-spawn` fail-closes both gates.
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, `bin/fm-launch-lib.sh` owns launch-command construction and flags, and `bin/fm-spawn.sh` owns fail-closed validation and launch orchestration.
@@ -409,7 +413,8 @@ No turn ends blind while work is under way, including turns described as holding
 At the start of every wake-handling turn, drain the durable wake queue before peeking, reading beyond the reason line, steering, or starting work.
 Session start is the only exception because its one-shot digest already presented the queue while locked or deliberately left it untouched in lock-refused read-only mode.
 Treat any `OPEN DECISIONS` section from the drain as actionable reconciliation input even when no wake record was queued.
-After handling all emitted wakes and reconciling the OPEN DECISIONS section, run the exact generation-bound `--ack-through` command printed as `WAKE_ACK_REQUIRED`; interruption before that acknowledgement deliberately leaves the work durable for idempotent re-handling.
+Treat any `UNREAD STATUS` section as newly surfaced status that must be read this turn; those lines are not re-printed after this presentation.
+After handling all emitted wakes and reconciling the OPEN DECISIONS and UNREAD STATUS sections, run the exact generation-bound `--ack-through` command printed as `WAKE_ACK_REQUIRED`; interruption before that acknowledgement deliberately leaves the work durable for idempotent re-handling.
 A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
 A declared `paused:` event means a bounded external wait expected to clear on its own, while `blocked:` means firstmate action is needed.
 

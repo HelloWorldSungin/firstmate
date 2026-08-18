@@ -189,6 +189,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -537,6 +539,7 @@ remote_secondmate_teardown() {
   tmp="$SECONDMATE_REG.tmp.$$"
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
+  status_retire_presentation_task "$STATE" "$ID" || return 1
   rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended" \
     "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions" \
     "$STATE/.$ID.open-decisions-cursor"
@@ -2823,12 +2826,14 @@ cleanup_firstmate_home_children() {
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)
     fi
     retire_busy_state "$sub_state" "$child_id" "$child_busy_gen" || return 1
-    rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" \
+    status_retire_presentation_task "$sub_state" "$child_id" || return 1
+    rm -f "$sub_state/$child_id.turn-ended" \
       "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" \
       "$sub_state/$child_id.run-step" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
       "$sub_state/$child_id.usage-sessions" "$sub_state/$child_id.muse-session" \
-      "$sub_state/$child_id.muse-session-current"
+      "$sub_state/$child_id.muse-session-current" \
+      "$sub_state/$child_id.cursor-session"
   done
 }
 
@@ -3164,12 +3169,14 @@ if [ "$NO_VERDICT_RETAIN_WORKTREE" -ne 1 ] && [ -n "$TASK_TMP" ]; then
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
+status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.run-step" \
   "$STATE/$ID.grok-turnend-token" "$STATE/$ID.kimi-turnend-token" \
   "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions" \
   "$STATE/.$ID.open-decisions-cursor" \
   "$STATE/$ID.muse-session" "$STATE/$ID.muse-session-current" \
+  "$STATE/$ID.cursor-session" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note"
 fm_lock_release "$META_LOCK"

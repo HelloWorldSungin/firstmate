@@ -7,7 +7,7 @@
 #   - fm-teardown drops an agy task's global workspace-trust entry (and never
 #     touches the shared settings file for a non-agy task).
 # The end-to-end launch + native-detection path is covered live in
-# tests/fm-cursor-agy-smoke.test.sh; here everything is deterministic with fakes.
+# tests/fm-agy-smoke.test.sh; here everything is deterministic with fakes.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -15,7 +15,7 @@ set -u
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
-TMP_ROOT=$(fm_test_tmproot fm-cursor-agy-adapter)
+TMP_ROOT=$(fm_test_tmproot fm-agy-adapter)
 
 make_fakebin() {
   local dir=$1 fakebin
@@ -109,7 +109,7 @@ EOF
   pass "$harness is refused on a non-herdr backend (herdr-only)"
 }
 
-test_cursor_and_agy_require_atomic_prompt_version() {
+test_agy_require_atomic_prompt_version() {
   local harness=$1 id home proj fakebin out status
   id="prompt-version-$harness-z2"
   IFS='|' read -r home proj fakebin <<EOF
@@ -134,7 +134,7 @@ SH
   pass "$harness requires Herdr 0.7.5 or newer before launch"
 }
 
-test_cursor_and_agy_require_named_server_prompt_capability() {
+test_agy_require_named_server_prompt_capability() {
   local harness=$1 id home proj fakebin out status
   id="prompt-server-$harness-z2"
   IFS='|' read -r home proj fakebin <<EOF
@@ -199,18 +199,12 @@ EOF
     fi
     assert_absent "$home/state/$id.meta" "raw bypass refusal must happen before meta is written"
   done <<'ROWS'
-cursor-agent --trust --force|--secondmate|cursor
 agy --dangerously-skip-permissions|--secondmate|agy
 env agy --dangerously-skip-permissions|--secondmate|agy
-FOO=1 cursor-agent --force|--secondmate|cursor
 FOO=1 BAR=2 agy -p hi||agy
-env -u HOME cursor-agent --force||cursor
 bash -lc 'agy --dangerously-skip-permissions'||agy
-bash -lc 'cursor-agent --trust --force'||cursor
 sh -c "agy -p hi"|--secondmate|agy
-env bash -lc 'cursor-agent'||cursor
 AGY=agy bash -lc '$AGY --dangerously-skip-permissions'||unresolved
-CUR=cursor-agent bash -lc '$CUR --trust --force'|--secondmate|unresolved
 bash -lc 'x=agy; eval "$x --dangerously-skip-permissions"'||unresolved
 bash -lc 'a=a; g=gy; $a$g --x'||unresolved
 ROWS
@@ -622,7 +616,7 @@ append_fake_prompt_receipt() {  # <home> <harness> <text>
   esac
 }
 
-test_accepted_cursor_and_agy_prompt_is_confirmed() {
+test_accepted_agy_prompt_is_confirmed() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-land-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -678,7 +672,7 @@ test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable() {
   pass "a cached $harness prompt snapshot cannot replace an acceptance receipt"
 }
 
-test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed() {
+test_receipted_agy_prompt_transport_failure_is_confirmed() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-receipted-error-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -701,7 +695,7 @@ test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed() {
   pass "a native $harness receipt resolves an ambiguous transport outcome"
 }
 
-test_concurrent_identical_cursor_and_agy_sends_are_attributed() {
+test_concurrent_identical_agy_sends_are_attributed() {
   local harness=$1 case_dir home proj wt fakebin pid_a pid_b rc_a=0 rc_b=0 codes
   case_dir="$TMP_ROOT/send-concurrent-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
@@ -738,7 +732,7 @@ test_concurrent_identical_cursor_and_agy_sends_are_attributed() {
   pass "concurrent identical $harness sends retain separate delivery verdicts"
 }
 
-test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
+test_ambiguous_agy_prompt_failure_is_unverifiable() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-acked-error-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -760,7 +754,7 @@ test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable() {
   pass "an ambiguous $harness prompt failure remains unverifiable"
 }
 
-test_metadata_free_cursor_and_agy_send_uses_live_identity() {
+test_metadata_free_agy_send_uses_live_identity() {
   local harness=$1 case_dir home fakebin err rc
   case_dir="$TMP_ROOT/send-explicit-$harness"
   home="$case_dir/home"; err="$case_dir/send.err"
@@ -809,7 +803,7 @@ test_identity_mismatch_is_undelivered_and_restores_scout() {
   pass "a metadata/native identity mismatch is known undelivered and restores scout completion"
 }
 
-test_blocked_cursor_and_agy_send_is_known_undelivered() {
+test_blocked_agy_send_is_known_undelivered() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-blocked-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -833,7 +827,7 @@ test_blocked_cursor_and_agy_send_is_known_undelivered() {
   pass "a pre-existing blocked $harness target is known undelivered"
 }
 
-test_rejected_cursor_and_agy_prompt_is_known_undelivered() {
+test_rejected_agy_prompt_is_known_undelivered() {
   local harness=$1 code=$2 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-rejected-$harness-$code"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -857,7 +851,7 @@ test_rejected_cursor_and_agy_prompt_is_known_undelivered() {
   pass "a deterministic $harness prompt rejection is known undelivered"
 }
 
-test_cursor_and_agy_send_requires_server_prompt_capability() {
+test_agy_send_requires_server_prompt_capability() {
   local harness=$1 case_dir home proj wt fakebin err rc
   case_dir="$TMP_ROOT/send-capability-$harness"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
@@ -937,7 +931,7 @@ test_genuinely_undelivered_steer_on_composer_supported_harness() {
   pass "a genuinely undelivered steer on a composer-supported harness is reported as failure"
 }
 
-test_live_cursor_and_agy_tasks_read_working_in_crew_state() {
+test_live_agy_tasks_read_working_in_crew_state() {
   local harness=$1 case_dir home proj wt fakebin out
   # Counterfactual: If fm_busy_classify returned unknown source-mismatch for a live
   # working cursor/agy worker, this test would fail.
@@ -961,7 +955,7 @@ test_live_cursor_and_agy_tasks_read_working_in_crew_state() {
   pass "a live, actively working $harness task reads as working from bin/fm-crew-state.sh"
 }
 
-test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state() {
+test_idle_unreadable_agy_tasks_read_unknown_in_crew_state() {
   local harness=$1 case_dir home proj wt fakebin out
   # Counterfactual: If an idle cursor/agy task without a turn-end hook was falsely
   # read as working or idle instead of unknown, this test would fail.
@@ -1013,14 +1007,10 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
   pass "unverifiable send on $harness is reported distinctly in wording and exit code"
 }
 
-test_crew_only_refuses_secondmate cursor
 test_crew_only_refuses_secondmate agy
-test_herdr_only_refuses_non_herdr_backend cursor
 test_herdr_only_refuses_non_herdr_backend agy
-test_cursor_and_agy_require_atomic_prompt_version cursor
-test_cursor_and_agy_require_atomic_prompt_version agy
-test_cursor_and_agy_require_named_server_prompt_capability cursor
-test_cursor_and_agy_require_named_server_prompt_capability agy
+test_agy_require_atomic_prompt_version agy
+test_agy_require_named_server_prompt_capability agy
 test_raw_command_bypass_refused
 test_raw_spawn_installs_exec_time_guard
 test_teardown_removes_owned_agy_trust
@@ -1028,40 +1018,23 @@ test_teardown_preserves_unowned_agy_trust
 test_teardown_incomplete_on_removal_failure
 test_forced_secondmate_child_trust_failure_prevents_release
 test_teardown_leaves_trust_for_non_agy
-test_accepted_cursor_and_agy_prompt_is_confirmed cursor
-test_accepted_cursor_and_agy_prompt_is_confirmed agy
-test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable cursor
+test_accepted_agy_prompt_is_confirmed agy
 test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable agy
-test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed cursor
-test_receipted_cursor_and_agy_prompt_transport_failure_is_confirmed agy
-test_concurrent_identical_cursor_and_agy_sends_are_attributed cursor
-test_concurrent_identical_cursor_and_agy_sends_are_attributed agy
-test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable cursor
-test_ambiguous_cursor_and_agy_prompt_failure_is_unverifiable agy
-test_metadata_free_cursor_and_agy_send_uses_live_identity cursor
-test_metadata_free_cursor_and_agy_send_uses_live_identity agy
-test_identity_mismatch_is_undelivered_and_restores_scout cursor
+test_receipted_agy_prompt_transport_failure_is_confirmed agy
+test_concurrent_identical_agy_sends_are_attributed agy
+test_ambiguous_agy_prompt_failure_is_unverifiable agy
+test_metadata_free_agy_send_uses_live_identity agy
 test_identity_mismatch_is_undelivered_and_restores_scout agy
-test_blocked_cursor_and_agy_send_is_known_undelivered cursor
-test_blocked_cursor_and_agy_send_is_known_undelivered agy
-test_rejected_cursor_and_agy_prompt_is_known_undelivered cursor agent_not_found
-test_rejected_cursor_and_agy_prompt_is_known_undelivered cursor agent_not_ready
-test_rejected_cursor_and_agy_prompt_is_known_undelivered cursor agent_prompt_failed
-test_rejected_cursor_and_agy_prompt_is_known_undelivered agy agent_not_found
-test_rejected_cursor_and_agy_prompt_is_known_undelivered agy agent_not_ready
-test_rejected_cursor_and_agy_prompt_is_known_undelivered agy agent_prompt_failed
-test_cursor_and_agy_send_requires_server_prompt_capability cursor
-test_cursor_and_agy_send_requires_server_prompt_capability agy
-test_cached_prompt_snapshot_is_unverifiable cursor blocked
-test_cached_prompt_snapshot_is_unverifiable cursor replacement
+test_blocked_agy_send_is_known_undelivered agy
+test_rejected_agy_prompt_is_known_undelivered agy agent_not_found
+test_rejected_agy_prompt_is_known_undelivered agy agent_not_ready
+test_rejected_agy_prompt_is_known_undelivered agy agent_prompt_failed
+test_agy_send_requires_server_prompt_capability agy
 test_cached_prompt_snapshot_is_unverifiable agy blocked
 test_cached_prompt_snapshot_is_unverifiable agy replacement
 test_genuinely_undelivered_steer_on_composer_supported_harness
-test_live_cursor_and_agy_tasks_read_working_in_crew_state cursor
-test_live_cursor_and_agy_tasks_read_working_in_crew_state agy
-test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state cursor
-test_idle_unreadable_cursor_and_agy_tasks_read_unknown_in_crew_state agy
-test_unverifiable_send_reports_distinct_wording_and_exit_code cursor
+test_live_agy_tasks_read_working_in_crew_state agy
+test_idle_unreadable_agy_tasks_read_unknown_in_crew_state agy
 test_unverifiable_send_reports_distinct_wording_and_exit_code agy
 
-echo "# all fm-cursor-agy-adapter tests passed"
+echo "# all fm-agy-adapter tests passed"
