@@ -96,7 +96,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   gbrain/            this home's OWN GBrain brain, and the only brain this home writes (docs/gbrain-scoping.md)
   gbrain-outbox/     durable redacted task-knowledge records awaiting capture into that brain; retried by bin/fm-gbrain-capture.sh (docs/gbrain-capture.md)
   learnings.md       curated fleet-local operational facts and gotchas; created lazily (docs/configuration.md "Operational learnings")
-  projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture and issue-tracker schemas (section 6)
+  projects.md        thin fleet navigation registry; docs/configuration.md owns its delivery-posture, issue-tracker, and project-board schemas (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown

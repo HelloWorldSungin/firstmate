@@ -544,6 +544,7 @@ If bootstrap kills a timed-out clone refresh, it replays any completed `fm-fleet
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
+That same stage runs the fleet-wide project-board drift sweep straight after the clone refresh; "Project issue trackers" above owns its declaration gate, its bounds, its resume point, and its `BOARD_SWEEP:` reporting.
 The same deferred network stage runs bootstrap's guarded secondmate sync for recorded live homes, then propagates declared inherited local material into each validated live home.
 Local routes use direct guarded filesystem operations, while remote routes delegate sync and allowlisted transfer through their configured SSH host without probing any unconfigured fleet.
 It emits `SECONDMATE_SYNC:` only when a home was skipped for an actionable sync reason, inheritance failed, or a divergent shared captain-preference copy was quarantined.
@@ -772,6 +773,10 @@ FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per forge call fm-issue-comment.sh makes for the living status comment, on GitHub and on a per-host forge alike
 FM_ISSUE_CLOSE_TIMEOUT=10   # seconds allowed per per-host forge call fm-pr-merge.sh makes to verify and close a landed work item
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
+FM_BOARD_SWEEP_TIMEOUT=240   # seconds bounding the whole fleet-wide board reconciliation sweep; a tighter inherited FM_WRITE_BACK_BUDGET wins and a larger one cannot loosen it (see "Project issue trackers")
+FM_BOARD_SWEEP_MAX_PAGES=20   # pages of 100 that sweep reads per board or tracker listing; a listing it could not finish reading plans no changes for that project and says so
+FM_BOARD_SWEEP_MAX_CHANGES=50   # board writes one sweep may make before it stops, names the entries it did not finish, and leaves them to the next run
+FM_BOARD_SWEEP_INTERVAL=21600   # minimum seconds between sweeps, measured from state/.board-sweep by bin/fm-bootstrap.sh
 FM_WORK_ITEM_MILESTONE_TIMEOUT=40   # seconds allowed for one whole fm-work-item-milestone.sh fan-out; the comment surface may spend at most half and the board gets the rest
 FM_GBRAIN_BIN=gbrain    # gbrain executable used by fm-gbrain.sh to register, revoke, and retire read-only main-brain clients, by fm-recall.sh to read this home's own brain, by fm-gbrain-capture.sh to deliver a captured document, by fm-gbrain-eval.sh to read the version, brain-plane configuration, and corpus counts an evaluation run records, and by fm-gbrain-health.sh to resolve the brain root and validate the configured planes; see "Brain scoping"
 FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either surface, and per reachability probe in fm-gbrain.sh check

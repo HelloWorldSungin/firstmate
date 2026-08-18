@@ -13,7 +13,8 @@
 # destination file both mean on and the generic absence mirror below already
 # converges a secondmate to the primary's default rather than turning it off;
 # only an explicit primary "off" propagates an opt-out, primary config/project-board
-# points that home's work at the same captain board so a secondmate's work is
+# points that home's work at the same FALLBACK captain board - the one a project
+# declaring no board= of its own falls back to - so a secondmate's work is
 # visible there too, and primary
 # config/trace-context is copied at the launch convergence point as part of the
 # default-off W3C trace-context setup, while live convergence leaves it unchanged.

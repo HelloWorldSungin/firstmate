@@ -79,10 +79,11 @@
 #                             bin/fm-timing-lib.sh's tab-separated format: the
 #                             stage total, one record per network phase (gh auth,
 #                             secondmate liveness, secondmate convergence, handoff
-#                             delivery, fleet sync), one per secondmate for the
-#                             remote-touching steps (id and host), and one per
-#                             project clone. Published for a timed-out or failed
-#                             run too, where a partial record is the answer.
+#                             delivery, fleet sync, board sweep), one per
+#                             secondmate for the remote-touching steps (id and
+#                             host), and one per project clone. Published for a
+#                             timed-out or failed run too, where a partial
+#                             record is the answer.
 #                             Diagnostic only: nothing reads it to make a
 #                             decision, and losing it never downgrades a run.
 #   .startup-network.lock     serializes publication, harvest acknowledgement,

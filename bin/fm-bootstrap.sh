@@ -111,10 +111,10 @@
 #          one that timed out, could not be bounded on this host, or ran and
 #          exited non-zero reports itself on a single USAGE_STORE line rather
 #          than degrading silently.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the nine MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the ten MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, run-attribution
 #          transition, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync,
+#          secondmate_handoff_resume, x_mode_setup, fleet_sync, board_sweep,
 #          usage_store_refresh)
 #          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
@@ -134,7 +134,7 @@
 #                 must never silently skip a safety sweep.
 #            skip - every LOCAL step, and none of the network ones. Skips
 #                 `gh auth status`, secondmate_liveness_sweep, secondmate_sync,
-#                 secondmate_handoff_resume, and fleet_sync.
+#                 secondmate_handoff_resume, fleet_sync, and board_sweep.
 #            only - ONLY those network steps and nothing else. No tool detection,
 #                 no version floors, no tangle check, no PR-check migration, no
 #                 x_mode_setup: those already ran on the local pass.

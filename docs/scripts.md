@@ -141,7 +141,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-milestone-lib.sh`    | Own the work-item lifecycle vocabulary every tracker write-back surface shares       |
 | `fm-work-item-milestone.sh` | Record one lifecycle milestone on every tracker surface firstmate keeps true, bounded as one fail-open operation |
 | `fm-issue-comment.sh`    | Own the work item's single living status comment, created once and thereafter edited in place |
-| `fm-project-board.sh`    | Keep the captain's GitHub Projects board true: membership, parent membership, and the board's existing Status field |
+| `fm-board-lib.sh`        | Own GitHub Projects board identity, its `data/projects.md` declaration, and the complete two-write board wire surface |
+| `fm-project-board.sh`    | Keep the captain's GitHub Projects boards true: one task's lifecycle membership, parent membership, and Status, plus the bounded fleet-wide drift reconciliation sweep |
 | `fm-outcome-lib.sh`      | Own the durable manifest, work-item, PR-status, and history wire shapes plus their atomic publication |
 | `fm-outcome-manifest.sh` | Write, read, and list the durable completion manifest teardown publishes before cleanup |
 | `fm-work-item.sh`        | Maintain a task's durable forge- and host-agnostic work-item reference store          |
