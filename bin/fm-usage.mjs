@@ -167,13 +167,27 @@ function findGitRoot(cwd) {
 }
 
 function readGitConfig(gitRoot) {
-  let configPath = path.join(gitRoot, ".git", "config");
+  const gitDotPath = path.join(gitRoot, ".git");
+  let configPath = path.join(gitDotPath, "config");
   try {
-    const gitDot = fs.readFileSync(path.join(gitRoot, ".git"), "utf8").trim();
-    const match = /^gitdir:\s*(.+)$/m.exec(gitDot);
-    if (match) configPath = path.resolve(gitRoot, match[1].trim(), "config");
+    const info = fs.statSync(gitDotPath);
+    if (info.isFile()) {
+      const gitDot = fs.readFileSync(gitDotPath, "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/m.exec(gitDot);
+      if (match) {
+        const gitDir = path.resolve(gitRoot, match[1].trim());
+        // A submodule keeps its config inside the gitdir itself. A worktree's
+        // gitdir is <common>/.git/worktrees/<name>, so its config lives two
+        // levels above. Try the gitdir first, then the common git dir.
+        try {
+          return fs.readFileSync(path.resolve(gitDir, "config"), "utf8");
+        } catch {
+          return fs.readFileSync(path.resolve(gitDir, "..", "..", "config"), "utf8");
+        }
+      }
+    }
   } catch {
-    // .git is a directory; configPath is already correct.
+    // .git is missing, unreadable, or a directory; configPath is already correct.
   }
   try {
     return fs.readFileSync(configPath, "utf8");
@@ -228,40 +242,92 @@ function normalizeGitUrl(url) {
   return null;
 }
 
-function resolveProjectAt(registry, homeRoot, cwd, { allowSupervision = false } = {}) {
-  if (!cwd) return null;
-  const gitRoot = findGitRoot(cwd);
-  if (!gitRoot) return null;
-  const config = readGitConfig(gitRoot);
-  if (!config) return null;
-  const remote = parseGitRemote(config, "origin");
-  const normalized = normalizeGitUrl(remote);
-  if (!normalized || !registry.byUrl.has(normalized)) return null;
-  const project = registry.byUrl.get(normalized);
-  if (allowSupervision && path.resolve(cwd) === homeRoot) {
-    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
-  }
-  return { project, method: "project_path", confidence: "low" };
-}
-
-function candidateProjectFromClonePath(homeRoot, cwd) {
+function resolveProjectByPathName(registry, homeRoot, cwd) {
   const resolved = path.resolve(cwd);
-  if (resolved === homeRoot) return "firstmate";
+  // projects/<name>[/<subpath>]
   const projectsPrefix = path.join(homeRoot, "projects") + path.sep;
   if (resolved.startsWith(projectsPrefix)) {
     const relative = resolved.slice(projectsPrefix.length);
     const name = relative.split(path.sep)[0];
-    return name || null;
+    if (name && registry.names.has(name)) return name;
   }
-  // Treehouse pool copies follow .treehouse/<name>-<hash>/<n>/<name>[/<subpath>].
+  // Treehouse pool copies follow .treehouse/<pool>-<hash>/<n>/<name>[/<subpath>].
   const treehouseMatch = /\/\.treehouse\/[^/]+-\w+\/\d+\/([^/]+)/.exec(resolved);
-  if (treehouseMatch) return treehouseMatch[1];
+  if (treehouseMatch) {
+    const name = treehouseMatch[1];
+    if (registry.names.has(name)) return name;
+  }
+  return null;
+}
+
+function resolveProjectByRepoHash(repoHashMap, cwd) {
+  const match = /\/\.no-mistakes\/worktrees\/([a-f0-9]+)\//.exec(path.resolve(cwd));
+  if (!match) return null;
+  return repoHashMap.get(match[1]) || null;
+}
+
+function buildRepoHashMap(registry) {
+  const map = new Map();
+  const noMistakesRoot = process.env.FM_USAGE_NO_MISTAKES_ROOT
+    ? path.resolve(process.env.FM_USAGE_NO_MISTAKES_ROOT)
+    : path.join(os.homedir(), ".no-mistakes");
+  const reposDir = path.join(noMistakesRoot, "repos");
+  let entries = [];
+  try {
+    entries = fs.readdirSync(reposDir, { withFileTypes: true });
+  } catch {
+    return map;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".git")) continue;
+    const hash = entry.name.slice(0, -".git".length);
+    let config;
+    try {
+      config = fs.readFileSync(path.join(reposDir, entry.name, "config"), "utf8");
+    } catch {
+      continue;
+    }
+    const remote = parseGitRemote(config, "origin");
+    const normalized = normalizeGitUrl(remote);
+    if (!normalized || !registry.byUrl.has(normalized)) continue;
+    map.set(hash, registry.byUrl.get(normalized));
+  }
+  return map;
+}
+
+function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervision = false } = {}) {
+  if (!cwd) return null;
+  const resolved = path.resolve(cwd);
+  if (allowSupervision && resolved === homeRoot) {
+    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
+  }
+  const gitRoot = findGitRoot(resolved);
+  if (gitRoot) {
+    const config = readGitConfig(gitRoot);
+    const remote = parseGitRemote(config, "origin");
+    const normalized = normalizeGitUrl(remote);
+    if (normalized && registry.byUrl.has(normalized)) {
+      return { project: registry.byUrl.get(normalized), method: "project_path", confidence: "low" };
+    }
+  }
+  // Fall back to path-derived candidates verified against the registry. A
+  // directory name that matches no registered project stays unknown rather
+  // than creating a phantom row.
+  const pathProject = resolveProjectByPathName(registry, homeRoot, resolved);
+  if (pathProject) {
+    return { project: pathProject, method: "project_path", confidence: "low" };
+  }
+  const hashProject = resolveProjectByRepoHash(repoHashMap, resolved);
+  if (hashProject) {
+    return { project: hashProject, method: "project_path", confidence: "low" };
+  }
   return null;
 }
 
 function buildPathResolver(home, registry) {
   const cache = new Map();
   const homeRoot = path.resolve(home);
+  const repoHashMap = buildRepoHashMap(registry);
   return {
     // For events with no task identity: resolve the directory to a project
     // name, or to the supervision category when the directory IS the firstmate
@@ -270,7 +336,7 @@ function buildPathResolver(home, registry) {
       if (!cwd) return null;
       const key = `path:${cwd}`;
       if (cache.has(key)) return cache.get(key);
-      const result = resolveProjectAt(registry, homeRoot, cwd, { allowSupervision: true });
+      const result = resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervision: true });
       cache.set(key, result);
       return result;
     },
@@ -284,14 +350,8 @@ function buildPathResolver(home, registry) {
       if (!worktree) return null;
       const key = `worktree:${worktree}`;
       if (cache.has(key)) return cache.get(key);
-      let project = null;
-      const remote = resolveProjectAt(registry, homeRoot, worktree, { allowSupervision: false });
-      if (remote) {
-        project = remote.project;
-      } else {
-        const candidate = candidateProjectFromClonePath(homeRoot, worktree);
-        if (candidate && registry.names.has(candidate)) project = candidate;
-      }
+      const result = resolveProjectAt(registry, homeRoot, repoHashMap, worktree, { allowSupervision: false });
+      const project = result ? result.project : null;
       cache.set(key, project);
       return project;
     },

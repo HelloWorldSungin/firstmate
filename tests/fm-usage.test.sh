@@ -136,6 +136,33 @@ git_init_with_remote() {
   )
 }
 
+# git_worktree_at <repo> <worktree-path>: add a real git worktree so the
+# collector can read its origin through a .git file, the shape treehouse uses.
+git_worktree_at() {
+  local repo=$1 worktree=$2
+  # git worktree add needs a HEAD to check out; create one if the fixture repo
+  # has no commits yet.
+  if ! git -C "$repo" rev-parse --quiet HEAD >/dev/null 2>&1; then
+    git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+      commit --allow-empty -qm "initial"
+  fi
+  git -C "$repo" worktree add --quiet --detach "$worktree"
+}
+
+# create_no_mistakes_bare_repo <case-root> <hash> <remote-url>: create a bare
+# repo at the no-mistakes repo hash path, matching how validation clones are
+# stored. The worktree directory itself is created separately and may be empty.
+create_no_mistakes_bare_repo() {
+  local case_root=$1 hash=$2 remote=$3
+  local bare="$case_root/.no-mistakes/repos/$hash.git"
+  mkdir -p "$bare"
+  (
+    cd "$bare" || return 1
+    git init --bare -q
+    git remote add origin "$remote"
+  )
+}
+
 # --- Claude adapter ---------------------------------------------------------
 
 test_claude_adapter() {
@@ -1035,10 +1062,136 @@ test_rerunning_ingest_repairs_historical_project_attribution() {
   pass "re-running ingest repairs history rather than only tagging new events"
 }
 
+# Treehouse pool copies are git worktrees whose .git is a file pointing back at
+# the registered project clone. The collector must read origin through that file
+# rather than expecting a .git directory.
+test_a_treehouse_worktree_path_resolves_to_its_registered_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_worktree_at "$case_root/home/projects/demo" "$wt"
+  local dir="$case_root/claude/-treehouse-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-treehouse.jsonl" session-treehouse "$wt" \
+    2026-08-01T10:00:00Z msg_treehouse 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] \
+    || fail "treehouse worktree path should attribute to demo: $row"
+  pass "a treehouse worktree path resolves to its registered project"
+}
+
+# A session may run in a subdirectory of the worktree. The git root walk must
+# find the enclosing project, not stop at the nested directory.
+test_a_treehouse_subdir_resolves_to_its_enclosing_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-subdir)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_worktree_at "$case_root/home/projects/demo" "$wt"
+  local subdir="$wt/prototypes/research-graph"
+  mkdir -p "$subdir"
+  local dir="$case_root/claude/-treehouse-subdir"
+  mkdir -p "$dir"
+  claude_line "$dir/session-subdir.jsonl" session-subdir "$subdir" \
+    2026-08-01T10:00:00Z msg_subdir 5 5 5 5
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse subdir ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "nested worktree directory should attribute to enclosing project: $row"
+  pass "a treehouse subdirectory resolves to its enclosing project"
+}
+
+# Pool copies are deleted after teardown. The path itself still carries the
+# registered project name and must be verified against the registry, not trusted
+# blindly.
+test_a_deleted_treehouse_path_resolves_by_directory_name() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case deleted-treehouse)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-deleted-treehouse"
+  mkdir -p "$dir"
+  claude_line "$dir/session-deleted.jsonl" session-deleted "$wt" \
+    2026-08-01T10:00:00Z msg_deleted 1 2 3 4
+  rm -rf "$wt"
+
+  usage_run "$case_root" ingest >/dev/null || fail "deleted treehouse ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] \
+    || fail "deleted treehouse path should resolve by directory name: $row"
+  pass "a deleted treehouse path resolves by directory name against the registry"
+}
+
+# no-mistakes validation worktrees carry a repo hash, not a project name, in the
+# path. The repo hash maps to a bare clone whose origin resolves through the
+# registry.
+test_a_no_mistakes_worktree_resolves_by_repo_hash() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case nm-repo-hash)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  create_no_mistakes_bare_repo "$case_root" "a1b2c3d4e5f6" "https://github.com/example/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/a1b2c3d4e5f6/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-nm-hash"
+  mkdir -p "$dir"
+  claude_line "$dir/session-nm.jsonl" session-nm "$wt" \
+    2026-08-01T10:00:00Z msg_nm 2 4 6 8
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "no-mistakes repo-hash ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "no-mistakes worktree should resolve by repo hash: $row"
+  pass "a no-mistakes worktree resolves by repo hash"
+}
+
+# A treehouse-style directory named after an unregistered project must not
+# create a phantom row just because the path looks right.
+test_a_treehouse_path_that_merely_resembles_a_project_does_not_invent_one() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-fake)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local wt="$case_root/home/.treehouse/fake-pool-abc123/1/fake"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-treehouse-fake"
+  mkdir -p "$dir"
+  claude_line "$dir/session-treehouse-fake.jsonl" session-treehouse-fake "$wt" \
+    2026-08-01T10:00:00Z msg_th_fake 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse fake ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "fake")')
+  [ -z "$row" ] || fail "a treehouse path resembling a project invented a row: $row"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(unknown)")')
+  [ -n "$row" ] || fail "unrecognized treehouse path should stay unknown"
+  pass "a treehouse path that merely resembles a project does not invent one"
+}
+
 test_a_work_copy_path_resolves_to_its_registered_project
 test_a_path_that_merely_resembles_a_project_does_not_invent_one
 test_a_filled_project_does_not_fabricate_a_task_id
 test_firstmate_supervision_spend_is_split_from_the_firstmate_project
 test_rerunning_ingest_repairs_historical_project_attribution
+test_a_treehouse_worktree_path_resolves_to_its_registered_project
+test_a_treehouse_subdir_resolves_to_its_enclosing_project
+test_a_deleted_treehouse_path_resolves_by_directory_name
+test_a_no_mistakes_worktree_resolves_by_repo_hash
+test_a_treehouse_path_that_merely_resembles_a_project_does_not_invent_one
 test_an_interrupted_ingest_leaves_a_self_contained_store
 printf '\nall fm-usage tests passed\n'
