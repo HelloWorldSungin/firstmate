@@ -248,6 +248,7 @@ const STATIC_FILES = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/inbox.js", ["inbox.js", "text/javascript; charset=utf-8"]],
   ["/history.js", ["history.js", "text/javascript; charset=utf-8"]],
+  ["/usage.js", ["usage.js", "text/javascript; charset=utf-8"]],
   ["/backlog.js", ["backlog.js", "text/javascript; charset=utf-8"]],
   ["/router.js", ["router.js", "text/javascript; charset=utf-8"]],
   ["/display.js", ["display.js", "text/javascript; charset=utf-8"]],

@@ -114,6 +114,28 @@ write_meta_at() {
   touch -t "$mtime" "$file"
 }
 
+# write_registry <home> <name> <tracker>...
+write_registry() {
+  local home=$1
+  shift
+  mkdir -p "$home/data"
+  : > "$home/data/projects.md"
+  for entry in "$@"; do
+    printf -- '- %s\n' "$entry" >> "$home/data/projects.md"
+  done
+}
+
+# git_init_with_remote <dir> <remote-url>
+git_init_with_remote() {
+  local dir=$1 remote=$2
+  mkdir -p "$dir"
+  (
+    cd "$dir" || return 1
+    git init -q
+    git remote add origin "$remote"
+  )
+}
+
 # --- Claude adapter ---------------------------------------------------------
 
 test_claude_adapter() {
@@ -891,5 +913,132 @@ test_rollups_reconcile
 test_cost_is_an_optional_versioned_estimate
 test_store_carries_no_transcript_content
 test_report_reads_a_read_only_data_directory
+# --- Project path attribution ------------------------------------------------
+#
+# These cases pin the new behavior: unattributed usage in a registered
+# project's clone is credited to the project without inventing a task id, a
+# directory that merely looks like a project is not trusted, and the firstmate
+# home itself is split between crew work (a task binding) and supervision
+# (no binding).
+
+test_a_work_copy_path_resolves_to_its_registered_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case project-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "project-path ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] || fail "project path should attribute tokens to demo: $row"
+  local attribution
+  attribution=$(usage_run "$case_root" attribution | jq -c '.by_method[] | select(.method == "project_path")')
+  [ "$(jq -r '.confidence' <<<"$attribution")" = low ] || fail "project path should report low confidence: $attribution"
+  pass "a work copy path resolves to its registered project"
+}
+
+test_a_path_that_merely_resembles_a_project_does_not_invent_one() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case fake-project-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  # A directory named like a project but not registered and with no matching origin.
+  git_init_with_remote "$case_root/home/projects/fake" "https://github.com/example/not-registered.git"
+  local dir="$case_root/claude/-fake"
+  mkdir -p "$dir"
+  claude_line "$dir/session-fake.jsonl" session-fake "$case_root/home/projects/fake" \
+    2026-08-01T10:00:00Z msg_fake 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "fake-project ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "fake")')
+  [ -z "$row" ] || fail "a path resembling a project invented a row: $row"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(unknown)")')
+  [ -n "$row" ] || fail "usage in an unrecognized clone should stay unknown"
+  pass "a path that merely resembles a project does not invent one"
+}
+
+test_a_filled_project_does_not_fabricate_a_task_id() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case no-fabricated-task)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "no-fabricated-task ingest failed"
+  local event
+  event=$(usage_run "$case_root" sessions | jq -c '.sessions[] | select(.session_id == "session-demo")')
+  [ "$(jq -r '.task_id' <<<"$event")" = null ] || fail "path-based project attribution must not fabricate a task id: $event"
+  pass "a filled project does not fabricate a task_id"
+}
+
+test_firstmate_supervision_spend_is_split_from_the_firstmate_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case supervision-split)
+  # The operational home itself is the firstmate project checkout.
+  write_registry "$case_root/home" "firstmate [no-mistakes tracker=github:github.com/example/firstmate] - firstmate itself"
+  git_init_with_remote "$case_root/home" "https://github.com/example/firstmate.git"
+  local dir="$case_root/claude/-home"
+  mkdir -p "$dir"
+  # A supervision session in the firstmate home with no task binding, before any
+  # crew task holds the worktree, so the only distinguishing signal is the binding.
+  claude_line "$dir/supervision.jsonl" session-supervision "$case_root/home" \
+    2026-08-01T08:00:00Z msg_supervision 1 2 3 4
+  # A crew session in the same cwd but bound to a task.
+  write_meta_at "$case_root/home/state/crew.meta" 202608010900.00 \
+    "window=fm:crew" "worktree=$case_root/home" "project=firstmate" "harness=claude" "kind=ship"
+  claude_line "$dir/crew.jsonl" session-crew "$case_root/home" \
+    2026-08-01T10:01:00Z msg_crew 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "supervision-split ingest failed"
+  local supervision
+  supervision=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(firstmate supervision)")')
+  [ "$(jq -r '.total_tokens' <<<"$supervision")" = 10 ] || fail "supervision spend should be its own row: $supervision"
+  local firstmate
+  firstmate=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "firstmate")')
+  [ "$(jq -r '.total_tokens' <<<"$firstmate")" = 100 ] || fail "crew work should land in the firstmate project row: $firstmate"
+  local method
+  method=$(usage_run "$case_root" attribution | jq -r '.by_method[] | select(.method == "firstmate_supervision") | .events')
+  [ "$method" = 1 ] || fail "supervision should use its own attribution method"
+  pass "firstmate supervision spend is split from the firstmate project"
+}
+
+test_rerunning_ingest_repairs_historical_project_attribution() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case repair-history)
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "first ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ -z "$row" ] || fail "before the registry exists, demo should not appear: $row"
+
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  usage_run "$case_root" ingest >/dev/null || fail "second ingest failed"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] || fail "re-running ingest should repair historical attribution: $row"
+  pass "re-running ingest repairs history rather than only tagging new events"
+}
+
+test_a_work_copy_path_resolves_to_its_registered_project
+test_a_path_that_merely_resembles_a_project_does_not_invent_one
+test_a_filled_project_does_not_fabricate_a_task_id
+test_firstmate_supervision_spend_is_split_from_the_firstmate_project
+test_rerunning_ingest_repairs_historical_project_attribution
 test_an_interrupted_ingest_leaves_a_self_contained_store
 printf '\nall fm-usage tests passed\n'

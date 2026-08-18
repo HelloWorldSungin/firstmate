@@ -84,8 +84,10 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 | --- | --- | --- |
 | `session_binding` | high | the session was observed in a live task's isolated worktree while that task held it, and the binding was recorded durably at that moment |
 | `worktree_window` | medium | the session's working directory is a task's recorded worktree or a path inside it, and the usage falls inside that task's own start and completion stamps |
+| `project_path` | low | the session's working directory resolves to a registered project through the checkout's git origin or a known clone layout, but no task claims it |
+| `firstmate_supervision` | low | the session runs in the firstmate home itself with no task binding; this is the fleet's own supervision spend, kept separate from crew work on the firstmate repo |
 | `ambiguous` | none | more than one task claims that worktree for that moment, so no claim is made |
-| `unknown` | none | no task claims it at all |
+| `unknown` | none | no task claims it at all and the directory does not resolve to a registered project |
 
 **A time window alone never attributes anything.**
 Every claim starts from the task's own recorded worktree path, which the session must have run in or under; the task's own lifetime only bounds a claim that a path already supports.
@@ -97,6 +99,14 @@ Either way the claim on the worktree ends when the task's hold on it ended, so t
 
 Task ids are operator-supplied slugs and `data/<id>/` outlives cleanup, so a stored task record describes one *occupancy* of an id.
 Seeing an id live again while its record describes a finished occupancy starts that record over, which is why a re-dispatched slug gets its own window instead of inheriting the closed one.
+
+**Project path attribution resolves against the project registry, not against path-shaped strings.**
+`data/projects.md` is the single source of registered projects; a directory that merely looks like a project cannot create a phantom row, and a real project reached through an SSH alias or a treehouse pool copy is still credited when the checkout's origin or clone layout matches the registry.
+The `project` column is normalized to the registered project name for every attribution method, so `report --by project` groups crew work and recovered work-copy spend under the same project name.
+
+Firstmate's own supervision spend is real and currently the single largest unattributed consumer in many fleets.
+It runs with the same working directory as crew work on the firstmate repo, so the distinguishing signal is the presence of a task binding, not the path.
+Sessions in the firstmate home with no task binding are credited to `(firstmate supervision)`, separate from the `firstmate` project row, because "supervision" is the fleet operating itself rather than a code change.
 
 Unattributed usage is preserved with explicit unknown fields and reported in every projection, including firstmate's own sessions, which belong to no task.
 `bin/fm-usage.mjs attribution` reports the method and confidence breakdown plus the percentage of events and tokens matched.

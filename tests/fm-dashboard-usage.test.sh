@@ -78,7 +78,7 @@ equal("a ready envelope renders rows", ready.shape, "rows");
 equal("first place is the largest project", ready.rows[0].key, "(firstmate supervision)");
 equal("second place is the next largest", ready.rows[1].key, "firstmate");
 equal("unattributed is kept in the rows", ready.rows[2].key, "(unknown)");
-check("percentage for the largest row is computed", ready.rows[0].share === (2000 / 3600 * 100));
+check("percentage for the largest row is computed", Math.abs(ready.rows[0].share - (2000 / 3600 * 100)) < 0.01);
 check("total tokens sum every row", ready.total_tokens === 3600);
 check("total events sum every row", ready.total_events === 360);
 

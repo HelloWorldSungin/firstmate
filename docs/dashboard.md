@@ -63,7 +63,7 @@ Clearing a filter is the one thing that replaces a value under the reader's hand
 
 ## Navigation and reading it on a phone
 
-The five destinations live behind a hash router (`#/needs`, `#/fleet`, `#/backlog`, `#/history`, `#/knowledge`, plus `#/task/<id>`), and [`assets/dashboard/router.js`](../assets/dashboard/router.js) owns the routing contract: a hash resolves to exactly one view, that view is the only one in the DOM, and an unknown or stale hash lands on Needs you rather than a blank page.
+The six destinations live behind a hash router (`#/needs`, `#/fleet`, `#/backlog`, `#/history`, `#/usage`, `#/knowledge`, plus `#/task/<id>`), and [`assets/dashboard/router.js`](../assets/dashboard/router.js) owns the routing contract: a hash resolves to exactly one view, that view is the only one in the DOM, and an unknown or stale hash lands on Needs you rather than a blank page.
 Navigation exists at every width: a left rail from 900 CSS px up (collapsing to icons below 1200), and a sticky bottom tab bar below 900, both carrying the Needs-you count badge.
 The layout is fluid across the whole width range rather than correct at a few chosen sizes, and 320 CSS px is a supported width.
 
@@ -146,6 +146,22 @@ The store reader still asks for no scratch path at all, so it keeps reading outs
 A task the retained read does not carry yet says exactly that, so a just-archived record is never reported as having cost nothing.
 [usage-accounting.md](usage-accounting.md) owns the store itself, including the read-only open that lets the hardened user service read it without write access to `data/`.
 Semantic search over captured report content belongs to the separate [Knowledge](#knowledge) page; history is fully usable without it.
+
+## Usage
+
+Usage shows how many tokens each project consumed, including the share that could not be attributed to any project.
+It is sourced from the same `data/usage.db` store as History, and [`assets/dashboard/usage.js`](../assets/dashboard/usage.js) is its single executable copy.
+
+The server reads both `report --by task` and `report --by project` on the history poll, so the page receives a project rollup it can display without launching an additional collector.
+A project row is shown when the store has attributed tokens to that project, and the unattributed share is rendered as its own row so the percentages stay honest.
+Removing the unknown row would silently drop most spend in many fleets, so it is never omitted.
+
+Firstmate's own supervision spend is shown separately from the `firstmate` project row, because the same working directory is legitimately used for crew work on the firstmate repo.
+The distinguishing signal is the presence of a task binding, and the `(firstmate supervision)` row means the fleet is operating itself rather than shipping a code change.
+
+The same failed-or-missing-read rule from History applies here: a read that did not land renders as `unavailable` with its reason, never as a zero.
+A home with no usage store, a dashboard with usage reads switched off, or a collector whose output this dashboard does not recognize all render as explicitly unavailable.
+A failed read on a home that does collect usage is flagged as a fault and the last good rollup is retained and labelled stale.
 
 ## Agent activity events
 
