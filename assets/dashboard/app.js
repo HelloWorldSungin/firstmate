@@ -1113,7 +1113,7 @@ function renderUsage() {
     : status?.last_success_at
       ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
       : status?.refreshing ? "Taking the first usage read" : "Waiting for the first usage read";
-  view.append(pageHead("Tokens · by project", "Usage", note));
+  view.append(pageHead("Work tokens · by project", "Usage", note));
 
   if (built.shape === "pending") {
     view.append(emptyState({ ring: true, big: "Reading token usage.", teach: "Waiting for the first usage read to finish." }));
@@ -1149,7 +1149,8 @@ function renderUsage() {
   for (const [key, value] of [
     ["Projects", String(built.rows.length)],
     ["Events", formatTokens(built.total_events)],
-    ["Tokens", formatTokens(built.total_tokens)],
+    ["Work tokens", formatTokens(built.total_work)],
+    ["Total tokens", formatTokens(built.total_tokens)],
   ]) {
     const stat = element("div", "stat");
     stat.append(element("span", "stat-k", key), element("span", "stat-v", value));
@@ -1167,10 +1168,11 @@ function renderUsage() {
     const meta = element("div", "rmeta");
     meta.append(element("span", "", `${row.events} ${row.events === 1 ? "event" : "events"}`));
     meta.append(element("span", "", `${row.sessions} ${row.sessions === 1 ? "session" : "sessions"}`));
+    meta.append(element("span", "", `${formatTokens(row.tokens)} total`));
     main.append(meta);
     rrow.append(main);
     const right = element("div", "rright");
-    right.append(element("span", "", formatTokens(row.tokens)));
+    right.append(element("span", "", formatTokens(row.work)));
     if (row.share !== null) right.append(element("span", "mid", `${row.share.toFixed(2)}%`));
     rrow.append(right);
     rows.append(rrow);

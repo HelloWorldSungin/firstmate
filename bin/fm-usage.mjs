@@ -1386,7 +1386,9 @@ function attributionReport(db) {
   const totals = db
     .prepare(`SELECT COUNT(*) AS events, SUM(total_tokens) AS tokens,
         SUM(CASE WHEN task_id IS NOT NULL THEN 1 ELSE 0 END) AS attributed_events,
-        SUM(CASE WHEN task_id IS NOT NULL THEN total_tokens ELSE 0 END) AS attributed_tokens
+        SUM(CASE WHEN task_id IS NOT NULL THEN total_tokens ELSE 0 END) AS attributed_tokens,
+        SUM(CASE WHEN project IS NOT NULL THEN 1 ELSE 0 END) AS project_events,
+        SUM(CASE WHEN project IS NOT NULL THEN total_tokens ELSE 0 END) AS project_tokens
       FROM usage_event`)
     .get();
   const byMethod = db
@@ -1398,6 +1400,8 @@ function attributionReport(db) {
   const attributed = totals.attributed_events ?? 0;
   const tokens = totals.tokens ?? 0;
   const attributedTokens = totals.attributed_tokens ?? 0;
+  const projectEvents = totals.project_events ?? 0;
+  const projectTokens = totals.project_tokens ?? 0;
   const percent = (part, whole) => (whole > 0 ? Math.round((part / whole) * 10000) / 100 : null);
   return {
     events,
@@ -1408,6 +1412,16 @@ function attributionReport(db) {
     attributed_tokens: attributedTokens,
     unattributed_tokens: tokens - attributedTokens,
     percent_tokens_attributed: percent(attributedTokens, tokens),
+    // Project coverage is separate from task attribution: slice 2 fills project
+    // without fabricating task_id, so a row may know its project and not its task.
+    project_coverage: {
+      events_with_project: projectEvents,
+      events_without_project: events - projectEvents,
+      percent_events_with_project: percent(projectEvents, events),
+      tokens_with_project: projectTokens,
+      tokens_without_project: tokens - projectTokens,
+      percent_tokens_with_project: percent(projectTokens, tokens),
+    },
     by_method: byMethod.map((row) => ({
       method: row.method,
       confidence: row.confidence,

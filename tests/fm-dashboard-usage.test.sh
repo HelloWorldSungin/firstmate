@@ -56,7 +56,9 @@ const disabled = buildUsage({
 });
 check("a disabled read is not a fault", disabled.fault === false);
 
-// A ready read with project rows keeps unattributed on screen and sorts by tokens.
+// A ready read with project rows keeps unattributed on screen and sorts by
+// work tokens (input + output), not raw total_tokens. A row that is large only
+// because of cache reads must not dominate the ranking.
 const ready = buildUsage({
   schema: "fm-dashboard-history.v1",
   usage: {
@@ -67,19 +69,20 @@ const ready = buildUsage({
     stale: false,
     tasks: {},
     projects: {
-      firstmate: { events: 100, sessions: 2, total_tokens: 1000 },
-      "(unknown)": { events: 50, sessions: 5, total_tokens: 500 },
-      "(firstmate supervision)": { events: 200, sessions: 1, total_tokens: 2000 },
-      "ark-business": { events: 10, sessions: 1, total_tokens: 100 },
+      firstmate: { events: 100, sessions: 2, input_tokens: 400, output_tokens: 100, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 500 },
+      "(unknown)": { events: 50, sessions: 5, input_tokens: 200, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 250 },
+      "(firstmate supervision)": { events: 200, sessions: 1, input_tokens: 50, output_tokens: 10, cache_read_tokens: 1940, cache_write_tokens: 0, total_tokens: 2000 },
+      "ark-business": { events: 10, sessions: 1, input_tokens: 40, output_tokens: 10, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 50 },
     },
   },
 });
 equal("a ready envelope renders rows", ready.shape, "rows");
-equal("first place is the largest project", ready.rows[0].key, "(firstmate supervision)");
-equal("second place is the next largest", ready.rows[1].key, "firstmate");
-equal("unattributed is kept in the rows", ready.rows[2].key, "(unknown)");
-check("percentage for the largest row is computed", Math.abs(ready.rows[0].share - (2000 / 3600 * 100)) < 0.01);
-check("total tokens sum every row", ready.total_tokens === 3600);
+equal("first place is the largest by work tokens", ready.rows[0].key, "firstmate");
+equal("supervision with high cache but low work is ranked lower", ready.rows[1].key, "(unknown)");
+equal("unattributed is kept in the rows", ready.rows[2].key, "(firstmate supervision)");
+check("percentage for the largest row is computed from work tokens", Math.abs(ready.rows[0].share - (500 / 860 * 100)) < 0.01);
+check("total tokens sum every row", ready.total_tokens === 2800);
+check("total work tokens sum every row", ready.total_work === 860);
 check("total events sum every row", ready.total_events === 360);
 
 // The helper that decides how to label a row must not invent project names.
