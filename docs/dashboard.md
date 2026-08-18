@@ -131,7 +131,10 @@ A manifest that is missing, corrupt, or written against a schema version this da
 A read where every manifest found was unreadable says exactly that and never "nothing delivered yet", which is the same distinct state the Backlog page gives an all-unreadable queue.
 Token usage is presence-gated on the fleet's token-usage collector and on its `data/usage.db` store existing under this home: with no store there is nothing to read, and no collector child is spawned at all.
 Totals appear when that store has attributed usage to a task, and every other state renders with its reason rather than as a zero, because a blank cell would read as "this task cost nothing", which is a different claim from "we do not know".
-Those states are deliberately not collapsed together. No collector, no store, usage reads switched off for this dashboard, no attributed row for this task, or a collected row with no readable total all read as `unavailable`, which is nothing to fix; a collector that failed, or one whose output this dashboard does not recognize, reads as needing attention and is drawn distinctly, which is.
+Those states are deliberately not collapsed together.
+No collector, no store, usage reads switched off for this dashboard, no attributed row for this task, or a collected row with no readable total all read as `unavailable`, which is nothing to fix.
+A collector that failed, or one whose output this dashboard does not recognize, is a fault someone can fix, so History carries a disclosure above the roll-up naming the failure and the reason the read gave.
+That disclosure is the one thing that separates a breakage from a home where collecting nothing is correct, which is why it fires on no other state.
 A failed read keeps the last good one visible and says so, the way a failed snapshot refresh does, for two genuinely different reasons.
 The store has writers - teardown refreshes it on every archive and bootstrap on every locked session start - and each holds it in WAL for the length of its window, so a writer that exits without closing leaves a store whose wal-index the dashboard's read-only open cannot build without write access to `data/`, and the read fails rather than reads empty.
 The at-rest `delete` journal mode the store is normally found in is the outcome that contract protects, not evidence the failure cannot happen.

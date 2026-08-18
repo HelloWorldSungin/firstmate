@@ -417,6 +417,18 @@ export function buildHistory(envelope, view = {}) {
       collection: text(usage?.collection) || null,
       stale: usage?.stale === true,
       source: text(usage?.source) || null,
+      // A read that MISSED on a home that does collect usage is a fault someone
+      // can fix, and it must not present as the settled "this home collects
+      // nothing" - that indistinguishability is what let the panel sit dead
+      // without anyone chasing it. Only `operational` earns the disclosure: the
+      // server classifies a read as operational solely when the collector and
+      // the store are both present and the read itself failed or came back in
+      // an unrecognized shape. `absent` and `disabled` are facts about this
+      // home rather than a failure, so they stay silent and the panel stays
+      // calm on every home where collecting nothing is correct. A retained
+      // last-good read is still `available`, so it is disclosed as stale
+      // instead of twice.
+      fault: usage?.available !== true && text(usage?.collection) === "operational",
     },
     // Semantic search over report content is a separate integration. Until it
     // exists this is a presence gate and nothing else: history is fully usable
