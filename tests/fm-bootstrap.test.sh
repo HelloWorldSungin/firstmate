@@ -1448,6 +1448,81 @@ SH
   pass "bootstrap: an unreachable board costs the fleet nothing, and an undeclared home sweeps nothing"
 }
 
+# The sweep's budget is derived from the stage that contains it, so a slow board
+# can never eat the deferred network stage - the task's own non-negotiable, that
+# a board problem must never become a fleet problem. Round 2 added that
+# derivation and nothing exercised it, which left the safety bound resting on an
+# unexercised branch.
+test_the_board_sweep_is_bounded_by_the_stage_that_contains_it() {
+  local case_dir fakebin log out
+  case_dir="$TMP_ROOT/board-sweep-budget"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  log="$case_dir/board-calls.log"
+  # A board that answers only after longer than the whole stage would allow. The
+  # sweep must be cut off by its derived budget rather than running to its own.
+  cat > "$fakebin/gh" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = status ]; then exit 0; fi
+if [ "\${1:-}" = api ]; then
+  printf 'called\n' >> "$log"
+  sleep 30
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+
+  local started elapsed
+  # The per-call bound is deliberately raised far above the board's answer time,
+  # so it cannot be what cuts the call short. That leaves the stage-derived
+  # budget as the ONLY thing that can, which is what makes this test able to
+  # fail: without the derivation the sweep runs to the board's own 30s.
+  started=$(date +%s)
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=12 \
+    FM_PROJECT_BOARD_TIMEOUT=90 FM_BOARD_SWEEP_TIMEOUT=240 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  elapsed=$(( $(date +%s) - started ))
+
+  assert_present "$log" "the sweep never reached the board at all, so the bound proved nothing"
+  # Derived budget is half of what remains of a 12s stage, so the sweep is cut
+  # off in single-digit seconds; unbounded it would wait out the board's 30s.
+  [ "$elapsed" -lt 20 ] \
+    || fail "the sweep was not bounded by its stage: it ran ${elapsed}s against a board that answers in 30s, with a 90s per-call bound that cannot have been what stopped it"
+  pass "bootstrap: a slow board is cut off by a budget derived from the stage, not by its own"
+}
+
+# A stage with almost nothing left must not start a sweep it cannot finish, and
+# must leave the interval unstamped so the next session start retries rather than
+# recording a sweep that never ran.
+test_a_stage_with_no_room_left_skips_the_sweep_without_stamping_it() {
+  local case_dir fakebin
+  case_dir="$TMP_ROOT/board-sweep-noroom"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=1 \
+    "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_absent "$case_dir/home/state/.board-sweep" \
+    "a sweep that had no room to run still stamped its interval, so the next session start would skip it too"
+  pass "bootstrap: a stage with no room left skips the sweep and leaves it due"
+}
+
 test_tasks_axi_verdict_handoff_is_consumed_once() {
   local case_dir fakebin log out
   case_dir="$TMP_ROOT/tasks-axi-handoff"
@@ -1633,6 +1708,8 @@ test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
 test_a_board_problem_never_becomes_a_fleet_problem
+test_the_board_sweep_is_bounded_by_the_stage_that_contains_it
+test_a_stage_with_no_room_left_skips_the_sweep_without_stamping_it
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_backend_mismatch

@@ -410,11 +410,6 @@ SH
   chmod +x "$1/gh"
 }
 
-# The board's add mutation needs to know which content it was handed, and the
-# fake cannot read the -f fields the real client sends as JSON. A tiny wrapper
-# exports the last issue id the fake resolved, which is enough for the store.
-FAKE_CONTENT_DEFAULT=I_42
-
 # case_dir <name> [work-item] [pr-target]: a home with one task's metadata and a
 # fakebin holding the fake gh. Echoes the case directory.
 case_dir() {  # <name> [work-item] [pr-target] [extra-meta...]
@@ -442,7 +437,6 @@ run_comment() {  # <case-dir> [args...]
   shift
   env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
     PATH="$dir/fakebin:$PATH" \
     "$COMMENT" status task-1 "$@" 2>&1
 }
@@ -452,7 +446,6 @@ run_board() {  # <case-dir> [args...]
   shift
   env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
     PATH="$dir/fakebin:$PATH" \
     "$BOARD" "$@" 2>&1
 }
@@ -462,7 +455,6 @@ run_milestone() {  # <case-dir> [args...]
   shift
   env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
     PATH="$dir/fakebin:$PATH" \
     "$MILESTONE" task-1 "$@" 2>&1
 }
@@ -1083,7 +1075,7 @@ test_github_write_back_ignores_forge_tokens_and_curl() {
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
     FM_FAKE_GITEA_STORE="$dir/store" FM_TEST_CURL_ARGS="$dir/curl-args" \
     FM_TEST_CURL_STDIN="$dir/curl-stdin" \
-    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" PATH="$dir/fakebin:$PATH" \
+    PATH="$dir/fakebin:$PATH" \
     "$COMMENT" status task-1 --milestone dispatched 2>&1) \
     || fail "the github milestone failed with a forge token present: $out"
   assert_contains "$out" "created: $ISSUE_URL" "the github comment was not created"
@@ -1512,7 +1504,6 @@ SH
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
     "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
   rc=$?
@@ -1552,7 +1543,7 @@ SH
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_FAKE_GH_FAIL=all FM_FAKE_GH_LAST_CONTENT="$FAKE_CONTENT_DEFAULT" \
+    FM_FAKE_GH_FAIL=all \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
     "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
   rc=$?
@@ -1934,15 +1925,50 @@ test_an_unfinishable_item_listing_is_not_read_as_an_empty_board() {
   seed_item "$dir" acme widget 3 'Todo'
   out=$(FM_FAKE_GH_PAGE_SIZE=2 FM_FAKE_GH_ITEMS_CURSOR_LOST=1 run_board "$dir" reconcile) \
     || fail "an unfinishable listing must not fail the sweep: $out"
+  # The write path fails closed on a partial view: NO writes at all, not merely
+  # no membership. Every write the sweep plans is an inference from comparing two
+  # listings, and none of those comparisons means anything unless both are whole.
   [ "$(log_count "$dir" add)" = 0 ] \
-    || fail "membership was re-added for an issue on a page the walk never read, got $(log_count "$dir" add) adds"
-  assert_contains "$out" 'left membership alone' \
+    || fail "membership was written from a partial view, got $(log_count "$dir" add) adds"
+  [ "$(log_count "$dir" status)" = 0 ] \
+    || fail "a status was written from a partial view, got $(log_count "$dir" status) writes"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] \
+    || fail "the board was changed from a view the sweep could not complete, got '$(item_status "$dir" acme widget 1)'"
+  assert_contains "$out" 'stopped without saying where it had got to' \
     "the sweep did not report that it could not tell what the board holds"
-  [ "$(item_status "$dir" acme widget 1)" = Done ] \
-    || fail "drift on an item the walk DID see was skipped, got '$(item_status "$dir" acme widget 1)'"
-  pass "a listing that cannot say where it stopped is reported, and never mistaken for an empty board"
+  assert_contains "$out" 'planned no changes at all' \
+    "the sweep truncated its work without announcing that it planned nothing"
+  pass "a listing that cannot say where it stopped plans no writes at all and says so"
 }
 
+# The two sides of the join learn the repository's name from different places:
+# this fixture's registry says `Acme/Widget`, while the board item's reference is
+# assembled from GitHub's own canonical casing, `acme/widget`. GitHub resolves an
+# owner/repo pair case-insensitively and answers canonically - asking it for
+# `helloworldsungin/FIRSTMATE` returns `HelloWorldSungin/firstmate` - so this is
+# an ordinary registry entry, not a typo to reject. Compared byte-exactly, every
+# issue looks absent and the sweep re-adds all of them on every run, forever,
+# without ever converging. Non-convergence is the property under test, so the
+# second run is what makes it meaningful.
+test_a_registry_typed_in_another_case_still_matches_and_converges() {
+  local dir out
+  dir=$(sweep_case sweepcasing 'board=https://github.com/users/captain/projects/7' \
+    'tracker=github:github.com/Acme/Widget')
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'In Progress'
+  out=$(run_board "$dir" reconcile) || fail "the sweep failed: $out"
+  [ "$(log_count "$dir" add)" = 0 ] \
+    || fail "an item already on the board was re-added because the two sides spell the repository differently, got $(log_count "$dir" add) adds"
+  [ "$(item_status "$dir" acme widget 2)" = Done ] \
+    || fail "drift went uncorrected because the join key did not match, got '$(item_status "$dir" acme widget 2)'"
+  # Convergence: with the drift now corrected, a second run must be a no-op.
+  : > "$dir/store/calls.log"
+  run_board "$dir" reconcile >/dev/null || fail "the second sweep failed"
+  [ "$(log_count "$dir" add)" = 0 ] && [ "$(log_count "$dir" status)" = 0 ] \
+    || fail "the sweep never converges: a re-run wrote again ($(log_count "$dir" add) adds, $(log_count "$dir" status) status writes)"
+  pass "a registry entry spelled in another case matches the board's canonical casing, and the sweep converges"
+}
 test_a_board_with_no_done_option_is_reported_never_given_one() {
   local dir out
   dir=$(sweep_case sweepnooption)
@@ -2083,6 +2109,7 @@ test_every_board_failure_mode_leaves_the_fleet_work_unaffected
 test_the_sweep_reconciles_against_issues_not_the_pull_request_inflated_count
 test_the_sweep_walks_every_page_of_a_board_and_a_tracker
 test_an_unfinishable_item_listing_is_not_read_as_an_empty_board
+test_a_registry_typed_in_another_case_still_matches_and_converges
 test_a_board_with_no_done_option_is_reported_never_given_one
 test_the_change_limit_truncates_loudly
 test_a_dry_run_reports_the_drift_and_writes_nothing

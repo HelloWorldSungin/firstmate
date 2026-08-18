@@ -72,10 +72,21 @@
 # contains it. Every bound that actually truncates something says so on a
 # BOARD_SWEEP: line, because a silent cap reads as "everything was covered".
 #
-# What a bound truncates it does not then guess past: a walk that saw only part
-# of a board's items reconciles the status of what it saw and adds no membership
-# at all, because "this issue is on no page" is not knowable from a page that was
-# never read.
+# THE WRITE PATH FAILS CLOSED ON A PARTIAL VIEW, and this is the property that
+# matters most in this script. Every write `reconcile` plans is an inference from
+# comparing two listings, and no such comparison means anything unless both are
+# whole: "this issue is on no page of the board" is not knowable from a page that
+# was never read. So a listing that is short for ANY reason - the page cap, or a
+# walk that could not say where it stopped - plans NO changes at all for that
+# project and says so, rather than confidently writing the part it believes. The
+# sweep may do nothing; it must never do the wrong thing to a real board.
+#
+# Three separate correctness defects came from carrying that view as two plain
+# listings and inferring what they meant, so the join now carries the three facts
+# it depends on explicitly: identity normalized once per side (see the join
+# itself), completeness as a state a listing reports rather than a shape inferred
+# from it (see read_all_pages), and no writes when completeness is anything but
+# `complete`.
 #
 # FAIL OPEN. A board that is unreachable, unauthorized, rate-limited, or missing
 # prints one "warning:" line on stderr and exits 0. It can never block or fail
@@ -448,12 +459,31 @@ status_in_class() {  # <status-name> <candidates-on-stdin>
 
 SWEEP_CHANGES=0
 SWEEP_TRUNCATED=0
+SWEEP_BUDGET_SPENT=0
+
+# THE WHOLE-OPERATION BUDGET ANNOUNCES ITSELF LIKE EVERY OTHER BOUND. It used to
+# be the one cap that could truncate the sweep in silence: the calls simply began
+# refusing with a reason that goes to stderr, which the session-start relay drops
+# on purpose, so a sweep that stopped half way looked exactly like one that found
+# nothing to do. A silent cap reads as complete coverage, which is the one thing
+# this script's own header and docs/configuration.md both promise it never does.
+sweep_budget_spent() {
+  [ "$(fm_call_bound 1)" -le 0 ]
+}
 
 # Read every page of a listing into <output-file>, up to the page cap. Returns 1
-# when a page could not be read, and sets PAGES_COMPLETE to 0 when the walk
-# stopped short of the listing's end, so a partial view is reported rather than
-# mistaken for a complete one. PAGES_TRUNCATED_BY_CAP says which kind of short it
-# was, because the two have different things to tell the captain.
+# when a page could not be read at all, and otherwise sets LISTING_STATE to the
+# one fact the write path depends on:
+#
+#   complete      a page said `end`, so the walk saw the whole listing
+#   capped        the page cap stopped the walk at a known point
+#   unfinishable  the walk cannot say where it stopped
+#
+# THAT STATE IS CARRIED, NEVER INFERRED, and this function is the only thing that
+# sets it. Three separate defects came from inferring it instead: a listing with
+# no records read as "the tracker side", a listing that stopped early read as "the
+# board holds nothing", and both of those looked downstream exactly like the
+# genuinely empty board the membership requirement exists to serve.
 #
 # ONLY A PAGE THAT SAYS `end` PROVES THE LISTING ENDED. A page carrying no cursor
 # line at all, or one that promises `more` and then names no cursor to follow, is
@@ -461,44 +491,38 @@ SWEEP_TRUNCATED=0
 # empty listing, however identical the two look downstream. Reading it as "the
 # listing ended here" is what would let a board that answered badly be mistaken
 # for a board that holds nothing.
-PAGES_COMPLETE=1
-PAGES_TRUNCATED_BY_CAP=0
+LISTING_STATE=complete
 read_all_pages() {  # <output-file> <reader> [reader-args...]
   local out=$1 reader=$2
   shift 2
   local cursor='' page=0 line more
-  PAGES_COMPLETE=1
-  PAGES_TRUNCATED_BY_CAP=0
+  LISTING_STATE=unfinishable
   : > "$out"
   while [ "$page" -lt "$SWEEP_MAX_PAGES" ]; do
     "$reader" "$WORKDIR/page" "$@" ${cursor:+"$cursor"} || return 1
     grep -v '^cursor ' "$WORKDIR/page" >> "$out" || true
     line=$(awk '$1 == "cursor" { print; exit }' "$WORKDIR/page")
-    if [ -z "$line" ]; then
-      PAGES_COMPLETE=0
-      return 0
-    fi
+    [ -n "$line" ] || return 0
     more=${line##* }
     case "$more" in
-      end) return 0 ;;
+      end) LISTING_STATE=complete; return 0 ;;
       more) ;;
-      *) PAGES_COMPLETE=0; return 0 ;;
+      *) return 0 ;;
     esac
     cursor=$(printf '%s' "$line" | awk '{ print $2 }')
     if [ -z "$cursor" ] || [ "$cursor" = - ]; then
-      PAGES_COMPLETE=0
       return 0
     fi
     page=$((page + 1))
   done
-  PAGES_COMPLETE=0
-  PAGES_TRUNCATED_BY_CAP=1
+  LISTING_STATE=capped
   return 0
 }
 
 reconcile_project() {  # <project> <board-url> <owner> <repo>
   local project=$1 board_url=$2 owner=$3 repo=$4
-  local project_id status_field added=0 corrected=0 blocked_done=0 blocked_open=0 items_complete=1
+  local project_id status_field added=0 corrected=0 blocked_done=0 blocked_open=0
+  local items_state issues_state join_key
   local action number state item_id status content_id done_option open_option
 
   fm_board_url_parse "$board_url" || {
@@ -520,44 +544,63 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     echo "warning: could not list the items on $board_url: $FM_BOARD_GQL_REASON" >&2
     return 0
   fi
-  # MEMBERSHIP NEEDS THE WHOLE ITEM LISTING, AND NOTHING LESS PROVES ANYTHING.
-  # An issue is missing from a board only if it is on no page of it, so a walk
-  # that saw part of the board cannot tell membership from a page it never read,
-  # and adding on that basis would spend the whole change budget re-adding items
-  # that were already there. Status for the items the walk DID see is still
-  # sound, so those are reconciled as usual.
-  items_complete=$PAGES_COMPLETE
-  if [ "$PAGES_COMPLETE" -eq 0 ]; then
-    if [ "$PAGES_TRUNCATED_BY_CAP" -eq 1 ]; then
-      echo "BOARD_SWEEP: $project: $board_url has more items than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100)) and left membership alone"
-    else
-      echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds and left membership alone"
-    fi
-  fi
+  items_state=$LISTING_STATE
+  case "$items_state" in
+    capped) echo "BOARD_SWEEP: $project: $board_url has more items than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))" ;;
+    unfinishable) echo "BOARD_SWEEP: $project: the item listing for $board_url stopped without saying where it had got to, so this sweep could not tell what the board holds" ;;
+  esac
   if ! read_all_pages "$WORKDIR/issues" fm_board_tracker_issues_page "$owner" "$repo"; then
     echo "warning: could not list $owner/$repo's issues for $project: $FM_BOARD_GQL_REASON" >&2
     return 0
   fi
-  if [ "$PAGES_COMPLETE" -eq 0 ]; then
-    if [ "$PAGES_TRUNCATED_BY_CAP" -eq 1 ]; then
-      echo "BOARD_SWEEP: $project: $owner/$repo has more issues than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))"
-    else
-      echo "BOARD_SWEEP: $project: the issue listing for $owner/$repo stopped without saying where it had got to, so this sweep saw only part of it"
-    fi
+  issues_state=$LISTING_STATE
+  case "$issues_state" in
+    capped) echo "BOARD_SWEEP: $project: $owner/$repo has more issues than the ${SWEEP_MAX_PAGES}-page cap reads, so this sweep saw only the first $((SWEEP_MAX_PAGES * 100))" ;;
+    unfinishable) echo "BOARD_SWEEP: $project: the issue listing for $owner/$repo stopped without saying where it had got to, so this sweep saw only part of it" ;;
+  esac
+
+  # THE WRITE PATH FAILS CLOSED ON AN INCOMPLETE VIEW, and this is the property
+  # that matters most here: the sweep may do nothing, but it must never
+  # confidently do the wrong thing to a real board. Every write it plans is an
+  # inference from comparing two listings, and neither comparison means anything
+  # unless both listings are whole - an issue is missing from a board only if it
+  # is on no page of it, and an item's status is only drift if the issue it
+  # matches was really in the tracker. So a view that is short for ANY reason
+  # plans nothing at all and says so, rather than writing the part it believes.
+  if [ "$items_state" != complete ] || [ "$issues_state" != complete ]; then
+    echo "BOARD_SWEEP: $project: this sweep saw only part of $board_url or of $owner/$repo, so it planned no changes at all; a partial view cannot tell a missing item from an unread one"
+    [ "$QUIET" -eq 0 ] && printf 'board: %s %s: 0 added, 0 status corrected (incomplete view, nothing planned)\n' "$project" "$board_url"
+    return 0
   fi
 
   # Join the board's items onto the tracker's issues. An item with no matching
   # issue is deliberately absent from the output: a card a human added by hand
   # is never removed, and reconciliation has nothing to say about it.
   #
+  # THE JOIN KEY IS NORMALIZED ONCE PER SIDE, WHERE IT IS CONSTRUCTED. The two
+  # sides learn the repository's name from different places and cannot be assumed
+  # to spell it the same way: this side comes from the captain-typed tracker=
+  # token in data/projects.md, while the item's own reference is assembled in
+  # bin/fm-board-lib.sh from GitHub's `repository.owner.login` and
+  # `repository.name`. GitHub resolves an owner/repo pair case-insensitively and
+  # answers in ITS canonical casing - asking it for `helloworldsungin/FIRSTMATE`
+  # returns `HelloWorldSungin/firstmate` - so the board side is always canonical
+  # while the registry side is however it was typed. Case-folding both once is
+  # therefore sound as well as necessary, because that same case-insensitive
+  # resolution is what makes `Foo/Bar` and `foo/bar` one repository rather than
+  # two. Compared byte-exactly, one capital letter would make every issue look
+  # absent, and the sweep would re-add all of them on every run forever without
+  # ever converging.
+  #
   # The side of the join is decided by FILENAME, never by a record count: a board
   # holding no issue items at all - a fresh one, or one carrying only draft and
   # pull-request cards - contributes zero records, and a count-keyed join would
   # then read the tracker as if it were the board and plan nothing at all, which
   # is exactly the board a new board= token is pointed at first.
-  awk -v key="$owner/$repo" -v itemsfile="$WORKDIR/items" -v membership="$items_complete" '
+  join_key=$(printf '%s/%s' "$owner" "$repo" | tr '[:upper:]' '[:lower:]')
+  awk -v key="$join_key" -v itemsfile="$WORKDIR/items" '
     FILENAME == itemsfile {
-      if ($1 == "item" && index($3, key "#") == 1) {
+      if ($1 == "item" && index(tolower($3), key "#") == 1) {
         n = $3; sub(/.*#/, "", n)
         id[n] = $2
         s = ""
@@ -568,7 +611,7 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
     }
     $1 == "issue" {
       if ($2 in id) print "have", $2, $3, id[$2], status[$2]
-      else if (membership == 1) print "add", $2, $3, "-", "-"
+      else print "add", $2, $3, "-", "-"
     }
   ' "$WORKDIR/items" "$WORKDIR/issues" > "$WORKDIR/plan"
 
@@ -578,6 +621,10 @@ reconcile_project() {  # <project> <board-url> <owner> <repo>
   while read -r action number state item_id status <&3; do
     if [ "$SWEEP_CHANGES" -ge "$SWEEP_MAX_CHANGES" ]; then
       SWEEP_TRUNCATED=1
+      break
+    fi
+    if sweep_budget_spent; then
+      SWEEP_BUDGET_SPENT=1
       break
     fi
     # An added item carries no status yet, so it falls through to the status
@@ -711,9 +758,13 @@ if [ "$COMMAND" = reconcile ]; then
     SWEPT=$((SWEPT + 1))
     reconcile_project "$name" "$board" "${FM_ISSUE_TRACKER_PATH%%/*}" "${FM_ISSUE_TRACKER_PATH#*/}"
     [ "$SWEEP_TRUNCATED" -eq 0 ] || break
+    [ "$SWEEP_BUDGET_SPENT" -eq 0 ] || break
   done 3<<EOF
 $(fm_board_registry_scan "$REGISTRY")
 EOF
+  if [ "$SWEEP_BUDGET_SPENT" -eq 1 ]; then
+    echo "BOARD_SWEEP: this sweep ran out of its ${SWEEP_BUDGET}s whole-operation budget before it finished, so drift may remain; the next sweep continues from where it stopped"
+  fi
   if [ "$SWEEP_TRUNCATED" -eq 1 ]; then
     echo "BOARD_SWEEP: this sweep stopped at its ${SWEEP_MAX_CHANGES}-change limit, so drift may remain; the next sweep continues from where it stopped"
   fi
