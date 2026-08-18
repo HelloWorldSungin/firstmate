@@ -110,23 +110,42 @@ fm_run_bash_timeout() {  # <seconds> <grace> <command...>
 }
 
 fm_run_external_timeout() {  # <runner> <seconds> <grace> <command...>
-  local runner=$1 seconds=$2 grace=$3 runner_rc started elapsed
+  local runner=$1 seconds=$2 grace=$3 runner_pid runner_rc started elapsed
   shift 3
   started=$SECONDS
-  if "$runner" -k "$grace" "$seconds" "$@"; then
+  # Run the external runner asynchronously so its pid - which is also the
+  # process-group id GNU/BSD timeout creates for itself without --foreground -
+  # stays available for an explicit reap. A shell wrapper can exit promptly on
+  # TERM while one of its descendants ignores TERM; timeout then considers the
+  # command finished and never sends its configured KILL, so a real timeout
+  # reaps that leftover group below instead of leaving it running.
+  # `<&0` is load-bearing: without an explicit redirection a non-interactive
+  # shell points an async command's stdin at /dev/null, which would silently
+  # empty a piped payload (bin/fm-forge-lib.sh feeds curl its config on stdin).
+  "$runner" -k "$grace" "$seconds" "$@" <&0 &
+  runner_pid=$!
+  # 2>/dev/null matches fm_run_bash_timeout: the shell otherwise prints its own
+  # "Killed" job notice when a reaped async job died on a signal.
+  if wait "$runner_pid" 2>/dev/null; then
     runner_rc=0
   else
     runner_rc=$?
   fi
   elapsed=$((SECONDS - started))
   case "$runner_rc" in
-    124) return 124 ;;
+    124)
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      return 124
+      ;;
     # GNU timeout reports 137 when its kill-after escalation fired, while a
     # command may also naturally exit 137. The deadline distinguishes them
     # without interposing a status-recording shell that would become the direct
     # child and let the real command escape timeout's process-group reap.
     137)
-      [ "$elapsed" -ge "$seconds" ] && return 124
+      if [ "$elapsed" -ge "$seconds" ]; then
+        kill -KILL -- "-$runner_pid" 2>/dev/null || true
+        return 124
+      fi
       return 137
       ;;
     *) return "$runner_rc" ;;

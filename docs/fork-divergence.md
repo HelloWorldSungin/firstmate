@@ -21,6 +21,16 @@ They are deliberately crew-only and Herdr-only because Herdr supplies the native
 They are not selectable for the primary firstmate or a persistent second mate, and their raw-command bypasses are rejected so the kind, backend, trust, and supervision guards cannot be skipped.
 The adapter contract lives in [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and their tests.
 
+### Watcher restart hand-over
+
+The fork guarantees that `bin/fm-watch-arm.sh --restart` never leaves this home without a live watcher, and never forks a second watcher while the first still holds the lock.
+[`tests/fm-watcher-lock.test.sh`](../tests/fm-watcher-lock.test.sh) pins both halves: a fresh watcher takes the lock inside the arm's own stop budget, and the outgoing watcher is gone by the time it does.
+
+The shape of that guarantee changed on 2026-08-18 without the guarantee itself moving.
+Upstream's re-arm recovery (`kunchenguid/firstmate#2065`) makes any watcher that arms over a pending downtime marker resurface `check: rearm-resurface` and exit, which for an out-of-band restart would deliver a wake and leave no live watcher at all.
+Upstream already models the case where one cycle deliberately succeeds another, through `FM_WATCH_PREDECESSOR_ARM_PID` and its handling-successor launch, so `--restart` now declares itself that successor rather than carrying a fork-local mechanism beside upstream's.
+A restart therefore keeps the fork's hand-over guarantee while every other arm path keeps upstream's resurface behavior unchanged.
+
 ### Upstream tracking mechanism
 
 This fork carries the optional drift detector, bootstrap diagnostic, sync-round skill and template, and this ledger.
@@ -31,6 +41,7 @@ A sync request dispatches an isolated merge task and PR rather than merging in t
 ### Repository-local validation evidence
 
 The fork keeps `.no-mistakes.yaml` `test.evidence.store_in_repo` set to `false`, confirmed on 2026-08-14, so routine test evidence stays local instead of becoming committed repository content.
+Upstream flipped the same key to `true` in `kunchenguid/firstmate@12384026`, which lands in a later sync round than the one that first recorded this entry, so the round that reaches that commit must resolve the hunk back to `false` rather than taking the flip as an ordinary upstream change.
 
 ### Upstream-read-only posture in shared tracked docs
 
@@ -55,6 +66,14 @@ Firstmate made that collision decision under the already adopted TRACK strategy 
 Keeping the smaller fork implementation would have selected permanent semantic divergence despite the decision to follow upstream through full merges.
 The upstream implementation was also the safer of two not-yet-live paths in this fleet because no registered second mate was using the fork implementation, upstream carried its own broader job-worker and doctor tests, and the fork's compatible `fm-remote-inherit*` additions could survive alongside it.
 This is the precedent for future capability collisions: apply TRACK to prefer upstream while preserving compatible fork-only intent, and escalate a genuine contradiction rather than silently blending two designs.
+
+### Fork-local composer blank fold - retired 2026-08-18
+
+The fork's `fm_composer_blank_normalize` and its `FM_COMPOSER_BLANKS` list were retired in favor of upstream's `FM_COMPOSER_UNICODE_SPACES` normalization, adopted with the composer consolidation in `kunchenguid/firstmate#2102`.
+Upstream's set is derived from the Unicode `White_Space=Yes` property rather than an enumerated guess, and it covers U+00A0, the only pad the fork's own incident evidence ever observed.
+The one behavior the fork gives up is folding the zero-width format characters U+200B and U+FEFF, which upstream deliberately excludes because Unicode gives them `White_Space=No`.
+That loss is safe in the one direction that matters: a composer padded with a zero-width character reads `pending`, which defers injection and eventually raises the wedge alarm, rather than injecting on an unproven verdict.
+This is the third capability collision resolved by the remote-doctor precedent above.
 
 ## Parked branches outside the fork baseline
 

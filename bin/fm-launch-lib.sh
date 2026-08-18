@@ -37,9 +37,21 @@ fm_launch_shell_quote() {
 # the raw-command escape hatch, whose input is not a verified template. Every
 # template caller fails loudly if a future placeholder is added without also
 # being rendered here.
+#
+# Rendering is SINGLE-PASS: the template is walked once and each recognized
+# placeholder is replaced as it is reached, so a substituted value is never
+# rescanned. That matters because the values are paths chosen by the operator,
+# not by this repository: a worktree, brief, or extension path may legitimately
+# contain a `__NAME__` segment, and a multi-pass renderer would either mangle it
+# or refuse the launch outright.
+#
+# __PIBIN__ and __PITUIMODE__ are deliberately passed through untouched. They
+# carry the Pi executable that bin/fm-spawn.sh resolves and probes from PATH, so
+# that caller substitutes them into the rendered command immediately after this
+# function returns, keeping the resolved path out of every earlier pass.
 fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> [<allow-unresolved>]
   local launch model_flag effort_flag brief turnend pi_ext pi_turnend pi_watch
-  local op_input allow_unresolved leftover
+  local op_input allow_unresolved token prefix out rest
   if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
     printf 'firstmate: fm_launch_render expected 9 or 10 arguments, got %s\n' "$#" >&2
     return 1
@@ -55,21 +67,37 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   op_input=$9
   allow_unresolved=${10:-0}
 
-  launch=${launch//__MODELFLAG__/$model_flag}
-  launch=${launch//__EFFORTFLAG__/$effort_flag}
-  launch=${launch//__BRIEF__/$brief}
-  launch=${launch//__TURNEND__/$turnend}
-  launch=${launch//__PIEXT__/$pi_ext}
-  launch=${launch//__PITURNEND__/$pi_turnend}
-  launch=${launch//__PIWATCH__/$pi_watch}
-  launch=${launch//__OPINPUT__/$op_input}
-
-  if [ "$allow_unresolved" != 1 ] && [[ $launch =~ __[A-Z][A-Z0-9_]*__ ]]; then
-    leftover=${BASH_REMATCH[0]}
-    printf 'firstmate: unresolved launch placeholder %s\n' "$leftover" >&2
-    return 1
-  fi
-  printf '%s' "$launch"
+  out=""
+  rest=$launch
+  # The name class excludes a trailing underscore run so two adjacent
+  # placeholders (`__MODELFLAG____EFFORTFLAG__`) match as two tokens rather than
+  # being swallowed into one unrecognized name.
+  while [[ $rest =~ __[A-Z][A-Z0-9]*(_[A-Z0-9]+)*__ ]]; do
+    token=${BASH_REMATCH[0]}
+    prefix=${rest%%"$token"*}
+    rest=${rest#"$prefix$token"}
+    out=$out$prefix
+    case "$token" in
+      __MODELFLAG__)  out=$out$model_flag ;;
+      __EFFORTFLAG__) out=$out$effort_flag ;;
+      __BRIEF__)      out=$out$brief ;;
+      __TURNEND__)    out=$out$turnend ;;
+      __PIEXT__)      out=$out$pi_ext ;;
+      __PITURNEND__)  out=$out$pi_turnend ;;
+      __PIWATCH__)    out=$out$pi_watch ;;
+      __OPINPUT__)    out=$out$op_input ;;
+      __PIBIN__|__PITUIMODE__) out=$out$token ;;
+      *)
+        if [ "$allow_unresolved" = 1 ]; then
+          out=$out$token
+        else
+          printf 'firstmate: unresolved launch placeholder %s\n' "$token" >&2
+          return 1
+        fi
+        ;;
+    esac
+  done
+  printf '%s' "$out$rest"
 }
 
 # fm_launch_restricted_harness_of_word: map one command word (an executable path
@@ -229,13 +257,16 @@ fm_launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
-    # pi and pi-signed share one template shape; the harness token is the exact
-    # executable name, so pi-signed never silently falls back to pi.
+    # pi and pi-signed share one template shape. __PIBIN__ is the concrete
+    # executable fm-spawn resolves from PATH for the exact harness token, so
+    # pi-signed never silently falls back to pi, and __PITUIMODE__ carries the
+    # regular-TUI override only when that executable advertises the flag.
     pi|pi-signed)
+      printf '%s' '__PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
-        printf '%s%s' "$harness" ' --tui-mode regular __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s' "$harness" ' --tui-mode regular __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive

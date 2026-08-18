@@ -172,12 +172,12 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | Skill              | What it does                                                                                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/afk`             | Enter away-mode supervision: the sub-supervisor self-handles routine notifications in bash, escalates captain-relevant events and bounded declared-external-wait rechecks as batched digests, and actively alerts if delivery gets stuck while you step away |
-| `/ahoy`            | Recap visible session events since the prior real captain message plus visibly unanswered captain decisions, falling back to Bearings when invoked as the session's first real captain message |
+| `/ahoy`            | Recap visible session events since the prior real captain message plus visibly unanswered captain decisions, then guide the captain through any open decisions one at a time in agent-judged impact order; fall back to Bearings when invoked as the session's first real captain message |
 | `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` when live PR enrichment is wanted |
 | `/sync-upstream`   | Check the fork's read-only upstream drift status or, when asked to sync, dispatch the next contiguous full-merge round as a reviewable fork PR without merging it |
 | `/tool-updates`    | Check installed tools against their latest stable releases and live compatibility floors, record evidence-backed decisions, and prepare an attended upgrade plan without changing the machine |
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the fork's latest with fast-forward-only pulls, then re-read instructions, nudge secondmates, and report upstream drift without merging it |
-| `/stow`            | Sweep durable knowledge, curate tiered startup memory with decay and cold archival, preserve pruned truth in the home's brain, propose captain-gated offloads when still over budget, cascade to registered second mates, file undone next steps, and report what is safe to reset |
+| `/stow`            | Sweep durable knowledge, curate tiered startup memory with decay and cold archival, preserve pruned truth in the home's brain, enforce each home's budget or surface the required decision through captain-gated offloads, cascade to registered second mates, file undone next steps, and report what is safe to reset |
 
 Bearings invocation examples:
 

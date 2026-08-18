@@ -136,6 +136,48 @@ SH
   printf '%s\n' "$fakebin/fm-crew-state.sh"
 }
 
+# Prime <file>'s .seen-* marker to its CURRENT signature through the production
+# signature owner (bin/fm-wake-lib.sh), so a test can declare "everything in
+# this file was already surfaced or deliberately absorbed" before exercising
+# the next wake, self-announced append, or annotation decision.
+prime_status_seen() {  # <state> <file>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    . "$1"
+    sig=$(fm_wake_signal_sig "$3") || exit 1
+    [ -n "$sig" ] || exit 1
+    printf "%s" "$sig" > "$(fm_wake_signal_seen_path "$2" "$3")"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2"
+}
+
+# Retire the downtime marker a DELIBERATELY stopped watcher left behind, without
+# consuming any queued wake. A test that reaps its own watcher and then starts
+# another is standing in for a supervision cycle that has already been handled;
+# without this the next watcher reads the marker as unrecovered downtime and
+# opens with `check: rearm-resurface` instead of exercising the path under test.
+# Use ack_stopped_cycle instead when the test wants the queue rows retired too.
+retire_downtime_marker() {  # <state>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    . "$1"
+    marker="$2/.watcher-down"
+    fm_recovery_marker_snapshot "$marker" || exit 0
+    case "${FM_RECOVERY_MARKER_TOKEN:-}" in
+      pending:*) ;;
+      *) exit 0 ;;
+    esac
+    fm_recovery_transition "$marker" acknowledge "${FM_RECOVERY_MARKER_TOKEN##*:}"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+}
+
+# Acknowledge a drain from its captured stderr (the WAKE_ACK_REQUIRED line).
+ack_drain_err() {  # <state> <stderr-file>
+  local state=$1 err=$2 sequence generation
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
+    --ack-through "$sequence" --recovery-generation "$generation"
+}
+
 make_supercase() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"
