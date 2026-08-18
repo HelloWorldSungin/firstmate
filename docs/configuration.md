@@ -76,13 +76,35 @@ A page shorter than the one it asked for never ends that lookup, because a forge
 A comment is created only where the lookup proved there is none to edit; wherever it could not prove that - the page cap ran out, the host re-served a page the walk had already seen, a page carried no readable comment id, or the comment was found under an id that cannot be addressed - nothing is written and the uncertainty is reported, because guessing in the create direction is what accumulates a comment per milestone.
 `bin/fm-pr-merge.sh` bounds each of its own per-host verify and close calls by `FM_ISSUE_CLOSE_TIMEOUT` seconds (default 10).
 
-`config/project-board` optionally names the captain's GitHub Projects board as one line, `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`; absent, `bin/fm-project-board.sh` does nothing and contacts no host.
-It adds board membership for each tracked work item and drives the board's existing Status field from the same milestones, and it ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
-It never creates, renames, or deletes a view, filter, field, status option, or item: a milestone with no matching status option is reported and the status left alone.
-That last one is a hard safety rule rather than a matter of taste, because `updateProjectV2Field` replaces a single-select field's whole option set and reassigns every option id, which detaches every item already using them: adding one option to the real Firstmate board blanked the status of all twenty items instantly.
-A missing option is therefore the captain's to add by hand, and each call is bounded by `FM_PROJECT_BOARD_TIMEOUT` seconds (default 15).
+Firstmate also keeps the captain's GitHub Projects boards true, and two different facts name a board, each with one owner.
+A project declares its own board with a `board=` token beside `tracker=` in the same bracket annotation, and `config/project-board` is this home's fallback for a project that declares nothing:
+
+```
+- <name> [<mode> +yolo tracker=<forge>:<host>/<path> board=https://github.com/orgs/<org>/projects/<n>] - <desc> (added <date>)
+- <name> [<mode> tracker=<forge>:<host>/<path> board=none] - <desc> (added <date>)
+```
+
+The board URL is `https://github.com/orgs/<org>/projects/<n>` or `https://github.com/users/<login>/projects/<n>`, and `config/project-board` holds one such line and nothing else.
+`board=none` declares that a project has no board, which is distinct from an absent token meaning undeclared: the first skips even where a home fallback exists, and the second falls back to it.
+`bin/fm-board-lib.sh` is the single owner of board identity, of that resolution rule, and of every request Firstmate can send to a board; a home with neither declaration nor fallback does nothing and contacts no host.
+
+`bin/fm-project-board.sh sync` is the lifecycle update for a task Firstmate is running.
+It resolves the board from the issue's own tracker through the registry and falls back to the home board, adds board membership for the tracked work item, drives the board's existing Status field from the same milestones, and ensures a story's parent issue is a member too so epic progress reads through GitHub's own sub-issue relationship rather than a Firstmate-invented field.
+Each call is bounded by `FM_PROJECT_BOARD_TIMEOUT` seconds (default 15).
+
+`bin/fm-project-board.sh reconcile` is the fleet-wide drift sweep, and it is the one that catches work Firstmate never dispatched: on 2026-08-04 the Ark-Signal board carried 222 items that no lifecycle update could ever have corrected, three of which had drifted.
+It uses DECLARED boards only and never the home fallback, so a sweep can only reach a board somebody named for that project by hand.
+For each such project every tracker issue is made a board member, a closed issue is moved to `Done`, and an open issue is moved out of `Done`; nothing finer is invented, because closed-versus-open is the only truth available for work Firstmate did not dispatch.
+Membership is reconciled against a real issue listing rather than a repository's REST `open_issues_count`, which includes pull requests and once had Firstmate reporting a missing item on a board that was already complete at 76 of 76.
+An item no tracker issue matches is left exactly where it is, because a card a human added by hand is not drift.
+The sweep is bounded as a whole operation by `FM_BOARD_SWEEP_TIMEOUT` seconds (default 240), reads at most `FM_BOARD_SWEEP_MAX_PAGES` pages of 100 per listing (default 20), and performs at most `FM_BOARD_SWEEP_MAX_CHANGES` writes per run (default 50); a bound that truncates anything says so, because a silent cap reads as complete coverage.
+`bin/fm-bootstrap.sh` runs it once per locked session start, at most every `FM_BOARD_SWEEP_INTERVAL` seconds (default 21600), and relays only its actionable `BOARD_SWEEP:` lines - a board one run could not reach is not a fleet diagnostic, because the next sweep re-derives exactly the same drift.
+
+Neither command ever creates, renames, or deletes a view, filter, field, status option, or item, and neither writes any field but Status: a milestone or a closed issue with no matching status option is reported and the status left alone.
+That is a hard safety rule rather than a matter of taste, because `updateProjectV2Field` replaces a single-select field's whole option set and reassigns every option id, which detaches every item already using them: adding one option to the real Firstmate board blanked the status of all twenty items instantly.
+A missing option is therefore the captain's to add by hand.
 Projects v2 is GraphQL-only and `gh-axi` does not implement it, so that one path uses `gh api graphql` directly and additionally needs the token's `project` scope, which `repo` does not imply.
-The file is inherited by secondmate homes, so their work appears on the same board.
+`config/project-board` is inherited by secondmate homes, so a secondmate's work reaches the same fallback board.
 
 Every write-back path fails open exactly as enrichment does: an unreachable, unauthenticated, rate-limited, or missing target prints one warning on stderr and exits 0, so it can never block or fail dispatch, validation, merge, or cleanup.
 What it is never allowed to be is silent, which is why each non-write reports its own reason rather than passing quietly.

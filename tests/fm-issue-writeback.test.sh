@@ -44,6 +44,13 @@
 #       four different reported facts, a dry run renders before any credential
 #       is resolved, every forge failure warns and exits 0, and the github path
 #       never reads a forge token or invokes curl at all
+#   (n) the fleet-wide drift sweep reads a project's board from the registry,
+#       adds only missing membership, moves a closed issue to Done and an open
+#       one out of it, invents no finer state, removes nothing a human added,
+#       writes no field but Status, reconciles against a real issue listing
+#       rather than a pull-request-inflated count, walks every page, reports a
+#       missing option instead of creating one, bounds and announces its own
+#       truncation, and fails open on every board failure mode
 #   (m) no lookup that could not PROVE there is no status comment ever resolves
 #       itself by creating one: discovery walks past a host that clamps its page
 #       size below the limit asked for, and both a list longer than the walk and
@@ -78,7 +85,7 @@ write_fake_gh() {  # <fakebin>
 #!/usr/bin/env bash
 set -u
 STORE=${FM_FAKE_GH_STORE:?fake gh needs FM_FAKE_GH_STORE}
-mkdir -p "$STORE/comments"
+mkdir -p "$STORE/comments" "$STORE/items"
 LOG="$STORE/calls.log"
 FAIL=" ${FM_FAKE_GH_FAIL:-} "
 
@@ -87,6 +94,8 @@ fail_with() {  # <token> <message>
     *" $1 "*|*" all "*)
       if [ -n "${FM_FAKE_GH_SCOPE_ERROR:-}" ]; then
         echo "gh: Your token has not been granted the required scopes: 'project'" >&2
+      elif [ -n "${FM_FAKE_GH_RATE_LIMIT:-}" ]; then
+        echo "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again." >&2
       else
         echo "gh: $2" >&2
       fi
@@ -102,6 +111,15 @@ JQFILTER=
 ENDPOINT=
 GRAPHQL=0
 QUERY=
+V_project=
+V_item=
+V_field=
+V_option=
+V_content=
+V_owner=
+V_name=
+V_number=
+V_after=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     graphql) GRAPHQL=1 ;;
@@ -111,6 +129,15 @@ while [ "$#" -gt 0 ]; do
     -F|-f)
       case "$2" in
         query=*) QUERY=${2#query=} ;;
+        project=*) V_project=${2#project=} ;;
+        item=*) V_item=${2#item=} ;;
+        field=*) V_field=${2#field=} ;;
+        option=*) V_option=${2#option=} ;;
+        content=*) V_content=${2#content=} ;;
+        owner=*) V_owner=${2#owner=} ;;
+        name=*) V_name=${2#name=} ;;
+        number=*) V_number=${2#number=} ;;
+        after=*) V_after=${2#after=} ;;
       esac
       shift
       ;;
@@ -127,6 +154,108 @@ emit() {  # <json>
   fi
 }
 
+# The board's Status field, as the captain configured it. Option ids are
+# positional so a mutation carrying one can be resolved back to its name, which
+# is what lets an item's stored status be observed rather than assumed.
+status_field_json() {
+  if [ -n "${FM_FAKE_GH_NO_STATUS_FIELD:-}" ]; then
+    printf 'null'
+  else
+    printf '%s' "${FM_FAKE_GH_STATUS_OPTIONS:-Todo,In Progress,In review,Done}" \
+      | jq -R 'split(",") | {id:"F_status", options:[to_entries[] | {id:("o"+((.key+1)|tostring)), name:.value}]}'
+  fi
+}
+
+status_name_for_option() {  # <option-id>
+  status_field_json | jq -r --arg id "$1" '.options[]? | select(.id == $id) | .name'
+}
+
+item_file() { printf '%s/items/%s\n' "$STORE" "$1"; }
+
+# The boards in this fleet carry more than Status - Ark-Signal has Priority,
+# Size, Estimate and Start date - so the fake resolves a mutation's FIELD ID to
+# the field it names and writes that one. A caller that addressed another field,
+# or cleared one, changes that field in the store, which is what makes "no field
+# other than Status is ever written" a check that can actually fail.
+field_name_for_id() {  # <field-id>
+  case "$1" in
+    F_status) printf 'Status' ;;
+    F_priority) printf 'Priority' ;;
+    F_size) printf 'Size' ;;
+    F_estimate) printf 'Estimate' ;;
+    F_startdate) printf 'Start date' ;;
+    *) printf 'Unknown(%s)' "$1" ;;
+  esac
+}
+
+item_clear_field() {  # <item-id> <field-name>
+  local f tmp
+  f=$(item_file "$1")
+  tmp="$f.tmp"
+  grep -v "^f:$2=" "$f" > "$tmp" 2>/dev/null || true
+  mv "$tmp" "$f"
+}
+
+# An item is stored as its content reference plus one line per FIELD VALUE, so a
+# mutation that touched a field it was never meant to touch is visible in the
+# store afterwards rather than only in a call log.
+item_write_field() {  # <item-id> <field-name> <value>
+  local f tmp
+  f=$(item_file "$1")
+  tmp="$f.tmp"
+  grep -v "^f:$2=" "$f" > "$tmp" 2>/dev/null || true
+  printf 'f:%s=%s\n' "$2" "$3" >> "$tmp"
+  mv "$tmp" "$f"
+}
+
+# Content ids are I_<owner>_<repo>_<number>, so an item created by the add
+# mutation carries the content reference the listing must report back.
+content_reference() {  # <content-id>
+  printf '%s' "$1" | awk -F_ '{ printf "%s/%s#%s", $2, $3, $4 }'
+}
+
+items_json() {
+  local f iid c st
+  for f in "$STORE"/items/*; do
+    [ -f "$f" ] || continue
+    iid=$(basename "$f")
+    c=$(sed -n 's/^content=//p' "$f")
+    st=$(sed -n 's/^f:Status=//p' "$f")
+    jq -n --arg id "$iid" --arg c "$c" --arg st "$st" '
+      ($c | capture("^(?<own>[^/]+)/(?<rep>[^#]+)#(?<num>[0-9]+)$")) as $p |
+      {id:$id,
+       content:{__typename:"Issue", number:($p.num|tonumber),
+                repository:{name:$p.rep, owner:{login:$p.own}}},
+       fieldValueByName: (if $st == "" then null else {name:$st} end)}'
+  done | jq -s '.'
+}
+
+tracker_json() {
+  if [ -f "$STORE/tracker" ]; then
+    jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {number:(.[0]|tonumber), state:.[1]})' < "$STORE/tracker"
+  else
+    printf '[]'
+  fi
+}
+
+# Emit one page of a connection, honouring a page size a case can shrink so the
+# walk over several pages is exercised rather than assumed.
+emit_page() {  # <nodes-json> <wrapper-jq>
+  local nodes=$1 wrapper=$2 size start total slice more
+  size=${FM_FAKE_GH_PAGE_SIZE:-100}
+  start=0
+  case "$V_after" in
+    c*) start=${V_after#c} ;;
+  esac
+  total=$(printf '%s' "$nodes" | jq 'length')
+  slice=$(printf '%s' "$nodes" | jq --argjson s "$start" --argjson n "$size" '.[$s:($s+$n)]')
+  if [ $((start + size)) -lt "$total" ]; then more=true; else more=false; fi
+  emit "$(jq -n --argjson nodes "$slice" --argjson more "$more" \
+    --arg cursor "c$((start + size))" --arg wrapper "$wrapper" \
+    '{pageInfo:{hasNextPage:$more, endCursor:$cursor}, nodes:$nodes}' \
+    | jq --arg w "$wrapper" 'if $w == "items" then {data:{node:{items:.}}} else {data:{repository:{issues:.}}} end')"
+}
+
 if [ "$GRAPHQL" = 1 ]; then
   printf '%s\n' "$QUERY" >> "$STORE/graphql.log"
   case "$QUERY" in
@@ -134,18 +263,48 @@ if [ "$GRAPHQL" = 1 ]; then
       fail_with graphql-status "board status update refused"
       printf 'status\n' >> "$LOG"
       printf 'set\n' >> "$STORE/board-status"
+      if [ -f "$(item_file "$V_item")" ]; then
+        FIELD_NAME=$(field_name_for_id "$V_field")
+        if [ "$FIELD_NAME" = Status ]; then
+          item_write_field "$V_item" Status "$(status_name_for_option "$V_option")"
+        else
+          item_write_field "$V_item" "$FIELD_NAME" "$V_option"
+        fi
+      fi
       emit '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}'
+      exit 0
+      ;;
+    *clearProjectV2ItemFieldValue*)
+      fail_with graphql-clear "board field clear refused"
+      printf 'clear\n' >> "$LOG"
+      [ ! -f "$(item_file "$V_item")" ] || item_clear_field "$V_item" "$(field_name_for_id "$V_field")"
+      emit '{"data":{"clearProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}'
       exit 0
       ;;
     *addProjectV2ItemById*)
       fail_with graphql-add "board membership refused"
       printf 'add\n' >> "$LOG"
-      # The real mutation returns the EXISTING item for content already on the
-      # board, so the same content always answers with the same item id.
+      # The real mutation returns the EXISTING item when the content is already
+      # on the board, so the same content always answers with the same item id.
       touch "$STORE/board-items"
-      grep -qxF "$FM_FAKE_GH_LAST_CONTENT" "$STORE/board-items" 2>/dev/null \
-        || printf '%s\n' "$FM_FAKE_GH_LAST_CONTENT" >> "$STORE/board-items"
-      emit "{\"data\":{\"addProjectV2ItemById\":{\"item\":{\"id\":\"PVTI_$FM_FAKE_GH_LAST_CONTENT\"}}}}"
+      grep -qxF "$V_content" "$STORE/board-items" 2>/dev/null \
+        || printf '%s\n' "$V_content" >> "$STORE/board-items"
+      if [ ! -f "$(item_file "PVTI_$V_content")" ]; then
+        printf 'content=%s\n' "$(content_reference "$V_content")" > "$(item_file "PVTI_$V_content")"
+      fi
+      emit "{\"data\":{\"addProjectV2ItemById\":{\"item\":{\"id\":\"PVTI_$V_content\"}}}}"
+      exit 0
+      ;;
+    *items\(first:*)
+      fail_with graphql-items "board item listing refused"
+      printf 'items\n' >> "$LOG"
+      emit_page "$(items_json)" items
+      exit 0
+      ;;
+    *issues\(first:*)
+      fail_with graphql-issues "tracker issue listing refused"
+      printf 'issues\n' >> "$LOG"
+      emit_page "$(tracker_json)" issues
       exit 0
       ;;
     *parent*)
@@ -159,28 +318,21 @@ if [ "$GRAPHQL" = 1 ]; then
       fi
       exit 0
       ;;
-    *projectV2*)
+    *projectV2\(*)
       fail_with graphql-board "board lookup refused"
       printf 'board\n' >> "$LOG"
       root=user
       case "$QUERY" in *organization\(*) root=organization ;; esac
-      if [ -n "${FM_FAKE_GH_NO_STATUS_FIELD:-}" ]; then
-        field=null
-      elif [ -n "${FM_FAKE_GH_STATUS_OPTIONS:-}" ]; then
-        field=$(printf '%s' "$FM_FAKE_GH_STATUS_OPTIONS" | jq -R 'split(",") | {id:"F_status", options:[to_entries[] | {id:("o"+(.key|tostring)), name:.value}]}')
-      else
-        field='{"id":"F_status","options":[{"id":"o1","name":"Todo"},{"id":"o2","name":"In Progress"},{"id":"o3","name":"In review"},{"id":"o4","name":"Done"}]}'
-      fi
-      emit "{\"data\":{\"$root\":{\"projectV2\":{\"id\":\"PVT_1\",\"title\":\"Fleet\",\"field\":$field}}}}"
+      emit "{\"data\":{\"$root\":{\"projectV2\":{\"id\":\"PVT_1\",\"title\":\"Fleet\",\"field\":$(status_field_json)}}}}"
       exit 0
       ;;
-    *issue*)
+    *issue\(*)
       fail_with graphql-issue "issue lookup refused"
       printf 'issue\n' >> "$LOG"
       if [ -n "${FM_FAKE_GH_MISSING_ISSUE:-}" ]; then
         emit '{"data":{"repository":{"issue":null}}}'
       else
-        emit '{"data":{"repository":{"issue":{"id":"I_42"}}}}'
+        emit "{\"data\":{\"repository\":{\"issue\":{\"id\":\"I_${V_owner}_${V_name}_${V_number}\"}}}}"
       fi
       exit 0
       ;;
@@ -225,6 +377,16 @@ case "$ENDPOINT" in
       done | jq -s '.'
     )
     emit "$doc"
+    exit 0
+    ;;
+esac
+# A repository read is the REST route to open_issues_count, which INCLUDES pull
+# requests. Nothing here may reconcile against it, so the fake records the call
+# and answers with the inflated count a caller would have been misled by.
+case "$ENDPOINT" in
+  repos/*)
+    printf 'REST %s\n' "$ENDPOINT" >> "$LOG"
+    emit "{\"open_issues_count\":${FM_FAKE_GH_OPEN_ISSUES_COUNT:-0}}"
     exit 0
     ;;
 esac
@@ -299,8 +461,12 @@ firstmate_comment() {  # <case-dir> -> the one firstmate-owned comment body
   grep -rl 'firstmate-status-comment' "$1/store/comments" 2>/dev/null | head -n 1
 }
 
+# A case where the fake was never reached has no call log at all, which is zero
+# calls rather than an unanswerable question, so it counts as zero here.
 log_count() {  # <case-dir> <token>
-  grep -c "^$2" "$1/store/calls.log" 2>/dev/null || true
+  local n
+  n=$(grep -c "^$2" "$1/store/calls.log" 2>/dev/null) || n=${n:-0}
+  printf '%s\n' "${n:-0}"
 }
 
 # --- (a) one comment, correct content ---------------------------------------
@@ -1420,6 +1586,341 @@ $added"
   pass "the forge library exports its named operations and no general transport"
 }
 
+
+# --- (n) fleet-wide board drift reconciliation -------------------------------
+#
+# The sweep is the most destructive thing in this repository's reach: it writes
+# to boards carrying hundreds of items that firstmate never dispatched. So every
+# case below observes the STORE the fake keeps, not only the calls made - a
+# mutation that touched a field it was never meant to touch shows up as a
+# changed field value, which no call-log assertion could catch.
+
+BOARD_URL_FIXTURE='https://github.com/users/captain/projects/7'
+
+sweep_case() {  # <name> [board-token] [tracker-token]
+  local name=$1 board=${2-board=$BOARD_URL_FIXTURE} tracker=${3-tracker=github:github.com/acme/widget} dir
+  dir=$(case_dir "$name")
+  mkdir -p "$dir/data"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes +yolo %s %s] - the fixture project (added 2026-08-18)\n' \
+      "$tracker" "$board"
+  } > "$dir/data/projects.md"
+  printf '%s\n' "$dir"
+}
+
+# seed_item <case-dir> <owner> <repo> <number> <status> [<field>=<value>...]
+# An empty <status> seeds an item the captain has left with no status set.
+seed_item() {
+  local dir=$1 owner=$2 repo=$3 num=$4 status=$5 field
+  shift 5
+  mkdir -p "$dir/store/items"
+  {
+    printf 'content=%s/%s#%s\n' "$owner" "$repo" "$num"
+    [ -z "$status" ] || printf 'f:Status=%s\n' "$status"
+    for field in "$@"; do printf 'f:%s\n' "$field"; done
+  } > "$dir/store/items/PVTI_I_${owner}_${repo}_${num}"
+}
+
+seed_tracker() {  # <case-dir> <"<number> <OPEN|CLOSED>">...
+  local dir=$1 line
+  shift
+  : > "$dir/store/tracker"
+  for line in "$@"; do printf '%s\n' "$line" >> "$dir/store/tracker"; done
+}
+
+item_status() {  # <case-dir> <owner> <repo> <number>
+  sed -n 's/^f:Status=//p' "$1/store/items/PVTI_I_${2}_${3}_${4}" 2>/dev/null
+}
+
+item_fields() {  # <case-dir> <owner> <repo> <number>
+  grep '^f:' "$1/store/items/PVTI_I_${2}_${3}_${4}" 2>/dev/null | grep -v '^f:Status=' | LC_ALL=C sort
+}
+
+test_a_closed_issue_reads_done_and_an_open_one_is_left_alone() {
+  local dir out
+  dir=$(sweep_case sweepdone)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED' '3 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'In Progress'
+  seed_item "$dir" acme widget 3 'Done'
+  out=$(run_board "$dir" reconcile) || fail "the sweep failed: $out"
+  [ "$(item_status "$dir" acme widget 2)" = Done ] \
+    || fail "a closed issue left in 'In Progress' was not corrected to Done"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] \
+    || fail "an open issue's status was changed, and only a drift into Done should move one"
+  [ "$(item_status "$dir" acme widget 3)" = Done ] || fail "a correct item was disturbed"
+  [ "$(log_count "$dir" status)" = 1 ] \
+    || fail "expected exactly one status write, got $(log_count "$dir" status)"
+  assert_contains "$out" '1 status corrected' "the sweep did not report what it corrected"
+  pass "a closed issue reads Done without anyone intervening, and an open one is left where it is"
+}
+
+test_an_issue_absent_from_its_board_is_added() {
+  local dir out
+  dir=$(sweep_case sweepadd)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  out=$(run_board "$dir" reconcile) || fail "the sweep failed: $out"
+  assert_present "$dir/store/items/PVTI_I_acme_widget_2" "the missing issue was not added to the board"
+  [ "$(item_status "$dir" acme widget 2)" = Done ] \
+    || fail "an added closed issue was not also given its Done status"
+  assert_contains "$out" '1 added' "the sweep did not report the membership it added"
+  pass "an issue absent from its board is added, and a closed one lands on Done"
+}
+
+test_an_open_issue_never_reads_done() {
+  local dir
+  dir=$(sweep_case sweepreopen)
+  seed_tracker "$dir" '1 OPEN'
+  seed_item "$dir" acme widget 1 'Done'
+  run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] \
+    || fail "an open issue was left reading Done, got '$(item_status "$dir" acme widget 1)'"
+  pass "an open issue that drifted into Done is moved back out"
+}
+
+test_a_sweep_with_no_drift_writes_nothing() {
+  local dir
+  dir=$(sweep_case sweepidem)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'In Progress'
+  run_board "$dir" reconcile >/dev/null || fail "the first sweep failed"
+  : > "$dir/store/calls.log"
+  run_board "$dir" reconcile >/dev/null || fail "the second sweep failed"
+  [ "$(log_count "$dir" add)" = 0 ] || fail "a re-run added membership that was already there"
+  [ "$(log_count "$dir" status)" = 0 ] || fail "a re-run rewrote a status that was already right"
+  pass "a re-run with nothing drifted is a no-op, so the sweep is safe to run often"
+}
+
+test_a_project_with_no_declared_board_is_unaffected_silently() {
+  local dir out
+  dir=$(sweep_case sweepnoboard '')
+  seed_tracker "$dir" '1 OPEN'
+  out=$(run_board "$dir" reconcile) || fail "an undeclared board must not fail"
+  [ -z "$out" ] || fail "a project with no declared board should say nothing, got: $out"
+  assert_absent "$dir/store/calls.log" "a project with no declared board contacted GitHub"
+
+  # A home default exists, and the sweep still refuses to touch a board nobody
+  # declared for this project: the fallback drives lifecycle updates alone.
+  dir=$(sweep_case sweepnoboarddefault '')
+  printf '%s\n' "$BOARD_URL_FIXTURE" > "$dir/config/project-board"
+  seed_tracker "$dir" '1 OPEN'
+  out=$(run_board "$dir" reconcile) || fail "the sweep must not fail on the home default"
+  assert_absent "$dir/store/calls.log" "the sweep reached a board only the home default named"
+
+  dir=$(sweep_case sweepboardnone 'board=none')
+  seed_tracker "$dir" '1 OPEN'
+  out=$(run_board "$dir" reconcile) || fail "board=none must not fail"
+  assert_absent "$dir/store/calls.log" "a project declaring board=none was still swept"
+  pass "a project with no declared board is unaffected, silently, and the home default never feeds the sweep"
+}
+
+test_the_sweep_never_removes_an_item_a_human_added() {
+  local dir
+  dir=$(sweep_case sweepkeep)
+  seed_tracker "$dir" '1 OPEN'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 99 'In Progress'
+  seed_item "$dir" other thing 5 'Done'
+  run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  assert_present "$dir/store/items/PVTI_I_acme_widget_99" "an item with no matching tracker issue was removed"
+  [ "$(item_status "$dir" acme widget 99)" = 'In Progress' ] \
+    || fail "a hand-added item's status was rewritten"
+  [ "$(item_status "$dir" other thing 5)" = Done ] \
+    || fail "an item from another repository was touched"
+  pass "an item a human added by hand is never removed and never rewritten"
+}
+
+# The acceptance criterion this proves is the destructive one: the boards in this
+# fleet carry Priority, Size, Estimate and Start date, and a sweep that cleared
+# one while setting Status would lose the captain's own data with no way back.
+test_no_field_other_than_status_is_ever_written() {
+  local dir before after
+  dir=$(sweep_case sweepfields)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED' '3 CLOSED'
+  seed_item "$dir" acme widget 1 'Done' 'Priority=P1' 'Size=M' 'Estimate=3' 'Start date=2026-08-01'
+  seed_item "$dir" acme widget 2 'In Progress' 'Priority=P0' 'Size=L' 'Estimate=8' 'Start date=2026-07-14'
+  seed_item "$dir" acme widget 3 'Done' 'Priority=P2' 'Size=S' 'Estimate=1' 'Start date=2026-06-30'
+  before=$(for n in 1 2 3; do item_fields "$dir" acme widget "$n"; done)
+  run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  after=$(for n in 1 2 3; do item_fields "$dir" acme widget "$n"; done)
+  [ "$before" = "$after" ] || fail "the sweep changed a field other than Status.
+before:
+$before
+after:
+$after"
+  # Without this the comparison above would pass on a sweep that wrote nothing at
+  # all and therefore proved nothing.
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] && [ "$(item_status "$dir" acme widget 2)" = Done ] \
+    || fail "the sweep wrote no status, so the field-preservation check proved nothing"
+  pass "Priority, Size, Estimate and Start date survive a sweep that rewrites Status"
+}
+
+test_the_sweep_writes_only_membership_and_a_status_value() {
+  local dir names name
+  dir=$(sweep_case sweepsurface)
+  seed_tracker "$dir" '1 OPEN' '2 CLOSED' '3 CLOSED'
+  seed_item "$dir" acme widget 1 'Done'
+  seed_item "$dir" acme widget 2 'Todo'
+  run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  assert_present "$dir/store/graphql.log" "the sweep sent no GraphQL at all, so nothing was proven"
+  names=$(grep -oE '(add|update|create|delete|clear|archive|unarchive)ProjectV2[A-Za-z]*' \
+    "$dir/store/graphql.log" | LC_ALL=C sort -u)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      addProjectV2ItemById|updateProjectV2ItemFieldValue) ;;
+      *) fail "the sweep called '$name', which is outside membership and setting an existing option" ;;
+    esac
+  done <<EOF
+$names
+EOF
+  assert_contains "$names" 'addProjectV2ItemById' "the sweep added no membership, so nothing was proven"
+  assert_contains "$names" 'updateProjectV2ItemFieldValue' "the sweep set no status, so nothing was proven"
+  pass "the sweep's whole write surface is board membership and one Status value"
+}
+
+# Each failure mode is checked on its own, because they fail for different
+# reasons and a single generic case would let two of the three regress unseen.
+test_every_board_failure_mode_leaves_the_fleet_work_unaffected() {
+  local dir out rc mode
+  for mode in unreachable scope ratelimit; do
+    dir=$(sweep_case "sweepfail$mode")
+    seed_tracker "$dir" '1 OPEN' '2 CLOSED'
+    seed_item "$dir" acme widget 2 'Todo'
+    set +e
+    case "$mode" in
+      unreachable) out=$(FM_FAKE_GH_FAIL=graphql-board run_board "$dir" reconcile) ;;
+      scope) out=$(FM_FAKE_GH_FAIL=graphql-board FM_FAKE_GH_SCOPE_ERROR=1 run_board "$dir" reconcile) ;;
+      ratelimit) out=$(FM_FAKE_GH_FAIL=graphql-items FM_FAKE_GH_RATE_LIMIT=1 run_board "$dir" reconcile) ;;
+    esac
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "a $mode board must not fail the sweep"
+    case "$mode" in
+      scope) assert_contains "$out" "'project' scope" "a missing project scope was not named" ;;
+      ratelimit) assert_contains "$out" 'rate-limiting' "a rate limit was not named" ;;
+      *) assert_contains "$out" 'could not read' "an unreachable board was not reported" ;;
+    esac
+    [ "$(log_count "$dir" status)" = 0 ] || fail "a $mode board still had a status written to it"
+    [ "$(log_count "$dir" add)" = 0 ] || fail "a $mode board still had membership written to it"
+    [ "$(item_status "$dir" acme widget 2)" = Todo ] || fail "a $mode board's items were changed anyway"
+
+    # The fleet work itself is what must survive: the task's own tracker update
+    # still lands after the sweep failed, with nothing left broken behind it.
+    out=$(run_milestone "$dir" --milestone dispatched) || fail "a $mode board took the task's own update down with it: $out"
+    [ "$(comment_count "$dir")" = 1 ] || fail "a $mode board cost the task its tracker comment"
+  done
+  pass "an unreachable board, a missing scope, and a rate limit each report and leave the fleet's work untouched"
+}
+
+# A repository's REST open_issues_count INCLUDES pull requests. Firstmate used it
+# on 2026-08-04 to conclude an ArkNode-AI issue was missing from its board and
+# was wrong: membership was already complete at 76 of 76.
+test_the_sweep_reconciles_against_issues_not_the_pull_request_inflated_count() {
+  local dir
+  dir=$(sweep_case sweepcount)
+  seed_tracker "$dir" '1 OPEN' '2 OPEN' '3 OPEN'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'Todo'
+  seed_item "$dir" acme widget 3 'Todo'
+  FM_FAKE_GH_OPEN_ISSUES_COUNT=5 run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  [ "$(log_count "$dir" add)" = 0 ] \
+    || fail "the sweep invented missing membership from a count that includes pull requests"
+  ! grep -q '^REST ' "$dir/store/calls.log" 2>/dev/null \
+    || fail "the sweep read a repository's REST counters, which include pull requests"
+  pass "membership is reconciled against a real issue listing, never against a pull-request-inflated count"
+}
+
+test_the_sweep_walks_every_page_of_a_board_and_a_tracker() {
+  local dir
+  dir=$(sweep_case sweeppages)
+  seed_tracker "$dir" '1 OPEN' '2 OPEN' '3 OPEN' '4 OPEN' '5 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'Todo'
+  seed_item "$dir" acme widget 3 'Todo'
+  seed_item "$dir" acme widget 4 'Todo'
+  seed_item "$dir" acme widget 5 'Todo'
+  FM_FAKE_GH_PAGE_SIZE=2 run_board "$dir" reconcile >/dev/null || fail "the sweep failed"
+  [ "$(item_status "$dir" acme widget 5)" = Done ] \
+    || fail "drift on the last page was missed, so the walk stopped early"
+  [ "$(log_count "$dir" add)" = 0 ] \
+    || fail "items on later pages were treated as missing membership"
+  pass "the walk reaches the last page of both listings, so late drift is found and late items are not re-added"
+}
+
+test_a_board_with_no_done_option_is_reported_never_given_one() {
+  local dir out
+  dir=$(sweep_case sweepnooption)
+  seed_tracker "$dir" '1 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  out=$(FM_FAKE_GH_STATUS_OPTIONS='Todo,In Progress' run_board "$dir" reconcile) \
+    || fail "a board missing an option must not fail the sweep"
+  assert_contains "$out" 'no Done-class Status option' "the missing option was not reported"
+  assert_contains "$out" 'add one by hand' "the report did not say the option is the captain's to add"
+  [ "$(log_count "$dir" status)" = 0 ] || fail "a status was written with no matching option"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] || fail "the item was changed anyway"
+  ! grep -q 'updateProjectV2Field' "$dir/store/graphql.log" \
+    || fail "the sweep created a status option, which detaches every item already using one"
+  pass "a board with no Done option is reported and left alone, never given one"
+}
+
+test_the_change_limit_truncates_loudly() {
+  local dir out
+  dir=$(sweep_case sweeplimit)
+  seed_tracker "$dir" '1 CLOSED' '2 CLOSED' '3 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  seed_item "$dir" acme widget 2 'Todo'
+  seed_item "$dir" acme widget 3 'Todo'
+  out=$(run_board "$dir" reconcile --limit 1) || fail "the sweep failed"
+  [ "$(log_count "$dir" status)" = 1 ] \
+    || fail "the change limit did not bound the run, got $(log_count "$dir" status) writes"
+  assert_contains "$out" 'change limit' "the sweep truncated its work without saying so"
+  pass "the change limit bounds a sweep and says what it left undone"
+}
+
+test_a_dry_run_reports_the_drift_and_writes_nothing() {
+  local dir out
+  dir=$(sweep_case sweepdry)
+  seed_tracker "$dir" '1 CLOSED' '2 CLOSED'
+  seed_item "$dir" acme widget 1 'Todo'
+  out=$(run_board "$dir" reconcile --dry-run) || fail "the dry run failed"
+  assert_contains "$out" 'would set Done' "the dry run did not name the status it would correct"
+  assert_contains "$out" 'would add' "the dry run did not name the membership it would add"
+  [ "$(log_count "$dir" status)" = 0 ] || fail "a dry run wrote a status"
+  [ "$(log_count "$dir" add)" = 0 ] || fail "a dry run wrote membership"
+  [ "$(item_status "$dir" acme widget 1)" = Todo ] || fail "a dry run changed the board"
+  pass "a dry run rehearses the whole sweep and writes nothing"
+}
+
+test_the_board_library_exports_only_its_named_operations() {
+  local base surface added expected
+  base=$(forge_lib_exports "$ROOT/bin/fm-timeout-lib.sh")
+  surface=$(forge_lib_exports "$ROOT/bin/fm-timeout-lib.sh" "$ROOT/bin/fm-board-lib.sh")
+  added=$(LC_ALL=C comm -13 <(printf '%s\n' "$base") <(printf '%s\n' "$surface") \
+    | grep -v '^_' || true)
+  expected=$(printf '%s\n' \
+    fm_board_issue_id \
+    fm_board_issue_parent \
+    fm_board_item_add \
+    fm_board_item_status_set \
+    fm_board_items_page \
+    fm_board_read \
+    fm_board_registry_board \
+    fm_board_registry_board_for_tracker \
+    fm_board_registry_scan \
+    fm_board_tracker_issues_page \
+    fm_board_url_parse | LC_ALL=C sort)
+  [ "$added" = "$expected" ] || fail "bin/fm-board-lib.sh's exported surface is no longer its allowlist.
+expected:
+$expected
+got:
+$added"
+  pass "the board library exports its named operations, and its two writes are the whole write surface"
+}
+
 test_first_milestone_creates_one_comment
 test_the_comment_carries_nothing_fleet_private
 test_repeated_milestones_edit_exactly_one_comment
@@ -1464,6 +1965,21 @@ test_the_whole_fanout_is_bounded_not_just_each_call
 test_an_unknown_milestone_is_a_usage_error
 test_the_merge_path_posts_its_own_milestones
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable
+test_a_closed_issue_reads_done_and_an_open_one_is_left_alone
+test_an_issue_absent_from_its_board_is_added
+test_an_open_issue_never_reads_done
+test_a_sweep_with_no_drift_writes_nothing
+test_a_project_with_no_declared_board_is_unaffected_silently
+test_the_sweep_never_removes_an_item_a_human_added
+test_no_field_other_than_status_is_ever_written
+test_the_sweep_writes_only_membership_and_a_status_value
+test_every_board_failure_mode_leaves_the_fleet_work_unaffected
+test_the_sweep_reconciles_against_issues_not_the_pull_request_inflated_count
+test_the_sweep_walks_every_page_of_a_board_and_a_tracker
+test_a_board_with_no_done_option_is_reported_never_given_one
+test_the_change_limit_truncates_loudly
+test_a_dry_run_reports_the_drift_and_writes_nothing
+test_the_board_library_exports_only_its_named_operations
 test_the_shared_contracts_have_exactly_one_owner
 test_the_forge_library_exports_only_its_named_operations
 printf '\nall fm-issue-writeback tests passed\n'

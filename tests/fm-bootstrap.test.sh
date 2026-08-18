@@ -1389,6 +1389,65 @@ test_network_phases_record_per_step_elapsed_times() {
   pass "bootstrap: each deferred network phase, secondmate, and clone records its own elapsed time"
 }
 
+# A board is decoration over work that already exists, so a board firstmate
+# cannot reach must cost the fleet nothing at all: the rest of the network phase
+# still runs and still reports, and the session start is not handed a diagnostic
+# about a transient host it will simply retry at its next interval.
+test_a_board_problem_never_becomes_a_fleet_problem() {
+  local case_dir fakebin log out rc
+  case_dir="$TMP_ROOT/board-sweep"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state" "$case_dir/home/data" "$case_dir/home/projects"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' "$$" > "$case_dir/home/state/.lock"
+  {
+    printf '# Projects\n\n'
+    printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget board=https://github.com/users/captain/projects/7] - fixture (added 2026-08-18)\n'
+  } > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # Every board call refuses. `gh auth status` still succeeds, so the only thing
+  # broken in this run is the board.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  exit 0
+fi
+if [ "${1:-}" = api ] && [ "${2:-}" = graphql ]; then
+  echo "gh: the board is unreachable" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh"
+  fm_git_init_commit "$case_dir/home/projects/alpha"
+  fm_git_add_origin "$case_dir/home/projects/alpha" "$case_dir/alpha-origin"
+
+  log="$case_dir/timings.tsv"
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ FM_TIMING_LOG="$log" FM_TIMING_EPOCH_MS=0 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "an unreachable board failed the whole network phase"
+  assert_timing_record "$log" phase board-sweep '' "the board sweep never ran"
+  assert_timing_record "$log" phase fleet-sync '' "the clone refresh was lost when the board refused"
+  assert_not_contains "$out" "BOARD_SWEEP:" "a transient board failure became a session-start diagnostic"
+  assert_present "$case_dir/home/state/.board-sweep" "the sweep did not record its interval"
+
+  # And a home whose projects declare no board contacts no host at all, which is
+  # every home until the captain adds the token by hand.
+  rm -rf "$case_dir/home/state/.board-sweep"
+  printf -- '- widget [no-mistakes tracker=github:github.com/acme/widget] - fixture (added 2026-08-18)\n' \
+    >> "$case_dir/home/data/projects.md.undeclared"
+  mv "$case_dir/home/data/projects.md.undeclared" "$case_dir/home/data/projects.md"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_NETWORK=only \
+    FM_BOOTSTRAP_NETWORK_LOCK_PID=$$ "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_absent "$case_dir/home/state/.board-sweep" "a home that declares no board still swept one"
+  pass "bootstrap: an unreachable board costs the fleet nothing, and an undeclared home sweeps nothing"
+}
+
 test_tasks_axi_verdict_handoff_is_consumed_once() {
   local case_dir fakebin log out
   case_dir="$TMP_ROOT/tasks-axi-handoff"
@@ -1573,6 +1632,7 @@ test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times
+test_a_board_problem_never_becomes_a_fleet_problem
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_backend_mismatch
