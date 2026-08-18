@@ -471,7 +471,7 @@ function safeText(value, limit = 4_000) {
     .slice(0, limit);
 }
 
-function usageEnvelope({ available, reason, collection, source, tasks, stale = false }) {
+function usageEnvelope({ available, reason, collection, source, tasks, projects, stale = false }) {
   return {
     available: Boolean(available),
     reason: reason ? safeText(reason) : null,
@@ -479,7 +479,26 @@ function usageEnvelope({ available, reason, collection, source, tasks, stale = f
     source: source ? safeText(source, 64) : null,
     stale: Boolean(stale),
     tasks: tasks && typeof tasks === "object" ? tasks : {},
+    projects: projects && typeof projects === "object" ? projects : {},
   };
+}
+
+// The dashboard reads both per-task and per-project rollups. Both share the
+// same numeric fields and the same rule that a missing or malformed value is
+// omitted rather than read as zero.
+function usageTotalsFromRow(row) {
+  const totals = {};
+  for (const field of USAGE_FIELDS) {
+    if (typeof row[field] === "number" && Number.isFinite(row[field]) && row[field] >= 0) totals[field] = row[field];
+  }
+  if (typeof row?.cost?.estimated === "number" && Number.isFinite(row.cost.estimated)) {
+    totals.cost = {
+      estimated: row.cost.estimated,
+      currency: typeof row.cost.currency === "string" ? safeText(row.cost.currency, 16) : null,
+      unpriced_events: typeof row.cost.unpriced_events === "number" ? row.cost.unpriced_events : null,
+    };
+  }
+  return totals;
 }
 
 function nowIso() {
@@ -847,6 +866,7 @@ class HistoryState {
         collection: "disabled",
         source: null,
         tasks: {},
+        projects: {},
       });
     }
     try {
@@ -858,6 +878,7 @@ class HistoryState {
         collection: "absent",
         source: null,
         tasks: {},
+        projects: {},
       });
     }
     const usageDb = path.join(this.config.dataDir, USAGE_DB_FILE);
@@ -870,11 +891,12 @@ class HistoryState {
         collection: "absent",
         source: null,
         tasks: {},
+        projects: {},
       });
     }
-    let document;
+    let taskDocument;
     try {
-      document = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "task", "--limit", String(this.config.historyLimit)], {
+      taskDocument = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "task", "--limit", String(this.config.historyLimit)], {
         timeoutMs: this.config.timeoutMs,
         env: { ...process.env, FM_HOME: this.config.fmHome },
         register: (child, previous) => {
@@ -889,33 +911,52 @@ class HistoryState {
         collection: "operational",
         source: null,
         tasks: {},
+        projects: {},
       });
     }
-    if (!document || document.schema !== USAGE_SCHEMA || !Array.isArray(document.rows)) {
+    if (!taskDocument || taskDocument.schema !== USAGE_SCHEMA || !Array.isArray(taskDocument.rows)) {
       return usageEnvelope({
         available: false,
         reason: "the token usage report is not a supported schema version",
         collection: "operational",
         source: null,
         tasks: {},
+        projects: {},
       });
     }
     const tasks = {};
-    for (const row of document.rows) {
+    for (const row of taskDocument.rows) {
       const key = typeof row?.key === "string" ? row.key.trim() : "";
       if (!key || !TASK_ID_PATTERN.test(key)) continue;
-      const totals = {};
-      for (const field of USAGE_FIELDS) {
-        if (typeof row[field] === "number" && Number.isFinite(row[field]) && row[field] >= 0) totals[field] = row[field];
+      tasks[key] = usageTotalsFromRow(row);
+    }
+    let projectDocument;
+    try {
+      projectDocument = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "project", "--limit", String(this.config.historyLimit)], {
+        timeoutMs: this.config.timeoutMs,
+        env: { ...process.env, FM_HOME: this.config.fmHome },
+        register: (child, previous) => {
+          if (child) this.activeChild = child;
+          else if (this.activeChild === previous) this.activeChild = null;
+        },
+      });
+    } catch (error) {
+      return usageEnvelope({
+        available: false,
+        reason: `token usage could not be read (${safeText(error.kind || "failed")})`,
+        collection: "operational",
+        source: null,
+        tasks,
+        projects: {},
+      });
+    }
+    const projects = {};
+    if (projectDocument && projectDocument.schema === USAGE_SCHEMA && Array.isArray(projectDocument.rows)) {
+      for (const row of projectDocument.rows) {
+        const key = typeof row?.key === "string" ? row.key.trim() : "";
+        if (!key) continue;
+        projects[key] = usageTotalsFromRow(row);
       }
-      if (typeof row?.cost?.estimated === "number" && Number.isFinite(row.cost.estimated)) {
-        totals.cost = {
-          estimated: row.cost.estimated,
-          currency: typeof row.cost.currency === "string" ? safeText(row.cost.currency, 16) : null,
-          unpriced_events: typeof row.cost.unpriced_events === "number" ? row.cost.unpriced_events : null,
-        };
-      }
-      tasks[key] = totals;
     }
     return usageEnvelope({
       available: true,
@@ -923,6 +964,7 @@ class HistoryState {
       collection: "ready",
       source: USAGE_SCHEMA,
       tasks,
+      projects,
     });
   }
 

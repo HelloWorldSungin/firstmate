@@ -71,6 +71,7 @@ const RATES_SCHEMA = "fm-usage-rates.v1";
 // task with many resumed sessions cannot grow an unbounded durable record.
 const MAX_TASK_SESSIONS = 64;
 const MAX_BURN_BUCKETS = 168;
+const SUPERVISION_PROJECT = "(firstmate supervision)";
 
 const USAGE = `usage: fm-usage.mjs ingest [--home <dir>] [--db <path>]
                           [--claude-root <dir>] [--codex-root <dir>]
@@ -100,6 +101,202 @@ Environment:
   FM_USAGE_RATES           cost-rate file (default: <home>/config/usage-rates.json)
   FM_USAGE_NOW             ISO-8601 UTC stamp used instead of the wall clock
 `;
+
+// ---------------------------------------------------------------------------
+// Project registry and path-based attribution
+// ---------------------------------------------------------------------------
+//
+// A session may run in a task worktree that is no longer held by a live task
+// and was never bound durably. When the working directory is still a git
+// checkout whose origin matches a registered project, the event can be
+// credited to that project without inventing a task identity. The project
+// registry is the captain's data/projects.md; the match is against the
+// checkout's actual remote URL, not against path-shaped strings, so a
+// directory that merely looks like a project cannot create a phantom row.
+
+function normalizeTrackerUrl(value) {
+  const text = cleanToken(value, 240);
+  if (!text) return null;
+  const colon = text.indexOf(":");
+  if (colon <= 0) return null;
+  return text.slice(colon + 1);
+}
+
+function loadProjectRegistry(home) {
+  const file = path.join(home, "data", "projects.md");
+  const byUrl = new Map();
+  const names = new Set();
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return { byUrl, names };
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("- ")) continue;
+    const nameMatch = /^- (\S+)/.exec(line);
+    if (!nameMatch) continue;
+    const name = cleanToken(nameMatch[1], 120);
+    if (!name) continue;
+    names.add(name);
+    const trackerIndex = line.indexOf("tracker=");
+    if (trackerIndex < 0) continue;
+    let tracker = line.slice(trackerIndex + 8);
+    const endIndex = tracker.search(/[\s\]]/);
+    if (endIndex >= 0) tracker = tracker.slice(0, endIndex);
+    const normalized = normalizeTrackerUrl(tracker);
+    if (!normalized || normalized === "none") continue;
+    byUrl.set(normalized, name);
+  }
+  return { byUrl, names };
+}
+
+function findGitRoot(cwd) {
+  let current = path.resolve(cwd);
+  while (true) {
+    const gitPath = path.join(current, ".git");
+    try {
+      const info = fs.statSync(gitPath);
+      if (info.isDirectory() || info.isFile()) return current;
+    } catch {}
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function readGitConfig(gitRoot) {
+  let configPath = path.join(gitRoot, ".git", "config");
+  try {
+    const gitDot = fs.readFileSync(path.join(gitRoot, ".git"), "utf8").trim();
+    const match = /^gitdir:\s*(.+)$/m.exec(gitDot);
+    if (match) configPath = path.resolve(gitRoot, match[1].trim(), "config");
+  } catch {
+    // .git is a directory; configPath is already correct.
+  }
+  try {
+    return fs.readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function parseGitRemote(configText, remoteName = "origin") {
+  const lines = configText.split("\n");
+  let inSection = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const section = /^\[remote "([^"]+)"\]\s*$/.exec(line);
+    if (section) {
+      inSection = section[1] === remoteName;
+      continue;
+    }
+    if (inSection) {
+      const url = /^url\s*=\s*(.+?)\s*$/.exec(line);
+      if (url) return url[1].trim();
+    }
+  }
+  return null;
+}
+
+function normalizeGitUrl(url) {
+  if (!url) return null;
+  let text = url.trim().replace(/\.git$/, "");
+  if (text.startsWith("https://") || text.startsWith("http://")) {
+    const withoutScheme = text.slice(text.indexOf("://") + 3);
+    const slash = withoutScheme.indexOf("/");
+    if (slash < 0) return null;
+    const host = withoutScheme.slice(0, slash).replace(/:\d+$/, "");
+    return `${host}${withoutScheme.slice(slash)}`;
+  }
+  if (text.startsWith("git@")) {
+    const rest = text.slice(4);
+    const colon = rest.indexOf(":");
+    if (colon < 0) return null;
+    const host = rest.slice(0, colon).replace(/:\d+$/, "");
+    return `${host}/${rest.slice(colon + 1)}`;
+  }
+  if (text.startsWith("ssh://")) {
+    let rest = text.slice(6);
+    if (rest.startsWith("git@")) rest = rest.slice(4);
+    const slash = rest.indexOf("/");
+    if (slash < 0) return null;
+    const host = rest.slice(0, slash).replace(/:\d+$/, "");
+    return `${host}${rest.slice(slash)}`;
+  }
+  return null;
+}
+
+function resolveProjectAt(registry, homeRoot, cwd, { allowSupervision = false } = {}) {
+  if (!cwd) return null;
+  const gitRoot = findGitRoot(cwd);
+  if (!gitRoot) return null;
+  const config = readGitConfig(gitRoot);
+  if (!config) return null;
+  const remote = parseGitRemote(config, "origin");
+  const normalized = normalizeGitUrl(remote);
+  if (!normalized || !registry.byUrl.has(normalized)) return null;
+  const project = registry.byUrl.get(normalized);
+  if (allowSupervision && path.resolve(cwd) === homeRoot) {
+    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
+  }
+  return { project, method: "project_path", confidence: "low" };
+}
+
+function candidateProjectFromClonePath(homeRoot, cwd) {
+  const resolved = path.resolve(cwd);
+  if (resolved === homeRoot) return "firstmate";
+  const projectsPrefix = path.join(homeRoot, "projects") + path.sep;
+  if (resolved.startsWith(projectsPrefix)) {
+    const relative = resolved.slice(projectsPrefix.length);
+    const name = relative.split(path.sep)[0];
+    return name || null;
+  }
+  // Treehouse pool copies follow .treehouse/<name>-<hash>/<n>/<name>[/<subpath>].
+  const treehouseMatch = /\/\.treehouse\/[^/]+-\w+\/\d+\/([^/]+)/.exec(resolved);
+  if (treehouseMatch) return treehouseMatch[1];
+  return null;
+}
+
+function buildPathResolver(home, registry) {
+  const cache = new Map();
+  const homeRoot = path.resolve(home);
+  return {
+    // For events with no task identity: resolve the directory to a project
+    // name, or to the supervision category when the directory IS the firstmate
+    // home and no task claims the session.
+    fromPath(cwd) {
+      if (!cwd) return null;
+      const key = `path:${cwd}`;
+      if (cache.has(key)) return cache.get(key);
+      const result = resolveProjectAt(registry, homeRoot, cwd, { allowSupervision: true });
+      cache.set(key, result);
+      return result;
+    },
+    // For events already attributed to a task: normalize the worktree path to
+    // the registered project name. The supervision category never applies here
+    // because a task binding is the distinguishing signal. Git remote is tried
+    // first; when a clone uses an SSH alias that does not match the registry's
+    // canonical host, the directory name under projects/ or the treehouse pool
+    // is accepted only if it names a real registered project.
+    fromWorktree(worktree) {
+      if (!worktree) return null;
+      const key = `worktree:${worktree}`;
+      if (cache.has(key)) return cache.get(key);
+      let project = null;
+      const remote = resolveProjectAt(registry, homeRoot, worktree, { allowSupervision: false });
+      if (remote) {
+        project = remote.project;
+      } else {
+        const candidate = candidateProjectFromClonePath(homeRoot, worktree);
+        if (candidate && registry.names.has(candidate)) project = candidate;
+      }
+      cache.set(key, project);
+      return project;
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -889,7 +1086,7 @@ function matchTasksByWorktree(db, cwd, atIso, fromIso = null, { liveOnly = false
 
 // Attribution is derived, so it is recomputed from scratch on every ingest and
 // never drifts from the bindings and task records it is built on.
-function attributeEvents(db) {
+function attributeEvents(db, home) {
   const update = db.prepare(`UPDATE usage_event
     SET task_id = ?, project = ?, attribution_method = ?, attribution_confidence = ?
     WHERE event_id = ?`);
@@ -900,6 +1097,8 @@ function attributeEvents(db) {
   const events = db
     .prepare("SELECT event_id, harness, session_id, cwd, occurred_at FROM usage_event")
     .all();
+  const registry = loadProjectRegistry(home);
+  const resolvePath = buildPathResolver(home, registry);
   db.exec("BEGIN");
   try {
     // The reset belongs inside the same transaction as the re-derivation. A
@@ -912,14 +1111,30 @@ function attributeEvents(db) {
     for (const event of events) {
       const binding = bindings.get(`${event.harness}\u001f${event.session_id}`);
       if (binding) {
-        update.run(binding.task_id, binding.project, "session_binding", "high", event.event_id);
+        // The binding's own project field is the task metadata's project,
+        // which is currently a clone path. Normalize it to the registered
+        // project name when the worktree resolves, but keep the task identity.
+        const project = resolvePath.fromWorktree(binding.worktree || event.cwd) || binding.project;
+        update.run(binding.task_id, project, "session_binding", "high", event.event_id);
         continue;
       }
       const candidates = matchTasksByWorktree(db, event.cwd, event.occurred_at);
       if (candidates.length === 1) {
-        update.run(candidates[0].task_id, candidates[0].project, "worktree_window", "medium", event.event_id);
+        const task = candidates[0];
+        const project = resolvePath.fromWorktree(task.worktree) || task.project;
+        update.run(task.task_id, project, "worktree_window", "medium", event.event_id);
       } else if (candidates.length > 1) {
         update.run(null, null, "ambiguous", "none", event.event_id);
+        continue;
+      }
+      // No binding and no single task claims this worktree. If the directory
+      // itself resolves to a registered project through its git origin, credit
+      // the event to that project while leaving task_id null. A path that
+      // merely looks like a project cannot create a phantom row because the
+      // match is against the registry, not the path string.
+      const resolved = resolvePath.fromPath(event.cwd);
+      if (resolved) {
+        update.run(null, resolved.project, resolved.method, resolved.confidence, event.event_id);
       }
     }
     db.exec("COMMIT");
@@ -1277,7 +1492,7 @@ async function main() {
           return fallback;
         }
       };
-      stage("attribution", () => attributeEvents(db), null);
+      stage("attribution", () => attributeEvents(db, paths.home), null);
       const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
         rate_version: null,
         currency: null,

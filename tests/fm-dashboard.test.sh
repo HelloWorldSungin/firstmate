@@ -2317,7 +2317,9 @@ SH
   cat > "$runtime/bin/fm-usage.mjs" <<SH
 #!/usr/bin/env node
 import fs from "node:fs";
-const marker = "$case_root/read-once";
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+const marker = "$case_root/read-once-" + by;
 if (fs.existsSync(marker)) {
   process.stderr.write("database is locked\n");
   process.exit(1);
@@ -2325,7 +2327,7 @@ if (fs.existsSync(marker)) {
 fs.writeFileSync(marker, "");
 process.stdout.write(JSON.stringify({
   schema: "fm-usage-report.v1",
-  by: "task",
+  by: by,
   rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
 }) + "\n");
 SH

@@ -322,6 +322,7 @@ VIEWS='needs|view-needs|Needs you|Needs you
 fleet|view-fleet|Fleet|Live board;Fleet
 backlog|view-backlog|Backlog|Queue · read-only;Backlog
 history|view-history|History|Delivered · newest first;History
+usage|view-usage|Usage|Tokens · by project;Usage
 knowledge|view-knowledge|Knowledge|Knowledge'
 
 DEFAULT_WIDTHS='390x844 899x844 900x844 1440x900'

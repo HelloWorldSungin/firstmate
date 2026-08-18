@@ -13,7 +13,7 @@
 // Unknown or malformed hashes resolve to the Needs you view, never to a blank
 // page: an operator's stale bookmark must land somewhere real.
 
-export const VIEWS = ["needs", "fleet", "backlog", "history", "knowledge"];
+export const VIEWS = ["needs", "fleet", "backlog", "history", "usage", "knowledge"];
 export const DEFAULT_VIEW = "needs";
 export const TASK_VIEW = "task";
 
