@@ -67,31 +67,45 @@ When results exist, the block replaces the current instruction-only Brain sectio
 Why this seam: the brain-presence branch already ships there and degrades to inert in production today; the task title and description are a real query, which session start lacks; the cost (measured 242-879 tokens of output per search at the bounds tested) is paid only when work is commissioned; and the moment is exactly when the knowledge would otherwise be re-derived at worker-investigation cost.
 
 Bounds: the embedded block is capped at roughly 900 tokens (the measured `--limit 5 --excerpt 400` shape); the exact flags are implementation detail owned by `fm-brief.sh` when this lands.
+The wait is pinned too, with an explicit `--timeout` of 10 seconds rather than the wrapper's 60-second default, following the dashboard's existing call site: 10 clears the measured ~8.6s worst case with margin, and a hung endpoint must not charge a minute to a dispatch path that costs nothing today.
 
 ### D2. A recall audit trail is a prerequisite, built into this design, sequenced first
 
-One append per `fm-recall.sh` invocation that actually read a resolved corpus, into a gitignored state file: timestamp, caller seam, query hash, exit state, result count.
-An invocation that resolved no corpus to read appends nothing, which is what keeps the trail inert on a home with no brain: there, every invocation fails its source, so the file is never created and the home produces exactly what it produces today.
-The wrapper already draws that line - it omits its answer when no corpus was read - so the trail binds to that condition rather than inventing a second notion of a successful read.
+One append per `fm-recall.sh` invocation in a home whose local index is present, into a gitignored state file: timestamp, caller seam, query hash, exit state, result count.
+
+The append condition is local brain presence - the same resolve-the-paths-and-find-the-PGlite-directory predicate `bin/fm-brief.sh` already gates its Brain section on - evaluated before the read and never from the read's outcome.
+Both of the properties that matter then hold structurally, rather than being asserted over a list of cases someone had to think of first:
+
+- A home with no local index appends nothing, because the predicate is false there.
+  That holds however an invocation turns out and whatever else that home can reach, including the supported configuration where a fleet main brain is reachable from a home with no brain of its own.
+- Every invocation in a home that does have an index appends, so the exit state carries information.
+  Ran-and-its-read-failed is a record; never-ran is the absence of one; keying the append on success instead would have collapsed those two into the same silence and left the exit-state field constant.
+
+A second record kind, owned by `/stow` rather than by the wrapper, carries D5's conclusion; it is specified under D5's third constraint below.
 
 - **Query hash, never query text.**
   This is a decision, not an omission: a query can carry the substance of what someone was working on, and brain content is private to a home.
   What the hash buys is that free-text queries never land in a file on disk, so no person, backup, or later tool that ingests state files learns what was asked by reading the trail.
   What it does not buy is resistance to a guess, because the hash is unkeyed: anyone who can propose a candidate query can hash it and see whether that digest is already in the trail.
-  What that costs differs by seam, so it is stated for each of the four seams this decision names rather than once for all of them:
-  - Brief-scaffold queries are the task's own words, and task titles are readable from the backlog, so the candidate set is small and cheap to test - the weakest of the four, and the one D6's trigger reads, which is worth saying plainly instead of averaging away.
+  What that costs differs by seam, so it is stated for each of the five seam values this decision names rather than once for all of them:
+  - Brief-scaffold queries are the task's own words, and task titles are readable from the backlog, so the candidate set is small and cheap to test - worth saying plainly instead of averaging away.
   - Dashboard queries are operator free text with no enumerable source to draw candidates from, so the hash withholds real content there.
   - Stow queries are the candidate learning's own content (D5), so a guess has to reproduce that text before the digest can confirm it.
   - Eval queries come from an evaluation set file, and the default set is tracked in this repository, so its questions are already public and the hash is protecting nothing that was private.
+  - Undeclared queries are ad-hoc, and include firstmate's own pre-commission consult, whose words come from the investigation being weighed and land close to the task title it becomes - so the backlog is again a candidate list, which makes this value and brief-scaffold the two weakest.
   The price, stated per seam above rather than once for all of them, is that the trail records outcomes rather than content, most weakly at the brief scaffold.
 - **The caller-seam field must distinguish** brief-scaffold, stow, dashboard, and eval invocations, or the trail cannot measure adoption, which is its purpose.
-  Two of those four already invoke `bin/fm-recall.sh` today and pass no seam identifier: the dashboard server's operator search and the eval harness.
+  It carries a fifth value meaning exactly no seam was declared, which is what an ad-hoc wrapper call from a conversation records - including firstmate's own pre-commission consult, the recall D6's trigger has to count and no mounted seam produces.
+  Every mounted seam declares its value; undeclared is for calls no mount owns, never a default a mount is allowed to fall back to.
+  If undeclared ever dominates the trail, seam tagging has stopped measuring what it exists to measure, and that is a finding to surface rather than a state to live with.
+  Two of the four mounted values already invoke `bin/fm-recall.sh` today and pass no seam identifier: the dashboard server's operator search and the eval harness.
   Satisfying this field therefore means editing those two call sites or adding a wrapper-side seam declaration they adopt, and the implementing task plans for those files rather than discovering them mid-flight.
 - **The trail must make pre-commission recall computable**: joined against task creation times, it must answer "was a recall run before this investigation was commissioned" (see D6 for why this specific question matters).
 - **Who reads it, and when**: firstmate reviews the trail one week after the mount lands and again at 30 days.
-  On a home whose brain resolves, no seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
+  On a home whose brain resolves and whose wrapper passes the D3 detection, no seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
+  Drop either condition and the silence is the design working: a home with no index never appends, and a home with a pre-contract wrapper correctly mounts nothing (D3).
   See D6 for the pre-commission reading and its trigger.
-- Without a brain the trail is empty, taken seam by seam across the four above: D1 and D4 do not run at all, and the callers that still invoke the wrapper - D5's per-item `/stow` searches, plus the dashboard and eval seams that already call it today independently of this design - each fail their source and so append nothing.
+- Without a local index the trail is empty by construction rather than by enumeration: the append predicate is false, so no seam can write to it, and no list of which callers still run has to be right for that to hold.
   Wherever it does hold records, it must never block or slow the read path it measures.
 
 Without this trail, neither the mount's adoption nor its effect on re-derivation can ever be demonstrated - the loop's brokenness would stay unmeasurable one level up.
@@ -100,7 +114,8 @@ Without this trail, neither the mount's adoption nor its effect on re-derivation
 
 The brain cannot signal a miss, so an unframed embed would feed plausible irrelevant pages into every commissioned brief as trusted context - worse than today's unread brain.
 
-The gate is **positive detection of behavior**, per home, at scaffold time: the installed `fm-recall.sh` must be observed to emit a framed nearest-or-none answer and per-result provenance carrying capture date and source state.
+The gate is **positive detection of behavior**, per home, at scaffold time: the installed `fm-recall.sh` must be observed to emit a framed nearest-or-none answer and per-result provenance fields for capture date and source state.
+Detection tests that those fields are present in the emitted document, never that they hold particular values: a null capture date and an unknown source state are supported outputs of the landed contract, produced by a home with an index but no capture outbox, and a non-null test would refuse to mount there while making it look identical to a home running an old wrapper - a false negative in the safety direction.
 Absence of the contract means do not mount; the fallback is today's instruction-only Brain section - shipped behavior, not a new degraded mode.
 The gate is deliberately not a version check or config flag: it is true per home while secondmates update independently, it degrades to known behavior, and it closes itself under a rollback.
 The concrete binding, now that `fm-gbrain-answer-protocol` has landed: the gate detects the installed wrapper emitting the `fm-recall.v1` document with its answer framing and per-result provenance present.
@@ -130,7 +145,9 @@ Concretely:
 
 1. A decision not to admit a learning rests on an actual content comparison of the candidate against the new fact - never a hit count, a score, or "search returned something".
 2. Symmetrically, a returned page is a candidate to read, never by itself proof an equivalent note exists.
-3. Every case where a `/stow` read leads to something not being captured is recorded through the D2 trail: seam, result count, and the conclusion reached.
+3. Every case where a `/stow` read leads to something not being captured is recorded through the D2 trail, as a second append that `/stow` itself writes after deciding, carrying a bounded outcome value and the read it followed.
+   The two records have two owners and stay independent: the wrapper owns "a read happened", `/stow` owns "here is what I concluded", and neither is widened to carry the other's datum, because the wrapper returns before the content comparison that produces the conclusion and cannot know it.
+   A read record with no conclusion record therefore means exactly that - a read whose conclusion was never written - and is never read as evidence that nothing was skipped; absence of a record must not become a record of absence.
 
 It is ungated by D3 for the same reason D4 is: constrained to advisory-with-comparison, these results are never trusted context.
 
@@ -147,6 +164,7 @@ The recorded instance is from 2026-08-19, in this project: two investigations in
 D4 narrows the window from "discovered afterwards" to "flagged at scaffold time, before tokens are spent", but the commission decision is already made by then.
 
 The revisit trigger, concrete rather than "with data": if the D2 trail over its first 30 days shows a pre-commission recall for fewer than half of commissioned investigations, this decision reopens - with the skill option, or a seam not yet found.
+The record it counts is an undeclared-seam recall predating a task's creation time, which is why D2's seam vocabulary carries that fifth value: the consult this decision leaves as prose is an ad-hoc wrapper call, so no mounted seam can produce the evidence, and a brief-scaffold record could never serve because that search runs after the commission decision.
 
 ### D7. The split-by-kind rule conflicted with itself, and this design resolves it - with a third category the captain did not name
 
@@ -224,7 +242,7 @@ This ADR adopts that target as the destination of the tranche system and holds t
 - Brief-scaffold search: measured 242-879 tokens of output per commissioned task, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
 - Nearest-prior-work line: one stdout line at scaffold time.
 - `/stow` round-trip: sub-second local searches per candidate item processed, so the count is proportional to what a pass admits and prunes rather than fixed (D5).
-- Audit trail: one local file append per recall that read a corpus; no context cost.
+- Audit trail: one local file append per recall in a home with a local index, plus one more per `/stow` conclusion (D5); no context cost.
 - Always-cost added to any session: **zero** - of the four seams listed above, each is paid only when its own trigger fires, and none charges the startup files or the per-session context unconditionally.
 
 ### The net, honestly
@@ -274,10 +292,10 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
 
 | Mount | Brain absent | Brain slow or degraded | Answer-protocol contract absent |
 | --- | --- | --- | --- |
-| D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | Wrapper timeout bounds the wait (60s default; measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
+| D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | The pinned 10s `--timeout` bounds the wait (measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
 | D4 nearest-prior-work line | Not printed | Same bounds as D1; absence of the line is silence about proximity, never a claim | Prints regardless (advisory; not gated) |
 | D5 stow round-trip | `/stow` reaches the same outcome as today, having newly done and failed work: its per-candidate-item searches fail their source, after which the advisory step is skipped and capture proceeds | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
-| D2 audit trail | Appends nothing - no invocation reads a corpus here, so nothing records and the trail file is never created | Appends locally; never blocks or slows the read it records | Independent of it |
+| D2 audit trail | Appends nothing - the append predicate is "local index present", which is false here, so no seam can write and the file is never created | Appends with whatever exit state the run produced, so a slow or failed read is a record rather than a silence; never blocks or slows the read it records | Independent of it |
 
 ## Consequences
 
@@ -289,7 +307,9 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
 - The recurring defect this interview kept meeting, in three different coats, is a positive standing without evidence: a search hit as a verdict, a capability assumed present, a check defaulting to "fine".
   The one-sentence rule that guards all of them: the brain may tell you where to look; it may not tell you that you have looked.
   It then appeared a fourth time, in this ADR's own prose - in the sentences written to fix the first three, which asserted properties over a set of seams nobody had enumerated: "the trail holds those failed invocations and nothing else", "the one difference the check found", "queries derive from task titles".
-  Each was false exactly at the seams left uncounted, which is the most transferable lesson here and the general form of the same defect: a claim about a set is evidence only when the set is on the page, so scope it to an enumeration the reader can see or do not make it.
+  Each was false exactly at the seams left uncounted.
+  It then appeared once more inside the repair itself: the option chosen to restore D2's inert property asserted that a brainless home appends nothing, which is a universal over a configuration set nobody had enumerated, and it was false wherever a fleet main brain is reachable from a home with no local index of its own.
+  That is the most transferable lesson of this design, and it tightens the rule rather than restating it: a claim about a set must be structurally true or explicitly enumerated, because the case you did not think of is by definition the one you cannot think of - which is why D2's append condition is now a predicate that makes the property hold rather than a sentence that asserts it.
 - The process rule this design paid a round to learn: a review finding that collides with a decided property escalates to that decision's owner and is never applied as a correction.
   A round of review here did exactly that, trading away D2's decided "inert without a brain" for a more accurate description of an unspecified detail, and the finding's apparent correctness is precisely what made the override invisible - a wrong decision is arguable, whereas a right-looking correction is not read as a decision at all.
 - Implementation is follow-up tracked work, per item: the audit trail (first, and carrying the seam declaration at the dashboard and eval call sites that D2 names), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
