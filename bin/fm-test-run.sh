@@ -1004,6 +1004,13 @@ families_for_changed_path() {
       printf '%s\n' secondmate
       printf '%s\n' live-harness-optin
       ;;
+    # The recorded-pin comparer has two consuming families: its own contract
+    # suite, and session start, which parses its verdict line and branches on
+    # its exit codes.
+    bin/fm-gbrain-pin-check.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' session-bootstrap
+      ;;
     # The shared wall-clock bound: brain retrieval owns its portable regression,
     # and the forge observation and write-back paths are its other consumers.
     bin/fm-timeout-lib.sh)

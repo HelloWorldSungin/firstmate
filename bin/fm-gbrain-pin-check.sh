@@ -15,7 +15,8 @@
 #
 # Environment:
 #   FM_GBRAIN_BIN  gbrain executable (default: gbrain on PATH), read only for
-#                  its --version
+#                  its --version. Setting it asserts that executable should be
+#                  there, so one that does not resolve is `unknown` too.
 #
 # Why this exists: docs/gbrain.md's upgrade policy requires the recorded pin to
 # move in the same change that performs an upgrade, and the dashboard's GBrain
@@ -33,13 +34,15 @@
 #   drift     1  they disagree; the record is stale or the host is not on the
 #                pinned release. Either way it is a finding, because the two
 #                are supposed to move together.
-#   skipped   0  no gbrain executable is installed here, so there is nothing to
-#                compare against. CI and a fresh worktree land here, and that
-#                is a genuine absence of evidence rather than a pass.
+#   skipped   0  nothing named a gbrain and none is on PATH, so there is
+#                nothing to compare against. CI and a fresh worktree land here,
+#                and that is a genuine absence of evidence rather than a pass.
+#                It is the only exit 0 that did not compare two releases.
 #   unknown   2  a side could not be read: no docs/gbrain.md, no parseable pin
-#                token in it, an explicitly named --gbrain that is not an
-#                executable file, or an installed executable whose --version
-#                output does not carry a version. Reported, never treated as ok.
+#                token in it, a recorded pin carrying no dotted release number,
+#                a --gbrain or FM_GBRAIN_BIN that does not resolve to an
+#                executable, or an installed executable whose --version output
+#                does not carry a version. Reported, never treated as ok.
 set -u
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,6 +84,11 @@ release_number() {  # <any string> -> dotted numeric version, or nothing
   printf '%s\n' "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1
 }
 
+version_evidence() {  # first non-empty line either stream of the read produced
+  printf '%s\n' "$VERSION_OUT" | grep -m1 . && return 0
+  grep -m1 . "$VERSION_STDERR" 2>/dev/null || true
+}
+
 emit() {  # <verdict> <exit-code> <detail>
   local verdict=$1 code=$2 detail=$3
   if [ "$JSON" = true ]; then
@@ -110,30 +118,46 @@ INSTALLED=""
 # leave every doc-side unknown reporting an empty detail.
 fm_gbrain_documented_pin "$FM_ROOT" || emit unknown 2 "$FM_GBRAIN_ERROR"
 DOCUMENTED=$FM_GBRAIN_PIN
+DOCUMENTED_NUMBER=$(release_number "$DOCUMENTED")
+[ -n "$DOCUMENTED_NUMBER" ] \
+  || emit unknown 2 "docs/gbrain.md records \"$DOCUMENTED\", which carries no dotted release number, so the record could not be read as a release"
 
-# An operator or wrapper that names a path has asserted it should be there, so
-# an unusable one is a side that could not be read. Only discovery finding
-# nothing is an absent brain, which is the one case that is genuinely skipped.
-# Discovery resolves FM_GBRAIN_BIN the way every other gbrain-touching script
-# does, because a home may name its executable there rather than on PATH and
-# still have a working recall, capture, health, and eval surface.
+# Anything that NAMES an executable - the flag or FM_GBRAIN_BIN - has asserted
+# it should be there, so one that does not resolve is a side that could not be
+# read. Only nothing naming one and none on PATH is an absent brain, which is
+# the single verdict allowed to exit 0 without comparing two releases.
+# Resolution itself is `command -v` over ${FM_GBRAIN_BIN:-gbrain}, the shape
+# every other gbrain-touching script already uses.
 if [ "$GBRAIN_EXPLICIT" = true ]; then
   [ -x "$GBRAIN_BIN" ] \
     || emit unknown 2 "--gbrain named \"$GBRAIN_BIN\", which is not an executable file, so the installed release could not be read"
-else
-  GBRAIN_WANTED="${FM_GBRAIN_BIN:-gbrain}"
-  GBRAIN_BIN=$(command -v "$GBRAIN_WANTED" 2>/dev/null || true)
+elif [ -n "${FM_GBRAIN_BIN:-}" ]; then
+  GBRAIN_BIN=$(command -v "$FM_GBRAIN_BIN" 2>/dev/null || true)
   [ -n "$GBRAIN_BIN" ] && [ -x "$GBRAIN_BIN" ] \
-    || emit skipped 0 "no gbrain executable on this host for \"$GBRAIN_WANTED\", so the recorded pin $DOCUMENTED was compared against nothing"
+    || emit unknown 2 "FM_GBRAIN_BIN named \"$FM_GBRAIN_BIN\", which does not resolve to an executable, so the installed release could not be read"
+else
+  GBRAIN_BIN=$(command -v gbrain 2>/dev/null || true)
+  [ -n "$GBRAIN_BIN" ] && [ -x "$GBRAIN_BIN" ] \
+    || emit skipped 0 "no gbrain executable on this host, so the recorded pin $DOCUMENTED was compared against nothing"
 fi
 
-VERSION_OUT=$("$GBRAIN_BIN" --version 2>&1) || {
-  emit unknown 2 "$GBRAIN_BIN --version failed: $(printf '%s' "$VERSION_OUT" | head -1)"
+VERSION_OUT=""
+VERSION_STDERR=$(mktemp "${TMPDIR:-/tmp}/fm-gbrain-pin-check.XXXXXX") \
+  || emit unknown 2 "no temporary file could be created, so $GBRAIN_BIN --version was never read"
+trap 'rm -f "$VERSION_STDERR"' EXIT
+
+# The release is parsed from stdout alone. gbrain writes upgrade-availability
+# banners carrying a SECOND version to stderr on the non-TTY path every caller
+# here takes, and a merged stream would let that one be read as the installed
+# release and reported as drift on every host at once. Both streams still feed
+# the detail an unknown prints, because that is evidence rather than a version.
+VERSION_OUT=$("$GBRAIN_BIN" --version 2>"$VERSION_STDERR") || {
+  emit unknown 2 "$GBRAIN_BIN --version failed: $(version_evidence)"
 }
 INSTALLED=$(release_number "$VERSION_OUT")
-[ -n "$INSTALLED" ] || emit unknown 2 "$GBRAIN_BIN --version printed no version: $(printf '%s' "$VERSION_OUT" | head -1)"
+[ -n "$INSTALLED" ] || emit unknown 2 "$GBRAIN_BIN --version printed no version: $(version_evidence)"
 
-if [ "$(release_number "$DOCUMENTED")" = "$INSTALLED" ]; then
+if [ "$DOCUMENTED_NUMBER" = "$INSTALLED" ]; then
   emit ok 0 "docs/gbrain.md records $DOCUMENTED and $GBRAIN_BIN is $INSTALLED"
 fi
 

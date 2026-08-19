@@ -65,13 +65,17 @@ make_gbrain() {  # <name> <mode>
   printf '%s\n' "$bin/gbrain"
 }
 
-# Run the check with no gbrain reachable on PATH unless one is passed. jq's own
-# directory is kept on that PATH because the check needs it for --json and it is
-# not under /usr/bin everywhere (Homebrew installs it elsewhere).
+# Run the check with no gbrain reachable unless one is passed. FM_GBRAIN_BIN is
+# cleared because the check resolves it ahead of PATH, and a caller who exports
+# it - the form the gbrain verification docs prescribe - would otherwise hand
+# these cases a real brain. jq's own directory is kept on the pinned PATH
+# because the check needs it for --json and it is not under /usr/bin everywhere
+# (Homebrew installs it elsewhere).
 run_check() {  # <code-root> [args...]
   local root=$1
   shift
-  FM_ROOT_OVERRIDE="$root" PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" \
+  FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN='' \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" \
     bash "$CHECK" "$@" 2>&1
 }
 
@@ -274,6 +278,73 @@ test_fm_gbrain_bin_names_the_executable_to_compare() {
   pass "FM_GBRAIN_BIN names the executable to compare, and --gbrain outranks it"
 }
 
+test_an_unresolvable_fm_gbrain_bin_is_unknown_not_skipped() {
+  local root out rc
+  # Setting FM_GBRAIN_BIN names an executable, which is the same assertion
+  # --gbrain makes, so a target that has been renamed or moved is a side that
+  # could not be read. Reporting it as skipped would hand that home a green
+  # exit 0 and a permanently silent session start while its pin drifts.
+  root=$(make_pinned_root envmissing v0.45.9.0 1ec6a6e)
+  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN="$TMP_ROOT/renamed-away-gbrain" \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 2 ] || fail "an unresolvable FM_GBRAIN_BIN must exit 2, got $rc: $out"
+  case $out in
+    *unknown*"$TMP_ROOT/renamed-away-gbrain"*) ;;
+    *) fail "an unresolvable FM_GBRAIN_BIN must be unknown and name the path: $out" ;;
+  esac
+  case $out in
+    *skipped*) fail "a named executable that does not resolve is not an absent brain: $out" ;;
+  esac
+
+  # An unset one is the genuine absent brain, and stays the one exit 0 that did
+  # not compare two releases.
+  out=$(run_check "$root") && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "an unset FM_GBRAIN_BIN with no gbrain on PATH must stay skipped, got $rc: $out"
+  case $out in
+    *skipped*) ;;
+    *) fail "nothing naming a gbrain and none on PATH must report skipped: $out" ;;
+  esac
+  pass "an FM_GBRAIN_BIN that does not resolve is unknown, while naming none stays skipped"
+}
+
+test_installed_release_is_read_from_stdout_alone() {
+  local root out rc bin
+  # gbrain writes upgrade-availability banners carrying a second version to
+  # stderr on the non-TTY path every caller here takes. A merged stream lets
+  # that banner's version be read as the installed release, which would report
+  # false drift on every host at once.
+  root=$(make_pinned_root banner v0.46.21.0 649ffe5f)
+  bin="$TMP_ROOT/bin-banner/gbrain"
+  mkdir -p "$TMP_ROOT/bin-banner"
+  printf '#!/usr/bin/env bash\nprintf "UPGRADE_AVAILABLE 0.46.21.0 0.47.0.0\\n" >&2\nprintf "gbrain 0.46.21.0\\n"\n' > "$bin"
+  chmod 0755 "$bin"
+  out=$(run_check "$root" --gbrain "$bin") && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "a banner on stderr must not become the installed release, got $rc: $out"
+  case $out in
+    *"ok - "*0.46.21.0*) ;;
+    *) fail "the release must be read from stdout alone: $out" ;;
+  esac
+  case $out in
+    *0.47.0.0*) fail "the stderr banner's version must never be reported as installed: $out" ;;
+  esac
+  pass "the installed release is read from stdout alone, never from a stderr banner"
+}
+
+test_a_record_with_no_dotted_release_is_unknown() {
+  local root out rc
+  # The pin token parses but carries nothing comparable, so the record side was
+  # not read as a release. Calling that drift would name a difference the check
+  # never established.
+  root=$(make_pinned_root nodots v1 1ec6a6e)
+  out=$(run_check "$root" --gbrain "$(make_gbrain nodots 'gbrain 0.46.21.0')") && rc=0 || rc=$?
+  [ "$rc" -eq 2 ] || fail "a record with no dotted release must exit 2, got $rc: $out"
+  case $out in
+    *unknown*"no dotted release number"*) ;;
+    *) fail "a record with no comparable release must be unknown, not drift: $out" ;;
+  esac
+  pass "a recorded pin carrying no dotted release number is unknown, not drift"
+}
+
 test_help_prints_the_flags_and_verdicts_it_owns() {
   local out rc needle
   # docs/one-owner.md makes each script's --help the owner of its exact flags
@@ -302,6 +373,9 @@ test_unknown_flag_is_refused
 test_repo_record_keeps_its_pin_first
 test_an_explicitly_named_gbrain_that_is_unusable_is_unknown
 test_fm_gbrain_bin_names_the_executable_to_compare
+test_an_unresolvable_fm_gbrain_bin_is_unknown_not_skipped
+test_installed_release_is_read_from_stdout_alone
+test_a_record_with_no_dotted_release_is_unknown
 test_help_prints_the_flags_and_verdicts_it_owns
 
 fm_test_every_defined_test_ran

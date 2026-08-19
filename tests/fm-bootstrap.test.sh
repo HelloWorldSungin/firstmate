@@ -1272,7 +1272,7 @@ SH
   chmod +x "$fakebin/gbrain"
 
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "GBRAIN_PIN: drift - " \
     "a record the host has moved past must surface at session start"
   assert_contains "$out" "v0.45.9.0" \
@@ -1283,7 +1283,7 @@ SH
   # Agreement is the whole point of the record, so it is not news.
   write_gbrain_record "$home" v0.46.21.0 649ffe5f
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_not_contains "$out" "GBRAIN_PIN:" \
     "a record that agrees with the installed release must print nothing"
 
@@ -1292,7 +1292,7 @@ SH
   write_gbrain_record "$home" v0.45.9.0 1ec6a6e
   rm -f "$fakebin/gbrain"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_not_contains "$out" "GBRAIN_PIN:" \
     "a home with no gbrain installed must print nothing about the pin"
   pass "bootstrap reports recorded-pin drift and stays silent on agreement and on a brainless home"
@@ -1333,6 +1333,30 @@ SH
   pass "bootstrap compares the pin against the gbrain FM_GBRAIN_BIN names, not just one on PATH"
 }
 
+# An FM_GBRAIN_BIN whose target was renamed or moved is a side that could not be
+# read, not an absent brain, and bootstrap must surface that rather than gate
+# itself off on its own copy of the resolution rule and go quiet forever.
+# Fail by: re-adding a `command -v` gate in front of the comparer.
+test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin() {
+  local case_dir home fakebin out
+  case_dir="$TMP_ROOT/gbrain-pin-envbin-missing"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/docs"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/gbrain"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_GBRAIN_BIN="$case_dir/renamed-away-gbrain" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: unknown - " \
+    "an FM_GBRAIN_BIN that no longer resolves must surface rather than silence the check"
+  assert_contains "$out" "$case_dir/renamed-away-gbrain" \
+    "the unknown line must name the executable that could not be read"
+  pass "bootstrap surfaces an FM_GBRAIN_BIN whose executable no longer resolves"
+}
+
 # The pin read execs `gbrain --version`, so it is bounded like every other
 # startup probe: an executable that ignores SIGTERM must degrade to one reported
 # line rather than parking session start behind it.
@@ -1356,7 +1380,7 @@ SH
   chmod +x "$fakebin/gbrain"
 
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_PIN_TIMEOUT=1 \
+    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_PIN_TIMEOUT=1 \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "GBRAIN_PIN: unknown - the bounded pin check did not finish within 1s" \
     "a gbrain that ignores SIGTERM must be killed and reported, never waited on"
@@ -1915,6 +1939,7 @@ test_bootstrap_relays_vault_drift_in_both_modes
 test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise
 test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names
+test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin
 test_bootstrap_bounds_the_gbrain_pin_read
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership

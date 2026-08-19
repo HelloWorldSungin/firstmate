@@ -113,13 +113,13 @@
 #          exited non-zero reports itself on a single USAGE_STORE line rather
 #          than degrading silently.
 #          The recorded-GBrain-pin comparison runs bin/fm-gbrain-pin-check.sh
-#          only where this host has both a gbrain executable (FM_GBRAIN_BIN, or
-#          gbrain on PATH) and a docs/gbrain.md to compare it against; it is
-#          bounded by FM_BOOTSTRAP_PIN_TIMEOUT (blank, non-numeric or zero falls
-#          back to 10s) and every bound escalates to SIGKILL. Agreement and a
-#          home with no GBrain installed are both silent; drift, a side that
-#          could not be read, and a read that could not be bounded each report
-#          themselves on a single GBRAIN_PIN line.
+#          wherever this code root carries a docs/gbrain.md, and that script
+#          alone decides whether this host has a gbrain to compare against; it
+#          is bounded by FM_BOOTSTRAP_PIN_TIMEOUT (blank, non-numeric or zero
+#          falls back to 10s) and every bound escalates to SIGKILL. Agreement
+#          and a home with no GBrain installed are both silent; drift, a side
+#          that could not be read, and a read that could not be bounded each
+#          report themselves on a single GBRAIN_PIN line.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the ten MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, run-attribution
 #          transition, secondmate_sync, secondmate_liveness_sweep,
@@ -477,18 +477,19 @@ gbrain_serving_credential_check() {
 # operator skips exactly when it matters. CI cannot close it either, because CI
 # has no brain and the check is inherently skipped there.
 #
-# Both gates below are absences of evidence rather than findings, so they are
-# silent and cost no exec: a host that resolves no gbrain has nothing to compare,
-# and a code root with no docs/gbrain.md has no record to compare it against (that
-# record's presence is bin/fm-doc-audience-check.sh's invariant, not a session's
-# to report). Everything past them is either agreement, which is silent, or a
-# line. The read is bounded like every other startup probe because it execs
-# `gbrain --version`, and a hung executable must degrade to one reported line
-# rather than parking session start.
+# Whether this host has a gbrain to compare against is the comparer's own
+# question, so it is asked there rather than gated on a second copy of the
+# resolution rule here: an absent brain comes back as its silent `skipped`,
+# while an FM_GBRAIN_BIN naming an executable that moved comes back as a line
+# instead of disappearing. The one gate left is the record's presence, which is
+# bin/fm-doc-audience-check.sh's invariant rather than a session's to report.
+# Everything past it is either agreement, which is silent, or a line. The read
+# is bounded like every other startup probe because it execs `gbrain --version`,
+# and a hung executable must degrade to one reported line rather than parking
+# session start.
 gbrain_pin_drift_check() {
   local timeout=${FM_BOOTSTRAP_PIN_TIMEOUT:-10} out status=0
   [ -x "$SCRIPT_DIR/fm-gbrain-pin-check.sh" ] || return 0
-  command -v "${FM_GBRAIN_BIN:-gbrain}" >/dev/null 2>&1 || return 0
   [ -f "$FM_ROOT/docs/gbrain.md" ] || return 0
   # Zero falls back with the blank and the non-numeric for the reason
   # usage_store_refresh records: zero is not a bound to any runner underneath.
