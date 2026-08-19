@@ -240,6 +240,40 @@ test_an_explicitly_named_gbrain_that_is_unusable_is_unknown() {
   pass "an explicitly named gbrain that is missing or not executable is unknown, not skipped"
 }
 
+test_fm_gbrain_bin_names_the_executable_to_compare() {
+  local root out rc envbin flagbin
+  # docs/configuration.md owns FM_GBRAIN_BIN as the gbrain executable the
+  # recall, capture, health, and eval surfaces all resolve, and a home may name
+  # it there without putting that directory on PATH. A comparer that only
+  # looked at PATH would read such a home as having no brain at all and let its
+  # pin drift behind a permanent exit 0, which is the silent pass `skipped`
+  # exists to avoid claiming.
+  root=$(make_pinned_root envbin v0.45.9.0 1ec6a6e)
+  envbin=$(make_gbrain envbin 'gbrain 0.46.21.0')
+  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN="$envbin" \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || fail "a gbrain reachable only through FM_GBRAIN_BIN must be compared, got $rc: $out"
+  case $out in
+    *drift*v0.45.9.0*0.46.21.0*) ;;
+    *) fail "FM_GBRAIN_BIN's executable must be the side compared: $out" ;;
+  esac
+  case $out in
+    *skipped*) fail "a home that names its gbrain in FM_GBRAIN_BIN has a brain to compare: $out" ;;
+  esac
+
+  # The flag is the caller's own override, so it outranks the environment.
+  flagbin=$(make_gbrain envbin-flag 'gbrain 0.45.9.0')
+  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN="$envbin" \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" --gbrain "$flagbin" 2>&1) \
+    && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "--gbrain must outrank FM_GBRAIN_BIN, got $rc: $out"
+  case $out in
+    *"ok - "*"$flagbin"*) ;;
+    *) fail "--gbrain must name the executable actually asked: $out" ;;
+  esac
+  pass "FM_GBRAIN_BIN names the executable to compare, and --gbrain outranks it"
+}
+
 test_help_prints_the_flags_and_verdicts_it_owns() {
   local out rc needle
   # docs/one-owner.md makes each script's --help the owner of its exact flags
@@ -267,6 +301,7 @@ test_json_carries_both_sides_and_the_verdict
 test_unknown_flag_is_refused
 test_repo_record_keeps_its_pin_first
 test_an_explicitly_named_gbrain_that_is_unusable_is_unknown
+test_fm_gbrain_bin_names_the_executable_to_compare
 test_help_prints_the_flags_and_verdicts_it_owns
 
 fm_test_every_defined_test_ran

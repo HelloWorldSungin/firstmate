@@ -8,10 +8,14 @@
 #
 # Options:
 #   --json      emit one fm-gbrain-pin-check.v1 object instead of prose.
-#   --gbrain    the executable to ask for its version, instead of the first
-#               `gbrain` on PATH. Naming a path asserts it should be there, so
-#               one that is missing or not executable is `unknown`, never
+#   --gbrain    the executable to ask for its version, instead of the one
+#               FM_GBRAIN_BIN names. Naming a path asserts it should be there,
+#               so one that is missing or not executable is `unknown`, never
 #               `skipped`.
+#
+# Environment:
+#   FM_GBRAIN_BIN  gbrain executable (default: gbrain on PATH), read only for
+#                  its --version
 #
 # Why this exists: docs/gbrain.md's upgrade policy requires the recorded pin to
 # move in the same change that performs an upgrade, and the dashboard's GBrain
@@ -108,15 +112,19 @@ fm_gbrain_documented_pin "$FM_ROOT" || emit unknown 2 "$FM_GBRAIN_ERROR"
 DOCUMENTED=$FM_GBRAIN_PIN
 
 # An operator or wrapper that names a path has asserted it should be there, so
-# an unusable one is a side that could not be read. Only auto-discovery finding
+# an unusable one is a side that could not be read. Only discovery finding
 # nothing is an absent brain, which is the one case that is genuinely skipped.
+# Discovery resolves FM_GBRAIN_BIN the way every other gbrain-touching script
+# does, because a home may name its executable there rather than on PATH and
+# still have a working recall, capture, health, and eval surface.
 if [ "$GBRAIN_EXPLICIT" = true ]; then
   [ -x "$GBRAIN_BIN" ] \
     || emit unknown 2 "--gbrain named \"$GBRAIN_BIN\", which is not an executable file, so the installed release could not be read"
 else
-  GBRAIN_BIN=$(command -v gbrain 2>/dev/null || true)
+  GBRAIN_WANTED="${FM_GBRAIN_BIN:-gbrain}"
+  GBRAIN_BIN=$(command -v "$GBRAIN_WANTED" 2>/dev/null || true)
   [ -n "$GBRAIN_BIN" ] && [ -x "$GBRAIN_BIN" ] \
-    || emit skipped 0 "no gbrain executable on this host, so the recorded pin $DOCUMENTED was compared against nothing"
+    || emit skipped 0 "no gbrain executable on this host for \"$GBRAIN_WANTED\", so the recorded pin $DOCUMENTED was compared against nothing"
 fi
 
 VERSION_OUT=$("$GBRAIN_BIN" --version 2>&1) || {

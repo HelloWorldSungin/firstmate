@@ -1298,6 +1298,41 @@ SH
   pass "bootstrap reports recorded-pin drift and stays silent on agreement and on a brainless home"
 }
 
+# A home may name its gbrain in FM_GBRAIN_BIN without putting that directory on
+# PATH, which is the form the gbrain verification docs use, and every other
+# gbrain-touching script resolves it. A bootstrap gate that only looked at PATH
+# would leave that home's pin free to drift with no session ever saying so.
+# Fail by: gating the probe on a bare `command -v gbrain`.
+test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names() {
+  local case_dir home fakebin offpath out
+  case_dir="$TMP_ROOT/gbrain-pin-envbin"
+  home="$case_dir/home"
+  offpath="$case_dir/off-path"
+  mkdir -p "$home/config" "$home/docs" "$offpath"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$offpath/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'gbrain 0.46.21.0'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$offpath/gbrain"
+  rm -f "$fakebin/gbrain"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_GBRAIN_BIN="$offpath/gbrain" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: drift - " \
+    "a gbrain reachable only through FM_GBRAIN_BIN must still be compared at session start"
+  assert_contains "$out" "0.46.21.0" \
+    "the drift line must name the release FM_GBRAIN_BIN's executable reports"
+  pass "bootstrap compares the pin against the gbrain FM_GBRAIN_BIN names, not just one on PATH"
+}
+
 # The pin read execs `gbrain --version`, so it is bounded like every other
 # startup probe: an executable that ignores SIGTERM must degrade to one reported
 # line rather than parking session start behind it.
@@ -1879,6 +1914,7 @@ test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_relays_vault_drift_in_both_modes
 test_bootstrap_relays_gbrain_serving_credential_in_both_modes
 test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise
+test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names
 test_bootstrap_bounds_the_gbrain_pin_read
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
