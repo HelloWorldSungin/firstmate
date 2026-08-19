@@ -1509,14 +1509,22 @@ test_a_relocated_no_mistakes_root_is_followed_through_nm_home() {
   case_root=$(new_case nm-home-root)
   write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
   git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
-  create_no_mistakes_bare_repo "$case_root" "b1c2d3e4f506" "https://github.com/example/demo.git"
-  local wt="$case_root/.no-mistakes/worktrees/b1c2d3e4f506/01KZX0123456789ABCDEF0123"
+  # A root whose directory is NOT named .no-mistakes: a relocated root is only
+  # followed if the path that consults the index is derived from it too.
+  local nm_root="$case_root/relocated-nm"
+  mkdir -p "$nm_root/repos/b1c2d3e4f506.git"
+  (
+    cd "$nm_root/repos/b1c2d3e4f506.git" || exit 1
+    git init --bare -q
+    git remote add origin "https://github.com/example/demo.git"
+  ) || fail "could not create the relocated bare repo"
+  local wt="$nm_root/worktrees/b1c2d3e4f506/01KZX0123456789ABCDEF0123"
   mkdir -p "$wt"
   local dir="$case_root/claude/-nm-home"
   mkdir -p "$dir"
   claude_line "$dir/nm.jsonl" session-nm-home "$wt" 2026-08-01T10:00:00Z msg_nm_home 2 4 6 8
 
-  NM_HOME="$case_root/.no-mistakes" usage_run "$case_root" ingest >/dev/null \
+  NM_HOME="$nm_root" usage_run "$case_root" ingest >/dev/null \
     || fail "nm-home ingest failed"
   local row
   row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
@@ -1525,8 +1533,48 @@ test_a_relocated_no_mistakes_root_is_followed_through_nm_home() {
   pass "a relocated no-mistakes root is followed through NM_HOME"
 }
 
+# git accepts the scp-like remote with or without a user component, and one
+# fleet writes both forms for the same repository - the clone with `git@`, the
+# gate's bare copy without it. They name one repository and must land on one
+# project.
+test_a_userless_scp_origin_resolves_like_its_user_prefixed_twin() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case scp-userless)
+  write_registry "$case_root/home" \
+    "demo [no-mistakes tracker=gitea:gitea.example.com/team/demo] - demo project" \
+    "solo [no-mistakes tracker=none] - registered through a userless remote"
+  git_init_with_remote "$case_root/home/projects/demo" "git@gitea.alias:team/demo.git"
+  # The gate's bare copy of the same repository, written without the user.
+  create_no_mistakes_bare_repo "$case_root" "c3d4e5f60718" "gitea.alias:team/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/c3d4e5f60718/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-scp"
+  mkdir -p "$dir"
+  claude_line "$dir/scp.jsonl" session-scp "$wt" 2026-08-01T10:00:00Z msg_scp 10 20 30 40
+  # And the mirror case: the registered clone itself is written without a user,
+  # so the origin index has to accept that form on the way in as well.
+  git_init_with_remote "$case_root/home/projects/solo" "gitea.alias:team/solo.git"
+  local solo_wt="$case_root/scratch/solo-copy"
+  git_worktree_at "$case_root/home/projects/solo" "$solo_wt"
+  local solo_dir="$case_root/claude/-solo"
+  mkdir -p "$solo_dir"
+  claude_line "$solo_dir/solo.jsonl" session-solo "$solo_wt" 2026-08-01T10:05:00Z msg_solo 1 2 3 4
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "scp-userless ingest failed"
+  local rows
+  rows=$(usage_run "$case_root" report --by project)
+  [ "$(jq -r '.rows[] | select(.key == "demo") | .total_tokens' <<<"$rows")" = 100 ] \
+    || fail "a userless scp remote did not match its user-prefixed twin: $rows"
+  [ "$(jq -r '.rows[] | select(.key == "solo") | .total_tokens' <<<"$rows")" = 10 ] \
+    || fail "a clone registered through a userless scp remote was not indexed: $rows"
+  pass "a userless scp origin resolves like its user-prefixed twin"
+}
+
 test_a_work_copy_path_resolves_to_its_registered_project
 test_a_path_that_merely_resembles_a_project_does_not_invent_one
+test_a_userless_scp_origin_resolves_like_its_user_prefixed_twin
 test_an_ambiguous_task_claim_still_credits_the_project
 test_a_relocated_no_mistakes_root_is_followed_through_nm_home
 test_a_clone_origin_outranks_a_tracker_that_names_another_host

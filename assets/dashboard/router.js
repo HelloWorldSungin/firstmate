@@ -1,7 +1,7 @@
 // router.js - the hash router for the fleet dashboard.
 //
-// Five primary destinations plus a task detail route:
-//   #/needs  #/fleet  #/backlog  #/history  #/knowledge  #/task/<id>
+// Six primary destinations plus a task detail route:
+//   #/needs  #/fleet  #/backlog  #/history  #/usage  #/knowledge  #/task/<id>
 //
 // The contract this module owns: a route resolves to EXACTLY ONE view.
 // activeViews() exists so a test can assert the others are absent, because a

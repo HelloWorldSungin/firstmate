@@ -159,9 +159,11 @@ Removing the unknown row would silently drop most spend in many fleets, so it is
 Firstmate's own supervision spend is shown separately from the `firstmate` project row, because the same working directory is legitimately used for crew work on the firstmate repo.
 The distinguishing signal is the presence of a task binding, and the `(firstmate supervision)` row means the fleet is operating itself rather than shipping a code change.
 
-The same failed-or-missing-read rule from History applies here: a read that did not land renders as `unavailable` with its reason, never as a zero.
-A home with no usage store, a dashboard with usage reads switched off, a collector whose output this dashboard does not recognize, and a history read that failed outright all render as explicitly unavailable.
-A failed read on a home that does collect usage is flagged as a fault and the last good rollup is retained and labelled stale.
+The same failed-or-missing-read rule from History applies here: a read that did not land renders as `unavailable` with its reason, never as a zero - and the three ways a page can end up with no rows are told apart rather than collapsed into one alarm.
+A read that missed on a home that *does* collect usage is the one an operator can act on, so it is the only one that draws a red notice, saying that the collector and its store are both present and that the dashboard keeps retrying.
+A collector whose output this dashboard does not recognize, and a history read that failed outright, render as `unavailable` with their reason.
+A home with no usage store, or a dashboard with usage reads switched off, says so calmly instead: nothing is failing and nothing is being retried, so there is no notice at all.
+When a read that missed is preceded by one that landed, the last good rollup is retained and labelled stale.
 The two rollups carry their own read state and retain separately, so a project read that missed leaves History's per-task totals fresh, and a task read that missed leaves this page's project rows fresh.
 
 ## Agent activity events

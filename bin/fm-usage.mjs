@@ -266,20 +266,33 @@ function normalizeGitUrl(url) {
     const host = withoutScheme.slice(0, slash).replace(/:\d+$/, "");
     return `${host}${withoutScheme.slice(slash)}`;
   }
-  if (text.startsWith("git@")) {
-    const rest = text.slice(4);
-    const colon = rest.indexOf(":");
-    if (colon < 0) return null;
-    const host = rest.slice(0, colon).replace(/:\d+$/, "");
-    return `${host}/${rest.slice(colon + 1)}`;
-  }
   if (text.startsWith("ssh://")) {
     let rest = text.slice(6);
-    if (rest.startsWith("git@")) rest = rest.slice(4);
+    const at = rest.indexOf("@");
+    const firstSlash = rest.indexOf("/");
+    if (at >= 0 && (firstSlash < 0 || at < firstSlash)) rest = rest.slice(at + 1);
     const slash = rest.indexOf("/");
     if (slash < 0) return null;
     const host = rest.slice(0, slash).replace(/:\d+$/, "");
     return `${host}${rest.slice(slash)}`;
+  }
+  // Any scheme this reader does not know is left unresolved rather than parsed
+  // by guess, so the scp-like branch below only ever sees a schemeless value.
+  if (text.includes("://")) return null;
+  // The scp-like form git accepts: [user@]host:path, told apart by a colon
+  // that comes before any slash. The user component is optional - a remote
+  // written without it names the same repository as one written with it, and
+  // reading only the literal "git@" dropped the userless form entirely.
+  const colon = text.indexOf(":");
+  const slash = text.indexOf("/");
+  if (colon > 0 && (slash < 0 || colon < slash)) {
+    const at = text.lastIndexOf("@", colon);
+    const rest = at >= 0 ? text.slice(at + 1) : text;
+    const separator = rest.indexOf(":");
+    const host = rest.slice(0, separator);
+    const repoPath = rest.slice(separator + 1);
+    if (!host || !repoPath) return null;
+    return `${host}/${repoPath}`;
   }
   return null;
 }
@@ -316,26 +329,33 @@ function resolveProjectByPathName(registry, projectsRoot, cwd) {
   return null;
 }
 
-function resolveProjectByRepoHash(repoHashMap, cwd) {
-  const match = /\/\.no-mistakes\/worktrees\/([a-f0-9]+)\//.exec(path.resolve(cwd));
-  if (!match) return null;
-  return repoHashMap.get(match[1]) || null;
+// NM_HOME is no-mistakes' own name for this root, so a fleet that relocated it
+// is followed rather than silently losing every validation worktree. Both the
+// hash index and the path that consults it are derived from this one answer:
+// a literal ".no-mistakes" in either place would build an index no relocated
+// working directory could ever reach.
+function noMistakesRoot() {
+  const declared = process.env.FM_USAGE_NO_MISTAKES_ROOT || process.env.NM_HOME;
+  return declared ? path.resolve(declared) : path.join(os.homedir(), ".no-mistakes");
+}
+
+function resolveProjectByRepoHash(repoHashes, cwd) {
+  const prefix = path.join(repoHashes.root, "worktrees") + path.sep;
+  const resolved = path.resolve(cwd);
+  if (!resolved.startsWith(prefix)) return null;
+  const hash = resolved.slice(prefix.length).split(path.sep)[0];
+  return (hash && repoHashes.byHash.get(hash)) || null;
 }
 
 function buildRepoHashMap(registry) {
-  const map = new Map();
-  // NM_HOME is no-mistakes' own name for this root, so a fleet that relocated
-  // it is followed rather than silently losing every validation worktree.
-  const declaredRoot = process.env.FM_USAGE_NO_MISTAKES_ROOT || process.env.NM_HOME;
-  const noMistakesRoot = declaredRoot
-    ? path.resolve(declaredRoot)
-    : path.join(os.homedir(), ".no-mistakes");
-  const reposDir = path.join(noMistakesRoot, "repos");
+  const root = noMistakesRoot();
+  const byHash = new Map();
+  const reposDir = path.join(root, "repos");
   let entries = [];
   try {
     entries = fs.readdirSync(reposDir, { withFileTypes: true });
   } catch {
-    return map;
+    return { root, byHash };
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.endsWith(".git")) continue;
@@ -349,9 +369,9 @@ function buildRepoHashMap(registry) {
     const remote = parseGitRemote(config, "origin");
     const normalized = normalizeGitUrl(remote);
     if (!normalized || !registry.byUrl.has(normalized)) continue;
-    map.set(hash, registry.byUrl.get(normalized));
+    byHash.set(hash, registry.byUrl.get(normalized));
   }
-  return map;
+  return { root, byHash };
 }
 
 function resolveProjectByOrigin(registry, gitRoot) {
@@ -364,7 +384,7 @@ function resolveProjectByOrigin(registry, gitRoot) {
   return null;
 }
 
-function resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision = false } = {}) {
+function resolveProjectAt(registry, roots, repoHashes, cwd, { allowSupervision = false } = {}) {
   if (!cwd) return null;
   const homeRoot = roots.home;
   const resolved = path.resolve(cwd);
@@ -387,7 +407,7 @@ function resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision 
   if (pathProject) {
     return { project: pathProject, method: "project_path", confidence: "low" };
   }
-  const hashProject = resolveProjectByRepoHash(repoHashMap, resolved);
+  const hashProject = resolveProjectByRepoHash(repoHashes, resolved);
   if (hashProject) {
     return { project: hashProject, method: "project_path", confidence: "low" };
   }
@@ -408,7 +428,7 @@ function resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision 
 function buildPathResolver({ home, projects }, registry) {
   const cache = new Map();
   const roots = { home: path.resolve(home), projects: path.resolve(projects) };
-  const repoHashMap = buildRepoHashMap(registry);
+  const repoHashes = buildRepoHashMap(registry);
   return {
     // For events with no task identity: resolve the directory to a project
     // name, or to the supervision category when the directory IS the firstmate
@@ -417,7 +437,7 @@ function buildPathResolver({ home, projects }, registry) {
       if (!cwd) return null;
       const key = `path:${cwd}`;
       if (cache.has(key)) return cache.get(key);
-      const result = resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision: true });
+      const result = resolveProjectAt(registry, roots, repoHashes, cwd, { allowSupervision: true });
       cache.set(key, result);
       return result;
     },
@@ -431,7 +451,7 @@ function buildPathResolver({ home, projects }, registry) {
       if (!worktree) return null;
       const key = `worktree:${worktree}`;
       if (cache.has(key)) return cache.get(key);
-      const result = resolveProjectAt(registry, roots, repoHashMap, worktree, { allowSupervision: false });
+      const result = resolveProjectAt(registry, roots, repoHashes, worktree, { allowSupervision: false });
       const project = result ? result.project : null;
       cache.set(key, project);
       return project;
