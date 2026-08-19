@@ -134,7 +134,11 @@
 #   --max-answer  think only. Characters of synthesis kept (default 8000).
 #   --home      the firstmate home whose brain to read.
 #   --timeout   seconds allowed for each retrieval call
-#               (default: search 60, think 300).
+#               (default: search 60, think 300). It also sizes search's
+#               provenance pass, at this budget once per corpus that search
+#               will read, so a value tuned down for a fast retrieval also
+#               bounds how many rows can be annotated before the rest keep
+#               their fail-safe unknown state.
 #   --          end of flags, so a query may begin with a dash.
 #
 # Environment:
