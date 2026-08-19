@@ -21,6 +21,8 @@ The arithmetic is in "Budget arithmetic" below.
 
 All numbers below use the fleet's own estimator, `ceil(UTF-8 bytes / 3)`, unless marked otherwise.
 Byte counts are measured; token figures derived from them are estimates by that conversion, deliberately conservative.
+Figures imported from another document are restated in this estimator, and wherever that document's own figure is quoted alongside it is attributed to that source's units, so a reader can reconcile the two rather than finding an unexplained disagreement.
+The measured claims in this document were reproduced against the live fleet during its validation, including a live re-measurement of the brief-scaffold search at the exact shape D1 names.
 
 **The budget is exhausted.**
 `bin/fm-startup-memory-budget.sh report` on 2026-08-19: `data/captain.md` 9,758 bytes = 3,253 estimated tokens, `data/learnings.md` 12,732 bytes = 4,244, total 7,497 of a 7,500 budget - 3 tokens of headroom, after a full consolidation pass on 2026-08-13 measured 7,944.
@@ -64,9 +66,11 @@ This ADR honors that gate rather than relitigating it.
 `bin/fm-brief.sh` runs one `fm-recall.sh search` at scaffold time, using the task's own words as the query, scope local, and embeds a bounded, provenance-labeled citations block in the generated brief.
 When results exist, the block replaces the current instruction-only Brain section; the instruction to search again mid-task remains.
 
-Why this seam: the brain-presence branch already ships there and degrades to inert in production today; the task title and description are a real query, which session start lacks; the cost (measured 242-879 tokens of output per search at the bounds tested) is paid only when work is commissioned; and the moment is exactly when the knowledge would otherwise be re-derived at worker-investigation cost.
+Why this seam: the brain-presence branch already ships there and degrades to inert in production today; the task title and description are a real query, which session start lacks; the cost (3,103-3,209 measured bytes of output per search = 1,035-1,070 estimated tokens, re-measured live at the `--limit 5 --excerpt 400` shape this decision names) is paid only when work is commissioned; and the moment is exactly when the knowledge would otherwise be re-derived at worker-investigation cost.
+`data/fm-gbrain-usage-inventory/report.md` states the same seam as 969-3,518 measured bytes = 242-879 tokens in that report's own `bytes / 4` units, which is 323-1,173 estimated tokens under this document's estimator.
+At 1,035-1,070 estimated tokens per commissioned task, this decision still holds comfortably: the cost is charged only when work is commissioned, against re-derivation that costs a worker investigation in the tens of thousands of tokens.
 
-Bounds: the embedded block is capped at roughly 900 tokens (the measured `--limit 5 --excerpt 400` shape); the exact flags are implementation detail owned by `fm-brief.sh` when this lands.
+Bounds: the embedded block is capped at roughly 1,100 estimated tokens, the live re-measurement of the `--limit 5 --excerpt 400` shape under this document's estimator; the exact flags are implementation detail owned by `fm-brief.sh` when this lands.
 The wait is pinned too, with an explicit `--timeout` of 10 seconds rather than the wrapper's 60-second default, following the dashboard's existing call site: 10 clears the measured ~8.6s worst case with margin, and a hung endpoint must not charge a minute to a dispatch path that costs nothing today.
 That budget covers the provenance pass as well as the retrieval, because the wrapper sizes both from the same `--timeout`, and the tradeoff is taken rather than engineered around: on a search slow enough to consume most of the 10 seconds, rows the pass did not reach carry a null capture date and an unknown source state.
 Both are supported states of the landed contract, so the gate's fields-present predicate still passes and the block mounts with those rows labeled unknown - which is the honest label, and better than either dropping them or waiting longer before every dispatch.
@@ -256,11 +260,13 @@ This ADR adopts that target as the destination of the tranche system and holds t
 
 ### What the seams cost
 
-- Brief-scaffold search: measured 242-879 tokens of output per commissioned task, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
+- Brief-scaffold search: 3,103-3,209 measured bytes of output per commissioned task = 1,035-1,070 estimated tokens, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
 - Nearest-prior-work line: one stdout line at scaffold time.
 - `/stow` round-trip: sub-second local searches per candidate item processed, so the count is proportional to what a pass admits and prunes rather than fixed (D5).
 - Audit trail: one local file append per `search` in a home with a local index, plus one conclusion record per candidate a `/stow` read informed (D5); no context cost.
 - Always-cost added to any session: **zero** - of the four seams listed above, each is paid only when its own trigger fires, and none charges the startup files or the per-session context unconditionally.
+
+The headline is unaffected by these seam costs, by construction: the brief-scaffold figure is per-commissioned-task context and not startup memory, no tranche figure above is derived from it, and the 7,497 to ~7,084 arithmetic stands exactly as computed.
 
 ### The net, honestly
 
@@ -278,7 +284,9 @@ What changed is that both investigations ran after that framing was written, and
 
 - Session start has no query.
   The digest knows fleet state, not the work about to be commissioned; a query-free "recent captures" section duplicates the backlog's Done history.
-- Retrieval there is an always-cost: 242-879 measured tokens per session, paid whether or not the session needs it, against ~50 tokens saved by pruning one more conditional fact - roughly a 12x-worse trade at the measured sizes.
+- Retrieval there is an always-cost: 1,035-1,070 estimated tokens per session, paid whether or not the session needs it, against roughly 67 estimated tokens saved by pruning one more conditional fact.
+  That 67 is `data/fm-gbrain-usage-inventory/report.md`'s ~50 tokens of pruning savings restated in this document's estimator, the same bytes under `ceil(bytes / 3)` rather than that report's `bytes / 4`.
+  With both sides in one estimator the trade is roughly 15x worse rather than the 12x that report computed, so the case against session-start retrieval is stronger than it was previously argued, not weaker.
 - A brain read inside the digest adds failure surface to the most safety-critical path firstmate has, for the above negative return.
 - And specifically for `context_pack`: the live probe on 0.46.21.0 returned an empty pack on this corpus, because capture writes pages, not the entities and facts `context_pack` packs.
   The candidate mechanism is not merely a poor trade here; it is currently inert on this fleet's data.
