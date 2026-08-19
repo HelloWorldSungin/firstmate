@@ -84,10 +84,13 @@ Both of the properties that matter then hold structurally, rather than being ass
 
 - A home with no local index appends nothing, because the predicate is false there.
   That holds however an invocation turns out and whatever else that home can reach, including the supported configuration where a fleet main brain is reachable from a home with no brain of its own.
-- Every invocation in a home that does have an index appends, so the exit state carries information.
+- Every search invocation in a home that does have an index appends, so the exit state carries information.
   Ran-and-its-read-failed is a record; never-ran is the absence of one; keying the append on success instead would have collapsed those two into the same silence and left the exit-state field constant.
 
 A second record kind, owned by `/stow` rather than by the wrapper, carries D5's conclusion; it is specified under D5's third constraint below.
+It inherits the same inertness without a second copy of the predicate, by derivation rather than by restatement: a conclusion record exists only for a candidate that a read informed, it names that read by the id the read returned, and an id exists only for an invocation that appended.
+A home with no local index therefore produces no append, no returned id, no informed candidate, and no conclusion record.
+The chain is what keeps the two writers from drifting apart, because a copied presence test is a second thing that can be edited and a derivation is not.
 
 - **Query hash, never query text.**
   This is a decision, not an omission: a query can carry the substance of what someone was working on, and brain content is private to a home.
@@ -112,7 +115,8 @@ A second record kind, owned by `/stow` rather than by the wrapper, carries D5's 
   Failing the D3 gate does not soften that verdict: a pre-contract home still runs the scaffold search for D4's ungated advisory line, so it still appends brief-scaffold records, and what the gate withholds there is the embed rather than the record.
   Only a missing local index makes the silence normal, because that is the one condition under which the append predicate is false.
   See D6 for the pre-commission reading and its trigger.
-- Without a local index the trail is empty by construction rather than by enumeration: the append predicate is false, so no seam can write to it, and no list of which callers still run has to be right for that to hold.
+- Without a local index the trail is empty by construction rather than by enumeration, across both of the writers this decision names: the append predicate is false, so the wrapper writes nothing, and `/stow`'s conclusion record cannot exist because the chain above gives it no read and no id to name.
+  No list of which callers still run has to be right for that to hold.
   Wherever it does hold records, it must never block or slow the read path it measures.
 
 Without this trail, neither the mount's adoption nor its effect on re-derivation can ever be demonstrated - the loop's brokenness would stay unmeasurable one level up.
@@ -308,7 +312,7 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
 | D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | The pinned 10s `--timeout` bounds the wait (measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
 | D4 nearest-prior-work line | Not printed | Same bounds as D1; absence of the line is silence about proximity, never a claim | Prints regardless (advisory; not gated) |
 | D5 stow round-trip | `/stow` reaches the same outcome as today, having newly done and failed work: its per-candidate-item searches fail their source, after which the advisory step is skipped and capture proceeds | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
-| D2 audit trail | Appends nothing - the append predicate is "local index present", which is false here, so no seam can write and the file is never created | Appends with whatever exit state the run produced, so a slow or failed read is a record rather than a silence; never blocks or slows the read it records | Independent of it |
+| D2 audit trail | Appends nothing from either writer - the append predicate is "local index present", which is false here, so the wrapper writes nothing and `/stow`'s conclusion record has no read and no id to name; the file is never created | Appends with whatever exit state the run produced, so a slow or failed read is a record rather than a silence; never blocks or slows the read it records | Independent of it |
 
 ## Consequences
 
@@ -323,6 +327,9 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
   Each was false exactly at the seams left uncounted.
   It then appeared once more inside the repair itself: the option chosen to restore D2's inert property asserted that a brainless home appends nothing, which is a universal over a configuration set nobody had enumerated, and it was false wherever a fleet main brain is reachable from a home with no local index of its own.
   That is the most transferable lesson of this design, and it tightens the rule rather than restating it: a claim about a set must be structurally true or explicitly enumerated, because the case you did not think of is by definition the one you cannot think of - which is why D2's append condition is now a predicate that makes the property hold rather than a sentence that asserts it.
+  The closing lesson, for whoever reads this next: when a property keeps needing to be restated, stop restating it and make the structure produce it.
+  That move solved this design three times - inverting a default so the whole class cannot occur, keying the trail's append on presence rather than on the read's outcome, and deriving the second writer's inertness from the causal chain instead of copying the predicate onto it.
+  Each time, the sentence that kept being wrong stopped being load-bearing, which is the only repair that does not have to be made again.
 - The process rule this design paid a round to learn: a review finding that collides with a decided property escalates to that decision's owner and is never applied as a correction.
   A round of review here did exactly that, trading away D2's decided "inert without a brain" for a more accurate description of an unspecified detail, and the finding's apparent correctness is precisely what made the override invisible - a wrong decision is arguable, whereas a right-looking correction is not read as a decision at all.
 - Implementation is follow-up tracked work, per item: the audit trail (first, and carrying the seam declaration at the dashboard and eval call sites that D2 names), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
