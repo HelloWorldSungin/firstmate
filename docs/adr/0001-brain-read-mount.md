@@ -25,7 +25,7 @@ Byte counts are measured; token figures derived from them are estimates by that 
 **The budget is exhausted.**
 `bin/fm-startup-memory-budget.sh report` on 2026-08-19: `data/captain.md` 9,758 bytes = 3,253 estimated tokens, `data/learnings.md` 12,732 bytes = 4,244, total 7,497 of a 7,500 budget - 3 tokens of headroom, after a full consolidation pass on 2026-08-13 measured 7,944.
 The residue is largely dated empirical evidence, the category the captain identified as belonging in retrieval.
-The same pressure applies to `AGENTS.md` (71,648 bytes, ~23.9k estimated tokens, every session) and the `harness-adapters` skill (72,220 bytes, ~24.1k estimated tokens, loaded before every spawn).
+The same pressure applies to `AGENTS.md` (71,876 bytes, ~23.9k estimated tokens, every session) and the `harness-adapters` skill (72,220 bytes, ~24.1k estimated tokens, loaded before every spawn).
 
 **The write side is enforced; the read side is prose.**
 `data/fm-gbrain-usage-inventory/report.md` (2026-08-19) established that capture runs as a structural teardown step while not one enforced read step exists anywhere in the fleet: no skill references recall, session start emits nothing from the brain, and the only read instruction is one always-loaded sentence plus a static section in generated briefs.
@@ -54,8 +54,8 @@ This ADR honors that gate rather than relitigating it.
    The scope reduction "do not build a custom change cursor" holds; "do not build custom session-boundary packing" holds only vacuously, because there is nothing to pack and session-start retrieval is rejected on its own merits below.
 2. `fm-gbrain-answer-protocol` was in validation for most of this interview, so every gate here was designed against its required behavior rather than its unlanded field names.
    It has since landed (PR 185, squash-merged, checks green) and this home runs it.
-   The shipped contract, verified against the merged `bin/fm-recall.sh` rather than reported state: the `fm-recall.v1` JSON document carrying an answer framing (`nearest` or `none`) and per-result provenance (`captured_at`, `source_state` across current, drifted, uncompared, missing, snapshot, and unknown, `source_updated_at`, stale flags).
-   `bin/fm-recall.sh` owns that contract, and `AGENTS.md` now states its two always-loaded consequences and names that owner; this ADR points there rather than restating it.
+   The shipped behavior was verified against the merged source rather than against reported state: a search now frames what its rows are, and labels each local result with capture and live-source provenance.
+   `bin/fm-recall.sh` owns that contract, and `AGENTS.md` now states its two always-loaded consequences and names that owner.
 
 ## Decision
 
@@ -74,13 +74,16 @@ One append per `fm-recall.sh` invocation into a gitignored state file: timestamp
 
 - **Query hash, never query text.**
   This is a decision, not an omission: a query can carry the substance of what someone was working on, and brain content is private to a home.
+  What the hash actually buys is narrow, and is stated narrowly here on purpose: free-text queries never land in a file on disk, so no person, backup, or later tool that ingests state files learns what was asked by reading the trail.
+  It does not prevent confirmation of a guessed query, and it cannot: queries derive from task titles, that candidate set is small and enumerable, and this decision requires joining the trail against task creation times, so anyone holding both can hash a candidate and check it.
+  The weaker claim is the true one, and it is chosen over a stronger claim that the join this trail exists to support would falsify.
   The price, accepted deliberately, is that the trail can never answer "what were people searching for" - only whether recall ran, from where, and with what outcome.
 - **The caller-seam field must distinguish** brief-scaffold, stow, dashboard, and eval invocations, or the trail cannot measure adoption, which is its purpose.
 - **The trail must make pre-commission recall computable**: joined against task creation times, it must answer "was a recall run before this investigation was commissioned" (see D6 for why this specific question matters).
 - **Who reads it, and when**: firstmate reviews the trail one week after the mount lands and again at 30 days.
   No seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
   See D6 for the pre-commission reading and its trigger.
-- It stays inert without a brain and must not slow the read path it measures.
+- Without a brain it changes nothing a home does today: D1 and D4 never run, D5 runs and fails, so the trail holds those failed invocations and nothing else, and it must never block or slow the read path it measures.
 
 Without this trail, neither the mount's adoption nor its effect on re-derivation can ever be demonstrated - the loop's brokenness would stay unmeasurable one level up.
 
@@ -92,8 +95,8 @@ The gate is **positive detection of behavior**, per home, at scaffold time: the 
 Absence of the contract means do not mount; the fallback is today's instruction-only Brain section - shipped behavior, not a new degraded mode.
 The gate is deliberately not a version check or config flag: it is true per home while secondmates update independently, it degrades to known behavior, and it closes itself under a rollback.
 The concrete binding, now that `fm-gbrain-answer-protocol` has landed: the gate detects the installed wrapper emitting the `fm-recall.v1` document with its answer framing and per-result provenance present.
-`bin/fm-recall.sh` owns that contract's full definition; the gate consumes it and never restates it.
-The gate was designed behavior-first while that work was still in validation, and stays defined by the behavior: if the contract ever changes shape, the gate follows the owner, not this ADR's snapshot of it.
+`bin/fm-recall.sh` owns that contract's full definition.
+The gate was designed behavior-first while that work was still in validation, and stays defined by the behavior: if the contract ever changes shape, the gate follows the owner.
 
 ### D4. The same search also prints a firstmate-facing "nearest prior work" line - advisory, ungated
 
@@ -107,7 +110,8 @@ It is surfacing, not enforcement: nothing forces firstmate to read it, and its e
 
 ### D5. `/stow` mounts a round-trip read - advisory, ungated, with a hard constraint
 
-Before admitting a "new" learning to always-loaded memory, `/stow` searches pruned notes for prior art; before creating a new pruned note, it searches for an existing equivalent.
+Before admitting a "new" learning to always-loaded memory, `/stow` runs one `fm-recall.sh search` at scope local over pruned notes for prior art; before creating a new pruned note, it runs a second search, also scope local, for an existing equivalent.
+Both are pinned to scope local for the same reason D1 is: no mount in this design reads the remote main brain, and inheriting the wrapper's default scope would mount one.
 This fixes the only demonstrated defect in this area - the 2026-08-05 to 2026-08-16 round-trip - at the moment it occurs, which no other seam reaches (nothing is commissioned at prune time).
 
 The constraint, which is not optional: **the read is advisory; a search hit may never, on its own, be the reason a learning is not captured.**
@@ -196,8 +200,8 @@ Sequencing note: the per-variant entries route into the per-harness files (or th
 
 The rule stays; the incident evidence behind it becomes a brain page with a pointer.
 Measured anchors: the Z.AI quota incident (~226 of 406 bytes is evidence), the week-reset story in `captain.md` (~299 of 549), the cursor/agy adoption history (~173 of 293), the merge-burst and big-merge incident details (~180), plus scattered dated fragments (~150-250).
-**Tranche 2 total: ~1,030-1,230 bytes, ~345-410 estimated tokens.**
-Startup files after tranches 1+2: **~6,680-6,740**.
+**Tranche 2 total: ~1,028-1,128 bytes, ~343-376 estimated tokens.**
+Startup files after tranches 1+2: **~6,708-6,741**.
 
 ### Tranche 3 - the deep offload; gated the same, scoped by capture-tightening's own list
 
@@ -217,7 +221,7 @@ This ADR adopts that target as the destination of the tranche system and holds t
 
 - Day one, with only this design landed: **~413 estimated tokens freed (tranche 1) plus the ~60% per-spawn cut once the D7 refactor ships; zero tokens freed through the brain.**
 - With `fm-gbrain-answer-protocol` landed (PR 185; it landed during this design's own validation window): the D1 embed can mount on any home whose installed wrapper passes the D3 detection - this home already does; still no budget relief from retrieval, but re-derivation pressure starts falling and becomes measurable.
-- After the capture-trust gate passes: tranches 2 and 3, ~1,550-2,100 further estimated tokens, taking the startup files to the 5,000-5,500 region capture-tightening computed.
+- After the capture-trust gate passes: tranches 2 and 3, ~1,543-2,076 further estimated tokens, taking the startup files to the 5,000-5,500 region capture-tightening computed.
 
 ## The overturned candidate - session-start retrieval
 
@@ -243,7 +247,11 @@ If the captain still wants session-start packing with these numbers in front of 
 - **Skill-level recall requirements replicated across skills** - prompt-level enforcement relocated is the same weakness with N copies to drift; even the single-skill variant adds a second copy of a one-line requirement with no enforcement gained (D6).
 - **An intake-time script gate for firstmate's own consult** - no natural seam exists at a conversational moment; machinery without a blocker fails the direct-path rule.
 - **Per-variant harness detail into the brain** - rejected by the safety clause (D7): spawn procedure must not sit behind a path that can fail.
-- **Hosted synthesis (`think`) on any structural path** - excluded outright; it sends excerpts off-host, and every mount in this design is local-search only.
+- **Hosted synthesis (`think`) on any structural path** - excluded outright, and the boundary is not "off-host".
+  D1 embeds brain excerpts in a brief that a hosted harness reads, so excerpts leave this host either way; what separates the two is who receives them and on whose choosing.
+  A commissioned crewmate already reads this home's material - the repo, the reports, the code it is about to change - so brain excerpts in its brief are that same material reaching that same reader by a shorter path.
+  `think` instead routes brain content to a synthesis provider as a side effect of a read, which adds a recipient nobody commissioned; no structural or ambient path here may do that.
+  This is the same rule D2's privacy decision applies to the trail - a read must not create a new holder of brain content, whether that is a hosted provider or a query written in plain text into a file - and every mount here is a scope-local search for it.
   Dreaming stays disabled.
   Neither privacy boundary relaxes.
 - **`delta` at heartbeat or bearings** - works, verified live, deferred: it serves a different goal than the one this design was commissioned for (D9).
@@ -251,20 +259,20 @@ If the captain still wants session-start packing with these numbers in front of 
 
 ## Degradation, per mount
 
-A home with no brain must keep working exactly as it does now; every row below was checked against that constraint.
+A home with no brain must keep working exactly as it does now - no changed behavior, no new failure, no blocked path; every row below was checked against that constraint, and the one difference the check found is named in its row rather than rounded away.
 
 | Mount | Brain absent | Brain slow or degraded | Answer-protocol contract absent |
 | --- | --- | --- | --- |
 | D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | Wrapper timeout bounds the wait (60s default; measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
 | D4 nearest-prior-work line | Not printed | Same bounds as D1; absence of the line is silence about proximity, never a claim | Prints regardless (advisory; not gated) |
 | D5 stow round-trip | `/stow` proceeds as today; searches simply fail their source and the advisory step is skipped | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
-| D2 audit trail | Inert - no recall invocations occur to record | Appends locally; never blocks or slows the read it records | Independent of it |
+| D2 audit trail | D1 and D4 do not run, so there is nothing there to record; D5's searches do run and fail, and one append per invocation means the trail records those failed invocations - a gitignored local append is the whole difference from today, and it blocks nothing | Appends locally; never blocks or slows the read it records | Independent of it |
 
 ## Consequences
 
 - **Nothing lands alone**: the D1 embed mounts only on homes passing the D3 contract detection (`fm-gbrain-answer-protocol` landed as PR 185 and this home passes; other homes gate themselves), and brain-destined offload is inert until the capture-trust gate passes.
   The captain should read the relief timeline in "The net, honestly" as the schedule: routing now, retrieval as homes pass the gate, deep offload last.
-- The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, query content is reconstructible never.
+- The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, and free-text queries are never written down, which resists casual disclosure but does not - and cannot - stop someone holding both the trail and the backlog from confirming a guessed query (D2).
 - D6 leaves a known, named gap open, with a dated instance and a concrete reopening trigger; anyone reading this ADR should not mistake D4's scaffold-time line for coverage of it.
 - Alarm fatigue is the named risk of D4; the mitigation is its honest name and claim, and the D2 trail is how a fatigued, skimmed-past line would be detected (surfacing that never changes a dispatch decision).
 - The recurring defect this interview kept meeting, in three different coats, is a positive standing without evidence: a search hit as a verdict, a capability assumed present, a check defaulting to "fine".
