@@ -782,8 +782,8 @@ pass "a search that never started, one that was refused, and one that found noth
 # shellcheck disable=SC1091
 . "$ROOT/bin/fm-gbrain-capture-lib.sh"
 
-write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body>
-  local home=$1 kind=$2 id=$3 captured=$4 body=$5
+write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body> [<redactions-json>]
+  local home=$1 kind=$2 id=$3 captured=$4 body=$5 redactions=${6:-[]}
   local tag doc_id slug
   tag=$(fm_gbrain_capture_home_tag "$home")
   doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
@@ -798,6 +798,7 @@ write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body>
     --arg id "$id" \
     --arg captured "$captured" \
     --arg body "$body" \
+    --argjson redactions "$redactions" \
     '{
       schema: $schema,
       document_id: $document_id,
@@ -810,7 +811,7 @@ write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body>
       attempts: 1,
       last_error: null,
       gbrain_document: $slug,
-      redactions: [],
+      redactions: $redactions,
       created_at: "2026-08-11T20:00:00Z",
       updated_at: "2026-08-11T20:00:00Z",
       captured_at: (if $captured == "" then null else $captured end),
@@ -931,5 +932,150 @@ run_recall "$MAIN_HOME" search --json --scope local teardown
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
   || fail "unjudged rows are still nearest pages: $RECALL_OUT"
 pass "answer protocol: a miss is not a negative, a served page carries provenance, and a live-source disagreement is surfaced without reordering"
+
+# --- 12. drift is only claimed when the two sides are actually comparable ----
+#
+# The stored body is not a verbatim copy of the report. Capture composes
+# frontmatter in front of it, truncates the composed document at
+# FM_GBRAIN_CAPTURE_MAX_BYTES, and rewrites credential-shaped values before any
+# byte reaches disk. A page whose live report never changed must not be marked
+# drifted - and so read as stale, with the live source winning - because the
+# tail it is compared against was cut or rewritten by capture itself.
+
+# A report whose tail carries a multi-byte character positioned so that a
+# 200-BYTE cut lands inside it. The orphaned continuation bytes decode to
+# U+FFFD, which matches nothing in a body that was stored intact, so a
+# byte-sized fingerprint reports an untouched page as drifted. The capture date
+# is after the report's mtime here, so the mtime rule cannot mask the result:
+# whatever this row says about drift is the content check's own verdict.
+UTF8_ID=utf8-tail-report
+UTF8_BODY="$(printf 'x%.0s' $(seq 1 300))→$(printf 'y%.0s' $(seq 1 197))"
+UTF8_SLUG=$(write_outbox "$MAIN_HOME" task "$UTF8_ID" "2026-08-11T20:00:00Z" "$UTF8_BODY")
+mkdir -p "$MAIN_HOME/data/$UTF8_ID"
+printf '%s\n' "$UTF8_BODY" > "$MAIN_HOME/data/$UTF8_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$UTF8_ID/report.md"
+stub_reply "$(jq -cn --arg s "$UTF8_SLUG" \
+  '[{slug:$s, title:"utf8 tail", chunk_text:"x", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local utf8-tail
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "an unchanged report whose tail splits a multi-byte character must not read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a false drift must not be escalated to stale: $RECALL_OUT"
+
+# A body that capture truncated cannot hold the report's tail at all. The tail
+# is genuinely absent, and that absence is capture's doing, not the report's, so
+# the mtime rule decides alone. FM_GBRAIN_CAPTURE_MAX_BYTES is the same knob
+# capture reads, which is what makes the ceiling testable without a 64 KiB file.
+TRUNC_ID=truncated-capture
+TRUNC_REPORT="$(printf 'a%.0s' $(seq 1 900))ENDOFREPORT"
+TRUNC_SLUG=$(write_outbox "$MAIN_HOME" task "$TRUNC_ID" "2026-08-11T20:00:00Z" \
+  "$(printf 'a%.0s' $(seq 1 512))")
+mkdir -p "$MAIN_HOME/data/$TRUNC_ID"
+printf '%s\n' "$TRUNC_REPORT" > "$MAIN_HOME/data/$TRUNC_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$TRUNC_ID/report.md"
+stub_reply "$(jq -cn --arg s "$TRUNC_SLUG" \
+  '[{slug:$s, title:"truncated", chunk_text:"a", score:0.5, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_CAPTURE_MAX_BYTES=512 \
+  bash "$CLI" search --json --scope local truncated 2>&1) || RECALL_RC=$?
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "a body capture truncated cannot disprove the report it was cut from: $RECALL_OUT"
+
+# The same body, now judged against the default ceiling it is nowhere near, has
+# no truncation to excuse the missing tail. The content check must still vote,
+# or this whole mechanism would have been disabled rather than made honest.
+run_recall "$MAIN_HOME" search --json --scope local truncated
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a body that is comparable and does not match must still read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a real drift must still be stale: $RECALL_OUT"
+
+# Redaction rewrites the body before it is stored, so a tail that no longer
+# matches may be the redactor's edit rather than the report's. A record that
+# names redactions cannot be used to claim drift.
+REDACT_ID="redacted-capture"
+REDACT_SLUG=$(write_outbox "$MAIN_HOME" task "$REDACT_ID" "2026-08-11T20:00:00Z" \
+  "The deploy key is [redacted:openai-key] and the service came up clean." \
+  '[{"class":"openai-key","count":1}]')
+mkdir -p "$MAIN_HOME/data/$REDACT_ID"
+printf '%s\n' "The deploy key is sk-liveliveliveliveliveliveliveliveli and the service came up clean." \
+  > "$MAIN_HOME/data/$REDACT_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$REDACT_ID/report.md"
+stub_reply "$(jq -cn --arg s "$REDACT_SLUG" \
+  '[{slug:$s, title:"redacted", chunk_text:"deploy key", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local redacted
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "a redacted body cannot be read as evidence that the report drifted: $RECALL_OUT"
+
+# A slug whose home tag cannot form a valid document id addresses no record in
+# this outbox, so it is unjudgeable rather than a task this home owns: reporting
+# a source kind and id for it would claim an identity nothing validated.
+stub_reply "$(jq -cn '[{slug:"firstmate/a b/task/some-task", title:"bad tag", chunk_text:"x", score:0.4, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local bad-tag
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "a slug with an unaddressable home tag must be unknown: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_kind')" = null ] \
+  || fail "a slug that failed the address checks must not be credited with a source kind: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_id')" = null ] \
+  || fail "a slug that failed the address checks must not be credited with a source id: $RECALL_OUT"
+pass "drift is claimed only from a comparable body: truncation, redaction, and a split character are not evidence"
+
+# --- 13. the human surface tells a miss apart from an unread corpus ----------
+#
+# stdout is what a reader actually sees, and neither of these two states may
+# read as "the thing does not exist" and neither may be silence. They are
+# checked on stdout ALONE, separated from stderr, because the defect this pins
+# was exactly stdout contradicting stderr: a reader piping stdout was told a
+# negative while stderr said the opposite.
+
+run_recall_split() {  # <home> <args...> -> RECALL_STDOUT / RECALL_STDERR / RECALL_RC
+  local home=$1
+  shift
+  local errfile
+  errfile=$(mktemp "$TMP_ROOT/stderr.XXXXXX")
+  RECALL_RC=0
+  RECALL_STDOUT=$(FM_HOME="$home" bash "$CLI" "$@" 2>"$errfile") || RECALL_RC=$?
+  RECALL_STDERR=$(cat "$errfile")
+  rm -f "$errfile"
+}
+
+# A home with no brain installed: the corpus was never read, so nothing here is
+# a statement about what the brain holds.
+RECALL_RC=0
+ERRFILE=$(mktemp "$TMP_ROOT/stderr.XXXXXX")
+RECALL_STDOUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$TMP_ROOT/no-such-gbrain-anywhere" \
+  bash "$CLI" search --scope local "does the OHLCV service run on CT100" 2>"$ERRFILE") || RECALL_RC=$?
+RECALL_STDERR=$(cat "$ERRFILE")
+rm -f "$ERRFILE"
+expect_code 3 "$RECALL_RC" "a corpus that could not be read is still a retrieval failure"
+assert_contains "$RECALL_STDOUT" "not searched" \
+  "stdout must say the corpus was never searched: $RECALL_STDOUT"
+assert_contains "$RECALL_STDOUT" "says nothing about whether it exists" \
+  "stdout must refuse to turn an unread corpus into a statement about the world"
+assert_not_contains "$RECALL_STDOUT" "no results" \
+  "an unread corpus must not be rendered as an empty result set"
+assert_not_contains "$RECALL_STDOUT" "no match in this brain" \
+  "an unread corpus must not be rendered as a miss"
+assert_contains "$RECALL_STDERR" "not an empty result set" \
+  "stderr must name the same fact stdout does: $RECALL_STDERR"
+assert_not_contains "$RECALL_STDERR" "no results" \
+  "stderr must not contradict stdout by calling this an empty result set"
+
+# A brain that WAS read and holds no match: a real, successful, empty answer -
+# which must be said out loud, and said as a fact about this brain.
+stub_reply '[]'
+run_recall_split "$MAIN_HOME" search --scope local "a topic this brain has never captured"
+expect_code 0 "$RECALL_RC" "a corpus that was read and had no match is not a failure"
+assert_contains "$RECALL_STDOUT" "no match in this brain" \
+  "a successful miss must be stated, not left as silence: [$RECALL_STDOUT]"
+assert_contains "$RECALL_STDOUT" "may simply not hold it" \
+  "a miss must be framed as this brain's gap, not the world's"
+assert_not_contains "$RECALL_STDOUT" "not searched" \
+  "a corpus that was read must not be reported as unsearched"
+assert_not_contains "$RECALL_STDOUT" "no results" \
+  "a miss must not fall back to the bare empty-result wording"
+assert_not_contains "$RECALL_STDERR" "no corpus could be read" \
+  "a corpus that answered must not have stderr claim it was never read: $RECALL_STDERR"
+pass "human output separates a searched brain with no match from a corpus that was never read, on stdout alone"
 
 echo "all fm-recall tests passed"

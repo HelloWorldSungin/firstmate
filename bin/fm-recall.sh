@@ -503,14 +503,68 @@ recall_iso_epoch() {  # <YYYY-MM-DDTHH:MM:SSZ> -> epoch seconds, or empty
     || true
 }
 
+# BSD date reads an epoch with -r; GNU date reads a FILE's mtime with -r and an
+# epoch with -d @. Trying the BSD form first on GNU is not a harmless fallthrough
+# - this command runs from an arbitrary working directory, and a file there
+# named for the epoch integer would answer with its own mtime.
 recall_epoch_iso() {  # <epoch> -> ISO-8601 UTC, or empty
-  date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || true
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  else
+    date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  fi
 }
 
 recall_regular_file() {  # <path> -> 0 when it is a regular non-symlink file
   [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+# One provenance object for a slug this home cannot judge. Kind and id are null
+# rather than echoed back, because a slug that failed the address checks has not
+# earned the claim that it names a task or a note this home owns.
+provenance_unknown() {  # <slug> [<kind> <id>]
+  jq -cn --arg slug "$1" --arg kind "${2:-}" --arg id "${3:-}" \
+    '{slug:$slug, captured_at:null, source_state:"unknown",
+      source_kind:(if $kind == "" then null else $kind end),
+      source_id:(if $id == "" then null else $id end),
+      source_updated_at:null, stale_from_source:false}'
+}
+
+# Does the live report still end the way the captured body does?
+#
+# The stored body is not a verbatim copy of the report: capture composes
+# frontmatter in front of it, truncates the composed document at
+# FM_GBRAIN_CAPTURE_MAX_BYTES, and rewrites credential-shaped values before any
+# byte reaches disk. A tail that is absent for one of those reasons is not
+# evidence that the report changed, so this votes "differs" only when the two
+# are genuinely comparable and answers "unknown" otherwise, which leaves the
+# mtime rule to decide on its own rather than marking an untouched page drifted.
+#
+# The comparison is taken in CHARACTERS, not bytes. A byte-sized cut lands inside
+# a multi-byte character often enough to matter, and the orphaned continuation
+# bytes decode to U+FFFD, which matches nothing in a body that was stored intact.
+recall_body_verdict() {  # <item-json> <report-path> -> match | differs | unknown
+  local item=$1 report=$2 max=${FM_GBRAIN_CAPTURE_MAX_BYTES:-65536} size verdict
+  size=$(wc -c < "$report" 2>/dev/null | tr -cd '0-9') || size=""
+  [ -n "$size" ] || size=0
+  verdict=$(printf '%s' "$item" | jq -r \
+    --rawfile tail <(tail -c 4000 "$report" 2>/dev/null || true) \
+    --argjson max "$max" --argjson size "$size" '
+      ($tail[-200:] | sub("\\s+$"; "")) as $fp
+      | if ($fp | length) == 0 then "match"
+        elif (.body | index($fp)) != null then "match"
+        elif ((.redactions | length) > 0)
+          or ((.body | utf8bytelength) >= $max)
+          or ($size >= $max) then "unknown"
+        else "differs"
+        end' 2>/dev/null) || verdict=""
+  # Anything this did not itself produce is not a verdict, so a jq that failed,
+  # a ceiling that is not a number, and a body this could not size all land on
+  # "unknown" rather than on an accidental claim about the live source.
+  case $verdict in
+    match | differs) printf '%s\n' "$verdict" ;;
+    *) printf 'unknown\n' ;;
+  esac
 }
 
 # Emit one provenance object for a local slug. Always succeeds with JSON so a
@@ -519,7 +573,7 @@ provenance_for_slug() {  # <data-dir> <slug>
   local data=$1 slug=$2
   local prefix tag kind id extra
   local doc_id item captured_at source_kind source_id cap_epoch
-  local report outcome live_epoch=0 file_epoch fp body_has=0 have_report=0
+  local report outcome live_epoch=0 file_epoch body_differs=0 have_report=0
   local source_state=unknown source_updated_at="" stale_from_source=false
   IFS=/ read -r prefix tag kind id extra <<EOF
 $slug
@@ -527,19 +581,24 @@ EOF
   if [ "$prefix" != firstmate ] || [ -z "$tag" ] || [ -z "$id" ] || [ -n "${extra:-}" ] \
       || { [ "$kind" != task ] && [ "$kind" != note ]; } \
       || ! fm_gbrain_capture_source_id_valid "$id"; then
-    jq -cn --arg slug "$slug" \
-      '{slug:$slug, captured_at:null, source_state:"unknown", source_kind:null,
-        source_id:null, source_updated_at:null, stale_from_source:false}'
+    provenance_unknown "$slug"
+    return 0
+  fi
+  # The home tag arrives inside a slug the brain returned, and it becomes a path
+  # component of the outbox record this reads. The parse above rejects a slug
+  # carrying an extra "/", but that is incidental to splitting the slug rather
+  # than a guarantee about the tag, so the document id is shape-checked with the
+  # library's own guard before it addresses a file.
+  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
+  if ! fm_gbrain_capture_document_id_valid "$doc_id"; then
+    provenance_unknown "$slug"
     return 0
   fi
   source_kind=$kind
   source_id=$id
-  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
   item=$(fm_gbrain_capture_item_read "$data" "$doc_id" 2>/dev/null) || item=""
   if [ -z "$item" ]; then
-    jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
-      '{slug:$slug, captured_at:null, source_state:"unknown", source_kind:$kind,
-        source_id:$id, source_updated_at:null, stale_from_source:false}'
+    provenance_unknown "$slug" "$source_kind" "$source_id"
     return 0
   fi
   captured_at=$(printf '%s' "$item" | jq -r '.captured_at // empty')
@@ -563,17 +622,10 @@ EOF
     if [ -n "$file_epoch" ] && [ "$file_epoch" -gt "$live_epoch" ]; then
       live_epoch=$file_epoch
     fi
-    fp=$(tail -c 200 "$report" 2>/dev/null | tr -d '\000' || true)
-    case $fp in
-      *[![:space:]]*)
-        if printf '%s' "$item" | jq -e --arg fp "$fp" '(.body | index($fp)) != null' >/dev/null 2>&1; then
-          body_has=1
-        fi
-        ;;
-      *) body_has=1 ;;
-    esac
+    # "unknown" is not a vote: a body that was truncated or redacted cannot
+    # disprove the report it was composed from, so only "differs" marks drift.
+    [ "$(recall_body_verdict "$item" "$report")" != differs ] || body_differs=1
   else
-    body_has=1
     if recall_regular_file "$outcome"; then
       file_epoch=$(recall_stat_mtime "$outcome")
       if [ -n "$file_epoch" ]; then
@@ -588,7 +640,7 @@ EOF
   else
     source_updated_at=$(recall_epoch_iso "$live_epoch")
     source_state=current
-    if [ "$body_has" -eq 0 ]; then
+    if [ "$body_differs" -eq 1 ]; then
       source_state=drifted
       stale_from_source=true
     elif [ "$have_report" -eq 1 ] && [ -n "$captured_at" ]; then
@@ -612,12 +664,17 @@ EOF
 annotate_search_results() {  # <results-json> <home> -> annotated results json
   local results=$1 home=$2
   local data="$home/data"
-  local meta='[]' slug p
-  while IFS= read -r slug; do
-    [ -n "$slug" ] || continue
-    p=$(provenance_for_slug "$data" "$slug")
-    meta=$(jq -c -n --argjson m "$meta" --argjson p "$p" '$m + [$p]')
-  done < <(printf '%s' "$results" | jq -r '[.[] | select(.source == "local") | .slug] | unique[]')
+  local meta slug
+  # Each slug's provenance is one JSON line and the whole stream is folded once.
+  # Re-reading and re-serialising the accumulated array per slug is quadratic on
+  # a path the dashboard runs under a time budget, at the CLI's cap of 50 rows.
+  meta=$(
+    while IFS= read -r slug; do
+      [ -n "$slug" ] || continue
+      provenance_for_slug "$data" "$slug"
+    done < <(printf '%s' "$results" | jq -r '[.[] | select(.source == "local") | .slug] | unique[]') \
+      | jq -c -s '.'
+  )
   jq -c --argjson meta "$meta" '
     ($meta | map({key: .slug, value: .}) | from_entries) as $by
     | map(
@@ -785,8 +842,8 @@ cmd_search() {
       (.sources[] | "\(.source)\t\(.state)\(if .brain == "" then "" else "\t" + .brain end)\(if .detail then "\t" + .detail else "" end)"),
       (if .answer then "answer\t\(.answer.kind)\t\(.answer.notice)" else empty end),
       "",
-      (if (.answer.kind // "") == "none" then empty
-       elif (.results | length) == 0 then "no results"
+      (if (.answer | not) then "not searched: no corpus could be read - this says nothing about whether it exists"
+       elif (.results | length) == 0 then "no match in this brain - the brain may simply not hold it"
        else (.results[]
              | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
        end)'
@@ -808,7 +865,7 @@ cmd_search() {
       exit 5
     fi
     [ "$JSON_MODE" -eq 1 ] \
-      || printf 'fm-recall: no corpus could be read, so this is not an empty result set - see the source states above\n' >&2
+      || printf 'fm-recall: not searched: no corpus could be read, so this is not an empty result set and says nothing about whether the queried thing exists - see the source states above\n' >&2
     exit 3
   fi
 }
