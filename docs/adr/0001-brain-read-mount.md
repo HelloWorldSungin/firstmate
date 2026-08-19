@@ -70,7 +70,9 @@ Bounds: the embedded block is capped at roughly 900 tokens (the measured `--limi
 
 ### D2. A recall audit trail is a prerequisite, built into this design, sequenced first
 
-One append per `fm-recall.sh` invocation into a gitignored state file: timestamp, caller seam, query hash, exit state, result count.
+One append per `fm-recall.sh` invocation that actually read a resolved corpus, into a gitignored state file: timestamp, caller seam, query hash, exit state, result count.
+An invocation that resolved no corpus to read appends nothing, which is what keeps the trail inert on a home with no brain: there, every invocation fails its source, so the file is never created and the home produces exactly what it produces today.
+The wrapper already draws that line - it omits its answer when no corpus was read - so the trail binds to that condition rather than inventing a second notion of a successful read.
 
 - **Query hash, never query text.**
   This is a decision, not an omission: a query can carry the substance of what someone was working on, and brain content is private to a home.
@@ -81,14 +83,16 @@ One append per `fm-recall.sh` invocation into a gitignored state file: timestamp
   - Dashboard queries are operator free text with no enumerable source to draw candidates from, so the hash withholds real content there.
   - Stow queries are the candidate learning's own content (D5), so a guess has to reproduce that text before the digest can confirm it.
   - Eval queries come from an evaluation set file, and the default set is tracked in this repository, so its questions are already public and the hash is protecting nothing that was private.
-  The price, accepted deliberately, is that the trail can never answer "what were people searching for" - only whether recall ran, from where, and with what outcome.
+  The price, stated per seam above rather than once for all of them, is that the trail records outcomes rather than content, most weakly at the brief scaffold.
 - **The caller-seam field must distinguish** brief-scaffold, stow, dashboard, and eval invocations, or the trail cannot measure adoption, which is its purpose.
+  Two of those four already invoke `bin/fm-recall.sh` today and pass no seam identifier: the dashboard server's operator search and the eval harness.
+  Satisfying this field therefore means editing those two call sites or adding a wrapper-side seam declaration they adopt, and the implementing task plans for those files rather than discovering them mid-flight.
 - **The trail must make pre-commission recall computable**: joined against task creation times, it must answer "was a recall run before this investigation was commissioned" (see D6 for why this specific question matters).
 - **Who reads it, and when**: firstmate reviews the trail one week after the mount lands and again at 30 days.
-  No seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
+  On a home whose brain resolves, no seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
   See D6 for the pre-commission reading and its trigger.
-- Without a brain, what the trail holds is whatever still calls `fm-recall.sh`, taken seam by seam across the four above: nothing from D1 or D4, which do not run; two failed invocations per `/stow` from D5; and one record per dashboard or eval search, since both of those seams already call the wrapper today, independently of this design.
-  Whatever it holds, it must never block or slow the read path it measures.
+- Without a brain the trail is empty, taken seam by seam across the four above: D1 and D4 do not run at all, and the callers that still invoke the wrapper - D5's per-item `/stow` searches, plus the dashboard and eval seams that already call it today independently of this design - each fail their source and so append nothing.
+  Wherever it does hold records, it must never block or slow the read path it measures.
 
 Without this trail, neither the mount's adoption nor its effect on re-derivation can ever be demonstrated - the loop's brokenness would stay unmeasurable one level up.
 
@@ -115,8 +119,9 @@ It is surfacing, not enforcement: nothing forces firstmate to read it, and its e
 
 ### D5. `/stow` mounts a round-trip read - advisory, ungated, with a hard constraint
 
-Before admitting a "new" learning to always-loaded memory, `/stow` runs one `fm-recall.sh search` at scope local over pruned notes for prior art; before creating a new pruned note, it runs a second search, also scope local, for an existing equivalent.
-Both are pinned to scope local for the same reason D1 is: the three mounts this ADR adds - D1, D4, and D5 - all read this home's own corpus and none reaches the remote main brain, and inheriting the wrapper's default scope would mount one.
+The searches are per candidate item, not per invocation: one `fm-recall.sh search` at scope local over pruned notes for prior art before admitting each "new" learning to always-loaded memory, and one, also scope local, before creating each new pruned note.
+A pass that admits nothing and prunes nothing runs none; a pass that admits two learnings and prunes three notes runs five.
+Both kinds are pinned to scope local for the same reason D1 is: the three mounts this ADR adds - D1, D4, and D5 - all read this home's own corpus and none reaches the remote main brain, and inheriting the wrapper's default scope would mount one.
 This fixes the only demonstrated defect in this area - the 2026-08-05 to 2026-08-16 round-trip - at the moment it occurs, which no other seam reaches (nothing is commissioned at prune time).
 
 The constraint, which is not optional: **the read is advisory; a search hit may never, on its own, be the reason a learning is not captured.**
@@ -151,7 +156,7 @@ A retrieval miss at spawn time means not knowing how to answer a trust dialog on
 
 **Resolution: the safety clause wins.**
 Per-variant harness procedure does not go to the brain.
-It goes into per-harness files loaded deterministically by the resolved harness name - a third category, **file-to-file routing**, which is neither "stays in the always-loaded file" nor "becomes retrieval", and is better than both here: the load is deterministic, the failure mode is nonexistent, and the token cost falls to the variant actually being spawned.
+It goes into per-harness files loaded deterministically by the resolved harness name - a third category, **file-to-file routing**, which is neither "stays in the always-loaded file" nor "becomes retrieval", and is better than both here: the load is deterministic, it has no retrieval failure mode to miss on (a missing or unreadable file still fails, and fails visibly), and the token cost falls to the variant actually being spawned.
 
 Measured shape: the skill is 23,164 bytes of shared head plus 49,056 bytes across nine per-harness sections.
 A spawn today loads all 72,220 bytes (~24.1k estimated tokens); split, it loads the shared head plus one variant, roughly 28,600 bytes (~9.5k estimated tokens) for an average variant - a ~60% per-spawn reduction with zero retrieval risk.
@@ -218,8 +223,8 @@ This ADR adopts that target as the destination of the tranche system and holds t
 
 - Brief-scaffold search: measured 242-879 tokens of output per commissioned task, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
 - Nearest-prior-work line: one stdout line at scaffold time.
-- `/stow` round-trip: two sub-second local searches per invocation (D5).
-- Audit trail: one local file append per recall; no context cost.
+- `/stow` round-trip: sub-second local searches per candidate item processed, so the count is proportional to what a pass admits and prunes rather than fixed (D5).
+- Audit trail: one local file append per recall that read a corpus; no context cost.
 - Always-cost added to any session: **zero** - of the four seams listed above, each is paid only when its own trigger fires, and none charges the startup files or the per-session context unconditionally.
 
 ### The net, honestly
@@ -271,8 +276,8 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
 | --- | --- | --- | --- |
 | D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | Wrapper timeout bounds the wait (60s default; measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
 | D4 nearest-prior-work line | Not printed | Same bounds as D1; absence of the line is silence about proximity, never a claim | Prints regardless (advisory; not gated) |
-| D5 stow round-trip | `/stow` reaches the same outcome as today, having newly done and failed work: two `fm-recall.sh` searches per invocation that fail their source, after which the advisory step is skipped and capture proceeds | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
-| D2 audit trail | Appends one record per invocation of whatever still runs: nothing from D1 or D4, two failed-invocation records per `/stow` (D5), and one per dashboard or eval search, both of which call `fm-recall.sh` today independently of this design; the appends are gitignored and block nothing | Appends locally; never blocks or slows the read it records | Independent of it |
+| D5 stow round-trip | `/stow` reaches the same outcome as today, having newly done and failed work: its per-candidate-item searches fail their source, after which the advisory step is skipped and capture proceeds | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
+| D2 audit trail | Appends nothing - no invocation reads a corpus here, so nothing records and the trail file is never created | Appends locally; never blocks or slows the read it records | Independent of it |
 
 ## Consequences
 
@@ -285,7 +290,9 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
   The one-sentence rule that guards all of them: the brain may tell you where to look; it may not tell you that you have looked.
   It then appeared a fourth time, in this ADR's own prose - in the sentences written to fix the first three, which asserted properties over a set of seams nobody had enumerated: "the trail holds those failed invocations and nothing else", "the one difference the check found", "queries derive from task titles".
   Each was false exactly at the seams left uncounted, which is the most transferable lesson here and the general form of the same defect: a claim about a set is evidence only when the set is on the page, so scope it to an enumeration the reader can see or do not make it.
-- Implementation is follow-up tracked work, per item: the audit trail (first), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
+- The process rule this design paid a round to learn: a review finding that collides with a decided property escalates to that decision's owner and is never applied as a correction.
+  A round of review here did exactly that, trading away D2's decided "inert without a brain" for a more accurate description of an unspecified detail, and the finding's apparent correctness is precisely what made the override invisible - a wrong decision is arguable, whereas a right-looking correction is not read as a decision at all.
+- Implementation is follow-up tracked work, per item: the audit trail (first, and carrying the seam declaration at the dashboard and eval call sites that D2 names), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
   This ADR authorizes none of them to skip their own validation.
 
 ## Open captain choices
