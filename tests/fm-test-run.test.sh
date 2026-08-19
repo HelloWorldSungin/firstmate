@@ -383,9 +383,9 @@ test_portable_shard_union_and_coverage_guard() {
     && fail "portable lanes must not include real-herdr-gated smoke"
   printf '%s\n' "$herdr" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "herdr family must include smoke"
-  printf '%s\n' "$optin" | grep -Fq 'tests/fm-cursor-agy-smoke.test.sh' \
+  printf '%s\n' "$optin" | grep -Fq 'tests/fm-agy-smoke.test.sh' \
     || fail "live-harness-optin must include the cursor/agy credentialed smoke"
-  if printf '%s\n' "$serial" | grep -Fq 'tests/fm-cursor-agy-smoke.test.sh'; then
+  if printf '%s\n' "$serial" | grep -Fq 'tests/fm-agy-smoke.test.sh'; then
     fail "portable serial must exclude the cursor/agy credentialed smoke"
   fi
   out=$("$RUNNER" --check-coverage)

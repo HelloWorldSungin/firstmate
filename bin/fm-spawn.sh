@@ -113,9 +113,9 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
-#   overrides it for this spawn (either kind); cursor and agy also override it but
-#   are crew-only and herdr-only. A non-flag string containing
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
+#   overrides it for this spawn (either kind); agy also overrides it but is
+#   crew-only and herdr-only. A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
 #   name from PATH once, probes that concrete path with --help, and launches the
@@ -186,16 +186,25 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+#     __WORKTREE__  absolute path to the task worktree
+#     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
-# cursor/agy install no hook at all: the watcher derives their completion from
+# agy installs no hook at all: the watcher derives its completion from
 # herdr-native agent state (bin/fm-transition-lib.sh, fm_transition_native_completion).
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
+# cursor installs no per-task hook either: it writes state/<id>.cursor-session to
+# bind the pane to cursor's own conversation transcript (projects root, the exact
+# workspace path cursor records in .workspace-trusted, and the conversations that
+# already existed for that workspace). It is launched through the verified binary
+# resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
+# the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
+# park owns that home's supervision (docs/supervision-protocols/cursor.md).
 # On success prints: spawned <id> harness=<name> kind=<ship|design|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship or design task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -274,6 +283,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-cursor-lib.sh
+. "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-issue-lib.sh
@@ -469,7 +480,7 @@ spawn_remote_secondmate() {
     harness=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
   fi
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
     *)
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1097,7 +1108,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1144,8 +1155,8 @@ pi_supports_tui_mode() {
 # The verified launch command per adapter lives in bin/fm-launch-lib.sh
 # (fm_launch_template), sourced above - including origin/main #909's __OPINPUT__
 # operational-input encoding threaded into each template there.
-# cursor and agy are CREW-ONLY, herdr-ONLY; the guard after this case block
-# enforces both gates.
+# agy is CREW-ONLY, herdr-ONLY; the guard after this case block enforces both
+# gates. cursor is an ordinary verified harness and carries no such gate.
 RAW_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
@@ -1203,28 +1214,41 @@ case "$ARG3" in
     ;;
 esac
 
-# cursor and agy are CREW-ONLY, herdr-ONLY adapters (captain-approved divergence;
-# data/captain.md, verification data/cursor-agy-verify/report.md). Enforce both
-# gates before any container or worktree work: they can supervise a ship/design/scout
-# crewmate only, never a secondmate, and only on the herdr backend, whose native
-# agent-state gives liveness plus the debounced turn-boundary wake the watcher
-# derives (fm-watch.sh maybe_native_turnend). tmux has no native agent detection
-# and is documented out-of-scope in the harness-adapters skill. Refuse loudly
-# rather than launch an unsupervisable crewmate.
+# agy is a CREW-ONLY, herdr-ONLY adapter (captain-approved divergence;
+# data/captain.md, verification data/cursor-agy-verify/report.md). Upstream carries
+# no agy support, so this gate is fork-local. Enforce both halves before any
+# container or worktree work: agy can supervise a ship/design/scout crewmate only,
+# never a secondmate, and only on the herdr backend, whose native agent-state gives
+# liveness plus the debounced turn-boundary wake the watcher derives
+# (fm-watch.sh maybe_native_turnend). tmux has no native agent detection and is
+# documented out-of-scope in the harness-adapters skill. Refuse loudly rather than
+# launch an unsupervisable crewmate. cursor is an ordinary verified harness and is
+# deliberately NOT gated here.
 case "$HARNESS" in
-  cursor|agy)
+  agy)
     if [ "$KIND" = secondmate ]; then
       echo "error: harness '$HARNESS' is crew-only and cannot launch a secondmate; use a verified secondmate launcher (config/secondmate-harness)" >&2
       exit 1
     fi
     if [ "$BACKEND" != herdr ]; then
-      echo "error: harness '$HARNESS' is supported only on the herdr backend (resolved backend '$BACKEND'); herdr provides the native agent-state signals cursor/agy need. Select the herdr backend or use a verified crew harness." >&2
+      echo "error: harness '$HARNESS' is supported only on the herdr backend (resolved backend '$BACKEND'); herdr provides the native agent-state signals agy needs. Select the herdr backend or use a verified crew harness." >&2
       exit 1
     fi
     fm_backend_herdr_agent_prompt_version_check || exit 1
     fm_backend_herdr_agent_prompt_capability_check "$(fm_backend_herdr_session)" || exit 1
     ;;
 esac
+
+# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
+# instance, so it needs a primary supervision protocol; muse has none, and its
+# Claude-compatible hook dialect explicitly rejects the model-reawakening and
+# asyncRewake handlers that firstmate's primary turn-end supervision is built on
+# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
+# secondmate whose supervision cycle could never be armed.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
+  echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
+  exit 1
+fi
 
 case "$HARNESS" in
   pi|pi-signed)
@@ -1241,18 +1265,23 @@ case "$HARNESS" in
     # in the template while earlier placeholders are still being rendered.
     LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
     ;;
+  cursor)
+    # `cursor` is not the CLI name, and the legacy alias `agent` is far too
+    # generic to launch on its name alone, so resolution runs through the
+    # verified owner rather than a bare command lookup. Refusing here keeps a
+    # missing install a loud spawn refusal instead of a pane that dies with a
+    # command-not-found the supervisor would read as a wedged worker.
+    CURSOR_BIN=$(fm_cursor_resolve_binary) || exit 1
+    if [ -n "$MODEL" ] && [ "$MODEL" != default ]; then
+      if CURSOR_MODELS=$(fm_cursor_list_models "$CURSOR_BIN"); then
+        if ! printf '%s\n' "$CURSOR_MODELS" | fm_cursor_catalog_has_model "$MODEL"; then
+          echo "error: Cursor model '$MODEL' is not available from '$CURSOR_BIN --list-models'; choose an id listed by that command or omit --model" >&2
+          exit 1
+        fi
+      fi
+    fi
+    ;;
 esac
-
-# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
-# instance, so it needs a primary supervision protocol; muse has none, and its
-# Claude-compatible hook dialect explicitly rejects the model-reawakening and
-# asyncRewake handlers that firstmate's primary turn-end supervision is built on
-# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
-# secondmate whose supervision cycle could never be armed.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
-  echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
 
 # config/secondmate-harness may carry optional model/effort tokens alongside the
 # harness ("<harness> [<model>] [<effort>]"). They apply only when this is a
@@ -2685,6 +2714,29 @@ $(fm_busy_muse_matching_logs "$MUSE_SESSIONS_ROOT" "$WT" || true)
 EOF
       } > "$STATE/$ID.muse-session"
       ;;
+    cursor*)
+      # Cursor's turn lifecycle is neither a hook nor a launch flag: it writes
+      # its own durable per-conversation transcript and brackets every turn
+      # there (bin/fm-busy-lib.sh owns the fold). Like muse that is a PULL
+      # source with no writer, so nothing is armed and no record is seeded.
+      # This sidecar is the whole binding. It pins the projects root and the
+      # exact workspace path cursor records in each project's
+      # .workspace-trusted, plus every conversation that already exists for
+      # that workspace, so a relaunch into a reused worktree folds its OWN
+      # conversation instead of its predecessor's. The classifier then accepts
+      # only one remaining conversation and never guesses between incarnations.
+      CURSOR_PROJECTS_ROOT="${CURSOR_PROJECTS_ROOT_OVERRIDE:-$HOME/.cursor/projects}"
+      {
+        printf 'projects_root=%s\n' "$CURSOR_PROJECTS_ROOT"
+        printf 'workspace_root=%s\n' "$WT"
+        if CURSOR_PRIOR_PROJECT=$(fm_busy_cursor_project_dir "$CURSOR_PROJECTS_ROOT" "$WT" 2>/dev/null); then
+          for CURSOR_PRIOR_DIR in "$CURSOR_PRIOR_PROJECT"/agent-transcripts/*/; do
+            [ -d "$CURSOR_PRIOR_DIR" ] || continue
+            printf 'prior_conversation=%s\n' "$(basename -- "${CURSOR_PRIOR_DIR%/}")"
+          done
+        fi
+      } > "$STATE/$ID.cursor-session"
+      ;;
     kimi*)
       # Kimi's Stop hook is global, but it is inert unless cwd contains this
       # task's token pointer and the token resolves through Firstmate's private
@@ -2699,14 +2751,6 @@ EOF
       printf '%s\n' "${auth_file##*/}" > "$STATE/$ID.kimi-turnend-token"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-kimi-turnend"
       exclude_path '.fm-kimi-turnend'
-      ;;
-    cursor*)
-      # cursor (crew-only, herdr-only): turn-end notification is the watcher's
-      # debounced native-idle detector (fm-watch.sh maybe_native_turnend), so NO
-      # launch-time hook is installed and NO repo hook file (.cursor/hooks.json) is
-      # ever written. cursor's launch-time --trust already covers its workspace
-      # trust modal, so unlike agy there is nothing to seed here.
-      :
       ;;
     agy*)
       # agy (crew-only, herdr-only): turn-end notification is the watcher's
@@ -2912,6 +2956,7 @@ sq_piturnend=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnen
 sq_piwatch=$(fm_launch_shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 # #909's canonical operational-input encoder path, threaded into every template.
 sq_opinput=$(fm_launch_shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
+sq_worktree=$(fm_launch_shell_quote "$WT")
 MODELFLAG=$(fm_launch_model_flag "$HARNESS" "$MODEL")
 EFFORTFLAG=$(fm_launch_effort_flag "$HARNESS" "$EFFORT")
 LAUNCH=$(fm_launch_render \
@@ -2926,6 +2971,20 @@ case "$HARNESS" in
     LAUNCH=${LAUNCH//__PIBIN__/$(fm_launch_shell_quote "$PI_BIN")}
     LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
     ;;
+  cursor)
+    LAUNCH=${LAUNCH//__CURSORBIN__/$(fm_launch_shell_quote "$CURSOR_BIN")}
+    ;;
+esac
+LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
+# Clear an inherited cursor marker for every harness that is not cursor, so a
+# spawn made from a cursor pane cannot leave CURSOR_AGENT/CURSOR_INVOKED_AS
+# outranking the launched adapter's own identity marker. cursor's own template
+# clears the foreign markers it needs; agy carries no marker of its own and is
+# covered here.
+case "$HARNESS" in
+  claude|codex|opencode|pi|pi-signed|grok|kimi|muse|agy)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
+    ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment. Forward an explicit config directory
@@ -2938,8 +2997,11 @@ fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(fm_launch_shell_quote "$PROJ_ABS")
   sq_primary_home=$(fm_launch_shell_quote "$FM_HOME")
+  # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
+  # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN
+  # turns, so a fresh beacon with no live watcher is their healthy mid-turn state.
   case "$HARNESS" in
-    claude) supervision_model=autoarm ;;
+    claude|cursor) supervision_model=autoarm ;;
     *) supervision_model=persistent ;;
   esac
   # Deliver the primary's EFFECTIVE trace-context decision as a normalized on/off

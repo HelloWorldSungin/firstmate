@@ -173,6 +173,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-cursor-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh disable=SC1091
@@ -955,6 +957,7 @@ install_cmd() {
 manual_install_url() {
   case "$1" in
     herdr) echo "https://herdr.dev" ;;
+    cursor-agent) echo "https://cursor.com/cli" ;;
     *) return 1 ;;
   esac
 }
@@ -1192,7 +1195,7 @@ crew_dispatch_validate() {
     return 0
   fi
   err=$(jq -r '
-    def verified($h): ["claude","codex","opencode","pi","pi-signed","grok","kimi","muse","cursor","agy"] | index($h);
+    def verified($h): ["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","muse","agy"] | index($h);
     def effort_ok($h; $e):
       if $e == null then true
       elif ($e | type) != "string" then false
@@ -1202,8 +1205,7 @@ crew_dispatch_validate() {
       elif $h == "pi" or $h == "pi-signed" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "agy" then (["low","medium","high"] | index($e))
       elif $h == "muse" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "opencode" or $h == "kimi" then false
-      elif $h == "cursor" then false
+      elif $h == "opencode" or $h == "kimi" or $h == "cursor" then false
       else true
       end;
     def profiles($value):
@@ -1258,11 +1260,12 @@ crew_dispatch_validate() {
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - $err"
     return 0
   fi
-  # Backend-context check (S2): cursor and agy are crew-only, HERDR-only. A
-  # dispatch profile that selects them is valid JSON, but every matching task
-  # will be refused at spawn when the resolved backend is not herdr. Diagnose it
-  # here rather than deferring the surprise to task intake. $BACKEND is the
-  # already-resolved runtime backend (fm_backend_name, above).
+  # Backend-context check (S2): agy is crew-only, HERDR-only. A dispatch profile
+  # that selects it is valid JSON, but every matching task will be refused at
+  # spawn when the resolved backend is not herdr. Diagnose it here rather than
+  # deferring the surprise to task intake. $BACKEND is the already-resolved
+  # runtime backend (fm_backend_name, above). cursor is deliberately excluded:
+  # it is an ordinary verified harness on every spawn backend.
   if [ "$BACKEND" != herdr ]; then
     local restricted
     restricted=$(jq -r '
@@ -1272,10 +1275,10 @@ crew_dispatch_validate() {
         else [] end;
       ([(.rules // [])[]? | profiles(.use?)[]?]
         + (if has("default") then [profiles(.default)[]?] else [] end))
-      | map(.harness?) | map(select(. == "cursor" or . == "agy")) | unique | join(", ")
+      | map(.harness?) | map(select(. == "agy")) | unique | join(", ")
     ' "$file" 2>/dev/null || true)
     if [ -n "$restricted" ]; then
-      echo "CREW_DISPATCH: backend mismatch - config/crew-dispatch.json selects crew-only herdr-only harness(es) ($restricted) but the resolved backend is '$BACKEND'; those tasks will be refused at spawn. Select the herdr backend (config/backend) or drop cursor/agy from the dispatch rules."
+      echo "CREW_DISPATCH: backend mismatch - config/crew-dispatch.json selects crew-only herdr-only harness(es) ($restricted) but the resolved backend is '$BACKEND'; those tasks will be refused at spawn. Select the herdr backend (config/backend) or drop agy from the dispatch rules."
       return 0
     fi
   fi
@@ -1400,6 +1403,14 @@ detect_local_config() {
   [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != "default" ]; then
     echo "BOOTSTRAP_INFO: crew harness override active: $crew"
+  fi
+  # A configured cursor crew harness needs a cursor executable present, and
+  # cursor ships under EITHER installed name. Resolution runs through the
+  # verified owner rather than a bare `command -v`, so a home that merely has
+  # some unrelated executable named `agent` on PATH is still reported missing
+  # instead of failing at the first spawn.
+  if [ "$crew" = cursor ] && ! fm_cursor_resolve_binary >/dev/null 2>&1; then
+    echo "MISSING_MANUAL: cursor-agent (instructions: $(manual_install_url cursor-agent))"
   fi
   crew_dispatch_validate
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \

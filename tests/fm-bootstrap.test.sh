@@ -113,7 +113,7 @@ add_quota_axi() {
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' "${FM_FAKE_QUOTA_AXI_VERSION:-0.1.17}"
+  printf '%s\n' "${FM_FAKE_QUOTA_AXI_VERSION:-0.1.25}"
   exit 0
 fi
 exit 0
@@ -496,11 +496,11 @@ test_quota_axi_min_version() {
         [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
     esac
   done <<'ROWS'
-minimum quota-axi version is accepted^0.1.17^empty
-newer quota-axi patch is accepted^0.1.18^empty
+minimum quota-axi version is accepted^0.1.25^empty
+newer quota-axi patch is accepted^0.1.26^empty
 newer quota-axi minor is accepted^0.2.0^empty
 newer quota-axi major is accepted^1.0.0^empty
-the patch just below the floor reports an upgrade^0.1.16^missing
+the patch just below the floor reports an upgrade^0.1.24^missing
 much older quota-axi minor reports an upgrade^0.0.9^missing
 unparseable quota-axi version reports an upgrade^quota-axi development build^missing
 ROWS
@@ -1650,34 +1650,50 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
 }
 
 test_crew_dispatch_backend_mismatch() {
-  # S2: a valid cursor/agy dispatch profile on a NON-herdr backend is unusable
-  # (every matching task is refused at spawn), so bootstrap must diagnose it here
-  # rather than deferring the surprise to task intake. On herdr it stays silent.
+  # S2: a valid agy dispatch profile on a NON-herdr backend is unusable (every
+  # matching task is refused at spawn), so bootstrap must diagnose it here rather
+  # than deferring the surprise to task intake. On herdr it stays silent. cursor
+  # is deliberately excluded: it is an ordinary verified harness on every spawn
+  # backend, and the case below proves it draws no mismatch warning on tmux.
   local case_dir fakebin out h
-  for h in cursor agy; do
-    case_dir="$TMP_ROOT/dispatch-mismatch-$h"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    printf '%s\n' tmux > "$case_dir/home/config/backend"
-    printf '{"rules":[{"when":"paid sub work","use":{"harness":"%s","model":"m1"}}]}\n' "$h" \
-      > "$case_dir/home/config/crew-dispatch.json"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    add_real_jq "$fakebin"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
-      || fail "$h on tmux backend should warn of a backend mismatch, got: $out"
-    printf '%s\n' "$out" | grep -q "($h)" \
-      || fail "$h backend-mismatch warning should name the harness, got: $out"
+  h=agy
+  case_dir="$TMP_ROOT/dispatch-mismatch-$h"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' tmux > "$case_dir/home/config/backend"
+  printf '{"rules":[{"when":"paid sub work","use":{"harness":"%s","model":"m1"}}]}\n' "$h" \
+    > "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    || fail "$h on tmux backend should warn of a backend mismatch, got: $out"
+  printf '%s\n' "$out" | grep -q "($h)" \
+    || fail "$h backend-mismatch warning should name the harness, got: $out"
 
-    # Same config on herdr must NOT warn of a mismatch (cursor/agy are usable there).
-    printf '%s\n' herdr > "$case_dir/home/config/backend"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-    printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
-      && fail "$h on the herdr backend must NOT warn of a backend mismatch, got: $out"
-  done
-  pass "bootstrap warns when a cursor/agy dispatch profile is configured on a non-herdr backend"
+  # Same config on herdr must NOT warn of a mismatch (agy is usable there).
+  printf '%s\n' herdr > "$case_dir/home/config/backend"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    && fail "$h on the herdr backend must NOT warn of a backend mismatch, got: $out"
+
+  # cursor is no longer backend-restricted, so the identical profile on tmux must
+  # stay silent. Without this the check could quietly go back to warning on it.
+  case_dir="$TMP_ROOT/dispatch-mismatch-cursor-ok"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' tmux > "$case_dir/home/config/backend"
+  printf '{"rules":[{"when":"composer work","use":{"harness":"cursor","model":"m1"}}]}\n' \
+    > "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  printf '%s\n' "$out" | grep -q "CREW_DISPATCH: backend mismatch" \
+    && fail "cursor is an ordinary verified harness and must not warn of a backend mismatch on tmux, got: $out"
+  pass "bootstrap warns for an agy dispatch profile on a non-herdr backend and leaves cursor alone"
 }
 
 test_crew_dispatch_validation() {
@@ -1717,6 +1733,8 @@ unsupported cursor effort is flagged^{"rules":[{"when":"composer work","use":{"h
 unsupported agy max effort is flagged^{"rules":[{"when":"gemini work","use":{"harness":"agy","model":"gemini-3-pro","effort":"max"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: agy:max
 kimi model profile is accepted^{"rules":[{"when":"kimi work","use":{"harness":"kimi","model":"kimi-code/k3"}}]}^empty^
 unsupported kimi effort is flagged^{"rules":[{"when":"kimi work","use":{"harness":"kimi","model":"kimi-code/k3","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: kimi:high
+cursor model profile is accepted^{"rules":[{"when":"cursor work","use":{"harness":"cursor","model":"cursor-grok-4.5-high"}}]}^empty^
+unsupported cursor effort is flagged^{"rules":[{"when":"cursor work","use":{"harness":"cursor","model":"cursor-grok-4.5-high","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cursor:high
 array use with quota-balanced is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude","model":"claude-sonnet-5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}],"select":"quota-balanced"}]}^empty^
 array use without select is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude"},{"harness":"codex"}]}]}^empty^
 one-element array use is accepted^{"rules":[{"when":"focused feature","use":[{"harness":"claude"}]}]}^empty^

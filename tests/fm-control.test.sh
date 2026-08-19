@@ -35,7 +35,7 @@ mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi muse"
+VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi cursor muse"
 
 # The expectation table, written out independently of the implementation so a
 # silent change to either side shows up here. The fourth field is the composer
@@ -50,6 +50,7 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
     pi-signed) printf '/quit\tEscape\t1\t\n' ;;
     grok) printf '/exit\tC-c\t1\t\n' ;;
     kimi) printf '/exit\tEscape\t1\t\n' ;;
+    cursor) printf '/exit\tEscape\t1\t\n' ;;
     muse) printf '/exit\tEscape\t1\tC-u\n' ;;
     *) return 1 ;;
   esac
@@ -220,7 +221,11 @@ test_exit_types_each_harness_verified_command() {
   for harness in $VERIFIED_HARNESSES; do
     dir=$(new_case "exit-$harness")
     add_task "$dir" t1 "$harness"
-    alive_as "$dir" "$harness"
+    if [ "$harness" = cursor ]; then
+      alive_as "$dir" cursor-agent
+    else
+      alive_as "$dir" "$harness"
+    fi
     out=$(run_control "$dir" t1 exit); rc=$?
     expect_code 0 "$rc" "exit on $harness should succeed"$'\n'"$out"
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
@@ -236,7 +241,11 @@ test_interrupt_sends_each_harness_verified_key() {
   for harness in $VERIFIED_HARNESSES; do
     dir=$(new_case "int-$harness")
     add_task "$dir" t1 "$harness"
-    alive_as "$dir" "$harness"
+    if [ "$harness" = cursor ]; then
+      alive_as "$dir" cursor-agent
+    else
+      alive_as "$dir" "$harness"
+    fi
     out=$(run_control "$dir" t1 interrupt); rc=$?
     expect_code 0 "$rc" "interrupt on $harness should succeed"$'\n'"$out"
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
@@ -256,8 +265,9 @@ test_interrupt_sends_each_harness_verified_key() {
 test_harness_family_resolution() {
   local pair recorded want got
   for pair in claude:claude claude-latest:claude codex:codex codex-cli:codex \
-      opencode:opencode grok:grok grok-2:grok kimi:kimi muse:muse \
-      muse-bin-0.1.0:muse pi:pi pi-signed:pi-signed; do
+      opencode:opencode grok:grok grok-2:grok kimi:kimi cursor:cursor \
+      cursor-agent:cursor muse:muse muse-bin-0.1.0:muse pi:pi \
+      pi-signed:pi-signed; do
     recorded=${pair%%:*}
     want=${pair#*:}
     got=$(fm_control_harness_family "$recorded") \
@@ -372,6 +382,35 @@ test_harness_kind_capability() {
   fm_control_harness_supports_kind someagent ship \
     && fail "an unverified harness must not claim any kind"
   pass "fm-control-lib: adapter capability is per task kind, not per adapter alone"
+}
+
+# agy is the fork-local crew-only, herdr-only adapter, so it never reaches the
+# tmux-endpoint cases above; its end-to-end control path is covered by the
+# herdr-gated smoke. What must hold here is that it has rows at all: before they
+# existed, every lifecycle verb on an agy task refused as unverified. The values
+# were measured on agy 1.1.14 (docs/verification/runtime-backends.md).
+test_agy_has_verified_control_rows() {
+  fm_control_harness_supported agy \
+    || fail "agy must have verified control mechanics, or every lifecycle verb on an agy task refuses"
+  [ "$(fm_control_harness_family agy-1.1.14)" = agy ] \
+    || fail "a recorded agy harness value must resolve to the agy adapter"
+  [ "$(fm_control_interrupt_key agy)" = Escape ] \
+    || fail "agy cancels its turn on Escape"
+  [ "$(fm_control_interrupt_repeat agy)" = 1 ] \
+    || fail "a single Escape is enough for agy"
+  [ -z "$(fm_control_interrupt_clear_key agy)" ] \
+    || fail "agy does not repollute its composer, so it must declare no clear key"
+  fm_control_interrupt_clear_key agy \
+    || fail "agy must still be a known adapter to the clear-key table, not an error"
+  [ "$(fm_control_interrupt_ack_source agy)" = none ] \
+    || fail "agy exposes no durable typed close, so it must claim no acknowledgement source"
+  [ "$(fm_control_exit_command agy)" = '/exit' ] \
+    || fail "agy exits on /exit"
+  fm_control_harness_supports_kind agy ship \
+    || fail "agy should be able to run a ship task"
+  fm_control_harness_supports_kind agy secondmate \
+    && fail "agy is crew-only and must not claim a secondmate"
+  pass "fm-control-lib: agy carries verified control rows and stays crew-only"
 }
 
 test_orca_refuses_an_escape_harness_interrupt() {
@@ -869,6 +908,7 @@ test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
 test_harness_kind_capability
 test_orca_refuses_an_escape_harness_interrupt
+test_agy_has_verified_control_rows
 test_unverified_state_backends_refuse_stop_verbs
 test_state_verified_backends_are_exactly_tmux_and_herdr
 test_window_label_is_refused_with_the_exact_id

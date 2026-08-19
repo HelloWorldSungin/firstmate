@@ -60,10 +60,12 @@ fm_control_verb_allowed() {  # <verb>
 
 # The harnesses whose control mechanics are verified. Mirrors AGENTS.md
 # section 4's verified-adapter list; an unverified adapter is refused rather
-# than guessed at, exactly as a spawn on it would be.
+# than guessed at, exactly as a spawn on it would be. agy is the fork-local
+# crew-only adapter (AGENTS.md section 4); its rows below were measured on
+# agy 1.1.14 and are recorded in docs/verification/runtime-backends.md.
 fm_control_harness_supported() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|muse) return 0 ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse|agy) return 0 ;;
   esac
   return 1
 }
@@ -85,21 +87,24 @@ fm_control_harness_family() {  # <recorded-harness>
     opencode*) printf 'opencode' ;;
     grok*) printf 'grok' ;;
     kimi*) printf 'kimi' ;;
+    cursor*) printf 'cursor' ;;
     muse*) printf 'muse' ;;
+    agy*) printf 'agy' ;;
     *) return 1 ;;
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse is a crewmate/scout
-# adapter only: it has no primary supervision protocol, and bin/fm-spawn.sh
-# refuses a --secondmate launch on it. The control plane asks this BEFORE it
-# stops anything, so an incompatible relaunch target is refused while the
-# current agent is still running rather than after it has been stopped.
+# Which task kinds an adapter is verified to run. muse and agy are
+# crewmate/scout adapters only: neither has a primary supervision protocol, and
+# bin/fm-spawn.sh refuses a --secondmate launch on either. The control plane
+# asks this BEFORE it stops anything, so an incompatible relaunch target is
+# refused while the current agent is still running rather than after it has
+# been stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse) [ "$kind" != secondmate ] || return 1 ;;
+    muse|agy) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -108,7 +113,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # whose Esc only moves focus to the scrollback; grok cancels on Ctrl+C.
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|kimi|muse) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|kimi|cursor|muse|agy) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -119,7 +124,7 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode) printf '2' ;;
-    claude|codex|pi|pi-signed|grok|kimi|muse) printf '1' ;;
+    claude|codex|pi|pi-signed|grok|kimi|cursor|muse|agy) printf '1' ;;
     *) return 1 ;;
   esac
 }
@@ -129,12 +134,17 @@ fm_control_interrupt_repeat() {  # <harness>
 # RESTORES the cancelled prompt into its composer as real bright text, so an
 # interrupt is not complete until Ctrl+U has cleared it; leaving it there would
 # make the next submitted line - a steer, or this plane's own exit command -
-# concatenate onto it. Prints the key or nothing; a harness with no verified
-# mechanics returns nonzero, matching the tables above.
+# concatenate onto it. cursor was checked for exactly that behaviour and does
+# NOT repollute: after a single Escape its composer shows only the `Add a
+# follow-up` placeholder, so it needs no clear key. agy was checked the same way
+# and also does not repollute: a single Escape closes the turn with
+# `Interrupted - What should Antigravity CLI do instead?` and leaves a bare `>`
+# composer. Prints the key or nothing; a harness with no verified mechanics
+# returns nonzero, matching the tables above.
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|agy) ;;
     *) return 1 ;;
   esac
 }
@@ -142,7 +152,14 @@ fm_control_interrupt_clear_key() {  # <harness>
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi) printf 'none' ;;
+    # cursor's transcript DOES type an aborted close, but its write latency
+    # after an interrupt was measured as variable - sometimes seconds, sometimes
+    # not within 20 - so a cancellation claim built on it would be unreliable.
+    # Normal turn completion is prompt, which is what the busy fold depends on.
+    # agy prints an `Interrupted` line but exposes no durable typed close: its
+    # busy state comes from herdr's native agent-state only, so there is no
+    # source an acknowledgement claim could be built on.
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|agy) printf 'none' ;;
     *) return 1 ;;
   esac
 }
@@ -150,7 +167,7 @@ fm_control_interrupt_ack_source() {  # <harness>
 # The command that exits the agent from its own composer.
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
-    claude|opencode|grok|kimi|muse) printf '/exit' ;;
+    claude|opencode|grok|kimi|cursor|muse|agy) printf '/exit' ;;
     codex|pi|pi-signed) printf '/quit' ;;
     *) return 1 ;;
   esac
@@ -214,6 +231,7 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
       printf '%s\n' "$state/$id.muse-session"
       printf '%s\n' "$state/$id.muse-session-current"
       ;;
+    cursor) printf '%s\n' "$state/$id.cursor-session" ;;
   esac
 }
 

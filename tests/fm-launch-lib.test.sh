@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for bin/fm-launch-lib.sh - the per-harness launch template and the
-# --model / effort flag renderers. Covers the crew-only cursor/agy adapters and
+# --model / effort flag renderers. Covers the crew-only agy adapter and
 # pins the existing harnesses so the extraction from fm-spawn.sh stays faithful
 # (tests/fm-spawn-dispatch-profile.test.sh separately proves the same strings
 # reach a real spawn).
@@ -51,12 +51,13 @@ test_render_rejects_unknown_placeholder() {
 
 test_cursor_template() {
   assert_eq "$(fm_launch_template cursor ship)" \
-    'cursor-agent --trust --force __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
-    "cursor ship template must launch cursor-agent with --trust --force and no effort placeholder"
-  # kind is irrelevant for cursor (crew-only, no secondmate variant).
+    'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    "cursor ship template must clear foreign markers, resolve its binary, pin the worktree, and carry no effort placeholder"
   assert_eq "$(fm_launch_template cursor scout)" "$(fm_launch_template cursor ship)" \
     "cursor scout template must match ship template"
-  pass "cursor template: --trust --force, model-only, no effort placeholder"
+  assert_eq "$(fm_launch_template cursor secondmate)" "$(fm_launch_template cursor ship)" \
+    "cursor secondmate template must match ship template"
+  pass "cursor template: resolved binary, --trust --yolo, pinned workspace, no effort placeholder"
 }
 
 test_agy_template() {
@@ -149,24 +150,25 @@ test_existing_effort_flags_unchanged() {
 
 test_raw_restricted_harness_resolution() {
   # Direct executables.
-  assert_eq "$(fm_launch_raw_restricted_harness 'cursor-agent --trust --force')" cursor "direct cursor-agent"
-  assert_eq "$(fm_launch_raw_restricted_harness 'cursor --trust')" cursor "direct cursor"
+  # cursor is an ordinary verified harness now: a raw cursor launch bypasses no
+  # gate, so the guard must NOT claim it.
+  assert_eq "$(fm_launch_raw_restricted_harness 'cursor-agent --trust --yolo')" "" "cursor-agent is no longer restricted"
+  assert_eq "$(fm_launch_raw_restricted_harness 'cursor --trust')" "" "cursor is no longer restricted"
   assert_eq "$(fm_launch_raw_restricted_harness 'agy --dangerously-skip-permissions')" agy "direct agy"
   # A full path is resolved by basename.
   assert_eq "$(fm_launch_raw_restricted_harness '/home/x/.local/bin/agy -p hi')" agy "agy via absolute path"
   # env wrapper (with and without options / NAME=val).
   assert_eq "$(fm_launch_raw_restricted_harness 'env agy --effort high')" agy "env agy"
-  assert_eq "$(fm_launch_raw_restricted_harness 'env FOO=1 cursor-agent --force')" cursor "env NAME=val cursor-agent"
+  assert_eq "$(fm_launch_raw_restricted_harness 'env FOO=1 cursor-agent --yolo')" "" "env NAME=val cursor-agent is not restricted"
   assert_eq "$(fm_launch_raw_restricted_harness 'env -u HOME agy')" agy "env -u NAME agy"
-  assert_eq "$(fm_launch_raw_restricted_harness 'env -i cursor-agent --force')" cursor "env -i cursor-agent"
   # Leading assignment prefixes.
   assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 agy -p hi')" agy "assignment-prefixed agy"
-  assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 BAR=2 cursor-agent')" cursor "two assignments then cursor-agent"
+  assert_eq "$(fm_launch_raw_restricted_harness 'FOO=1 BAR=2 agy')" agy "two assignments then agy"
   # Non-restricted commands resolve to nothing.
   assert_eq "$(fm_launch_raw_restricted_harness 'claude --dangerously-skip-permissions')" "" "claude is not restricted"
   assert_eq "$(fm_launch_raw_restricted_harness 'my-wrapper --run')" "" "an unrelated wrapper is not restricted"
   assert_eq "$(fm_launch_raw_restricted_harness 'env FOO=1 codex')" "" "env codex is not restricted"
-  pass "fm_launch_raw_restricted_harness resolves cursor-agent/agy through env and assignment prefixes"
+  pass "fm_launch_raw_restricted_harness resolves agy through env and assignment prefixes, and leaves cursor alone"
 }
 
 test_raw_restricted_harness_shell_wrappers() {
@@ -174,12 +176,11 @@ test_raw_restricted_harness_shell_wrappers() {
   # quoted string, so the raw token is e.g. "'agy", not "agy". The fail-closed
   # backstop neutralizes quoting/separators before scanning.
   assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'agy --dangerously-skip-permissions'")" agy "bash -lc 'agy ...'"
-  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'cursor-agent --trust --force'")" cursor "bash -lc 'cursor-agent ...'"
+  assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'cursor-agent --trust --yolo'")" "" "a wrapped cursor-agent is not restricted"
   assert_eq "$(fm_launch_raw_restricted_harness 'sh -c "agy -p hi"')" agy 'sh -c "agy ..."'
-  assert_eq "$(fm_launch_raw_restricted_harness 'bash -c "cursor-agent"')" cursor 'bash -c "cursor-agent"'
   assert_eq "$(fm_launch_raw_restricted_harness "env bash -lc 'agy'")" agy "env bash -lc 'agy'"
   assert_eq "$(fm_launch_raw_restricted_harness "zsh -ic 'x=1; agy'")" agy "zsh -ic with a separator"
-  # Wrappers that do NOT invoke cursor/agy still resolve to nothing.
+  # Wrappers that do NOT invoke agy still resolve to nothing.
   assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'echo hello world'")" "" "harmless wrapped command"
   assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'claude --x'")" "" "wrapped claude is not restricted"
   pass "fm_launch_raw_restricted_harness sees through quoted shell-wrapper commands (bash -lc 'agy ...')"
@@ -190,7 +191,6 @@ test_raw_restricted_harness_variable_indirection() {
   # restricted executable the literal scan cannot see. Since the raw command is run
   # by the pane shell, any unresolved shell expansion is refused as 'unresolved'.
   assert_eq "$(fm_launch_raw_restricted_harness "AGY=agy bash -lc '\$AGY --dangerously-skip-permissions'")" unresolved "assigned-var indirection to agy"
-  assert_eq "$(fm_launch_raw_restricted_harness "CUR=cursor-agent bash -lc '\$CUR --trust'")" unresolved "assigned-var indirection to cursor-agent"
   assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'x=agy; eval \"\$x --x\"'")" unresolved "eval of a variable"
   assert_eq "$(fm_launch_raw_restricted_harness "bash -lc 'a=a; g=gy; \$a\$g --x'")" unresolved "split-token concatenation"
   assert_eq "$(fm_launch_raw_restricted_harness "custom-agent --home \$HOME")" unresolved "any \$ expansion is refused as unverifiable"
@@ -203,9 +203,9 @@ test_raw_restricted_harness_variable_indirection() {
 test_raw_guard_intercepts_every_bypass_spelling() {
   # B1 hardening: the robust, primary defense is the exec-time PATH shim
   # (fm_launch_write_raw_guard), not the string classifier. With the guard dir
-  # ahead of a fake REAL cursor-agent/agy on PATH, EVERY shell spelling the pane
-  # could use to resolve those binaries must hit the refusing shim, so the real
-  # binary never runs. This is what closes quote-concat / brace / alias /
+  # ahead of a fake REAL agy on PATH, EVERY shell spelling the pane could use to
+  # resolve that binary must hit the refusing shim, so the real binary never
+  # runs. cursor is deliberately unguarded and its row below proves it runs. This is what closes quote-concat / brace / alias /
   # process-substitution AND the wrapper-script boundary uniformly - constructs a
   # launch-string scan can never model.
   local tmp shim realbin b execlog rc
@@ -214,9 +214,10 @@ test_raw_guard_intercepts_every_bypass_spelling() {
   shim="$tmp/raw-guard"
   realbin="$tmp/realbin"
   fm_launch_write_raw_guard "$shim" || fail "fm_launch_write_raw_guard failed"
-  for b in cursor-agent cursor agy; do
-    assert_present "$shim/$b" "guard shim for $b was not written"
-    [ -x "$shim/$b" ] || fail "guard shim for $b is not executable"
+  assert_present "$shim/agy" "guard shim for agy was not written"
+  [ -x "$shim/agy" ] || fail "guard shim for agy is not executable"
+  for b in cursor-agent cursor; do
+    [ -e "$shim/$b" ] && fail "cursor is an ordinary verified harness and must not be guarded ($b)"
   done
   mkdir -p "$realbin"
   execlog="$tmp/executed.log"
@@ -237,16 +238,20 @@ test_raw_guard_intercepts_every_bypass_spelling() {
     [ "$rc" -ne 0 ] || fail "B1 bypass [$label]: the shim did not refuse (exit 0)"
   done <<'ROWS'
 quote-concat agy|ag"y" --dangerously-skip-permissions
-quote-concat cursor-agent|cur"sor-agent" --trust --force
 eval + quote-concat agy|eval ag"y" --dangerously-skip-permissions
 brace agy|a{gy,} --dangerously-skip-permissions
-brace cursor-agent|cur{sor-agent,} --trust --force
 process substitution agy|source <(printf %b "\141\147\171 --x")
 alias expansion agy|shopt -s expand_aliases; alias a=agy; a --x
 wrapper via PATH agy|agy --x
-plain cursor-agent|cursor-agent --trust
 ROWS
-  [ "$n" -ge 9 ] || fail "expected all bypass rows to run, ran $n"
+  [ "$n" -ge 6 ] || fail "expected all bypass rows to run, ran $n"
+
+  # The other side of the same guard: a raw cursor-agent launch must reach the
+  # REAL binary, because cursor no longer has a gate for the raw hatch to bypass.
+  : > "$execlog"
+  PATH="$shim:$realbin:$PATH" bash -c 'cursor-agent --trust' >/dev/null 2>&1
+  grep -Fq REAL_cursor-agent_RAN "$execlog" \
+    || fail "a raw cursor-agent launch must reach the real binary now that cursor is unguarded"
 
   # Accepted residuals for this PATH shim are an absolute-path invocation, a PATH
   # reset that drops the guard, and `rm -rf` of the predictable guard dir before

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# tests/fm-cursor-agy-smoke.test.sh - live herdr smoke for the crew-only,
-# herdr-only cursor/agy adapters. It launches each CLI through the EXACT
-# bin/fm-launch-lib.sh template in an isolated Herdr lab pane and confirms herdr
-# NATIVELY recognizes it, which is the load-bearing generic-detection claim that
-# lets these adapters reuse herdr's liveness code and feed the watcher-side
-# native-completion detector (verification data/cursor-agy-verify/report.md).
-# For agy it also exercises the real
-# workspace-trust seed/remove around the launch.
+# tests/fm-agy-smoke.test.sh - live herdr smoke for the crew-only, herdr-only
+# agy adapter. It launches the CLI through the EXACT bin/fm-launch-lib.sh
+# template in an isolated Herdr lab pane and confirms herdr NATIVELY recognizes
+# it, which is the load-bearing generic-detection claim that lets this adapter
+# reuse herdr's liveness code and feed the watcher-side native-completion
+# detector (verification data/cursor-agy-verify/report.md). It also exercises
+# the real workspace-trust seed/remove around the launch.
+# Cursor is deliberately absent: it is an ordinary verified harness whose busy
+# source is its own transcript, covered by tests/fm-cursor-harness.test.sh.
 #
 # Requires the explicit credentialed-test opt-in, then skips cleanly when any
 # required binary or the supported Herdr event path is unavailable.
@@ -19,7 +20,7 @@
 set -u
 
 if [ "${FM_CURSOR_AGY_LIVE_E2E:-0}" != 1 ]; then
-  echo "skip: set FM_CURSOR_AGY_LIVE_E2E=1 to run the cursor/agy live smoke"
+  echo "skip: set FM_CURSOR_AGY_LIVE_E2E=1 to run the agy live smoke"
   exit 0
 fi
 
@@ -29,7 +30,7 @@ LAB="$ROOT/bin/fm-herdr-lab.sh"
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
-for t in herdr cursor-agent agy jq; do
+for t in herdr agy jq; do
   command -v "$t" >/dev/null 2>&1 || { echo "skip: $t not found"; exit 0; }
 done
 
@@ -40,9 +41,9 @@ done
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-agy-trust-lib.sh"
 fm_backend_source herdr || { echo "skip: herdr backend could not be sourced"; exit 0; }
-fm_backend_herdr_agent_prompt_version_check >/dev/null 2>&1 || { echo "skip: installed herdr lacks cursor/agy atomic prompt delivery"; exit 0; }
+fm_backend_herdr_agent_prompt_version_check >/dev/null 2>&1 || { echo "skip: installed herdr lacks agy atomic prompt delivery"; exit 0; }
 
-SESSION=$("$LAB" name cursor-agy-smoke) || { echo "skip: could not derive a lab session name"; exit 0; }
+SESSION=$("$LAB" name agy-smoke) || { echo "skip: could not derive a lab session name"; exit 0; }
 WORK=
 AGY_TRUST_CREATED=0
 FM_AGY_TRUST_ADDED=
@@ -62,7 +63,7 @@ trap cleanup EXIT
 "$LAB" provision "$SESSION" >/dev/null 2>&1 || { echo "skip: could not provision the isolated Herdr lab session"; trap - EXIT; exit 0; }
 export HERDR_SESSION="$SESSION"
 fm_backend_herdr_agent_prompt_capability_check "$SESSION" >/dev/null 2>&1 \
-  || { echo "skip: isolated Herdr server lacks cursor/agy atomic prompt delivery"; exit 0; }
+  || { echo "skip: isolated Herdr server lacks agy atomic prompt delivery"; exit 0; }
 
 WORK=$(mktemp -d)
 printf 'Reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"
@@ -121,10 +122,6 @@ EOF
 $snapshot
 EOF
   case "$harness" in
-    cursor)
-      token=FIRSTMATE_CURSOR_STEER_ACCEPTED
-      token_prompt="Reply with exactly FIRSTMATE_CURSOR_ followed immediately by STEER_ACCEPTED and nothing else."
-      ;;
     agy)
       token=FIRSTMATE_AGY_STEER_ACCEPTED
       token_prompt="Reply with exactly FIRSTMATE_AGY_ followed immediately by STEER_ACCEPTED and nothing else."
@@ -188,18 +185,6 @@ prove_completion_wake() {  # <target> <harness>
   return 1
 }
 
-# cursor: --trust --force, positional brief, effort encoded in the model string.
-if launch_and_detect cursor default; then
-  pass "cursor launches, is detected alive, and confirms a landed atomic steer"
-else
-  fail "cursor did not launch, register, and settle as a native herdr agent"
-fi
-if prove_completion_wake "$LAUNCH_TARGET" cursor; then
-  pass "cursor: the native debounced completion detector produces a turn-end wake from the settled pane"
-else
-  fail "cursor: no turn-end completion signal was produced from the settled native state"
-fi
-
 # agy: pre-seed exact-path workspace trust (as fm-spawn does), launch with
 # --prompt-interactive + --effort, then remove the trust entry (as teardown does).
 GLOBAL_SETTINGS="${HOME}/.gemini/antigravity-cli/settings.json"
@@ -226,4 +211,4 @@ if jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTI
 fi
 pass "agy workspace trust is seeded before launch and removed afterward"
 
-echo "# all fm-cursor-agy-smoke tests passed"
+echo "# all fm-agy-smoke tests passed"

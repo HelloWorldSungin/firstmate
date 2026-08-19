@@ -14,12 +14,20 @@ Each round brings one upstream merge through its own reviewable PR, and the conf
 
 ## Active divergences
 
-### Cursor and Agy crew adapters
+### Agy crew adapter
 
-The fork carries Cursor Agent CLI and Antigravity CLI adapters so workers can use the operator's paid Composer and Gemini subscriptions.
-They are deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise these CLIs without treating screen text as authority.
-They are not selectable for the primary firstmate or a persistent second mate, and their raw-command bypasses are rejected so the kind, backend, trust, and supervision guards cannot be skipped.
-The adapter contract lives in [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and their tests.
+The fork carries an Antigravity CLI adapter so workers can use the operator's paid Gemini subscription.
+Upstream has no agy support at all, so every part of it is fork-local.
+It is deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise that CLI without treating screen text as authority.
+It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
+The adapter contract lives in [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
+This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
+
+### Pinned ShellCheck download retry budget
+
+The fork keeps its own wall-time download retry budget in [`bin/fm-install-shellcheck.sh`](../bin/fm-install-shellcheck.sh) rather than upstream's `DOWNLOAD_ATTEMPTS` count.
+Two fork CI failures on the portable serial lane measured how long a release-CDN blip actually lasts, and a count-based loop gave up while the same run's other installs succeeded; the script's own comment owns that evidence and the constants it justifies.
+Upstream re-expressed the budget as a count in `kunchenguid/firstmate@4930d2ca`, which is the first round to collide with it, so a future round must keep the fork's budget rather than reading upstream's loop as newer.
 
 ### Watcher restart hand-over
 
@@ -41,7 +49,10 @@ A sync request dispatches an isolated merge task and PR rather than merging in t
 ### Repository-local validation evidence
 
 The fork keeps `.no-mistakes.yaml` `test.evidence.store_in_repo` set to `false`, confirmed on 2026-08-14, so routine test evidence stays local instead of becoming committed repository content.
-Upstream flipped the same key to `true` in `kunchenguid/firstmate@12384026`, which lands in a later sync round than the one that first recorded this entry, so the round that reaches that commit must resolve the hunk back to `false` rather than taking the flip as an ordinary upstream change.
+Upstream flipped the same key to `true` in `kunchenguid/firstmate@12384026`.
+That commit was reached on 2026-08-18 and the flip was resolved back to `false` with the fork's own explanatory comment retained.
+The file does not conflict textually, so git takes the flip silently: every future round that touches it must re-check the value rather than trusting a clean merge.
+Upstream's later `kunchenguid/firstmate#2548` and `kunchenguid/firstmate#2549` reconcile upstream's own docs to `true`; this fork does not adopt that setting, so it does not adopt those doc reconciliations either.
 
 ### Upstream-read-only posture in shared tracked docs
 
@@ -74,6 +85,17 @@ Upstream's set is derived from the Unicode `White_Space=Yes` property rather tha
 The one behavior the fork gives up is folding the zero-width format characters U+200B and U+FEFF, which upstream deliberately excludes because Unicode gives them `White_Space=No`.
 That loss is safe in the one direction that matters: a composer padded with a zero-width character reads `pending`, which defers injection and eventually raises the wedge alarm, rather than injecting on an unproven verdict.
 This is the third capability collision resolved by the remote-doctor precedent above.
+
+### Fork-local cursor crew adapter - retired 2026-08-18
+
+The fork's own Cursor Agent CLI adapter was retired in favor of upstream's cursor support, adopted with `kunchenguid/firstmate#2238` and `kunchenguid/firstmate#2305`.
+The captain made that collision decision on 2026-08-14 from the evidence in the fork's upstream evaluation, under the already adopted TRACK strategy.
+The fork's design rested on trusting Herdr's native `agent_status` for cursor, which the fork's own issue 140 proved untrustworthy - Herdr reports a Cursor pane `blocked` in every state - so it could not be incrementally repaired.
+Upstream instead reads cursor's own durable per-conversation transcript, which is backend-agnostic, and is verified from crewmate through primary on both tmux and Herdr with its own regression suites.
+Retiring the fork arm also removed the standing cost of carrying a parallel implementation of a harness upstream actively develops, on the fork's highest-collision files.
+Concretely, the round deleted the fork's cursor launch template, its crew-only and Herdr-only spawn gates, its cursor half of the raw-launch restricted-harness guard, and its cursor arm of the Herdr atomic-prompt submit path, and narrowed the shared cursor/agy mechanisms - the native-idle debounce in `bin/fm-transition-lib.sh`, the identity-gated Herdr busy arm, and the adapter suite now at [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh) - to agy alone.
+Cursor is now an ordinary verified harness here, so `AGENTS.md` section 4's crew-only, Herdr-only sentence restricts agy alone.
+This is the fourth capability collision resolved by the remote-doctor precedent above.
 
 ## Parked branches outside the fork baseline
 
