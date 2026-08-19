@@ -576,8 +576,8 @@ calm-absent : html_written=yes status_row_seen=yes last_status_row=Session expor
 ```
 
 This is a Calm defect, not a Pi one, and it is older than Pi 0.84: the `showStatus` coalescing branch is byte-identical in 0.82.0, 0.83.0, and 0.84.1, and the toggle has been Calm's redraw mechanism since PR #895/#936.
-Pi's extension API offers no render-invalidation call without a status side effect, so fixing it needs a deliberate change to Calm's export redraw (or a Pi API addition) rather than a test edit; that fix is not attempted here.
-Until then the E2E records the behavior in both directions: it waits for the completed HTML document, fails if Pi's confirmation *does* appear (which would mean the clobber was fixed and this record is stale), and requires the editor to have cleared and Calm's redraw status row to be on screen.
+Pi's extension API offers no render-invalidation call without a status side effect, so fixing it needs a deliberate change to Calm's export redraw (or a Pi API addition) rather than a test edit; that fix was not attempted in this record.
+This paragraph's assertion direction is superseded by the 2026-08-15 record below, which lands that fix: Calm now invalidates only the tool rows it presents and requests the redraw through `setStatus`, so the E2E asserts Pi's confirmation IS on screen after the redraw settles rather than that it is absent.
 The structural export check is unchanged and still fails on a missing or incomplete HTML document, missing rendered tool data, or missing synthetic provenance.
 
 Tested scope, stated exactly: the counterfactual above compares Calm loaded and active against `fm-calm.ts` being absent, and the E2E assertion covers `/export` with Calm on.
@@ -665,3 +665,65 @@ The repair here is a signature correction that preserves behavior exactly: the h
 Calm only observes the keystroke and never returns a `{ consume, data }` directive, so Pi's own input handling is untouched, and the annotation is erased at run time.
 
 The gap was not visible earlier because nothing forced the check to run; see [Regression coverage](#regression-coverage) for that caveat, which still applies.
+
+## 2026-08-15 Pi 0.84.1 export-confirmation verification
+
+Pi 0.83.0 added a status line to every tool-expansion change, which silently broke the `/export` confirmation under Calm on Pi 0.83.0 and newer.
+Pi appends `Session exported to: <path>` through `showStatus`, which updates the previous status line in place whenever two status messages arrive back to back with nothing else added to the chat.
+Calm's post-export redraw cycled tool expansion on the macrotask right after that, so both of its expansion status lines coalesced over the confirmation and left no record of where the export landed.
+Calm now invalidates only the tool rows it presents and requests the redraw through `setStatus`, neither of which appends to the transcript.
+
+Pi source evidence, from the installed release's own changelog and interactive mode:
+
+```text
+$ pi --version
+0.84.1
+
+CHANGELOG.md, 0.83.0 "Fixed":
+- Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
+
+interactive-mode setToolsExpanded:
+  setToolsExpanded(expanded) {
+    if (expanded === this.toolOutputExpanded)
+      return;
+    ...
+    this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
+  }
+```
+
+The regression is pinned by the real-terminal `/export` case in `tests/fm-calm-pi-extension.test.sh`, which now asserts the confirmation is still on screen after Calm's redraw has settled and that the redraw restored every Calm-hidden row.
+Reverting only the extension fix fails that assertion deterministically rather than racing the roughly 50ms window the confirmation used to survive:
+
+```text
+not ok - Calm's post-export repaint overwrote Pi's export confirmation (missing: 'Session exported to: .../calm-export.html')
+```
+
+```text
+$ tests/fm-calm-pi-extension.test.sh
+ok - Pi calm resolves its persistent home independently of Pi's launch directory
+ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
+ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
+ok - missing Pi presentation class exports reach the independent adapter degradation path
+ok - Calm registers none of its 7 built-in tool wrappers at load while config/calm is off, and all 7 synchronously at load while config/calm is on
+ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm on collapses mid-turn assistant working notes to zero height while Calm off keeps them, leaves streaming, truncated-final, and genuine final replies untouched, never mutates the messages, ignores every /calm argument, and restores a legacy persisted max as ordinary Calm on
+ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics
+ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool block at zero height while preserving expansion, history, restart, and Calm-off rendering
+ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+
+$ tests/fm-pi-primary-types.test.sh
+ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.80.10
+
+$ bin/fm-lint.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=68 local_links=253
+
+$ bin/fm-test-run.sh --changed --base origin/main
+FM_TEST_SUMMARY total=46 failed=0 skipped_gate=16 duration_ms=279390
+FM_TEST_SUMMARY_FAMILY family=live-harness-optin count=16 duration_ms=431 failed=0
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=30 duration_ms=277700 failed=0
+```

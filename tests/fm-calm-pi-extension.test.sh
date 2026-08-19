@@ -3213,7 +3213,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait export_status_wait trailing_export_status boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot export_settled_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: pi or tmux not found for Pi calm interactive E2E"
     return 0
@@ -3233,6 +3233,7 @@ test_interactive_terminal_e2e() {
   active_before_snapshot="$TMP_ROOT/active-before.txt"
   active_hidden_snapshot="$TMP_ROOT/active-hidden.txt"
   export_snapshot="$TMP_ROOT/export.txt"
+  export_settled_snapshot="$TMP_ROOT/export-settled.txt"
   restored_snapshot="$TMP_ROOT/restored.txt"
   working_snapshot="$TMP_ROOT/working.txt"
   working_response_snapshot="$TMP_ROOT/working-response.txt"
@@ -3649,45 +3650,10 @@ JS
   done
   grep -Fq '</html>' "$export_file" 2>/dev/null \
     || fail "/export did not complete while calm mode was on"
-  # Pi appends /export's "Session exported to: <path>" through showStatus, which rewrites
-  # the previous status row in place whenever that row is still the last thing in the
-  # chat instead of appending a new one. Calm's own post-export redraw restores Calm
-  # rendering by toggling setToolsExpanded off and back on (see fm-calm.ts), and each of
-  # those toggles ends in the same showStatus - so Calm's "Tool output:" row lands on top
-  # of Pi's confirmation and the confirmation never survives to a drawn frame. Removing
-  # only fm-calm.ts from an otherwise identical session flips this: the confirmation then
-  # reaches the terminal (docs/calm-mode-feasibility.md records the counterfactual). This
-  # is tracked current behavior, not the behavior Calm wants, so the check runs in both
-  # directions and names the record to update when it changes.
-  #
-  # The Ctrl+O press earlier in this test already left its own "Tool output: expanded" row
-  # in the transcript, and Calm's post-export toggle ends on the same expansion state, so
-  # it emits a byte-identical string. Matching that string anywhere in the 600-line capture
-  # would therefore still pass with Calm's whole post-export redraw removed. Anchor on
-  # position instead: the only two callers of setToolsExpanded are Ctrl+O and Calm's own
-  # /calm and post-export redraws, and both of the pre-export ones run before the
-  # operational injections append their " Error:" rows. So a status row below the last of
-  # those error rows can only have been written after /export, and which message that
-  # trailing row carries is the discriminating signal.
-  export_status_wait=0
-  trailing_export_status=""
-  while [ "$export_status_wait" -lt 120 ]; do
-    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S -600 >"$export_snapshot"
-    trailing_export_status=$(awk '
-      / Error:/ { last_error = NR }
-      /Tool output:|Session exported to:/ { last_status = NR; last_status_line = $0 }
-      END { if (last_error && last_status > last_error) print last_status_line }
-    ' "$export_snapshot")
-    [ -n "$trailing_export_status" ] && break
-    sleep 0.05
-    export_status_wait=$((export_status_wait + 1))
-  done
-  [ -n "$trailing_export_status" ] \
-    || fail "no status row reached the terminal below the operational rows after /export"
-  assert_not_contains "$(cat "$export_snapshot")" "Session exported to: $export_file" \
-    "Calm's post-export redraw no longer overwrites Pi's export confirmation; restore the confirmation assertion and refresh docs/calm-mode-feasibility.md"
-  assert_contains "$trailing_export_status" "Tool output:" \
-    "Calm's post-export redraw status row never reached the terminal"
+  # Pi appends /export's "Session exported to: <path>" through showStatus, and the
+  # confirmation must survive Calm's post-export repaint. That is asserted below on
+  # the settled snapshot, after the export-data checks have given the repaint time
+  # to finish (docs/calm-mode-feasibility.md, 2026-08-15 record).
   assert_not_contains "$(cat "$export_snapshot")" "/export $export_file" \
     "/export did not leave the editor while calm mode was on"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
@@ -3739,6 +3705,38 @@ for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_A
 }
 if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
 JS
+  # Calm returns the transcript to its own presentation once the export has been
+  # rendered. That repaint runs on the macrotask right after Pi prints the export
+  # confirmation, so it must not overwrite it: the captain has to keep seeing where
+  # their export landed. The export-data assertions above take seconds of real time,
+  # so this snapshot is taken well after that repaint has settled rather than racing it.
+  tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S -600 >"$export_settled_snapshot"
+  assert_contains "$(cat "$export_settled_snapshot")" "Session exported to: $export_file" \
+    "Calm's post-export repaint overwrote Pi's export confirmation"
+  assert_not_contains "$(cat "$export_settled_snapshot")" "fm_watch_arm_pi" \
+    "/export left the Firstmate watcher tool call shell in the Calm transcript"
+  assert_not_contains "$(cat "$export_settled_snapshot")" "watcher: started Pi extension arm child" \
+    "/export left the Firstmate watcher tool result in the Calm transcript"
+  assert_not_contains "$(cat "$export_settled_snapshot")" "FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status" \
+    "/export left a synthetic Firstmate user-role presentation in the Calm transcript"
+  assert_not_contains "$(cat "$export_settled_snapshot")" "Thinking..." \
+    "/export left collapsed thinking labels in the Calm transcript"
+  assert_not_contains "$(cat "$export_settled_snapshot")" "I will run one command." \
+    "/export left a mid-turn assistant working note in the Calm transcript"
+  for hidden in \
+    CURRENT_WATCHER_E2E \
+    CURRENT_TURN_END_E2E \
+    CURRENT_AWAY_E2E \
+    CURRENT_FROM_FIRSTMATE_E2E \
+    CURRENT_LAUNCH_BRIEF_E2E
+  do
+    assert_not_contains "$(cat "$export_settled_snapshot")" "$hidden" \
+      "/export left operational input $hidden in the Calm transcript"
+  done
+  assert_contains "$(cat "$export_settled_snapshot")" "Show a deterministic tool example." \
+    "/export removed a genuine user prompt from the Calm transcript"
+  assert_contains "$(cat "$export_settled_snapshot")" "The deterministic tool example is complete." \
+    "/export removed genuine assistant conversation from the Calm transcript"
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
