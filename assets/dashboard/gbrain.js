@@ -353,10 +353,6 @@ export function paintGBrainSearchResults(elements, payload, error) {
       head.append(element("span", "pill quiet", `score ${row.score.toFixed(3)}`));
     }
     if (row.stale === true) head.append(element("span", "chip amber", "stale"));
-    if (row.source_state && row.source_state !== "unknown") {
-      head.append(element("span", "pill quiet", row.source_state === "drifted" ? "live source wins" : row.source_state));
-    }
-    if (row.captured_at) head.append(element("span", "pill quiet", `captured ${text(row.captured_at)}`));
     card.append(head);
     card.append(element("div", "task-id", text(row.slug) || "no slug"));
     card.append(element("h3", "", text(row.title) || "Untitled"));
