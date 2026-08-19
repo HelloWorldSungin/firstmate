@@ -2,8 +2,9 @@
 # Behavior tests for the dashboard's per-project usage view.
 #
 # The view must keep the unattributed share on screen, never render a failed
-# read as a zero, and sort projects by their token totals. docs/dashboard.md
-# owns the human statement of the policy these cases pin.
+# read as a zero, and rank projects by work tokens rather than by their raw
+# totals. docs/dashboard.md owns the human statement of the policy these cases
+# pin.
 set -u
 
 # shellcheck source=tests/lib.sh

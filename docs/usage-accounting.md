@@ -1,6 +1,6 @@
 # Usage accounting
 
-Firstmate records how many tokens the fleet actually spent and which task spent them.
+Firstmate records how many tokens the fleet actually spent, which task spent them, and which project they were spent on.
 [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) is the single owner of the store, the harness collectors, the attribution ladder, and the rollups; its `--help` owns exact flags and environment names.
 This page owns what is stored, how a task keeps its usage after cleanup, and what the numbers do and do not claim.
 
@@ -49,7 +49,7 @@ Each usage event carries a stable identity, its source provenance, and its raw c
 | derived | `total_tokens`, `task_id`, `project`, `attribution_method`, `attribution_confidence` |
 
 Raw fields carry the source's own numbers, adjusted only where a harness counts differently than the store does - both conversions are named below.
-Derived fields are recomputed from raw fields and the durable task records on every ingest, so a corrected task record fixes history without re-reading a transcript.
+Derived fields are recomputed from raw fields, the durable task records, and the project registry on every ingest, so a corrected task record or a newly registered project fixes history without re-reading a transcript.
 
 The token columns are disjoint by contract: `input_tokens` counts input that was **not** served from a cache, `cache_read_tokens` and `cache_write_tokens` count the cached parts, and `total_tokens` is their sum plus output.
 Harnesses disagree about that, so each adapter names the convention its own source uses and converts once, rather than letting the shared arithmetic assume one of them:
@@ -104,7 +104,7 @@ Seeing an id live again while its record describes a finished occupancy starts t
 `data/projects.md` is the single source of registered projects; a directory that merely looks like a project cannot create a phantom row, and a real project reached through an SSH alias or a treehouse pool copy is still credited when the checkout's origin or clone layout matches the registry.
 The origin index is built from the remotes of the clones the registry names - `projects/<name>`, plus the home itself for the project whose clone IS this home - because a work copy's origin is a copy of its clone's origin and of nothing else.
 A `tracker=` declaration is only a supplementary hint here and is overridden by any real clone origin: [configuration.md](configuration.md) owns that token and states that the tracker is never implied by a git remote, so a project mirrored on one host and tracked on another, or declaring `tracker=none`, still resolves.
-Only paths built from a registered project name are read; no directory is searched for repositories.
+Only paths built from a registered project name are read, and no project is discovered by scanning: the one directory listing taken is the no-mistakes `repos/` index named below, and an entry there counts only when its own origin already matches a registered project.
 The `project` column is normalized to the registered project name for every attribution method, so `report --by project` groups crew work and recovered work-copy spend under the same project name.
 The store, the registry and the projects root are all resolved through the same `FM_DATA_OVERRIDE` and `FM_PROJECTS_OVERRIDE` the rest of firstmate honors, so a home running under an override reads the registry that belongs to the store it is writing.
 A no-mistakes validation worktree carries a repo hash rather than a project name, so its project comes from the matching `repos/<hash>.git` clone under the no-mistakes root - `FM_USAGE_NO_MISTAKES_ROOT`, then `NM_HOME`, then `~/.no-mistakes` - and a relocated root is followed rather than dropping that spend into `(unknown)`.

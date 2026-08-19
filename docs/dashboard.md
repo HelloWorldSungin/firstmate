@@ -150,11 +150,15 @@ Semantic search over captured report content belongs to the separate [Knowledge]
 ## Usage
 
 Usage shows how many tokens each project consumed, including the share that could not be attributed to any project.
-It is sourced from the same `data/usage.db` store as History, and [`assets/dashboard/usage.js`](../assets/dashboard/usage.js) is its single executable copy.
+It is sourced from the same `data/usage.db` store as History, [`assets/dashboard/usage.js`](../assets/dashboard/usage.js) is its single executable copy, and `tests/fm-dashboard-usage.test.sh` pins the policy stated here.
 
 The server reads both `report --by task` and `report --by project` on the history poll, so the page receives a project rollup it can display without launching an additional collector.
 A project row is shown when the store has attributed tokens to that project, and the unattributed share is rendered as its own row so the percentages stay honest.
 Removing the unknown row would silently drop most spend in many fleets, so it is never omitted.
+
+Rows rank by work tokens - input plus output - rather than by the raw total, and each row's percentage is its share of the fleet's work tokens.
+Cache reads are real spend but replayed context rather than new work, so a row that is almost entirely cache would otherwise sit at the top of the page and read as the fleet's largest consumer.
+Every row still carries its total tokens beside its events and sessions, so cache replay stays visible without being read as work done, and the page heads with the number of projects worked on, the events behind the figures, and both token totals.
 
 Firstmate's own supervision spend is shown separately from the `firstmate` project row, because the same working directory is legitimately used for crew work on the firstmate repo.
 The distinguishing signal is the presence of a task binding, and the `(firstmate supervision)` row means the fleet is operating itself rather than shipping a code change.
