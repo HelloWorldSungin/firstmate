@@ -556,10 +556,6 @@ equal("search_setup_failed says the search never started",
 
   paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [], answer: { kind: "none", notice: "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent." } }, null);
   deepEqual("the empty-result dot carries its tone as a class", dots(results).map((d) => d.className), ["dot green"]);
-  check("an empty result is framed as no indexed match", results.textContent.includes("No indexed match"),
-    `received ${JSON.stringify(results.textContent)}`);
-  check("an empty result is not a negative about the world", !results.textContent.includes("does not exist") && !results.textContent.includes("No matches"),
-    `received ${JSON.stringify(results.textContent)}`);
 
   paintGBrainSearchResults(elements, {
     schema: "fm-gbrain-search.v1",
@@ -591,26 +587,13 @@ equal("search_setup_failed says the search never started",
   equal("a routine health repaint keeps the search results", results.children.length, 3);
   check("the kept results are the same cards", results.textContent.includes("task/one") && results.textContent.includes("task/two"),
     `received ${JSON.stringify(results.textContent)}`);
-  check("returned rows are framed as nearest pages", results.textContent.includes("nearest indexed pages"),
-    `received ${JSON.stringify(results.textContent)}`);
 
-  paintGBrainSearchResults(elements, {
-    schema: "fm-gbrain-search.v1",
-    query: "Does the BZ-SIM ratchet feature apply to AGS?",
-    answer: { kind: "nearest", notice: "These are the nearest indexed pages, not answers." },
-    results: [{
-      source: "local", slug: "task/bzsim-ratchet-fix-side-effects", title: "BZ-SIM ratchet",
-      score: 0.49, excerpt: "AGS has a code-proven zero-Value problem", stale: true,
-      captured_at: "2026-08-11T20:39:46Z", source_state: "drifted", source_updated_at: "2026-08-11T21:25:41Z",
-    }],
-    sources: [],
-  }, null);
-  check("a drifted page is marked stale", results.textContent.includes("stale"),
-    `received ${JSON.stringify(results.textContent)}`);
-  check("a drifted page shows its capture date", results.textContent.includes("2026-08-11T20:39:46Z"),
-    `received ${JSON.stringify(results.textContent)}`);
-  check("a drifted page says the live source wins", results.textContent.includes("live source wins"),
-    `received ${JSON.stringify(results.textContent)}`);
+  // The provenance a reader actually sees - the capture date, the source state,
+  // and the live-source-wins marker - is asserted against the renderer the
+  // running dashboard loads, which is the Knowledge view in app.js. index.html
+  // loads /app.js alone and imports no paint function from this module, so an
+  // assertion here would prove the presentation on a path no captain reaches.
+  // tests/fm-dashboard.test.sh owns it.
 
   paintGBrainSearchResults(elements, null, searchFailure("timed_out", "the brain did not answer within the search timeout"));
   paintGBrainPanel(elements, configuredEnvelope);

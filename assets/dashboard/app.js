@@ -1274,8 +1274,12 @@ function renderKnowledge() {
     if (failed.length) {
       results.append(notice(failed.some((row) => row.state === "failed") ? "red" : "amber", "Some corpora did not answer.", ` ${failed.map((row) => `${row.source}: ${row.detail || row.state}`).join("; ")}`));
     }
+    // The answer framing is a paragraph of prose, not a one-line label: .khint
+    // is the terse mono hint beside the search box, and wearing it would set
+    // four lines of 10.5px muted monospace above the rows whose own metadata
+    // is styled the same way.
     if (payload.answer?.notice && payload.results?.length) {
-      results.append(element("p", "khint", payload.answer.notice));
+      results.append(element("p", "empty-teach", payload.answer.notice));
     }
     for (const row of payload.results || []) {
       const card = element("article", "krow");
@@ -1303,7 +1307,7 @@ function renderKnowledge() {
       });
       results.append(emptyState({
         big: "No indexed match",
-        facts: payload.answer?.notice || "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.",
+        teach: payload.answer?.notice || "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.",
         action: clear,
       }));
     }

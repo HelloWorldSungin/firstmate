@@ -412,6 +412,37 @@ EOF
   pass "the dashboard keeps capture date, source state, and nearest-page framing"
 }
 
+# bin/fm-recall.sh owns both the page-provenance vocabulary and which of its
+# states count as stale. The endpoint carries them; it does not re-decide them.
+# A state it folded into "unknown" would hide the very fact the wrapper went to
+# the trouble of distinguishing, and a stale boolean it re-derived would be a
+# second owner of a rule that silently disagrees the day the first one moves.
+test_search_carries_the_wrappers_provenance_verdict() {
+  local home bindir out
+  home=$(make_home search-uncompared)
+  bindir=$(make_bin_dir search-uncompared)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","home":"/home/firstmate","query":"outcome only","answer":{"kind":"nearest","notice":"These are the nearest indexed pages, not answers."},"sources":[{"source":"local","state":"ok","brain":"/home/firstmate/data/gbrain","results":2}],"results":[{"source":"local","slug":"firstmate/tag/task/outcome-only","title":"Outcome only","score":0.4,"stale":false,"excerpt":"nothing to compare","captured_at":"2026-08-11T19:00:00Z","source_state":"uncompared","source_kind":"task","source_id":"outcome-only","source_updated_at":"2026-08-11T19:00:00Z"},{"source":"local","slug":"firstmate/tag/task/gone","title":"Gone","score":0.3,"stale":false,"excerpt":"live files removed","captured_at":"2026-08-11T18:00:00Z","source_state":"missing","source_kind":"task","source_id":"gone","source_updated_at":null}]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"outcome only","limit":3}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '
+    .results[0].source_state == "uncompared"
+      and .results[0].source_state != "current"
+      and .results[0].stale == false
+      and .results[1].source_state == "missing"
+      and .results[1].stale == false
+  ' >/dev/null || fail "the endpoint rewrote the wrapper's provenance verdict: $out"
+  pass "a page-provenance state reaches the page as the wrapper decided it, stale included"
+}
+
 test_partial_source_failure_uses_display_error() {
   local home bindir out
   home=$(make_home search-partial)
@@ -784,6 +815,7 @@ test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
 test_search_keeps_answer_protocol_fields
+test_search_carries_the_wrappers_provenance_verdict
 test_partial_source_failure_uses_display_error
 test_search_preserves_same_as_local_source_state
 test_search_returns_504_when_recall_exceeds_budget

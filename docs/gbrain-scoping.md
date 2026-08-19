@@ -87,6 +87,7 @@ A main brain that is stopped, unreachable, or not shared with this home reads as
 The same independence runs the other way: a home with no GBrain installed reports its own index as failed and still reads the shared corpus, which needs only `curl` and a token.
 A search fails as a retrieval failure only when no corpus it was asked for could be read at all, so an empty result list with exit 0 means at least one requested corpus was read and had no match, and the per-source rows say which were read and which were not.
 `bin/fm-recall.sh`'s `--help` owns the answer protocol that search document carries: rows are nearest indexed pages rather than answers, a miss is absence of a match rather than absence of the queried thing, each local page carries its capture date and live-source state, and a live source that has moved on is marked so rather than presented as current.
+A page is only `current` when a comparison actually ran and agreed; a page nothing could be compared against is `uncompared`, which reads with unknown rather than with current.
 A run that could not create its own working files is the third state and exits 5 instead: no corpus was ever asked there, and reporting it as a corpus that did not answer would send you to your brain for a fault in the environment the command ran in.
 A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
 

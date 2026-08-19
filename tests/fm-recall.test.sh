@@ -505,6 +505,10 @@ for a in "$@"; do
     */token) jq -cn --arg t "${FM_FAKE_TOKEN:-fake-token}" '{access_token: $t, token_type: "Bearer"}'; exit 0 ;;
   esac
 done
+# A main brain that answers slowly, on the call that reads it rather than on the
+# token mint. This is the only way to spend real wall clock inside a run without
+# a network or a server, and the run's time budget is a behavior that needs it.
+[ "${FM_FAKE_CURL_SLEEP:-0}" = 0 ] || sleep "$FM_FAKE_CURL_SLEEP"
 cat "$FM_FAKE_MCP_REPLY"
 exit 0
 CURLEOF
@@ -1007,6 +1011,73 @@ run_recall "$MAIN_HOME" search --json --scope local redacted
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
   || fail "a redacted body cannot be read as evidence that the report drifted: $RECALL_OUT"
 
+# The mtime rule on its own. The report's tail is byte-identical to the stored
+# body, so the content check votes "match" and cannot be what decides this row -
+# only the capture time compared against the live mtime can. That comparison
+# runs through recall_iso_epoch, whose two date dialects disagree about what -d
+# means, and a build that answers it with the current time instead of failing
+# would make every capture look newer than every report and retire drift
+# detection entirely on that platform.
+MTIME_ID="edited-mid-report"
+MTIME_BODY="The deploy is green and the runbook stands."
+MTIME_SLUG=$(write_outbox "$MAIN_HOME" task "$MTIME_ID" "2026-08-11T20:00:00Z" "$MTIME_BODY")
+mkdir -p "$MAIN_HOME/data/$MTIME_ID"
+printf '%s\n' "$MTIME_BODY" > "$MAIN_HOME/data/$MTIME_ID/report.md"
+touch -d '2026-08-11T21:30:00Z' "$MAIN_HOME/data/$MTIME_ID/report.md"
+stub_reply "$(jq -cn --arg s "$MTIME_SLUG" \
+  '[{slug:$s, title:"edited", chunk_text:"deploy is green", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local edited-mid-report
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a report edited after capture must be drifted on the mtime rule alone: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a page whose live source moved on after capture must not read as current: $RECALL_OUT"
+
+# A task with no report on disk has nothing to compare against: its only live
+# file is the manifest capture itself rewrites, which is deliberately not read
+# as a freshness signal. Reporting that as current would be a confident
+# positive with nothing behind it, so it is uncompared - which reads with
+# unknown, never with a clean bill of health.
+OUTCOME_ID="outcome-only-task"
+OUTCOME_SLUG=$(write_outbox "$MAIN_HOME" task "$OUTCOME_ID" "2026-08-11T20:00:00Z" "an outcome with no report")
+mkdir -p "$MAIN_HOME/data/$OUTCOME_ID"
+jq -n '{schema: "fm-outcome-manifest.v1", outcome: {state: "done"}}' \
+  > "$MAIN_HOME/data/$OUTCOME_ID/outcome.json"
+stub_reply "$(jq -cn --arg s "$OUTCOME_SLUG" \
+  '[{slug:$s, title:"outcome only", chunk_text:"an outcome", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local outcome-only
+expect_code 0 "$RECALL_RC" "a page nothing could be compared against is still returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = uncompared ] \
+  || fail "an outcome-only task compares nothing and must say so: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" != current ] \
+  || fail "a page that compared nothing must never be reported as current: $RECALL_OUT"
+run_recall "$MAIN_HOME" search --scope local outcome-only
+assert_contains "$RECALL_OUT" "source=uncompared" \
+  "a reader must see that nothing was compared rather than a silent clean state"
+assert_not_contains "$RECALL_OUT" "source=current" \
+  "the human line must not absorb an uncompared page into current"
+
+# The second way a comparison cannot happen: capture truncated the body, so the
+# report's tail is legitimately absent, and the record carries no capture time
+# for the mtime rule to fall back on. Neither check ran, so neither may be
+# reported as having agreed.
+UNCOMP_ID="truncated-and-uncaptured"
+UNCOMP_SLUG=$(write_outbox "$MAIN_HOME" task "$UNCOMP_ID" "" "$(printf 'b%.0s' $(seq 1 512))")
+mkdir -p "$MAIN_HOME/data/$UNCOMP_ID"
+printf '%s\n' "$(printf 'b%.0s' $(seq 1 900))TAILNOTINBODY" \
+  > "$MAIN_HOME/data/$UNCOMP_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$UNCOMP_ID/report.md"
+stub_reply "$(jq -cn --arg s "$UNCOMP_SLUG" \
+  '[{slug:$s, title:"pending capture", chunk_text:"b", score:0.5, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_CAPTURE_MAX_BYTES=512 \
+  bash "$CLI" search --json --scope local truncated-and-uncaptured 2>&1) || RECALL_RC=$?
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = uncompared ] \
+  || fail "a truncated body with no capture time compared nothing and must say so: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" != current ] \
+  || fail "a row where neither check ran must never be reported as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = null ] \
+  || fail "the uncompared fixture must be the null-capture case it claims to be: $RECALL_OUT"
+
 # A slug whose home tag cannot form a valid document id addresses no record in
 # this outbox, so it is unjudgeable rather than a task this home owns: reporting
 # a source kind and id for it would claim an identity nothing validated.
@@ -1041,12 +1112,8 @@ run_recall_split() {  # <home> <args...> -> RECALL_STDOUT / RECALL_STDERR / RECA
 
 # A home with no brain installed: the corpus was never read, so nothing here is
 # a statement about what the brain holds.
-RECALL_RC=0
-ERRFILE=$(mktemp "$TMP_ROOT/stderr.XXXXXX")
-RECALL_STDOUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$TMP_ROOT/no-such-gbrain-anywhere" \
-  bash "$CLI" search --scope local "does the OHLCV service run on CT100" 2>"$ERRFILE") || RECALL_RC=$?
-RECALL_STDERR=$(cat "$ERRFILE")
-rm -f "$ERRFILE"
+FM_GBRAIN_BIN="$TMP_ROOT/no-such-gbrain-anywhere" \
+  run_recall_split "$MAIN_HOME" search --scope local "does the OHLCV service run on CT100"
 expect_code 3 "$RECALL_RC" "a corpus that could not be read is still a retrieval failure"
 assert_contains "$RECALL_STDOUT" "not searched" \
   "stdout must say the corpus was never searched: $RECALL_STDOUT"
@@ -1077,5 +1144,60 @@ assert_not_contains "$RECALL_STDOUT" "no results" \
 assert_not_contains "$RECALL_STDERR" "no corpus could be read" \
   "a corpus that answered must not have stderr claim it was never read: $RECALL_STDERR"
 pass "human output separates a searched brain with no match from a corpus that was never read, on stdout alone"
+
+# --- 14. provenance spends the run's budget, never the answer ----------------
+#
+# Provenance is read from the filesystem AFTER both corpora have answered, so it
+# is wall clock a caller already budgeted for retrieval. The dashboard sizes its
+# kill deadline around the wrapper's own timeout with about a second to spare,
+# and a caller that kills the run gets nothing - including the rows that were
+# successfully retrieved before the annotation started. Past the deadline the
+# rows keep the fail-safe unknown state instead, so a slow read costs
+# provenance and never the answer.
+#
+# The clock is spent by the main brain rather than by a real slow filesystem,
+# because that is the only way to spend a deterministic amount of it offline.
+
+jq -n '{version: 1,
+        local: {embedding_base_url: "http://127.0.0.1:11434/v1"},
+        main_brain: {mcp_url: "http://127.0.0.1:9/mcp", token_url: "http://127.0.0.1:9/token",
+                     mount: "fm-main", scopes: "read", secret: "main-brain-client-secret"}}' \
+  > "$SM_HOME/config/gbrain.json"
+{
+  printf 'event: message\n'
+  printf 'data: %s\n' "$(jq -cn --arg t '[]' '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+} > "$FM_FAKE_MCP_REPLY"
+
+BUDGET_ID="budgeted-page"
+BUDGET_BODY="The provenance pass must not cost the answer."
+BUDGET_SLUG=$(write_outbox "$SM_HOME" task "$BUDGET_ID" "2026-08-11T20:00:00Z" "$BUDGET_BODY")
+mkdir -p "$SM_HOME/data/$BUDGET_ID"
+printf '%s\n' "$BUDGET_BODY" > "$SM_HOME/data/$BUDGET_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$SM_HOME/data/$BUDGET_ID/report.md"
+stub_reply "$(jq -cn --arg s "$BUDGET_SLUG" \
+  '[{slug:$s, title:"budgeted", chunk_text:"provenance", score:0.5, stale:false}]')"
+
+# The control: with budget to spare the same row IS judged, so the degradation
+# below is the deadline's doing and not a broken annotator.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all --timeout 30 budgeted 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "the control search should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "with budget to spare the row must carry its judged provenance: $RECALL_OUT"
+
+# The same search whose corpora spend the whole budget: the answer survives
+# intact and only the provenance degrades.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=3 \
+  bash "$CLI" search --json --scope all --timeout 2 budgeted 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a run whose corpora spent the budget must still answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "local")] | length')" -eq 1 ] \
+  || fail "a retrieved row must survive a provenance pass that ran out of budget: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "past the deadline a row keeps the fail-safe unknown state: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = null ] \
+  || fail "a row the provenance pass never reached must claim nothing about its capture: $RECALL_OUT"
+pass "a provenance pass that runs out of the run's budget degrades to unknown instead of costing the answer"
 
 echo "all fm-recall tests passed"

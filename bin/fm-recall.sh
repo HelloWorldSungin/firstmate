@@ -88,15 +88,24 @@
 # Each local result also carries provenance from this home's capture outbox and
 # the live source that outbox was composed from, when those records exist:
 #   captured_at        when the outbox revision was marked captured, or null
-#   source_state       current | drifted | missing | snapshot | unknown
+#   source_state       current | drifted | uncompared | missing | snapshot |
+#                      unknown
 #   source_kind/id     task or note identity from the slug, or null
 #   source_updated_at  newest mtime of the live source files, or null
-# source_state is current when the live source still matches the captured page,
-# drifted when the live source has moved on, missing when the outbox names a
-# task whose durable files are gone, snapshot for a note (no live file to
-# compare), and unknown when this home cannot judge (no outbox, not a Firstmate
-# capture slug, or a main-brain row). Drifted and missing also set stale=true,
-# combined with GBrain's own stale flag rather than replacing it. Where a live
+# source_state is current only when a comparison actually ran and agreed: the
+# live report still ends the way the captured body does, or its mtime is no
+# later than the capture. It is drifted when a comparison ran and disagreed,
+# and uncompared when no comparison was possible at all - an outcome-only task
+# whose only live file is the manifest capture itself rewrites, or a body
+# capture truncated or redacted with no capture time to fall back on.
+# Uncompared is not a clean bill of health: nothing was checked, so it reads
+# with unknown rather than with current, and is never folded into current.
+# It is missing when the outbox names a task whose durable files are gone,
+# snapshot for a note (no live file to compare), and unknown when this home
+# cannot judge - no outbox, not a Firstmate capture slug, a main-brain row, or
+# a provenance pass that ran out of the run's time budget before reaching the
+# row. Drifted and missing set stale=true, combined with GBrain's own stale
+# flag rather than replacing it. Where a live
 # source disagrees with the page, the live source wins and the disagreement is
 # surfaced; this command never silently prefers either copy, never drops the
 # page, and never rewrites the excerpt from the live file. A home with no
@@ -497,16 +506,23 @@ recall_stat_mtime() {  # <path> -> epoch seconds, or empty
   fi
 }
 
+# The two date dialects collide in both directions, so neither form is ever
+# tried as a fallthrough from the other. On BSD `-d` is the daylight-saving
+# flag, not a date to parse, and a build that does not validate its argument
+# answers with the CURRENT time instead of failing - which would silently make
+# every capture look newer than every report and retire the drift rule.
 recall_iso_epoch() {  # <YYYY-MM-DDTHH:MM:SSZ> -> epoch seconds, or empty
-  date -u -d "$1" +%s 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null \
-    || true
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null || true
+  else
+    date -u -d "$1" +%s 2>/dev/null || true
+  fi
 }
 
-# BSD date reads an epoch with -r; GNU date reads a FILE's mtime with -r and an
-# epoch with -d @. Trying the BSD form first on GNU is not a harmless fallthrough
-# - this command runs from an arbitrary working directory, and a file there
-# named for the epoch integer would answer with its own mtime.
+# The mirror image: BSD date reads an epoch with -r, while GNU date reads a
+# FILE's mtime with -r and an epoch with -d @. This command runs from an
+# arbitrary working directory, and a file there named for the epoch integer
+# would answer with its own mtime.
 recall_epoch_iso() {  # <epoch> -> ISO-8601 UTC, or empty
   if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
     date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
@@ -573,7 +589,7 @@ provenance_for_slug() {  # <data-dir> <slug>
   local data=$1 slug=$2
   local prefix tag kind id extra
   local doc_id item captured_at source_kind source_id cap_epoch
-  local report outcome live_epoch=0 file_epoch body_differs=0 have_report=0
+  local report outcome live_epoch=0 file_epoch body_differs=0 compared=0
   local source_state=unknown source_updated_at="" stale_from_source=false
   IFS=/ read -r prefix tag kind id extra <<EOF
 $slug
@@ -617,14 +633,24 @@ EOF
   # so that file's mtime is not a freshness signal. The report is. Outcome-only
   # tasks have no later editable source on disk once teardown finished.
   if recall_regular_file "$report"; then
-    have_report=1
     file_epoch=$(recall_stat_mtime "$report")
     if [ -n "$file_epoch" ] && [ "$file_epoch" -gt "$live_epoch" ]; then
       live_epoch=$file_epoch
     fi
     # "unknown" is not a vote: a body that was truncated or redacted cannot
-    # disprove the report it was composed from, so only "differs" marks drift.
-    [ "$(recall_body_verdict "$item" "$report")" != differs ] || body_differs=1
+    # disprove the report it was composed from, so only "differs" marks drift
+    # and only a real verdict counts as a comparison having happened.
+    case $(recall_body_verdict "$item" "$report") in
+      match) compared=1 ;;
+      differs) compared=1; body_differs=1 ;;
+    esac
+    if [ -n "$captured_at" ]; then
+      cap_epoch=$(recall_iso_epoch "$captured_at")
+      if [ -n "$cap_epoch" ]; then
+        compared=1
+        [ "$live_epoch" -le "$cap_epoch" ] || body_differs=1
+      fi
+    fi
   else
     if recall_regular_file "$outcome"; then
       file_epoch=$(recall_stat_mtime "$outcome")
@@ -634,21 +660,22 @@ EOF
     fi
   fi
 
+  # A page is only current when something was actually compared and agreed.
+  # Nothing to compare against is its own answer - uncompared - because a
+  # confident "current" with no evidence behind it is the same defect as a
+  # retrieval failure rendered as "not found".
   if [ "$live_epoch" -eq 0 ]; then
     source_state=missing
     stale_from_source=true
   else
     source_updated_at=$(recall_epoch_iso "$live_epoch")
-    source_state=current
     if [ "$body_differs" -eq 1 ]; then
       source_state=drifted
       stale_from_source=true
-    elif [ "$have_report" -eq 1 ] && [ -n "$captured_at" ]; then
-      cap_epoch=$(recall_iso_epoch "$captured_at")
-      if [ -n "$cap_epoch" ] && [ "$live_epoch" -gt "$cap_epoch" ]; then
-        source_state=drifted
-        stale_from_source=true
-      fi
+    elif [ "$compared" -eq 1 ]; then
+      source_state=current
+    else
+      source_state=uncompared
     fi
   fi
   jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
@@ -661,6 +688,10 @@ EOF
       stale_from_source:$stale}'
 }
 
+# The run's wall-clock ceiling, as bash's own second counter. Empty means no
+# ceiling, which is what a caller that never set one gets.
+RECALL_DEADLINE=""
+
 annotate_search_results() {  # <results-json> <home> -> annotated results json
   local results=$1 home=$2
   local data="$home/data"
@@ -668,9 +699,18 @@ annotate_search_results() {  # <results-json> <home> -> annotated results json
   # Each slug's provenance is one JSON line and the whole stream is folded once.
   # Re-reading and re-serialising the accumulated array per slug is quadratic on
   # a path the dashboard runs under a time budget, at the CLI's cap of 50 rows.
+  #
+  # Provenance is read from the filesystem AFTER both corpora have answered, so
+  # without a ceiling it is unbounded time added to a run a caller already
+  # budgeted - and a caller that kills the run gets no answer at all, throwing
+  # away results that were successfully retrieved. The run's own budget bounds
+  # it: past the deadline the remaining rows keep the fail-safe state this
+  # design already defines, so a slow filesystem costs provenance, never the
+  # answer.
   meta=$(
     while IFS= read -r slug; do
       [ -n "$slug" ] || continue
+      if [ -n "$RECALL_DEADLINE" ] && [ "$SECONDS" -ge "$RECALL_DEADLINE" ]; then break; fi
       provenance_for_slug "$data" "$slug"
     done < <(printf '%s' "$results" | jq -r '[.[] | select(.source == "local") | .slug] | unique[]') \
       | jq -c -s '.'
@@ -746,6 +786,7 @@ cmd_search() {
   require_tool jq
   resolve_context
   local secs=${TIMEOUT:-${FM_RECALL_TIMEOUT:-60}}
+  RECALL_DEADLINE=$((SECONDS + secs))
 
   # Each requested corpus is read on its own terms and reports its own verdict,
   # so neither leg decides the other's outcome. A home with no GBrain installed

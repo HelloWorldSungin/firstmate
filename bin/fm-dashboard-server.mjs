@@ -240,6 +240,12 @@ const GBRAIN_QUERY_MIN_LENGTH = 2;
 // would rewrite a healthy read into "unknown" and paint a false failure.
 const GBRAIN_SOURCE_STATES = new Set(["ok", "degraded", "absent", "failed", "unconfigured", "same-as-local", "unknown"]);
 const GBRAIN_SOURCE_NAMES = new Set(["local", "main"]);
+// One RESULT ROW's provenance state, which is a different vocabulary from the
+// corpus states above: it describes one captured page against the live source
+// it was composed from. bin/fm-recall.sh owns it, including which of these
+// count as stale - that boolean arrives already decided and is passed through
+// rather than re-derived here, so the rule has one owner.
+const GBRAIN_PAGE_SOURCE_STATES = new Set(["current", "drifted", "uncompared", "missing", "snapshot", "unknown"]);
 const GBRAIN_NON_ERROR_SOURCE_STATES = new Set(["ok", "absent", "unconfigured", "same-as-local"]);
 
 const STATIC_FILES = new Map([
@@ -1483,9 +1489,8 @@ class GBrainState {
       // reasons a stored document cannot become markup.
       const results = Array.isArray(document.results) ? document.results : [];
       const sources = Array.isArray(document.sources) ? document.sources : [];
-      const SOURCE_STATES = new Set(["current", "drifted", "missing", "snapshot", "unknown"]);
       const cleanedResults = results.slice(0, n).map((row) => {
-        const sourceState = SOURCE_STATES.has(row?.source_state) ? row.source_state : "unknown";
+        const sourceState = GBRAIN_PAGE_SOURCE_STATES.has(row?.source_state) ? row.source_state : "unknown";
         const capturedAt = typeof row?.captured_at === "string" ? safeText(row.captured_at, 40) : null;
         const sourceUpdatedAt = typeof row?.source_updated_at === "string" ? safeText(row.source_updated_at, 40) : null;
         return {
@@ -1494,7 +1499,7 @@ class GBrainState {
           title: typeof row?.title === "string" ? safeText(row.title, 400) : "",
           score: typeof row?.score === "number" && Number.isFinite(row.score) ? row.score : null,
           excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
-          stale: row?.stale === true || sourceState === "drifted" || sourceState === "missing",
+          stale: row?.stale === true,
           captured_at: capturedAt,
           source_state: sourceState,
           source_kind: row?.source_kind === "task" || row?.source_kind === "note" ? row.source_kind : null,
