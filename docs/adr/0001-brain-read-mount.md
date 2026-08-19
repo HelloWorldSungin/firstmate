@@ -43,7 +43,7 @@ There is no calibrated presence test, so any design that treats "search returned
 Its verdict: further startup-memory offload waits for a capture audit, repairs, two consecutive clean integrity audits, and eval parity.
 This ADR honors that gate rather than relitigating it.
 
-**Two in-flight facts this design was required to verify, not assume.**
+**Two moving facts this design was required to verify, not assume.**
 
 1. GBrain on this host is now 0.46.21.0.
    Re-established from the installed source and live probes: `context_pack` and `delta` still exist, additive at `protocol_version: 1`, semantics unchanged since 0.45.7 (the protocol document sections are byte-unchanged since 0.45.9; implementations were refactored into ops modules).
@@ -52,9 +52,10 @@ This ADR honors that gate rather than relitigating it.
    The release evaluation's "use native `context_pack` for session boundaries" is therefore inert here until capture itself changes, which is out of this design's scope.
    `delta` was probed live with a timestamp and works: it returned the pages captured since the given time, oldest first.
    The scope reduction "do not build a custom change cursor" holds; "do not build custom session-boundary packing" holds only vacuously, because there is nothing to pack and session-start retrieval is rejected on its own merits below.
-2. `fm-gbrain-answer-protocol` is in validation and is reshaping recall's output as this ADR is written.
-   Its branch establishes the behavior this design depends on: a framed answer that distinguishes "nearest indexed pages, possibly unrelated" from "read and no match", and per-result provenance carrying the capture date and the current state of the source.
-   Everything in this ADR that consumes those behaviors names the dependency and binds to the behavior, never to that branch's tokens or field names, which may not be what ships.
+2. `fm-gbrain-answer-protocol` was in validation for most of this interview, so every gate here was designed against its required behavior rather than its unlanded field names.
+   It has since landed (PR 185, squash-merged, checks green) and this home runs it.
+   The shipped contract, verified against the merged `bin/fm-recall.sh` rather than reported state: the `fm-recall.v1` JSON document carrying an answer framing (`nearest` or `none`) and per-result provenance (`captured_at`, `source_state` across current, drifted, uncompared, missing, snapshot, and unknown, `source_updated_at`, stale flags).
+   `bin/fm-recall.sh` owns that contract, and `AGENTS.md` now states its two always-loaded consequences and names that owner; this ADR points there rather than restating it.
 
 ## Decision
 
@@ -90,8 +91,9 @@ The brain cannot signal a miss, so an unframed embed would feed plausible irrele
 The gate is **positive detection of behavior**, per home, at scaffold time: the installed `fm-recall.sh` must be observed to emit a framed nearest-or-none answer and per-result provenance carrying capture date and source state.
 Absence of the contract means do not mount; the fallback is today's instruction-only Brain section - shipped behavior, not a new degraded mode.
 The gate is deliberately not a version check or config flag: it is true per home while secondmates update independently, it degrades to known behavior, and it closes itself under a rollback.
-The concrete detection token is bound when `fm-gbrain-answer-protocol` lands; this ADR binds to the behavior, because that branch's field names are being reshaped in validation as this is written.
-If that work fails validation, this seam waits, and this ADR says so here rather than leaving it to be discovered.
+The concrete binding, now that `fm-gbrain-answer-protocol` has landed: the gate detects the installed wrapper emitting the `fm-recall.v1` document with its answer framing and per-result provenance present.
+`bin/fm-recall.sh` owns that contract's full definition; the gate consumes it and never restates it.
+The gate was designed behavior-first while that work was still in validation, and stays defined by the behavior: if the contract ever changes shape, the gate follows the owner, not this ADR's snapshot of it.
 
 ### D4. The same search also prints a firstmate-facing "nearest prior work" line - advisory, ungated
 
@@ -214,7 +216,7 @@ This ADR adopts that target as the destination of the tranche system and holds t
 ### The net, honestly
 
 - Day one, with only this design landed: **~413 estimated tokens freed (tranche 1) plus the ~60% per-spawn cut once the D7 refactor ships; zero tokens freed through the brain.**
-- After `fm-gbrain-answer-protocol` lands: the D1 embed mounts; still no budget relief from retrieval, but re-derivation pressure starts falling and becomes measurable.
+- With `fm-gbrain-answer-protocol` landed (PR 185; it landed during this design's own validation window): the D1 embed can mount on any home whose installed wrapper passes the D3 detection - this home already does; still no budget relief from retrieval, but re-derivation pressure starts falling and becomes measurable.
 - After the capture-trust gate passes: tranches 2 and 3, ~1,550-2,100 further estimated tokens, taking the startup files to the 5,000-5,500 region capture-tightening computed.
 
 ## The overturned candidate - session-start retrieval
@@ -260,8 +262,8 @@ A home with no brain must keep working exactly as it does now; every row below w
 
 ## Consequences
 
-- **Nothing lands alone**: the D1 embed is inert until `fm-gbrain-answer-protocol` lands, and brain-destined offload is inert until the capture-trust gate passes.
-  The captain should read the relief timeline in "The net, honestly" as the schedule: routing now, retrieval later, deep offload last.
+- **Nothing lands alone**: the D1 embed mounts only on homes passing the D3 contract detection (`fm-gbrain-answer-protocol` landed as PR 185 and this home passes; other homes gate themselves), and brain-destined offload is inert until the capture-trust gate passes.
+  The captain should read the relief timeline in "The net, honestly" as the schedule: routing now, retrieval as homes pass the gate, deep offload last.
 - The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, query content is reconstructible never.
 - D6 leaves a known, named gap open, with a dated instance and a concrete reopening trigger; anyone reading this ADR should not mistake D4's scaffold-time line for coverage of it.
 - Alarm fatigue is the named risk of D4; the mitigation is its honest name and claim, and the D2 trail is how a fatigued, skimmed-past line would be detected (surfacing that never changes a dispatch decision).
