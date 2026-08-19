@@ -23,19 +23,36 @@ function positiveInteger(value) {
 // project. They are rendered as rows like any other so the share of spend that
 // is unknown stays on screen rather than vanishing from percentages.
 const UNATTRIBUTED_KEYS = new Set(["(unknown)", "(unattributed)"]);
+const SUPERVISION_KEY = "(firstmate supervision)";
+
+// Every phase bin/fm-dashboard-server.mjs's HistoryState.envelope() can report,
+// plus the "unavailable" one app.js synthesises when /api/history itself fails.
+// A phase outside this set is a document this page cannot read, and saying so
+// is the only honest answer: guessing "pending" would promise a number that is
+// never coming, and guessing "absent" would claim this home collects nothing.
+const ENVELOPE_PHASES = new Set(["first_run", "ready", "last_good", "unavailable"]);
+
+// The two collection states that are facts about this home rather than a read
+// that missed. Everything else - "operational" and anything this page does not
+// recognize - is a failure and is disclosed as one.
+const CALM_COLLECTIONS = new Set(["absent", "disabled"]);
 
 function isUnattributed(key) {
   return UNATTRIBUTED_KEYS.has(text(key));
 }
 
+function isProject(key) {
+  return !isUnattributed(key) && text(key) !== SUPERVISION_KEY;
+}
+
 function projectTone(key) {
-  if (key === "(firstmate supervision)") return "amber";
+  if (key === SUPERVISION_KEY) return "amber";
   if (isUnattributed(key)) return "grey";
   return "blue";
 }
 
 function projectLabel(key) {
-  if (key === "(firstmate supervision)") {
+  if (key === SUPERVISION_KEY) {
     return "Firstmate supervision";
   }
   if (isUnattributed(key)) {
@@ -68,17 +85,29 @@ function projectRead(usage) {
   };
 }
 
-// A failed read and a read still on its way are opposite claims, and only the
-// envelope's own status can tell them apart: /api/history failing produces an
-// envelope with no usage rollup at all, which is a read that did not land
-// rather than one that has not finished.
+// The five answers this page can give, decided from the envelope's own phase
+// first and the rollup's state second. A failed read, a read still on its way,
+// a home that collects nothing and a retained read are four different claims,
+// and the renderer needs them apart: only one of them is an alarm.
+//
+// The phase is asked first because it is the only thing that can tell a read
+// that did not land from a read that has not finished - /api/history failing
+// produces an envelope with no usage rollup at all.
 function usageReadState(envelope, read) {
   if (!envelope) return "pending";
   const status = envelope.status && typeof envelope.status === "object" ? envelope.status : null;
-  if (text(status?.phase) === "unavailable") return "unavailable";
-  if (text(status?.phase) === "first_run" && status?.refreshing === true) return "pending";
+  const phase = text(status?.phase);
+  if (!ENVELOPE_PHASES.has(phase)) return "unavailable";
+  if (phase === "unavailable") return "unavailable";
+  // The first poll has not answered yet, so there is nothing to be right or
+  // wrong about: this is the one state that is neither a claim nor an alarm.
+  if (phase === "first_run") return "pending";
   if (!read) return "unavailable";
-  return read.available ? "ready" : "unavailable";
+  if (!read.available) return CALM_COLLECTIONS.has(read.collection) ? "absent" : "unavailable";
+  // A retained read on either side: the server kept its last good rollup, or
+  // the history poll itself is serving its last good envelope, which freezes
+  // the usage read at that same vintage.
+  return read.stale || phase === "last_good" ? "stale" : "ready";
 }
 
 /** Build the usage view from the server's fm-dashboard-history.v1 envelope. */
@@ -116,8 +145,7 @@ export function buildUsage(envelope) {
   rows.sort((left, right) => right.work - left.work);
 
   let shape;
-  if (readState === "pending") shape = "pending";
-  else if (readState === "unavailable") shape = "unavailable";
+  if (readState === "pending" || readState === "unavailable" || readState === "absent") shape = readState;
   else if (rows.length === 0) shape = "empty";
   else shape = "rows";
 
@@ -125,14 +153,21 @@ export function buildUsage(envelope) {
     readState,
     shape,
     rows,
+    // The unattributed and supervision rows are spend, not projects: they are
+    // kept on screen so the percentages stay honest, and counted apart so the
+    // headline says how many projects this fleet actually worked on.
+    project_count: rows.filter((row) => isProject(row.key)).length,
     total_tokens: totalTokens,
     total_work: totalWork,
     total_events: totalEvents,
     reason: read?.reason || "",
     collection: read?.collection || "",
-    stale: read?.stale === true,
+    stale: readState === "stale",
+    // The one failure a reader can act on: this home collects usage and the
+    // read missed anyway. It is what the renderer's alarm copy is keyed on, so
+    // a home that simply collects nothing never draws one.
     fault: read !== null && !read.available && read.collection === "operational",
   };
 }
 
-export { formatTokens, isUnattributed, projectLabel, projectTone };
+export { formatTokens, isProject, isUnattributed, projectLabel, projectTone, SUPERVISION_KEY };

@@ -1107,20 +1107,37 @@ function renderUsage() {
   const view = viewRoot("usage");
   const status = state.history.envelope?.status;
   const built = buildUsage(state.history.envelope);
-  const unavailable = built.readState === "unavailable";
-  const note = unavailable
+  const note = built.readState === "unavailable"
     ? "usage read failing"
-    : status?.last_success_at
-      ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
-      : status?.refreshing ? "Taking the first usage read" : "Waiting for the first usage read";
+    : built.readState === "absent"
+      ? built.collection === "disabled" ? "usage reads disabled" : "not collected here"
+      : status?.last_success_at
+        ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+        : status?.refreshing ? "Taking the first usage read" : "Waiting for the first usage read";
   view.append(pageHead("Work tokens · by project", "Usage", note));
 
   if (built.shape === "pending") {
     view.append(emptyState({ ring: true, big: "Reading token usage.", teach: "Waiting for the first usage read to finish." }));
     return view;
   }
-  if (unavailable) {
-    view.append(notice("red", "Token usage unavailable.", `The usage read could not be read${built.reason ? `: ${built.reason}` : ""}. Retrying automatically.`));
+  // A home that collects no usage, or a dashboard told not to read it, is a
+  // settled fact rather than a failure. History stays silent for the same home,
+  // and an alarm here would send a reader chasing a break that does not exist -
+  // "retrying" especially, because nothing is going to be retried.
+  if (built.shape === "absent") {
+    view.append(emptyState({
+      ring: true,
+      big: "Token usage is not collected here.",
+      teach: `The dashboard reports: ${built.reason || "no usage collector is attached to this home"}. Nothing is failing and nothing is being retried; when this home collects usage, the per-project breakdown appears here with the unattributed share kept visible.`,
+    }));
+    return view;
+  }
+  if (built.shape === "unavailable") {
+    // usage.js owns which reads earn the sharper wording: only a home that DOES
+    // collect usage and whose read missed anyway is a failure someone can fix.
+    view.append(built.fault
+      ? notice("red", "Token usage is not being read.", `The read reported: ${built.reason || "no detail"}. The collector and its store are both present on this home, so this is a failure to fix rather than a home that collects nothing. The dashboard keeps retrying.`)
+      : notice("red", "Token usage unavailable.", `The usage read could not be read${built.reason ? `: ${built.reason}` : ""}. Retrying automatically.`));
     view.append(emptyState({
       ring: true,
       big: "Usage cannot be read.",
@@ -1130,10 +1147,7 @@ function renderUsage() {
   }
 
   if (built.stale) {
-    view.append(notice("amber", null, `Showing the last known good usage read${built.reason ? `: ${built.reason}` : ""}.`));
-  }
-  if (built.fault) {
-    view.append(notice("amber", "Token usage is not being read.", `The read reported: ${built.reason || "no detail"}. The collector and its store are both present on this home, so this is a failure to fix rather than a home that collects nothing.`));
+    view.append(notice("amber", null, `Showing the last known good usage read: ${built.reason || status?.error?.message || "the newest read did not land"}.`));
   }
 
   if (built.shape === "empty") {
@@ -1147,7 +1161,7 @@ function renderUsage() {
 
   const stats = element("div", "stats");
   for (const [key, value] of [
-    ["Projects", String(built.rows.length)],
+    ["Projects", String(built.project_count)],
     ["Events", formatTokens(built.total_events)],
     ["Work tokens", formatTokens(built.total_work)],
     ["Total tokens", formatTokens(built.total_tokens)],

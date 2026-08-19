@@ -85,7 +85,7 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 | `session_binding` | high | the session was observed in a live task's isolated worktree while that task held it, and the binding was recorded durably at that moment |
 | `worktree_window` | medium | the session's working directory is a task's recorded worktree or a path inside it, and the usage falls inside that task's own start and completion stamps |
 | `project_path` | low | the session's working directory resolves to a registered project through the checkout's git origin or a known clone layout, but no task claims it |
-| `firstmate_supervision` | low | the session runs in the firstmate home itself with no task binding; this is the fleet's own supervision spend, kept separate from crew work on the firstmate repo |
+| `firstmate_supervision` | low | the session runs anywhere in the firstmate home's own checkout with no task binding, and no project claimed it first; this is the fleet's own supervision spend, kept separate from crew work on the firstmate repo |
 | `ambiguous` | none | more than one task claims that worktree for that moment, so no claim is made |
 | `unknown` | none | no task claims it at all and the directory does not resolve to a registered project |
 

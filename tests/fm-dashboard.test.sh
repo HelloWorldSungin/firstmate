@@ -399,7 +399,7 @@ for (const buttonId of ["theme-button", "notify-button"]) {
   button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
 const routeButtons = [];
-for (const route of ["needs", "fleet", "backlog", "history", "knowledge"]) {
+for (const route of ["needs", "fleet", "backlog", "history", "usage", "knowledge"]) {
   for (const prefix of ["nav", "tab"]) {
     const button = staticNode("button", `${prefix}-${route}`, prefix === "nav" ? "navitem" : "tabitem");
     button.dataset.route = route;
@@ -624,7 +624,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
     return matches[0];
   };
 
-  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-knowledge", "view-task"];
+  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-usage", "view-knowledge", "view-task"];
   // The exclusivity assertion the rebuild exists for: the active view's root
   // is on the page AND every other view root is absent from the DOM - not
   // hidden, absent. A check that only looked for the active view would pass
@@ -692,7 +692,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await settle();
 
   // --- every route renders its view and only its view ------------------------
-  for (const route of ["fleet", "backlog", "history", "knowledge", "needs"]) {
+  for (const route of ["fleet", "backlog", "history", "usage", "knowledge", "needs"]) {
     await go(`#/${route}`);
     assertOnly(`view-${route}`, `#/${route}`);
     for (const button of routeButtons) {
@@ -702,6 +702,92 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
       if (!active && "aria-current" in button.attributes) throw new Error(`#/${route}: ${button.id} kept a stale aria-current`);
     }
   }
+
+  // --- the Usage page tells three different "no rows" states apart -----------
+  //
+  // A home that collects nothing, a dashboard told not to read usage, and a
+  // read that missed on a home that DOES collect are three different claims
+  // made from the same empty page. Only the last one is a failure anyone can
+  // act on, so only it earns an alarm - and only it can honestly say anything
+  // is being retried.
+  const usageEnvelopeWith = (usage) => JSON.stringify({ ...historyEnvelope, usage });
+  const pushHistory = async (usage) => {
+    eventSources[0].listeners.history({ data: usageEnvelopeWith(usage) });
+    await settle();
+  };
+  await go("#/usage");
+  assertOnly("view-usage", "#/usage");
+
+  await pushHistory({
+    available: false,
+    reason: "token usage is not collected in this home",
+    collection: "absent",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "token usage is not collected in this home", collection: "absent", stale: false },
+  });
+  const absentUsage = viewNode.textContent;
+  if (absentUsage.includes("Retrying automatically")) throw new Error(`a home that collects no usage claimed a retry: ${absentUsage}`);
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 0) throw new Error(`a home that collects no usage drew an alarm: ${absentUsage}`);
+  if (!absentUsage.includes("not collected")) throw new Error(`a home that collects no usage did not say so: ${absentUsage}`);
+
+  await pushHistory({
+    available: false,
+    reason: "token usage reads are disabled for this dashboard",
+    collection: "disabled",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "token usage reads are disabled for this dashboard", collection: "disabled", stale: false },
+  });
+  const disabledUsage = viewNode.textContent;
+  if (disabledUsage.includes("Retrying automatically")) throw new Error(`a dashboard with usage reads off claimed a retry it will never make: ${disabledUsage}`);
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 0) throw new Error(`a dashboard with usage reads off drew an alarm: ${disabledUsage}`);
+
+  await pushHistory({
+    available: true,
+    reason: null,
+    collection: "ready",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "the store is locked", collection: "operational", stale: false },
+  });
+  const faultedUsage = viewNode.textContent;
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 1) throw new Error(`a read that missed on a collecting home did not draw its alarm: ${faultedUsage}`);
+  if (!faultedUsage.includes("failure to fix rather than a home that collects nothing")) {
+    throw new Error(`a read that missed was not told apart from a home that collects nothing: ${faultedUsage}`);
+  }
+  if (!faultedUsage.includes("the store is locked")) throw new Error(`the failed usage read lost its reason: ${faultedUsage}`);
+
+  // And with rows, the headline counts projects rather than the unattributed
+  // and supervision rows the page deliberately keeps on screen.
+  await pushHistory({
+    available: true,
+    reason: null,
+    collection: "ready",
+    stale: false,
+    tasks: {},
+    projects: {
+      firstmate: { events: 10, sessions: 2, input_tokens: 400, output_tokens: 100, total_tokens: 500 },
+      "ark-business": { events: 4, sessions: 1, input_tokens: 40, output_tokens: 10, total_tokens: 50 },
+      "(unknown)": { events: 5, sessions: 5, input_tokens: 200, output_tokens: 50, total_tokens: 250 },
+      "(firstmate supervision)": { events: 20, sessions: 1, input_tokens: 50, output_tokens: 10, total_tokens: 2000 },
+    },
+    projects_read: { available: true, reason: null, collection: "ready", stale: false },
+  });
+  const usageRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (usageRows.length !== 4) throw new Error(`the Usage page dropped a row: rendered ${usageRows.length}`);
+  const projectStat = all(viewNode, (node) => hasClass(node, "stat")).find((stat) => stat.textContent.startsWith("Projects"));
+  if (!projectStat || projectStat.textContent !== "Projects2") {
+    throw new Error(`the Projects headline counted the unattributed and supervision rows: ${projectStat?.textContent}`);
+  }
+  if (!viewNode.textContent.includes("Firstmate supervision") || !viewNode.textContent.includes("Unattributed")) {
+    throw new Error("the Usage page stopped showing the spend it does not credit to a project");
+  }
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  await settle();
 
   // --- a data refresh never steals focus from a mounted control --------------
   //
