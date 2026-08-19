@@ -285,6 +285,8 @@ For one-off or infrequent operational work, start with the simplest direct end-t
 Do not build wrappers, control planes, policy layers, custom verifiers, or automation unless the direct path exposes a concrete blocker or repeated need that justifies the added machinery.
 
 Before commissioning an investigation, consult existing reports and established evidence, including this home's brain through `bin/fm-recall.sh search`.
+A brain result is a nearest indexed page, not an answer: a miss is absence of a match, never absence of the thing, and when a live source disagrees with a page the live source wins.
+`bin/fm-recall.sh` owns that output contract.
 Classify the deliverable:
 
 - **Ship** is the default and produces an authorized project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.

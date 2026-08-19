@@ -62,12 +62,59 @@
 # characters to search for.
 #
 # --json prints one "fm-recall.v1" document: the resolved home, a per-source
-# state, and capped results. Human output renders the same content as lines.
+# state, an answer framing, and capped results. Human output renders the same
+# content as lines.
 # Each corpus's results keep the order that corpus returned them in, which is
 # its own ranking rather than its raw score column, and two corpora are merged
 # by rank: first result of each, then second of each, cycling in the order the
 # corpora were read. Scores from different brains are not comparable, so a
 # printed score explains one corpus's row and never orders across corpora.
+# The printed score is also not that ranking within one corpus: rerank reorders
+# rows while leaving the pre-rerank blend in .score, so rank 1 may show a lower
+# number than rank 2. Order is the verdict; the number is a blend for that row.
+#
+# Answer protocol. A corpus that was read always answers, and the engine
+# essentially always returns rows, including for queries whose topic is absent.
+# There is no calibrated score threshold that separates a hit from nonsense, so
+# this command never invents one. When a corpus answered, the document carries
+# an `answer` object that says what the rows are:
+#   nearest  rows are the nearest indexed pages, not answers. A listed page may
+#            be unrelated to the query. Absence of a match is not absence of
+#            the queried thing.
+#   none     the corpus was read and returned no rows. That is absence of an
+#            indexed match, never evidence that the queried thing is absent.
+# `answer` is omitted when no corpus was read, so a retrieval failure cannot be
+# rendered as "not found".
+# Each local result also carries provenance from this home's capture outbox and
+# the live source that outbox was composed from, when those records exist:
+#   captured_at        when the outbox revision was marked captured, or null
+#   source_state       current | drifted | uncompared | missing | snapshot |
+#                      unknown
+#   source_kind/id     task or note identity from the slug, or null
+#   source_updated_at  newest mtime of the live source files, or null
+# source_state for a task is decided from EVIDENCE, and every check answers
+# agree, disagree, or "could not run". Two checks can run: the live report still
+# ends the way the captured body does, and the report's mtime is no later than
+# the capture. Any check that disagrees makes the page drifted, because a live
+# source that disagrees wins. Otherwise the page is current only if at least one
+# check ran and agreed, and uncompared when none of them could run at all.
+# A check that could not run - an unreadable or contentless report tail, a body
+# capture truncated or redacted, a capture time that is absent or unparseable,
+# an outcome-only task whose only live file is the manifest capture itself
+# rewrites - contributes nothing rather than a quiet pass, so current is always
+# earned rather than assumed. Uncompared is not a clean bill of health: nothing
+# was checked, so it reads with unknown rather than with current.
+# It is missing when the outbox names a task whose durable files are gone,
+# snapshot for a note (no live file to compare), and unknown when this home
+# cannot judge - no outbox, not a Firstmate capture slug, a main-brain row, or
+# a provenance pass that ran out of the run's time budget before reaching the
+# row. Drifted and missing set stale=true, combined with GBrain's own stale
+# flag rather than replacing it. Where a live
+# source disagrees with the page, the live source wins and the disagreement is
+# surfaced; this command never silently prefers either copy, never drops the
+# page, and never rewrites the excerpt from the live file. A home with no
+# outbox, and a home with no brain, keep their existing paths: provenance that
+# cannot be judged is unknown, and a missing index still fails as retrieval.
 # A source's state is one of:
 #   ok             it was read, and its results are the rows labelled with it.
 #   degraded       the main brain is configured but this read did not reach it,
@@ -87,7 +134,11 @@
 #   --max-answer  think only. Characters of synthesis kept (default 8000).
 #   --home      the firstmate home whose brain to read.
 #   --timeout   seconds allowed for each retrieval call
-#               (default: search 60, think 300).
+#               (default: search 60, think 300). It also sizes search's
+#               provenance pass, at this budget once per corpus that search
+#               will read, so a value tuned down for a fast retrieval also
+#               bounds how many rows can be annotated before the rest keep
+#               their fail-safe unknown state.
 #   --          end of flags, so a query may begin with a dash.
 #
 # Environment:
@@ -104,6 +155,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
+# shellcheck source=bin/fm-gbrain-capture-lib.sh
+. "$SCRIPT_DIR/fm-gbrain-capture-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -447,6 +500,278 @@ $2
 EOF
 }
 
+# Provenance is judged from this home's capture outbox and the live source that
+# outbox was composed from. It is presentation: it never changes result order,
+# never drops a row, and never rewrites an excerpt from the live file.
+ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; the printed score is a pre-rerank blend and does not order this list. Where a live source disagrees with a page, the live source wins.'
+ANSWER_NONE_NOTICE='No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.'
+
+recall_stat_mtime() {  # <path> -> epoch seconds, or empty
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    stat -f %m "$1" 2>/dev/null || true
+  else
+    stat -c %Y "$1" 2>/dev/null || true
+  fi
+}
+
+# The two date dialects collide in both directions, so neither form is ever
+# tried as a fallthrough from the other. On BSD `-d` is the daylight-saving
+# flag, not a date to parse, and a build that does not validate its argument
+# answers with the CURRENT time instead of failing - which would silently make
+# every capture look newer than every report and retire the drift rule.
+recall_iso_epoch() {  # <YYYY-MM-DDTHH:MM:SSZ> -> epoch seconds, or empty
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null || true
+  else
+    date -u -d "$1" +%s 2>/dev/null || true
+  fi
+}
+
+# The mirror image: BSD date reads an epoch with -r, while GNU date reads a
+# FILE's mtime with -r and an epoch with -d @. This command runs from an
+# arbitrary working directory, and a file there named for the epoch integer
+# would answer with its own mtime.
+recall_epoch_iso() {  # <epoch> -> ISO-8601 UTC, or empty
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  else
+    date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  fi
+}
+
+recall_regular_file() {  # <path> -> 0 when it is a regular non-symlink file
+  [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+# One provenance object for a slug this home cannot judge. Kind and id are null
+# rather than echoed back, because a slug that failed the address checks has not
+# earned the claim that it names a task or a note this home owns.
+provenance_unknown() {  # <slug> [<kind> <id>]
+  jq -cn --arg slug "$1" --arg kind "${2:-}" --arg id "${3:-}" \
+    '{slug:$slug, captured_at:null, source_state:"unknown",
+      source_kind:(if $kind == "" then null else $kind end),
+      source_id:(if $id == "" then null else $id end),
+      source_updated_at:null, stale_from_source:false}'
+}
+
+# --- currency: what evidence is there that a page still matches its source ---
+#
+# Every check below answers with EVIDENCE, not with a verdict, and the vocabulary
+# has three words:
+#
+#   agree     the check ran and the page still matches the live source
+#   disagree  the check ran and the page does not match the live source
+#   none      the check could not run, and therefore says nothing either way
+#
+# `none` is the default of every check, and it is not a quiet `agree`. A check
+# that could not read its input, could not parse its input, or was handed inputs
+# that are not comparable produces `none`, so the only way to reach `agree` is
+# for a comparison to have actually happened and actually matched. That is the
+# whole shape: `current` is earned by evidence rather than assumed in its
+# absence, so a path nobody thought of degrades to "nothing was checked" rather
+# than to "this page is fine".
+#
+# recall_currency_verdict is the single owner that turns the collected evidence
+# into a state, and it is the only producer of `current` in this file.
+
+# Does the live report still end the way the captured body does?
+#
+# The stored body is not a verbatim copy of the report: capture composes
+# frontmatter in front of it, truncates the composed document at
+# FM_GBRAIN_CAPTURE_MAX_BYTES, and rewrites credential-shaped values before any
+# byte reaches disk. A tail that is absent for one of those reasons is not
+# evidence that the report changed - and a tail that could not be read at all is
+# not evidence that it did not, so both answer `none`.
+#
+# The comparison is taken in CHARACTERS, not bytes. A byte-sized cut lands inside
+# a multi-byte character often enough to matter, and the orphaned continuation
+# bytes decode to U+FFFD, which matches nothing in a body that was stored intact.
+recall_content_evidence() {  # <item-json> <report-path> -> agree | disagree | none
+  local item=$1 report=$2 max=${FM_GBRAIN_CAPTURE_MAX_BYTES:-65536} size verdict
+  size=$(wc -c < "$report" 2>/dev/null | tr -cd '0-9') || size=""
+  [ -n "$size" ] || size=0
+  verdict=$(printf '%s' "$item" | jq -r \
+    --rawfile tail <(tail -c 4000 "$report" 2>/dev/null || true) \
+    --argjson max "$max" --argjson size "$size" '
+      ($tail[-200:] | sub("\\s+$"; "")) as $fp
+      | if ($fp | length) == 0 then "none"
+        elif (.body | index($fp)) != null then "agree"
+        elif ((.redactions | length) > 0)
+          or ((.body | utf8bytelength) >= $max)
+          or ($size >= $max) then "none"
+        else "disagree"
+        end' 2>/dev/null) || verdict=""
+  case $verdict in
+    agree | disagree) printf '%s\n' "$verdict" ;;
+    *) printf 'none\n' ;;
+  esac
+}
+
+# Was the live source last written no later than the capture that copied it?
+#
+# Both sides have to be readable integers for this to say anything: an epoch this
+# command could not stat and a capture time it could not parse are each a reason
+# the check did not run, never a reason to call the page current.
+recall_mtime_evidence() {  # <live-epoch> <captured-at> -> agree | disagree | none
+  local live=${1:-} captured=${2:-} cap_epoch
+  case $live in '' | *[!0-9]*) printf 'none\n'; return 0 ;; esac
+  [ "$live" -gt 0 ] || { printf 'none\n'; return 0; }
+  [ -n "$captured" ] || { printf 'none\n'; return 0; }
+  cap_epoch=$(recall_iso_epoch "$captured")
+  case $cap_epoch in '' | *[!0-9]*) printf 'none\n'; return 0 ;; esac
+  if [ "$live" -gt "$cap_epoch" ]; then printf 'disagree\n'; else printf 'agree\n'; fi
+}
+
+# The single owner of the currency question, and the only producer of `current`.
+#
+# One check disagreeing is enough to mark the page drifted, because the live
+# source wins on disagreement. `current` needs a check that ran and agreed; with
+# no agreeing check the answer is `uncompared`, which is what "no evidence"
+# means and is never read as a clean bill of health.
+recall_currency_verdict() {  # <evidence...> -> current | drifted | uncompared
+  local piece agreed=0
+  for piece in "$@"; do
+    case $piece in
+      disagree) printf 'drifted\n'; return 0 ;;
+      agree) agreed=1 ;;
+    esac
+  done
+  if [ "$agreed" -eq 1 ]; then printf 'current\n'; else printf 'uncompared\n'; fi
+}
+
+# Emit one provenance object for a local slug. Always succeeds with JSON so a
+# missing outbox cannot abort a search that already answered.
+provenance_for_slug() {  # <data-dir> <slug>
+  local data=$1 slug=$2
+  local prefix tag kind id extra
+  local doc_id item captured_at source_kind source_id
+  local report outcome live_epoch=0 file_epoch evidence=()
+  local source_state=unknown source_updated_at="" stale_from_source=false
+  IFS=/ read -r prefix tag kind id extra <<EOF
+$slug
+EOF
+  if [ "$prefix" != firstmate ] || [ -z "$tag" ] || [ -z "$id" ] || [ -n "${extra:-}" ] \
+      || { [ "$kind" != task ] && [ "$kind" != note ]; } \
+      || ! fm_gbrain_capture_source_id_valid "$id"; then
+    provenance_unknown "$slug"
+    return 0
+  fi
+  # The home tag arrives inside a slug the brain returned, and it becomes a path
+  # component of the outbox record this reads. The parse above rejects a slug
+  # carrying an extra "/", but that is incidental to splitting the slug rather
+  # than a guarantee about the tag, so the document id is shape-checked with the
+  # library's own guard before it addresses a file.
+  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
+  if ! fm_gbrain_capture_document_id_valid "$doc_id"; then
+    provenance_unknown "$slug"
+    return 0
+  fi
+  source_kind=$kind
+  source_id=$id
+  item=$(fm_gbrain_capture_item_read "$data" "$doc_id" 2>/dev/null) || item=""
+  if [ -z "$item" ]; then
+    provenance_unknown "$slug" "$source_kind" "$source_id"
+    return 0
+  fi
+  captured_at=$(printf '%s' "$item" | jq -r '.captured_at // empty')
+  if [ "$kind" = note ]; then
+    jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
+      --arg captured "${captured_at:-}" \
+      '{slug:$slug, captured_at:(if $captured == "" then null else $captured end),
+        source_state:"snapshot", source_kind:$kind, source_id:$id,
+        source_updated_at:null, stale_from_source:false}'
+    return 0
+  fi
+
+  report="$data/$id/report.md"
+  outcome="$data/$id/outcome.json"
+  # Capture republishes the outcome manifest in the same second as captured_at,
+  # so that file's mtime is not a freshness signal. The report is. Outcome-only
+  # tasks have no later editable source on disk once teardown finished.
+  if recall_regular_file "$report"; then
+    file_epoch=$(recall_stat_mtime "$report")
+    if [ -n "$file_epoch" ] && [ "$file_epoch" -gt "$live_epoch" ]; then
+      live_epoch=$file_epoch
+    fi
+    evidence+=("$(recall_content_evidence "$item" "$report")")
+    evidence+=("$(recall_mtime_evidence "$live_epoch" "$captured_at")")
+  else
+    # An outcome-only task contributes NO evidence. Its only live file is the
+    # manifest capture republishes around captured_at, so comparing against it
+    # would answer with capture's own timestamp rather than with the source.
+    # Having nothing to compare is not a comparison that passed.
+    if recall_regular_file "$outcome"; then
+      file_epoch=$(recall_stat_mtime "$outcome")
+      if [ -n "$file_epoch" ]; then
+        live_epoch=$file_epoch
+      fi
+    fi
+  fi
+
+  if [ "$live_epoch" -eq 0 ]; then
+    source_state=missing
+    stale_from_source=true
+  else
+    source_updated_at=$(recall_epoch_iso "$live_epoch")
+    source_state=$(recall_currency_verdict ${evidence[@]+"${evidence[@]}"})
+    [ "$source_state" != drifted ] || stale_from_source=true
+  fi
+  jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
+    --arg captured "${captured_at:-}" --arg state "$source_state" \
+    --arg updated "${source_updated_at:-}" --argjson stale "$stale_from_source" \
+    '{slug:$slug,
+      captured_at:(if $captured == "" then null else $captured end),
+      source_state:$state, source_kind:$kind, source_id:$id,
+      source_updated_at:(if $updated == "" then null else $updated end),
+      stale_from_source:$stale}'
+}
+
+# The run's wall-clock ceiling, as bash's own second counter: the per-call
+# retrieval budget once per leg the run will read. Empty means no ceiling, which
+# is what a caller that never set one, or set one this command cannot compute
+# with, gets.
+RECALL_DEADLINE=""
+
+annotate_search_results() {  # <results-json> <home> -> annotated results json
+  local results=$1 home=$2
+  local data="$home/data"
+  local meta slug
+  # Each slug's provenance is one JSON line and the whole stream is folded once.
+  # Re-reading and re-serialising the accumulated array per slug is quadratic on
+  # a path the dashboard runs under a time budget, at the CLI's cap of 50 rows.
+  #
+  # Provenance is read from the filesystem AFTER both corpora have answered, so
+  # without a ceiling it is unbounded time added to a run a caller already
+  # budgeted - and a caller that kills the run gets no answer at all, throwing
+  # away results that were successfully retrieved. The run's own budget bounds
+  # it: past the deadline the remaining rows keep the fail-safe state this
+  # design already defines, so a slow filesystem costs provenance, never the
+  # answer.
+  meta=$(
+    while IFS= read -r slug; do
+      [ -n "$slug" ] || continue
+      if [ -n "$RECALL_DEADLINE" ] && [ "$SECONDS" -ge "$RECALL_DEADLINE" ]; then break; fi
+      provenance_for_slug "$data" "$slug"
+    done < <(printf '%s' "$results" | jq -r '[.[] | select(.source == "local") | .slug] | unique[]') \
+      | jq -c -s '.'
+  )
+  jq -c --argjson meta "$meta" '
+    ($meta | map({key: .slug, value: .}) | from_entries) as $by
+    | map(
+        . as $row
+        | (if $row.source == "local" then ($by[$row.slug] // null) else null end) as $p
+        | .captured_at = (if $p == null then null else $p.captured_at end)
+        | .source_state = (if $p == null then "unknown" else $p.source_state end)
+        | .source_kind = (if $p == null then null else $p.source_kind end)
+        | .source_id = (if $p == null then null else $p.source_id end)
+        | .source_updated_at = (if $p == null then null else $p.source_updated_at end)
+        | .stale = ((.stale == true) or ($p != null and $p.stale_from_source == true))
+      )
+  ' <<EOF
+$results
+EOF
+}
+
 # Two corpora are merged by RANK, never by score, and each corpus's own order is
 # left exactly as it arrived. A brain's returned order is its verdict, not its
 # raw score: reranking runs inside the brain, so its ordering carries a
@@ -524,6 +849,21 @@ cmd_search() {
     read_local=1
   fi
 
+  # --timeout bounds EACH retrieval call, so the run's own ceiling is that
+  # budget once per leg this scope will actually read. Sizing the provenance
+  # pass against one leg instead would expire it while retrieval was still
+  # inside the budget it was granted, and every row would lose its capture date
+  # and its drift marker because the index was merely cold.
+  #
+  # A budget that is not a positive integer is left to the retrieval bound to
+  # refuse the way it always has; computing a deadline from it would abort the
+  # run with a raw arithmetic error, which is none of this command's statuses.
+  local legs=$((read_local + (read_main == 1 && main_is_local == 0 ? 1 : 0)))
+  case $secs in
+    '' | *[!0-9]*) RECALL_DEADLINE="" ;;
+    *) RECALL_DEADLINE=$((SECONDS + secs * (legs > 0 ? legs : 1))) ;;
+  esac
+
   if [ "$read_local" -eq 1 ]; then
     if ! command -v "$GBRAIN_BIN" >/dev/null 2>&1; then
       local_state=failed
@@ -571,21 +911,36 @@ cmd_search() {
     fi
   fi
 
-  local sources doc
+  local sources doc answer_kind="" answer_notice=""
+  results=$(annotate_search_results "$results" "$HOME_PATH")
+  if [ "$answered" -eq 1 ]; then
+    if [ "$(printf '%s' "$results" | jq 'length')" -eq 0 ]; then
+      answer_kind=none
+      answer_notice=$ANSWER_NONE_NOTICE
+    else
+      answer_kind=nearest
+      answer_notice=$ANSWER_NEAREST_NOTICE
+    fi
+  fi
   sources=$(printf '%s\n' ${rows[@]+"${rows[@]}"} | jq -c -s 'map(select(. != null))')
   doc=$(jq -c -n --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$query" \
+    --arg akind "$answer_kind" --arg anote "$answer_notice" \
     --argjson src "$sources" --argjson res "$results" "$JQ_MERGE_BY_RANK"'
     {schema: $s, command: "search", home: $h, query: $q, sources: $src,
-     results: ($res | merge_by_rank)}')
+     results: ($res | merge_by_rank)}
+    + (if $akind == "" then {} else {answer: {kind: $akind, notice: $anote}} end)')
 
   if [ "$JSON_MODE" -eq 1 ]; then
     printf '%s\n' "$doc" | jq '.'
   else
     printf '%s' "$doc" | jq -r '
       (.sources[] | "\(.source)\t\(.state)\(if .brain == "" then "" else "\t" + .brain end)\(if .detail then "\t" + .detail else "" end)"),
+      (if .answer then "answer\t\(.answer.kind)\t\(.answer.notice)" else empty end),
       "",
-      (if (.results | length) == 0 then "no results"
-       else (.results[] | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\n  \(.excerpt)")
+      (if (.answer | not) then "not searched: no corpus could be read - this says nothing about whether it exists"
+       elif (.results | length) == 0 then "no match in this brain - the brain may simply not hold it"
+       else (.results[]
+             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
        end)'
   fi
 
@@ -605,7 +960,7 @@ cmd_search() {
       exit 5
     fi
     [ "$JSON_MODE" -eq 1 ] \
-      || printf 'fm-recall: no corpus could be read, so this is not an empty result set - see the source states above\n' >&2
+      || printf 'fm-recall: not searched: no corpus could be read, so this is not an empty result set and says nothing about whether the queried thing exists - see the source states above\n' >&2
     exit 3
   fi
 }

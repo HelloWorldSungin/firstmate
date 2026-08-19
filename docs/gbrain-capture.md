@@ -93,6 +93,8 @@ Backfill writes each task's `state/<id>.gbrain` receipt but never republishes a 
 Run a backfill once after adopting a brain, and after a long outage.
 
 The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
+It is read once more at query time: [`bin/fm-recall.sh`](../bin/fm-recall.sh) judges whether a page it is about to serve still matches the live source it was composed from, using that record's stored body and capture time, so a body truncated at the cap or rewritten by redaction leaves the comparison with no evidence rather than with agreement.
+`bin/fm-recall.sh --help` owns that comparison and the page states it produces.
 
 ## Recovering from a damaged record
 

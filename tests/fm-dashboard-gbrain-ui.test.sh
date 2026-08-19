@@ -554,7 +554,7 @@ equal("search_setup_failed says the search never started",
   deepEqual("the search failure dot carries its tone as a class", dots(results).map((d) => d.className), ["dot amber"]);
   equal("the search failure sentence is printed once", results.textContent, searchReasonLabel("timed_out"));
 
-  paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [] }, null);
+  paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [], answer: { kind: "none", notice: "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent." } }, null);
   deepEqual("the empty-result dot carries its tone as a class", dots(results).map((d) => d.className), ["dot green"]);
 
   paintGBrainSearchResults(elements, {
@@ -575,17 +575,25 @@ equal("search_setup_failed says the search never started",
   paintGBrainSearchResults(elements, {
     schema: "fm-gbrain-search.v1",
     query: "fleet supervision",
+    answer: { kind: "nearest", notice: "These are the nearest indexed pages, not answers." },
     results: [
       { source: "local", slug: "task/one", title: "One", score: 0.5, excerpt: "body" },
       { source: "local", slug: "task/two", title: "Two", score: 0.4, excerpt: "body" },
     ],
     sources: [],
   }, null);
-  equal("a search paints one card per result", results.children.length, 2);
+  equal("a search paints the framing notice plus one card per result", results.children.length, 3);
   paintGBrainPanel(elements, configuredEnvelope);
-  equal("a routine health repaint keeps the search results", results.children.length, 2);
+  equal("a routine health repaint keeps the search results", results.children.length, 3);
   check("the kept results are the same cards", results.textContent.includes("task/one") && results.textContent.includes("task/two"),
     `received ${JSON.stringify(results.textContent)}`);
+
+  // The provenance a reader actually sees - the capture date, the source state,
+  // and the live-source-wins marker - is asserted against the renderer the
+  // running dashboard loads, which is the Knowledge view in app.js. index.html
+  // loads /app.js alone and imports no paint function from this module, so an
+  // assertion here would prove the presentation on a path no captain reaches.
+  // tests/fm-dashboard.test.sh owns it.
 
   paintGBrainSearchResults(elements, null, searchFailure("timed_out", "the brain did not answer within the search timeout"));
   paintGBrainPanel(elements, configuredEnvelope);

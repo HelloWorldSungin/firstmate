@@ -505,6 +505,10 @@ for a in "$@"; do
     */token) jq -cn --arg t "${FM_FAKE_TOKEN:-fake-token}" '{access_token: $t, token_type: "Bearer"}'; exit 0 ;;
   esac
 done
+# A main brain that answers slowly, on the call that reads it rather than on the
+# token mint. This is the only way to spend real wall clock inside a run without
+# a network or a server, and the run's time budget is a behavior that needs it.
+[ "${FM_FAKE_CURL_SLEEP:-0}" = 0 ] || sleep "$FM_FAKE_CURL_SLEEP"
 cat "$FM_FAKE_MCP_REPLY"
 exit 0
 CURLEOF
@@ -767,5 +771,635 @@ stub_reply '[]'
 run_recall "$MAIN_HOME" search --json --scope local teardown
 expect_code 0 "$RECALL_RC" "a corpus that was read and had no match is not a failure"
 pass "a search that never started, one that was refused, and one that found nothing each have their own exit status"
+
+# --- 11. the answer protocol: nearest pages, provenance, live source wins ----
+#
+# The engine returns rows for queries whose topic is absent, and the score
+# cannot separate a hit from nonsense, so a threshold would lie. Rows are
+# presented as nearest pages, never as answers, and a miss is absence of a
+# match rather than absence of the thing. A served page carries its capture
+# date and the live source's state, so a voided or superseded finding cannot
+# be read as current. Where the live source disagrees, that disagreement is
+# named and the live source wins; the page is not dropped or rewritten.
+
+# shellcheck source=bin/fm-gbrain-capture-lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/bin/fm-gbrain-capture-lib.sh"
+
+write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body> [<redactions-json>]
+  local home=$1 kind=$2 id=$3 captured=$4 body=$5 redactions=${6:-[]}
+  local tag doc_id slug
+  tag=$(fm_gbrain_capture_home_tag "$home")
+  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
+  slug=$(fm_gbrain_capture_slug "$tag" "$kind" "$id")
+  mkdir -p "$home/data/gbrain-outbox"
+  jq -n \
+    --arg schema "$FM_GBRAIN_CAPTURE_SCHEMA" \
+    --arg document_id "$doc_id" \
+    --arg slug "$slug" \
+    --arg home "$home" \
+    --arg kind "$kind" \
+    --arg id "$id" \
+    --arg captured "$captured" \
+    --arg body "$body" \
+    --argjson redactions "$redactions" \
+    '{
+      schema: $schema,
+      document_id: $document_id,
+      revision_id: "rev-aaaaaaaaaaaaaaaa",
+      slug: $slug,
+      home: $home,
+      source: {kind: $kind, id: $id, title: $id},
+      content_version: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      status: "captured",
+      attempts: 1,
+      last_error: null,
+      gbrain_document: $slug,
+      redactions: $redactions,
+      created_at: "2026-08-11T20:00:00Z",
+      updated_at: "2026-08-11T20:00:00Z",
+      captured_at: (if $captured == "" then null else $captured end),
+      body: $body
+    }' > "$home/data/gbrain-outbox/${doc_id}.json"
+  printf '%s\n' "$slug"
+}
+
+stub_reply '[]'
+run_recall "$MAIN_HOME" search --json --scope local "a topic this brain has never captured"
+expect_code 0 "$RECALL_RC" "a read corpus with no rows is still a successful read"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .answer.kind)" = none ] \
+  || fail "zero rows from a read corpus must be framed as none, not as an answer: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "absence of a match" \
+  "a miss must be named as absence of a match"
+assert_not_contains "$RECALL_OUT" "does not exist" \
+  "a miss must not be readable as absence of the queried thing"
+assert_not_contains "$RECALL_OUT" "no such thing" \
+  "a miss must not be readable as a negative about the world"
+
+stub_fail 1 "No brain configured. Run: gbrain init"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+expect_code 3 "$RECALL_RC" "a home with no readable brain is still a retrieval failure"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r 'has("answer")')" = false ] \
+  || fail "a corpus that was never read must not carry an answer framing: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "a missing brain must still fail as local retrieval: $RECALL_OUT"
+
+DRIFT_ID=ratchet-side-effects
+DRIFT_SLUG=$(write_outbox "$MAIN_HOME" task "$DRIFT_ID" "2026-08-11T20:39:46Z" \
+  "AGS has a code-proven zero-Value problem that becomes long intervals.")
+mkdir -p "$MAIN_HOME/data/$DRIFT_ID"
+printf '%s\n' \
+  "AGS has a code-proven zero-Value problem that becomes long intervals." \
+  "" \
+  "Finding 5 is void. Ratcheting does not apply to AGS." \
+  > "$MAIN_HOME/data/$DRIFT_ID/report.md"
+touch -d '2026-08-11T21:25:41Z' "$MAIN_HOME/data/$DRIFT_ID/report.md"
+stub_reply "$(jq -cn --arg s "$DRIFT_SLUG" \
+  '[{slug:$s, title:"BZ-SIM ratchet side effects", chunk_text:"AGS has a code-proven zero-Value problem", score:0.49, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local "Does the BZ-SIM ratchet feature apply to AGS?"
+expect_code 0 "$RECALL_RC" "a drifted page should still be returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .answer.kind)" = nearest ] \
+  || fail "returned rows must be framed as nearest pages: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "not answers" \
+  "nearest pages must not be readable as answers"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a live report that moved on after capture must be drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = "2026-08-11T20:39:46Z" ] \
+  || fail "a served page must carry its capture date: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a drifted page must not be presentable as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_updated_at')" = "2026-08-11T21:25:41Z" ] \
+  || fail "a drifted page must name the live source's time: $RECALL_OUT"
+run_recall "$MAIN_HOME" search --scope local "Does the BZ-SIM ratchet feature apply to AGS?"
+assert_contains "$RECALL_OUT" "live source wins" \
+  "human output must say the live source wins when it disagrees"
+assert_contains "$RECALL_OUT" "(stale)" \
+  "human output must mark the voided finding stale"
+
+CURRENT_ID=ohlcv-reenable
+CURRENT_SLUG=$(write_outbox "$MAIN_HOME" task "$CURRENT_ID" "2026-08-11T19:42:31Z" \
+  "OHLCV service active+enabled on CT100, listening 8812, healthy.")
+mkdir -p "$MAIN_HOME/data/$CURRENT_ID"
+printf '%s\n' "OHLCV service active+enabled on CT100, listening 8812, healthy." \
+  > "$MAIN_HOME/data/$CURRENT_ID/report.md"
+touch -d '2026-08-11T19:40:41Z' "$MAIN_HOME/data/$CURRENT_ID/report.md"
+STALE_ID=ohlcv-deploy-fix
+STALE_SLUG=$(write_outbox "$MAIN_HOME" task "$STALE_ID" "2026-08-11T17:45:52Z" \
+  "The OHLCV service remains inactive and disabled.")
+mkdir -p "$MAIN_HOME/data/$STALE_ID"
+printf '%s\n' \
+  "The OHLCV service remains inactive and disabled." \
+  "" \
+  "Re-enable completed; service is active and enabled." \
+  > "$MAIN_HOME/data/$STALE_ID/report.md"
+touch -d '2026-08-11T19:40:13Z' "$MAIN_HOME/data/$STALE_ID/report.md"
+stub_reply "$(jq -cn --arg a "$CURRENT_SLUG" --arg b "$STALE_SLUG" \
+  '[{slug:$a, title:"Re-enable OHLCV", chunk_text:"OHLCV service active+enabled", score:0.64, stale:false},
+    {slug:$b, title:"Deploy OHLCV fix", chunk_text:"The OHLCV service remains inactive", score:0.65, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local "What is the current state of the OHLCV service on CT100?"
+expect_code 0 "$RECALL_RC" "active and stale pages should both be returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].slug] | join(",")')" = "$CURRENT_SLUG,$STALE_SLUG" ] \
+  || fail "provenance must not reorder rows: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "the matching live source must read as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[1].source_state')" = drifted ] \
+  || fail "the superseded live source must read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a current page must not inherit the sibling's stale mark: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[1].stale')" = true ] \
+  || fail "the reader must be able to tell the stale OHLCV page from the current one: $RECALL_OUT"
+
+MISSING_ID=torn-down-task
+MISSING_SLUG=$(write_outbox "$MAIN_HOME" task "$MISSING_ID" "2026-08-11T12:00:00Z" "a captured body")
+stub_reply "$(jq -cn --arg s "$MISSING_SLUG" \
+  '[{slug:$s, title:"gone", chunk_text:"a captured body", score:0.4, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local missing-source
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = missing ] \
+  || fail "an outbox whose live files are gone must read as missing: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a missing source must not be presentable as current: $RECALL_OUT"
+
+NOTE_ID=pruned-learning
+NOTE_SLUG=$(write_outbox "$MAIN_HOME" note "$NOTE_ID" "2026-08-11T18:00:00Z" "a pruned learning")
+stub_reply "$(jq -cn --arg s "$NOTE_SLUG" \
+  '[{slug:$s, title:"note", chunk_text:"a pruned learning", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local pruned-learning
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = snapshot ] \
+  || fail "a note has no live file and must read as a snapshot: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a snapshot note is not itself a drifted source: $RECALL_OUT"
+
+stub_reply "$SEARCH_HIT"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "a slug with no outbox must be unknown rather than guessed current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
+  || fail "unjudged rows are still nearest pages: $RECALL_OUT"
+pass "answer protocol: a miss is not a negative, a served page carries provenance, and a live-source disagreement is surfaced without reordering"
+
+# --- 12. drift is only claimed when the two sides are actually comparable ----
+#
+# The stored body is not a verbatim copy of the report. Capture composes
+# frontmatter in front of it, truncates the composed document at
+# FM_GBRAIN_CAPTURE_MAX_BYTES, and rewrites credential-shaped values before any
+# byte reaches disk. A page whose live report never changed must not be marked
+# drifted - and so read as stale, with the live source winning - because the
+# tail it is compared against was cut or rewritten by capture itself.
+
+# A report whose tail carries a multi-byte character positioned so that a
+# 200-BYTE cut lands inside it. The orphaned continuation bytes decode to
+# U+FFFD, which matches nothing in a body that was stored intact, so a
+# byte-sized fingerprint reports an untouched page as drifted. The capture date
+# is after the report's mtime here, so the mtime rule cannot mask the result:
+# whatever this row says about drift is the content check's own verdict.
+UTF8_ID=utf8-tail-report
+UTF8_BODY="$(printf 'x%.0s' $(seq 1 300))→$(printf 'y%.0s' $(seq 1 197))"
+UTF8_SLUG=$(write_outbox "$MAIN_HOME" task "$UTF8_ID" "2026-08-11T20:00:00Z" "$UTF8_BODY")
+mkdir -p "$MAIN_HOME/data/$UTF8_ID"
+printf '%s\n' "$UTF8_BODY" > "$MAIN_HOME/data/$UTF8_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$UTF8_ID/report.md"
+stub_reply "$(jq -cn --arg s "$UTF8_SLUG" \
+  '[{slug:$s, title:"utf8 tail", chunk_text:"x", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local utf8-tail
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "an unchanged report whose tail splits a multi-byte character must not read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a false drift must not be escalated to stale: $RECALL_OUT"
+
+# A body that capture truncated cannot hold the report's tail at all. The tail
+# is genuinely absent, and that absence is capture's doing, not the report's, so
+# the mtime rule decides alone. FM_GBRAIN_CAPTURE_MAX_BYTES is the same knob
+# capture reads, which is what makes the ceiling testable without a 64 KiB file.
+TRUNC_ID=truncated-capture
+TRUNC_REPORT="$(printf 'a%.0s' $(seq 1 900))ENDOFREPORT"
+TRUNC_SLUG=$(write_outbox "$MAIN_HOME" task "$TRUNC_ID" "2026-08-11T20:00:00Z" \
+  "$(printf 'a%.0s' $(seq 1 512))")
+mkdir -p "$MAIN_HOME/data/$TRUNC_ID"
+printf '%s\n' "$TRUNC_REPORT" > "$MAIN_HOME/data/$TRUNC_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$TRUNC_ID/report.md"
+stub_reply "$(jq -cn --arg s "$TRUNC_SLUG" \
+  '[{slug:$s, title:"truncated", chunk_text:"a", score:0.5, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_CAPTURE_MAX_BYTES=512 \
+  bash "$CLI" search --json --scope local truncated 2>&1) || RECALL_RC=$?
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "a body capture truncated cannot disprove the report it was cut from: $RECALL_OUT"
+
+# The same body, now judged against the default ceiling it is nowhere near, has
+# no truncation to excuse the missing tail. The content check must still vote,
+# or this whole mechanism would have been disabled rather than made honest.
+run_recall "$MAIN_HOME" search --json --scope local truncated
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a body that is comparable and does not match must still read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a real drift must still be stale: $RECALL_OUT"
+
+# Redaction rewrites the body before it is stored, so a tail that no longer
+# matches may be the redactor's edit rather than the report's. A record that
+# names redactions cannot be used to claim drift.
+REDACT_ID="redacted-capture"
+REDACT_SLUG=$(write_outbox "$MAIN_HOME" task "$REDACT_ID" "2026-08-11T20:00:00Z" \
+  "The deploy key is [redacted:openai-key] and the service came up clean." \
+  '[{"class":"openai-key","count":1}]')
+mkdir -p "$MAIN_HOME/data/$REDACT_ID"
+printf '%s\n' "The deploy key is sk-liveliveliveliveliveliveliveliveli and the service came up clean." \
+  > "$MAIN_HOME/data/$REDACT_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$REDACT_ID/report.md"
+stub_reply "$(jq -cn --arg s "$REDACT_SLUG" \
+  '[{slug:$s, title:"redacted", chunk_text:"deploy key", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local redacted
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "a redacted body cannot be read as evidence that the report drifted: $RECALL_OUT"
+
+# The mtime rule on its own. The report's tail is byte-identical to the stored
+# body, so the content check votes "match" and cannot be what decides this row -
+# only the capture time compared against the live mtime can. That comparison
+# runs through recall_iso_epoch, whose two date dialects disagree about what -d
+# means, and a build that answers it with the current time instead of failing
+# would make every capture look newer than every report and retire drift
+# detection entirely on that platform.
+MTIME_ID="edited-mid-report"
+MTIME_BODY="The deploy is green and the runbook stands."
+MTIME_SLUG=$(write_outbox "$MAIN_HOME" task "$MTIME_ID" "2026-08-11T20:00:00Z" "$MTIME_BODY")
+mkdir -p "$MAIN_HOME/data/$MTIME_ID"
+printf '%s\n' "$MTIME_BODY" > "$MAIN_HOME/data/$MTIME_ID/report.md"
+touch -d '2026-08-11T21:30:00Z' "$MAIN_HOME/data/$MTIME_ID/report.md"
+stub_reply "$(jq -cn --arg s "$MTIME_SLUG" \
+  '[{slug:$s, title:"edited", chunk_text:"deploy is green", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local edited-mid-report
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a report edited after capture must be drifted on the mtime rule alone: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a page whose live source moved on after capture must not read as current: $RECALL_OUT"
+
+# A task with no report on disk has nothing to compare against: its only live
+# file is the manifest capture itself rewrites, which is deliberately not read
+# as a freshness signal. Reporting that as current would be a confident
+# positive with nothing behind it, so it is uncompared - which reads with
+# unknown, never with a clean bill of health.
+OUTCOME_ID="outcome-only-task"
+OUTCOME_SLUG=$(write_outbox "$MAIN_HOME" task "$OUTCOME_ID" "2026-08-11T20:00:00Z" "an outcome with no report")
+mkdir -p "$MAIN_HOME/data/$OUTCOME_ID"
+jq -n '{schema: "fm-outcome-manifest.v1", outcome: {state: "done"}}' \
+  > "$MAIN_HOME/data/$OUTCOME_ID/outcome.json"
+stub_reply "$(jq -cn --arg s "$OUTCOME_SLUG" \
+  '[{slug:$s, title:"outcome only", chunk_text:"an outcome", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local outcome-only
+expect_code 0 "$RECALL_RC" "a page nothing could be compared against is still returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = uncompared ] \
+  || fail "an outcome-only task compares nothing and must say so: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" != current ] \
+  || fail "a page that compared nothing must never be reported as current: $RECALL_OUT"
+run_recall "$MAIN_HOME" search --scope local outcome-only
+assert_contains "$RECALL_OUT" "source=uncompared" \
+  "a reader must see that nothing was compared rather than a silent clean state"
+assert_not_contains "$RECALL_OUT" "source=current" \
+  "the human line must not absorb an uncompared page into current"
+
+# The second way a comparison cannot happen: capture truncated the body, so the
+# report's tail is legitimately absent, and the record carries no capture time
+# for the mtime rule to fall back on. Neither check ran, so neither may be
+# reported as having agreed.
+UNCOMP_ID="truncated-and-uncaptured"
+UNCOMP_SLUG=$(write_outbox "$MAIN_HOME" task "$UNCOMP_ID" "" "$(printf 'b%.0s' $(seq 1 512))")
+mkdir -p "$MAIN_HOME/data/$UNCOMP_ID"
+printf '%s\n' "$(printf 'b%.0s' $(seq 1 900))TAILNOTINBODY" \
+  > "$MAIN_HOME/data/$UNCOMP_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$MAIN_HOME/data/$UNCOMP_ID/report.md"
+stub_reply "$(jq -cn --arg s "$UNCOMP_SLUG" \
+  '[{slug:$s, title:"pending capture", chunk_text:"b", score:0.5, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_CAPTURE_MAX_BYTES=512 \
+  bash "$CLI" search --json --scope local truncated-and-uncaptured 2>&1) || RECALL_RC=$?
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = uncompared ] \
+  || fail "a truncated body with no capture time compared nothing and must say so: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" != current ] \
+  || fail "a row where neither check ran must never be reported as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = null ] \
+  || fail "the uncompared fixture must be the null-capture case it claims to be: $RECALL_OUT"
+
+# A slug whose home tag cannot form a valid document id addresses no record in
+# this outbox, so it is unjudgeable rather than a task this home owns: reporting
+# a source kind and id for it would claim an identity nothing validated.
+stub_reply "$(jq -cn '[{slug:"firstmate/a b/task/some-task", title:"bad tag", chunk_text:"x", score:0.4, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local bad-tag
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "a slug with an unaddressable home tag must be unknown: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_kind')" = null ] \
+  || fail "a slug that failed the address checks must not be credited with a source kind: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_id')" = null ] \
+  || fail "a slug that failed the address checks must not be credited with a source id: $RECALL_OUT"
+pass "drift is claimed only from a comparable body: truncation, redaction, and a split character are not evidence"
+
+# --- 13. the human surface tells a miss apart from an unread corpus ----------
+#
+# stdout is what a reader actually sees, and neither of these two states may
+# read as "the thing does not exist" and neither may be silence. They are
+# checked on stdout ALONE, separated from stderr, because the defect this pins
+# was exactly stdout contradicting stderr: a reader piping stdout was told a
+# negative while stderr said the opposite.
+
+run_recall_split() {  # <home> <args...> -> RECALL_STDOUT / RECALL_STDERR / RECALL_RC
+  local home=$1
+  shift
+  local errfile
+  errfile=$(mktemp "$TMP_ROOT/stderr.XXXXXX")
+  RECALL_RC=0
+  RECALL_STDOUT=$(FM_HOME="$home" bash "$CLI" "$@" 2>"$errfile") || RECALL_RC=$?
+  RECALL_STDERR=$(cat "$errfile")
+  rm -f "$errfile"
+}
+
+# A home with no brain installed: the corpus was never read, so nothing here is
+# a statement about what the brain holds.
+FM_GBRAIN_BIN="$TMP_ROOT/no-such-gbrain-anywhere" \
+  run_recall_split "$MAIN_HOME" search --scope local "does the OHLCV service run on CT100"
+expect_code 3 "$RECALL_RC" "a corpus that could not be read is still a retrieval failure"
+assert_contains "$RECALL_STDOUT" "not searched" \
+  "stdout must say the corpus was never searched: $RECALL_STDOUT"
+assert_contains "$RECALL_STDOUT" "says nothing about whether it exists" \
+  "stdout must refuse to turn an unread corpus into a statement about the world"
+assert_not_contains "$RECALL_STDOUT" "no results" \
+  "an unread corpus must not be rendered as an empty result set"
+assert_not_contains "$RECALL_STDOUT" "no match in this brain" \
+  "an unread corpus must not be rendered as a miss"
+assert_contains "$RECALL_STDERR" "not an empty result set" \
+  "stderr must name the same fact stdout does: $RECALL_STDERR"
+assert_not_contains "$RECALL_STDERR" "no results" \
+  "stderr must not contradict stdout by calling this an empty result set"
+
+# A brain that WAS read and holds no match: a real, successful, empty answer -
+# which must be said out loud, and said as a fact about this brain.
+stub_reply '[]'
+run_recall_split "$MAIN_HOME" search --scope local "a topic this brain has never captured"
+expect_code 0 "$RECALL_RC" "a corpus that was read and had no match is not a failure"
+assert_contains "$RECALL_STDOUT" "no match in this brain" \
+  "a successful miss must be stated, not left as silence: [$RECALL_STDOUT]"
+assert_contains "$RECALL_STDOUT" "may simply not hold it" \
+  "a miss must be framed as this brain's gap, not the world's"
+assert_not_contains "$RECALL_STDOUT" "not searched" \
+  "a corpus that was read must not be reported as unsearched"
+assert_not_contains "$RECALL_STDOUT" "no results" \
+  "a miss must not fall back to the bare empty-result wording"
+assert_not_contains "$RECALL_STDERR" "no corpus could be read" \
+  "a corpus that answered must not have stderr claim it was never read: $RECALL_STDERR"
+pass "human output separates a searched brain with no match from a corpus that was never read, on stdout alone"
+
+# --- 14. provenance spends the run's budget, never the answer ----------------
+#
+# Provenance is read from the filesystem AFTER both corpora have answered, so it
+# is wall clock a caller already budgeted for retrieval. The dashboard sizes its
+# kill deadline around the wrapper's own timeout with about a second to spare,
+# and a caller that kills the run gets nothing - including the rows that were
+# successfully retrieved before the annotation started. Past the deadline the
+# rows keep the fail-safe unknown state instead, so a slow read costs
+# provenance and never the answer.
+#
+# The clock is spent by the main brain rather than by a real slow filesystem,
+# because that is the only way to spend a deterministic amount of it offline.
+
+jq -n '{version: 1,
+        local: {embedding_base_url: "http://127.0.0.1:11434/v1"},
+        main_brain: {mcp_url: "http://127.0.0.1:9/mcp", token_url: "http://127.0.0.1:9/token",
+                     mount: "fm-main", scopes: "read", secret: "main-brain-client-secret"}}' \
+  > "$SM_HOME/config/gbrain.json"
+{
+  printf 'event: message\n'
+  printf 'data: %s\n' "$(jq -cn --arg t '[]' '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+} > "$FM_FAKE_MCP_REPLY"
+
+BUDGET_ID="budgeted-page"
+BUDGET_BODY="The provenance pass must not cost the answer."
+BUDGET_SLUG=$(write_outbox "$SM_HOME" task "$BUDGET_ID" "2026-08-11T20:00:00Z" "$BUDGET_BODY")
+mkdir -p "$SM_HOME/data/$BUDGET_ID"
+printf '%s\n' "$BUDGET_BODY" > "$SM_HOME/data/$BUDGET_ID/report.md"
+touch -d '2026-08-11T19:00:00Z' "$SM_HOME/data/$BUDGET_ID/report.md"
+stub_reply "$(jq -cn --arg s "$BUDGET_SLUG" \
+  '[{slug:$s, title:"budgeted", chunk_text:"provenance", score:0.5, stale:false}]')"
+
+# The control: with budget to spare the same row IS judged, so the degradation
+# below is the deadline's doing and not a broken annotator.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all --timeout 30 budgeted 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "the control search should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "with budget to spare the row must carry its judged provenance: $RECALL_OUT"
+
+# The same search whose corpora spend the whole RUN budget - `--timeout` once
+# per leg this scope reads, which is what the caller actually sanctioned - and
+# only then does the provenance degrade, with the answer surviving intact.
+# Two legs at 1s each is a 2s ceiling; the main brain spends 3s.
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=3 \
+  bash "$CLI" search --json --scope all --timeout 1 budgeted 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a run whose corpora spent the budget must still answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "local")] | length')" -eq 1 ] \
+  || fail "a retrieved row must survive a provenance pass that ran out of budget: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "past the deadline a row keeps the fail-safe unknown state: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = null ] \
+  || fail "a row the provenance pass never reached must claim nothing about its capture: $RECALL_OUT"
+pass "a provenance pass that runs out of the run's budget degrades to unknown instead of costing the answer"
+
+# --- 15. the named regression survives a cold index --------------------------
+#
+# The captain-voided BZ-SIM finding is the page this whole task exists to stop
+# presenting as current. A brain that takes a few seconds on a cold index is the
+# condition the Knowledge view's own hint tells the reader to expect, and it is
+# well inside the budget the caller granted retrieval - so the page must still
+# arrive carrying its capture date and its drift marker. Sizing the provenance
+# pass against ONE leg instead of the run wipes exactly this row to
+# unknown/null, which is the failure this pins.
+#
+# Two legs at 3s each is a 6s ceiling; the main brain spends 4s of it.
+
+BZSIM_ID="bzsim-ratchet-fix-side-effects"
+BZSIM_CAPTURED="AGS has a code-proven zero-Value problem that becomes long intervals."
+BZSIM_SLUG=$(write_outbox "$SM_HOME" task "$BZSIM_ID" "2026-08-11T20:39:46Z" "$BZSIM_CAPTURED")
+mkdir -p "$SM_HOME/data/$BZSIM_ID"
+printf '%s\n' "$BZSIM_CAPTURED" "" "Finding 5 is void. Ratcheting does not apply to AGS." \
+  > "$SM_HOME/data/$BZSIM_ID/report.md"
+touch -d '2026-08-11T21:25:41Z' "$SM_HOME/data/$BZSIM_ID/report.md"
+stub_reply "$(jq -cn --arg s "$BZSIM_SLUG" \
+  '[{slug:$s, title:"BZ-SIM ratchet side effects", chunk_text:"AGS has a code-proven zero-Value problem", score:0.49, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=4 \
+  bash "$CLI" search --json --scope all --timeout 3 "Does the BZ-SIM ratchet feature apply to AGS?" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a slow but budgeted run must still answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a cold index must not cost the voided finding its drift marker: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "the captain-voided finding must still read as not current when the brain was slow: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = "2026-08-11T20:39:46Z" ] \
+  || fail "a slow run must not wipe the served page's capture date: $RECALL_OUT"
+pass "the captain-voided BZ-SIM page keeps its capture date and drift marker when retrieval spends most of the run budget"
+
+# --- 16. current is earned: every path that can produce one -------------------
+#
+# Currency is decided from evidence, and every check answers agree, disagree, or
+# "could not run". The property under test is not that particular cases behave -
+# it is that `current` has exactly one way in. A check that cannot run must
+# contribute nothing, so a path nobody anticipated degrades to "nothing was
+# checked" rather than to "this page is fine".
+#
+# The enumeration below is the whole input space of a provenance verdict, one
+# fixture per class, read through a single search. Only the two rows built with
+# a comparison that ran AND agreed may come back current.
+
+VERDICT_HOME=$(make_home "$TMP_ROOT/verdict")
+VERDICT_TAG=$(fm_gbrain_capture_home_tag "$VERDICT_HOME")
+VERDICT_SLUGS=()
+
+# Sets <var> to the fixture's slug and adds it to the row set the search will
+# return. It assigns rather than printing because a command substitution would
+# run the array append in a subshell and drop it.
+verdict_fixture() {  # <var> <id> <captured_at-or-empty> <body> <report|OUTCOME-ONLY|NO-LIVE-FILES> [<mtime>] [<redactions>]
+  local into=$1 id=$2 captured=$3 body=$4 report=$5
+  local mtime=${6:-2026-08-11T19:00:00Z} redactions=${7:-[]}
+  local slug
+  slug=$(write_outbox "$VERDICT_HOME" task "$id" "$captured" "$body" "$redactions")
+  if [ "$report" != NO-LIVE-FILES ]; then
+    mkdir -p "$VERDICT_HOME/data/$id"
+    if [ "$report" = OUTCOME-ONLY ]; then
+      jq -n '{schema: "fm-outcome-manifest.v1", outcome: {state: "done"}}' \
+        > "$VERDICT_HOME/data/$id/outcome.json"
+    else
+      printf '%s' "$report" > "$VERDICT_HOME/data/$id/report.md"
+      touch -d "$mtime" "$VERDICT_HOME/data/$id/report.md"
+    fi
+  fi
+  VERDICT_SLUGS+=("$slug")
+  printf -v "$into" '%s' "$slug"
+}
+
+verdict_search() {  # <extra-env-assignments...> -> RECALL_OUT with every fixture row
+  stub_reply "$(printf '%s\n' ${VERDICT_SLUGS[@]+"${VERDICT_SLUGS[@]}"} \
+    | jq -R -s -c 'split("\n") | map(select(length > 0))
+        | map({slug: ., title: "row", chunk_text: "x", score: 0.5, stale: false})')"
+  RECALL_RC=0
+  RECALL_OUT=$(env FM_HOME="$VERDICT_HOME" "$@" bash "$CLI" search --json --scope local everything 2>&1) || RECALL_RC=$?
+}
+
+verdict_state() {  # <slug> -> the source_state that slug came back with
+  printf '%s' "$RECALL_OUT" | jq -r --arg s "$1" '.results[] | select(.slug == $s) | .source_state'
+}
+
+expect_state() {  # <slug> <expected> <why>
+  local got
+  got=$(verdict_state "$1")
+  [ "$got" = "$2" ] || fail "$3: expected $2, got ${got:-<no row>}"
+}
+
+# Both checks can run and both agree - the only shape that earns current.
+AGREE_BODY="The runbook stands and the deploy is green."
+BLANK_REPORT=$(printf '   \n\n   \n')
+verdict_fixture EV_BOTH_AGREE ev-both-agree "2026-08-11T20:00:00Z" "$AGREE_BODY" "$AGREE_BODY"
+# Only the content check can run, and it agrees: no capture time to compare.
+verdict_fixture EV_CONTENT_AGREE ev-content-agree "" "$AGREE_BODY" "$AGREE_BODY"
+# Only the mtime check can run, and it agrees: the body was redacted, so the
+# missing tail says nothing, but the report predates the capture.
+verdict_fixture EV_MTIME_AGREE ev-mtime-agree "2026-08-11T20:00:00Z" \
+  "The key is [redacted:openai-key] and nothing else survived." \
+  "The key is sk-liveliveliveliveliveliveliveliveli and nothing else survived." \
+  "2026-08-11T19:00:00Z" '[{"class":"openai-key","count":1}]'
+# The content check ran and disagreed.
+verdict_fixture EV_CONTENT_DISAGREE ev-content-disagree "" "A body that is not the report." "$AGREE_BODY"
+# The content check agreed and the mtime check disagreed: one disagreement is
+# enough, because a live source that disagrees wins.
+verdict_fixture EV_MTIME_DISAGREE ev-mtime-disagree "2026-08-11T20:00:00Z" "$AGREE_BODY" "$AGREE_BODY" \
+  "2026-08-11T21:30:00Z"
+# Neither check can run: a report with no content to fingerprint and no capture
+# time to fall back on.
+verdict_fixture EV_NO_EVIDENCE ev-no-evidence "" "$AGREE_BODY" "$BLANK_REPORT"
+# Neither check can run: the capture time is present but unparseable.
+verdict_fixture EV_BAD_CAPTURE ev-bad-capture "not-a-date" "$AGREE_BODY" "$BLANK_REPORT"
+# No report to compare, and the only live file is the manifest capture rewrites.
+verdict_fixture EV_OUTCOME_ONLY ev-outcome-only "2026-08-11T20:00:00Z" "$AGREE_BODY" OUTCOME-ONLY
+# The live files are gone entirely.
+verdict_fixture EV_LIVE_GONE ev-live-gone "2026-08-11T20:00:00Z" "$AGREE_BODY" NO-LIVE-FILES
+# A note has no live file by construction.
+EV_NOTE=$(write_outbox "$VERDICT_HOME" note ev-note "2026-08-11T20:00:00Z" "a pruned learning")
+VERDICT_SLUGS+=("$EV_NOTE")
+# A slug this home never captured, and a slug whose home tag cannot address a
+# record at all.
+EV_NO_OUTBOX="firstmate/$VERDICT_TAG/task/ev-never-captured"
+VERDICT_SLUGS+=("$EV_NO_OUTBOX")
+EV_BAD_TAG="firstmate/a b/task/ev-bad-tag"
+VERDICT_SLUGS+=("$EV_BAD_TAG")
+
+verdict_search
+expect_code 0 "$RECALL_RC" "the enumeration search should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq "${#VERDICT_SLUGS[@]}" ] \
+  || fail "the enumeration must read every fixture row: $RECALL_OUT"
+
+expect_state "$EV_BOTH_AGREE" current "two agreeing checks earn current"
+expect_state "$EV_CONTENT_AGREE" current "a content check that ran and agreed earns current"
+expect_state "$EV_MTIME_AGREE" current "an mtime check that ran and agreed earns current"
+expect_state "$EV_CONTENT_DISAGREE" drifted "a content check that ran and disagreed marks drift"
+expect_state "$EV_MTIME_DISAGREE" drifted "one disagreeing check outweighs one that agreed"
+expect_state "$EV_NO_EVIDENCE" uncompared "no check could run, so nothing was compared"
+expect_state "$EV_BAD_CAPTURE" uncompared "an unparseable capture time is not a comparison"
+expect_state "$EV_OUTCOME_ONLY" uncompared "an outcome-only task compares nothing"
+expect_state "$EV_LIVE_GONE" missing "an outbox whose live files are gone is missing"
+expect_state "$EV_NOTE" snapshot "a note has no live file to compare"
+expect_state "$EV_NO_OUTBOX" unknown "a slug with no outbox cannot be judged"
+expect_state "$EV_BAD_TAG" unknown "a slug that cannot address a record cannot be judged"
+
+# The closure itself: across the whole input space, the rows that came back
+# current are EXACTLY the three built with a comparison that ran and agreed. A
+# new path that reaches current without evidence fails here even if nobody
+# thought to name it.
+CURRENT_ROWS=$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source_state == "current") | .slug] | sort | join(",")')
+EXPECTED_CURRENT=$(printf '%s\n%s\n%s\n' "$EV_BOTH_AGREE" "$EV_CONTENT_AGREE" "$EV_MTIME_AGREE" \
+  | sort | tr '\n' ',' | sed 's/,$//')
+[ "$CURRENT_ROWS" = "$EXPECTED_CURRENT" ] \
+  || fail "current was reached without an agreeing comparison: got [$CURRENT_ROWS], earned [$EXPECTED_CURRENT]"
+
+# The mechanism, stated as a property rather than as a case list: for EVERY way
+# a check can fail to run, pairing it with the other check also unable to run
+# yields uncompared. None of them contributes a quiet pass.
+VERDICT_SLUGS=()
+CANNOT_RUN=()
+cannot_run_slug=""
+for content_way in whitespace-tail empty-file truncated-body redacted-body; do
+  for capture_way in absent unparseable; do
+    id="cannot-run-$content_way-$capture_way"
+    case $capture_way in
+      absent) captured="" ;;
+      *) captured="not-a-date" ;;
+    esac
+    case $content_way in
+      whitespace-tail) body="$AGREE_BODY"; report="$BLANK_REPORT"; redactions='[]' ;;
+      empty-file) body="$AGREE_BODY"; report=""; redactions='[]' ;;
+      truncated-body) body=$(printf 'b%.0s' $(seq 1 512)); report="$(printf 'b%.0s' $(seq 1 900))TAILNOTINBODY"; redactions='[]' ;;
+      *) body="key [redacted:openai-key] done"; report="key sk-liveliveliveliveliveliveliveliveli done"; redactions='[{"class":"openai-key","count":1}]' ;;
+    esac
+    verdict_fixture cannot_run_slug "$id" "$captured" "$body" "$report" "2026-08-11T19:00:00Z" "$redactions"
+    CANNOT_RUN+=("$cannot_run_slug")
+  done
+done
+verdict_search FM_GBRAIN_CAPTURE_MAX_BYTES=512
+expect_code 0 "$RECALL_RC" "the cannot-run search should answer: $RECALL_OUT"
+for slug in "${CANNOT_RUN[@]}"; do
+  expect_state "$slug" uncompared "a check that could not run must contribute nothing ($slug)"
+done
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source_state == "current")] | length')" -eq 0 ] \
+  || fail "a check that could not run was counted as a pass: $RECALL_OUT"
+pass "current is reachable only through a comparison that ran and agreed; a check that cannot run contributes nothing"
+
+# A budget this command cannot compute with is refused by the retrieval bound
+# the way it always was, rather than aborting the run with a raw shell error on
+# a status no caller knows how to read.
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_RECALL_TIMEOUT=30s \
+  bash "$CLI" search --json --scope local teardown 2>&1) || RECALL_RC=$?
+expect_code 3 "$RECALL_RC" "a non-integer retrieval budget must stay a named retrieval failure: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "a non-integer budget must be reported as the local leg failing: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "value too great for base" \
+  "a bad budget must not surface as a raw shell arithmetic error"
+pass "a retrieval budget that is not a positive integer keeps the documented exit contract"
 
 echo "all fm-recall tests passed"

@@ -563,6 +563,38 @@ const storage = new Map();
 // pressed.
 const knowledgeSearches = [];
 let knowledgeSearchGate = null;
+// The Knowledge view is the surface a captain reads a brain page on, so the
+// provenance the wrapper attaches has to survive all the way to it: the capture
+// date, the live source's state, and the disagreement marker. This fixture
+// carries one drifted page and one the wrapper could not compare at all.
+let knowledgeSearchEmpty = false;
+const NEAREST_NOTICE = "These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent.";
+const NONE_NOTICE = "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.";
+const knowledgeSearchPayload = () => (knowledgeSearchEmpty
+  ? {
+    schema: "fm-gbrain-search.v1",
+    answer: { kind: "none", notice: NONE_NOTICE },
+    results: [],
+    sources: [{ source: "local", state: "ok" }],
+  }
+  : {
+    schema: "fm-gbrain-search.v1",
+    answer: { kind: "nearest", notice: NEAREST_NOTICE },
+    results: [
+      {
+        title: "A captured runbook", source: "local", slug: "firstmate/home/task/runbook",
+        excerpt: "how the fleet did it", score: 0.49, stale: true,
+        captured_at: "2026-08-11T20:39:46Z", source_state: "drifted",
+        source_updated_at: "2026-08-11T21:25:41Z",
+      },
+      {
+        title: "An outcome-only task", source: "local", slug: "firstmate/home/task/outcome-only",
+        excerpt: "nothing on disk to compare", score: 0.31, stale: false,
+        captured_at: "2026-08-11T19:00:00Z", source_state: "uncompared", source_updated_at: null,
+      },
+    ],
+    sources: [{ source: "local", state: "ok" }],
+  });
 Object.assign(globalThis, {
   document,
   window: fakeWindow,
@@ -574,11 +606,7 @@ Object.assign(globalThis, {
       if (url.startsWith("/api/gbrain/search")) {
         knowledgeSearches.push(url);
         if (knowledgeSearchGate) await knowledgeSearchGate;
-        return {
-          schema: "fm-gbrain-search.v1",
-          results: [{ title: "A captured runbook", source: "gbrain", excerpt: "how the fleet did it" }],
-          sources: [{ source: "gbrain", state: "ok" }],
-        };
+        return knowledgeSearchPayload();
       }
       if (url.startsWith("/api/snapshot")) return envelope;
       if (url.startsWith("/api/history")) return historyEnvelope;
@@ -1210,6 +1238,55 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   if (!answered.includes("A captured runbook")) throw new Error(`the search results that landed are not on the page: ${answered}`);
   if (answered.includes("The query was too short to search.")) throw new Error("an earlier failed search masked the results that landed");
   knowledgeSearchGate = null;
+
+  // --- a served page carries its provenance to the reader --------------------
+  //
+  // This is the whole point of the answer protocol on the surface the captain
+  // actually reads: a voided or superseded page must be readable as not
+  // current, and a page nothing could be compared against must not be dressed
+  // as one that was. Asserted against the mounted Knowledge view, so removing
+  // the wiring from renderKnowledge fails here rather than passing on a
+  // renderer the browser never loads.
+  const knowledgeRows = () => all(knowledgeView("for the provenance read"), (node) => hasClass(node, "krow"));
+  const rowMeta = (index) => {
+    const meta = all(knowledgeRows()[index], (node) => hasClass(node, "kmeta"));
+    if (meta.length !== 1) throw new Error(`result ${index} carries ${meta.length} metadata lines`);
+    return meta[0].textContent;
+  };
+  if (knowledgeRows().length !== 2) throw new Error(`the Knowledge view painted ${knowledgeRows().length} rows for two results`);
+  const driftedMeta = rowMeta(0);
+  for (const marker of ["live source wins", "stale", "captured 2026-08-11T20:39:46Z"]) {
+    if (!driftedMeta.includes(marker)) throw new Error(`a drifted page reached the reader without "${marker}": ${driftedMeta}`);
+  }
+  const uncomparedMeta = rowMeta(1);
+  if (!uncomparedMeta.includes("uncompared")) throw new Error(`a page nothing was compared against did not say so: ${uncomparedMeta}`);
+  if (uncomparedMeta.includes("current")) throw new Error(`an uncompared page was dressed as current: ${uncomparedMeta}`);
+  if (uncomparedMeta.includes("stale")) throw new Error(`an uncompared page was marked stale the wrapper did not set: ${uncomparedMeta}`);
+
+  // The framing is a paragraph of prose, so it wears the prose class rather
+  // than the terse mono hint that sits beside the search box.
+  const nearestNotice = all(knowledgeView("for the answer framing"), (node) => node.tagName === "P" && node.textContent === NEAREST_NOTICE);
+  if (nearestNotice.length !== 1) throw new Error(`the nearest-pages framing appeared ${nearestNotice.length} times on the page`);
+  if (!hasClass(nearestNotice[0], "empty-teach")) throw new Error(`the answer framing wears ${JSON.stringify(nearestNotice[0].className)} rather than the prose class`);
+  if (!knowledgeView("for the framing").textContent.includes("nearest indexed pages, not answers")) {
+    throw new Error("returned rows were not framed as nearest pages");
+  }
+
+  // A read corpus with no rows is a miss about this brain, never a negative
+  // about the world - and the notice that says so is prose too.
+  knowledgeSearchEmpty = true;
+  const emptySearch = knowledgeInput("for the empty search");
+  emptySearch.value = "a topic this brain has never captured";
+  emptySearch.listeners.keydown({ key: "Enter" });
+  await settle();
+  await settle();
+  const emptyView = knowledgeView("after the empty search");
+  if (!emptyView.textContent.includes("No indexed match")) throw new Error(`a read corpus with no rows lost its framing: ${emptyView.textContent}`);
+  if (emptyView.textContent.includes("does not exist")) throw new Error("an empty result read as a negative about the world");
+  const noneNotice = all(emptyView, (node) => node.tagName === "P" && node.textContent === NONE_NOTICE);
+  if (noneNotice.length !== 1) throw new Error(`the empty-state framing appeared ${noneNotice.length} times`);
+  if (!hasClass(noneNotice[0], "empty-teach")) throw new Error(`the empty-state framing wears ${JSON.stringify(noneNotice[0].className)} rather than the prose class`);
+  knowledgeSearchEmpty = false;
 
   // --- the task route: kv strip, full PR URL, and honest outcome chips -------
   await go(`#/task/${TASK_ID}`);

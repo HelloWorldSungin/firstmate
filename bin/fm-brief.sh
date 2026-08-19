@@ -391,6 +391,7 @@ BRAIN_SECTION=""
 if fm_gbrain_resolve_paths "$FM_HOME" && [ -d "$FM_GBRAIN_PGLITE" ]; then
   BRAIN_SECTION="# Brain
 This home keeps a searchable record of the fleet's prior work: run \`$FM_ROOT/bin/fm-recall.sh search <query>\` before re-deriving something already known, and cite anything you use by the \`<source>:<slug>\` label it prints.
+Results are nearest indexed pages, not answers: a miss is absence of a match, never evidence that the queried thing is absent, a listed page may be unrelated or stale, and when a live source disagrees with a page the live source wins.
 Retrieval stays on this host, but \`fm-recall.sh think\` sends your question and the excerpts it selects to a hosted provider, so reach for it only when local results are not enough and never for anything that must not leave this host.
 
 "

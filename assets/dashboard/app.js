@@ -1229,7 +1229,9 @@ function renderKnowledge() {
   const hint = state.gbrain.busy
     ? "searching…"
     : state.gbrain.searched
-      ? `${state.gbrain.payload?.results?.length ?? 0} ${state.gbrain.error ? "results unavailable" : "matches"}`
+      ? (state.gbrain.error
+        ? "results unavailable"
+        : `${state.gbrain.payload?.results?.length ?? 0} nearest pages`)
       : "the brain may take a few seconds on a cold index";
   hero.append(element("span", "khint", hint));
   view.append(hero);
@@ -1272,11 +1274,24 @@ function renderKnowledge() {
     if (failed.length) {
       results.append(notice(failed.some((row) => row.state === "failed") ? "red" : "amber", "Some corpora did not answer.", ` ${failed.map((row) => `${row.source}: ${row.detail || row.state}`).join("; ")}`));
     }
+    // The answer framing is a paragraph of prose, not a one-line label: .khint
+    // is the terse mono hint beside the search box, and wearing it would set
+    // four lines of 10.5px muted monospace above the rows whose own metadata
+    // is styled the same way.
+    if (payload.answer?.notice && payload.results?.length) {
+      results.append(element("p", "empty-teach", payload.answer.notice));
+    }
     for (const row of payload.results || []) {
       const card = element("article", "krow");
       card.append(element("div", "kk", row.title || "Untitled"));
       if (row.excerpt) card.append(element("div", "ksnip", row.excerpt));
-      const meta = [row.source, row.stale === true ? "stale" : null, typeof row.score === "number" ? `score ${row.score.toFixed(3)}` : null].filter(Boolean);
+      const meta = [
+        row.source,
+        row.source_state && row.source_state !== "unknown" ? (row.source_state === "drifted" ? "live source wins" : row.source_state) : null,
+        row.stale === true ? "stale" : null,
+        row.captured_at ? `captured ${row.captured_at}` : null,
+        typeof row.score === "number" ? `score ${row.score.toFixed(3)}` : null,
+      ].filter(Boolean);
       card.append(element("div", "kmeta", meta.join(" · ")));
       results.append(card);
     }
@@ -1291,8 +1306,8 @@ function renderKnowledge() {
         });
       });
       results.append(emptyState({
-        big: "No notes match.",
-        facts: `searched the captured corpora · 0 matches`,
+        big: "No indexed match",
+        teach: payload.answer?.notice || "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.",
         action: clear,
       }));
     }

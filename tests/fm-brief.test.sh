@@ -1106,6 +1106,8 @@ test_brain_instruction_tracks_whether_the_home_has_one() {
     assert_grep "$ROOT/bin/fm-recall.sh search" "$brief" \
       "$kind must name the retrieval command by absolute path"
     assert_grep '<source>:<slug>' "$brief" "$kind must say how to cite a result"
+    assert_grep 'nearest indexed pages' "$brief" \
+      "$kind must say brain rows are nearest pages, not answers"
     assert_grep 'hosted provider' "$brief" \
       "$kind must say that hosted synthesis leaves this host"
     assert_no_grep 'gbrain call' "$brief" \
