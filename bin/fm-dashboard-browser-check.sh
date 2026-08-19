@@ -181,12 +181,14 @@
 #   no destination may scroll sideways; the History view must display the
 #   completion records it read, each displayed row carrying its usage cell;
 #   opening a task from the Fleet board must land on that task's detail page
-#   alone, and that page is then held to the same three measurements the five
-#   are - real rendered height, its own landmark text, and nothing behind a
+#   alone, and that page is then held to the same three measurements the
+#   navigation destinations are - real rendered height, its own landmark text,
+#   and nothing behind a
 #   horizontal swipe - because a destination a reader is sent to owes the same
 #   answers whether they got there from a tab or from a board row, and
-#   measuring only the five was how a task page that scrolled sideways at 390
-#   CSS px went unobserved while this run's own summary said none did;
+#   measuring only the navigation destinations was how a task page that
+#   scrolled sideways at 390 CSS px went unobserved while this run's own
+#   summary said none did;
 #   no destination's operational chrome may contain a credential-shaped
 #   or absolute-path-shaped value - the labels, filters, errors, status lines
 #   and notices the dashboard itself composes, read as rendered attributes as
@@ -209,7 +211,7 @@
 #
 #   Fixture mode then makes that exclusion a tested claim rather than a stated
 #   one. It seeds a completed task whose retained report body carries an
-#   absolute clone path, visits that task's page as a seventh destination, and
+#   absolute clone path, visits that task's page as one more destination, and
 #   requires all three of: the exempt region present, a path-shaped value
 #   inside it, and the scan over everything else clean. A count of zero
 #   excluded regions fails the scan's own coverage verdict there, because a
@@ -350,11 +352,11 @@ FIXTURE_REPORT_TASK=fixture-done-ship
 # absence half of the exclusivity assertion looks for all of them by name.
 ALL_VIEW_IDS="$(printf '%s\n' "$VIEWS" | cut -d'|' -f2 | paste -sd, -),view-task"
 
-# The sixth destination. It is not a VIEWS row because it is not reached from
-# the navigation - it is reached by opening a row on the Fleet board - but it
-# is a destination a reader lands on, so it owes the same per-destination
-# observations the five do: real height, its own landmarks, and nothing behind
-# a horizontal swipe. Its landmarks are the furniture every task page carries
+# The destination that is not a VIEWS row, because it is not reached from the
+# navigation - it is reached by opening a row on the Fleet board - but it is a
+# destination a reader lands on, so it owes the same per-destination
+# observations every navigation destination does: real height, its own
+# landmarks, and nothing behind a horizontal swipe. Its landmarks are the furniture every task page carries
 # whatever the task is doing: the page eyebrow and the state panel's heading.
 TASK_VIEW_NAME='Task detail'
 TASK_LANDMARKS='Task;Current state'
@@ -1383,9 +1385,9 @@ route_probe_js() {  # <route> <view id> <semicolon landmarks>
 # than by writing a hash by hand.
 #
 # It also measures the destination it landed on, for the same reason the route
-# probe measures the five: a page a reader is sent to owes the same answers
-# about its height, its landmarks, and its width whether the reader got there
-# from a tab or from a board row. Measuring only the five was how a task page
+# probe measures the navigation destinations: a page a reader is sent to owes
+# the same answers about its height, its landmarks, and its width whether the
+# reader got there from a tab or from a board row. Measuring only those was how a task page
 # that scrolled sideways at 390 CSS px went unobserved while this run's own
 # summary said no destination did.
 task_open_probe_js() {
@@ -1894,8 +1896,8 @@ INNER
 
 # The swipe verdict is a page property at a destination, judged only at a width
 # the run proved, because a sideways scroll measured at the wrong viewport says
-# nothing about this one. Shared by the five navigation destinations and the
-# task detail so all six are judged by one rule in one wording.
+# nothing about this one. Shared by every navigation destination and the task
+# detail so all of them are judged by one rule in one wording.
 judge_swipe() {  # <label> <name> <width trusted> <client width> <scroll width>
   local label=$1 name=$2 trusted=$3 client_width=$4 scroll_width=$5
   if [ "$trusted" != yes ]; then
@@ -2092,7 +2094,8 @@ check_usage_cells() {  # <label> <rows> <cells>
 }
 
 # The three per-destination observations the task detail owes, for a run that
-# never got to measure it. Mirrors route_unobserved for the five.
+# never got to measure it. Mirrors route_unobserved for the navigation
+# destinations.
 task_unobserved() {  # <label> <verdict> <reason>
   local label=$1 verdict=$2 reason=$3
   record "$verdict" "$label: the $TASK_VIEW_NAME view rendered with real height" "$reason"
@@ -2216,7 +2219,7 @@ INNER
 }
 
 # The height, legibility and sideways-swipe verdicts for the task destination,
-# read from the same probe that opened it and judged by the same rules the five
+# read from the same probe that opened it and judged by the same rules the
 # navigation destinations are judged by.
 check_task_body() {  # <label> <probe>
   local label=$1 probe=$2 fields key value expected
@@ -2313,7 +2316,7 @@ INNER
 
   # This destination's scan counts toward the width's coverage like any other,
   # so the aggregate below expects one more scan in fixture mode than under
-  # --url rather than quietly reading six where seven ran.
+  # --url rather than quietly reading one fewer scan than the number that ran.
   if is_number "$leak_patterns" && is_number "$leak_chars" && [ "$leak_chars" -gt 0 ] \
     && is_number "$leak_text_chars" && is_number "$leak_attribute_chars" \
     && [ "$leak_attribute_chars" -gt 0 ] && is_number "$excluded"; then
@@ -2348,15 +2351,16 @@ INNER
 # completed scan per primary destination plus the task detail and a real
 # character count before an empty result is read as a clean page.
 #
-# The sixth scan is required in every mode, including --url against an idle
-# fleet, because it is reached in every mode: where no board row exists to
+# The task detail's scan is required in every mode, including --url against an
+# idle fleet, because it is reached in every mode: where no board row exists to
 # open, the task probe still selects a task address of its own and scans the
 # page the router mounts for it. So an idle fleet costs this run the task-open
 # observation and the three measurements of the page a row would have opened -
 # all recorded n/a - but not the leak scan's coverage of that destination, and
-# expecting five here would be reading a scan that ran as one that did not.
+# expecting only the VIEWS rows here would be reading a scan that ran as one
+# that did not.
 #
-# Fixture mode reaches a seventh: the completed task whose retained report body
+# Fixture mode reaches one more: the completed task whose retained report body
 # is the region this scan skips. Only fixture mode can, because only a run that
 # authored the completed work can seed a report to skip, so the expected count
 # follows the mode rather than being a constant that would read a scan that ran
@@ -2365,7 +2369,7 @@ check_leak_aggregate() {  # <label>
   local label=$1 route_total
   route_total=$(printf '%s\n' "$VIEWS" | grep -c .)
   route_total=$((route_total + 1))
-  # The seventh destination fixture mode visits: the completed task whose
+  # The extra destination fixture mode visits: the completed task whose
   # retained report body is the one region this scan skips.
   [ "$MODE" = fixture ] && route_total=$((route_total + 1))
   forced leak unverified && LEAK_SCANS=0
@@ -2554,11 +2558,11 @@ check_live_stream() {
 # currently selected page since its last navigation. Worse than it sounds: the
 # collector behind it splits its storage on Puppeteer's framenavigated, which
 # fires for same-document navigations too, and it keeps three buckets. Each of
-# the five nav-link clicks this check makes is a fragment navigation, so five
-# clicks after the page loaded, the bucket holding everything the page printed
-# while loading and first rendering has been discarded outright. Measured, not
-# inferred: a message logged at load is gone from the listing after five
-# fragment navigations.
+# the nav-link clicks this check makes is a fragment navigation, so a handful
+# of clicks after the page loaded, the bucket holding everything the page
+# printed while loading and first rendering has been discarded outright.
+# Measured, not inferred: a message logged at load is gone from the listing
+# after those fragment navigations.
 #
 # So a read taken once per width, at the end, sees the moment after the last
 # nav click and nothing else, and would report a console it never looked at as

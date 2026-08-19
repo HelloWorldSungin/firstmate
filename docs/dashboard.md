@@ -160,8 +160,9 @@ Firstmate's own supervision spend is shown separately from the `firstmate` proje
 The distinguishing signal is the presence of a task binding, and the `(firstmate supervision)` row means the fleet is operating itself rather than shipping a code change.
 
 The same failed-or-missing-read rule from History applies here: a read that did not land renders as `unavailable` with its reason, never as a zero.
-A home with no usage store, a dashboard with usage reads switched off, or a collector whose output this dashboard does not recognize all render as explicitly unavailable.
+A home with no usage store, a dashboard with usage reads switched off, a collector whose output this dashboard does not recognize, and a history read that failed outright all render as explicitly unavailable.
 A failed read on a home that does collect usage is flagged as a fault and the last good rollup is retained and labelled stale.
+The two rollups carry their own read state and retain separately, so a project read that missed leaves History's per-task totals fresh, and a task read that missed leaves this page's project rows fresh.
 
 ## Agent activity events
 

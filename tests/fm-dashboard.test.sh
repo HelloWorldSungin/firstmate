@@ -2349,6 +2349,118 @@ SH
   pass "a usage read that failed keeps the last good totals and says the newest read did not land"
 }
 
+# The dashboard takes two reads of the same store: History renders the per-task
+# rollup and Usage renders the per-project one. They fail independently, because
+# a project read that missed says nothing about the task totals - and folding
+# them into one verdict would darken every completed card's token column for a
+# failure that never touched it.
+test_a_failed_project_rollup_keeps_the_task_totals_available() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-split"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the split usage case could not create a store"
+  # A collector whose per-project rollup always fails while the per-task one
+  # always answers.
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+if (by === "project") {
+  process.stderr.write("database is locked\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: by,
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.stale == false' "$case_root/history.json" >/dev/null \
+    || fail "a failed project rollup took the task totals down with it"
+  jq -e '.usage.projects_read.available == false and .usage.projects_read.collection == "operational" and (.usage.projects_read.reason | test("could not be read"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "the failed project rollup did not report itself as unavailable"
+  jq -e '(.usage.projects | length) == 0' "$case_root/history.json" >/dev/null \
+    || fail "a failed project rollup must not publish rows"
+  stop_server
+  pass "a failed per-project rollup leaves the per-task totals available"
+}
+
+# An output this dashboard does not recognize is a failed read on either half:
+# publishing an empty project map as available would draw a zero over a
+# collector whose answer was never understood.
+test_an_unrecognized_project_report_is_unavailable_not_empty() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-project-schema"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the project-schema case could not create a store"
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+if (by === "project") {
+  process.stdout.write(JSON.stringify({ schema: "fm-usage-report.v99", by: by, rows: [] }) + "\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: by,
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.projects_read.available == false and (.usage.projects_read.reason | test("supported schema"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "an unrecognized project report was published as an empty available rollup"
+  stop_server
+  pass "a project report this dashboard does not recognize is unavailable rather than empty"
+}
+
 test_usage_without_store_file_is_absent_not_operational() {
   local case_root runtime home
   case_root="$TMP_ROOT/history-usage-absent-store"
@@ -2498,6 +2610,8 @@ test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
 test_usage_without_store_file_is_absent_not_operational
 test_a_failed_usage_read_keeps_the_last_good_one
+test_a_failed_project_rollup_keeps_the_task_totals_available
+test_an_unrecognized_project_report_is_unavailable_not_empty
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service

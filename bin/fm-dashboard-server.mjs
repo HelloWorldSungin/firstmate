@@ -472,7 +472,26 @@ function safeText(value, limit = 4_000) {
     .slice(0, limit);
 }
 
-function usageEnvelope({ available, reason, collection, source, tasks, projects, stale = false }) {
+// The per-task and per-project rollups are two reads of the same store, and one
+// of them failing says nothing about the other. The top-level fields are the
+// task rollup's own read state - History's per-task token column is derived
+// from them - and `projects_read` carries the project rollup's, so a project
+// read that missed cannot darken every task's totals. A shared precondition
+// (usage switched off, no collector, no store) sets both to the same answer,
+// which is what the defaults express.
+function usageEnvelope({
+  available,
+  reason,
+  collection,
+  source,
+  tasks,
+  projects,
+  stale = false,
+  projectsAvailable = available,
+  projectsReason = reason,
+  projectsCollection = collection,
+  projectsStale = stale,
+}) {
   return {
     available: Boolean(available),
     reason: reason ? safeText(reason) : null,
@@ -481,7 +500,23 @@ function usageEnvelope({ available, reason, collection, source, tasks, projects,
     stale: Boolean(stale),
     tasks: tasks && typeof tasks === "object" ? tasks : {},
     projects: projects && typeof projects === "object" ? projects : {},
+    projects_read: {
+      available: Boolean(projectsAvailable),
+      reason: projectsReason ? safeText(projectsReason) : null,
+      collection: projectsCollection ? safeText(projectsCollection, 32) : null,
+      stale: Boolean(projectsStale),
+    },
   };
+}
+
+// One rollup's retention decision, applied identically to both halves: an
+// available read becomes the new last good, a non-operational failure drops the
+// retained read because it is a fact about this home rather than a read that
+// missed, and an operational failure keeps the last good read labelled stale.
+function retainRollup(fresh, lastGood) {
+  if (fresh.available) return { result: fresh, lastGood: fresh };
+  if (fresh.collection !== "operational" || !lastGood) return { result: fresh, lastGood: null };
+  return { result: { ...lastGood, stale: true, reason: fresh.reason }, lastGood };
 }
 
 // The dashboard reads both per-task and per-project rollups. Both share the
@@ -696,6 +731,7 @@ class HistoryState {
     this.clients = clients;
     this.lastGood = null;
     this.lastGoodUsage = null;
+    this.lastGoodProjects = null;
     this.usage = usageEnvelope({
       available: false,
       reason: "token usage has not been read yet",
@@ -842,131 +878,122 @@ class HistoryState {
   // this home rather than a read that missed - a deleted store or a dashboard
   // with usage reads switched off must not keep serving totals from before - so
   // they drop the retained read instead of hiding behind it.
+  //
+  // Each rollup retains on its own, so a project read that missed while the
+  // task read landed keeps serving fresh task totals rather than dragging them
+  // into the failure.
   retainUsage(fresh) {
-    if (fresh.available) {
-      this.lastGoodUsage = fresh;
-      return fresh;
-    }
-    if (fresh.collection !== "operational") {
-      this.lastGoodUsage = null;
-      return fresh;
-    }
-    if (!this.lastGoodUsage) return fresh;
-    return usageEnvelope({ ...this.lastGoodUsage, stale: true, reason: fresh.reason });
+    const task = retainRollup(
+      { available: fresh.available, reason: fresh.reason, collection: fresh.collection, source: fresh.source, rows: fresh.tasks, stale: false },
+      this.lastGoodUsage,
+    );
+    const project = retainRollup(
+      {
+        available: fresh.projects_read.available,
+        reason: fresh.projects_read.reason,
+        collection: fresh.projects_read.collection,
+        source: fresh.source,
+        rows: fresh.projects,
+        stale: false,
+      },
+      this.lastGoodProjects,
+    );
+    this.lastGoodUsage = task.lastGood;
+    this.lastGoodProjects = project.lastGood;
+    return usageEnvelope({
+      available: task.result.available,
+      reason: task.result.reason,
+      collection: task.result.collection,
+      source: task.result.source || project.result.source,
+      stale: task.result.stale,
+      tasks: task.result.rows,
+      projects: project.result.rows,
+      projectsAvailable: project.result.available,
+      projectsReason: project.result.reason,
+      projectsCollection: project.result.collection,
+      projectsStale: project.result.stale,
+    });
   }
 
   // Token usage is an optional integration owned elsewhere. Its absence, its
   // failure, and an output this dashboard does not recognize all resolve to the
   // same honest answer: unavailable with a reason. None of them ever becomes a
   // zero, because a zero would read as "this task cost nothing".
+  //
+  // History reads the per-task rollup and Usage reads the per-project one. They
+  // are two reads of the same store, so each is taken and reported on its own:
+  // whichever one lands is served, and the one that missed says so.
   async readUsage() {
+    const blocked = await this.usageUnavailableForThisHome();
+    if (blocked) {
+      return usageEnvelope({
+        available: false,
+        reason: blocked.reason,
+        collection: blocked.collection,
+        source: null,
+        tasks: {},
+        projects: {},
+      });
+    }
+    const tasks = await this.readUsageRollup("task", (key) => TASK_ID_PATTERN.test(key));
+    const projects = await this.readUsageRollup("project", () => true);
+    return usageEnvelope({
+      available: tasks.available,
+      reason: tasks.reason,
+      collection: tasks.collection,
+      source: tasks.available || projects.available ? USAGE_SCHEMA : null,
+      tasks: tasks.rows,
+      projects: projects.rows,
+      projectsAvailable: projects.available,
+      projectsReason: projects.reason,
+      projectsCollection: projects.collection,
+    });
+  }
+
+  // The conditions that are facts about this home rather than a read that
+  // missed. They apply to both rollups, because neither can be taken at all.
+  async usageUnavailableForThisHome() {
     if (this.config.usage === "off") {
-      return usageEnvelope({
-        available: false,
-        reason: "token usage reads are disabled for this dashboard",
-        collection: "disabled",
-        source: null,
-        tasks: {},
-        projects: {},
-      });
+      return { reason: "token usage reads are disabled for this dashboard", collection: "disabled" };
     }
-    try {
-      await stat(USAGE_COMMAND);
-    } catch {
-      return usageEnvelope({
-        available: false,
-        reason: "token usage is not collected in this home",
-        collection: "absent",
-        source: null,
-        tasks: {},
-        projects: {},
-      });
-    }
-    const usageDb = path.join(this.config.dataDir, USAGE_DB_FILE);
-    try {
-      await stat(usageDb);
-    } catch {
-      return usageEnvelope({
-        available: false,
-        reason: "token usage is not collected in this home",
-        collection: "absent",
-        source: null,
-        tasks: {},
-        projects: {},
-      });
-    }
-    let taskDocument;
-    try {
-      taskDocument = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "task", "--limit", String(this.config.historyLimit)], {
-        timeoutMs: this.config.timeoutMs,
-        env: { ...process.env, FM_HOME: this.config.fmHome },
-        register: (child, previous) => {
-          if (child) this.activeChild = child;
-          else if (this.activeChild === previous) this.activeChild = null;
-        },
-      });
-    } catch (error) {
-      return usageEnvelope({
-        available: false,
-        reason: `token usage could not be read (${safeText(error.kind || "failed")})`,
-        collection: "operational",
-        source: null,
-        tasks: {},
-        projects: {},
-      });
-    }
-    if (!taskDocument || taskDocument.schema !== USAGE_SCHEMA || !Array.isArray(taskDocument.rows)) {
-      return usageEnvelope({
-        available: false,
-        reason: "the token usage report is not a supported schema version",
-        collection: "operational",
-        source: null,
-        tasks: {},
-        projects: {},
-      });
-    }
-    const tasks = {};
-    for (const row of taskDocument.rows) {
-      const key = typeof row?.key === "string" ? row.key.trim() : "";
-      if (!key || !TASK_ID_PATTERN.test(key)) continue;
-      tasks[key] = usageTotalsFromRow(row);
-    }
-    let projectDocument;
-    try {
-      projectDocument = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", "project", "--limit", String(this.config.historyLimit)], {
-        timeoutMs: this.config.timeoutMs,
-        env: { ...process.env, FM_HOME: this.config.fmHome },
-        register: (child, previous) => {
-          if (child) this.activeChild = child;
-          else if (this.activeChild === previous) this.activeChild = null;
-        },
-      });
-    } catch (error) {
-      return usageEnvelope({
-        available: false,
-        reason: `token usage could not be read (${safeText(error.kind || "failed")})`,
-        collection: "operational",
-        source: null,
-        tasks,
-        projects: {},
-      });
-    }
-    const projects = {};
-    if (projectDocument && projectDocument.schema === USAGE_SCHEMA && Array.isArray(projectDocument.rows)) {
-      for (const row of projectDocument.rows) {
-        const key = typeof row?.key === "string" ? row.key.trim() : "";
-        if (!key) continue;
-        projects[key] = usageTotalsFromRow(row);
+    for (const target of [USAGE_COMMAND, path.join(this.config.dataDir, USAGE_DB_FILE)]) {
+      try {
+        await stat(target);
+      } catch {
+        return { reason: "token usage is not collected in this home", collection: "absent" };
       }
     }
-    return usageEnvelope({
-      available: true,
-      reason: null,
-      collection: "ready",
-      source: USAGE_SCHEMA,
-      tasks,
-      projects,
-    });
+    return null;
+  }
+
+  async readUsageRollup(by, accepts) {
+    const subject = by === "project" ? "per-project token usage" : "token usage";
+    let document;
+    try {
+      document = await runJsonCommand(process.execPath, [USAGE_COMMAND, "report", "--by", by, "--limit", String(this.config.historyLimit)], {
+        timeoutMs: this.config.timeoutMs,
+        env: { ...process.env, FM_HOME: this.config.fmHome },
+        register: (child, previous) => {
+          if (child) this.activeChild = child;
+          else if (this.activeChild === previous) this.activeChild = null;
+        },
+      });
+    } catch (error) {
+      return { available: false, reason: `${subject} could not be read (${safeText(error.kind || "failed")})`, collection: "operational", rows: {} };
+    }
+    // An output this dashboard does not recognize is a failed read, never an
+    // empty fleet: serving it as available with no rows would draw a zero claim
+    // over a collector whose answer was never understood.
+    if (!document || document.schema !== USAGE_SCHEMA || !Array.isArray(document.rows)) {
+      return { available: false, reason: `the ${subject} report is not a supported schema version`, collection: "operational", rows: {} };
+    }
+    const rows = {};
+    for (const row of document.rows) {
+      const key = typeof row?.key === "string" ? safeText(row.key, 200) : "";
+      if (!key || !accepts(key)) continue;
+      rows[key] = usageTotalsFromRow(row);
+    }
+    return { available: true, reason: null, collection: "ready", rows };
   }
 
   start() {

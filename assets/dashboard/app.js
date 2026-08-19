@@ -1,14 +1,15 @@
 // app.js - the Firstmate fleet dashboard application.
 //
-// Six destinations behind a hash router (#/needs, #/fleet, #/backlog,
-// #/history, #/knowledge, #/task/<id>), rebuilt from the approved design in
-// data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered at a
-// time: the router resolves exactly one view (router.js owns that contract)
+// Seven destinations behind a hash router (#/needs, #/fleet, #/backlog,
+// #/history, #/usage, #/knowledge, #/task/<id>), rebuilt from the approved
+// design in data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered
+// at a time: the router resolves exactly one view (router.js owns that contract)
 // and this module mounts only that view's DOM, so the others are absent from
 // the document rather than hidden.
 //
 // The data policy lives in the sibling modules (inbox.js, history.js,
-// backlog.js, gbrain.js, events.js); this file owns presentation and wiring.
+// backlog.js, usage.js, gbrain.js, events.js); this file owns presentation and
+// wiring.
 // display.js owns the convention that record values become labels before they
 // reach the DOM, so no filesystem path renders on any view.
 
@@ -101,7 +102,6 @@ const state = {
   backlog: { envelope: null, filters: { query: "", project: "", kind: "", prio: "" }, tab: "all", page: 0 },
   fleet: { filters: [] },
   gbrain: { health: null, query: "", limit: 8, searched: false, payload: null, error: null, busy: false, healthOpen: false },
-  usage: { filters: { query: "" }, range: "all" },
   task: { reports: new Map(), timelines: new Map() },
   events: null,
   routeEpoch: 0,
@@ -1160,8 +1160,9 @@ function renderUsage() {
 
   const rows = element("div", "rows");
   for (const row of built.rows) {
-    const rrow = element("button", "rrow");
-    rrow.type = "button";
+    // A project row is a reading, not a destination: there is no per-project
+    // page to open, so it carries no button affordance.
+    const rrow = element("div", "rrow rrow-flat");
     rrow.append(dot(projectTone(row.key)));
     const main = element("div", "rmain");
     main.append(element("div", "rtitle", projectLabel(row.key)));
@@ -1172,8 +1173,8 @@ function renderUsage() {
     main.append(meta);
     rrow.append(main);
     const right = element("div", "rright");
-    right.append(element("span", "", formatTokens(row.work)));
-    if (row.share !== null) right.append(element("span", "mid", `${row.share.toFixed(2)}%`));
+    right.append(element("span", "rwork", formatTokens(row.work)));
+    right.append(element("span", "rshare", row.share === null ? "" : `${row.share.toFixed(2)}%`));
     rrow.append(right);
     rows.append(rrow);
   }

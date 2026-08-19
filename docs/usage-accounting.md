@@ -106,10 +106,13 @@ The `project` column is normalized to the registered project name for every attr
 
 Firstmate's own supervision spend is real and currently the single largest unattributed consumer in many fleets.
 It runs with the same working directory as crew work on the firstmate repo, so the distinguishing signal is the presence of a task binding, not the path.
-Sessions in the firstmate home with no task binding are credited to `(firstmate supervision)`, separate from the `firstmate` project row, because "supervision" is the fleet operating itself rather than a code change.
+Sessions anywhere in the firstmate home's own checkout with no task binding are credited to `(firstmate supervision)`, separate from the `firstmate` project row, because "supervision" is the fleet operating itself rather than a code change.
+A work copy under the home has its own checkout or a registry-verified path, and is resolved to its project before supervision is ever considered, so nesting a project inside the home never turns that project's spend into supervision.
 
 Unattributed usage is preserved with explicit unknown fields and reported in every projection, including firstmate's own sessions, which belong to no task.
 `bin/fm-usage.mjs attribution` reports the method and confidence breakdown plus the percentage of events and tokens matched.
+Its `project_coverage` block reports the same two figures for the project column, which is a separate question: an event can know its project and not its task, so `events_with_project` / `events_without_project` / `percent_events_with_project` and the matching `tokens_with_project` / `tokens_without_project` / `percent_tokens_with_project` measure how much spend the per-project view can account for, while the top-level `percent_events_attributed` measures how much is tied to a task.
+A percentage is `null` rather than zero when there is nothing to divide, because no events is not the same claim as no coverage.
 
 ### Surviving teardown
 

@@ -56,6 +56,64 @@ const disabled = buildUsage({
 });
 check("a disabled read is not a fault", disabled.fault === false);
 
+// A history read that failed outright carries no usage rollup at all. That is a
+// read that did not land, not a read still on its way: rendering it as pending
+// would promise a number that is never coming.
+const failedHistory = buildUsage({
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "unavailable", refreshing: false, stale: false, error: { kind: "server_unreachable" } },
+});
+equal("a failed history read is unavailable, not pending", failedHistory.shape, "unavailable");
+equal("a failed history read has no rows", failedHistory.rows.length, 0);
+
+// The first poll of a fresh server has not answered yet, which IS pending.
+const firstRun = buildUsage({
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "first_run", refreshing: true, stale: false },
+  usage: { available: false, reason: "token usage has not been read yet", collection: "absent", tasks: {}, projects: {} },
+});
+equal("the first read in flight is pending", firstRun.shape, "pending");
+
+// The per-task and per-project rollups are separate reads. A project read that
+// missed is unavailable here even though the task totals landed, and the task
+// totals stay available for History.
+const projectFailed = buildUsage({
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "ready", refreshing: false },
+  usage: {
+    available: true,
+    reason: null,
+    collection: "ready",
+    source: "fm-usage-report.v1",
+    stale: false,
+    tasks: { paid: { events: 2, total_tokens: 30 } },
+    projects: {},
+    projects_read: { available: false, reason: "the store is locked", collection: "operational", stale: false },
+  },
+});
+equal("a failed project read is unavailable", projectFailed.shape, "unavailable");
+equal("a failed project read carries its own reason", projectFailed.reason, "the store is locked");
+check("a failed project read is a fault", projectFailed.fault === true);
+
+// The mirror case: the task read missed and the project read landed, so the
+// project rows are still shown.
+const taskFailed = buildUsage({
+  schema: "fm-dashboard-history.v1",
+  status: { phase: "ready", refreshing: false },
+  usage: {
+    available: false,
+    reason: "token usage could not be read (exit_nonzero)",
+    collection: "operational",
+    source: "fm-usage-report.v1",
+    stale: false,
+    tasks: {},
+    projects: { firstmate: { events: 1, sessions: 1, input_tokens: 3, output_tokens: 2, total_tokens: 5 } },
+    projects_read: { available: true, reason: null, collection: "ready", stale: false },
+  },
+});
+equal("a failed task read does not darken the project rows", taskFailed.shape, "rows");
+check("a landed project read is not a fault", taskFailed.fault === false);
+
 // A ready read with project rows keeps unattributed on screen and sorts by
 // work tokens (input + output), not raw total_tokens. A row that is large only
 // because of cache reads must not dominate the ranking.
@@ -89,6 +147,9 @@ check("total events sum every row", ready.total_events === 360);
 equal("supervision gets a readable label", projectLabel("(firstmate supervision)"), "Firstmate supervision");
 equal("unknown gets a readable label", projectLabel("(unknown)"), "Unattributed");
 equal("a real project keeps its name", projectLabel("ark-business"), "ark-business");
+// A project value that arrives path-shaped never renders as a host path.
+equal("a clone path renders as its project name", projectLabel("/home/sungin/projects/demo"), "demo");
+equal("a trailing slash contributes nothing", projectLabel("/home/sungin/projects/demo/"), "demo");
 check("supervision is amber-toned", projectTone("(firstmate supervision)") === "amber");
 check("unknown is grey-toned", projectTone("(unknown)") === "grey");
 check("a real project is blue-toned", projectTone("ark-business") === "blue");

@@ -197,6 +197,11 @@ function readGitConfig(gitRoot) {
 }
 
 function parseGitRemote(configText, remoteName = "origin") {
+  // A checkout whose config cannot be read carries no remote. That is an
+  // ordinary state for a stale work copy - a pruned gitdir, a .git file whose
+  // target is gone - and attribution runs over every collected cwd, so it must
+  // resolve to "no remote" rather than throw the whole rebuild away.
+  if (typeof configText !== "string") return null;
   const lines = configText.split("\n");
   let inSection = false;
   for (const raw of lines) {
@@ -240,6 +245,20 @@ function normalizeGitUrl(url) {
     return `${host}${rest.slice(slash)}`;
   }
   return null;
+}
+
+// Task metadata records a project as an absolute clone path. The stored
+// project column is a project NAME, so a path that no registry lookup could
+// resolve still enters the store as its clone's own directory name: keeping
+// the path would key a report row - and a dashboard row title - by a host
+// filesystem path, and would split one project into two rows the moment any
+// other event for it resolved through the registry.
+function projectName(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/\/+$/, "");
+  if (!trimmed) return null;
+  const cut = trimmed.lastIndexOf("/");
+  return (cut === -1 ? trimmed : trimmed.slice(cut + 1)) || null;
 }
 
 function resolveProjectByPathName(registry, homeRoot, cwd) {
@@ -295,20 +314,30 @@ function buildRepoHashMap(registry) {
   return map;
 }
 
+function resolveProjectByOrigin(registry, gitRoot) {
+  const config = readGitConfig(gitRoot);
+  const remote = parseGitRemote(config, "origin");
+  const normalized = normalizeGitUrl(remote);
+  if (normalized && registry.byUrl.has(normalized)) {
+    return { project: registry.byUrl.get(normalized), method: "project_path", confidence: "low" };
+  }
+  return null;
+}
+
 function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervision = false } = {}) {
   if (!cwd) return null;
   const resolved = path.resolve(cwd);
-  if (allowSupervision && resolved === homeRoot) {
-    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
-  }
   const gitRoot = findGitRoot(resolved);
-  if (gitRoot) {
-    const config = readGitConfig(gitRoot);
-    const remote = parseGitRemote(config, "origin");
-    const normalized = normalizeGitUrl(remote);
-    if (normalized && registry.byUrl.has(normalized)) {
-      return { project: registry.byUrl.get(normalized), method: "project_path", confidence: "low" };
-    }
+  // The firstmate home is itself a checkout of the firstmate repo, so its
+  // origin answers "firstmate" for every directory inside it - the home root,
+  // bin/, data/ and the rest alike. That origin is the one signal that cannot
+  // separate supervision from crew work, so it is asked last. A project work
+  // copy under the home has its own git root and is resolved here, before
+  // supervision is ever considered.
+  const isHomeCheckout = gitRoot !== null && gitRoot === homeRoot;
+  if (gitRoot && !isHomeCheckout) {
+    const origin = resolveProjectByOrigin(registry, gitRoot);
+    if (origin) return origin;
   }
   // Fall back to path-derived candidates verified against the registry. A
   // directory name that matches no registered project stays unknown rather
@@ -320,6 +349,17 @@ function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervisi
   const hashProject = resolveProjectByRepoHash(repoHashMap, resolved);
   if (hashProject) {
     return { project: hashProject, method: "project_path", confidence: "low" };
+  }
+  // Anywhere in the firstmate home's own checkout, with no task binding and no
+  // project claim, is the fleet operating itself. The binding is the
+  // distinguishing signal, so a bound session skips this and resolves through
+  // the home's origin below.
+  if (allowSupervision && (isHomeCheckout || resolved === homeRoot)) {
+    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
+  }
+  if (isHomeCheckout) {
+    const origin = resolveProjectByOrigin(registry, gitRoot);
+    if (origin) return origin;
   }
   return null;
 }
@@ -1174,15 +1214,19 @@ function attributeEvents(db, home) {
         // The binding's own project field is the task metadata's project,
         // which is currently a clone path. Normalize it to the registered
         // project name when the worktree resolves, but keep the task identity.
-        const project = resolvePath.fromWorktree(binding.worktree || event.cwd) || binding.project;
+        const project = resolvePath.fromWorktree(binding.worktree || event.cwd) || projectName(binding.project);
         update.run(binding.task_id, project, "session_binding", "high", event.event_id);
         continue;
       }
       const candidates = matchTasksByWorktree(db, event.cwd, event.occurred_at);
       if (candidates.length === 1) {
         const task = candidates[0];
-        const project = resolvePath.fromWorktree(task.worktree) || task.project;
+        const project = resolvePath.fromWorktree(task.worktree) || projectName(task.project);
         update.run(task.task_id, project, "worktree_window", "medium", event.event_id);
+        // A task claims this event. The path ladder below answers only for
+        // events no task claims, and must not run on to clear the task id
+        // that was just written.
+        continue;
       } else if (candidates.length > 1) {
         update.run(null, null, "ambiguous", "none", event.event_id);
         continue;
