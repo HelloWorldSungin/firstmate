@@ -770,18 +770,29 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
     stale: false,
     tasks: {},
     projects: {
-      firstmate: { events: 10, sessions: 2, input_tokens: 400, output_tokens: 100, total_tokens: 500 },
-      "ark-business": { events: 4, sessions: 1, input_tokens: 40, output_tokens: 10, total_tokens: 50 },
-      "(unknown)": { events: 5, sessions: 5, input_tokens: 200, output_tokens: 50, total_tokens: 250 },
-      "(firstmate supervision)": { events: 20, sessions: 1, input_tokens: 50, output_tokens: 10, total_tokens: 2000 },
+      firstmate: { events: 1200, sessions: 2, input_tokens: 400, output_tokens: 100, total_tokens: 500 },
+      "ark-business": { events: 400, sessions: 1, input_tokens: 40, output_tokens: 10, total_tokens: 50 },
+      "(unknown)": { events: 500, sessions: 5, input_tokens: 200, output_tokens: 50, total_tokens: 250 },
+      "(firstmate supervision)": { events: 2000, sessions: 1, input_tokens: 50, output_tokens: 10, total_tokens: 2000 },
     },
     projects_read: { available: true, reason: null, collection: "ready", stale: false },
   });
   const usageRows = all(viewNode, (node) => hasClass(node, "rrow"));
   if (usageRows.length !== 4) throw new Error(`the Usage page dropped a row: rendered ${usageRows.length}`);
-  const projectStat = all(viewNode, (node) => hasClass(node, "stat")).find((stat) => stat.textContent.startsWith("Projects"));
+  const usageStats = all(viewNode, (node) => hasClass(node, "stat"));
+  const projectStat = usageStats.find((stat) => stat.textContent.startsWith("Projects"));
   if (!projectStat || projectStat.textContent !== "Projects2") {
     throw new Error(`the Projects headline counted the unattributed and supervision rows: ${projectStat?.textContent}`);
+  }
+  // A count is a count: compacting it the way a token total is compacted would
+  // print one quantity two ways on one page, since each row states its own
+  // event count in full directly below.
+  const eventStat = usageStats.find((stat) => stat.textContent.startsWith("Events"));
+  if (!eventStat || eventStat.textContent !== "Events4100") {
+    throw new Error(`the Events headline compacted an event count: ${eventStat?.textContent}`);
+  }
+  if (!usageRows.some((row) => row.textContent.includes("1200 events"))) {
+    throw new Error("a usage row stopped stating its own event count in full");
   }
   if (!viewNode.textContent.includes("Firstmate supervision") || !viewNode.textContent.includes("Unattributed")) {
     throw new Error("the Usage page stopped showing the spend it does not credit to a project");

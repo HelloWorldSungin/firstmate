@@ -1162,7 +1162,7 @@ function renderUsage() {
   const stats = element("div", "stats");
   for (const [key, value] of [
     ["Projects", String(built.project_count)],
-    ["Events", formatTokens(built.total_events)],
+    ["Events", String(built.total_events)],
     ["Work tokens", formatTokens(built.total_work)],
     ["Total tokens", formatTokens(built.total_tokens)],
   ]) {

@@ -1462,8 +1462,73 @@ test_the_registry_and_projects_root_follow_their_overrides() {
   pass "the registry and projects root follow their overrides"
 }
 
+# An overlapping task claim says nothing about which project the work copy
+# belongs to: a pool copy is per-project whatever task is holding it. The task
+# stays unnamed and the spend stays visible under its project.
+test_an_ambiguous_task_claim_still_credits_the_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case ambiguous-project)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local worktree="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  git_worktree_at "$case_root/home/projects/demo" "$worktree"
+  # Two live tasks recorded against the same pool copy: the task is ambiguous.
+  write_meta_at "$case_root/home/state/dup-one.meta" 202608010900.00 \
+    "window=fm:dup-one" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  write_meta_at "$case_root/home/state/dup-two.meta" 202608010900.00 \
+    "window=fm:dup-two" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  local dir="$case_root/claude/-ambiguous"
+  mkdir -p "$dir"
+  claude_line "$dir/amb.jsonl" session-amb "$worktree" 2026-08-01T10:00:00Z msg_amb 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "ambiguous-project ingest failed"
+  local attribution
+  attribution=$(usage_run "$case_root" attribution)
+  [ "$(jq -r '.by_method[] | select(.method == "ambiguous") | .events' <<<"$attribution")" = 1 ] \
+    || fail "an overlapping claim must still be disclosed as ambiguous: $attribution"
+  [ "$(jq -r '.attributed_events' <<<"$attribution")" = 0 ] \
+    || fail "an ambiguous claim must not name a task: $attribution"
+  [ "$(jq -r '.project_coverage.events_with_project' <<<"$attribution")" = 1 ] \
+    || fail "an ambiguous claim should still count toward project coverage: $attribution"
+  local project_row task_row
+  project_row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$project_row")" = 100 ] \
+    || fail "an ambiguous task claim dropped the project it resolves to: $project_row"
+  task_row=$(usage_run "$case_root" report --by task | jq -c '.rows[] | select(.key == "(unattributed)")')
+  [ "$(jq -r '.total_tokens' <<<"$task_row")" = 100 ] \
+    || fail "an ambiguous claim must leave the task unattributed: $task_row"
+  pass "an ambiguous task claim still credits the project the work copy belongs to"
+}
+
+# NM_HOME is no-mistakes' own name for its root. A fleet that relocated it must
+# not lose every validation worktree's spend to "(unknown)".
+test_a_relocated_no_mistakes_root_is_followed_through_nm_home() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case nm-home-root)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  create_no_mistakes_bare_repo "$case_root" "b1c2d3e4f506" "https://github.com/example/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/b1c2d3e4f506/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-nm-home"
+  mkdir -p "$dir"
+  claude_line "$dir/nm.jsonl" session-nm-home "$wt" 2026-08-01T10:00:00Z msg_nm_home 2 4 6 8
+
+  NM_HOME="$case_root/.no-mistakes" usage_run "$case_root" ingest >/dev/null \
+    || fail "nm-home ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "a relocated no-mistakes root declared through NM_HOME was not followed: $row"
+  pass "a relocated no-mistakes root is followed through NM_HOME"
+}
+
 test_a_work_copy_path_resolves_to_its_registered_project
 test_a_path_that_merely_resembles_a_project_does_not_invent_one
+test_an_ambiguous_task_claim_still_credits_the_project
+test_a_relocated_no_mistakes_root_is_followed_through_nm_home
 test_a_clone_origin_outranks_a_tracker_that_names_another_host
 test_a_project_declaring_no_tracker_resolves_by_its_clone_origin
 test_a_tracker_url_in_a_description_is_not_a_declaration

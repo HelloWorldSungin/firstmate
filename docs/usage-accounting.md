@@ -86,7 +86,7 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 | `worktree_window` | medium | the session's working directory is a task's recorded worktree or a path inside it, and the usage falls inside that task's own start and completion stamps |
 | `project_path` | low | the session's working directory resolves to a registered project through the checkout's git origin or a known clone layout, but no task claims it |
 | `firstmate_supervision` | low | the session runs anywhere in the firstmate home's own checkout with no task binding, and no project claimed it first; this is the fleet's own supervision spend, kept separate from crew work on the firstmate repo |
-| `ambiguous` | none | more than one task claims that worktree for that moment, so no claim is made |
+| `ambiguous` | none | more than one task claims that worktree for that moment, so no task is named; the project is still credited when the directory resolves to one, because a work copy belongs to one project whatever task holds it |
 | `unknown` | none | no task claims it at all and the directory does not resolve to a registered project |
 
 **A time window alone never attributes anything.**
@@ -107,6 +107,7 @@ A `tracker=` declaration is only a supplementary hint here and is overridden by 
 Only paths built from a registered project name are read; no directory is searched for repositories.
 The `project` column is normalized to the registered project name for every attribution method, so `report --by project` groups crew work and recovered work-copy spend under the same project name.
 The store, the registry and the projects root are all resolved through the same `FM_DATA_OVERRIDE` and `FM_PROJECTS_OVERRIDE` the rest of firstmate honors, so a home running under an override reads the registry that belongs to the store it is writing.
+A no-mistakes validation worktree carries a repo hash rather than a project name, so its project comes from the matching `repos/<hash>.git` clone under the no-mistakes root - `FM_USAGE_NO_MISTAKES_ROOT`, then `NM_HOME`, then `~/.no-mistakes` - and a relocated root is followed rather than dropping that spend into `(unknown)`.
 
 Firstmate's own supervision spend is real and currently the single largest unattributed consumer in many fleets.
 It runs with the same working directory as crew work on the firstmate repo, so the distinguishing signal is the presence of a task binding, not the path.

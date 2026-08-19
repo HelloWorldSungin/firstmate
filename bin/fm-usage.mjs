@@ -100,6 +100,10 @@ Environment:
                            honoring CODEX_HOME)
   FM_USAGE_RATES           cost-rate file (default: <home>/config/usage-rates.json)
   FM_USAGE_NOW             ISO-8601 UTC stamp used instead of the wall clock
+  FM_USAGE_NO_MISTAKES_ROOT
+                           no-mistakes root whose repos/<hash>.git clones name the
+                           project a validation worktree belongs to
+                           (default: NM_HOME, then ~/.no-mistakes)
 `;
 
 // ---------------------------------------------------------------------------
@@ -320,8 +324,11 @@ function resolveProjectByRepoHash(repoHashMap, cwd) {
 
 function buildRepoHashMap(registry) {
   const map = new Map();
-  const noMistakesRoot = process.env.FM_USAGE_NO_MISTAKES_ROOT
-    ? path.resolve(process.env.FM_USAGE_NO_MISTAKES_ROOT)
+  // NM_HOME is no-mistakes' own name for this root, so a fleet that relocated
+  // it is followed rather than silently losing every validation worktree.
+  const declaredRoot = process.env.FM_USAGE_NO_MISTAKES_ROOT || process.env.NM_HOME;
+  const noMistakesRoot = declaredRoot
+    ? path.resolve(declaredRoot)
     : path.join(os.homedir(), ".no-mistakes");
   const reposDir = path.join(noMistakesRoot, "repos");
   let entries = [];
@@ -1262,7 +1269,14 @@ function attributeEvents(db, roots) {
         // that was just written.
         continue;
       } else if (candidates.length > 1) {
-        update.run(null, null, "ambiguous", "none", event.event_id);
+        // Two tasks claiming one worktree makes the TASK ambiguous, not the
+        // project: a work copy belongs to one project whatever task is holding
+        // it. The project is filled from the same resolver every other branch
+        // uses, and from the candidates' own records only when they agree,
+        // while task_id stays null because no task can be named.
+        const declared = new Set(candidates.map((task) => projectName(task.project)).filter(Boolean));
+        const project = resolvePath.fromWorktree(event.cwd) || (declared.size === 1 ? [...declared][0] : null);
+        update.run(null, project, "ambiguous", "none", event.event_id);
         continue;
       }
       // No binding and no single task claims this worktree. If the directory
