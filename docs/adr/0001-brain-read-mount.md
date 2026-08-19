@@ -74,16 +74,21 @@ One append per `fm-recall.sh` invocation into a gitignored state file: timestamp
 
 - **Query hash, never query text.**
   This is a decision, not an omission: a query can carry the substance of what someone was working on, and brain content is private to a home.
-  What the hash actually buys is narrow, and is stated narrowly here on purpose: free-text queries never land in a file on disk, so no person, backup, or later tool that ingests state files learns what was asked by reading the trail.
-  It does not prevent confirmation of a guessed query, and it cannot: queries derive from task titles, that candidate set is small and enumerable, and this decision requires joining the trail against task creation times, so anyone holding both can hash a candidate and check it.
-  The weaker claim is the true one, and it is chosen over a stronger claim that the join this trail exists to support would falsify.
+  What the hash buys is that free-text queries never land in a file on disk, so no person, backup, or later tool that ingests state files learns what was asked by reading the trail.
+  What it does not buy is resistance to a guess, because the hash is unkeyed: anyone who can propose a candidate query can hash it and see whether that digest is already in the trail.
+  What that costs differs by seam, so it is stated for each of the four seams this decision names rather than once for all of them:
+  - Brief-scaffold queries are the task's own words, and task titles are readable from the backlog, so the candidate set is small and cheap to test - the weakest of the four, and the one D6's trigger reads, which is worth saying plainly instead of averaging away.
+  - Dashboard queries are operator free text with no enumerable source to draw candidates from, so the hash withholds real content there.
+  - Stow queries are the candidate learning's own content (D5), so a guess has to reproduce that text before the digest can confirm it.
+  - Eval queries come from an evaluation set file, and the default set is tracked in this repository, so its questions are already public and the hash is protecting nothing that was private.
   The price, accepted deliberately, is that the trail can never answer "what were people searching for" - only whether recall ran, from where, and with what outcome.
 - **The caller-seam field must distinguish** brief-scaffold, stow, dashboard, and eval invocations, or the trail cannot measure adoption, which is its purpose.
 - **The trail must make pre-commission recall computable**: joined against task creation times, it must answer "was a recall run before this investigation was commissioned" (see D6 for why this specific question matters).
 - **Who reads it, and when**: firstmate reviews the trail one week after the mount lands and again at 30 days.
   No seam-tagged brief-scaffold records while briefs were scaffolded means the mount is not exercising - an implementation defect to fix, not a finding to file.
   See D6 for the pre-commission reading and its trigger.
-- Without a brain it changes nothing a home does today: D1 and D4 never run, D5 runs and fails, so the trail holds those failed invocations and nothing else, and it must never block or slow the read path it measures.
+- Without a brain, what the trail holds is whatever still calls `fm-recall.sh`, taken seam by seam across the four above: nothing from D1 or D4, which do not run; two failed invocations per `/stow` from D5; and one record per dashboard or eval search, since both of those seams already call the wrapper today, independently of this design.
+  Whatever it holds, it must never block or slow the read path it measures.
 
 Without this trail, neither the mount's adoption nor its effect on re-derivation can ever be demonstrated - the loop's brokenness would stay unmeasurable one level up.
 
@@ -111,7 +116,7 @@ It is surfacing, not enforcement: nothing forces firstmate to read it, and its e
 ### D5. `/stow` mounts a round-trip read - advisory, ungated, with a hard constraint
 
 Before admitting a "new" learning to always-loaded memory, `/stow` runs one `fm-recall.sh search` at scope local over pruned notes for prior art; before creating a new pruned note, it runs a second search, also scope local, for an existing equivalent.
-Both are pinned to scope local for the same reason D1 is: no mount in this design reads the remote main brain, and inheriting the wrapper's default scope would mount one.
+Both are pinned to scope local for the same reason D1 is: the three mounts this ADR adds - D1, D4, and D5 - all read this home's own corpus and none reaches the remote main brain, and inheriting the wrapper's default scope would mount one.
 This fixes the only demonstrated defect in this area - the 2026-08-05 to 2026-08-16 round-trip - at the moment it occurs, which no other seam reaches (nothing is commissioned at prune time).
 
 The constraint, which is not optional: **the read is advisory; a search hit may never, on its own, be the reason a learning is not captured.**
@@ -213,9 +218,9 @@ This ADR adopts that target as the destination of the tranche system and holds t
 
 - Brief-scaffold search: measured 242-879 tokens of output per commissioned task, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
 - Nearest-prior-work line: one stdout line at scaffold time.
-- `/stow` round-trip: a few sub-second local searches per invocation.
+- `/stow` round-trip: two sub-second local searches per invocation (D5).
 - Audit trail: one local file append per recall; no context cost.
-- Always-cost added to any session: **zero**; nothing in this design charges the startup files or the per-session context unconditionally.
+- Always-cost added to any session: **zero** - of the four seams listed above, each is paid only when its own trigger fires, and none charges the startup files or the per-session context unconditionally.
 
 ### The net, honestly
 
@@ -251,7 +256,7 @@ If the captain still wants session-start packing with these numbers in front of 
   D1 embeds brain excerpts in a brief that a hosted harness reads, so excerpts leave this host either way; what separates the two is who receives them and on whose choosing.
   A commissioned crewmate already reads this home's material - the repo, the reports, the code it is about to change - so brain excerpts in its brief are that same material reaching that same reader by a shorter path.
   `think` instead routes brain content to a synthesis provider as a side effect of a read, which adds a recipient nobody commissioned; no structural or ambient path here may do that.
-  This is the same rule D2's privacy decision applies to the trail - a read must not create a new holder of brain content, whether that is a hosted provider or a query written in plain text into a file - and every mount here is a scope-local search for it.
+  This is the same rule D2's privacy decision applies to the trail - a read must not create a new holder of brain content, whether that is a hosted provider or a query written in plain text into a file - and it is why D1, D4, and D5 are each a scope-local search.
   Dreaming stays disabled.
   Neither privacy boundary relaxes.
 - **`delta` at heartbeat or bearings** - works, verified live, deferred: it serves a different goal than the one this design was commissioned for (D9).
@@ -259,24 +264,27 @@ If the captain still wants session-start packing with these numbers in front of 
 
 ## Degradation, per mount
 
-A home with no brain must keep working exactly as it does now - no changed behavior, no new failure, no blocked path; every row below was checked against that constraint, and the one difference the check found is named in its row rather than rounded away.
+A home with no brain must keep working as it does now, and that is checked per mount rather than asserted once: each of the four rows below states what its mount does on a brainless home, including work it newly performs and fails.
+Read across those four rows, none blocks capture, dispatch, or a session, and none changes what a brainless home produces; where a row adds work that does not happen today, the row says so rather than rounding it to "no change".
 
 | Mount | Brain absent | Brain slow or degraded | Answer-protocol contract absent |
 | --- | --- | --- | --- |
 | D1 brief embed | Scaffold's existing presence branch omits the Brain section entirely - shipped behavior today | Wrapper timeout bounds the wait (60s default; measured worst case with a dead embed endpoint ~8.6s); on failure exits distinguish never-started from read-and-empty, and the scaffold falls back to the instruction-only section | Embed does not mount (positive detection, D3); instruction-only section ships |
 | D4 nearest-prior-work line | Not printed | Same bounds as D1; absence of the line is silence about proximity, never a claim | Prints regardless (advisory; not gated) |
-| D5 stow round-trip | `/stow` proceeds as today; searches simply fail their source and the advisory step is skipped | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
-| D2 audit trail | D1 and D4 do not run, so there is nothing there to record; D5's searches do run and fail, and one append per invocation means the trail records those failed invocations - a gitignored local append is the whole difference from today, and it blocks nothing | Appends locally; never blocks or slows the read it records | Independent of it |
+| D5 stow round-trip | `/stow` reaches the same outcome as today, having newly done and failed work: two `fm-recall.sh` searches per invocation that fail their source, after which the advisory step is skipped and capture proceeds | Advisory step waits or is skipped; capture is never blocked by a read | Runs regardless (advisory; not gated) |
+| D2 audit trail | Appends one record per invocation of whatever still runs: nothing from D1 or D4, two failed-invocation records per `/stow` (D5), and one per dashboard or eval search, both of which call `fm-recall.sh` today independently of this design; the appends are gitignored and block nothing | Appends locally; never blocks or slows the read it records | Independent of it |
 
 ## Consequences
 
 - **Nothing lands alone**: the D1 embed mounts only on homes passing the D3 contract detection (`fm-gbrain-answer-protocol` landed as PR 185 and this home passes; other homes gate themselves), and brain-destined offload is inert until the capture-trust gate passes.
   The captain should read the relief timeline in "The net, honestly" as the schedule: routing now, retrieval as homes pass the gate, deep offload last.
-- The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, and free-text queries are never written down, which resists casual disclosure but does not - and cannot - stop someone holding both the trail and the backlog from confirming a guessed query (D2).
+- The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, and free-text queries are never written down, which resists reading the trail but not guessing against it - unevenly across the four seams D2 enumerates, and weakest at the brief scaffold, where the backlog supplies the candidates.
 - D6 leaves a known, named gap open, with a dated instance and a concrete reopening trigger; anyone reading this ADR should not mistake D4's scaffold-time line for coverage of it.
 - Alarm fatigue is the named risk of D4; the mitigation is its honest name and claim, and the D2 trail is how a fatigued, skimmed-past line would be detected (surfacing that never changes a dispatch decision).
 - The recurring defect this interview kept meeting, in three different coats, is a positive standing without evidence: a search hit as a verdict, a capability assumed present, a check defaulting to "fine".
   The one-sentence rule that guards all of them: the brain may tell you where to look; it may not tell you that you have looked.
+  It then appeared a fourth time, in this ADR's own prose - in the sentences written to fix the first three, which asserted properties over a set of seams nobody had enumerated: "the trail holds those failed invocations and nothing else", "the one difference the check found", "queries derive from task titles".
+  Each was false exactly at the seams left uncounted, which is the most transferable lesson here and the general form of the same defect: a claim about a set is evidence only when the set is on the page, so scope it to an enumeration the reader can see or do not make it.
 - Implementation is follow-up tracked work, per item: the audit trail (first), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
   This ADR authorizes none of them to skip their own validation.
 
@@ -287,6 +295,7 @@ Two choices surfaced by this design belong to the captain and are registered as 
 1. **The post-gate budget target** (`budget-target-post-gate`): keep the effective 7,500, or lower it toward 5,500 and then 5,000 as capture-tightening recommends once its gates pass and the tranches land.
    The budget knob is the captain's own local operating choice; nothing in this design moves it.
 2. **Acceptance of the split-rule resolution** (`kind-split-safety-resolution`): the captain's own split-by-kind rule conflicted with itself on `harness-adapters`, and this design resolved it toward the safety clause by adding a routing category the rule did not name (D7).
-   If the captain resolves it differently, D7 reopens; nothing else in this design depends on it.
+   If the captain resolves it differently, D7 reopens, and so do the two tranche 1 moves whose destination is a per-harness file - the codex entry and the cursor/agy entry, ~305 of tranche 1's ~413 estimated tokens - because those destinations are what D7 creates.
+   No other decision in this ADR depends on it: D1 through D6, D8, and D9 each stand whichever way the split rule is resolved.
 
 The session-start reversal (above) is deliberately not a third held item: firstmate ruled that this ADR itself is the captain's decision point for it.
