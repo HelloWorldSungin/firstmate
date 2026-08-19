@@ -697,6 +697,25 @@ fm_gbrain_read_secret() {  # <home> <name>
   return 0
 }
 
+# --- documented release pin -------------------------------------------------
+
+# The GBrain release this fleet runs is recorded in prose, in docs/gbrain.md,
+# because the pin is an operator decision rather than whatever binary happens
+# to be on a host. This function is the single reader of that record, so the
+# dashboard panel and the drift check cannot disagree about what the pin says.
+# The token is the first backticked v-prefixed release in that file, which
+# docs/gbrain.md's upgrade policy requires the operator to keep first.
+fm_gbrain_documented_pin() {  # <code-root> -> release token, e.g. v0.46.21.0
+  local doc=$1/docs/gbrain.md pin
+  FM_GBRAIN_ERROR=""
+  [ -n "$1" ] || { fm_gbrain_fail "no code root given"; return 1; }
+  [ -f "$doc" ] || { fm_gbrain_fail "no docs/gbrain.md under $1"; return 1; }
+  # shellcheck disable=SC2016 # regex pattern, not a shell expansion
+  pin=$(grep -oE '`v[0-9][^`]*`' "$doc" 2>/dev/null | head -1 | tr -d '`' || true)
+  [ -n "$pin" ] || { fm_gbrain_fail "docs/gbrain.md records no pinned release token"; return 1; }
+  printf '%s\n' "$pin"
+}
+
 # --- resolved paths ---------------------------------------------------------
 
 # Resolve this home's own brain locations. Sets FM_GBRAIN_BRAIN_ROOT,

@@ -185,7 +185,7 @@ family_for_basename() {
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
-    fm-gbrain-lib.test.sh|fm-recall.test.sh)
+    fm-gbrain-lib.test.sh|fm-gbrain-pin-check.test.sh|fm-recall.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\

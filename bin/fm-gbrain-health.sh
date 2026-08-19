@@ -136,13 +136,10 @@ fi
 # The pinned version lives in docs/gbrain.md and is rendered as the operator
 # reference for the installed release; this is what the dashboard quotes. A
 # home without the doc (e.g. a worktree checkout) gets version: null, never a
-# guess from a running executable.
-VERSION=null
-if [ -f "$FM_ROOT/docs/gbrain.md" ]; then
-  # shellcheck disable=SC2016 # regex pattern, not a shell expansion
-  VERSION=$(grep -oE '`v[0-9][^`]*`' "$FM_ROOT/docs/gbrain.md" 2>/dev/null | head -1 | tr -d '`' || true)
-  [ -n "$VERSION" ] || VERSION=null
-fi
+# guess from a running executable. fm_gbrain_documented_pin owns that read;
+# bin/fm-gbrain-pin-check.sh is what catches the record going stale.
+VERSION=$(fm_gbrain_documented_pin "$FM_ROOT" 2>/dev/null) || VERSION=null
+[ -n "$VERSION" ] || VERSION=null
 
 # --- brain paths and index presence -----------------------------------------
 

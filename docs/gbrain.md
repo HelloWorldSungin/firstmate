@@ -17,10 +17,11 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 
 ## Pinned installation and upgrade
 
-The installed GBrain release is `v0.45.9.0` at commit `1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5`.
-The pin moved there from `v0.45.0.0` on 2026-08-13, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the live upgrade evidence, the new boundary-retrieval verbs, and the unchanged privacy controls.
-The earlier pin moved from `v0.42.69.0` on 2026-08-12, and the same verification record preserves what that upgrade measured, including the capture guarantees it did not change.
-That earlier pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
+The installed GBrain release is `v0.46.21.0` at commit `649ffe5f8baf3ff7f979c77f4de3975904cfe029`.
+The pin moved there from `v0.45.9.0` on 2026-08-19, backed up first to `data/gbrain/backups/20260819T045704Z`, and a like-for-like evaluation against the pre-upgrade baseline measured retrieval unchanged.
+The earlier pin had moved from `v0.45.0.0` on 2026-08-13, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the live upgrade evidence, the new boundary-retrieval verbs, and the unchanged privacy controls.
+The pin before that moved from `v0.42.69.0` on 2026-08-12, and the same verification record preserves what that upgrade measured, including the capture guarantees it did not change.
+The `v0.42.69.0` pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
 The installation remains on GBrain's documented `git clone` plus pinned `bun install` fallback so a version upgrade does not also change the packaging path used for migration and rollback.
 The old `v0.42.71.0` and `v0.42.72.1` standalone Linux binaries failed fresh PGLite initialization, while the `v0.45.9.0` standalone binary passed fresh isolated initialization with this deployment's embedding shape.
 That fresh initialization does not prove an in-place production upgrade through the standalone packaging, so adopting it requires a separate isolated-copy migration and the full gate below.
@@ -32,7 +33,7 @@ For a clean source installation with the pinned Bun binary already present, run:
 ```sh
 mkdir -p /home/sungin/.local/gbrain/{bin,bun-global,cache}
 git clone https://github.com/garrytan/gbrain.git /home/sungin/.local/gbrain/src
-git -C /home/sungin/.local/gbrain/src checkout --detach 1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5
+git -C /home/sungin/.local/gbrain/src checkout --detach 649ffe5f8baf3ff7f979c77f4de3975904cfe029
 cd /home/sungin/.local/gbrain/src
 BUN_INSTALL=/home/sungin/.local/gbrain/bun-global \
   /home/sungin/.local/gbrain/bin/bun install \
@@ -58,9 +59,11 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
 
 1. **Pin.** The version in force is the one recorded above, and it moves only by editing this file in the same change that performs the upgrade.
    Select the new tag explicitly; `latest` is not a pin.
-   That recorded string is also the version the dashboard's GBrain panel quotes: [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) reads the first backticked `v`-prefixed release token in this file rather than asking a running executable what it is.
+   That recorded string is also the version the dashboard's GBrain panel quotes: [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) reports it rather than asking a running executable what it is, reading it through `fm_gbrain_documented_pin` in [`bin/fm-gbrain-lib.sh`](../bin/fm-gbrain-lib.sh), which takes the first backticked `v`-prefixed release token in this file.
    Keep the pin first among such tokens, so this step is what keeps the panel true as well.
    The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
+   [`bin/fm-gbrain-pin-check.sh`](../bin/fm-gbrain-pin-check.sh) is the mechanical reader of both sides: it compares the recorded pin with what the installed executable reports and fails on drift, so a pin left behind by an upgrade is a finding rather than something a reviewer has to notice.
+   Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 4. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
@@ -73,20 +76,32 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
 Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-4 backup recorded there.
 Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
-To upgrade deliberately, select a newer verified GBrain tag, then run:
+To upgrade deliberately, select a newer verified GBrain tag, then run the block below from the Firstmate code root.
+
+`apply-migrations` rewrites whichever brain `GBRAIN_HOME` names, so this block resolves that home rather than naming one, exactly as the backup below does.
+A hardcoded `GBRAIN_HOME` is wrong for every home but the one it was written from, and on a host carrying more than one brain directory it is worse than wrong: the migration succeeds against the wrong database and every step after it reports success, while the brain the home actually reads stays un-migrated under new code.
+That is not hypothetical, and the two directories that made it possible on this host are the ones [Operating paths](#operating-paths) names.
 
 ```sh
+FM_HOME=/home/sungin/firstmate
+gbrain_home=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json | jq -er '.gbrain_home')
+if [ ! -d "$gbrain_home" ]; then
+  printf 'refusing upgrade: %s is not an initialized brain runtime for %s\n' "$gbrain_home" "$FM_HOME" >&2
+  exit 1
+fi
 git -C /home/sungin/.local/gbrain/src fetch --tags origin
 git -C /home/sungin/.local/gbrain/src checkout --detach <verified-tag>
-cd /home/sungin/.local/gbrain/src
-/home/sungin/.local/gbrain/bin/bun install --frozen-lockfile --ignore-scripts --cache-dir /home/sungin/.local/gbrain/cache
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+(cd /home/sungin/.local/gbrain/src \
+  && /home/sungin/.local/gbrain/bin/bun install --frozen-lockfile --ignore-scripts --cache-dir /home/sungin/.local/gbrain/cache)
+GBRAIN_HOME=$gbrain_home \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain apply-migrations \
   --yes --non-interactive --no-autopilot-install
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=$gbrain_home \
   /home/sungin/.local/gbrain/bin/gbrain doctor
 ```
+
+Resolve `gbrain_home` before the checkout, as above, so the value is read while the working directory is still the Firstmate code root.
 
 Verify PGLite initialization in an isolated approved directory before adopting a new standalone release binary.
 `--ignore-scripts` prevents Bun's postinstall hook from running an unguarded migration, and the explicit `--no-autopilot-install` migration skips the Phase F autopilot installation.

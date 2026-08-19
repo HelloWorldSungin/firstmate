@@ -182,6 +182,10 @@
       "target": "docs/verification/dashboard-fleet-health.md"
     },
     {
+      "source": "bin/fm-gbrain-pin-check.sh",
+      "target": "docs/gbrain.md"
+    },
+    {
       "source": "docs/dashboard-inbox-policy.md",
       "target": "docs/verification/dashboard-fleet-health.md"
     },
