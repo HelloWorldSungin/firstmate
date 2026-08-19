@@ -92,14 +92,18 @@
 #                      unknown
 #   source_kind/id     task or note identity from the slug, or null
 #   source_updated_at  newest mtime of the live source files, or null
-# source_state is current only when a comparison actually ran and agreed: the
-# live report still ends the way the captured body does, or its mtime is no
-# later than the capture. It is drifted when a comparison ran and disagreed,
-# and uncompared when no comparison was possible at all - an outcome-only task
-# whose only live file is the manifest capture itself rewrites, or a body
-# capture truncated or redacted with no capture time to fall back on.
-# Uncompared is not a clean bill of health: nothing was checked, so it reads
-# with unknown rather than with current, and is never folded into current.
+# source_state for a task is decided from EVIDENCE, and every check answers
+# agree, disagree, or "could not run". Two checks can run: the live report still
+# ends the way the captured body does, and the report's mtime is no later than
+# the capture. Any check that disagrees makes the page drifted, because a live
+# source that disagrees wins. Otherwise the page is current only if at least one
+# check ran and agreed, and uncompared when none of them could run at all.
+# A check that could not run - an unreadable or contentless report tail, a body
+# capture truncated or redacted, a capture time that is absent or unparseable,
+# an outcome-only task whose only live file is the manifest capture itself
+# rewrites - contributes nothing rather than a quiet pass, so current is always
+# earned rather than assumed. Uncompared is not a clean bill of health: nothing
+# was checked, so it reads with unknown rather than with current.
 # It is missing when the outbox names a task whose durable files are gone,
 # snapshot for a note (no live file to compare), and unknown when this home
 # cannot judge - no outbox, not a Firstmate capture slug, a main-brain row, or
@@ -546,20 +550,39 @@ provenance_unknown() {  # <slug> [<kind> <id>]
       source_updated_at:null, stale_from_source:false}'
 }
 
+# --- currency: what evidence is there that a page still matches its source ---
+#
+# Every check below answers with EVIDENCE, not with a verdict, and the vocabulary
+# has three words:
+#
+#   agree     the check ran and the page still matches the live source
+#   disagree  the check ran and the page does not match the live source
+#   none      the check could not run, and therefore says nothing either way
+#
+# `none` is the default of every check, and it is not a quiet `agree`. A check
+# that could not read its input, could not parse its input, or was handed inputs
+# that are not comparable produces `none`, so the only way to reach `agree` is
+# for a comparison to have actually happened and actually matched. That is the
+# whole shape: `current` is earned by evidence rather than assumed in its
+# absence, so a path nobody thought of degrades to "nothing was checked" rather
+# than to "this page is fine".
+#
+# recall_currency_verdict is the single owner that turns the collected evidence
+# into a state, and it is the only producer of `current` in this file.
+
 # Does the live report still end the way the captured body does?
 #
 # The stored body is not a verbatim copy of the report: capture composes
 # frontmatter in front of it, truncates the composed document at
 # FM_GBRAIN_CAPTURE_MAX_BYTES, and rewrites credential-shaped values before any
 # byte reaches disk. A tail that is absent for one of those reasons is not
-# evidence that the report changed, so this votes "differs" only when the two
-# are genuinely comparable and answers "unknown" otherwise, which leaves the
-# mtime rule to decide on its own rather than marking an untouched page drifted.
+# evidence that the report changed - and a tail that could not be read at all is
+# not evidence that it did not, so both answer `none`.
 #
 # The comparison is taken in CHARACTERS, not bytes. A byte-sized cut lands inside
 # a multi-byte character often enough to matter, and the orphaned continuation
 # bytes decode to U+FFFD, which matches nothing in a body that was stored intact.
-recall_body_verdict() {  # <item-json> <report-path> -> match | differs | unknown
+recall_content_evidence() {  # <item-json> <report-path> -> agree | disagree | none
   local item=$1 report=$2 max=${FM_GBRAIN_CAPTURE_MAX_BYTES:-65536} size verdict
   size=$(wc -c < "$report" 2>/dev/null | tr -cd '0-9') || size=""
   [ -n "$size" ] || size=0
@@ -567,20 +590,49 @@ recall_body_verdict() {  # <item-json> <report-path> -> match | differs | unknow
     --rawfile tail <(tail -c 4000 "$report" 2>/dev/null || true) \
     --argjson max "$max" --argjson size "$size" '
       ($tail[-200:] | sub("\\s+$"; "")) as $fp
-      | if ($fp | length) == 0 then "match"
-        elif (.body | index($fp)) != null then "match"
+      | if ($fp | length) == 0 then "none"
+        elif (.body | index($fp)) != null then "agree"
         elif ((.redactions | length) > 0)
           or ((.body | utf8bytelength) >= $max)
-          or ($size >= $max) then "unknown"
-        else "differs"
+          or ($size >= $max) then "none"
+        else "disagree"
         end' 2>/dev/null) || verdict=""
-  # Anything this did not itself produce is not a verdict, so a jq that failed,
-  # a ceiling that is not a number, and a body this could not size all land on
-  # "unknown" rather than on an accidental claim about the live source.
   case $verdict in
-    match | differs) printf '%s\n' "$verdict" ;;
-    *) printf 'unknown\n' ;;
+    agree | disagree) printf '%s\n' "$verdict" ;;
+    *) printf 'none\n' ;;
   esac
+}
+
+# Was the live source last written no later than the capture that copied it?
+#
+# Both sides have to be readable integers for this to say anything: an epoch this
+# command could not stat and a capture time it could not parse are each a reason
+# the check did not run, never a reason to call the page current.
+recall_mtime_evidence() {  # <live-epoch> <captured-at> -> agree | disagree | none
+  local live=${1:-} captured=${2:-} cap_epoch
+  case $live in '' | *[!0-9]*) printf 'none\n'; return 0 ;; esac
+  [ "$live" -gt 0 ] || { printf 'none\n'; return 0; }
+  [ -n "$captured" ] || { printf 'none\n'; return 0; }
+  cap_epoch=$(recall_iso_epoch "$captured")
+  case $cap_epoch in '' | *[!0-9]*) printf 'none\n'; return 0 ;; esac
+  if [ "$live" -gt "$cap_epoch" ]; then printf 'disagree\n'; else printf 'agree\n'; fi
+}
+
+# The single owner of the currency question, and the only producer of `current`.
+#
+# One check disagreeing is enough to mark the page drifted, because the live
+# source wins on disagreement. `current` needs a check that ran and agreed; with
+# no agreeing check the answer is `uncompared`, which is what "no evidence"
+# means and is never read as a clean bill of health.
+recall_currency_verdict() {  # <evidence...> -> current | drifted | uncompared
+  local piece agreed=0
+  for piece in "$@"; do
+    case $piece in
+      disagree) printf 'drifted\n'; return 0 ;;
+      agree) agreed=1 ;;
+    esac
+  done
+  if [ "$agreed" -eq 1 ]; then printf 'current\n'; else printf 'uncompared\n'; fi
 }
 
 # Emit one provenance object for a local slug. Always succeeds with JSON so a
@@ -588,8 +640,8 @@ recall_body_verdict() {  # <item-json> <report-path> -> match | differs | unknow
 provenance_for_slug() {  # <data-dir> <slug>
   local data=$1 slug=$2
   local prefix tag kind id extra
-  local doc_id item captured_at source_kind source_id cap_epoch
-  local report outcome live_epoch=0 file_epoch body_differs=0 compared=0
+  local doc_id item captured_at source_kind source_id
+  local report outcome live_epoch=0 file_epoch evidence=()
   local source_state=unknown source_updated_at="" stale_from_source=false
   IFS=/ read -r prefix tag kind id extra <<EOF
 $slug
@@ -637,21 +689,13 @@ EOF
     if [ -n "$file_epoch" ] && [ "$file_epoch" -gt "$live_epoch" ]; then
       live_epoch=$file_epoch
     fi
-    # "unknown" is not a vote: a body that was truncated or redacted cannot
-    # disprove the report it was composed from, so only "differs" marks drift
-    # and only a real verdict counts as a comparison having happened.
-    case $(recall_body_verdict "$item" "$report") in
-      match) compared=1 ;;
-      differs) compared=1; body_differs=1 ;;
-    esac
-    if [ -n "$captured_at" ]; then
-      cap_epoch=$(recall_iso_epoch "$captured_at")
-      if [ -n "$cap_epoch" ]; then
-        compared=1
-        [ "$live_epoch" -le "$cap_epoch" ] || body_differs=1
-      fi
-    fi
+    evidence+=("$(recall_content_evidence "$item" "$report")")
+    evidence+=("$(recall_mtime_evidence "$live_epoch" "$captured_at")")
   else
+    # An outcome-only task contributes NO evidence. Its only live file is the
+    # manifest capture republishes around captured_at, so comparing against it
+    # would answer with capture's own timestamp rather than with the source.
+    # Having nothing to compare is not a comparison that passed.
     if recall_regular_file "$outcome"; then
       file_epoch=$(recall_stat_mtime "$outcome")
       if [ -n "$file_epoch" ]; then
@@ -660,23 +704,13 @@ EOF
     fi
   fi
 
-  # A page is only current when something was actually compared and agreed.
-  # Nothing to compare against is its own answer - uncompared - because a
-  # confident "current" with no evidence behind it is the same defect as a
-  # retrieval failure rendered as "not found".
   if [ "$live_epoch" -eq 0 ]; then
     source_state=missing
     stale_from_source=true
   else
     source_updated_at=$(recall_epoch_iso "$live_epoch")
-    if [ "$body_differs" -eq 1 ]; then
-      source_state=drifted
-      stale_from_source=true
-    elif [ "$compared" -eq 1 ]; then
-      source_state=current
-    else
-      source_state=uncompared
-    fi
+    source_state=$(recall_currency_verdict ${evidence[@]+"${evidence[@]}"})
+    [ "$source_state" != drifted ] || stale_from_source=true
   fi
   jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
     --arg captured "${captured_at:-}" --arg state "$source_state" \
@@ -688,8 +722,10 @@ EOF
       stale_from_source:$stale}'
 }
 
-# The run's wall-clock ceiling, as bash's own second counter. Empty means no
-# ceiling, which is what a caller that never set one gets.
+# The run's wall-clock ceiling, as bash's own second counter: the per-call
+# retrieval budget once per leg the run will read. Empty means no ceiling, which
+# is what a caller that never set one, or set one this command cannot compute
+# with, gets.
 RECALL_DEADLINE=""
 
 annotate_search_results() {  # <results-json> <home> -> annotated results json
@@ -786,7 +822,6 @@ cmd_search() {
   require_tool jq
   resolve_context
   local secs=${TIMEOUT:-${FM_RECALL_TIMEOUT:-60}}
-  RECALL_DEADLINE=$((SECONDS + secs))
 
   # Each requested corpus is read on its own terms and reports its own verdict,
   # so neither leg decides the other's outcome. A home with no GBrain installed
@@ -809,6 +844,21 @@ cmd_search() {
     main_is_local=1
     read_local=1
   fi
+
+  # --timeout bounds EACH retrieval call, so the run's own ceiling is that
+  # budget once per leg this scope will actually read. Sizing the provenance
+  # pass against one leg instead would expire it while retrieval was still
+  # inside the budget it was granted, and every row would lose its capture date
+  # and its drift marker because the index was merely cold.
+  #
+  # A budget that is not a positive integer is left to the retrieval bound to
+  # refuse the way it always has; computing a deadline from it would abort the
+  # run with a raw arithmetic error, which is none of this command's statuses.
+  local legs=$((read_local + (read_main == 1 && main_is_local == 0 ? 1 : 0)))
+  case $secs in
+    '' | *[!0-9]*) RECALL_DEADLINE="" ;;
+    *) RECALL_DEADLINE=$((SECONDS + secs * (legs > 0 ? legs : 1))) ;;
+  esac
 
   if [ "$read_local" -eq 1 ]; then
     if ! command -v "$GBRAIN_BIN" >/dev/null 2>&1; then

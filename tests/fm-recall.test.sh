@@ -1186,11 +1186,13 @@ expect_code 0 "$RECALL_RC" "the control search should answer: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
   || fail "with budget to spare the row must carry its judged provenance: $RECALL_OUT"
 
-# The same search whose corpora spend the whole budget: the answer survives
-# intact and only the provenance degrades.
+# The same search whose corpora spend the whole RUN budget - `--timeout` once
+# per leg this scope reads, which is what the caller actually sanctioned - and
+# only then does the provenance degrade, with the answer surviving intact.
+# Two legs at 1s each is a 2s ceiling; the main brain spends 3s.
 RECALL_RC=0
 RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=3 \
-  bash "$CLI" search --json --scope all --timeout 2 budgeted 2>&1) || RECALL_RC=$?
+  bash "$CLI" search --json --scope all --timeout 1 budgeted 2>&1) || RECALL_RC=$?
 expect_code 0 "$RECALL_RC" "a run whose corpora spent the budget must still answer: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source == "local")] | length')" -eq 1 ] \
   || fail "a retrieved row must survive a provenance pass that ran out of budget: $RECALL_OUT"
@@ -1199,5 +1201,205 @@ expect_code 0 "$RECALL_RC" "a run whose corpora spent the budget must still answ
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = null ] \
   || fail "a row the provenance pass never reached must claim nothing about its capture: $RECALL_OUT"
 pass "a provenance pass that runs out of the run's budget degrades to unknown instead of costing the answer"
+
+# --- 15. the named regression survives a cold index --------------------------
+#
+# The captain-voided BZ-SIM finding is the page this whole task exists to stop
+# presenting as current. A brain that takes a few seconds on a cold index is the
+# condition the Knowledge view's own hint tells the reader to expect, and it is
+# well inside the budget the caller granted retrieval - so the page must still
+# arrive carrying its capture date and its drift marker. Sizing the provenance
+# pass against ONE leg instead of the run wipes exactly this row to
+# unknown/null, which is the failure this pins.
+#
+# Two legs at 3s each is a 6s ceiling; the main brain spends 4s of it.
+
+BZSIM_ID="bzsim-ratchet-fix-side-effects"
+BZSIM_CAPTURED="AGS has a code-proven zero-Value problem that becomes long intervals."
+BZSIM_SLUG=$(write_outbox "$SM_HOME" task "$BZSIM_ID" "2026-08-11T20:39:46Z" "$BZSIM_CAPTURED")
+mkdir -p "$SM_HOME/data/$BZSIM_ID"
+printf '%s\n' "$BZSIM_CAPTURED" "" "Finding 5 is void. Ratcheting does not apply to AGS." \
+  > "$SM_HOME/data/$BZSIM_ID/report.md"
+touch -d '2026-08-11T21:25:41Z' "$SM_HOME/data/$BZSIM_ID/report.md"
+stub_reply "$(jq -cn --arg s "$BZSIM_SLUG" \
+  '[{slug:$s, title:"BZ-SIM ratchet side effects", chunk_text:"AGS has a code-proven zero-Value problem", score:0.49, stale:false}]')"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=4 \
+  bash "$CLI" search --json --scope all --timeout 3 "Does the BZ-SIM ratchet feature apply to AGS?" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a slow but budgeted run must still answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a cold index must not cost the voided finding its drift marker: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "the captain-voided finding must still read as not current when the brain was slow: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = "2026-08-11T20:39:46Z" ] \
+  || fail "a slow run must not wipe the served page's capture date: $RECALL_OUT"
+pass "the captain-voided BZ-SIM page keeps its capture date and drift marker when retrieval spends most of the run budget"
+
+# --- 16. current is earned: every path that can produce one -------------------
+#
+# Currency is decided from evidence, and every check answers agree, disagree, or
+# "could not run". The property under test is not that particular cases behave -
+# it is that `current` has exactly one way in. A check that cannot run must
+# contribute nothing, so a path nobody anticipated degrades to "nothing was
+# checked" rather than to "this page is fine".
+#
+# The enumeration below is the whole input space of a provenance verdict, one
+# fixture per class, read through a single search. Only the two rows built with
+# a comparison that ran AND agreed may come back current.
+
+VERDICT_HOME=$(make_home "$TMP_ROOT/verdict")
+VERDICT_TAG=$(fm_gbrain_capture_home_tag "$VERDICT_HOME")
+VERDICT_SLUGS=()
+
+# Sets <var> to the fixture's slug and adds it to the row set the search will
+# return. It assigns rather than printing because a command substitution would
+# run the array append in a subshell and drop it.
+verdict_fixture() {  # <var> <id> <captured_at-or-empty> <body> <report|OUTCOME-ONLY|NO-LIVE-FILES> [<mtime>] [<redactions>]
+  local into=$1 id=$2 captured=$3 body=$4 report=$5
+  local mtime=${6:-2026-08-11T19:00:00Z} redactions=${7:-[]}
+  local slug
+  slug=$(write_outbox "$VERDICT_HOME" task "$id" "$captured" "$body" "$redactions")
+  if [ "$report" != NO-LIVE-FILES ]; then
+    mkdir -p "$VERDICT_HOME/data/$id"
+    if [ "$report" = OUTCOME-ONLY ]; then
+      jq -n '{schema: "fm-outcome-manifest.v1", outcome: {state: "done"}}' \
+        > "$VERDICT_HOME/data/$id/outcome.json"
+    else
+      printf '%s' "$report" > "$VERDICT_HOME/data/$id/report.md"
+      touch -d "$mtime" "$VERDICT_HOME/data/$id/report.md"
+    fi
+  fi
+  VERDICT_SLUGS+=("$slug")
+  printf -v "$into" '%s' "$slug"
+}
+
+verdict_search() {  # <extra-env-assignments...> -> RECALL_OUT with every fixture row
+  stub_reply "$(printf '%s\n' ${VERDICT_SLUGS[@]+"${VERDICT_SLUGS[@]}"} \
+    | jq -R -s -c 'split("\n") | map(select(length > 0))
+        | map({slug: ., title: "row", chunk_text: "x", score: 0.5, stale: false})')"
+  RECALL_RC=0
+  RECALL_OUT=$(env FM_HOME="$VERDICT_HOME" "$@" bash "$CLI" search --json --scope local everything 2>&1) || RECALL_RC=$?
+}
+
+verdict_state() {  # <slug> -> the source_state that slug came back with
+  printf '%s' "$RECALL_OUT" | jq -r --arg s "$1" '.results[] | select(.slug == $s) | .source_state'
+}
+
+expect_state() {  # <slug> <expected> <why>
+  local got
+  got=$(verdict_state "$1")
+  [ "$got" = "$2" ] || fail "$3: expected $2, got ${got:-<no row>}"
+}
+
+# Both checks can run and both agree - the only shape that earns current.
+AGREE_BODY="The runbook stands and the deploy is green."
+BLANK_REPORT=$(printf '   \n\n   \n')
+verdict_fixture EV_BOTH_AGREE ev-both-agree "2026-08-11T20:00:00Z" "$AGREE_BODY" "$AGREE_BODY"
+# Only the content check can run, and it agrees: no capture time to compare.
+verdict_fixture EV_CONTENT_AGREE ev-content-agree "" "$AGREE_BODY" "$AGREE_BODY"
+# Only the mtime check can run, and it agrees: the body was redacted, so the
+# missing tail says nothing, but the report predates the capture.
+verdict_fixture EV_MTIME_AGREE ev-mtime-agree "2026-08-11T20:00:00Z" \
+  "The key is [redacted:openai-key] and nothing else survived." \
+  "The key is sk-liveliveliveliveliveliveliveliveli and nothing else survived." \
+  "2026-08-11T19:00:00Z" '[{"class":"openai-key","count":1}]'
+# The content check ran and disagreed.
+verdict_fixture EV_CONTENT_DISAGREE ev-content-disagree "" "A body that is not the report." "$AGREE_BODY"
+# The content check agreed and the mtime check disagreed: one disagreement is
+# enough, because a live source that disagrees wins.
+verdict_fixture EV_MTIME_DISAGREE ev-mtime-disagree "2026-08-11T20:00:00Z" "$AGREE_BODY" "$AGREE_BODY" \
+  "2026-08-11T21:30:00Z"
+# Neither check can run: a report with no content to fingerprint and no capture
+# time to fall back on.
+verdict_fixture EV_NO_EVIDENCE ev-no-evidence "" "$AGREE_BODY" "$BLANK_REPORT"
+# Neither check can run: the capture time is present but unparseable.
+verdict_fixture EV_BAD_CAPTURE ev-bad-capture "not-a-date" "$AGREE_BODY" "$BLANK_REPORT"
+# No report to compare, and the only live file is the manifest capture rewrites.
+verdict_fixture EV_OUTCOME_ONLY ev-outcome-only "2026-08-11T20:00:00Z" "$AGREE_BODY" OUTCOME-ONLY
+# The live files are gone entirely.
+verdict_fixture EV_LIVE_GONE ev-live-gone "2026-08-11T20:00:00Z" "$AGREE_BODY" NO-LIVE-FILES
+# A note has no live file by construction.
+EV_NOTE=$(write_outbox "$VERDICT_HOME" note ev-note "2026-08-11T20:00:00Z" "a pruned learning")
+VERDICT_SLUGS+=("$EV_NOTE")
+# A slug this home never captured, and a slug whose home tag cannot address a
+# record at all.
+EV_NO_OUTBOX="firstmate/$VERDICT_TAG/task/ev-never-captured"
+VERDICT_SLUGS+=("$EV_NO_OUTBOX")
+EV_BAD_TAG="firstmate/a b/task/ev-bad-tag"
+VERDICT_SLUGS+=("$EV_BAD_TAG")
+
+verdict_search
+expect_code 0 "$RECALL_RC" "the enumeration search should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq "${#VERDICT_SLUGS[@]}" ] \
+  || fail "the enumeration must read every fixture row: $RECALL_OUT"
+
+expect_state "$EV_BOTH_AGREE" current "two agreeing checks earn current"
+expect_state "$EV_CONTENT_AGREE" current "a content check that ran and agreed earns current"
+expect_state "$EV_MTIME_AGREE" current "an mtime check that ran and agreed earns current"
+expect_state "$EV_CONTENT_DISAGREE" drifted "a content check that ran and disagreed marks drift"
+expect_state "$EV_MTIME_DISAGREE" drifted "one disagreeing check outweighs one that agreed"
+expect_state "$EV_NO_EVIDENCE" uncompared "no check could run, so nothing was compared"
+expect_state "$EV_BAD_CAPTURE" uncompared "an unparseable capture time is not a comparison"
+expect_state "$EV_OUTCOME_ONLY" uncompared "an outcome-only task compares nothing"
+expect_state "$EV_LIVE_GONE" missing "an outbox whose live files are gone is missing"
+expect_state "$EV_NOTE" snapshot "a note has no live file to compare"
+expect_state "$EV_NO_OUTBOX" unknown "a slug with no outbox cannot be judged"
+expect_state "$EV_BAD_TAG" unknown "a slug that cannot address a record cannot be judged"
+
+# The closure itself: across the whole input space, the rows that came back
+# current are EXACTLY the three built with a comparison that ran and agreed. A
+# new path that reaches current without evidence fails here even if nobody
+# thought to name it.
+CURRENT_ROWS=$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source_state == "current") | .slug] | sort | join(",")')
+EXPECTED_CURRENT=$(printf '%s\n%s\n%s\n' "$EV_BOTH_AGREE" "$EV_CONTENT_AGREE" "$EV_MTIME_AGREE" \
+  | sort | tr '\n' ',' | sed 's/,$//')
+[ "$CURRENT_ROWS" = "$EXPECTED_CURRENT" ] \
+  || fail "current was reached without an agreeing comparison: got [$CURRENT_ROWS], earned [$EXPECTED_CURRENT]"
+
+# The mechanism, stated as a property rather than as a case list: for EVERY way
+# a check can fail to run, pairing it with the other check also unable to run
+# yields uncompared. None of them contributes a quiet pass.
+VERDICT_SLUGS=()
+CANNOT_RUN=()
+cannot_run_slug=""
+for content_way in whitespace-tail empty-file truncated-body redacted-body; do
+  for capture_way in absent unparseable; do
+    id="cannot-run-$content_way-$capture_way"
+    case $capture_way in
+      absent) captured="" ;;
+      *) captured="not-a-date" ;;
+    esac
+    case $content_way in
+      whitespace-tail) body="$AGREE_BODY"; report="$BLANK_REPORT"; redactions='[]' ;;
+      empty-file) body="$AGREE_BODY"; report=""; redactions='[]' ;;
+      truncated-body) body=$(printf 'b%.0s' $(seq 1 512)); report="$(printf 'b%.0s' $(seq 1 900))TAILNOTINBODY"; redactions='[]' ;;
+      *) body="key [redacted:openai-key] done"; report="key sk-liveliveliveliveliveliveliveliveli done"; redactions='[{"class":"openai-key","count":1}]' ;;
+    esac
+    verdict_fixture cannot_run_slug "$id" "$captured" "$body" "$report" "2026-08-11T19:00:00Z" "$redactions"
+    CANNOT_RUN+=("$cannot_run_slug")
+  done
+done
+verdict_search FM_GBRAIN_CAPTURE_MAX_BYTES=512
+expect_code 0 "$RECALL_RC" "the cannot-run search should answer: $RECALL_OUT"
+for slug in "${CANNOT_RUN[@]}"; do
+  expect_state "$slug" uncompared "a check that could not run must contribute nothing ($slug)"
+done
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[] | select(.source_state == "current")] | length')" -eq 0 ] \
+  || fail "a check that could not run was counted as a pass: $RECALL_OUT"
+pass "current is reachable only through a comparison that ran and agreed; a check that cannot run contributes nothing"
+
+# A budget this command cannot compute with is refused by the retrieval bound
+# the way it always was, rather than aborting the run with a raw shell error on
+# a status no caller knows how to read.
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_RECALL_TIMEOUT=30s \
+  bash "$CLI" search --json --scope local teardown 2>&1) || RECALL_RC=$?
+expect_code 3 "$RECALL_RC" "a non-integer retrieval budget must stay a named retrieval failure: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "a non-integer budget must be reported as the local leg failing: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "value too great for base" \
+  "a bad budget must not surface as a raw shell arithmetic error"
+pass "a retrieval budget that is not a positive integer keeps the documented exit contract"
 
 echo "all fm-recall tests passed"
