@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -98,5 +98,12 @@ When any diagnostic needs captain attention, report the plain consequence and re
   A home *proven* to serve no brain never raises this line, but an `unknown` line does not prove the home serves anything either - a missing `jq` or an unreadable home-local plane raises it before the serving relationship has been read at all.
   Both states print the same `GBRAIN_SERVING_CREDENTIAL:` prefix, so read the state rather than the prose: `bin/fm-gbrain.sh check` answers the same verdict as a `serving-credential` row whose state is `failed` for a proven violation and `unknown` for one this home could not reach.
   Only a `failed` verdict is the captain-authorized boundary described above; an `unknown` one is an unreadable plane to repair first, after which the verdict is re-read rather than assumed in either direction.
+- `GBRAIN_PIN: <verdict> - <detail>` - session start compared the GBrain release [`docs/gbrain.md`](../../../docs/gbrain.md#pinned-installation-and-upgrade) records against the one this host actually runs, and the two did not agree or one side could not be read.
+  `drift` means an upgrade moved one of them without the other, which is a real finding: the dashboard's GBrain panel quotes the recorded string rather than asking a running executable, so a stale record makes the panel describe a release the fleet no longer runs.
+  Resolve it by reading the detail's two sides rather than by assuming which one is wrong - a host ahead of the record needs the record moved (`docs/gbrain.md`'s upgrade policy step 1 moves the pin and the clean-install recipe commit in one edit), while a host behind it needs the upgrade finished or rolled back.
+  `unknown` means a side could not be read at all, which is never agreement: repair the named side and let the next session re-read the verdict rather than assuming either direction.
+  `bin/fm-gbrain-pin-check.sh` owns the comparison and re-prints the same verdict on demand, and `fm_gbrain_documented_pin` in `bin/fm-gbrain-lib.sh` is the single reader of the record - never grep the pin out of the doc yourself.
+  Never resolve this line by running an upgrade or a migration; moving a brain under new code is the captain-gated seven-step procedure `docs/gbrain.md` owns, not a remediation for a diagnostic.
+  A home with no GBrain installed, and a host whose two sides agree, both stay silent, so this line appearing at all means there is something to read.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

@@ -8,6 +8,7 @@ The measured retrieval and synthesis numbers, and the recorded migration timings
 ## Operating paths
 
 The pinned GBrain source and executable live under `/home/sungin/.local/gbrain`.
+Read the brain paths below as one deployment's rather than as any home's: `bin/fm-gbrain.sh paths` is the authority for what a home actually resolves, and on this host `/home/sungin/firstmate` carries no `config/gbrain-local.json`, so it resolves its own brain under `/home/sungin/firstmate/data/gbrain` instead.
 The PGLite database and index live at `/home/sungin/.local/share/gbrain/pglite`.
 The GBrain runtime configuration lives at `/home/sungin/.local/share/gbrain/runtime/.gbrain` through `GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime`.
 The canonical markdown archive is the remote-less Git repository at `/home/sungin/.local/share/gbrain/archive`, outside both Firstmate project roots and the Firstmate source tree.
@@ -64,6 +65,7 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    The clean-install recipe above names the same commit, so move both in that one edit: a recipe left on the previous commit hands an operator a binary the rest of this file no longer describes, while the panel still quotes the recorded pin.
    [`bin/fm-gbrain-pin-check.sh`](../bin/fm-gbrain-pin-check.sh) is the mechanical reader of both sides: it compares the recorded pin with what the installed executable reports and fails on drift, so a pin left behind by an upgrade is a finding rather than something a reviewer has to notice.
    Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
+   Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 4. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
@@ -85,7 +87,7 @@ That is not hypothetical, and the two directories that made it possible on this 
 ```sh
 FM_HOME=/home/sungin/firstmate
 gbrain_home=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json | jq -er '.gbrain_home')
-if [ ! -d "$gbrain_home" ]; then
+if [ ! -d "$gbrain_home/.gbrain" ]; then
   printf 'refusing upgrade: %s is not an initialized brain runtime for %s\n' "$gbrain_home" "$FM_HOME" >&2
   exit 1
 fi

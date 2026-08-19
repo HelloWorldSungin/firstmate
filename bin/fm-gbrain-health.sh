@@ -138,8 +138,8 @@ fi
 # home without the doc (e.g. a worktree checkout) gets version: null, never a
 # guess from a running executable. fm_gbrain_documented_pin owns that read;
 # bin/fm-gbrain-pin-check.sh is what catches the record going stale.
-VERSION=$(fm_gbrain_documented_pin "$FM_ROOT" 2>/dev/null) || VERSION=null
-[ -n "$VERSION" ] || VERSION=null
+fm_gbrain_documented_pin "$FM_ROOT" || true
+VERSION=${FM_GBRAIN_PIN:-null}
 
 # --- brain paths and index presence -----------------------------------------
 

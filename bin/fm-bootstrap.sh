@@ -26,6 +26,7 @@
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "USAGE_STORE: skipped|failed: <detail>",
 #                 "GBRAIN_SERVING_CREDENTIAL: <why hosted synthesis is reachable on a serving home, or why the verdict could not be reached>",
+#                 "GBRAIN_PIN: <drift between the recorded GBrain pin and the installed release, or why a side could not be read>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -458,6 +459,54 @@ upstream_status_check() {
 # dependency and stays silent when the home is clear.
 gbrain_serving_credential_check() {
   FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-gbrain.sh" serving-check || true
+}
+
+# docs/gbrain.md's upgrade policy requires the recorded GBrain pin and the
+# installed release to move in one change, and bin/fm-gbrain-pin-check.sh is the
+# single comparer of the two. Session start is where that comparison has to
+# happen: the drift it exists to catch came from an upgrade performed outside
+# that procedure, so a check reachable only from inside the procedure is one an
+# operator skips exactly when it matters. CI cannot close it either, because CI
+# has no brain and the check is inherently skipped there.
+#
+# Both gates below are absences of evidence rather than findings, so they are
+# silent and cost no exec: a host with no gbrain has nothing to compare, and a
+# code root with no docs/gbrain.md has no record to compare it against (that
+# record's presence is bin/fm-doc-audience-check.sh's invariant, not a session's
+# to report). Everything past them is either agreement, which is silent, or a
+# line. The read is bounded like every other startup probe because it execs
+# `gbrain --version`, and a hung executable must degrade to one reported line
+# rather than parking session start.
+gbrain_pin_drift_check() {
+  local timeout=${FM_BOOTSTRAP_PIN_TIMEOUT:-10} out status=0
+  [ -x "$SCRIPT_DIR/fm-gbrain-pin-check.sh" ] || return 0
+  command -v gbrain >/dev/null 2>&1 || return 0
+  [ -f "$FM_ROOT/docs/gbrain.md" ] || return 0
+  # Zero falls back with the blank and the non-numeric for the reason
+  # usage_store_refresh records: zero is not a bound to any runner underneath.
+  case "$timeout" in ''|*[!0-9]*) timeout=10 ;; esac
+  [ "$timeout" -ge 1 ] || timeout=10
+  out=$(fm_run_timed "$timeout" \
+    env FM_ROOT_OVERRIDE="$FM_ROOT" "$SCRIPT_DIR/fm-gbrain-pin-check.sh" 2>&1) || status=$?
+  # The check owns the verdict wording and prefixes it with its own name; strip
+  # that prefix so the emitted line reads as one of this family rather than two
+  # names stacked, and keep the verdict word it chose.
+  out=$(printf '%s\n' "$out" | head -1)
+  out=${out#fm-gbrain-pin-check: }
+  case "$status" in
+    0) ;;
+    1 | 2) echo "GBRAIN_PIN: ${out:-bin/fm-gbrain-pin-check.sh exited $status without saying why}" ;;
+    124 | 137)
+      echo "GBRAIN_PIN: unknown - the bounded pin check did not finish within ${timeout}s, so the recorded pin was compared against nothing"
+      ;;
+    125)
+      echo "GBRAIN_PIN: unknown - the bounded runner could not start, so the recorded pin was compared against nothing"
+      ;;
+    *)
+      echo "GBRAIN_PIN: unknown - bin/fm-gbrain-pin-check.sh exited $status: ${out:-no output}"
+      ;;
+  esac
+  return 0
 }
 
 secondmate_sync() {
@@ -1482,8 +1531,10 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
 elif network_phase; then
   vault_drift_check
 fi
-# The GBrain serving boundary and usage-store refresh are home-local checks.
+# The GBrain serving boundary, the recorded-pin drift check, and the usage-store
+# refresh are home-local checks.
 local_phase && gbrain_serving_credential_check
+local_phase && gbrain_pin_drift_check
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   local_phase && usage_store_refresh
 fi
