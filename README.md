@@ -179,7 +179,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/sync-upstream`   | Check the fork's read-only upstream drift status or, when asked to sync, dispatch the next contiguous full-merge round as a reviewable fork PR without merging it |
 | `/tool-updates`    | Check installed tools against their latest stable releases and live compatibility floors, record evidence-backed decisions, and prepare an attended upgrade plan without changing the machine |
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the fork's latest with fast-forward-only pulls, then re-read instructions, nudge secondmates, and report upstream drift without merging it |
-| `/stow`            | Sweep durable knowledge, curate tiered startup memory with decay and cold archival, preserve pruned truth in the home's brain, enforce each home's budget or surface the required decision through captain-gated offloads, cascade to registered second mates, file undone next steps, and report what is safe to reset |
+| `/stow`            | Sweep the session for uncaptured durable knowledge, persist the open work records this session knows are unfiled or now wrong, curate tiered startup memory with decay and cold archival, preserve pruned truth in the home's brain, enforce each home's budget or surface the required decision through captain-gated offloads, cascade to registered second mates, file undone next steps, and report what is safe to reset |
 
 Bearings invocation examples:
 

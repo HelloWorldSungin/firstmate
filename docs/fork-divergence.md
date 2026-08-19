@@ -21,13 +21,29 @@ Upstream has no agy support at all, so every part of it is fork-local.
 It is deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise that CLI without treating screen text as authority.
 It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
 The adapter contract lives in [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
+Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
 This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
 
 ### Pinned ShellCheck download retry budget
 
 The fork keeps its own wall-time download retry budget in [`bin/fm-install-shellcheck.sh`](../bin/fm-install-shellcheck.sh) rather than upstream's `DOWNLOAD_ATTEMPTS` count.
 Two fork CI failures on the portable serial lane measured how long a release-CDN blip actually lasts, and a count-based loop gave up while the same run's other installs succeeded; the script's own comment owns that evidence and the constants it justifies.
-Upstream re-expressed the budget as a count in `kunchenguid/firstmate@4930d2ca`, which is the first round to collide with it, so a future round must keep the fork's budget rather than reading upstream's loop as newer.
+Upstream re-expressed the budget as a count in `kunchenguid/firstmate@4930d2ca`, so a round must keep the fork's budget rather than reading upstream's loop as newer.
+That collision was reached on 2026-08-19 with `kunchenguid/firstmate#2546`, which also added multi-platform archive selection; the platform coverage was taken and the fork's wall-time budget kept, and `tests/fm-lint.test.sh` now pins the fork's two budget cases to linux/x86_64 so their pinned checksum stays the archive the installer selects on any host.
+
+### LLM quota sidecar
+
+The fork carries a host-published LLM quota reader, [`bin/fm-quota-sidecar.sh`](../bin/fm-quota-sidecar.sh) with [`tests/fm-quota-sidecar.test.sh`](../tests/fm-quota-sidecar.test.sh), which upstream has no equivalent of.
+It exists because this fleet's crew-dispatch array routes to minimax, zai, opencode-go, and antigravity, four providers `quota-axi` does not model at all; without it those candidates have no evidence surface rather than a stale one, and a disclosed `UNKNOWN` with a measured age is a materially different dispatch input than silence.
+The reader is additive evidence only and never merges, caches, ranks, or recommends routes.
+
+Upstream's `kunchenguid/firstmate#2574` adopted `spendPriority` as the single quota-perspective ranker, which first collided with this entry on 2026-08-19.
+The two do not compete and this is not a capability collision, so the remote-doctor precedent below does not apply: `spendPriority` ranks, while the sidecar supplies eligibility evidence for providers that ranker cannot see.
+The reconciliation keeps upstream's TOON-first spine intact - the sidecar is a separate reader rather than a `quota-axi --json` call - confines sidecar evidence to the eligibility gate, and leaves `spendPriority` the sole ranker.
+Where both sources cover a provider, `quota-axi` wins for selection and the sidecar stays corroborating diagnostic evidence with material disagreement disclosed.
+Stale, missing, error, and unmodeled sidecar results all remain disclosed eligibility uncertainty and never become headroom, runway, a healthy default, or a block.
+[`.agents/skills/quota-array-dispatch`](../.agents/skills/quota-array-dispatch/SKILL.md) owns that freshness and degradation policy, and [`docs/configuration.md`](configuration.md) owns the `fm-quota-sidecar.v1` producer contract.
+This divergence went unrecorded from its introduction until 2026-08-19, which is why the collision arrived mid-merge instead of as a known one.
 
 ### Watcher restart hand-over
 
@@ -53,6 +69,7 @@ Upstream flipped the same key to `true` in `kunchenguid/firstmate@12384026`.
 That commit was reached on 2026-08-18 and the flip was resolved back to `false` with the fork's own explanatory comment retained.
 The file does not conflict textually, so git takes the flip silently: every future round that touches it must re-check the value rather than trusting a clean merge.
 Upstream's later `kunchenguid/firstmate#2548` and `kunchenguid/firstmate#2549` reconcile upstream's own docs to `true`; this fork does not adopt that setting, so it does not adopt those doc reconciliations either.
+Both were reached on 2026-08-19 and were not adopted; that round's merge conflicted on the explanatory comment alone while the value stayed `false`, which is exactly why the value must be re-read rather than trusted to a clean merge.
 
 ### Upstream-read-only posture in shared tracked docs
 

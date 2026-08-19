@@ -927,10 +927,17 @@ test_genuinely_undelivered_steer_on_composer_supported_harness() {
     FM_HERDR_FAKE_AGENT="claude_code" FM_HERDR_FAKE_COMPOSER='│ › unsubmitted text │' \
     "$ROOT/bin/fm-send.sh" "fm-lane-claude" "steer message" >/dev/null 2>"$err"
   rc=$?
-  expect_code 1 "$rc" "genuinely undelivered steer on claude should report failure"
-  assert_contains "$(cat "$err")" "delivery unconfirmed; verdict=pending" \
-    "undelivered steer on composer-supported harness should report verdict=pending"
-  pass "a genuinely undelivered steer on a composer-supported harness is reported as failure"
+  # A composer still holding the text is delivered-unconfirmed, not proven
+  # undelivered: the harness may have queued the steer. fm-send reports that as
+  # exit 3 so a caller verifies the pane instead of blindly re-typing and
+  # double-delivering. The safety property this case guards is unchanged - the
+  # send is never falsely confirmed as delivered.
+  expect_code 3 "$rc" "unsubmitted steer on claude should report delivered-unconfirmed"
+  assert_contains "$(cat "$err")" "verdict=pending" \
+    "unsubmitted steer on composer-supported harness should report verdict=pending"
+  assert_contains "$(cat "$err")" "do not retype or blindly resend" \
+    "delivered-unconfirmed steer must warn against a blind resend"
+  pass "an unsubmitted steer on a composer-supported harness is reported as delivered-unconfirmed"
 }
 
 test_live_agy_tasks_read_working_in_crew_state() {

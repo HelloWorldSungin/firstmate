@@ -123,7 +123,8 @@ Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this reposi
 - Plain dash `-`, never an em dash.
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
-- Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, and pinned shellcheck version) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other shellcheck version.
+- Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, pinned shellcheck version, and pinned actionlint workflow lint) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other version of either linter.
+- When a task names a specific tool, implement the work with that tool, or explicitly flag the substitution and its new dependency footprint for review before shipping.
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - Close a suite with the sibling trailing marker `printf '\nall <subject> tests passed\n'`, so a run that died partway through is visible as a missing final line instead of a quiet short pass.
   Place it where only a genuinely clean run reaches it: after the last case, below the `fail` path that already exits non-zero, and guarded on `[ "$FAILED" -eq 0 ]` in a suite that tallies failures instead of exiting on the first one.
