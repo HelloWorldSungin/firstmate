@@ -768,4 +768,168 @@ run_recall "$MAIN_HOME" search --json --scope local teardown
 expect_code 0 "$RECALL_RC" "a corpus that was read and had no match is not a failure"
 pass "a search that never started, one that was refused, and one that found nothing each have their own exit status"
 
+# --- 11. the answer protocol: nearest pages, provenance, live source wins ----
+#
+# The engine returns rows for queries whose topic is absent, and the score
+# cannot separate a hit from nonsense, so a threshold would lie. Rows are
+# presented as nearest pages, never as answers, and a miss is absence of a
+# match rather than absence of the thing. A served page carries its capture
+# date and the live source's state, so a voided or superseded finding cannot
+# be read as current. Where the live source disagrees, that disagreement is
+# named and the live source wins; the page is not dropped or rewritten.
+
+# shellcheck source=bin/fm-gbrain-capture-lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/bin/fm-gbrain-capture-lib.sh"
+
+write_outbox() {  # <home> <kind> <id> <captured_at-or-empty> <body>
+  local home=$1 kind=$2 id=$3 captured=$4 body=$5
+  local tag doc_id slug
+  tag=$(fm_gbrain_capture_home_tag "$home")
+  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
+  slug=$(fm_gbrain_capture_slug "$tag" "$kind" "$id")
+  mkdir -p "$home/data/gbrain-outbox"
+  jq -n \
+    --arg schema "$FM_GBRAIN_CAPTURE_SCHEMA" \
+    --arg document_id "$doc_id" \
+    --arg slug "$slug" \
+    --arg home "$home" \
+    --arg kind "$kind" \
+    --arg id "$id" \
+    --arg captured "$captured" \
+    --arg body "$body" \
+    '{
+      schema: $schema,
+      document_id: $document_id,
+      revision_id: "rev-aaaaaaaaaaaaaaaa",
+      slug: $slug,
+      home: $home,
+      source: {kind: $kind, id: $id, title: $id},
+      content_version: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      status: "captured",
+      attempts: 1,
+      last_error: null,
+      gbrain_document: $slug,
+      redactions: [],
+      created_at: "2026-08-11T20:00:00Z",
+      updated_at: "2026-08-11T20:00:00Z",
+      captured_at: (if $captured == "" then null else $captured end),
+      body: $body
+    }' > "$home/data/gbrain-outbox/${doc_id}.json"
+  printf '%s\n' "$slug"
+}
+
+stub_reply '[]'
+run_recall "$MAIN_HOME" search --json --scope local "a topic this brain has never captured"
+expect_code 0 "$RECALL_RC" "a read corpus with no rows is still a successful read"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .answer.kind)" = none ] \
+  || fail "zero rows from a read corpus must be framed as none, not as an answer: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "absence of a match" \
+  "a miss must be named as absence of a match"
+assert_not_contains "$RECALL_OUT" "does not exist" \
+  "a miss must not be readable as absence of the queried thing"
+assert_not_contains "$RECALL_OUT" "no such thing" \
+  "a miss must not be readable as a negative about the world"
+
+stub_fail 1 "No brain configured. Run: gbrain init"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+expect_code 3 "$RECALL_RC" "a home with no readable brain is still a retrieval failure"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r 'has("answer")')" = false ] \
+  || fail "a corpus that was never read must not carry an answer framing: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.sources[] | select(.source == "local") | .state')" = failed ] \
+  || fail "a missing brain must still fail as local retrieval: $RECALL_OUT"
+
+DRIFT_ID=ratchet-side-effects
+DRIFT_SLUG=$(write_outbox "$MAIN_HOME" task "$DRIFT_ID" "2026-08-11T20:39:46Z" \
+  "AGS has a code-proven zero-Value problem that becomes long intervals.")
+mkdir -p "$MAIN_HOME/data/$DRIFT_ID"
+printf '%s\n' \
+  "AGS has a code-proven zero-Value problem that becomes long intervals." \
+  "" \
+  "Finding 5 is void. Ratcheting does not apply to AGS." \
+  > "$MAIN_HOME/data/$DRIFT_ID/report.md"
+touch -d '2026-08-11T21:25:41Z' "$MAIN_HOME/data/$DRIFT_ID/report.md"
+stub_reply "$(jq -cn --arg s "$DRIFT_SLUG" \
+  '[{slug:$s, title:"BZ-SIM ratchet side effects", chunk_text:"AGS has a code-proven zero-Value problem", score:0.49, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local "Does the BZ-SIM ratchet feature apply to AGS?"
+expect_code 0 "$RECALL_RC" "a drifted page should still be returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .answer.kind)" = nearest ] \
+  || fail "returned rows must be framed as nearest pages: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "not answers" \
+  "nearest pages must not be readable as answers"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = drifted ] \
+  || fail "a live report that moved on after capture must be drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].captured_at')" = "2026-08-11T20:39:46Z" ] \
+  || fail "a served page must carry its capture date: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a drifted page must not be presentable as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_updated_at')" = "2026-08-11T21:25:41Z" ] \
+  || fail "a drifted page must name the live source's time: $RECALL_OUT"
+run_recall "$MAIN_HOME" search --scope local "Does the BZ-SIM ratchet feature apply to AGS?"
+assert_contains "$RECALL_OUT" "live source wins" \
+  "human output must say the live source wins when it disagrees"
+assert_contains "$RECALL_OUT" "(stale)" \
+  "human output must mark the voided finding stale"
+
+CURRENT_ID=ohlcv-reenable
+CURRENT_SLUG=$(write_outbox "$MAIN_HOME" task "$CURRENT_ID" "2026-08-11T19:42:31Z" \
+  "OHLCV service active+enabled on CT100, listening 8812, healthy.")
+mkdir -p "$MAIN_HOME/data/$CURRENT_ID"
+printf '%s\n' "OHLCV service active+enabled on CT100, listening 8812, healthy." \
+  > "$MAIN_HOME/data/$CURRENT_ID/report.md"
+touch -d '2026-08-11T19:40:41Z' "$MAIN_HOME/data/$CURRENT_ID/report.md"
+STALE_ID=ohlcv-deploy-fix
+STALE_SLUG=$(write_outbox "$MAIN_HOME" task "$STALE_ID" "2026-08-11T17:45:52Z" \
+  "The OHLCV service remains inactive and disabled.")
+mkdir -p "$MAIN_HOME/data/$STALE_ID"
+printf '%s\n' \
+  "The OHLCV service remains inactive and disabled." \
+  "" \
+  "Re-enable completed; service is active and enabled." \
+  > "$MAIN_HOME/data/$STALE_ID/report.md"
+touch -d '2026-08-11T19:40:13Z' "$MAIN_HOME/data/$STALE_ID/report.md"
+stub_reply "$(jq -cn --arg a "$CURRENT_SLUG" --arg b "$STALE_SLUG" \
+  '[{slug:$a, title:"Re-enable OHLCV", chunk_text:"OHLCV service active+enabled", score:0.64, stale:false},
+    {slug:$b, title:"Deploy OHLCV fix", chunk_text:"The OHLCV service remains inactive", score:0.65, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local "What is the current state of the OHLCV service on CT100?"
+expect_code 0 "$RECALL_RC" "active and stale pages should both be returned: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].slug] | join(",")')" = "$CURRENT_SLUG,$STALE_SLUG" ] \
+  || fail "provenance must not reorder rows: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = current ] \
+  || fail "the matching live source must read as current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[1].source_state')" = drifted ] \
+  || fail "the superseded live source must read as drifted: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a current page must not inherit the sibling's stale mark: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[1].stale')" = true ] \
+  || fail "the reader must be able to tell the stale OHLCV page from the current one: $RECALL_OUT"
+
+MISSING_ID=torn-down-task
+MISSING_SLUG=$(write_outbox "$MAIN_HOME" task "$MISSING_ID" "2026-08-11T12:00:00Z" "a captured body")
+stub_reply "$(jq -cn --arg s "$MISSING_SLUG" \
+  '[{slug:$s, title:"gone", chunk_text:"a captured body", score:0.4, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local missing-source
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = missing ] \
+  || fail "an outbox whose live files are gone must read as missing: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = true ] \
+  || fail "a missing source must not be presentable as current: $RECALL_OUT"
+
+NOTE_ID=pruned-learning
+NOTE_SLUG=$(write_outbox "$MAIN_HOME" note "$NOTE_ID" "2026-08-11T18:00:00Z" "a pruned learning")
+stub_reply "$(jq -cn --arg s "$NOTE_SLUG" \
+  '[{slug:$s, title:"note", chunk_text:"a pruned learning", score:0.5, stale:false}]')"
+run_recall "$MAIN_HOME" search --json --scope local pruned-learning
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = snapshot ] \
+  || fail "a note has no live file and must read as a snapshot: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].stale')" = false ] \
+  || fail "a snapshot note is not itself a drifted source: $RECALL_OUT"
+
+stub_reply "$SEARCH_HIT"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].source_state')" = unknown ] \
+  || fail "a slug with no outbox must be unknown rather than guessed current: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
+  || fail "unjudged rows are still nearest pages: $RECALL_OUT"
+pass "answer protocol: a miss is not a negative, a served page carries provenance, and a live-source disagreement is surfaced without reordering"
+
 echo "all fm-recall tests passed"

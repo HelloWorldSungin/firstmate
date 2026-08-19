@@ -62,12 +62,46 @@
 # characters to search for.
 #
 # --json prints one "fm-recall.v1" document: the resolved home, a per-source
-# state, and capped results. Human output renders the same content as lines.
+# state, an answer framing, and capped results. Human output renders the same
+# content as lines.
 # Each corpus's results keep the order that corpus returned them in, which is
 # its own ranking rather than its raw score column, and two corpora are merged
 # by rank: first result of each, then second of each, cycling in the order the
 # corpora were read. Scores from different brains are not comparable, so a
 # printed score explains one corpus's row and never orders across corpora.
+# The printed score is also not that ranking within one corpus: rerank reorders
+# rows while leaving the pre-rerank blend in .score, so rank 1 may show a lower
+# number than rank 2. Order is the verdict; the number is a blend for that row.
+#
+# Answer protocol. A corpus that was read always answers, and the engine
+# essentially always returns rows, including for queries whose topic is absent.
+# There is no calibrated score threshold that separates a hit from nonsense, so
+# this command never invents one. When a corpus answered, the document carries
+# an `answer` object that says what the rows are:
+#   nearest  rows are the nearest indexed pages, not answers. A listed page may
+#            be unrelated to the query. Absence of a match is not absence of
+#            the queried thing.
+#   none     the corpus was read and returned no rows. That is absence of an
+#            indexed match, never evidence that the queried thing is absent.
+# `answer` is omitted when no corpus was read, so a retrieval failure cannot be
+# rendered as "not found".
+# Each local result also carries provenance from this home's capture outbox and
+# the live source that outbox was composed from, when those records exist:
+#   captured_at        when the outbox revision was marked captured, or null
+#   source_state       current | drifted | missing | snapshot | unknown
+#   source_kind/id     task or note identity from the slug, or null
+#   source_updated_at  newest mtime of the live source files, or null
+# source_state is current when the live source still matches the captured page,
+# drifted when the live source has moved on, missing when the outbox names a
+# task whose durable files are gone, snapshot for a note (no live file to
+# compare), and unknown when this home cannot judge (no outbox, not a Firstmate
+# capture slug, or a main-brain row). Drifted and missing also set stale=true,
+# combined with GBrain's own stale flag rather than replacing it. Where a live
+# source disagrees with the page, the live source wins and the disagreement is
+# surfaced; this command never silently prefers either copy, never drops the
+# page, and never rewrites the excerpt from the live file. A home with no
+# outbox, and a home with no brain, keep their existing paths: provenance that
+# cannot be judged is unknown, and a missing index still fails as retrieval.
 # A source's state is one of:
 #   ok             it was read, and its results are the rows labelled with it.
 #   degraded       the main brain is configured but this read did not reach it,
@@ -104,6 +138,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # shellcheck source=bin/fm-gbrain-lib.sh
 . "$SCRIPT_DIR/fm-gbrain-lib.sh"
+# shellcheck source=bin/fm-gbrain-capture-lib.sh
+. "$SCRIPT_DIR/fm-gbrain-capture-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -447,6 +483,158 @@ $2
 EOF
 }
 
+# Provenance is judged from this home's capture outbox and the live source that
+# outbox was composed from. It is presentation: it never changes result order,
+# never drops a row, and never rewrites an excerpt from the live file.
+ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; the printed score is a pre-rerank blend and does not order this list. Where a live source disagrees with a page, the live source wins.'
+ANSWER_NONE_NOTICE='No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.'
+
+recall_stat_mtime() {  # <path> -> epoch seconds, or empty
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    stat -f %m "$1" 2>/dev/null || true
+  else
+    stat -c %Y "$1" 2>/dev/null || true
+  fi
+}
+
+recall_iso_epoch() {  # <YYYY-MM-DDTHH:MM:SSZ> -> epoch seconds, or empty
+  date -u -d "$1" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null \
+    || true
+}
+
+recall_epoch_iso() {  # <epoch> -> ISO-8601 UTC, or empty
+  date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || true
+}
+
+recall_regular_file() {  # <path> -> 0 when it is a regular non-symlink file
+  [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+# Emit one provenance object for a local slug. Always succeeds with JSON so a
+# missing outbox cannot abort a search that already answered.
+provenance_for_slug() {  # <data-dir> <slug>
+  local data=$1 slug=$2
+  local prefix tag kind id extra
+  local doc_id item captured_at source_kind source_id cap_epoch
+  local report outcome live_epoch=0 file_epoch fp body_has=0 have_report=0
+  local source_state=unknown source_updated_at="" stale_from_source=false
+  IFS=/ read -r prefix tag kind id extra <<EOF
+$slug
+EOF
+  if [ "$prefix" != firstmate ] || [ -z "$tag" ] || [ -z "$id" ] || [ -n "${extra:-}" ] \
+      || { [ "$kind" != task ] && [ "$kind" != note ]; } \
+      || ! fm_gbrain_capture_source_id_valid "$id"; then
+    jq -cn --arg slug "$slug" \
+      '{slug:$slug, captured_at:null, source_state:"unknown", source_kind:null,
+        source_id:null, source_updated_at:null, stale_from_source:false}'
+    return 0
+  fi
+  source_kind=$kind
+  source_id=$id
+  doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$id")
+  item=$(fm_gbrain_capture_item_read "$data" "$doc_id" 2>/dev/null) || item=""
+  if [ -z "$item" ]; then
+    jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
+      '{slug:$slug, captured_at:null, source_state:"unknown", source_kind:$kind,
+        source_id:$id, source_updated_at:null, stale_from_source:false}'
+    return 0
+  fi
+  captured_at=$(printf '%s' "$item" | jq -r '.captured_at // empty')
+  if [ "$kind" = note ]; then
+    jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
+      --arg captured "${captured_at:-}" \
+      '{slug:$slug, captured_at:(if $captured == "" then null else $captured end),
+        source_state:"snapshot", source_kind:$kind, source_id:$id,
+        source_updated_at:null, stale_from_source:false}'
+    return 0
+  fi
+
+  report="$data/$id/report.md"
+  outcome="$data/$id/outcome.json"
+  # Capture republishes the outcome manifest in the same second as captured_at,
+  # so that file's mtime is not a freshness signal. The report is. Outcome-only
+  # tasks have no later editable source on disk once teardown finished.
+  if recall_regular_file "$report"; then
+    have_report=1
+    file_epoch=$(recall_stat_mtime "$report")
+    if [ -n "$file_epoch" ] && [ "$file_epoch" -gt "$live_epoch" ]; then
+      live_epoch=$file_epoch
+    fi
+    fp=$(tail -c 200 "$report" 2>/dev/null | tr -d '\000' || true)
+    case $fp in
+      *[![:space:]]*)
+        if printf '%s' "$item" | jq -e --arg fp "$fp" '(.body | index($fp)) != null' >/dev/null 2>&1; then
+          body_has=1
+        fi
+        ;;
+      *) body_has=1 ;;
+    esac
+  else
+    body_has=1
+    if recall_regular_file "$outcome"; then
+      file_epoch=$(recall_stat_mtime "$outcome")
+      if [ -n "$file_epoch" ]; then
+        live_epoch=$file_epoch
+      fi
+    fi
+  fi
+
+  if [ "$live_epoch" -eq 0 ]; then
+    source_state=missing
+    stale_from_source=true
+  else
+    source_updated_at=$(recall_epoch_iso "$live_epoch")
+    source_state=current
+    if [ "$body_has" -eq 0 ]; then
+      source_state=drifted
+      stale_from_source=true
+    elif [ "$have_report" -eq 1 ] && [ -n "$captured_at" ]; then
+      cap_epoch=$(recall_iso_epoch "$captured_at")
+      if [ -n "$cap_epoch" ] && [ "$live_epoch" -gt "$cap_epoch" ]; then
+        source_state=drifted
+        stale_from_source=true
+      fi
+    fi
+  fi
+  jq -cn --arg slug "$slug" --arg kind "$source_kind" --arg id "$source_id" \
+    --arg captured "${captured_at:-}" --arg state "$source_state" \
+    --arg updated "${source_updated_at:-}" --argjson stale "$stale_from_source" \
+    '{slug:$slug,
+      captured_at:(if $captured == "" then null else $captured end),
+      source_state:$state, source_kind:$kind, source_id:$id,
+      source_updated_at:(if $updated == "" then null else $updated end),
+      stale_from_source:$stale}'
+}
+
+annotate_search_results() {  # <results-json> <home> -> annotated results json
+  local results=$1 home=$2
+  local data="$home/data"
+  local meta='[]' slug p
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    p=$(provenance_for_slug "$data" "$slug")
+    meta=$(jq -c -n --argjson m "$meta" --argjson p "$p" '$m + [$p]')
+  done < <(printf '%s' "$results" | jq -r '[.[] | select(.source == "local") | .slug] | unique[]')
+  jq -c --argjson meta "$meta" '
+    ($meta | map({key: .slug, value: .}) | from_entries) as $by
+    | map(
+        . as $row
+        | (if $row.source == "local" then ($by[$row.slug] // null) else null end) as $p
+        | .captured_at = (if $p == null then null else $p.captured_at end)
+        | .source_state = (if $p == null then "unknown" else $p.source_state end)
+        | .source_kind = (if $p == null then null else $p.source_kind end)
+        | .source_id = (if $p == null then null else $p.source_id end)
+        | .source_updated_at = (if $p == null then null else $p.source_updated_at end)
+        | .stale = ((.stale == true) or ($p != null and $p.stale_from_source == true))
+      )
+  ' <<EOF
+$results
+EOF
+}
+
 # Two corpora are merged by RANK, never by score, and each corpus's own order is
 # left exactly as it arrived. A brain's returned order is its verdict, not its
 # raw score: reranking runs inside the brain, so its ordering carries a
@@ -571,21 +759,36 @@ cmd_search() {
     fi
   fi
 
-  local sources doc
+  local sources doc answer_kind="" answer_notice=""
+  results=$(annotate_search_results "$results" "$HOME_PATH")
+  if [ "$answered" -eq 1 ]; then
+    if [ "$(printf '%s' "$results" | jq 'length')" -eq 0 ]; then
+      answer_kind=none
+      answer_notice=$ANSWER_NONE_NOTICE
+    else
+      answer_kind=nearest
+      answer_notice=$ANSWER_NEAREST_NOTICE
+    fi
+  fi
   sources=$(printf '%s\n' ${rows[@]+"${rows[@]}"} | jq -c -s 'map(select(. != null))')
   doc=$(jq -c -n --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$query" \
+    --arg akind "$answer_kind" --arg anote "$answer_notice" \
     --argjson src "$sources" --argjson res "$results" "$JQ_MERGE_BY_RANK"'
     {schema: $s, command: "search", home: $h, query: $q, sources: $src,
-     results: ($res | merge_by_rank)}')
+     results: ($res | merge_by_rank)}
+    + (if $akind == "" then {} else {answer: {kind: $akind, notice: $anote}} end)')
 
   if [ "$JSON_MODE" -eq 1 ]; then
     printf '%s\n' "$doc" | jq '.'
   else
     printf '%s' "$doc" | jq -r '
       (.sources[] | "\(.source)\t\(.state)\(if .brain == "" then "" else "\t" + .brain end)\(if .detail then "\t" + .detail else "" end)"),
+      (if .answer then "answer\t\(.answer.kind)\t\(.answer.notice)" else empty end),
       "",
-      (if (.results | length) == 0 then "no results"
-       else (.results[] | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\n  \(.excerpt)")
+      (if (.answer.kind // "") == "none" then empty
+       elif (.results | length) == 0 then "no results"
+       else (.results[]
+             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
        end)'
   fi
 

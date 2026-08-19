@@ -1483,14 +1483,25 @@ class GBrainState {
       // reasons a stored document cannot become markup.
       const results = Array.isArray(document.results) ? document.results : [];
       const sources = Array.isArray(document.sources) ? document.sources : [];
-      const cleanedResults = results.slice(0, n).map((row) => ({
-        source: typeof row?.source === "string" ? row.source : null,
-        slug: typeof row?.slug === "string" ? row.slug : null,
-        title: typeof row?.title === "string" ? safeText(row.title, 400) : "",
-        score: typeof row?.score === "number" && Number.isFinite(row.score) ? row.score : null,
-        excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
-        stale: row?.stale === true,
-      }));
+      const SOURCE_STATES = new Set(["current", "drifted", "missing", "snapshot", "unknown"]);
+      const cleanedResults = results.slice(0, n).map((row) => {
+        const sourceState = SOURCE_STATES.has(row?.source_state) ? row.source_state : "unknown";
+        const capturedAt = typeof row?.captured_at === "string" ? safeText(row.captured_at, 40) : null;
+        const sourceUpdatedAt = typeof row?.source_updated_at === "string" ? safeText(row.source_updated_at, 40) : null;
+        return {
+          source: typeof row?.source === "string" ? row.source : null,
+          slug: typeof row?.slug === "string" ? row.slug : null,
+          title: typeof row?.title === "string" ? safeText(row.title, 400) : "",
+          score: typeof row?.score === "number" && Number.isFinite(row.score) ? row.score : null,
+          excerpt: typeof row?.excerpt === "string" ? safeText(row.excerpt, 4000) : "",
+          stale: row?.stale === true || sourceState === "drifted" || sourceState === "missing",
+          captured_at: capturedAt,
+          source_state: sourceState,
+          source_kind: row?.source_kind === "task" || row?.source_kind === "note" ? row.source_kind : null,
+          source_id: typeof row?.source_id === "string" ? safeText(row.source_id, 80) : null,
+          source_updated_at: sourceUpdatedAt,
+        };
+      });
       const cleanedSources = sources.map((row) => {
         const source = GBRAIN_SOURCE_NAMES.has(row?.source) ? row.source : "unknown";
         const state = GBRAIN_SOURCE_STATES.has(row?.state) ? row.state : "unknown";
@@ -1509,6 +1520,12 @@ class GBrainState {
           detail: failure?.message || (typeof row?.detail === "string" ? safeText(row.detail, 240) : null),
         };
       });
+      const answerKind = document?.answer?.kind === "nearest" || document?.answer?.kind === "none"
+        ? document.answer.kind
+        : null;
+      const answerNotice = typeof document?.answer?.notice === "string"
+        ? safeText(document.answer.notice, 800)
+        : null;
       return {
         schema: GBRAIN_SEARCH_SCHEMA,
         generated: nowIso(),
@@ -1517,6 +1534,7 @@ class GBrainState {
         home: typeof document.home === "string" ? document.home : this.config.fmHome,
         sources: cleanedSources,
         results: cleanedResults,
+        answer: answerKind ? { kind: answerKind, notice: answerNotice || "" } : null,
       };
     } catch (error) {
       const kind = error.kind || "search_failed";

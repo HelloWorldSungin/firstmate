@@ -385,6 +385,33 @@ EOF
   pass "successful search returns the cleaned envelope the page consumes"
 }
 
+test_search_keeps_answer_protocol_fields() {
+  local home bindir out
+  home=$(make_home search-protocol)
+  bindir=$(make_bin_dir search-protocol)
+  cat > "$home/config/gbrain.json" <<'EOF'
+{
+  "version": 1,
+  "local": {"embedding_base_url": "http://127.0.0.1:11434/v1", "embedding_model": "embed-test"}
+}
+EOF
+  mkdir -p "$home/data/gbrain/pglite"
+  install_recall_stub "$bindir" '{"schema":"fm-recall.v1","command":"search","home":"/home/firstmate","query":"ags ratchet","answer":{"kind":"nearest","notice":"These are the nearest indexed pages, not answers."},"sources":[{"source":"local","state":"ok","brain":"/home/firstmate/data/gbrain","results":1}],"results":[{"source":"local","slug":"firstmate/tag/task/bzsim-ratchet-fix-side-effects","title":"BZ-SIM ratchet","score":0.49,"stale":true,"excerpt":"voided finding","captured_at":"2026-08-11T20:39:46Z","source_state":"drifted","source_kind":"task","source_id":"bzsim-ratchet-fix-side-effects","source_updated_at":"2026-08-11T21:25:41Z"}]}'
+  start_server "$bindir" "$home" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":0,"pending":0,"failed":0,"unreadable":0},"documents":[]}'
+  out=$(curl -sS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"ags ratchet","limit":3}' \
+    "http://127.0.0.1:$TEST_PORT/api/gbrain/search")
+  printf '%s' "$out" | jq -e '
+    .answer.kind == "nearest"
+      and (.answer.notice | test("nearest indexed pages"))
+      and .results[0].captured_at == "2026-08-11T20:39:46Z"
+      and .results[0].source_state == "drifted"
+      and .results[0].stale == true
+      and .results[0].source_updated_at == "2026-08-11T21:25:41Z"
+  ' >/dev/null || fail "answer-protocol fields were dropped before they reached the page: $out"
+  pass "the dashboard keeps capture date, source state, and nearest-page framing"
+}
+
 test_partial_source_failure_uses_display_error() {
   local home bindir out
   home=$(make_home search-partial)
@@ -756,6 +783,7 @@ test_health_panel_reports_configured_home
 test_health_panel_reports_no_brain
 test_health_panel_survives_degraded_probes
 test_search_returns_clean_envelope
+test_search_keeps_answer_protocol_fields
 test_partial_source_failure_uses_display_error
 test_search_preserves_same_as_local_source_state
 test_search_returns_504_when_recall_exceeds_budget

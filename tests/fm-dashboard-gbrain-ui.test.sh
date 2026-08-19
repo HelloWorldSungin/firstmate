@@ -554,8 +554,12 @@ equal("search_setup_failed says the search never started",
   deepEqual("the search failure dot carries its tone as a class", dots(results).map((d) => d.className), ["dot amber"]);
   equal("the search failure sentence is printed once", results.textContent, searchReasonLabel("timed_out"));
 
-  paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [] }, null);
+  paintGBrainSearchResults(elements, { schema: "fm-gbrain-search.v1", query: "nothing", results: [], sources: [], answer: { kind: "none", notice: "No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent." } }, null);
   deepEqual("the empty-result dot carries its tone as a class", dots(results).map((d) => d.className), ["dot green"]);
+  check("an empty result is framed as no indexed match", results.textContent.includes("No indexed match"),
+    `received ${JSON.stringify(results.textContent)}`);
+  check("an empty result is not a negative about the world", !results.textContent.includes("does not exist") && !results.textContent.includes("No matches"),
+    `received ${JSON.stringify(results.textContent)}`);
 
   paintGBrainSearchResults(elements, {
     schema: "fm-gbrain-search.v1",
@@ -575,16 +579,37 @@ equal("search_setup_failed says the search never started",
   paintGBrainSearchResults(elements, {
     schema: "fm-gbrain-search.v1",
     query: "fleet supervision",
+    answer: { kind: "nearest", notice: "These are the nearest indexed pages, not answers." },
     results: [
       { source: "local", slug: "task/one", title: "One", score: 0.5, excerpt: "body" },
       { source: "local", slug: "task/two", title: "Two", score: 0.4, excerpt: "body" },
     ],
     sources: [],
   }, null);
-  equal("a search paints one card per result", results.children.length, 2);
+  equal("a search paints the framing notice plus one card per result", results.children.length, 3);
   paintGBrainPanel(elements, configuredEnvelope);
-  equal("a routine health repaint keeps the search results", results.children.length, 2);
+  equal("a routine health repaint keeps the search results", results.children.length, 3);
   check("the kept results are the same cards", results.textContent.includes("task/one") && results.textContent.includes("task/two"),
+    `received ${JSON.stringify(results.textContent)}`);
+  check("returned rows are framed as nearest pages", results.textContent.includes("nearest indexed pages"),
+    `received ${JSON.stringify(results.textContent)}`);
+
+  paintGBrainSearchResults(elements, {
+    schema: "fm-gbrain-search.v1",
+    query: "Does the BZ-SIM ratchet feature apply to AGS?",
+    answer: { kind: "nearest", notice: "These are the nearest indexed pages, not answers." },
+    results: [{
+      source: "local", slug: "task/bzsim-ratchet-fix-side-effects", title: "BZ-SIM ratchet",
+      score: 0.49, excerpt: "AGS has a code-proven zero-Value problem", stale: true,
+      captured_at: "2026-08-11T20:39:46Z", source_state: "drifted", source_updated_at: "2026-08-11T21:25:41Z",
+    }],
+    sources: [],
+  }, null);
+  check("a drifted page is marked stale", results.textContent.includes("stale"),
+    `received ${JSON.stringify(results.textContent)}`);
+  check("a drifted page shows its capture date", results.textContent.includes("2026-08-11T20:39:46Z"),
+    `received ${JSON.stringify(results.textContent)}`);
+  check("a drifted page says the live source wins", results.textContent.includes("live source wins"),
     `received ${JSON.stringify(results.textContent)}`);
 
   paintGBrainSearchResults(elements, null, searchFailure("timed_out", "the brain did not answer within the search timeout"));
