@@ -399,7 +399,7 @@ for (const buttonId of ["theme-button", "notify-button"]) {
   button.append(Object.assign(new FakeNode("span"), { className: "nlabel" }));
 }
 const routeButtons = [];
-for (const route of ["needs", "fleet", "backlog", "history", "knowledge"]) {
+for (const route of ["needs", "fleet", "backlog", "history", "usage", "knowledge"]) {
   for (const prefix of ["nav", "tab"]) {
     const button = staticNode("button", `${prefix}-${route}`, prefix === "nav" ? "navitem" : "tabitem");
     button.dataset.route = route;
@@ -624,7 +624,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
     return matches[0];
   };
 
-  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-knowledge", "view-task"];
+  const VIEW_IDS = ["view-needs", "view-fleet", "view-backlog", "view-history", "view-usage", "view-knowledge", "view-task"];
   // The exclusivity assertion the rebuild exists for: the active view's root
   // is on the page AND every other view root is absent from the DOM - not
   // hidden, absent. A check that only looked for the active view would pass
@@ -692,7 +692,7 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
   await settle();
 
   // --- every route renders its view and only its view ------------------------
-  for (const route of ["fleet", "backlog", "history", "knowledge", "needs"]) {
+  for (const route of ["fleet", "backlog", "history", "usage", "knowledge", "needs"]) {
     await go(`#/${route}`);
     assertOnly(`view-${route}`, `#/${route}`);
     for (const button of routeButtons) {
@@ -702,6 +702,103 @@ import(pathToFileURL(process.argv[2]).href).then(async () => {
       if (!active && "aria-current" in button.attributes) throw new Error(`#/${route}: ${button.id} kept a stale aria-current`);
     }
   }
+
+  // --- the Usage page tells three different "no rows" states apart -----------
+  //
+  // A home that collects nothing, a dashboard told not to read usage, and a
+  // read that missed on a home that DOES collect are three different claims
+  // made from the same empty page. Only the last one is a failure anyone can
+  // act on, so only it earns an alarm - and only it can honestly say anything
+  // is being retried.
+  const usageEnvelopeWith = (usage) => JSON.stringify({ ...historyEnvelope, usage });
+  const pushHistory = async (usage) => {
+    eventSources[0].listeners.history({ data: usageEnvelopeWith(usage) });
+    await settle();
+  };
+  await go("#/usage");
+  assertOnly("view-usage", "#/usage");
+
+  await pushHistory({
+    available: false,
+    reason: "token usage is not collected in this home",
+    collection: "absent",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "token usage is not collected in this home", collection: "absent", stale: false },
+  });
+  const absentUsage = viewNode.textContent;
+  if (absentUsage.includes("Retrying automatically")) throw new Error(`a home that collects no usage claimed a retry: ${absentUsage}`);
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 0) throw new Error(`a home that collects no usage drew an alarm: ${absentUsage}`);
+  if (!absentUsage.includes("not collected")) throw new Error(`a home that collects no usage did not say so: ${absentUsage}`);
+
+  await pushHistory({
+    available: false,
+    reason: "token usage reads are disabled for this dashboard",
+    collection: "disabled",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "token usage reads are disabled for this dashboard", collection: "disabled", stale: false },
+  });
+  const disabledUsage = viewNode.textContent;
+  if (disabledUsage.includes("Retrying automatically")) throw new Error(`a dashboard with usage reads off claimed a retry it will never make: ${disabledUsage}`);
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 0) throw new Error(`a dashboard with usage reads off drew an alarm: ${disabledUsage}`);
+
+  await pushHistory({
+    available: true,
+    reason: null,
+    collection: "ready",
+    stale: false,
+    tasks: {},
+    projects: {},
+    projects_read: { available: false, reason: "the store is locked", collection: "operational", stale: false },
+  });
+  const faultedUsage = viewNode.textContent;
+  if (all(viewNode, (node) => hasClass(node, "error")).length !== 1) throw new Error(`a read that missed on a collecting home did not draw its alarm: ${faultedUsage}`);
+  if (!faultedUsage.includes("failure to fix rather than a home that collects nothing")) {
+    throw new Error(`a read that missed was not told apart from a home that collects nothing: ${faultedUsage}`);
+  }
+  if (!faultedUsage.includes("the store is locked")) throw new Error(`the failed usage read lost its reason: ${faultedUsage}`);
+
+  // And with rows, the headline counts projects rather than the unattributed
+  // and supervision rows the page deliberately keeps on screen.
+  await pushHistory({
+    available: true,
+    reason: null,
+    collection: "ready",
+    stale: false,
+    tasks: {},
+    projects: {
+      firstmate: { events: 1200, sessions: 2, input_tokens: 400, output_tokens: 100, total_tokens: 500 },
+      "ark-business": { events: 400, sessions: 1, input_tokens: 40, output_tokens: 10, total_tokens: 50 },
+      "(unknown)": { events: 500, sessions: 5, input_tokens: 200, output_tokens: 50, total_tokens: 250 },
+      "(firstmate supervision)": { events: 2000, sessions: 1, input_tokens: 50, output_tokens: 10, total_tokens: 2000 },
+    },
+    projects_read: { available: true, reason: null, collection: "ready", stale: false },
+  });
+  const usageRows = all(viewNode, (node) => hasClass(node, "rrow"));
+  if (usageRows.length !== 4) throw new Error(`the Usage page dropped a row: rendered ${usageRows.length}`);
+  const usageStats = all(viewNode, (node) => hasClass(node, "stat"));
+  const projectStat = usageStats.find((stat) => stat.textContent.startsWith("Projects"));
+  if (!projectStat || projectStat.textContent !== "Projects2") {
+    throw new Error(`the Projects headline counted the unattributed and supervision rows: ${projectStat?.textContent}`);
+  }
+  // A count is a count: compacting it the way a token total is compacted would
+  // print one quantity two ways on one page, since each row states its own
+  // event count in full directly below.
+  const eventStat = usageStats.find((stat) => stat.textContent.startsWith("Events"));
+  if (!eventStat || eventStat.textContent !== "Events4100") {
+    throw new Error(`the Events headline compacted an event count: ${eventStat?.textContent}`);
+  }
+  if (!usageRows.some((row) => row.textContent.includes("1200 events"))) {
+    throw new Error("a usage row stopped stating its own event count in full");
+  }
+  if (!viewNode.textContent.includes("Firstmate supervision") || !viewNode.textContent.includes("Unattributed")) {
+    throw new Error("the Usage page stopped showing the spend it does not credit to a project");
+  }
+  eventSources[0].listeners.history({ data: JSON.stringify(historyEnvelope) });
+  await settle();
 
   // --- a data refresh never steals focus from a mounted control --------------
   //
@@ -2317,7 +2414,9 @@ SH
   cat > "$runtime/bin/fm-usage.mjs" <<SH
 #!/usr/bin/env node
 import fs from "node:fs";
-const marker = "$case_root/read-once";
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+const marker = "$case_root/read-once-" + by;
 if (fs.existsSync(marker)) {
   process.stderr.write("database is locked\n");
   process.exit(1);
@@ -2325,7 +2424,7 @@ if (fs.existsSync(marker)) {
 fs.writeFileSync(marker, "");
 process.stdout.write(JSON.stringify({
   schema: "fm-usage-report.v1",
-  by: "task",
+  by: by,
   rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
 }) + "\n");
 SH
@@ -2345,6 +2444,118 @@ SH
     || fail "a failed usage read dropped the totals it should have retained"
   stop_server
   pass "a usage read that failed keeps the last good totals and says the newest read did not land"
+}
+
+# The dashboard takes two reads of the same store: History renders the per-task
+# rollup and Usage renders the per-project one. They fail independently, because
+# a project read that missed says nothing about the task totals - and folding
+# them into one verdict would darken every completed card's token column for a
+# failure that never touched it.
+test_a_failed_project_rollup_keeps_the_task_totals_available() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-split"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[{"schema":"fm-outcome-manifest.v1","task_id":"paid","report":{"path":null,"present":false}}],"total":1,"shown":1,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the split usage case could not create a store"
+  # A collector whose per-project rollup always fails while the per-task one
+  # always answers.
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+if (by === "project") {
+  process.stderr.write("database is locked\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: by,
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.tasks.paid.total_tokens == 15 and .usage.stale == false' "$case_root/history.json" >/dev/null \
+    || fail "a failed project rollup took the task totals down with it"
+  jq -e '.usage.projects_read.available == false and .usage.projects_read.collection == "operational" and (.usage.projects_read.reason | test("could not be read"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "the failed project rollup did not report itself as unavailable"
+  jq -e '(.usage.projects | length) == 0' "$case_root/history.json" >/dev/null \
+    || fail "a failed project rollup must not publish rows"
+  stop_server
+  pass "a failed per-project rollup leaves the per-task totals available"
+}
+
+# An output this dashboard does not recognize is a failed read on either half:
+# publishing an empty project map as available would draw a zero over a
+# collector whose answer was never understood.
+test_an_unrecognized_project_report_is_unavailable_not_empty() {
+  local case_root runtime home
+  case_root="$TMP_ROOT/history-usage-project-schema"
+  runtime="$case_root/runtime"
+  home="$case_root/home"
+  mkdir -p "$runtime/bin" "$runtime/assets/dashboard" "$home/data" "$home/state" "$home/projects"
+  cp "$SERVER" "$runtime/bin/fm-dashboard-server.mjs"
+  cp "$ROOT/bin/fm-event-store.mjs" "$ROOT/bin/fm-telemetry-store.mjs" "$runtime/bin/"
+  cp "$ROOT/assets/dashboard/"* "$runtime/assets/dashboard/"
+  cat > "$runtime/bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-fleet-snapshot.v1","tasks":[],"card_precedence":[]}\n'
+SH
+  cat > "$runtime/bin/fm-outcome-manifest.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"schema":"fm-outcome-history.v1","records":[],"total":0,"shown":0,"truncated":false,"malformed":[]}\n'
+SH
+  chmod +x "$runtime/bin/fm-fleet-snapshot.sh" "$runtime/bin/fm-outcome-manifest.sh"
+  node "$ROOT/bin/fm-usage.mjs" migrate --home "$home" >/dev/null \
+    || fail "the project-schema case could not create a store"
+  cat > "$runtime/bin/fm-usage.mjs" <<'SH'
+#!/usr/bin/env node
+const byIndex = process.argv.indexOf("--by");
+const by = byIndex >= 0 ? process.argv[byIndex + 1] : "task";
+if (by === "project") {
+  process.stdout.write(JSON.stringify({ schema: "fm-usage-report.v99", by: by, rows: [] }) + "\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  schema: "fm-usage-report.v1",
+  by: by,
+  rows: [{ key: "paid", events: 4, sessions: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15 }],
+}) + "\n");
+SH
+  chmod +x "$runtime/bin/fm-usage.mjs"
+  TEST_PORT=$(free_port)
+  FM_HOME="$home" FM_DASHBOARD_PORT="$TEST_PORT" FM_DASHBOARD_POLL_SECONDS=1 \
+    FM_DASHBOARD_HISTORY_POLL_SECONDS=1 \
+    node "$runtime/bin/fm-dashboard-server.mjs" > "$case_root/server.log" 2>&1 &
+  SERVER_PID=$!
+  wait_for_http "$case_root"
+  wait_for_history "$case_root" '.usage.available == true'
+  jq -e '.usage.projects_read.available == false and (.usage.projects_read.reason | test("supported schema"))' \
+    "$case_root/history.json" >/dev/null \
+    || fail "an unrecognized project report was published as an empty available rollup"
+  stop_server
+  pass "a project report this dashboard does not recognize is unavailable rather than empty"
 }
 
 test_usage_without_store_file_is_absent_not_operational() {
@@ -2496,6 +2707,8 @@ test_a_huge_report_is_bounded_and_says_so
 test_usage_totals_are_presence_gated
 test_usage_without_store_file_is_absent_not_operational
 test_a_failed_usage_read_keeps_the_last_good_one
+test_a_failed_project_rollup_keeps_the_task_totals_available
+test_an_unrecognized_project_report_is_unavailable_not_empty
 test_usage_reads_a_read_only_store_through_node
 test_history_streams_and_isolates_bad_records
 test_installer_writes_hardened_user_service

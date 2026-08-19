@@ -1,6 +1,6 @@
 # Usage accounting
 
-Firstmate records how many tokens the fleet actually spent and which task spent them.
+Firstmate records how many tokens the fleet actually spent, which task spent them, and which project they were spent on.
 [`bin/fm-usage.mjs`](../bin/fm-usage.mjs) is the single owner of the store, the harness collectors, the attribution ladder, and the rollups; its `--help` owns exact flags and environment names.
 This page owns what is stored, how a task keeps its usage after cleanup, and what the numbers do and do not claim.
 
@@ -49,7 +49,7 @@ Each usage event carries a stable identity, its source provenance, and its raw c
 | derived | `total_tokens`, `task_id`, `project`, `attribution_method`, `attribution_confidence` |
 
 Raw fields carry the source's own numbers, adjusted only where a harness counts differently than the store does - both conversions are named below.
-Derived fields are recomputed from raw fields and the durable task records on every ingest, so a corrected task record fixes history without re-reading a transcript.
+Derived fields are recomputed from raw fields, the durable task records, and the project registry on every ingest, so a corrected task record or a newly registered project fixes history without re-reading a transcript.
 
 The token columns are disjoint by contract: `input_tokens` counts input that was **not** served from a cache, `cache_read_tokens` and `cache_write_tokens` count the cached parts, and `total_tokens` is their sum plus output.
 Harnesses disagree about that, so each adapter names the convention its own source uses and converts once, rather than letting the shared arithmetic assume one of them:
@@ -84,8 +84,10 @@ Usage that loses its task at cleanup is worthless, so attribution is durable by 
 | --- | --- | --- |
 | `session_binding` | high | the session was observed in a live task's isolated worktree while that task held it, and the binding was recorded durably at that moment |
 | `worktree_window` | medium | the session's working directory is a task's recorded worktree or a path inside it, and the usage falls inside that task's own start and completion stamps |
-| `ambiguous` | none | more than one task claims that worktree for that moment, so no claim is made |
-| `unknown` | none | no task claims it at all |
+| `project_path` | low | the session's working directory resolves to a registered project through the checkout's git origin or a known clone layout, but no task claims it |
+| `firstmate_supervision` | low | the session runs anywhere in the firstmate home's own checkout with no task binding, and no project claimed it first; this is the fleet's own supervision spend, kept separate from crew work on the firstmate repo |
+| `ambiguous` | none | more than one task claims that worktree for that moment, so no task is named; the project is still credited when the directory resolves to one, because a work copy belongs to one project whatever task holds it |
+| `unknown` | none | no task claims it at all and the directory does not resolve to a registered project |
 
 **A time window alone never attributes anything.**
 Every claim starts from the task's own recorded worktree path, which the session must have run in or under; the task's own lifetime only bounds a claim that a path already supports.
@@ -98,8 +100,24 @@ Either way the claim on the worktree ends when the task's hold on it ended, so t
 Task ids are operator-supplied slugs and `data/<id>/` outlives cleanup, so a stored task record describes one *occupancy* of an id.
 Seeing an id live again while its record describes a finished occupancy starts that record over, which is why a re-dispatched slug gets its own window instead of inheriting the closed one.
 
+**Project path attribution resolves against the project registry, not against path-shaped strings.**
+`data/projects.md` is the single source of registered projects; a directory that merely looks like a project cannot create a phantom row, and a real project reached through an SSH alias or a treehouse pool copy is still credited when the checkout's origin or clone layout matches the registry.
+The origin index is built from the remotes of the clones the registry names - `projects/<name>`, plus the home itself for the project whose clone IS this home - because a work copy's origin is a copy of its clone's origin and of nothing else.
+A `tracker=` declaration is only a supplementary hint here and is overridden by any real clone origin: [configuration.md](configuration.md) owns that token and states that the tracker is never implied by a git remote, so a project mirrored on one host and tracked on another, or declaring `tracker=none`, still resolves.
+Only paths built from a registered project name are read, and no project is discovered by scanning: the one directory listing taken is the no-mistakes `repos/` index named below, and an entry there counts only when its own origin already matches a registered project.
+The `project` column is normalized to the registered project name for every attribution method, so `report --by project` groups crew work and recovered work-copy spend under the same project name.
+The store, the registry and the projects root are all resolved through the same `FM_DATA_OVERRIDE` and `FM_PROJECTS_OVERRIDE` the rest of firstmate honors, so a home running under an override reads the registry that belongs to the store it is writing.
+A no-mistakes validation worktree carries a repo hash rather than a project name, so its project comes from the matching `repos/<hash>.git` clone under the no-mistakes root - `FM_USAGE_NO_MISTAKES_ROOT`, then `NM_HOME`, then `~/.no-mistakes` - and a relocated root is followed rather than dropping that spend into `(unknown)`.
+
+Firstmate's own supervision spend is real and currently the single largest unattributed consumer in many fleets.
+It runs with the same working directory as crew work on the firstmate repo, so the distinguishing signal is the presence of a task binding, not the path.
+Sessions anywhere in the firstmate home's own checkout with no task binding are credited to `(firstmate supervision)`, separate from the `firstmate` project row, because "supervision" is the fleet operating itself rather than a code change.
+A work copy under the home has its own checkout or a registry-verified path, and is resolved to its project before supervision is ever considered, so nesting a project inside the home never turns that project's spend into supervision.
+
 Unattributed usage is preserved with explicit unknown fields and reported in every projection, including firstmate's own sessions, which belong to no task.
 `bin/fm-usage.mjs attribution` reports the method and confidence breakdown plus the percentage of events and tokens matched.
+Its `project_coverage` block reports the same two figures for the project column, which is a separate question: an event can know its project and not its task, so `events_with_project` / `events_without_project` / `percent_events_with_project` and the matching `tokens_with_project` / `tokens_without_project` / `percent_tokens_with_project` measure how much spend the per-project view can account for, while the top-level `percent_events_attributed` measures how much is tied to a task.
+A percentage is `null` rather than zero when there is nothing to divide, because no events is not the same claim as no coverage.
 
 ### Surviving teardown
 

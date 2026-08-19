@@ -1,6 +1,6 @@
 # Fleet dashboard
 
-The fleet dashboard is a mobile-first, read-only view of the fleet over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract: five destinations behind a hash router - Needs you, Fleet, Backlog, History, Knowledge - plus a per-task detail page, with exactly one view rendered at a time.
+The fleet dashboard is a mobile-first, read-only view of the fleet over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract: six destinations behind a hash router - Needs you, Fleet, Backlog, History, Usage, Knowledge - plus a per-task detail page, with exactly one view rendered at a time.
 It never dispatches, steers, merges, tears down, or writes fleet state: its one write is the agent-event store it owns outside the operational home ([dashboard events](dashboard-events.md)).
 Stopping the dashboard has no effect on Firstmate supervision.
 
@@ -63,7 +63,7 @@ Clearing a filter is the one thing that replaces a value under the reader's hand
 
 ## Navigation and reading it on a phone
 
-The five destinations live behind a hash router (`#/needs`, `#/fleet`, `#/backlog`, `#/history`, `#/knowledge`, plus `#/task/<id>`), and [`assets/dashboard/router.js`](../assets/dashboard/router.js) owns the routing contract: a hash resolves to exactly one view, that view is the only one in the DOM, and an unknown or stale hash lands on Needs you rather than a blank page.
+The six destinations live behind a hash router (`#/needs`, `#/fleet`, `#/backlog`, `#/history`, `#/usage`, `#/knowledge`, plus `#/task/<id>`), and [`assets/dashboard/router.js`](../assets/dashboard/router.js) owns the routing contract: a hash resolves to exactly one view, that view is the only one in the DOM, and an unknown or stale hash lands on Needs you rather than a blank page.
 Navigation exists at every width: a left rail from 900 CSS px up (collapsing to icons below 1200), and a sticky bottom tab bar below 900, both carrying the Needs-you count badge.
 The layout is fluid across the whole width range rather than correct at a few chosen sizes, and 320 CSS px is a supported width.
 
@@ -146,6 +146,29 @@ The store reader still asks for no scratch path at all, so it keeps reading outs
 A task the retained read does not carry yet says exactly that, so a just-archived record is never reported as having cost nothing.
 [usage-accounting.md](usage-accounting.md) owns the store itself, including the read-only open that lets the hardened user service read it without write access to `data/`.
 Semantic search over captured report content belongs to the separate [Knowledge](#knowledge) page; history is fully usable without it.
+
+## Usage
+
+Usage shows how many tokens each project consumed, including the share that could not be attributed to any project.
+It is sourced from the same `data/usage.db` store as History, [`assets/dashboard/usage.js`](../assets/dashboard/usage.js) is its single executable copy, and `tests/fm-dashboard-usage.test.sh` pins the policy stated here.
+
+The server reads both `report --by task` and `report --by project` on the history poll, so the page receives a project rollup it can display without launching an additional collector.
+A project row is shown when the store has attributed tokens to that project, and the unattributed share is rendered as its own row so the percentages stay honest.
+Removing the unknown row would silently drop most spend in many fleets, so it is never omitted.
+
+Rows rank by work tokens - input plus output - rather than by the raw total, and each row's percentage is its share of the fleet's work tokens.
+Cache reads are real spend but replayed context rather than new work, so a row that is almost entirely cache would otherwise sit at the top of the page and read as the fleet's largest consumer.
+Every row still carries its total tokens beside its events and sessions, so cache replay stays visible without being read as work done, and the page heads with the number of projects worked on, the events behind the figures, and both token totals.
+
+Firstmate's own supervision spend is shown separately from the `firstmate` project row, because the same working directory is legitimately used for crew work on the firstmate repo.
+The distinguishing signal is the presence of a task binding, and the `(firstmate supervision)` row means the fleet is operating itself rather than shipping a code change.
+
+The same failed-or-missing-read rule from History applies here: a read that did not land renders as `unavailable` with its reason, never as a zero - and the three ways a page can end up with no rows are told apart rather than collapsed into one alarm.
+A read that missed on a home that *does* collect usage is the one an operator can act on, so it is the only one that draws a red notice, saying that the collector and its store are both present and that the dashboard keeps retrying.
+A collector whose output this dashboard does not recognize, and a history read that failed outright, render as `unavailable` with their reason.
+A home with no usage store, or a dashboard with usage reads switched off, says so calmly instead: nothing is failing and nothing is being retried, so there is no notice at all.
+When a read that missed is preceded by one that landed, the last good rollup is retained and labelled stale.
+The two rollups carry their own read state and retain separately, so a project read that missed leaves History's per-task totals fresh, and a task read that missed leaves this page's project rows fresh.
 
 ## Agent activity events
 

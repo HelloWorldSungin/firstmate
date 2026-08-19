@@ -218,6 +218,11 @@ button { font: inherit; color: inherit; background: none; border: none; padding:
 .rage.age-unknown { color: var(--muted); }
 .hdur { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 36px; text-align: right; }
 .hcost { font-family: var(--mono); font-size: 11px; color: var(--text2); min-width: 52px; text-align: right; }
+/* Usage rows are readings, not destinations: no pointer, no hover lift. */
+.rrow-flat { cursor: default; }
+.rrow-flat:hover { background: transparent; }
+.rwork { font-family: var(--mono); font-size: 12px; font-weight: 620; color: var(--text); min-width: 64px; text-align: right; }
+.rshare { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 52px; text-align: right; }
 .pager { display: flex; align-items: center; gap: 10px; padding: 14px 2px; max-width: 980px; }
 .pginfo { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-right: auto; }
 .pgbtn { min-height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--text2); font-size: 12.5px; font-weight: 560; display: inline-flex; align-items: center; }

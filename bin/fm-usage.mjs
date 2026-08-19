@@ -71,6 +71,7 @@ const RATES_SCHEMA = "fm-usage-rates.v1";
 // task with many resumed sessions cannot grow an unbounded durable record.
 const MAX_TASK_SESSIONS = 64;
 const MAX_BURN_BUCKETS = 168;
+const SUPERVISION_PROJECT = "(firstmate supervision)";
 
 const USAGE = `usage: fm-usage.mjs ingest [--home <dir>] [--db <path>]
                           [--claude-root <dir>] [--codex-root <dir>]
@@ -99,7 +100,364 @@ Environment:
                            honoring CODEX_HOME)
   FM_USAGE_RATES           cost-rate file (default: <home>/config/usage-rates.json)
   FM_USAGE_NOW             ISO-8601 UTC stamp used instead of the wall clock
+  FM_USAGE_NO_MISTAKES_ROOT
+                           no-mistakes root whose repos/<hash>.git clones name the
+                           project a validation worktree belongs to
+                           (default: NM_HOME, then ~/.no-mistakes)
 `;
+
+// ---------------------------------------------------------------------------
+// Project registry and path-based attribution
+// ---------------------------------------------------------------------------
+//
+// A session may run in a task worktree that is no longer held by a live task
+// and was never bound durably. When the working directory is still a git
+// checkout whose origin matches a registered project, the event can be
+// credited to that project without inventing a task identity. The project
+// registry is the captain's data/projects.md; the match is against the
+// checkout's actual remote URL, not against path-shaped strings, so a
+// directory that merely looks like a project cannot create a phantom row.
+//
+// The origin index is keyed on the remotes of the clones the registry already
+// names - projects/<name>, plus the home itself for the project whose clone IS
+// this home - because that is the only value a work copy's origin can actually
+// equal. docs/configuration.md owns `tracker=` and states outright that "the
+// tracker is never implied by a git remote": a project may be mirrored on one
+// host while its issues are tracked on another, and `tracker=none` is a valid
+// declaration for a project with a perfectly ordinary remote. Reading the
+// tracker as if it were the remote silently dropped every such project's spend
+// into `(unknown)`, so it survives here only as a supplementary hint that a
+// real clone's origin overrides. No directory is searched for repositories:
+// every path consulted is derived from a name the registry already carries.
+
+function normalizeTrackerUrl(value) {
+  const text = cleanToken(value, 240);
+  if (!text) return null;
+  const colon = text.indexOf(":");
+  if (colon <= 0) return null;
+  return text.slice(colon + 1);
+}
+
+// The declaration rides inside the delivery-posture annotation, so it is read
+// from there rather than from anywhere on the line: a description that happens
+// to mention a tracker URL is prose, not a declaration.
+function parseTrackerAnnotation(line) {
+  const annotation = /^- \S+\s+\[([^\]]*)\]/.exec(line);
+  if (!annotation) return null;
+  const tracker = /(?:^|\s)tracker=(\S+)/.exec(annotation[1]);
+  if (!tracker) return null;
+  const normalized = normalizeTrackerUrl(tracker[1]);
+  return normalized && normalized !== "none" ? normalized : null;
+}
+
+function readOriginUrl(checkout) {
+  return normalizeGitUrl(parseGitRemote(readGitConfig(checkout), "origin"));
+}
+
+function loadProjectRegistry({ data, projects, home }) {
+  const file = path.join(data, "projects.md");
+  const byUrl = new Map();
+  const names = new Set();
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return { byUrl, names };
+  }
+  const homeRoot = path.resolve(home);
+  const clones = new Map();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("- ")) continue;
+    const nameMatch = /^- (\S+)/.exec(line);
+    if (!nameMatch) continue;
+    const name = cleanToken(nameMatch[1], 120);
+    if (!name) continue;
+    names.add(name);
+    const tracker = parseTrackerAnnotation(line);
+    if (tracker && !byUrl.has(tracker)) byUrl.set(tracker, name);
+    // The registry names the clone; the clone names the remote. Only paths
+    // built from a registered name are consulted, and the first registered
+    // project to claim an origin keeps it.
+    for (const checkout of [path.join(projects, name), path.basename(homeRoot) === name ? homeRoot : null]) {
+      if (!checkout) continue;
+      const origin = readOriginUrl(checkout);
+      if (origin && !clones.has(origin)) clones.set(origin, name);
+    }
+  }
+  for (const [origin, name] of clones) byUrl.set(origin, name);
+  return { byUrl, names };
+}
+
+function findGitRoot(cwd) {
+  let current = path.resolve(cwd);
+  while (true) {
+    const gitPath = path.join(current, ".git");
+    try {
+      const info = fs.statSync(gitPath);
+      if (info.isDirectory() || info.isFile()) return current;
+    } catch {}
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function readGitConfig(gitRoot) {
+  const gitDotPath = path.join(gitRoot, ".git");
+  let configPath = path.join(gitDotPath, "config");
+  try {
+    const info = fs.statSync(gitDotPath);
+    if (info.isFile()) {
+      const gitDot = fs.readFileSync(gitDotPath, "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/m.exec(gitDot);
+      if (match) {
+        const gitDir = path.resolve(gitRoot, match[1].trim());
+        // A submodule keeps its config inside the gitdir itself. A worktree's
+        // gitdir is <common>/.git/worktrees/<name>, so its config lives two
+        // levels above. Try the gitdir first, then the common git dir.
+        try {
+          return fs.readFileSync(path.resolve(gitDir, "config"), "utf8");
+        } catch {
+          return fs.readFileSync(path.resolve(gitDir, "..", "..", "config"), "utf8");
+        }
+      }
+    }
+  } catch {
+    // .git is missing, unreadable, or a directory; configPath is already correct.
+  }
+  try {
+    return fs.readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function parseGitRemote(configText, remoteName = "origin") {
+  // A checkout whose config cannot be read carries no remote. That is an
+  // ordinary state for a stale work copy - a pruned gitdir, a .git file whose
+  // target is gone - and attribution runs over every collected cwd, so it must
+  // resolve to "no remote" rather than throw the whole rebuild away.
+  if (typeof configText !== "string") return null;
+  const lines = configText.split("\n");
+  let inSection = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const section = /^\[remote "([^"]+)"\]\s*$/.exec(line);
+    if (section) {
+      inSection = section[1] === remoteName;
+      continue;
+    }
+    if (inSection) {
+      const url = /^url\s*=\s*(.+?)\s*$/.exec(line);
+      if (url) return url[1].trim();
+    }
+  }
+  return null;
+}
+
+function normalizeGitUrl(url) {
+  if (!url) return null;
+  let text = url.trim().replace(/\.git$/, "");
+  if (text.startsWith("https://") || text.startsWith("http://")) {
+    const withoutScheme = text.slice(text.indexOf("://") + 3);
+    const slash = withoutScheme.indexOf("/");
+    if (slash < 0) return null;
+    const host = withoutScheme.slice(0, slash).replace(/:\d+$/, "");
+    return `${host}${withoutScheme.slice(slash)}`;
+  }
+  if (text.startsWith("ssh://")) {
+    let rest = text.slice(6);
+    const at = rest.indexOf("@");
+    const firstSlash = rest.indexOf("/");
+    if (at >= 0 && (firstSlash < 0 || at < firstSlash)) rest = rest.slice(at + 1);
+    const slash = rest.indexOf("/");
+    if (slash < 0) return null;
+    const host = rest.slice(0, slash).replace(/:\d+$/, "");
+    return `${host}${rest.slice(slash)}`;
+  }
+  // Any scheme this reader does not know is left unresolved rather than parsed
+  // by guess, so the scp-like branch below only ever sees a schemeless value.
+  if (text.includes("://")) return null;
+  // The scp-like form git accepts: [user@]host:path, told apart by a colon
+  // that comes before any slash. The user component is optional - a remote
+  // written without it names the same repository as one written with it, and
+  // reading only the literal "git@" dropped the userless form entirely.
+  const colon = text.indexOf(":");
+  const slash = text.indexOf("/");
+  if (colon > 0 && (slash < 0 || colon < slash)) {
+    const at = text.lastIndexOf("@", colon);
+    const rest = at >= 0 ? text.slice(at + 1) : text;
+    const separator = rest.indexOf(":");
+    const host = rest.slice(0, separator);
+    const repoPath = rest.slice(separator + 1);
+    if (!host || !repoPath) return null;
+    return `${host}/${repoPath}`;
+  }
+  return null;
+}
+
+// Task metadata records a project as an absolute clone path. The stored
+// project column is a project NAME, so a path that no registry lookup could
+// resolve still enters the store as its clone's own directory name: keeping
+// the path would key a report row - and a dashboard row title - by a host
+// filesystem path, and would split one project into two rows the moment any
+// other event for it resolved through the registry.
+function projectName(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/\/+$/, "");
+  if (!trimmed) return null;
+  const cut = trimmed.lastIndexOf("/");
+  return (cut === -1 ? trimmed : trimmed.slice(cut + 1)) || null;
+}
+
+function resolveProjectByPathName(registry, projectsRoot, cwd) {
+  const resolved = path.resolve(cwd);
+  // <projects>/<name>[/<subpath>]
+  const projectsPrefix = projectsRoot + path.sep;
+  if (resolved.startsWith(projectsPrefix)) {
+    const relative = resolved.slice(projectsPrefix.length);
+    const name = relative.split(path.sep)[0];
+    if (name && registry.names.has(name)) return name;
+  }
+  // Treehouse pool copies follow .treehouse/<pool>-<hash>/<n>/<name>[/<subpath>].
+  const treehouseMatch = /\/\.treehouse\/[^/]+-\w+\/\d+\/([^/]+)/.exec(resolved);
+  if (treehouseMatch) {
+    const name = treehouseMatch[1];
+    if (registry.names.has(name)) return name;
+  }
+  return null;
+}
+
+// NM_HOME is no-mistakes' own name for this root, so a fleet that relocated it
+// is followed rather than silently losing every validation worktree. Both the
+// hash index and the path that consults it are derived from this one answer:
+// a literal ".no-mistakes" in either place would build an index no relocated
+// working directory could ever reach.
+function noMistakesRoot() {
+  const declared = process.env.FM_USAGE_NO_MISTAKES_ROOT || process.env.NM_HOME;
+  return declared ? path.resolve(declared) : path.join(os.homedir(), ".no-mistakes");
+}
+
+function resolveProjectByRepoHash(repoHashes, cwd) {
+  const prefix = path.join(repoHashes.root, "worktrees") + path.sep;
+  const resolved = path.resolve(cwd);
+  if (!resolved.startsWith(prefix)) return null;
+  const hash = resolved.slice(prefix.length).split(path.sep)[0];
+  return (hash && repoHashes.byHash.get(hash)) || null;
+}
+
+function buildRepoHashMap(registry) {
+  const root = noMistakesRoot();
+  const byHash = new Map();
+  const reposDir = path.join(root, "repos");
+  let entries = [];
+  try {
+    entries = fs.readdirSync(reposDir, { withFileTypes: true });
+  } catch {
+    return { root, byHash };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".git")) continue;
+    const hash = entry.name.slice(0, -".git".length);
+    let config;
+    try {
+      config = fs.readFileSync(path.join(reposDir, entry.name, "config"), "utf8");
+    } catch {
+      continue;
+    }
+    const remote = parseGitRemote(config, "origin");
+    const normalized = normalizeGitUrl(remote);
+    if (!normalized || !registry.byUrl.has(normalized)) continue;
+    byHash.set(hash, registry.byUrl.get(normalized));
+  }
+  return { root, byHash };
+}
+
+function resolveProjectByOrigin(registry, gitRoot) {
+  const config = readGitConfig(gitRoot);
+  const remote = parseGitRemote(config, "origin");
+  const normalized = normalizeGitUrl(remote);
+  if (normalized && registry.byUrl.has(normalized)) {
+    return { project: registry.byUrl.get(normalized), method: "project_path", confidence: "low" };
+  }
+  return null;
+}
+
+function resolveProjectAt(registry, roots, repoHashes, cwd, { allowSupervision = false } = {}) {
+  if (!cwd) return null;
+  const homeRoot = roots.home;
+  const resolved = path.resolve(cwd);
+  const gitRoot = findGitRoot(resolved);
+  // The firstmate home is itself a checkout of the firstmate repo, so its
+  // origin answers "firstmate" for every directory inside it - the home root,
+  // bin/, data/ and the rest alike. That origin is the one signal that cannot
+  // separate supervision from crew work, so it is asked last. A project work
+  // copy under the home has its own git root and is resolved here, before
+  // supervision is ever considered.
+  const isHomeCheckout = gitRoot !== null && gitRoot === homeRoot;
+  if (gitRoot && !isHomeCheckout) {
+    const origin = resolveProjectByOrigin(registry, gitRoot);
+    if (origin) return origin;
+  }
+  // Fall back to path-derived candidates verified against the registry. A
+  // directory name that matches no registered project stays unknown rather
+  // than creating a phantom row.
+  const pathProject = resolveProjectByPathName(registry, roots.projects, resolved);
+  if (pathProject) {
+    return { project: pathProject, method: "project_path", confidence: "low" };
+  }
+  const hashProject = resolveProjectByRepoHash(repoHashes, resolved);
+  if (hashProject) {
+    return { project: hashProject, method: "project_path", confidence: "low" };
+  }
+  // Anywhere in the firstmate home's own checkout, with no task binding and no
+  // project claim, is the fleet operating itself. The binding is the
+  // distinguishing signal, so a bound session skips this and resolves through
+  // the home's origin below.
+  if (allowSupervision && (isHomeCheckout || resolved === homeRoot)) {
+    return { project: SUPERVISION_PROJECT, method: "firstmate_supervision", confidence: "low" };
+  }
+  if (isHomeCheckout) {
+    const origin = resolveProjectByOrigin(registry, gitRoot);
+    if (origin) return origin;
+  }
+  return null;
+}
+
+function buildPathResolver({ home, projects }, registry) {
+  const cache = new Map();
+  const roots = { home: path.resolve(home), projects: path.resolve(projects) };
+  const repoHashes = buildRepoHashMap(registry);
+  return {
+    // For events with no task identity: resolve the directory to a project
+    // name, or to the supervision category when the directory IS the firstmate
+    // home and no task claims the session.
+    fromPath(cwd) {
+      if (!cwd) return null;
+      const key = `path:${cwd}`;
+      if (cache.has(key)) return cache.get(key);
+      const result = resolveProjectAt(registry, roots, repoHashes, cwd, { allowSupervision: true });
+      cache.set(key, result);
+      return result;
+    },
+    // For events already attributed to a task: normalize the worktree path to
+    // the registered project name. The supervision category never applies here
+    // because a task binding is the distinguishing signal. Git remote is tried
+    // first; when a clone uses an SSH alias that does not match the registry's
+    // canonical host, the directory name under projects/ or the treehouse pool
+    // is accepted only if it names a real registered project.
+    fromWorktree(worktree) {
+      if (!worktree) return null;
+      const key = `worktree:${worktree}`;
+      if (cache.has(key)) return cache.get(key);
+      const result = resolveProjectAt(registry, roots, repoHashes, worktree, { allowSupervision: false });
+      const project = result ? result.project : null;
+      cache.set(key, project);
+      return project;
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -889,7 +1247,7 @@ function matchTasksByWorktree(db, cwd, atIso, fromIso = null, { liveOnly = false
 
 // Attribution is derived, so it is recomputed from scratch on every ingest and
 // never drifts from the bindings and task records it is built on.
-function attributeEvents(db) {
+function attributeEvents(db, roots) {
   const update = db.prepare(`UPDATE usage_event
     SET task_id = ?, project = ?, attribution_method = ?, attribution_confidence = ?
     WHERE event_id = ?`);
@@ -900,6 +1258,8 @@ function attributeEvents(db) {
   const events = db
     .prepare("SELECT event_id, harness, session_id, cwd, occurred_at FROM usage_event")
     .all();
+  const registry = loadProjectRegistry(roots);
+  const resolvePath = buildPathResolver(roots, registry);
   db.exec("BEGIN");
   try {
     // The reset belongs inside the same transaction as the re-derivation. A
@@ -912,14 +1272,41 @@ function attributeEvents(db) {
     for (const event of events) {
       const binding = bindings.get(`${event.harness}\u001f${event.session_id}`);
       if (binding) {
-        update.run(binding.task_id, binding.project, "session_binding", "high", event.event_id);
+        // The binding's own project field is the task metadata's project,
+        // which is currently a clone path. Normalize it to the registered
+        // project name when the worktree resolves, but keep the task identity.
+        const project = resolvePath.fromWorktree(binding.worktree || event.cwd) || projectName(binding.project);
+        update.run(binding.task_id, project, "session_binding", "high", event.event_id);
         continue;
       }
       const candidates = matchTasksByWorktree(db, event.cwd, event.occurred_at);
       if (candidates.length === 1) {
-        update.run(candidates[0].task_id, candidates[0].project, "worktree_window", "medium", event.event_id);
+        const task = candidates[0];
+        const project = resolvePath.fromWorktree(task.worktree) || projectName(task.project);
+        update.run(task.task_id, project, "worktree_window", "medium", event.event_id);
+        // A task claims this event. The path ladder below answers only for
+        // events no task claims, and must not run on to clear the task id
+        // that was just written.
+        continue;
       } else if (candidates.length > 1) {
-        update.run(null, null, "ambiguous", "none", event.event_id);
+        // Two tasks claiming one worktree makes the TASK ambiguous, not the
+        // project: a work copy belongs to one project whatever task is holding
+        // it. The project is filled from the same resolver every other branch
+        // uses, and from the candidates' own records only when they agree,
+        // while task_id stays null because no task can be named.
+        const declared = new Set(candidates.map((task) => projectName(task.project)).filter(Boolean));
+        const project = resolvePath.fromWorktree(event.cwd) || (declared.size === 1 ? [...declared][0] : null);
+        update.run(null, project, "ambiguous", "none", event.event_id);
+        continue;
+      }
+      // No binding and no single task claims this worktree. If the directory
+      // itself resolves to a registered project through its git origin, credit
+      // the event to that project while leaving task_id null. A path that
+      // merely looks like a project cannot create a phantom row because the
+      // match is against the registry, not the path string.
+      const resolved = resolvePath.fromPath(event.cwd);
+      if (resolved) {
+        update.run(null, resolved.project, resolved.method, resolved.confidence, event.event_id);
       }
     }
     db.exec("COMMIT");
@@ -1111,7 +1498,9 @@ function attributionReport(db) {
   const totals = db
     .prepare(`SELECT COUNT(*) AS events, SUM(total_tokens) AS tokens,
         SUM(CASE WHEN task_id IS NOT NULL THEN 1 ELSE 0 END) AS attributed_events,
-        SUM(CASE WHEN task_id IS NOT NULL THEN total_tokens ELSE 0 END) AS attributed_tokens
+        SUM(CASE WHEN task_id IS NOT NULL THEN total_tokens ELSE 0 END) AS attributed_tokens,
+        SUM(CASE WHEN project IS NOT NULL THEN 1 ELSE 0 END) AS project_events,
+        SUM(CASE WHEN project IS NOT NULL THEN total_tokens ELSE 0 END) AS project_tokens
       FROM usage_event`)
     .get();
   const byMethod = db
@@ -1123,6 +1512,8 @@ function attributionReport(db) {
   const attributed = totals.attributed_events ?? 0;
   const tokens = totals.tokens ?? 0;
   const attributedTokens = totals.attributed_tokens ?? 0;
+  const projectEvents = totals.project_events ?? 0;
+  const projectTokens = totals.project_tokens ?? 0;
   const percent = (part, whole) => (whole > 0 ? Math.round((part / whole) * 10000) / 100 : null);
   return {
     events,
@@ -1133,6 +1524,16 @@ function attributionReport(db) {
     attributed_tokens: attributedTokens,
     unattributed_tokens: tokens - attributedTokens,
     percent_tokens_attributed: percent(attributedTokens, tokens),
+    // Project coverage is separate from task attribution: slice 2 fills project
+    // without fabricating task_id, so a row may know its project and not its task.
+    project_coverage: {
+      events_with_project: projectEvents,
+      events_without_project: events - projectEvents,
+      percent_events_with_project: percent(projectEvents, events),
+      tokens_with_project: projectTokens,
+      tokens_without_project: tokens - projectTokens,
+      percent_tokens_with_project: percent(projectTokens, tokens),
+    },
     by_method: byMethod.map((row) => ({
       method: row.method,
       confidence: row.confidence,
@@ -1211,10 +1612,12 @@ function resolvePaths(options) {
   // reaches exactly the records it means to.
   const state = path.resolve(process.env.FM_STATE_OVERRIDE || path.join(home, "state"));
   const data = path.resolve(process.env.FM_DATA_OVERRIDE || path.join(home, "data"));
+  const projects = path.resolve(process.env.FM_PROJECTS_OVERRIDE || path.join(home, "projects"));
   return {
     home,
     state,
     data,
+    projects,
     db: path.resolve(options.db || process.env.FM_USAGE_DB || path.join(data, "usage.db")),
     claude: path.resolve(
       options.claude_root || process.env.FM_USAGE_CLAUDE_ROOT || path.join(claudeConfig, "projects"),
@@ -1277,7 +1680,7 @@ async function main() {
           return fallback;
         }
       };
-      stage("attribution", () => attributeEvents(db), null);
+      stage("attribution", () => attributeEvents(db, paths), null);
       const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
         rate_version: null,
         currency: null,

@@ -114,6 +114,55 @@ write_meta_at() {
   touch -t "$mtime" "$file"
 }
 
+# write_registry <home> <name> <tracker>...
+write_registry() {
+  local home=$1
+  shift
+  mkdir -p "$home/data"
+  : > "$home/data/projects.md"
+  for entry in "$@"; do
+    printf -- '- %s\n' "$entry" >> "$home/data/projects.md"
+  done
+}
+
+# git_init_with_remote <dir> <remote-url>
+git_init_with_remote() {
+  local dir=$1 remote=$2
+  mkdir -p "$dir"
+  (
+    cd "$dir" || return 1
+    git init -q
+    git remote add origin "$remote"
+  )
+}
+
+# git_worktree_at <repo> <worktree-path>: add a real git worktree so the
+# collector can read its origin through a .git file, the shape treehouse uses.
+git_worktree_at() {
+  local repo=$1 worktree=$2
+  # git worktree add needs a HEAD to check out; create one if the fixture repo
+  # has no commits yet.
+  if ! git -C "$repo" rev-parse --quiet HEAD >/dev/null 2>&1; then
+    git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+      commit --allow-empty -qm "initial"
+  fi
+  git -C "$repo" worktree add --quiet --detach "$worktree"
+}
+
+# create_no_mistakes_bare_repo <case-root> <hash> <remote-url>: create a bare
+# repo at the no-mistakes repo hash path, matching how validation clones are
+# stored. The worktree directory itself is created separately and may be empty.
+create_no_mistakes_bare_repo() {
+  local case_root=$1 hash=$2 remote=$3
+  local bare="$case_root/.no-mistakes/repos/$hash.git"
+  mkdir -p "$bare"
+  (
+    cd "$bare" || return 1
+    git init --bare -q
+    git remote add origin "$remote"
+  )
+}
+
 # --- Claude adapter ---------------------------------------------------------
 
 test_claude_adapter() {
@@ -891,5 +940,659 @@ test_rollups_reconcile
 test_cost_is_an_optional_versioned_estimate
 test_store_carries_no_transcript_content
 test_report_reads_a_read_only_data_directory
+# --- Project path attribution ------------------------------------------------
+#
+# These cases pin the new behavior: unattributed usage in a registered
+# project's clone is credited to the project without inventing a task id, a
+# directory that merely looks like a project is not trusted, and the firstmate
+# home itself is split between crew work (a task binding) and supervision
+# (no binding).
+
+test_a_work_copy_path_resolves_to_its_registered_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case project-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "project-path ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] || fail "project path should attribute tokens to demo: $row"
+  local attribution
+  attribution=$(usage_run "$case_root" attribution | jq -c '.by_method[] | select(.method == "project_path")')
+  [ "$(jq -r '.confidence' <<<"$attribution")" = low ] || fail "project path should report low confidence: $attribution"
+  pass "a work copy path resolves to its registered project"
+}
+
+test_a_path_that_merely_resembles_a_project_does_not_invent_one() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case fake-project-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  # A directory named like a project but not registered and with no matching origin.
+  git_init_with_remote "$case_root/home/projects/fake" "https://github.com/example/not-registered.git"
+  local dir="$case_root/claude/-fake"
+  mkdir -p "$dir"
+  claude_line "$dir/session-fake.jsonl" session-fake "$case_root/home/projects/fake" \
+    2026-08-01T10:00:00Z msg_fake 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "fake-project ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "fake")')
+  [ -z "$row" ] || fail "a path resembling a project invented a row: $row"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(unknown)")')
+  [ -n "$row" ] || fail "usage in an unrecognized clone should stay unknown"
+  pass "a path that merely resembles a project does not invent one"
+}
+
+test_a_filled_project_does_not_fabricate_a_task_id() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case no-fabricated-task)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "no-fabricated-task ingest failed"
+  local event
+  event=$(usage_run "$case_root" sessions | jq -c '.sessions[] | select(.session_id == "session-demo")')
+  [ "$(jq -r '.task_id' <<<"$event")" = null ] || fail "path-based project attribution must not fabricate a task id: $event"
+  pass "a filled project does not fabricate a task_id"
+}
+
+test_firstmate_supervision_spend_is_split_from_the_firstmate_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case supervision-split)
+  # The operational home itself is the firstmate project checkout.
+  write_registry "$case_root/home" "firstmate [no-mistakes tracker=github:github.com/example/firstmate] - firstmate itself"
+  git_init_with_remote "$case_root/home" "https://github.com/example/firstmate.git"
+  local dir="$case_root/claude/-home"
+  mkdir -p "$dir"
+  # A supervision session in the firstmate home with no task binding, before any
+  # crew task holds the worktree, so the only distinguishing signal is the binding.
+  claude_line "$dir/supervision.jsonl" session-supervision "$case_root/home" \
+    2026-08-01T08:00:00Z msg_supervision 1 2 3 4
+  # A crew session in the same cwd but bound to a task.
+  write_meta_at "$case_root/home/state/crew.meta" 202608010900.00 \
+    "window=fm:crew" "worktree=$case_root/home" "project=firstmate" "harness=claude" "kind=ship"
+  claude_line "$dir/crew.jsonl" session-crew "$case_root/home" \
+    2026-08-01T10:01:00Z msg_crew 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "supervision-split ingest failed"
+  local supervision
+  supervision=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(firstmate supervision)")')
+  [ "$(jq -r '.total_tokens' <<<"$supervision")" = 10 ] || fail "supervision spend should be its own row: $supervision"
+  local firstmate
+  firstmate=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "firstmate")')
+  [ "$(jq -r '.total_tokens' <<<"$firstmate")" = 100 ] || fail "crew work should land in the firstmate project row: $firstmate"
+  local method
+  method=$(usage_run "$case_root" attribution | jq -r '.by_method[] | select(.method == "firstmate_supervision") | .events')
+  [ "$method" = 1 ] || fail "supervision should use its own attribution method"
+  pass "firstmate supervision spend is split from the firstmate project"
+}
+
+test_rerunning_ingest_repairs_historical_project_attribution() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case repair-history)
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_demo 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "first ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ -z "$row" ] || fail "before the registry exists, demo should not appear: $row"
+
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  usage_run "$case_root" ingest >/dev/null || fail "second ingest failed"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] || fail "re-running ingest should repair historical attribution: $row"
+  pass "re-running ingest repairs history rather than only tagging new events"
+}
+
+# Treehouse pool copies are git worktrees whose .git is a file pointing back at
+# the registered project clone. The collector must read origin through that file
+# rather than expecting a .git directory.
+test_a_treehouse_worktree_path_resolves_to_its_registered_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_worktree_at "$case_root/home/projects/demo" "$wt"
+  local dir="$case_root/claude/-treehouse-demo"
+  mkdir -p "$dir"
+  claude_line "$dir/session-treehouse.jsonl" session-treehouse "$wt" \
+    2026-08-01T10:00:00Z msg_treehouse 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] \
+    || fail "treehouse worktree path should attribute to demo: $row"
+  pass "a treehouse worktree path resolves to its registered project"
+}
+
+# A session may run in a subdirectory of the worktree. The git root walk must
+# find the enclosing project, not stop at the nested directory.
+test_a_treehouse_subdir_resolves_to_its_enclosing_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-subdir)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_worktree_at "$case_root/home/projects/demo" "$wt"
+  local subdir="$wt/prototypes/research-graph"
+  mkdir -p "$subdir"
+  local dir="$case_root/claude/-treehouse-subdir"
+  mkdir -p "$dir"
+  claude_line "$dir/session-subdir.jsonl" session-subdir "$subdir" \
+    2026-08-01T10:00:00Z msg_subdir 5 5 5 5
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse subdir ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "nested worktree directory should attribute to enclosing project: $row"
+  pass "a treehouse subdirectory resolves to its enclosing project"
+}
+
+# Pool copies are deleted after teardown. The path itself still carries the
+# registered project name and must be verified against the registry, not trusted
+# blindly.
+test_a_deleted_treehouse_path_resolves_by_directory_name() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case deleted-treehouse)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local wt="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-deleted-treehouse"
+  mkdir -p "$dir"
+  claude_line "$dir/session-deleted.jsonl" session-deleted "$wt" \
+    2026-08-01T10:00:00Z msg_deleted 1 2 3 4
+  rm -rf "$wt"
+
+  usage_run "$case_root" ingest >/dev/null || fail "deleted treehouse ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] \
+    || fail "deleted treehouse path should resolve by directory name: $row"
+  pass "a deleted treehouse path resolves by directory name against the registry"
+}
+
+# no-mistakes validation worktrees carry a repo hash, not a project name, in the
+# path. The repo hash maps to a bare clone whose origin resolves through the
+# registry.
+test_a_no_mistakes_worktree_resolves_by_repo_hash() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case nm-repo-hash)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  create_no_mistakes_bare_repo "$case_root" "a1b2c3d4e5f6" "https://github.com/example/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/a1b2c3d4e5f6/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-nm-hash"
+  mkdir -p "$dir"
+  claude_line "$dir/session-nm.jsonl" session-nm "$wt" \
+    2026-08-01T10:00:00Z msg_nm 2 4 6 8
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "no-mistakes repo-hash ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "no-mistakes worktree should resolve by repo hash: $row"
+  pass "a no-mistakes worktree resolves by repo hash"
+}
+
+# A treehouse-style directory named after an unregistered project must not
+# create a phantom row just because the path looks right.
+test_a_treehouse_path_that_merely_resembles_a_project_does_not_invent_one() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case treehouse-fake)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local wt="$case_root/home/.treehouse/fake-pool-abc123/1/fake"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-treehouse-fake"
+  mkdir -p "$dir"
+  claude_line "$dir/session-treehouse-fake.jsonl" session-treehouse-fake "$wt" \
+    2026-08-01T10:00:00Z msg_th_fake 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "treehouse fake ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "fake")')
+  [ -z "$row" ] || fail "a treehouse path resembling a project invented a row: $row"
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(unknown)")')
+  [ -n "$row" ] || fail "unrecognized treehouse path should stay unknown"
+  pass "a treehouse path that merely resembles a project does not invent one"
+}
+
+# A task claim and a path claim can both fit the same event: a work copy inside
+# a registered project is exactly where a task runs. The task claim wins and
+# keeps its task id - the path ladder answers only for events no task claims.
+test_a_worktree_window_claim_keeps_its_task_when_the_path_resolves() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case window-over-path)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local worktree="$case_root/home/projects/demo"
+  git_init_with_remote "$worktree" "https://github.com/example/demo.git"
+  mkdir -p "$case_root/home/data/delta"
+  # An archived task: its runtime records are gone, so the session was never
+  # bound live and attribution has to fall back to the worktree window.
+  jq -n --arg worktree "$worktree" '{schema:"fm-outcome-manifest.v1",task_id:"delta",
+    home:"/home/fleet",title:null,project:"demo",kind:"ship",mode:"no-mistakes",yolo:"off",
+    harness:"claude",model:"claude-opus-5",effort:"high",
+    timestamps:{created:null,started:"2026-08-01T09:00:00Z",completed:"2026-08-01T10:30:00Z"},
+    timestamp_sources:{created:null,started:"meta_mtime",completed:"explicit"},
+    outcome:{state:"done",detail:null,source:"status_event",forced:false},
+    pr:{url:null,provider:null,host:null,path:null,number:null,head:null,
+        status:{state:"unknown",draft:null,review:"unknown",checks:"unknown",
+                mergeable:"unknown",head:null,observed_at:null,source:"absent"}},
+    report:{path:null,present:false},
+    attribution:{backend:"tmux",endpoint:{target:"fm:delta",task_id:null},
+                 worktree:$worktree,task_tmp:null,traceparent:null,secondmate_home:null,
+                 sessions:[]},
+    work_items:{schema:"fm-work-items.v1",references:[]},
+    gbrain:{status:"absent",receipt:null,observed_at:null,detail:null},
+    recorded_at:"2026-08-01T10:30:00Z"}' > "$case_root/home/data/delta/outcome.json"
+  local dir="$case_root/claude/-slot-window"
+  mkdir -p "$dir"
+  claude_line "$dir/window.jsonl" session-window "$worktree" 2026-08-01T10:00:00Z msg_w 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "window-over-path ingest failed"
+  local task_row
+  task_row=$(usage_run "$case_root" report --by task | jq -c '.rows[] | select(.key == "delta")')
+  [ "$(jq -r '.total_tokens' <<<"$task_row")" = 100 ]     || fail "path attribution overwrote the task that claimed this worktree: $task_row"
+  local method
+  method=$(usage_run "$case_root" attribution | jq -r '.by_method[] | select(.method == "worktree_window") | .events')
+  [ "$method" = 1 ] || fail "the worktree window claim was replaced by a path claim"
+  local project_row
+  project_row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$project_row")" = 100 ]     || fail "a task-claimed event should still be credited to its project: $project_row"
+  pass "a worktree window claim keeps its task id when the path also resolves"
+}
+
+# Supervision is the fleet operating itself, and it does that from the whole
+# home, not only from its root directory. Every directory in the home's own
+# checkout answers "firstmate" to a git origin lookup, so an unbound session in
+# one of them must not inflate the firstmate project row.
+test_supervision_covers_the_firstmate_home_subtree() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case supervision-subdir)
+  write_registry "$case_root/home" "firstmate [no-mistakes tracker=github:github.com/example/firstmate] - firstmate itself"
+  git_init_with_remote "$case_root/home" "https://github.com/example/firstmate.git"
+  mkdir -p "$case_root/home/data/decisions-review"
+  local dir="$case_root/claude/-home-data"
+  mkdir -p "$dir"
+  claude_line "$dir/nested.jsonl" session-nested "$case_root/home/data/decisions-review"     2026-08-01T08:00:00Z msg_nested 1 2 3 4
+  # A registered project checked out under the home keeps its own identity: a
+  # nested work copy is not supervision.
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  write_registry "$case_root/home" \
+    "firstmate [no-mistakes tracker=github:github.com/example/firstmate] - firstmate itself" \
+    "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local demo_dir="$case_root/claude/-home-projects-demo"
+  mkdir -p "$demo_dir"
+  claude_line "$demo_dir/demo.jsonl" session-demo "$case_root/home/projects/demo" \
+    2026-08-01T09:00:00Z msg_demo 5 5 5 5
+
+  usage_run "$case_root" ingest >/dev/null || fail "supervision-subdir ingest failed"
+  local supervision firstmate demo
+  supervision=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "(firstmate supervision)")')
+  [ "$(jq -r '.total_tokens' <<<"$supervision")" = 10 ] \
+    || fail "an unbound session inside the home should be supervision: $supervision"
+  firstmate=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "firstmate")')
+  [ -z "$firstmate" ] || fail "supervision spend inflated the firstmate project row: $firstmate"
+  demo=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$demo")" = 20 ] \
+    || fail "a project checked out under the home lost its own attribution: $demo"
+  pass "supervision covers the firstmate home subtree without swallowing nested projects"
+}
+
+# Work copies outlive the gitdir they point at. A .git file whose target has
+# been pruned reads back no config at all, and attribution is recomputed from
+# scratch over every collected directory, so one stale pointer must not take
+# the whole rebuild down with it.
+test_a_stale_git_pointer_does_not_break_attribution() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case stale-git-pointer)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local stale="$case_root/home/.treehouse/demo-pool-abc123/1/stale"
+  mkdir -p "$stale"
+  printf 'gitdir: %s\n' "$case_root/pruned/.git/worktrees/1" > "$stale/.git"
+  local dir="$case_root/claude/-stale"
+  mkdir -p "$dir"
+  claude_line "$dir/stale.jsonl" session-stale "$stale" 2026-08-01T10:00:00Z msg_stale 1 1 1 1
+  local good="$case_root/claude/-good"
+  mkdir -p "$good"
+  claude_line "$good/good.jsonl" session-good "$case_root/home/projects/demo" \
+    2026-08-01T10:05:00Z msg_good 10 20 30 40
+
+  local out
+  out=$(usage_run "$case_root" ingest) || fail "a stale .git pointer failed the ingest"
+  [ "$(jq -r '.failures | length' <<<"$out")" = 0 ] \
+    || fail "a stale .git pointer was recorded as an ingest failure: $out"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] \
+    || fail "one unreadable work copy left the healthy events unattributed: $row"
+  pass "a work copy whose git pointer is stale does not break attribution"
+}
+
+# The task metadata records a project as a clone path. A report row keyed by a
+# host path is not a project name, and it splits one project across two rows the
+# moment another event for it resolves through the registry.
+test_a_path_shaped_task_project_is_stored_as_a_name() {
+  local case_root
+  case_root=$(new_case path-shaped-project)
+  local worktree="$case_root/worktrees/slot-name"
+  mkdir -p "$worktree"
+  write_meta_at "$case_root/home/state/named.meta" 202608010900.00 \
+    "window=fm:named" "worktree=$worktree" "project=$case_root/clones/demo" "harness=claude" "kind=ship"
+  local dir="$case_root/claude/-slot-name"
+  mkdir -p "$dir"
+  claude_line "$dir/named.jsonl" session-named "$worktree" 2026-08-01T10:00:00Z msg_named 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "path-shaped-project ingest failed"
+  local rows
+  rows=$(usage_run "$case_root" report --by project)
+  [ "$(jq -r '.rows[] | select(.key == "demo") | .total_tokens' <<<"$rows")" = 10 ] \
+    || fail "a clone path should be stored as the project name: $rows"
+  [ "$(jq -r '[.rows[] | select(.key | startswith("/"))] | length' <<<"$rows")" = 0 ] \
+    || fail "a filesystem path was reported as a project key: $rows"
+  pass "a path-shaped task project is stored as a project name"
+}
+
+# Project coverage answers a different question from task attribution: an event
+# can know its project and not its task, so the report states both.
+test_the_attribution_report_states_project_coverage() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case project-coverage)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  local dir="$case_root/claude/-coverage-demo"
+  mkdir -p "$dir" "$case_root/claude/-coverage-elsewhere"
+  claude_line "$dir/demo.jsonl" session-cov-demo "$case_root/home/projects/demo" \
+    2026-08-01T10:00:00Z msg_cov_demo 10 20 30 40
+  claude_line "$case_root/claude/-coverage-elsewhere/other.jsonl" session-cov-other /elsewhere \
+    2026-08-01T10:00:00Z msg_cov_other 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "project-coverage ingest failed"
+  local coverage
+  coverage=$(usage_run "$case_root" attribution | jq -c '.project_coverage')
+  [ "$(jq -r '.events_with_project' <<<"$coverage")" = 1 ] \
+    || fail "project coverage should count the event that resolved: $coverage"
+  [ "$(jq -r '.events_without_project' <<<"$coverage")" = 1 ] \
+    || fail "project coverage should keep the unresolved event visible: $coverage"
+  [ "$(jq -r '.percent_events_with_project' <<<"$coverage")" = 50 ] \
+    || fail "project coverage should report the matched percentage: $coverage"
+  [ "$(jq -r '.tokens_with_project' <<<"$coverage")" = 100 ] \
+    || fail "project coverage should report matched tokens: $coverage"
+  [ "$(jq -r '.tokens_without_project' <<<"$coverage")" = 10 ] \
+    || fail "project coverage should report unmatched tokens: $coverage"
+  # Task attribution is the separate figure: neither event belongs to a task.
+  [ "$(jq -r '.attributed_events' <<<"$(usage_run "$case_root" attribution)")" = 0 ] \
+    || fail "project coverage must not be read as task attribution"
+  pass "the attribution report states project coverage separately from task attribution"
+}
+
+# docs/configuration.md owns `tracker=` and says outright that the tracker is
+# never implied by a git remote: a project may be mirrored on one host while its
+# issues are tracked on another. The origin index therefore comes from the
+# clones the registry names, and a tracker that names a different host cannot
+# strand that project's work-copy spend in "(unknown)".
+test_a_clone_origin_outranks_a_tracker_that_names_another_host() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-host-differs)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=gitea:gitea.example.com/team/demo] - demo project"
+  # The clone's real origin uses an SSH alias that the tracker host does not name.
+  git_init_with_remote "$case_root/home/projects/demo" "git@gitea.alias:team/demo.git"
+  create_no_mistakes_bare_repo "$case_root" "a1b2c3d4e5f6" "git@gitea.alias:team/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/a1b2c3d4e5f6/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-alias-worktree"
+  mkdir -p "$dir"
+  claude_line "$dir/alias.jsonl" session-alias "$wt" 2026-08-01T10:00:00Z msg_alias 10 20 30 40
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "tracker-host-differs ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] \
+    || fail "a clone whose origin differs from its tracker host lost its spend: $row"
+  pass "a clone origin outranks a tracker that names another host"
+}
+
+# `tracker=none` is a valid declaration for a project with an ordinary remote,
+# so it must not remove that project from the origin index.
+test_a_project_declaring_no_tracker_resolves_by_its_clone_origin() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-none-origin)
+  write_registry "$case_root/home" "dotfiles [no-mistakes +yolo tracker=none] - no tracker by decision"
+  git_init_with_remote "$case_root/home/projects/dotfiles" "https://github.com/example/dotfiles.git"
+  # A work copy outside projects/ whose directory name is not a project name,
+  # so its origin is the only signal available.
+  local wt="$case_root/scratch/checkout-7"
+  git_worktree_at "$case_root/home/projects/dotfiles" "$wt"
+  local dir="$case_root/claude/-tracker-none"
+  mkdir -p "$dir"
+  claude_line "$dir/none.jsonl" session-none "$wt" 2026-08-01T10:00:00Z msg_none 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "tracker-none ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "dotfiles")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] \
+    || fail "a project declaring no tracker lost its work-copy spend: $row"
+  pass "a project declaring no tracker resolves by its clone origin"
+}
+
+# The declaration rides inside the delivery-posture annotation. A description
+# that mentions a tracker URL is prose, and reading it as a declaration would
+# credit one project's spend to another.
+test_a_tracker_url_in_a_description_is_not_a_declaration() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-in-prose)
+  write_registry "$case_root/home" \
+    "demo [no-mistakes] - undeclared; the old repo was tracker=github:github.com/example/other before the move"
+  git_init_with_remote "$case_root/other" "https://github.com/example/other.git"
+  local dir="$case_root/claude/-prose"
+  mkdir -p "$dir"
+  claude_line "$dir/prose.jsonl" session-prose "$case_root/other" 2026-08-01T10:00:00Z msg_prose 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "tracker-in-prose ingest failed"
+  local rows
+  rows=$(usage_run "$case_root" report --by project)
+  [ -z "$(jq -c '.rows[] | select(.key == "demo")' <<<"$rows")" ] \
+    || fail "a tracker URL quoted in a description was read as a declaration: $rows"
+  [ -n "$(jq -c '.rows[] | select(.key == "(unknown)")' <<<"$rows")" ] \
+    || fail "an unrecognized clone should stay unknown: $rows"
+  pass "a tracker URL in a description is not a declaration"
+}
+
+# The registry and the projects root follow the same overrides as the store.
+# Reading the registry from the home while writing the store to an override is
+# how a whole home's recovered spend silently collapses into "(unknown)".
+test_the_registry_and_projects_root_follow_their_overrides() {
+  local case_root data projects
+  case_root=$(new_case registry-overrides)
+  data="$case_root/alt-data"
+  projects="$case_root/alt-projects"
+  mkdir -p "$data" "$projects/demo/sub"
+  printf -- '- demo [no-mistakes tracker=none] - demo project\n' > "$data/projects.md"
+  # A decoy registry at the home's own data dir: reading this one instead of the
+  # override would name a project that does not own this work.
+  write_registry "$case_root/home" "decoy [no-mistakes tracker=none] - not this home's registry"
+  local dir="$case_root/claude/-override"
+  mkdir -p "$dir"
+  claude_line "$dir/override.jsonl" session-override "$projects/demo/sub" \
+    2026-08-01T10:00:00Z msg_override 10 20 30 40
+
+  FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" usage_run "$case_root" ingest \
+    >/dev/null || fail "override ingest failed"
+  local rows
+  rows=$(FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" usage_run "$case_root" report --by project)
+  [ "$(jq -r '.rows[] | select(.key == "demo") | .total_tokens' <<<"$rows")" = 100 ] \
+    || fail "the registry and projects root did not follow their overrides: $rows"
+  [ -z "$(jq -c '.rows[] | select(.key == "decoy")' <<<"$rows")" ] \
+    || fail "the home's own registry was read instead of the override: $rows"
+  pass "the registry and projects root follow their overrides"
+}
+
+# An overlapping task claim says nothing about which project the work copy
+# belongs to: a pool copy is per-project whatever task is holding it. The task
+# stays unnamed and the spend stays visible under its project.
+test_an_ambiguous_task_claim_still_credits_the_project() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case ambiguous-project)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  local worktree="$case_root/home/.treehouse/demo-pool-abc123/1/demo"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  git_worktree_at "$case_root/home/projects/demo" "$worktree"
+  # Two live tasks recorded against the same pool copy: the task is ambiguous.
+  write_meta_at "$case_root/home/state/dup-one.meta" 202608010900.00 \
+    "window=fm:dup-one" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  write_meta_at "$case_root/home/state/dup-two.meta" 202608010900.00 \
+    "window=fm:dup-two" "worktree=$worktree" "project=demo" "harness=claude" "kind=ship"
+  local dir="$case_root/claude/-ambiguous"
+  mkdir -p "$dir"
+  claude_line "$dir/amb.jsonl" session-amb "$worktree" 2026-08-01T10:00:00Z msg_amb 10 20 30 40
+
+  usage_run "$case_root" ingest >/dev/null || fail "ambiguous-project ingest failed"
+  local attribution
+  attribution=$(usage_run "$case_root" attribution)
+  [ "$(jq -r '.by_method[] | select(.method == "ambiguous") | .events' <<<"$attribution")" = 1 ] \
+    || fail "an overlapping claim must still be disclosed as ambiguous: $attribution"
+  [ "$(jq -r '.attributed_events' <<<"$attribution")" = 0 ] \
+    || fail "an ambiguous claim must not name a task: $attribution"
+  [ "$(jq -r '.project_coverage.events_with_project' <<<"$attribution")" = 1 ] \
+    || fail "an ambiguous claim should still count toward project coverage: $attribution"
+  local project_row task_row
+  project_row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$project_row")" = 100 ] \
+    || fail "an ambiguous task claim dropped the project it resolves to: $project_row"
+  task_row=$(usage_run "$case_root" report --by task | jq -c '.rows[] | select(.key == "(unattributed)")')
+  [ "$(jq -r '.total_tokens' <<<"$task_row")" = 100 ] \
+    || fail "an ambiguous claim must leave the task unattributed: $task_row"
+  pass "an ambiguous task claim still credits the project the work copy belongs to"
+}
+
+# NM_HOME is no-mistakes' own name for its root. A fleet that relocated it must
+# not lose every validation worktree's spend to "(unknown)".
+test_a_relocated_no_mistakes_root_is_followed_through_nm_home() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case nm-home-root)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=github:github.com/example/demo] - demo project"
+  git_init_with_remote "$case_root/home/projects/demo" "https://github.com/example/demo.git"
+  # A root whose directory is NOT named .no-mistakes: a relocated root is only
+  # followed if the path that consults the index is derived from it too.
+  local nm_root="$case_root/relocated-nm"
+  mkdir -p "$nm_root/repos/b1c2d3e4f506.git"
+  (
+    cd "$nm_root/repos/b1c2d3e4f506.git" || exit 1
+    git init --bare -q
+    git remote add origin "https://github.com/example/demo.git"
+  ) || fail "could not create the relocated bare repo"
+  local wt="$nm_root/worktrees/b1c2d3e4f506/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-nm-home"
+  mkdir -p "$dir"
+  claude_line "$dir/nm.jsonl" session-nm-home "$wt" 2026-08-01T10:00:00Z msg_nm_home 2 4 6 8
+
+  NM_HOME="$nm_root" usage_run "$case_root" ingest >/dev/null \
+    || fail "nm-home ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 20 ] \
+    || fail "a relocated no-mistakes root declared through NM_HOME was not followed: $row"
+  pass "a relocated no-mistakes root is followed through NM_HOME"
+}
+
+# git accepts the scp-like remote with or without a user component, and one
+# fleet writes both forms for the same repository - the clone with `git@`, the
+# gate's bare copy without it. They name one repository and must land on one
+# project.
+test_a_userless_scp_origin_resolves_like_its_user_prefixed_twin() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case scp-userless)
+  write_registry "$case_root/home" \
+    "demo [no-mistakes tracker=gitea:gitea.example.com/team/demo] - demo project" \
+    "solo [no-mistakes tracker=none] - registered through a userless remote"
+  git_init_with_remote "$case_root/home/projects/demo" "git@gitea.alias:team/demo.git"
+  # The gate's bare copy of the same repository, written without the user.
+  create_no_mistakes_bare_repo "$case_root" "c3d4e5f60718" "gitea.alias:team/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/c3d4e5f60718/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-scp"
+  mkdir -p "$dir"
+  claude_line "$dir/scp.jsonl" session-scp "$wt" 2026-08-01T10:00:00Z msg_scp 10 20 30 40
+  # And the mirror case: the registered clone itself is written without a user,
+  # so the origin index has to accept that form on the way in as well.
+  git_init_with_remote "$case_root/home/projects/solo" "gitea.alias:team/solo.git"
+  local solo_wt="$case_root/scratch/solo-copy"
+  git_worktree_at "$case_root/home/projects/solo" "$solo_wt"
+  local solo_dir="$case_root/claude/-solo"
+  mkdir -p "$solo_dir"
+  claude_line "$solo_dir/solo.jsonl" session-solo "$solo_wt" 2026-08-01T10:05:00Z msg_solo 1 2 3 4
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "scp-userless ingest failed"
+  local rows
+  rows=$(usage_run "$case_root" report --by project)
+  [ "$(jq -r '.rows[] | select(.key == "demo") | .total_tokens' <<<"$rows")" = 100 ] \
+    || fail "a userless scp remote did not match its user-prefixed twin: $rows"
+  [ "$(jq -r '.rows[] | select(.key == "solo") | .total_tokens' <<<"$rows")" = 10 ] \
+    || fail "a clone registered through a userless scp remote was not indexed: $rows"
+  pass "a userless scp origin resolves like its user-prefixed twin"
+}
+
+test_a_work_copy_path_resolves_to_its_registered_project
+test_a_path_that_merely_resembles_a_project_does_not_invent_one
+test_a_userless_scp_origin_resolves_like_its_user_prefixed_twin
+test_an_ambiguous_task_claim_still_credits_the_project
+test_a_relocated_no_mistakes_root_is_followed_through_nm_home
+test_a_clone_origin_outranks_a_tracker_that_names_another_host
+test_a_project_declaring_no_tracker_resolves_by_its_clone_origin
+test_a_tracker_url_in_a_description_is_not_a_declaration
+test_the_registry_and_projects_root_follow_their_overrides
+test_a_worktree_window_claim_keeps_its_task_when_the_path_resolves
+test_supervision_covers_the_firstmate_home_subtree
+test_a_stale_git_pointer_does_not_break_attribution
+test_a_path_shaped_task_project_is_stored_as_a_name
+test_the_attribution_report_states_project_coverage
+test_a_filled_project_does_not_fabricate_a_task_id
+test_firstmate_supervision_spend_is_split_from_the_firstmate_project
+test_rerunning_ingest_repairs_historical_project_attribution
+test_a_treehouse_worktree_path_resolves_to_its_registered_project
+test_a_treehouse_subdir_resolves_to_its_enclosing_project
+test_a_deleted_treehouse_path_resolves_by_directory_name
+test_a_no_mistakes_worktree_resolves_by_repo_hash
+test_a_treehouse_path_that_merely_resembles_a_project_does_not_invent_one
 test_an_interrupted_ingest_leaves_a_self_contained_store
 printf '\nall fm-usage tests passed\n'

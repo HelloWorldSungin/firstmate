@@ -1,7 +1,7 @@
 // router.js - the hash router for the fleet dashboard.
 //
-// Five primary destinations plus a task detail route:
-//   #/needs  #/fleet  #/backlog  #/history  #/knowledge  #/task/<id>
+// Six primary destinations plus a task detail route:
+//   #/needs  #/fleet  #/backlog  #/history  #/usage  #/knowledge  #/task/<id>
 //
 // The contract this module owns: a route resolves to EXACTLY ONE view.
 // activeViews() exists so a test can assert the others are absent, because a
@@ -13,7 +13,7 @@
 // Unknown or malformed hashes resolve to the Needs you view, never to a blank
 // page: an operator's stale bookmark must land somewhere real.
 
-export const VIEWS = ["needs", "fleet", "backlog", "history", "knowledge"];
+export const VIEWS = ["needs", "fleet", "backlog", "history", "usage", "knowledge"];
 export const DEFAULT_VIEW = "needs";
 export const TASK_VIEW = "task";
 

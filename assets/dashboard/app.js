@@ -1,19 +1,21 @@
 // app.js - the Firstmate fleet dashboard application.
 //
-// Six destinations behind a hash router (#/needs, #/fleet, #/backlog,
-// #/history, #/knowledge, #/task/<id>), rebuilt from the approved design in
-// data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered at a
-// time: the router resolves exactly one view (router.js owns that contract)
+// Seven destinations behind a hash router (#/needs, #/fleet, #/backlog,
+// #/history, #/usage, #/knowledge, #/task/<id>), rebuilt from the approved
+// design in data/dashboard-design/Firstmate Fleet.dc.html. One view is rendered
+// at a time: the router resolves exactly one view (router.js owns that contract)
 // and this module mounts only that view's DOM, so the others are absent from
 // the document rather than hidden.
 //
 // The data policy lives in the sibling modules (inbox.js, history.js,
-// backlog.js, gbrain.js, events.js); this file owns presentation and wiring.
+// backlog.js, usage.js, gbrain.js, events.js); this file owns presentation and
+// wiring.
 // display.js owns the convention that record values become labels before they
 // reach the DOM, so no filesystem path renders on any view.
 
 import { buildInbox, formatAge, prReadiness, REASON_KINDS } from "./inbox.js";
-import { buildHistory, formatDuration, formatTokens, HISTORY_LIMITS, OUTCOME_LABELS } from "./history.js";
+import { buildHistory, formatDuration, HISTORY_LIMITS, OUTCOME_LABELS } from "./history.js";
+import { buildUsage, formatTokens, projectLabel, projectTone } from "./usage.js";
 import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel } from "./events.js";
 import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
 import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
@@ -1099,6 +1101,102 @@ function renderHistory() {
   return view;
 }
 
+// --- Usage -------------------------------------------------------------------
+
+function renderUsage() {
+  const view = viewRoot("usage");
+  const status = state.history.envelope?.status;
+  const built = buildUsage(state.history.envelope);
+  const note = built.readState === "unavailable"
+    ? "usage read failing"
+    : built.readState === "absent"
+      ? built.collection === "disabled" ? "usage reads disabled" : "not collected here"
+      : status?.last_success_at
+        ? `${status.refreshing ? "Refreshing · " : ""}read ${formatAge(status.last_success_age_seconds)} ago`
+        : status?.refreshing ? "Taking the first usage read" : "Waiting for the first usage read";
+  view.append(pageHead("Work tokens · by project", "Usage", note));
+
+  if (built.shape === "pending") {
+    view.append(emptyState({ ring: true, big: "Reading token usage.", teach: "Waiting for the first usage read to finish." }));
+    return view;
+  }
+  // A home that collects no usage, or a dashboard told not to read it, is a
+  // settled fact rather than a failure. History stays silent for the same home,
+  // and an alarm here would send a reader chasing a break that does not exist -
+  // "retrying" especially, because nothing is going to be retried.
+  if (built.shape === "absent") {
+    view.append(emptyState({
+      ring: true,
+      big: "Token usage is not collected here.",
+      teach: `The dashboard reports: ${built.reason || "no usage collector is attached to this home"}. Nothing is failing and nothing is being retried; when this home collects usage, the per-project breakdown appears here with the unattributed share kept visible.`,
+    }));
+    return view;
+  }
+  if (built.shape === "unavailable") {
+    // usage.js owns which reads earn the sharper wording: only a home that DOES
+    // collect usage and whose read missed anyway is a failure someone can fix.
+    view.append(built.fault
+      ? notice("red", "Token usage is not being read.", `The read reported: ${built.reason || "no detail"}. The collector and its store are both present on this home, so this is a failure to fix rather than a home that collects nothing. The dashboard keeps retrying.`)
+      : notice("red", "Token usage unavailable.", `The usage read could not be read${built.reason ? `: ${built.reason}` : ""}. Retrying automatically.`));
+    view.append(emptyState({
+      ring: true,
+      big: "Usage cannot be read.",
+      teach: "Until the usage read can finish, nothing on this page is a claim about how much any project consumed.",
+    }));
+    return view;
+  }
+
+  if (built.stale) {
+    view.append(notice("amber", null, `Showing the last known good usage read: ${built.reason || status?.error?.message || "the newest read did not land"}.`));
+  }
+
+  if (built.shape === "empty") {
+    view.append(emptyState({
+      ring: true,
+      big: "Nothing to show yet.",
+      teach: "When usage is collected and attributed to projects, the breakdown appears here with the unattributed share kept visible.",
+    }));
+    return view;
+  }
+
+  const stats = element("div", "stats");
+  for (const [key, value] of [
+    ["Projects", String(built.project_count)],
+    ["Events", String(built.total_events)],
+    ["Work tokens", formatTokens(built.total_work)],
+    ["Total tokens", formatTokens(built.total_tokens)],
+  ]) {
+    const stat = element("div", "stat");
+    stat.append(element("span", "stat-k", key), element("span", "stat-v", value));
+    stats.append(stat);
+  }
+  view.append(stats);
+
+  const rows = element("div", "rows");
+  for (const row of built.rows) {
+    // A project row is a reading, not a destination: there is no per-project
+    // page to open, so it carries no button affordance.
+    const rrow = element("div", "rrow rrow-flat");
+    rrow.append(dot(projectTone(row.key)));
+    const main = element("div", "rmain");
+    main.append(element("div", "rtitle", projectLabel(row.key)));
+    const meta = element("div", "rmeta");
+    meta.append(element("span", "", `${row.events} ${row.events === 1 ? "event" : "events"}`));
+    meta.append(element("span", "", `${row.sessions} ${row.sessions === 1 ? "session" : "sessions"}`));
+    meta.append(element("span", "", `${formatTokens(row.tokens)} total`));
+    main.append(meta);
+    rrow.append(main);
+    const right = element("div", "rright");
+    right.append(element("span", "rwork", formatTokens(row.work)));
+    right.append(element("span", "rshare", row.share === null ? "" : `${row.share.toFixed(2)}%`));
+    rrow.append(right);
+    rows.append(rrow);
+  }
+  view.append(rows);
+  view.append(element("div", "ronote", "Unattributed usage is shown as its own row so the percentages stay honest."));
+  return view;
+}
+
 // --- Knowledge ---------------------------------------------------------------
 
 function renderKnowledge() {
@@ -1773,6 +1871,7 @@ const VIEW_RENDERERS = {
   fleet: renderFleet,
   backlog: renderBacklog,
   history: renderHistory,
+  usage: renderUsage,
   knowledge: renderKnowledge,
   [TASK_VIEW]: renderTask,
 };
