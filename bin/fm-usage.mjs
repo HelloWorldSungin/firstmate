@@ -113,6 +113,18 @@ Environment:
 // registry is the captain's data/projects.md; the match is against the
 // checkout's actual remote URL, not against path-shaped strings, so a
 // directory that merely looks like a project cannot create a phantom row.
+//
+// The origin index is keyed on the remotes of the clones the registry already
+// names - projects/<name>, plus the home itself for the project whose clone IS
+// this home - because that is the only value a work copy's origin can actually
+// equal. docs/configuration.md owns `tracker=` and states outright that "the
+// tracker is never implied by a git remote": a project may be mirrored on one
+// host while its issues are tracked on another, and `tracker=none` is a valid
+// declaration for a project with a perfectly ordinary remote. Reading the
+// tracker as if it were the remote silently dropped every such project's spend
+// into `(unknown)`, so it survives here only as a supplementary hint that a
+// real clone's origin overrides. No directory is searched for repositories:
+// every path consulted is derived from a name the registry already carries.
 
 function normalizeTrackerUrl(value) {
   const text = cleanToken(value, 240);
@@ -122,8 +134,24 @@ function normalizeTrackerUrl(value) {
   return text.slice(colon + 1);
 }
 
-function loadProjectRegistry(home) {
-  const file = path.join(home, "data", "projects.md");
+// The declaration rides inside the delivery-posture annotation, so it is read
+// from there rather than from anywhere on the line: a description that happens
+// to mention a tracker URL is prose, not a declaration.
+function parseTrackerAnnotation(line) {
+  const annotation = /^- \S+\s+\[([^\]]*)\]/.exec(line);
+  if (!annotation) return null;
+  const tracker = /(?:^|\s)tracker=(\S+)/.exec(annotation[1]);
+  if (!tracker) return null;
+  const normalized = normalizeTrackerUrl(tracker[1]);
+  return normalized && normalized !== "none" ? normalized : null;
+}
+
+function readOriginUrl(checkout) {
+  return normalizeGitUrl(parseGitRemote(readGitConfig(checkout), "origin"));
+}
+
+function loadProjectRegistry({ data, projects, home }) {
+  const file = path.join(data, "projects.md");
   const byUrl = new Map();
   const names = new Set();
   let text;
@@ -132,6 +160,8 @@ function loadProjectRegistry(home) {
   } catch {
     return { byUrl, names };
   }
+  const homeRoot = path.resolve(home);
+  const clones = new Map();
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line.startsWith("- ")) continue;
@@ -140,15 +170,18 @@ function loadProjectRegistry(home) {
     const name = cleanToken(nameMatch[1], 120);
     if (!name) continue;
     names.add(name);
-    const trackerIndex = line.indexOf("tracker=");
-    if (trackerIndex < 0) continue;
-    let tracker = line.slice(trackerIndex + 8);
-    const endIndex = tracker.search(/[\s\]]/);
-    if (endIndex >= 0) tracker = tracker.slice(0, endIndex);
-    const normalized = normalizeTrackerUrl(tracker);
-    if (!normalized || normalized === "none") continue;
-    byUrl.set(normalized, name);
+    const tracker = parseTrackerAnnotation(line);
+    if (tracker && !byUrl.has(tracker)) byUrl.set(tracker, name);
+    // The registry names the clone; the clone names the remote. Only paths
+    // built from a registered name are consulted, and the first registered
+    // project to claim an origin keeps it.
+    for (const checkout of [path.join(projects, name), path.basename(homeRoot) === name ? homeRoot : null]) {
+      if (!checkout) continue;
+      const origin = readOriginUrl(checkout);
+      if (origin && !clones.has(origin)) clones.set(origin, name);
+    }
   }
+  for (const [origin, name] of clones) byUrl.set(origin, name);
   return { byUrl, names };
 }
 
@@ -261,10 +294,10 @@ function projectName(value) {
   return (cut === -1 ? trimmed : trimmed.slice(cut + 1)) || null;
 }
 
-function resolveProjectByPathName(registry, homeRoot, cwd) {
+function resolveProjectByPathName(registry, projectsRoot, cwd) {
   const resolved = path.resolve(cwd);
-  // projects/<name>[/<subpath>]
-  const projectsPrefix = path.join(homeRoot, "projects") + path.sep;
+  // <projects>/<name>[/<subpath>]
+  const projectsPrefix = projectsRoot + path.sep;
   if (resolved.startsWith(projectsPrefix)) {
     const relative = resolved.slice(projectsPrefix.length);
     const name = relative.split(path.sep)[0];
@@ -324,8 +357,9 @@ function resolveProjectByOrigin(registry, gitRoot) {
   return null;
 }
 
-function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervision = false } = {}) {
+function resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision = false } = {}) {
   if (!cwd) return null;
+  const homeRoot = roots.home;
   const resolved = path.resolve(cwd);
   const gitRoot = findGitRoot(resolved);
   // The firstmate home is itself a checkout of the firstmate repo, so its
@@ -342,7 +376,7 @@ function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervisi
   // Fall back to path-derived candidates verified against the registry. A
   // directory name that matches no registered project stays unknown rather
   // than creating a phantom row.
-  const pathProject = resolveProjectByPathName(registry, homeRoot, resolved);
+  const pathProject = resolveProjectByPathName(registry, roots.projects, resolved);
   if (pathProject) {
     return { project: pathProject, method: "project_path", confidence: "low" };
   }
@@ -364,9 +398,9 @@ function resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervisi
   return null;
 }
 
-function buildPathResolver(home, registry) {
+function buildPathResolver({ home, projects }, registry) {
   const cache = new Map();
-  const homeRoot = path.resolve(home);
+  const roots = { home: path.resolve(home), projects: path.resolve(projects) };
   const repoHashMap = buildRepoHashMap(registry);
   return {
     // For events with no task identity: resolve the directory to a project
@@ -376,7 +410,7 @@ function buildPathResolver(home, registry) {
       if (!cwd) return null;
       const key = `path:${cwd}`;
       if (cache.has(key)) return cache.get(key);
-      const result = resolveProjectAt(registry, homeRoot, repoHashMap, cwd, { allowSupervision: true });
+      const result = resolveProjectAt(registry, roots, repoHashMap, cwd, { allowSupervision: true });
       cache.set(key, result);
       return result;
     },
@@ -390,7 +424,7 @@ function buildPathResolver(home, registry) {
       if (!worktree) return null;
       const key = `worktree:${worktree}`;
       if (cache.has(key)) return cache.get(key);
-      const result = resolveProjectAt(registry, homeRoot, repoHashMap, worktree, { allowSupervision: false });
+      const result = resolveProjectAt(registry, roots, repoHashMap, worktree, { allowSupervision: false });
       const project = result ? result.project : null;
       cache.set(key, project);
       return project;
@@ -1186,7 +1220,7 @@ function matchTasksByWorktree(db, cwd, atIso, fromIso = null, { liveOnly = false
 
 // Attribution is derived, so it is recomputed from scratch on every ingest and
 // never drifts from the bindings and task records it is built on.
-function attributeEvents(db, home) {
+function attributeEvents(db, roots) {
   const update = db.prepare(`UPDATE usage_event
     SET task_id = ?, project = ?, attribution_method = ?, attribution_confidence = ?
     WHERE event_id = ?`);
@@ -1197,8 +1231,8 @@ function attributeEvents(db, home) {
   const events = db
     .prepare("SELECT event_id, harness, session_id, cwd, occurred_at FROM usage_event")
     .all();
-  const registry = loadProjectRegistry(home);
-  const resolvePath = buildPathResolver(home, registry);
+  const registry = loadProjectRegistry(roots);
+  const resolvePath = buildPathResolver(roots, registry);
   db.exec("BEGIN");
   try {
     // The reset belongs inside the same transaction as the re-derivation. A
@@ -1544,10 +1578,12 @@ function resolvePaths(options) {
   // reaches exactly the records it means to.
   const state = path.resolve(process.env.FM_STATE_OVERRIDE || path.join(home, "state"));
   const data = path.resolve(process.env.FM_DATA_OVERRIDE || path.join(home, "data"));
+  const projects = path.resolve(process.env.FM_PROJECTS_OVERRIDE || path.join(home, "projects"));
   return {
     home,
     state,
     data,
+    projects,
     db: path.resolve(options.db || process.env.FM_USAGE_DB || path.join(data, "usage.db")),
     claude: path.resolve(
       options.claude_root || process.env.FM_USAGE_CLAUDE_ROOT || path.join(claudeConfig, "projects"),
@@ -1610,7 +1646,7 @@ async function main() {
           return fallback;
         }
       };
-      stage("attribution", () => attributeEvents(db, paths.home), null);
+      stage("attribution", () => attributeEvents(db, paths), null);
       const cost = stage("cost", () => applyCost(db, loadRates(paths.rates), stamp), {
         rate_version: null,
         currency: null,

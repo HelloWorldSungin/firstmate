@@ -1,6 +1,6 @@
 # Fleet dashboard
 
-The fleet dashboard is a mobile-first, read-only view of the fleet over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract: five destinations behind a hash router - Needs you, Fleet, Backlog, History, Knowledge - plus a per-task detail page, with exactly one view rendered at a time.
+The fleet dashboard is a mobile-first, read-only view of the fleet over [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh)'s versioned JSON contract: six destinations behind a hash router - Needs you, Fleet, Backlog, History, Usage, Knowledge - plus a per-task detail page, with exactly one view rendered at a time.
 It never dispatches, steers, merges, tears down, or writes fleet state: its one write is the agent-event store it owns outside the operational home ([dashboard events](dashboard-events.md)).
 Stopping the dashboard has no effect on Firstmate supervision.
 

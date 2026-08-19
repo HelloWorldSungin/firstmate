@@ -1357,8 +1357,117 @@ test_the_attribution_report_states_project_coverage() {
   pass "the attribution report states project coverage separately from task attribution"
 }
 
+# docs/configuration.md owns `tracker=` and says outright that the tracker is
+# never implied by a git remote: a project may be mirrored on one host while its
+# issues are tracked on another. The origin index therefore comes from the
+# clones the registry names, and a tracker that names a different host cannot
+# strand that project's work-copy spend in "(unknown)".
+test_a_clone_origin_outranks_a_tracker_that_names_another_host() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-host-differs)
+  write_registry "$case_root/home" "demo [no-mistakes tracker=gitea:gitea.example.com/team/demo] - demo project"
+  # The clone's real origin uses an SSH alias that the tracker host does not name.
+  git_init_with_remote "$case_root/home/projects/demo" "git@gitea.alias:team/demo.git"
+  create_no_mistakes_bare_repo "$case_root" "a1b2c3d4e5f6" "git@gitea.alias:team/demo.git"
+  local wt="$case_root/.no-mistakes/worktrees/a1b2c3d4e5f6/01KZX0123456789ABCDEF0123"
+  mkdir -p "$wt"
+  local dir="$case_root/claude/-alias-worktree"
+  mkdir -p "$dir"
+  claude_line "$dir/alias.jsonl" session-alias "$wt" 2026-08-01T10:00:00Z msg_alias 10 20 30 40
+
+  FM_USAGE_NO_MISTAKES_ROOT="$case_root/.no-mistakes" usage_run "$case_root" ingest \
+    >/dev/null || fail "tracker-host-differs ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "demo")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 100 ] \
+    || fail "a clone whose origin differs from its tracker host lost its spend: $row"
+  pass "a clone origin outranks a tracker that names another host"
+}
+
+# `tracker=none` is a valid declaration for a project with an ordinary remote,
+# so it must not remove that project from the origin index.
+test_a_project_declaring_no_tracker_resolves_by_its_clone_origin() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-none-origin)
+  write_registry "$case_root/home" "dotfiles [no-mistakes +yolo tracker=none] - no tracker by decision"
+  git_init_with_remote "$case_root/home/projects/dotfiles" "https://github.com/example/dotfiles.git"
+  # A work copy outside projects/ whose directory name is not a project name,
+  # so its origin is the only signal available.
+  local wt="$case_root/scratch/checkout-7"
+  git_worktree_at "$case_root/home/projects/dotfiles" "$wt"
+  local dir="$case_root/claude/-tracker-none"
+  mkdir -p "$dir"
+  claude_line "$dir/none.jsonl" session-none "$wt" 2026-08-01T10:00:00Z msg_none 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "tracker-none ingest failed"
+  local row
+  row=$(usage_run "$case_root" report --by project | jq -c '.rows[] | select(.key == "dotfiles")')
+  [ "$(jq -r '.total_tokens' <<<"$row")" = 10 ] \
+    || fail "a project declaring no tracker lost its work-copy spend: $row"
+  pass "a project declaring no tracker resolves by its clone origin"
+}
+
+# The declaration rides inside the delivery-posture annotation. A description
+# that mentions a tracker URL is prose, and reading it as a declaration would
+# credit one project's spend to another.
+test_a_tracker_url_in_a_description_is_not_a_declaration() {
+  command -v git >/dev/null 2>&1 || { echo "skip: git not found"; return; }
+  local case_root
+  case_root=$(new_case tracker-in-prose)
+  write_registry "$case_root/home" \
+    "demo [no-mistakes] - undeclared; the old repo was tracker=github:github.com/example/other before the move"
+  git_init_with_remote "$case_root/other" "https://github.com/example/other.git"
+  local dir="$case_root/claude/-prose"
+  mkdir -p "$dir"
+  claude_line "$dir/prose.jsonl" session-prose "$case_root/other" 2026-08-01T10:00:00Z msg_prose 1 2 3 4
+
+  usage_run "$case_root" ingest >/dev/null || fail "tracker-in-prose ingest failed"
+  local rows
+  rows=$(usage_run "$case_root" report --by project)
+  [ -z "$(jq -c '.rows[] | select(.key == "demo")' <<<"$rows")" ] \
+    || fail "a tracker URL quoted in a description was read as a declaration: $rows"
+  [ -n "$(jq -c '.rows[] | select(.key == "(unknown)")' <<<"$rows")" ] \
+    || fail "an unrecognized clone should stay unknown: $rows"
+  pass "a tracker URL in a description is not a declaration"
+}
+
+# The registry and the projects root follow the same overrides as the store.
+# Reading the registry from the home while writing the store to an override is
+# how a whole home's recovered spend silently collapses into "(unknown)".
+test_the_registry_and_projects_root_follow_their_overrides() {
+  local case_root data projects
+  case_root=$(new_case registry-overrides)
+  data="$case_root/alt-data"
+  projects="$case_root/alt-projects"
+  mkdir -p "$data" "$projects/demo/sub"
+  printf -- '- demo [no-mistakes tracker=none] - demo project\n' > "$data/projects.md"
+  # A decoy registry at the home's own data dir: reading this one instead of the
+  # override would name a project that does not own this work.
+  write_registry "$case_root/home" "decoy [no-mistakes tracker=none] - not this home's registry"
+  local dir="$case_root/claude/-override"
+  mkdir -p "$dir"
+  claude_line "$dir/override.jsonl" session-override "$projects/demo/sub" \
+    2026-08-01T10:00:00Z msg_override 10 20 30 40
+
+  FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" usage_run "$case_root" ingest \
+    >/dev/null || fail "override ingest failed"
+  local rows
+  rows=$(FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" usage_run "$case_root" report --by project)
+  [ "$(jq -r '.rows[] | select(.key == "demo") | .total_tokens' <<<"$rows")" = 100 ] \
+    || fail "the registry and projects root did not follow their overrides: $rows"
+  [ -z "$(jq -c '.rows[] | select(.key == "decoy")' <<<"$rows")" ] \
+    || fail "the home's own registry was read instead of the override: $rows"
+  pass "the registry and projects root follow their overrides"
+}
+
 test_a_work_copy_path_resolves_to_its_registered_project
 test_a_path_that_merely_resembles_a_project_does_not_invent_one
+test_a_clone_origin_outranks_a_tracker_that_names_another_host
+test_a_project_declaring_no_tracker_resolves_by_its_clone_origin
+test_a_tracker_url_in_a_description_is_not_a_declaration
+test_the_registry_and_projects_root_follow_their_overrides
 test_a_worktree_window_claim_keeps_its_task_when_the_path_resolves
 test_supervision_covers_the_firstmate_home_subtree
 test_a_stale_git_pointer_does_not_break_attribution

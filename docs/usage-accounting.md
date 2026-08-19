@@ -102,7 +102,11 @@ Seeing an id live again while its record describes a finished occupancy starts t
 
 **Project path attribution resolves against the project registry, not against path-shaped strings.**
 `data/projects.md` is the single source of registered projects; a directory that merely looks like a project cannot create a phantom row, and a real project reached through an SSH alias or a treehouse pool copy is still credited when the checkout's origin or clone layout matches the registry.
+The origin index is built from the remotes of the clones the registry names - `projects/<name>`, plus the home itself for the project whose clone IS this home - because a work copy's origin is a copy of its clone's origin and of nothing else.
+A `tracker=` declaration is only a supplementary hint here and is overridden by any real clone origin: [configuration.md](configuration.md) owns that token and states that the tracker is never implied by a git remote, so a project mirrored on one host and tracked on another, or declaring `tracker=none`, still resolves.
+Only paths built from a registered project name are read; no directory is searched for repositories.
 The `project` column is normalized to the registered project name for every attribution method, so `report --by project` groups crew work and recovered work-copy spend under the same project name.
+The store, the registry and the projects root are all resolved through the same `FM_DATA_OVERRIDE` and `FM_PROJECTS_OVERRIDE` the rest of firstmate honors, so a home running under an override reads the registry that belongs to the store it is writing.
 
 Firstmate's own supervision spend is real and currently the single largest unattributed consumer in many fleets.
 It runs with the same working directory as crew work on the firstmate repo, so the distinguishing signal is the presence of a task binding, not the path.
