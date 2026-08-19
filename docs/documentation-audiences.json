@@ -324,6 +324,10 @@
       "audience": "public-product"
     },
     {
+      "path": "docs/adr/0001-brain-read-mount.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/agent-control.md",
       "audience": "maintainer-architecture"
     },
