@@ -48,12 +48,18 @@ This ADR honors that gate rather than relitigating it.
 **Two moving facts this design was required to verify, not assume.**
 
 1. GBrain on this host is now 0.46.21.0.
+   `docs/gbrain.md` owns the recorded pin and still states `v0.45.9.0`, so a reader who opens both files meets two different installed versions, and this one is the current build.
+   That pin cannot move in this change: `docs/gbrain.md`'s own upgrade procedure moves the recorded version and the clean-install recipe's checkout commit in a single edit, and the existing task `fm-gbrain-doc-upgrade-wrong-home` owns that edit together with the same file's wrong-brain-path correction.
+   The discrepancy is named here, with its owner, rather than left for a reader to discover as a contradiction.
    Re-established from the installed source and live probes: `context_pack` and `delta` still exist, additive at `protocol_version: 1`, semantics unchanged since 0.45.7 (the protocol document sections are byte-unchanged since 0.45.9; implementations were refactored into ops modules).
-   New finding: **`context_pack` is empty on this corpus.**
-   A live probe (`entities: "firstmate"`) returned zero cards, zero facts, zero threads, because this fleet's capture pipeline writes task and note pages only - the brain contains no entity cards or extracted facts for `context_pack` to pack.
-   The release evaluation's "use native `context_pack` for session boundaries" is therefore inert here until capture itself changes, which is out of this design's scope.
+   **Corrected claim: an earlier round of this document reported "`context_pack` is empty on this corpus", and that claim is withdrawn.**
+   Review raised it by cross-checking this document against `docs/verification/gbrain-memory-verbs.md`, the repository's owner for measured GBrain verb behavior, which records a live `context-pack` call against this corpus at the prior pin returning `{"cards":1,"budget_used":33}`.
+   What the original probe supports is narrower than what it was written as saying: it passed the entity name `firstmate`, and a re-run confirms that name resolves through none of the four arms the card builder uses - alias, exact title, exact slug, slug suffix - so an empty pack was that probe's expected result rather than a fact about the corpus.
+   `context_pack` assembles its cards from the `pages` table through exactly those arms, per the installed 0.46.21.0 `src/core/verbs/entity-card.ts`, so a corpus of pages does produce cards: a live probe on this brain naming an exact page title returned one card, alongside the `firstmate` re-run that returned none.
+   The claim that `context_pack` is inert on this fleet's data is therefore not established, and it is withdrawn rather than narrowed.
+   The release evaluation's "use native `context_pack` for session boundaries" is not adopted here because D9 rejects session-start retrieval on its own merits, not because there is nothing to pack.
    `delta` was probed live with a timestamp and works: it returned the pages captured since the given time, oldest first.
-   The scope reduction "do not build a custom change cursor" holds; "do not build custom session-boundary packing" holds only vacuously, because there is nothing to pack and session-start retrieval is rejected on its own merits below.
+   The scope reduction "do not build a custom change cursor" holds; "do not build custom session-boundary packing" holds on that same D9 rejection rather than vacuously.
 2. `fm-gbrain-answer-protocol` was in validation for most of this interview, so every gate here was designed against its required behavior rather than its unlanded field names.
    It has since landed (PR 185, squash-merged, checks green) and this home runs it.
    The shipped behavior was verified against the merged source rather than against reported state: a search now frames what its rows are, and labels each local result with capture and live-source provenance.
@@ -288,8 +294,9 @@ What changed is that both investigations ran after that framing was written, and
   That 67 is `data/fm-gbrain-usage-inventory/report.md`'s ~50 tokens of pruning savings restated in this document's estimator, the same bytes under `ceil(bytes / 3)` rather than that report's `bytes / 4`.
   With both sides in one estimator the trade is roughly 15x worse rather than the 12x that report computed, so the case against session-start retrieval is stronger than it was previously argued, not weaker.
 - A brain read inside the digest adds failure surface to the most safety-critical path firstmate has, for the above negative return.
-- And specifically for `context_pack`: the live probe on 0.46.21.0 returned an empty pack on this corpus, because capture writes pages, not the entities and facts `context_pack` packs.
-  The candidate mechanism is not merely a poor trade here; it is currently inert on this fleet's data.
+- And specifically for `context_pack`: its `--entities` argument has to be supplied, and session start is the one moment with nothing to supply it from - no query, and no principled basis for choosing which entities the session is about before the work is named.
+  A pack for a name that matches no page returns empty arrays, exit 0, and no error, verified live on 0.46.21.0, so the caller cannot distinguish a badly chosen entity name from an absent one.
+  That is the same cannot-signal-a-miss shape the rest of this design guards against, arriving here as an unreadable result from an unmotivated choice; the corrected finding in the context above is what this bullet now rests on instead of a claim about the corpus.
 
 If the captain still wants session-start packing with these numbers in front of them, that is their call; the evidence above is what it would be made against, and firstmate ruled that this ADR - not a silent default - is where they make it.
 
@@ -334,6 +341,8 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
   It then appeared a fourth time, in this ADR's own prose - in the sentences written to fix the first three, which asserted properties over a set of seams nobody had enumerated: "the trail holds those failed invocations and nothing else", "the one difference the check found", "queries derive from task titles".
   Each was false exactly at the seams left uncounted.
   It then appeared once more inside the repair itself: the option chosen to restore D2's inert property asserted that a brainless home appends nothing, which is a universal over a configuration set nobody had enumerated, and it was false wherever a fleet main brain is reachable from a home with no local index of its own.
+  Its sharpest instance is the withdrawn `context_pack` finding in the context above: one probe on one unenumerated entity name was written up as a universal cause about the whole corpus, and it sat in the section whose entire job is to say what was actually checked, which is the one place a reader has no reason to re-check.
+  It survived every reading of this document by its own authors and was caught only when review cross-checked the repository's verification owner - so the lesson is not that probes lie, but that a probe's scope has to be written next to its conclusion or the conclusion outgrows it.
   That is the most transferable lesson of this design, and it tightens the rule rather than restating it: a claim about a set must be structurally true or explicitly enumerated, because the case you did not think of is by definition the one you cannot think of - which is why D2's append condition is now a predicate that makes the property hold rather than a sentence that asserts it.
   The closing lesson, for whoever reads this next: when a property keeps needing to be restated, stop restating it and make the structure produce it.
   That move solved this design three times - inverting a default so the whole class cannot occur, keying the trail's append on presence rather than on the read's outcome, and deriving the second writer's inertness from the causal chain instead of copying the predicate onto it.
