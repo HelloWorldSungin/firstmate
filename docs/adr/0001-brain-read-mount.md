@@ -76,6 +76,8 @@ Both are supported states of the landed contract, so the gate's fields-present p
 One append per `fm-recall.sh search` invocation in a home whose local index is present, into a gitignored state file: record id, timestamp, caller seam, query hash, exit state, result count.
 `fm-recall.sh think` never appends: it is the other command the wrapper offers, hosted synthesis with its own exit vocabulary and no result count, and this trail measures search adoption.
 The record id identifies one invocation, and exists so a later record written by a caller can name the read it followed without either record carrying the other's datum (D5).
+The wrapper both writes it on the trail record and returns it in the search output document the caller already consumes, so a caller learns its own read's id from that read; nothing in this design reads the trail back to find it.
+Returning it is an additive field on the `fm-recall.v1` document that `bin/fm-recall.sh` owns, and the implementing task plans that change there alongside the seam declaration below rather than discovering it mid-flight.
 
 The append condition is local brain presence - the same resolve-the-paths-and-find-the-PGlite-directory predicate `bin/fm-brief.sh` already gates its Brain section on - evaluated before the read and never from the read's outcome.
 Both of the properties that matter then hold structurally, rather than being asserted over a list of cases someone had to think of first:
@@ -95,7 +97,7 @@ A second record kind, owned by `/stow` rather than by the wrapper, carries D5's 
   - Brief-scaffold queries are the task's own words, and task titles are readable from the backlog, so the candidate set is small and cheap to test - worth saying plainly instead of averaging away.
   - Dashboard queries are operator free text with no enumerable source to draw candidates from, so the hash withholds real content there.
   - Stow queries are the candidate learning's own content (D5), so a guess has to reproduce that text before the digest can confirm it.
-  - Eval queries come from an evaluation set file, and the default set is tracked in this repository, so its questions are already public and the hash is protecting nothing that was private.
+  - Eval queries come from an evaluation set file, so the protection depends on which set was run: the shipped default set is tracked in this repository and its questions are already public, so the hash protects nothing private there, while an operator-supplied `--set` file can be private, and there the hash withholds real content.
   - Undeclared queries are ad-hoc, and include firstmate's own pre-commission consult, whose words come from the investigation being weighed and land close to the task title it becomes - so the backlog is again a candidate list, which makes this value and brief-scaffold the two weakest.
   The price, stated per seam above rather than once for all of them, is that the trail records outcomes rather than content, and it does so unevenly across those five values - weakest at brief-scaffold and undeclared, the two whose candidates the backlog supplies.
 - **The caller-seam field must distinguish** brief-scaffold, stow, dashboard, and eval invocations, or the trail cannot measure adoption, which is its purpose.
@@ -135,7 +137,9 @@ The line **never enters the generated brief**; if the two outputs ever collapse 
 
 This line claims proximity, never duplication.
 222 of the 261 records in this brain are task records, so any rule that fires on "the top result is a completed report" fires at base rate; a flag that fires every time is a line firstmate learns to skim, and alarm fatigue would make this feature worse than nothing by looking like coverage.
-It is surfacing, not enforcement: nothing forces firstmate to read it, and its efficacy is measurable through the D2 trail.
+It is surfacing, not enforcement: nothing forces firstmate to read it, and nothing measures whether it was.
+D4 has no seam of its own, because it rides D1's search and the two share one brief-scaffold record; none of that record's fields - record id, timestamp, caller seam, query hash, exit state, result count - says whether a line was printed, read, or acted on.
+The trail shows the shared search ran and what it returned, and stops there.
 
 ### D5. `/stow` mounts a round-trip read - advisory, ungated, with a hard constraint
 
@@ -150,10 +154,11 @@ Concretely:
 
 1. A decision not to admit a learning rests on an actual content comparison of the candidate against the new fact - never a hit count, a score, or "search returned something".
 2. Symmetrically, a returned page is a candidate to read, never by itself proof an equivalent note exists.
-3. Every case where a `/stow` read leads to something not being captured is recorded through the D2 trail, as a second append that `/stow` itself writes after deciding, carrying a bounded outcome value and the record id of the read it followed.
-   That id is the whole coupling: the wrapper emits it on the read record, `/stow` echoes it on the conclusion record, and neither record is widened to carry the other's datum, because the wrapper returns before the content comparison that produces the conclusion and cannot know it.
+3. Every candidate a `/stow` read informed gets a conclusion record, not only the ones that ended in nothing being captured: a second append `/stow` itself writes after deciding, carrying the record id of the read it followed and one bounded outcome value from a closed set - captured, not-captured, or no-comparison-made.
+   That id is the whole coupling: the wrapper returns it with the read and also writes it on the read record, `/stow` echoes it on the conclusion record, and neither record is widened to carry the other's datum, because the wrapper returns before the content comparison that produces the conclusion and cannot know it.
    It is also what keeps the pair unambiguous when a pass runs the same query twice, which the per-candidate searches above make ordinary rather than exceptional.
-   A read record with no conclusion record therefore means exactly that - a read whose conclusion was never written - and is never read as evidence that nothing was skipped; absence of a record must not become a record of absence.
+   Recording every outcome rather than only the not-captured ones is what buys the property: a read record with no conclusion record then means exactly one thing, that the procedure did not complete, instead of being ambiguous between that and capture proceeding normally.
+   The not-captured outcomes this constraint exists to make auditable are recorded either way, and absence of a record still never becomes a record of absence.
 
 It is ungated by D3 for the same reason D4 is: constrained to advisory-with-comparison, these results are never trusted context.
 
@@ -171,7 +176,7 @@ D4 narrows the window from "discovered afterwards" to "flagged at scaffold time,
 
 The revisit trigger, concrete rather than "with data": if the D2 trail over its first 30 days shows a pre-commission recall for fewer than half of commissioned investigations, this decision reopens - with the skill option, or a seam not yet found.
 The record it counts is an undeclared-seam recall in the 24 hours before a task's creation time, which is why D2's seam vocabulary carries that fifth value: the consult this decision leaves as prose is an ad-hoc wrapper call, so no mounted seam can produce the evidence, and a brief-scaffold record could never serve because that search runs after the commission decision.
-The 24-hour window is the captain's decision of 2026-08-20, recorded here as theirs rather than as a default this design chose, because the number's owner is the point.
+The 24-hour window is the captain's decision of 2026-08-19, recorded here as theirs rather than as a default this design chose, because the number's owner is the point.
 It has to be bounded at all for a structural reason: undeclared is a shared bucket for every ad-hoc call, so an unbounded lookback would let one old record count as the pre-commission recall for every task created after it, driving the measured fraction to one and leaving the trigger unable to fire.
 
 ### D7. The split-by-kind rule conflicted with itself, and this design resolves it - with a third category the captain did not name
@@ -250,7 +255,7 @@ This ADR adopts that target as the destination of the tranche system and holds t
 - Brief-scaffold search: measured 242-879 tokens of output per commissioned task, ~0.75s, zero hosted tokens; zero cost for sessions that commission nothing.
 - Nearest-prior-work line: one stdout line at scaffold time.
 - `/stow` round-trip: sub-second local searches per candidate item processed, so the count is proportional to what a pass admits and prunes rather than fixed (D5).
-- Audit trail: one local file append per `search` in a home with a local index, plus one more per `/stow` conclusion (D5); no context cost.
+- Audit trail: one local file append per `search` in a home with a local index, plus one conclusion record per candidate a `/stow` read informed (D5); no context cost.
 - Always-cost added to any session: **zero** - of the four seams listed above, each is paid only when its own trigger fires, and none charges the startup files or the per-session context unconditionally.
 
 ### The net, honestly
@@ -311,7 +316,7 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
   The captain should read the relief timeline in "The net, honestly" as the schedule: routing now, retrieval as homes pass the gate, deep offload last.
 - The D2 trail's privacy trade is permanent: adoption and outcomes are measurable forever, and free-text queries are never written down, which resists reading the trail but not guessing against it - unevenly across the five seam values D2 enumerates, and weakest at brief-scaffold and undeclared, the two whose candidates the backlog supplies.
 - D6 leaves a known, named gap open, with a dated instance and a concrete reopening trigger; anyone reading this ADR should not mistake D4's scaffold-time line for coverage of it.
-- Alarm fatigue is the named risk of D4; the mitigation is its honest name and claim, and the D2 trail is how a fatigued, skimmed-past line would be detected (surfacing that never changes a dispatch decision).
+- Alarm fatigue is the named risk of D4, and its only guard is the line's honest framing as proximity rather than duplication; a skimmed-past line is not detectable from the trail, whose fields say a search ran and nothing about what the line did.
 - The recurring defect this interview kept meeting, in three different coats, is a positive standing without evidence: a search hit as a verdict, a capability assumed present, a check defaulting to "fine".
   The one-sentence rule that guards all of them: the brain may tell you where to look; it may not tell you that you have looked.
   It then appeared a fourth time, in this ADR's own prose - in the sentences written to fix the first three, which asserted properties over a set of seams nobody had enumerated: "the trail holds those failed invocations and nothing else", "the one difference the check found", "queries derive from task titles".
