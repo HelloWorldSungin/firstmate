@@ -13,6 +13,13 @@
 // "unknown" rather than dropped, so a hostile wrapper cannot make a result
 // invisible.
 //
+// No page loads these paint functions: index.html loads /app.js alone, and
+// assets/dashboard/app.js imports this module's data layer without them. The
+// Knowledge view there is the renderer a captain sees, so a result row's
+// capture date and live-source state are rendered there alone rather than in
+// a second copy here. Issue 170 owns whether this rendering layer is removed
+// with its tests or covered.
+//
 // The data layer below returns plain objects; the rendering layer turns
 // them into DOM nodes. Tests exercise the data layer without needing a
 // DOM, and the rendering layer is the only thing that touches
@@ -353,10 +360,6 @@ export function paintGBrainSearchResults(elements, payload, error) {
       head.append(element("span", "pill quiet", `score ${row.score.toFixed(3)}`));
     }
     if (row.stale === true) head.append(element("span", "chip amber", "stale"));
-    if (row.source_state && row.source_state !== "unknown") {
-      head.append(element("span", "pill quiet", row.source_state === "drifted" ? "live source wins" : row.source_state));
-    }
-    if (row.captured_at) head.append(element("span", "pill quiet", `captured ${text(row.captured_at)}`));
     card.append(head);
     card.append(element("div", "task-id", text(row.slug) || "no slug"));
     card.append(element("h3", "", text(row.title) || "Untitled"));
