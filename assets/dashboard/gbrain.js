@@ -13,6 +13,13 @@
 // "unknown" rather than dropped, so a hostile wrapper cannot make a result
 // invisible.
 //
+// No page loads these paint functions: index.html loads /app.js alone, and
+// assets/dashboard/app.js imports this module's data layer without them. The
+// Knowledge view there is the renderer a captain sees, so a result row's
+// capture date and live-source state are rendered there alone rather than in
+// a second copy here. Issue 170 owns whether this rendering layer is removed
+// with its tests or covered.
+//
 // The data layer below returns plain objects; the rendering layer turns
 // them into DOM nodes. Tests exercise the data layer without needing a
 // DOM, and the rendering layer is the only thing that touches

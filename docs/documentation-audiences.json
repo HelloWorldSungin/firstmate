@@ -178,6 +178,10 @@
       "target": "bin/fm-classify-lib.sh"
     },
     {
+      "source": "assets/dashboard/gbrain.js",
+      "target": "assets/dashboard/app.js"
+    },
+    {
       "source": "bin/fm-fleet-snapshot.sh",
       "target": "docs/verification/dashboard-fleet-health.md"
     },
