@@ -2,6 +2,7 @@
 
 Dated empirical evidence for what pinned GBrain releases provide to Firstmate's captured corpus, and for the upgrades that installed them.
 It exists because release notes can read as though they retire several of the capture guarantees Firstmate still owns, and the measurements below show which of those readings survive contact with the binary.
+A `What this leaves to Firstmate` table states which of those guarantees the binary covers and which stay Firstmate's, as measured at one release, so the newest such table is the current one and every earlier table stays scoped to the release its own column header names.
 The installation and upgrade procedure itself is owned by [`../gbrain.md`](../gbrain.md); the delivery-side receipt proof is owned by [gbrain-capture.md](gbrain-capture.md); the standalone retrieval and synthesis quality baseline and the embedding-migration numbers are owned by [gbrain-eval.md](gbrain-eval.md), while the runs taken either side of a pin move stay here.
 
 ## Environment
@@ -729,5 +730,6 @@ Firstmate's own body cap at 65536 bytes and the absence of a truncation marker i
 
 ## Maintaining this file
 
-Refresh it on the next GBrain pin move, and treat every row of the closing table as a claim that has to be re-measured rather than carried forward.
+Refresh it on the next GBrain pin move, and sooner when the newest entry's table has not been measured against the installed pin.
+Treat every row of that table as a claim that has to be re-measured rather than carried forward.
 Keep the probes on a disposable brain, and keep the hosted-synthesis boundary in [`../gbrain.md`](../gbrain.md) rather than restating it here.
