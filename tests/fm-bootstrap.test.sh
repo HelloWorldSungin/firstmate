@@ -1233,6 +1233,172 @@ SH
   pass "bootstrap surfaces a serving-home credential violation in normal and detect-only sessions"
 }
 
+# The recorded GBrain pin and the installed release are required to move in one
+# change, and the drift that motivated the check came from an upgrade performed
+# OUTSIDE the documented procedure - so the check has to run where nobody has to
+# remember it, which is session start. What has to hold is that it is a signal
+# rather than a fixture: only a real disagreement, or a side that could not be
+# read, prints. Fail by: dropping bootstrap's invocation, letting agreement or a
+# brainless host print anything, or swallowing the drift line.
+# The record docs/gbrain.md carries, in the shape fm_gbrain_documented_pin reads
+# it. Its backticks are markdown rather than command substitution, which is why
+# the one place that writes them carries the directive.
+# shellcheck disable=SC2016
+GBRAIN_PIN_RECORD='# Local GBrain archive\n\nThe installed GBrain release is `%s` at commit `%s`.\n'
+
+write_gbrain_record() {  # <code-root> <version> <commit>
+  # shellcheck disable=SC2059 # GBRAIN_PIN_RECORD is this suite's own format string
+  printf "$GBRAIN_PIN_RECORD" "$2" "$3" > "$1/docs/gbrain.md"
+}
+
+test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise() {
+  local case_dir home fakebin out
+  case_dir="$TMP_ROOT/gbrain-pin-drift"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/docs"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # The universal stub answers `config get` for the serving check and nothing
+  # else, so this case gives it the one question the pin check asks.
+  cat > "$fakebin/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' "gbrain ${FM_FAKE_GBRAIN_VERSION:-0.46.21.0}"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gbrain"
+
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: drift - " \
+    "a record the host has moved past must surface at session start"
+  assert_contains "$out" "v0.45.9.0" \
+    "the drift line must name the recorded pin"
+  assert_contains "$out" "0.46.21.0" \
+    "the drift line must name the release the host actually runs"
+
+  # Agreement is the whole point of the record, so it is not news.
+  write_gbrain_record "$home" v0.46.21.0 649ffe5f
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_PIN:" \
+    "a record that agrees with the installed release must print nothing"
+
+  # A home with no GBrain installed has nothing to compare, which is a complete
+  # answer rather than a diagnostic every brainless home would carry forever.
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  rm -f "$fakebin/gbrain"
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_PIN:" \
+    "a home with no gbrain installed must print nothing about the pin"
+  pass "bootstrap reports recorded-pin drift and stays silent on agreement and on a brainless home"
+}
+
+# A home may name its gbrain in FM_GBRAIN_BIN without putting that directory on
+# PATH, which is the form the gbrain verification docs use, and every other
+# gbrain-touching script resolves it. A bootstrap gate that only looked at PATH
+# would leave that home's pin free to drift with no session ever saying so.
+# Fail by: gating the probe on a bare `command -v gbrain`.
+test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names() {
+  local case_dir home fakebin offpath out
+  case_dir="$TMP_ROOT/gbrain-pin-envbin"
+  home="$case_dir/home"
+  offpath="$case_dir/off-path"
+  mkdir -p "$home/config" "$home/docs" "$offpath"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$offpath/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'gbrain 0.46.21.0'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$offpath/gbrain"
+  rm -f "$fakebin/gbrain"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_GBRAIN_BIN="$offpath/gbrain" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: drift - " \
+    "a gbrain reachable only through FM_GBRAIN_BIN must still be compared at session start"
+  assert_contains "$out" "0.46.21.0" \
+    "the drift line must name the release FM_GBRAIN_BIN's executable reports"
+  pass "bootstrap compares the pin against the gbrain FM_GBRAIN_BIN names, not just one on PATH"
+}
+
+# An FM_GBRAIN_BIN whose target was renamed or moved is a side that could not be
+# read, not an absent brain, and bootstrap must surface that rather than gate
+# itself off on its own copy of the resolution rule and go quiet forever.
+# Fail by: re-adding a `command -v` gate in front of the comparer.
+test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin() {
+  local case_dir home fakebin out
+  case_dir="$TMP_ROOT/gbrain-pin-envbin-missing"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/docs"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/gbrain"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_GBRAIN_BIN="$case_dir/renamed-away-gbrain" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: unknown - " \
+    "an FM_GBRAIN_BIN that no longer resolves must surface rather than silence the check"
+  assert_contains "$out" "$case_dir/renamed-away-gbrain" \
+    "the unknown line must name the executable that could not be read"
+
+  # The same home with the variable UNSET states nothing about where a gbrain
+  # is, so it is a home that does not run GBrain and session start says so by
+  # saying nothing. That contrast is the whole set-ness rule at this layer.
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_PIN:" \
+    "a home with FM_GBRAIN_BIN unset and no gbrain installed must print nothing about the pin"
+  pass "bootstrap surfaces an unresolvable FM_GBRAIN_BIN and stays silent when it is unset"
+}
+
+# The pin read execs `gbrain --version`, so it is bounded like every other
+# startup probe: an executable that ignores SIGTERM must degrade to one reported
+# line rather than parking session start behind it.
+# Fail by: dropping the bound, or reporting a hung read as agreement.
+test_bootstrap_bounds_the_gbrain_pin_read() {
+  local case_dir home fakebin out
+  case_dir="$TMP_ROOT/gbrain-pin-bound"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/docs"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_gbrain_record "$home" v0.45.9.0 1ec6a6e
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  trap '' TERM
+  sleep 300
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gbrain"
+
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_PIN_TIMEOUT=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_PIN: unknown - the bounded pin check did not finish within 1s" \
+    "a gbrain that ignores SIGTERM must be killed and reported, never waited on"
+  pass "bootstrap bounds the pin read and reports the bound it spent"
+}
+
 # FM_BOOTSTRAP_NETWORK splits one bootstrap run into its local and network
 # halves so a session start can compose its digest from the local half alone and
 # run the network half concurrently. The property that has to hold is that the
@@ -1783,6 +1949,10 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_relays_vault_drift_in_both_modes
 test_bootstrap_relays_gbrain_serving_credential_in_both_modes
+test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise
+test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names
+test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin
+test_bootstrap_bounds_the_gbrain_pin_read
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times

@@ -185,7 +185,7 @@ family_for_basename() {
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
-    fm-gbrain-lib.test.sh|fm-recall.test.sh)
+    fm-gbrain-lib.test.sh|fm-gbrain-pin-check.test.sh|fm-recall.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
@@ -1003,6 +1003,13 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       printf '%s\n' live-harness-optin
+      ;;
+    # The recorded-pin comparer has two consuming families: its own contract
+    # suite, and session start, which parses its verdict line and branches on
+    # its exit codes.
+    bin/fm-gbrain-pin-check.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' session-bootstrap
       ;;
     # The shared wall-clock bound: brain retrieval owns its portable regression,
     # and the forge observation and write-back paths are its other consumers.
