@@ -39,10 +39,12 @@ agy:## agy ("
 # directory, so a test can delete or chmod a variant without touching the repo.
 fixture_root() {
   local dir=$1
-  mkdir -p "$dir/bin" "$dir/.agents/skills/harness-adapters/harnesses"
-  cp "$DOC" "$dir/bin/"
+  mkdir -p "$dir/bin" "$dir/.agents/skills/harness-adapters/harnesses" \
+    || fail "could not build the fixture tree at $dir"
+  cp "$DOC" "$dir/bin/" || fail "could not copy the resolver into the fixture at $dir"
   cp "$ROOT"/.agents/skills/harness-adapters/harnesses/*.md \
-    "$dir/.agents/skills/harness-adapters/harnesses/"
+    "$dir/.agents/skills/harness-adapters/harnesses/" \
+    || fail "could not copy the variant files into the fixture at $dir"
   printf '%s\n' "$dir"
 }
 
@@ -74,11 +76,18 @@ EOF
 }
 
 test_pi_and_pi_signed_share_one_variant() {
-  local a b
-  a=$("$DOC" pi)
-  b=$("$DOC" pi-signed)
+  local a b code
+  a=$("$DOC" pi) && code=0 || code=$?
+  [ "$code" = 0 ] \
+    || fail "pi did not resolve (exit $code), so comparing it with pi-signed would be vacuous"
+  b=$("$DOC" pi-signed) && code=0 || code=$?
+  [ "$code" = 0 ] \
+    || fail "pi-signed did not resolve (exit $code), so comparing it with pi would be vacuous"
+  [ -n "$a" ] && [ -n "$b" ] \
+    || fail "the resolver printed no path for pi or pi-signed, so this would compare two empty strings"
   [ "$a" = "$b" ] \
     || fail "pi and pi-signed are one adapter and must share one variant file, got '$a' and '$b'"
+  assert_present "$a" "pi and pi-signed share a variant file that does not exist: $a"
   pass "pi and pi-signed resolve to the same variant file"
 }
 
@@ -152,7 +161,8 @@ test_resolution_results_are_refused_not_treated_as_harnesses() {
 
 test_missing_variant_file_refuses_naming_the_path() {
   local dir out code
-  dir=$(fixture_root "$TMP_ROOT/missing")
+  dir=$(fixture_root "$TMP_ROOT/missing") \
+    || fail "could not build the missing-variant fixture, so this case would not exercise the resolver"
   rm "$dir/.agents/skills/harness-adapters/harnesses/grok.md"
   out=$(FM_ROOT_OVERRIDE="$dir" "$dir/bin/fm-harness-adapter-doc.sh" grok 2>&1) && code=0 || code=$?
   expect_code 3 "$code" "a missing variant file"
@@ -168,7 +178,8 @@ test_missing_variant_file_refuses_naming_the_path() {
 
 test_unreadable_variant_file_refuses() {
   local dir out code
-  dir=$(fixture_root "$TMP_ROOT/unreadable")
+  dir=$(fixture_root "$TMP_ROOT/unreadable") \
+    || fail "could not build the unreadable-variant fixture, so this case would not exercise the resolver"
   chmod 000 "$dir/.agents/skills/harness-adapters/harnesses/cursor.md"
   out=$(FM_ROOT_OVERRIDE="$dir" "$dir/bin/fm-harness-adapter-doc.sh" cursor 2>&1) && code=0 || code=$?
   chmod 644 "$dir/.agents/skills/harness-adapters/harnesses/cursor.md"

@@ -61,7 +61,6 @@ Never hand-type an interrupt key or exit command through `fm-send`: a routing-ma
 The per-adapter `Exit command` and `Interrupt` rows in the variant file for the harness you resolved (`bin/fm-harness-adapter-doc.sh <harness>`) remain the verification record for those values; the executable owner is what firstmate actually runs, so a newly verified adapter is not reachable by the control plane until its rows land in that owner.
 The primary-session "no turn ends blind" guard contract and harness hook installation paths live in `docs/turnend-guard.md`.
 The primary-session watcher wake protocols are rendered from `docs/supervision-protocols/` by `bin/fm-supervision-instructions.sh`.
-The supervision knowledge lives here: busy state, exit command, interrupt, dialogs, resume behavior, skill invocation, and quirks.
 Each adapter's `Busy state` row names only which semantic source that harness uses; `bin/fm-busy-lib.sh` owns the contract itself, including verdicts, source attribution, and the verification gates that keep an unverified harness at unknown.
 
 Never dispatch a crewmate or secondmate on an unverified adapter.
@@ -99,6 +98,9 @@ Because Cursor loads the tracked Claude settings too, every Claude-shaped entryp
 The exact hook files, commands, scoping rules, and fail-open tradeoffs are owned by `docs/turnend-guard.md`.
 `docs/verification/supervision.md` "Turn-end guard" owns active validation evidence.
 When changing any primary turn-end hook, validate the real harness behavior in a scratch project or throwaway home before trusting it, then update that doc and that harness's concise fact in its own variant file (`bin/fm-harness-adapter-doc.sh <harness>`).
+
+Where firstmate installs a hook guarded, so that it exits silently and writes nothing unless its scoping conditions match the session that fired it, absence of effect proves nothing about invocation: no marker written is equally consistent with the guard declining and with the hook never running.
+Prove invocation with an unguarded probe before concluding that the hook did not fire.
 
 The same per-task hook files optionally carry the dashboard's agent-event reporting for `claude` and `opencode` when a home has instrumentation enabled.
 Those entries are additive and always exit 0 silently off the critical path, so they cannot change any guard's decision, and they are absent entirely otherwise; [`docs/dashboard-events.md`](../../../docs/dashboard-events.md) owns that contract.
