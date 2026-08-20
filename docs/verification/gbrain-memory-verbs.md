@@ -2,7 +2,7 @@
 
 Dated empirical evidence for what pinned GBrain releases provide to Firstmate's captured corpus, and for the upgrades that installed them.
 It exists because release notes can read as though they retire several of the capture guarantees Firstmate still owns, and the measurements below show which of those readings survive contact with the binary.
-The installation and upgrade procedure itself is owned by [`../gbrain.md`](../gbrain.md); the delivery-side receipt proof is owned by [gbrain-capture.md](gbrain-capture.md); the retrieval quality numbers are owned by [gbrain-eval.md](gbrain-eval.md).
+The installation and upgrade procedure itself is owned by [`../gbrain.md`](../gbrain.md); the delivery-side receipt proof is owned by [gbrain-capture.md](gbrain-capture.md); the standalone retrieval and synthesis quality baseline and the embedding-migration numbers are owned by [gbrain-eval.md](gbrain-eval.md), while the runs taken either side of a pin move stay here.
 
 ## Environment
 
@@ -269,6 +269,52 @@ Dreaming therefore remained disabled, and the upgrade added no scheduler, persis
 
 The `mounts --mcp-url` implementation remained absent at the pinned source commit.
 The current source still labels HTTP MCP mounts and OAuth as not yet shipped, so [`../gbrain-scoping.md`](../gbrain-scoping.md) required no correction.
+
+## The 2026-08-19 upgrade to `v0.46.21.0`
+
+The live source installation moved from `v0.45.9.0` at `1ec6a6e842a15f2bde2ebe8c3a686a6fa6b17aa5` to `v0.46.21.0` at `649ffe5f8baf3ff7f979c77f4de3975904cfe029`, backed up first to `data/gbrain/backups/20260819T045704Z`.
+Firstmate ran the evaluation either side of that move and supplied the numbers below from its own run artifacts.
+Those artifacts are `baseline-0.45.9.0.json`, `baseline-run.log`, `after-0.46.21.0.json`, `after-run.log`, and `rollback.md` under `/home/sungin/firstmate/data/gbrain-upgrade-2026-08-19/`, which is in the home's gitignored `data/` and therefore unreachable from a checkout of this repository.
+This entry is consequently the durable copy of the observation rather than a pointer to one, so it carries its provenance inline.
+
+The baseline run on `v0.45.9.0`, labelled `pre-0.46.21.0`, started `2026-08-19T04:34:25Z` and finished `2026-08-19T04:56:38Z`.
+The post-upgrade run on `v0.46.21.0`, labelled `post-0.46.21.0`, started `2026-08-19T04:59:32Z` and finished `2026-08-19T05:19:36Z`.
+Both asked the same forty questions at `top_k` 5 against `brain_root /home/sungin/firstmate/data/gbrain`, the brain that home resolves rather than the second deployment tree under `~/.local/share/gbrain`.
+
+Everything a like-for-like comparison has to hold fixed was identical in the two runs:
+
+| Field | Both runs |
+| --- | --- |
+| Evaluation set | `fleet-history` v2, `docs/gbrain-eval-set.v1.json`, `sha256:8246d22fefc1d1abc3ea1430357758db7655de3fb2b44eb970017d41e11f3e38` |
+| Corpus | 257 documents, 1146 chunks, 1146 embedded, revision `sha256:fa060f67f9a1ece0e4ea62fc8504ffcb6b298b5b6dbe866e18fc606d7858811d` |
+| Embedding | `ollama:snowflake-arctic-embed2:568m`, 1024 dimensions |
+| Reranker | `llama-server-reranker:qwen3-reranker-0.6b-q8_0`, enabled |
+| Engine | `pglite`, schema pack `gbrain-base-v2` |
+
+Retrieval did not move across the pin:
+
+| Metric | `0.45.9.0` | `0.46.21.0` |
+| --- | --- | --- |
+| search top-1 | 0.925 | 0.925 |
+| search top-5 | 0.95 | 0.95 |
+| search MRR | 0.9375 | 0.9375 |
+
+That agreement is question by question rather than only in aggregate: the same two questions missed in both runs, `q24` and `q35`, and the same one fell to rank two, `q26`.
+
+Synthesis did move, so the upgrade is like-for-like on retrieval alone and nothing here supports a wider claim:
+
+| Metric | `0.45.9.0` | `0.46.21.0` |
+| --- | --- | --- |
+| think answered | 0.8205 over 39 scored | 0.80 over 40 scored |
+| think grounded | 0.9375 | 0.96875 |
+| think key facts | 0.78125 | 0.734375 |
+| think citation precision | 0.5154 | 0.5289 |
+| Unread questions | `q39`, `local_retrieval_failed` | none |
+
+Two facts make those numbers readable.
+The scored counts differ because the baseline failed local retrieval on `q39` and scored 39 questions, while the post-upgrade run read all 40.
+The 0.95 `think_answered` threshold was missed in both runs, so that miss predates this upgrade rather than being a regression it introduced.
+Unlike the disposable-brain probes elsewhere in this file, the synthesis half of both runs read the live corpus through the configured hosted model, which is the export boundary [`../gbrain.md`](../gbrain.md) owns.
 
 ## Maintaining this file
 
