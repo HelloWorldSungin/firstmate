@@ -417,107 +417,116 @@ $ jq -r '.checks[] | select(.name == "schema_version") | .message' /tmp/doctor-2
 Version 132 (latest: 132)
 ```
 
-Every check this build runs, with its status, read back from that one saved run rather than from a name allowlist carried forward:
+Every check this build runs, with the category GBrain assigns it and its status, read back from that one saved run rather than from a name list chosen here:
 
 ```text
-$ jq -r '.checks[] | "\(.name) \(.status)"' /tmp/doctor-2026-08-20.json
-resolver_health fail
-retrieval_reflex_health warn
-volunteer_channels ok
-memory_verbs_usage ok
-skill_conformance ok
-skill_brain_first ok
-skills_manifest_integrity ok
-skill_currency warn
-skill_preconditions ok
-nightly_quality_probe_health ok
-extract_health ok
-conversation_facts_backlog ok
-extract_atoms_backlog ok
-conversation_format_coverage ok
-progressive_batch_audit_health ok
-conversation_parser_probe_health ok
-home_dir_in_worktree warn
-npm_squat ok
-connection ok
-pgvector ok
-rls ok
-schema_version ok
-rls_event_trigger ok
-embeddings ok
-embedding_provider ok
-embedding_column_registry ok
-embedding_env_override ok
-embedding_migration_state ok
-graph_coverage ok
-brain_score warn
-orphan_ratio ok
-integrity ok
-jsonb_integrity ok
-takes_weight_grid ok
-child_table_orphans ok
-raw_provenance ok
-source_config_shape ok
-whoknows_health ok
-cross_modal_modality_backfill ok
-unified_multimodal_coverage ok
-markdown_body_completeness ok
-oversized_pages ok
-scraper_junk_pages ok
-content_sanity_audit_recent ok
-quarantined_pages ok
-flagged_pages ok
-unverified_extractions ok
-frontmatter_integrity ok
-eval_capture ok
-contradictions ok
-facts_extraction_health ok
-effective_date_health ok
-salience_health ok
-queue_health ok
-subagent_capability ok
-facts_health ok
-image_assets ok
-ocr_health ok
-sync_freshness ok
-sync_consolidation ok
-links_extraction_lag warn
-cycle_freshness ok
-content_hash_duplicates ok
-undeclared_db_only_pages ok
-db_only_collector_collision ok
-search_mode ok
-hidden_by_search_policy ok
-eval_drift ok
-reranker_health ok
-batch_retry_health ok
-wedged_queue ok
-orphaned_private_queue ok
-autopilot_fanout_concurrency ok
-graph_signals_coverage ok
-brainstorm_health ok
-link_resolution_opportunity ok
-ze_embedding_health ok
-provider_sunset ok
-embedding_width_consistency ok
-facts_embedding_width_consistency ok
-source_routing_health ok
-oauth_confidential_client_health ok
-oauth_client_scope_health ok
-autopilot_lock_scope ok
-stale_locks ok
-cycle_phase_scope ok
-embed_staleness ok
-entity_link_coverage ok
-timeline_coverage ok
-takes_count warn
-pack_upgrade_available ok
-type_proliferation ok
-dangling_aliases ok
+$ jq -r '.checks[] | "\(.category) \(.name) \(.status)"' /tmp/doctor-2026-08-20.json
+skill resolver_health fail
+skill retrieval_reflex_health warn
+skill volunteer_channels ok
+skill memory_verbs_usage ok
+skill skill_conformance ok
+skill skill_brain_first ok
+skill skills_manifest_integrity ok
+skill skill_currency warn
+skill skill_preconditions ok
+brain nightly_quality_probe_health ok
+brain extract_health ok
+brain conversation_facts_backlog ok
+brain extract_atoms_backlog ok
+brain conversation_format_coverage ok
+ops progressive_batch_audit_health ok
+brain conversation_parser_probe_health ok
+ops home_dir_in_worktree warn
+ops npm_squat ok
+ops connection ok
+ops pgvector ok
+ops rls ok
+meta schema_version ok
+ops rls_event_trigger ok
+brain embeddings ok
+brain embedding_provider ok
+brain embedding_column_registry ok
+brain embedding_env_override ok
+brain embedding_migration_state ok
+brain graph_coverage ok
+brain brain_score warn
+brain orphan_ratio ok
+brain integrity ok
+brain jsonb_integrity ok
+brain takes_weight_grid ok
+brain child_table_orphans ok
+brain raw_provenance ok
+brain source_config_shape ok
+skill whoknows_health ok
+brain cross_modal_modality_backfill ok
+brain unified_multimodal_coverage ok
+brain markdown_body_completeness ok
+brain oversized_pages ok
+brain scraper_junk_pages ok
+brain content_sanity_audit_recent ok
+brain quarantined_pages ok
+brain flagged_pages ok
+brain unverified_extractions ok
+brain frontmatter_integrity ok
+meta eval_capture ok
+brain contradictions ok
+brain facts_extraction_health ok
+brain effective_date_health ok
+brain salience_health ok
+ops queue_health ok
+ops subagent_capability ok
+brain facts_health ok
+brain image_assets ok
+brain ocr_health ok
+brain sync_freshness ok
+ops sync_consolidation ok
+brain links_extraction_lag warn
+brain cycle_freshness ok
+brain content_hash_duplicates ok
+brain undeclared_db_only_pages ok
+ops db_only_collector_collision ok
+ops search_mode ok
+brain hidden_by_search_policy ok
+brain eval_drift ok
+ops reranker_health ok
+ops batch_retry_health ok
+ops wedged_queue ok
+ops orphaned_private_queue ok
+ops autopilot_fanout_concurrency ok
+brain graph_signals_coverage ok
+ops brainstorm_health ok
+brain link_resolution_opportunity ok
+ops ze_embedding_health ok
+ops provider_sunset ok
+brain embedding_width_consistency ok
+brain facts_embedding_width_consistency ok
+brain source_routing_health ok
+ops oauth_confidential_client_health ok
+ops oauth_client_scope_health ok
+ops autopilot_lock_scope ok
+ops stale_locks ok
+meta cycle_phase_scope ok
+brain embed_staleness ok
+brain entity_link_coverage ok
+brain timeline_coverage ok
+brain takes_count warn
+meta pack_upgrade_available ok
+meta type_proliferation ok
+brain dangling_aliases ok
 ```
 
-Of the 93 checks, 86 report `ok`, among them `connection`, `integrity`, `content_hash_duplicates`, `child_table_orphans`, `orphan_ratio`, and `jsonb_integrity`.
-The seven that do not are `resolver_health`, `retrieval_reflex_health`, `skill_currency`, `home_dir_in_worktree`, `brain_score`, `links_extraction_lag`, and `takes_count`; their messages are not reproduced here, and none of them is one of the integrity-class checks named above.
+Of the 93 checks, 86 report `ok`, and that first column is the build's own classification: 54 `brain`, 24 `ops`, 10 `skill`, 5 `meta`.
+`brain` is the class `core/doctor-categories.ts` describes as the data-integrity signals, and it is not uniformly clean here: three of the seven non-`ok` checks belong to it, each `warn` - `brain_score`, `links_extraction_lag`, and `takes_count`.
+The other four are `resolver_health` (`fail`), `retrieval_reflex_health`, and `skill_currency` in `skill`, and `home_dir_in_worktree` in `ops`; their messages are not reproduced here.
+The five integrity checks the 2026-08-13 entry named all report `ok` - `integrity`, `content_hash_duplicates`, `child_table_orphans`, `orphan_ratio`, and `jsonb_integrity` - as does `connection`, which this build files under `ops` rather than `brain`.
+The build scores those classes itself, out of the same saved run:
+
+```text
+$ jq -c '{brain_checks_score, category_scores}' /tmp/doctor-2026-08-20.json
+{"brain_checks_score":85,"category_scores":{"brain":85,"skill":70,"ops":95,"meta":100}}
+```
+
 No name in the listing contains `outbox` or `divergence`, so the capture outbox is still a Firstmate artifact that GBrain has no knowledge of.
 
 #### Capturing corrections and current facts, not only pruned text
@@ -685,7 +694,8 @@ Nothing native returns a query-level miss bit, so the answer protocol is still F
 `gbrain eval brainbench` still grades cross-harness memory conformance against bundled fixtures, not this corpus:
 
 ```text
-$ /home/sungin/.local/gbrain/bin/gbrain eval brainbench --help 2>/dev/null
+$ /home/sungin/.local/gbrain/bin/gbrain eval brainbench --help 2>&1 | \
+  sed -n '/^Usage/,/BRAINBENCH.md/p'
 Usage: gbrain eval brainbench [options]
 
 Cross-harness memory conformance suite. Hermetic by default: in-memory
