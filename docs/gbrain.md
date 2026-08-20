@@ -1,6 +1,6 @@
-# Local GBrain archive
+# Local GBrain installation and operation
 
-This operator reference owns the Firstmate GBrain installation, archive setup, retrieval configuration, privacy boundary, quality evaluation, embedding-migration playbook, and recovery procedure for one brain.
+This operator reference owns the Firstmate GBrain installation, archive import, retrieval configuration, privacy boundary, quality evaluation, embedding-migration playbook, and backup and rebuild procedure for one brain.
 How a Firstmate home scopes its OWN brain, and how the main brain is shared read-only with secondmate homes, is owned by [gbrain-scoping.md](gbrain-scoping.md).
 The local embedding endpoint contract is in [gbrain-endpoints.md](gbrain-endpoints.md), the local reranker evidence is in [verification/gbrain-reranker.md](verification/gbrain-reranker.md), and the empirical installation evidence is in [verification/gbrain-init-retrieval.md](verification/gbrain-init-retrieval.md).
 The measured retrieval and synthesis numbers, and the recorded migration timings, are in [verification/gbrain-eval.md](verification/gbrain-eval.md).
@@ -8,13 +8,32 @@ The measured retrieval and synthesis numbers, and the recorded migration timings
 ## Operating paths
 
 The pinned GBrain source and executable live under `/home/sungin/.local/gbrain`.
-Read the brain paths below as one deployment's rather than as any home's: `bin/fm-gbrain.sh paths` is the authority for what a home actually resolves, and on this host `/home/sungin/firstmate` carries no `config/gbrain-local.json`, so it resolves its own brain under `/home/sungin/firstmate/data/gbrain` instead.
-The PGLite database and index live at `/home/sungin/.local/share/gbrain/pglite`.
-The GBrain runtime configuration lives at `/home/sungin/.local/share/gbrain/runtime/.gbrain` through `GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime`.
-The canonical markdown archive is the remote-less Git repository at `/home/sungin/.local/share/gbrain/archive`, outside both Firstmate project roots and the Firstmate source tree.
-Do not add a third-party Git remote to that archive.
-Those brain paths belong to this one deployment rather than to every home: a Firstmate home reaches them only when its `config/gbrain-local.json` sets `brain_root` to `/home/sungin/.local/share/gbrain`, and otherwise resolves its own `runtime/`, `pglite/`, and `archive/` under `$FM_HOME/data/gbrain` ([gbrain-scoping.md](gbrain-scoping.md)).
-Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute those values for the absolute paths in the commands below.
+That is the installation, and it is shared by every home on this host.
+
+A brain's own directories are per home, so this page resolves them rather than naming them.
+`bin/fm-gbrain.sh paths` is the authority for what a home actually resolves: its brain root, the `GBRAIN_HOME` runtime directory holding `.gbrain`, the PGLite database and index, and the archive location.
+A home resolves those under `$FM_HOME/data/gbrain` unless its `config/gbrain-local.json` sets `brain_root` elsewhere ([gbrain-scoping.md](gbrain-scoping.md)).
+Resolve them once from the Firstmate code root, and the command blocks below read the values from this shell:
+
+```sh
+FM_HOME=${FM_HOME:-/home/sungin/firstmate}
+paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
+gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
+pglite=$(printf '%s' "$paths" | jq -er '.pglite')
+archive=$(printf '%s' "$paths" | jq -er '.archive')
+```
+
+The command blocks below guard these variables, so a value that was never resolved refuses instead of silently creating or rewriting a brain under `$HOME/.gbrain`.
+The upgrade, backup, and `reinit-pglite` blocks resolve the same values again behind their own guard, because a step that rewrites or copies a brain wholesale must not inherit a stale variable from an earlier shell.
+Re-resolution covers the other failure, replacing a value that is real but stale, which a guard accepts because it is set.
+The init, configuration, import and embed, and raw `think` blocks read the shared values rather than resolving their own, so a stale value reaches them.
+In the raw `think` block that consequence leaves the machine: a stale `$gbrain_home` synthesizes against a different home's brain, so the wrong home's memory excerpts are sent to the hosted synthesis provider.
+As one example of what `paths --json` returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
+A hardcoded brain path is wrong for every home but the one it was written from, and it goes on looking right after the deployment it named is gone.
+
+`paths` reports the archive location a home derives, not a directory that exists.
+Only an archive-fed brain has one at all, and a Firstmate home fed by task-knowledge capture has none ([What a home can actually rebuild from](#what-a-home-can-actually-rebuild-from)).
+Where an archive does exist it is a remote-less Git repository, and no third-party Git remote may be added to it.
 
 ## Pinned installation and upgrade
 
@@ -82,15 +101,17 @@ To upgrade deliberately, select a newer verified GBrain tag, then run the block 
 
 `apply-migrations` rewrites whichever brain `GBRAIN_HOME` names, so this block resolves that home rather than naming one, exactly as the backup below does.
 A hardcoded `GBRAIN_HOME` is wrong for every home but the one it was written from, and on a host carrying more than one brain directory it is worse than wrong: the migration succeeds against the wrong database and every step after it reports success, while the brain the home actually reads stays un-migrated under new code.
-That is not hypothetical, and the two directories that made it possible on this host are the ones [Operating paths](#operating-paths) names.
+That is not hypothetical: this host has carried more than one brain directory at a time, and nothing stops that happening again.
+The block below follows an exported `FM_HOME` and migrates whatever brain that resolves to, so confirm which home the environment names before pasting it.
 
 ```sh
-FM_HOME=/home/sungin/firstmate
+FM_HOME=${FM_HOME:-/home/sungin/firstmate}
 gbrain_home=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json | jq -er '.gbrain_home')
 if [ ! -d "$gbrain_home/.gbrain" ]; then
   printf 'refusing upgrade: %s is not an initialized brain runtime for %s\n' "$gbrain_home" "$FM_HOME" >&2
   exit 1
 fi
+printf 'migrating the brain for %s at %s\n' "$FM_HOME" "$gbrain_home"
 git -C /home/sungin/.local/gbrain/src fetch --tags origin
 git -C /home/sungin/.local/gbrain/src checkout --detach <verified-tag>
 (cd /home/sungin/.local/gbrain/src \
@@ -140,7 +161,7 @@ The rule is checked rather than only stated, over a deliberately bounded set of 
 `serving-check` runs at every session start (via `bin/fm-bootstrap.sh`) and emits a `GBRAIN_SERVING_CREDENTIAL` line when a home is already in the forbidden configuration, so an existing violation cannot sit unnoticed between sessions.
 The verdict keys off the actual planes and never a home's name, because deriving it from a name is the defect class this repository keeps relearning.
 The serving relationship is `main_brain_owner` in the home-local plane, and it is read first: a home that provably serves nothing is clean whatever its credential plane holds, because the rule constrains serving homes alone.
-Past that gate the verdict inspects Firstmate's declared surfaces (`think.secret` and `think.base_url` in `config/gbrain.json`, and `config/gbrain-secrets/<name>`), GBrain's own runtime configuration (`models.think` and the matching `provider_base_urls.<provider>` under `GBRAIN_HOME`), and `minimax.key` in the fleet-wide runtime credential store (`/home/sungin/.pi/agent/auth.json`).
+Past that gate the verdict inspects Firstmate's declared surfaces (`think.secret` and `think.base_url` in `config/gbrain.json`, and `config/gbrain-secrets/<name>`), GBrain's own runtime configuration (`models.think` and the matching `provider_base_urls.<provider>` under `GBRAIN_HOME`), and `minimax.key` in the fleet-wide runtime credential store (`$HOME/.pi/agent/auth.json`).
 Hosted synthesis is reachable if a named credential is held in the declared credential store, `minimax.key` is held in the runtime credential store, or the declared or runtime `think` route points at a base URL that leaves this host.
 An unreadable serving relationship, declared plane, runtime plane, or credential store is reported as `unknown` and never as a pass, on every surface including `grant-read`, because a check that could not run must not look like one that found nothing.
 `bin/fm-gbrain-lib.sh` owns the single verdict every surface shares; [`gbrain-scoping.md`](gbrain-scoping.md) points here for the rule and its enforcement.
@@ -159,10 +180,10 @@ An unannounced window degrades rather than breaks: the panel reports the retriev
 Initialize a new local PGLite brain with the verified local embedding model and its probed dimension:
 
 ```sh
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain init --pglite \
-  --path /home/sungin/.local/share/gbrain/pglite \
+  --path "${pglite:?run the Operating paths resolve block first}" \
   --embedding-model ollama:snowflake-arctic-embed2:568m \
   --embedding-dimensions 1024 \
   --non-interactive
@@ -171,15 +192,15 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 Configure the local reranker and hosted synthesis routing with these verified commands:
 
 ```sh
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set provider_base_urls.llama-server-reranker http://127.0.0.1:8081/v1
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set search.reranker.model llama-server-reranker:qwen3-reranker-0.6b-q8_0
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set search.reranker.enabled true
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set provider_base_urls.minimax https://api.minimax.io/v1
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set models.think minimax:MiniMax-M3
 ```
 
@@ -227,7 +248,7 @@ A missed threshold is a result to record with its cause, never a reason to edit 
 
 ## MiniMax credential contract and privacy boundary
 
-The MiniMax credential is read only at runtime from `/home/sungin/.pi/agent/auth.json`, field `minimax.key`.
+The MiniMax credential is read only at runtime from `$HOME/.pi/agent/auth.json`, field `minimax.key`.
 The file must remain mode `0600`.
 Do not place that value in GBrain configuration, a repository, a test, a log, or a service unit.
 A home that uses per-home brain scoping may instead keep its own copy in that home's credential plane, `config/gbrain-secrets/<name>` named by `think.secret`, under the same mode `0600` requirement ([gbrain-scoping.md](gbrain-scoping.md)).
@@ -237,9 +258,9 @@ A Firstmate worker never runs the raw path below: `bin/fm-recall.sh` is the retr
 For a raw operator run, use an untraced shell to inject the key only into the `think` process:
 
 ```sh
-task_minimax_key=$(jq -er '.minimax.key | select(type == "string" and length > 0)' /home/sungin/.pi/agent/auth.json)
+task_minimax_key=$(jq -er '.minimax.key | select(type == "string" and length > 0)' "$HOME/.pi/agent/auth.json")
 MINIMAX_API_KEY="$task_minimax_key" \
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain think '<question>' --rounds 1
 unset task_minimax_key
@@ -251,13 +272,13 @@ When the MiniMax credential is absent, `think` returns no synthesis and reports 
 
 ## Archive, backup, and rebuild
 
-Import and embed the local-only archive with:
+An archive-fed brain imports and embeds its local-only archive with the commands below; a capture-fed brain has no archive to import and rebuilds from its outbox instead ([What a home can actually rebuild from](#what-a-home-can-actually-rebuild-from)).
 
 ```sh
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain import /home/sungin/.local/share/gbrain/archive
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+  /home/sungin/.local/gbrain/bin/gbrain import "${archive:?run the Operating paths resolve block first}"
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain embed --stale
 ```
@@ -266,10 +287,10 @@ Stop every `gbrain serve` process before copying PGLite because it is a single-w
 A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#knowledge)).
 So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
 Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
-Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory:
+Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory, running the block below from the Firstmate code root:
 
 ```sh
-FM_HOME=/home/sungin/firstmate
+FM_HOME=${FM_HOME:-/home/sungin/firstmate}
 paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
 brain_root=$(printf '%s' "$paths" | jq -er '.brain_root')
 pglite=$(printf '%s' "$paths" | jq -er '.pglite')
@@ -318,13 +339,24 @@ Announce the window first ([Announce a maintenance window](#announce-a-maintenan
 It also clears the brain's own database-plane configuration.
 The reranker, the hosted synthesis model, and the provider base URLs are stored there, so a reinitialized brain silently retrieves without reranking until [Initialize and configure retrieval](#initialize-and-configure-retrieval) is applied again.
 Re-apply that configuration before measuring or trusting the rebuilt brain, then restore the documents from whichever source the previous section identified.
+Run the block below from the Firstmate code root.
+It follows an exported `FM_HOME` and wipes whatever brain that resolves to, so confirm which home the environment names before pasting it.
 
 ```sh
-GBRAIN_HOME=/home/sungin/.local/share/gbrain/runtime \
+FM_HOME=${FM_HOME:-/home/sungin/firstmate}
+paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
+gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
+pglite=$(printf '%s' "$paths" | jq -er '.pglite')
+if [ ! -d "$gbrain_home/.gbrain" ] || [ ! -d "$pglite" ]; then
+  printf 'refusing to reinitialize: %s did not resolve an initialized brain runtime at %s and an index at %s\n' "$FM_HOME" "$gbrain_home" "$pglite" >&2
+  exit 1
+fi
+printf 'reinitializing the brain for %s at %s\n' "$FM_HOME" "$pglite"
+GBRAIN_HOME=$gbrain_home \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain reinit-pglite \
-  --path /home/sungin/.local/share/gbrain/pglite \
+  --path "$pglite" \
   --embedding-model ollama:snowflake-arctic-embed2:568m \
   --embedding-dimensions 1024 \
   --yes --no-sync

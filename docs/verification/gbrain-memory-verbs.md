@@ -16,6 +16,10 @@ gbrain_home /home/sungin/firstmate/data/gbrain/runtime
 pglite      /home/sungin/firstmate/data/gbrain/pglite
 ```
 
+Dated note, 2026-08-20: that second deployment tree under `~/.local/share/gbrain` was verified orphaned and deleted on that date, so the sentence above naming a second deployment tree is preserved as what was accurate when recorded rather than as a tree that still exists.
+Only that claim is stale, and the `/home/sungin/firstmate/data/gbrain` paths recorded nearby are this home's live brain and remain current.
+The installation at `/home/sungin/.local/gbrain` is a different directory and is unaffected.
+
 Every `remember` and `recall` probe below ran against a disposable PGLite brain under a temp path, never against the live corpus.
 No hosted synthesis and no hosted corpus analysis was run.
 
@@ -281,6 +285,10 @@ This entry is consequently the durable copy of the observation rather than a poi
 The baseline run on `v0.45.9.0`, labelled `pre-0.46.21.0`, started `2026-08-19T04:34:25Z` and finished `2026-08-19T04:56:38Z`.
 The post-upgrade run on `v0.46.21.0`, labelled `post-0.46.21.0`, started `2026-08-19T04:59:32Z` and finished `2026-08-19T05:19:36Z`.
 Both asked the same forty questions at `top_k` 5 against `brain_root /home/sungin/firstmate/data/gbrain`, the brain that home resolves rather than the second deployment tree under `~/.local/share/gbrain`.
+
+Dated note, 2026-08-20: that second deployment tree under `~/.local/share/gbrain` was verified orphaned and deleted on that date, so the sentence above naming a second deployment tree is preserved as what was accurate when recorded rather than as a tree that still exists.
+Only that claim is stale, and the `/home/sungin/firstmate/data/gbrain` paths recorded nearby are this home's live brain and remain current.
+The installation at `/home/sungin/.local/gbrain` is a different directory and is unaffected.
 
 Everything a like-for-like comparison has to hold fixed was identical in the two runs:
 

@@ -3,6 +3,10 @@
 This record captures active evidence for the installation and operator contract in [`gbrain.md`](../gbrain.md).
 The initial evidence was refreshed on 2026-08-04, and later observations carry their own dates below.
 
+Dated note, 2026-08-20: the brain directory these observations were taken against, `/home/sungin/.local/share/gbrain`, was verified orphaned and deleted on that date, so the recorded paths below cannot be re-run and are preserved as what was observed rather than as where a brain lives.
+The installation at `/home/sungin/.local/gbrain` is untouched and still current.
+[`gbrain.md`](../gbrain.md#operating-paths) owns how a home resolves its own brain directories now.
+
 ## Version and installation evidence
 
 GBrain `v0.42.69.0` was installed from commit `3acd511b80bd4d2fe487290a70de75d4cf094730` in the pinned source checkout at `/home/sungin/.local/gbrain/src`, which was the pin in force when this record was taken.
