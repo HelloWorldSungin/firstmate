@@ -24,6 +24,7 @@ pglite=$(printf '%s' "$paths" | jq -er '.pglite')
 archive=$(printf '%s' "$paths" | jq -er '.archive')
 ```
 
+The command blocks below guard these variables, so an unresolved value refuses instead of silently creating or rewriting a brain under `$HOME/.gbrain`.
 The upgrade and backup blocks resolve the same values again behind their own guard, because a step that rewrites or copies a brain must not inherit a stale variable from an earlier shell.
 As one example of what that returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
 A hardcoded brain path is wrong for every home but the one it was written from, and it goes on looking right after the deployment it named is gone.
@@ -175,10 +176,10 @@ An unannounced window degrades rather than breaks: the panel reports the retriev
 Initialize a new local PGLite brain with the verified local embedding model and its probed dimension:
 
 ```sh
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain init --pglite \
-  --path "$pglite" \
+  --path "${pglite:?run the Operating paths resolve block first}" \
   --embedding-model ollama:snowflake-arctic-embed2:568m \
   --embedding-dimensions 1024 \
   --non-interactive
@@ -187,15 +188,15 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 Configure the local reranker and hosted synthesis routing with these verified commands:
 
 ```sh
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set provider_base_urls.llama-server-reranker http://127.0.0.1:8081/v1
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set search.reranker.model llama-server-reranker:qwen3-reranker-0.6b-q8_0
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set search.reranker.enabled true
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set provider_base_urls.minimax https://api.minimax.io/v1
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
   /home/sungin/.local/gbrain/bin/gbrain config set models.think minimax:MiniMax-M3
 ```
 
@@ -255,7 +256,7 @@ For a raw operator run, use an untraced shell to inject the key only into the `t
 ```sh
 task_minimax_key=$(jq -er '.minimax.key | select(type == "string" and length > 0)' /home/sungin/.pi/agent/auth.json)
 MINIMAX_API_KEY="$task_minimax_key" \
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain think '<question>' --rounds 1
 unset task_minimax_key
@@ -270,10 +271,10 @@ When the MiniMax credential is absent, `think` returns no synthesis and reports 
 An archive-fed brain imports and embeds its local-only archive with the commands below; a capture-fed brain has no archive to import and rebuilds from its outbox instead ([What a home can actually rebuild from](#what-a-home-can-actually-rebuild-from)).
 
 ```sh
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain import "$archive"
-GBRAIN_HOME=$gbrain_home \
+  /home/sungin/.local/gbrain/bin/gbrain import "${archive:?run the Operating paths resolve block first}"
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain embed --stale
 ```
@@ -336,11 +337,11 @@ The reranker, the hosted synthesis model, and the provider base URLs are stored 
 Re-apply that configuration before measuring or trusting the rebuilt brain, then restore the documents from whichever source the previous section identified.
 
 ```sh
-GBRAIN_HOME=$gbrain_home \
+GBRAIN_HOME=${gbrain_home:?run the Operating paths resolve block first} \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain reinit-pglite \
-  --path "$pglite" \
+  --path "${pglite:?run the Operating paths resolve block first}" \
   --embedding-model ollama:snowflake-arctic-embed2:568m \
   --embedding-dimensions 1024 \
   --yes --no-sync
