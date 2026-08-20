@@ -55,6 +55,20 @@ Upstream's re-arm recovery (`kunchenguid/firstmate#2065`) makes any watcher that
 Upstream already models the case where one cycle deliberately succeeds another, through `FM_WATCH_PREDECESSOR_ARM_PID` and its handling-successor launch, so `--restart` now declares itself that successor rather than carrying a fork-local mechanism beside upstream's.
 A restart therefore keeps the fork's hand-over guarantee while every other arm path keeps upstream's resurface behavior unchanged.
 
+### Run-progress wedge hold
+
+The fork carries [`bin/fm-run-progress.sh`](../bin/fm-run-progress.sh), which upstream has no equivalent of, and threads a per-pane hold-count file through `wedge_timer_check` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) so a wedge escalation is held while the crew's validation run is demonstrably still moving.
+That hold-count file is a required fifth parameter here and does not exist upstream, so every upstream change that adds a `wedge_timer_check` caller arrives one argument short and must be threaded through rather than taken verbatim.
+It first collided on 2026-08-20 with `kunchenguid/firstmate#2619`, whose new `busy_turn_bound_check` absorber was adopted with the fork's hold-count argument added to its signature and its call.
+`bin/fm-classify-lib.sh`'s `crew_wedge_progress` owns the policy and [`docs/architecture.md`](architecture.md) owns the supervisor-facing contract.
+
+### Herdr pre-Enter footer read on a native working baseline
+
+The fork skips the pre-Enter rendered-footer read entirely when herdr's native agent-state baseline is already `working`, because the rendered-footer conversion refuses a `working` baseline outright and the read can therefore produce no verdict.
+Upstream reads that footer unconditionally whenever the baseline is not legibly idle.
+The skip is behaviour-neutral and saves one pane read per submit, but it shifts the adapter's CLI call sequence by one on that baseline, so upstream tests that pin response indices for a `working` baseline need renumbering rather than being taken verbatim.
+That renumbering was first applied on 2026-08-20 for the two `kunchenguid/firstmate#2647` cases in [`tests/fm-backend-herdr.test.sh`](../tests/fm-backend-herdr.test.sh) that assume the extra read.
+
 ### Upstream tracking mechanism
 
 This fork carries the optional drift detector, bootstrap diagnostic, sync-round skill and template, and this ledger.
@@ -113,6 +127,17 @@ Retiring the fork arm also removed the standing cost of carrying a parallel impl
 Concretely, the round deleted the fork's cursor launch template, its crew-only and Herdr-only spawn gates, its cursor half of the raw-launch restricted-harness guard, and its cursor arm of the Herdr atomic-prompt submit path, and narrowed the shared cursor/agy mechanisms - the native-idle debounce in `bin/fm-transition-lib.sh`, the identity-gated Herdr busy arm, and the adapter suite now at [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh) - to agy alone.
 Cursor is now an ordinary verified harness here, so `AGENTS.md` section 4's crew-only, Herdr-only sentence restricts agy alone.
 This is the fourth capability collision resolved by the remote-doctor precedent above.
+
+### Fork-local herdr queued-Enter conversion - retired 2026-08-20
+
+The fork's own retries-exhausted busy-queue conversion in `bin/backends/herdr.sh` - a tail composer re-read plus a native agent-state read classified with the adapter's submit vocabulary, guarded by an explicit `baseline_raw != blocked` short-circuit - was retired in favour of upstream's shared `fm_composer_queued_enter_verdict` policy, adopted with `kunchenguid/firstmate#2647`.
+Firstmate made that collision decision on 2026-08-20 under the already adopted TRACK strategy, applying the remote-doctor precedent above to two independently built implementations of one capability.
+Upstream's version puts the policy in `bin/fm-composer-lib.sh` where tmux and herdr both consume it, so the fork stops carrying a second copy of a decision on its highest-collision file.
+The blocked-baseline safety property the fork's guard existed for survives structurally rather than as a special case: upstream's `fm_backend_herdr_queued_enter_busy` counts only native `working` as delivery-busy, so a pane that was already blocked at a permission prompt still keeps the honest `pending` verdict that `HelloWorldSungin/firstmate#84` requires.
+One behaviour narrows in the safe direction: a pane that reaches `blocked` only as a result of our Enter used to be converted to `empty` at the tail and now reports `pending`, so such a send is reported delivered-unconfirmed rather than confirmed.
+The in-loop fast path is unchanged and still confirms that same transition, so the narrowing applies only after the full Enter retry budget is spent.
+[`tests/fm-backend-herdr.test.sh`](../tests/fm-backend-herdr.test.sh) keeps the fork's blocked-baseline regression against the new implementation, and [`docs/herdr-backend.md`](herdr-backend.md) remains the operator-facing owner of that boundary.
+This is the fifth capability collision resolved by the remote-doctor precedent above.
 
 ## Parked branches outside the fork baseline
 
