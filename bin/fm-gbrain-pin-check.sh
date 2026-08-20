@@ -8,15 +8,19 @@
 #
 # Options:
 #   --json      emit one fm-gbrain-pin-check.v1 object instead of prose.
-#   --gbrain    the executable to ask for its version, instead of the one
-#               FM_GBRAIN_BIN names. Naming a path asserts it should be there,
-#               so one that is missing or not executable is `unknown`, never
+#   --gbrain    the executable to ask for its version, outranking
+#               FM_GBRAIN_BIN. Passing it states that executable is there, so
+#               one that is missing or not executable is `unknown`, never
 #               `skipped`.
 #
 # Environment:
 #   FM_GBRAIN_BIN  gbrain executable (default: gbrain on PATH), read only for
-#                  its --version. Setting it asserts that executable should be
-#                  there, so one that does not resolve is `unknown` too.
+#                  its --version. What matters is whether it is SET, not what
+#                  it holds: setting it to any value, including the documented
+#                  default `gbrain` and including the empty string, states
+#                  where the executable is, so a set one that does not resolve
+#                  is `unknown`. Leaving it UNSET on a host with no gbrain on
+#                  PATH is the one absent-brain case, and that is `skipped`.
 #
 # Why this exists: docs/gbrain.md's upgrade policy requires the recorded pin to
 # move in the same change that performs an upgrade, and the dashboard's GBrain
@@ -34,13 +38,14 @@
 #   drift     1  they disagree; the record is stale or the host is not on the
 #                pinned release. Either way it is a finding, because the two
 #                are supposed to move together.
-#   skipped   0  nothing named a gbrain and none is on PATH, so there is
-#                nothing to compare against. CI and a fresh worktree land here,
-#                and that is a genuine absence of evidence rather than a pass.
-#                It is the only exit 0 that did not compare two releases.
+#   skipped   0  FM_GBRAIN_BIN is unset and no gbrain is on PATH, so this host
+#                does not run GBrain and there is nothing to compare against.
+#                CI and a fresh worktree land here, and that is a genuine
+#                absence of evidence rather than a pass. It is the only exit 0
+#                that did not compare two releases.
 #   unknown   2  a side could not be read: no docs/gbrain.md, no parseable pin
 #                token in it, a recorded pin carrying no dotted release number,
-#                a --gbrain or FM_GBRAIN_BIN that does not resolve to an
+#                a --gbrain or a SET FM_GBRAIN_BIN that does not resolve to an
 #                executable, or an installed executable whose --version output
 #                does not carry a version. Reported, never treated as ok.
 set -u
@@ -122,19 +127,22 @@ DOCUMENTED_NUMBER=$(release_number "$DOCUMENTED")
 [ -n "$DOCUMENTED_NUMBER" ] \
   || emit unknown 2 "docs/gbrain.md records \"$DOCUMENTED\", which carries no dotted release number, so the record could not be read as a release"
 
-# Anything that NAMES an executable - the flag or FM_GBRAIN_BIN - has asserted
-# it should be there, so one that does not resolve is a side that could not be
-# read. Only nothing naming one and none on PATH is an absent brain, which is
-# the single verdict allowed to exit 0 without comparing two releases.
-# Resolution itself is `command -v` over ${FM_GBRAIN_BIN:-gbrain}, the shape
-# every other gbrain-touching script already uses.
+# Passing --gbrain, or setting FM_GBRAIN_BIN at all, states where the
+# executable is, so one that does not resolve is a statement that is not true
+# and therefore a side that could not be read. The discriminator on
+# FM_GBRAIN_BIN is set-ness rather than value: an operator who says "use
+# gbrain" on a host without it has still said something wrong, while a home
+# that leaves the variable unset has said nothing and simply does not run
+# GBrain. That last case is the only verdict allowed to exit 0 without
+# comparing two releases. Resolution itself is `command -v` over
+# ${FM_GBRAIN_BIN:-gbrain}, the shape every other gbrain-touching script uses.
 if [ "$GBRAIN_EXPLICIT" = true ]; then
   [ -x "$GBRAIN_BIN" ] \
     || emit unknown 2 "--gbrain named \"$GBRAIN_BIN\", which is not an executable file, so the installed release could not be read"
-elif [ -n "${FM_GBRAIN_BIN:-}" ]; then
+elif [ -n "${FM_GBRAIN_BIN+set}" ]; then
   GBRAIN_BIN=$(command -v "$FM_GBRAIN_BIN" 2>/dev/null || true)
   [ -n "$GBRAIN_BIN" ] && [ -x "$GBRAIN_BIN" ] \
-    || emit unknown 2 "FM_GBRAIN_BIN named \"$FM_GBRAIN_BIN\", which does not resolve to an executable, so the installed release could not be read"
+    || emit unknown 2 "FM_GBRAIN_BIN is set to \"$FM_GBRAIN_BIN\", which does not resolve to an executable, so the installed release could not be read; correct it or unset it to let PATH answer"
 else
   GBRAIN_BIN=$(command -v gbrain 2>/dev/null || true)
   [ -n "$GBRAIN_BIN" ] && [ -x "$GBRAIN_BIN" ] \

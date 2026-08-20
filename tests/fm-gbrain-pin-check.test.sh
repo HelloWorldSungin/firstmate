@@ -66,15 +66,17 @@ make_gbrain() {  # <name> <mode>
 }
 
 # Run the check with no gbrain reachable unless one is passed. FM_GBRAIN_BIN is
-# cleared because the check resolves it ahead of PATH, and a caller who exports
-# it - the form the gbrain verification docs prescribe - would otherwise hand
-# these cases a real brain. jq's own directory is kept on the pinned PATH
-# because the check needs it for --json and it is not under /usr/bin everywhere
-# (Homebrew installs it elsewhere).
+# UNSET rather than cleared, because the check discriminates on set-ness: a
+# caller who exports it - the form the gbrain verification docs prescribe -
+# would otherwise hand these cases a real brain, while clearing it to the empty
+# string would state an executable location that is not true and turn every
+# absent-brain case into `unknown`. jq's own directory is kept on the pinned
+# PATH because the check needs it for --json and it is not under /usr/bin
+# everywhere (Homebrew installs it elsewhere).
 run_check() {  # <code-root> [args...]
   local root=$1
   shift
-  FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN='' \
+  env -u FM_GBRAIN_BIN FM_ROOT_OVERRIDE="$root" \
     PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" \
     bash "$CHECK" "$@" 2>&1
 }
@@ -170,11 +172,16 @@ test_broken_executable_is_unknown_not_drift() {
   root=$(make_pinned_root broken v0.46.21.0 649ffe5f)
   out=$(run_check "$root" --gbrain "$(make_gbrain broken fail)") && rc=0 || rc=$?
   [ "$rc" -eq 2 ] || fail "an executable that cannot report its version must exit 2, got $rc: $out"
+  # The stub writes its reason to stderr, which the read captures separately
+  # from the stdout it parses the release out of. An unknown that names no
+  # cause is the same empty-detail defect the doc side already carries a case
+  # for, and through session start it would surface as a GBRAIN_PIN line
+  # nobody can act on.
   case $out in
-    *unknown*) ;;
-    *) fail "a failed --version must be unknown, not drift: $out" ;;
+    *unknown*"cannot open database"*) ;;
+    *) fail "a failed --version must be unknown and carry the reason the executable gave: $out" ;;
   esac
-  pass "an executable that cannot report its version is unknown, not drift"
+  pass "an executable that cannot report its version is unknown, and carries its reason"
 }
 
 test_json_carries_both_sides_and_the_verdict() {
@@ -278,33 +285,47 @@ test_fm_gbrain_bin_names_the_executable_to_compare() {
   pass "FM_GBRAIN_BIN names the executable to compare, and --gbrain outranks it"
 }
 
-test_an_unresolvable_fm_gbrain_bin_is_unknown_not_skipped() {
+# Set-ness, not value, decides between the two absent-executable answers, so
+# all three states are pinned here. Setting the variable states where the
+# executable is; failing to resolve what it states is a check that could not
+# run, and reporting that as skipped would hand the home a green exit 0 and a
+# permanently silent session start while its pin drifts. Leaving it unset
+# states nothing, so a host with no gbrain is simply a host that does not run
+# GBrain.
+test_fm_gbrain_bin_setness_decides_unknown_versus_skipped() {
   local root out rc
-  # Setting FM_GBRAIN_BIN names an executable, which is the same assertion
-  # --gbrain makes, so a target that has been renamed or moved is a side that
-  # could not be read. Reporting it as skipped would hand that home a green
-  # exit 0 and a permanently silent session start while its pin drifts.
   root=$(make_pinned_root envmissing v0.45.9.0 1ec6a6e)
-  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN="$TMP_ROOT/renamed-away-gbrain" \
-    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" 2>&1) && rc=0 || rc=$?
-  [ "$rc" -eq 2 ] || fail "an unresolvable FM_GBRAIN_BIN must exit 2, got $rc: $out"
-  case $out in
-    *unknown*"$TMP_ROOT/renamed-away-gbrain"*) ;;
-    *) fail "an unresolvable FM_GBRAIN_BIN must be unknown and name the path: $out" ;;
-  esac
-  case $out in
-    *skipped*) fail "a named executable that does not resolve is not an absent brain: $out" ;;
-  esac
 
-  # An unset one is the genuine absent brain, and stays the one exit 0 that did
-  # not compare two releases.
+  # Unset, nothing on PATH: the one exit 0 that compared nothing.
   out=$(run_check "$root") && rc=0 || rc=$?
   [ "$rc" -eq 0 ] || fail "an unset FM_GBRAIN_BIN with no gbrain on PATH must stay skipped, got $rc: $out"
   case $out in
     *skipped*) ;;
     *) fail "nothing naming a gbrain and none on PATH must report skipped: $out" ;;
   esac
-  pass "an FM_GBRAIN_BIN that does not resolve is unknown, while naming none stays skipped"
+
+  # Set to an absolute path that has been renamed or moved.
+  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN="$TMP_ROOT/renamed-away-gbrain" \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 2 ] || fail "an unresolvable FM_GBRAIN_BIN path must exit 2, got $rc: $out"
+  case $out in
+    *unknown*"$TMP_ROOT/renamed-away-gbrain"*) ;;
+    *) fail "an unresolvable FM_GBRAIN_BIN must be unknown and name what it holds: $out" ;;
+  esac
+  case $out in
+    *skipped*) fail "a stated executable that does not resolve is not an absent brain: $out" ;;
+  esac
+
+  # Set to the documented default value on a host that has no gbrain: still a
+  # statement about where the executable is, and still not true.
+  out=$(FM_ROOT_OVERRIDE="$root" FM_GBRAIN_BIN=gbrain \
+    PATH="$TMP_ROOT/empty-path:$JQ_BIN_DIR:/usr/bin:/bin" bash "$CHECK" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 2 ] || fail "a bare-name FM_GBRAIN_BIN that does not resolve must exit 2, got $rc: $out"
+  case $out in
+    *unknown*) ;;
+    *) fail "setting FM_GBRAIN_BIN to a name nothing resolves must be unknown: $out" ;;
+  esac
+  pass "FM_GBRAIN_BIN set to anything unresolvable is unknown, while leaving it unset is skipped"
 }
 
 test_installed_release_is_read_from_stdout_alone() {
@@ -373,7 +394,7 @@ test_unknown_flag_is_refused
 test_repo_record_keeps_its_pin_first
 test_an_explicitly_named_gbrain_that_is_unusable_is_unknown
 test_fm_gbrain_bin_names_the_executable_to_compare
-test_an_unresolvable_fm_gbrain_bin_is_unknown_not_skipped
+test_fm_gbrain_bin_setness_decides_unknown_versus_skipped
 test_installed_release_is_read_from_stdout_alone
 test_a_record_with_no_dotted_release_is_unknown
 test_help_prints_the_flags_and_verdicts_it_owns

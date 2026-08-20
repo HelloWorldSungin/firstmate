@@ -1271,8 +1271,9 @@ exit 0
 SH
   chmod +x "$fakebin/gbrain"
 
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "GBRAIN_PIN: drift - " \
     "a record the host has moved past must surface at session start"
   assert_contains "$out" "v0.45.9.0" \
@@ -1282,8 +1283,9 @@ SH
 
   # Agreement is the whole point of the record, so it is not news.
   write_gbrain_record "$home" v0.46.21.0 649ffe5f
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_not_contains "$out" "GBRAIN_PIN:" \
     "a record that agrees with the installed release must print nothing"
 
@@ -1291,8 +1293,9 @@ SH
   # answer rather than a diagnostic every brainless home would carry forever.
   write_gbrain_record "$home" v0.45.9.0 1ec6a6e
   rm -f "$fakebin/gbrain"
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_not_contains "$out" "GBRAIN_PIN:" \
     "a home with no gbrain installed must print nothing about the pin"
   pass "bootstrap reports recorded-pin drift and stays silent on agreement and on a brainless home"
@@ -1354,7 +1357,16 @@ test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin() {
     "an FM_GBRAIN_BIN that no longer resolves must surface rather than silence the check"
   assert_contains "$out" "$case_dir/renamed-away-gbrain" \
     "the unknown line must name the executable that could not be read"
-  pass "bootstrap surfaces an FM_GBRAIN_BIN whose executable no longer resolves"
+
+  # The same home with the variable UNSET states nothing about where a gbrain
+  # is, so it is a home that does not run GBrain and session start says so by
+  # saying nothing. That contrast is the whole set-ness rule at this layer.
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_PIN:" \
+    "a home with FM_GBRAIN_BIN unset and no gbrain installed must print nothing about the pin"
+  pass "bootstrap surfaces an unresolvable FM_GBRAIN_BIN and stays silent when it is unset"
 }
 
 # The pin read execs `gbrain --version`, so it is bounded like every other
@@ -1379,8 +1391,8 @@ exit 0
 SH
   chmod +x "$fakebin/gbrain"
 
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
-    FM_GBRAIN_BIN='' FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_PIN_TIMEOUT=1 \
+  out=$(env -u FM_GBRAIN_BIN PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_PIN_TIMEOUT=1 \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "GBRAIN_PIN: unknown - the bounded pin check did not finish within 1s" \
     "a gbrain that ignores SIGTERM must be killed and reported, never waited on"
