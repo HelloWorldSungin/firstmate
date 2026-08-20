@@ -93,7 +93,8 @@ if [ -z "$DOC_NAME" ]; then
   # Named refusal, never a fallback to the shared head: see the header.
   echo "error: '$HARNESS' is not a harness with an adapter variant file." >&2
   echo "       resolvable names: $(known_names | tr '\n' ' ')" >&2
-  echo "       'default' and 'unknown' are resolution results, not harnesses: resolve them through bin/fm-harness.sh first." >&2
+  echo "       'default' is a resolution result, not a harness: resolve it through bin/fm-harness.sh first." >&2
+  echo "       'unknown' means detection failed, and bin/fm-harness.sh is what emits it: ask the captain which harness this is instead of guessing." >&2
   echo "       A newly verified adapter needs its variant file and its row in $(basename "${BASH_SOURCE[0]}") before it resolves." >&2
   exit 2
 fi

@@ -135,10 +135,15 @@ test_resolution_results_are_refused_not_treated_as_harnesses() {
     out=$("$DOC" "$name" 2>&1) && code=0 || code=$?
     case "$name" in
       "") expect_code 64 "$code" "an empty harness name" ;;
-      *)
+      default)
         expect_code 2 "$code" "the resolution result '$name'"
-        assert_contains "$out" "bin/fm-harness.sh" \
-          "'$name' must be routed back to harness detection, not silently accepted"
+        assert_contains "$out" "resolve it through bin/fm-harness.sh" \
+          "'default' must be routed back to harness detection, not silently accepted"
+        ;;
+      unknown)
+        expect_code 2 "$code" "the resolution result '$name'"
+        assert_contains "$out" "ask the captain" \
+          "'unknown' is what harness detection already produced, so its repair must be the captain, not a re-run"
         ;;
     esac
   done
@@ -168,11 +173,11 @@ test_unreadable_variant_file_refuses() {
   out=$(FM_ROOT_OVERRIDE="$dir" "$dir/bin/fm-harness-adapter-doc.sh" cursor 2>&1) && code=0 || code=$?
   chmod 644 "$dir/.agents/skills/harness-adapters/harnesses/cursor.md"
   if [ "$(id -u)" = 0 ]; then
-    printf '# skipped: running as root, which can read a mode-000 file\n'
-  else
-    expect_code 3 "$code" "an unreadable variant file"
-    assert_contains "$out" "harnesses/cursor.md" "the refusal must name the unreadable path"
+    pass "unreadable variant file case skipped (running as root, which can read a mode-000 file)"
+    return
   fi
+  expect_code 3 "$code" "an unreadable variant file"
+  assert_contains "$out" "harnesses/cursor.md" "the refusal must name the unreadable path"
   pass "an unreadable variant file exits 3 naming the path"
 }
 
