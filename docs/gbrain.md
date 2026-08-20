@@ -23,10 +23,11 @@ pglite=$(printf '%s' "$paths" | jq -er '.pglite')
 archive=$(printf '%s' "$paths" | jq -er '.archive')
 ```
 
-The command blocks below guard these variables, so an unresolved value refuses instead of silently creating or rewriting a brain under `$HOME/.gbrain`.
+The command blocks below guard these variables, so a value that was never resolved refuses instead of silently creating or rewriting a brain under `$HOME/.gbrain`.
 The upgrade, backup, and `reinit-pglite` blocks resolve the same values again behind their own guard, because a step that rewrites or copies a brain wholesale must not inherit a stale variable from an earlier shell.
-The configuration and import blocks read the shared values instead, behind a guard that catches an unresolved value but not a stale one.
-The guards catch a value that was never resolved, while re-resolution replaces one that is real but stale, so the two cover different failures and neither replaces the other.
+Re-resolution covers the other failure, replacing a value that is real but stale, which a guard accepts because it is set.
+The init, configuration, import and embed, and raw `think` blocks read the shared values rather than resolving their own, so a stale value reaches them.
+In the raw `think` block that consequence leaves the machine: a stale `$gbrain_home` synthesizes against a different home's brain, so the wrong home's memory excerpts are sent to the hosted synthesis provider.
 As one example of what that returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
 A hardcoded brain path is wrong for every home but the one it was written from, and it goes on looking right after the deployment it named is gone.
 
@@ -101,6 +102,7 @@ To upgrade deliberately, select a newer verified GBrain tag, then run the block 
 `apply-migrations` rewrites whichever brain `GBRAIN_HOME` names, so this block resolves that home rather than naming one, exactly as the backup below does.
 A hardcoded `GBRAIN_HOME` is wrong for every home but the one it was written from, and on a host carrying more than one brain directory it is worse than wrong: the migration succeeds against the wrong database and every step after it reports success, while the brain the home actually reads stays un-migrated under new code.
 That is not hypothetical: this host has carried more than one brain directory at a time, and nothing stops that happening again.
+It follows an exported `FM_HOME` and migrates whatever brain that resolves to, so confirm which home the environment names before pasting it.
 
 ```sh
 FM_HOME=${FM_HOME:-/home/sungin/firstmate}
@@ -113,6 +115,7 @@ git -C /home/sungin/.local/gbrain/src fetch --tags origin
 git -C /home/sungin/.local/gbrain/src checkout --detach <verified-tag>
 (cd /home/sungin/.local/gbrain/src \
   && /home/sungin/.local/gbrain/bin/bun install --frozen-lockfile --ignore-scripts --cache-dir /home/sungin/.local/gbrain/cache)
+printf 'migrating the brain for %s at %s\n' "$FM_HOME" "$gbrain_home"
 GBRAIN_HOME=$gbrain_home \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain apply-migrations \
@@ -284,7 +287,7 @@ Stop every `gbrain serve` process before copying PGLite because it is a single-w
 A home's index has two other writers: task-knowledge capture ([gbrain-capture.md](gbrain-capture.md)), and search itself, because every `bin/fm-recall.sh search` that succeeds rewrites files under `pglite/` ([verification/gbrain-retrieval.md](verification/gbrain-retrieval.md) records which ones and how that was measured), and the dashboard's GBrain panel lets an operator start a search on demand ([dashboard.md](dashboard.md#knowledge)).
 So take the copy when no teardown, no `bin/fm-gbrain-capture.sh` run, and no search can start, a running dashboard's panel included.
 Those writers contend for the same single-writer lock, and a dashboard search is one more source of a busy brain: a capture that finds it busy leaves a pending outbox item and is retried later, while a search that cannot take the lock fails outright with a lock timeout.
-Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory:
+Back up the durable document source, PGLite directory, and runtime configuration together to an on-box directory, running the block below from the Firstmate code root:
 
 ```sh
 FM_HOME=${FM_HOME:-/home/sungin/firstmate}
