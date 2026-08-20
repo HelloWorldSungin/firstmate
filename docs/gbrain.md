@@ -28,7 +28,7 @@ The upgrade, backup, and `reinit-pglite` blocks resolve the same values again be
 Re-resolution covers the other failure, replacing a value that is real but stale, which a guard accepts because it is set.
 The init, configuration, import and embed, and raw `think` blocks read the shared values rather than resolving their own, so a stale value reaches them.
 In the raw `think` block that consequence leaves the machine: a stale `$gbrain_home` synthesizes against a different home's brain, so the wrong home's memory excerpts are sent to the hosted synthesis provider.
-As one example of what that returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
+As one example of what `paths --json` returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
 A hardcoded brain path is wrong for every home but the one it was written from, and it goes on looking right after the deployment it named is gone.
 
 `paths` reports the archive location a home derives, not a directory that exists.
@@ -102,7 +102,7 @@ To upgrade deliberately, select a newer verified GBrain tag, then run the block 
 `apply-migrations` rewrites whichever brain `GBRAIN_HOME` names, so this block resolves that home rather than naming one, exactly as the backup below does.
 A hardcoded `GBRAIN_HOME` is wrong for every home but the one it was written from, and on a host carrying more than one brain directory it is worse than wrong: the migration succeeds against the wrong database and every step after it reports success, while the brain the home actually reads stays un-migrated under new code.
 That is not hypothetical: this host has carried more than one brain directory at a time, and nothing stops that happening again.
-It follows an exported `FM_HOME` and migrates whatever brain that resolves to, so confirm which home the environment names before pasting it.
+The block below follows an exported `FM_HOME` and migrates whatever brain that resolves to, so confirm which home the environment names before pasting it.
 
 ```sh
 FM_HOME=${FM_HOME:-/home/sungin/firstmate}
@@ -111,11 +111,11 @@ if [ ! -d "$gbrain_home/.gbrain" ]; then
   printf 'refusing upgrade: %s is not an initialized brain runtime for %s\n' "$gbrain_home" "$FM_HOME" >&2
   exit 1
 fi
+printf 'migrating the brain for %s at %s\n' "$FM_HOME" "$gbrain_home"
 git -C /home/sungin/.local/gbrain/src fetch --tags origin
 git -C /home/sungin/.local/gbrain/src checkout --detach <verified-tag>
 (cd /home/sungin/.local/gbrain/src \
   && /home/sungin/.local/gbrain/bin/bun install --frozen-lockfile --ignore-scripts --cache-dir /home/sungin/.local/gbrain/cache)
-printf 'migrating the brain for %s at %s\n' "$FM_HOME" "$gbrain_home"
 GBRAIN_HOME=$gbrain_home \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
   /home/sungin/.local/gbrain/bin/gbrain apply-migrations \
@@ -348,7 +348,7 @@ paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
 gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
 pglite=$(printf '%s' "$paths" | jq -er '.pglite')
 if [ ! -d "$gbrain_home/.gbrain" ] || [ ! -d "$pglite" ]; then
-  printf 'refusing to reinitialize: %s did not resolve an initialized brain runtime and an index path\n' "$FM_HOME" >&2
+  printf 'refusing to reinitialize: %s did not resolve an initialized brain runtime at %s and an index at %s\n' "$FM_HOME" "$gbrain_home" "$pglite" >&2
   exit 1
 fi
 printf 'reinitializing the brain for %s at %s\n' "$FM_HOME" "$pglite"
