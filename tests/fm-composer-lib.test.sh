@@ -712,4 +712,36 @@ test_non_ascii_blank_pad_is_empty
 test_non_ascii_blank_pad_with_text_is_pending
 test_non_ascii_blank_pad_does_not_revive_a_dead_shell
 test_multibyte_agent_glyph_is_stripped_whole
+
+test_queued_enter_verdict_busy_pending_is_empty() {
+  local out
+  out=$(fm_composer_queued_enter_verdict pending busy)
+  [ "$out" = empty ] || fail "busy + proven pending must be queued delivery (empty), got '$out'"
+  pass "fm_composer_queued_enter_verdict: pending + busy returns empty (queued Enter)"
+}
+
+test_queued_enter_verdict_idle_pending_stays_pending() {
+  local out
+  out=$(fm_composer_queued_enter_verdict pending idle)
+  [ "$out" = pending ] || fail "idle + proven pending must stay a genuine swallow, got '$out'"
+  out=$(fm_composer_queued_enter_verdict pending unknown)
+  [ "$out" = pending ] || fail "unknown busy is not proof of a queue, got '$out'"
+  pass "fm_composer_queued_enter_verdict: pending + idle/unknown stays pending"
+}
+
+test_queued_enter_verdict_does_not_convert_other_states() {
+  local state out
+  for state in empty pending-unproven unknown send-failed future-state; do
+    out=$(fm_composer_queued_enter_verdict "$state" busy)
+    [ "$out" = "$state" ] || fail "busy must not convert '$state', got '$out'"
+    out=$(fm_composer_queued_enter_verdict "$state" idle)
+    [ "$out" = "$state" ] || fail "idle must not convert '$state', got '$out'"
+  done
+  pass "fm_composer_queued_enter_verdict: only proven pending is converted"
+}
+
+test_queued_enter_verdict_busy_pending_is_empty
+test_queued_enter_verdict_idle_pending_stays_pending
+test_queued_enter_verdict_does_not_convert_other_states
+
 printf '\nall fm-composer-lib tests passed\n'

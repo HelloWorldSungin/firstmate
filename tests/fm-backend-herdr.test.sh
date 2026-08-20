@@ -3753,155 +3753,55 @@ test_send_text_submit_detects_landed_send() {
 }
 
 test_send_text_submit_detects_swallowed_enter() {
-  local dir log resp fb out enter_count agent_gets
+  local dir log resp fb out
   dir="$TMP_ROOT/submit-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: send-text  2: baseline idle  3: enter  4: agent get -> idle
-  # 5: enter  6: agent get -> idle  7: pane read -> a genuinely EMPTY composer
-  # Every post-Enter agent-get read still reports idle: the Enter never
-  # started a turn (swallowed), so wait_for_working never observes "busy".
+  # Every post-Enter agent-get read still reports idle, and the composer still
+  # holds the typed text: a genuine swallow, not a queued Enter.
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf \n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/8.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/9.out"
+  printf '  ready\n' > "$resp/10.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending ] || fail "send_text_submit should report pending once retries are exhausted with agent_status never going busy, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "a swallowed Enter should be retried up to the configured count, sent $enter_count Enter(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 3 ] || fail "the busy-queue fallback must not consult native agent-state when the structural composer read is not proven pending, made $agent_gets agent get(s)"
-  pass "fm_backend_herdr_send_text_submit: reports 'pending' when agent_status never reports working after retried Enters (swallowed), and the busy-queue fallback never engages on a composer that is not proven pending"
-}
-
-# The direction issue #84 must NOT swallow: the target is idle and the typed
-# text is still visibly sitting unsubmitted in its composer. The busy-queue
-# fallback below reads the structural composer (proven pending) and THEN native
-# agent-state; a non-busy target keeps the honest 'pending' verdict, so the
-# caller still knows the message was never delivered. If the fallback ever
-# converted proven-pending-on-an-idle-target into 'empty', this fails.
-test_send_text_submit_idle_target_with_visible_unsubmitted_text_stays_pending() {
-  local dir log resp fb out enter_count read_count agent_gets
-  dir="$TMP_ROOT/submit-idle-visible-text"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: send-text  2: baseline idle  3: enter  4: agent get -> idle
-  # 5: enter  6: agent get -> idle
-  # 7: pane read -> the message is STILL in the composer (proven pending)
-  # 8: agent get -> idle (native busy read: not busy, so no queued Enter)
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/8.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending ] || fail "an idle target still showing the unsubmitted message must stay pending, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "an idle target with unsubmitted text should retry Enter up to the configured count, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 1 ] || fail "the busy-queue fallback should make exactly one structural composer read on an idle baseline, made $read_count read(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 4 ] || fail "a proven pending composer must be followed by a native agent-state read before any queued-Enter verdict, made $agent_gets agent get(s)"
-  pass "fm_backend_herdr_send_text_submit: an idle target whose composer still shows the unsubmitted message stays 'pending' even though the busy-queue fallback ran"
-}
-
-# The direction issue #84 must fix: an ACTIVE target accepts Enter, queues the
-# message for after the current turn, and keeps the typed text visible. Proven
-# pending composer + native submit-active agent-state = delivered, so the
-# caller does not re-send.
-test_send_text_submit_busy_queue_is_confirmed_by_structural_composer_and_native_busy() {
-  local dir log resp fb out enter_count read_count agent_gets
-  dir="$TMP_ROOT/submit-busy-queue"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: send-text  2: baseline working (not legibly idle -> composer branch)
-  # 3: enter  4: pane read -> pending  5: enter  6: pane read -> pending
-  # 7: pane read -> still pending (proven)  8: agent get -> working (queued)
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/8.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "a busy target holding the queued message in its composer should report delivered, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "the busy-queue verdict must only be reached after the full Enter retry budget, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 3 ] || fail "the busy-queue fallback should re-read the structural composer once after the retry loop, made $read_count read(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 2 ] || fail "the busy-queue fallback should consult native agent-state exactly once after the baseline read, made $agent_gets agent get(s)"
-  pass "fm_backend_herdr_send_text_submit: a busy target retaining the typed text reports the queued Enter as delivered ('empty')"
+  [ "$out" = pending ] || fail "send_text_submit should report pending once retries are exhausted with agent_status never going busy and the composer still holding the text, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: reports 'pending' when agent_status stays idle and the composer still holds unsent text after retried Enters (swallowed)"
 }
 
 # A target that was ALREADY at a permission prompt before the send is the one
-# shape the busy-queue conversion must refuse: the approval dialog owns the
+# shape the queued-Enter conversion must refuse: the approval dialog owns the
 # keyboard, so an Enter it consumes leaves the text unsubmitted while native
 # agent-state keeps reporting the same pre-existing blocked turn. Converting
-# that to 'empty' would make fm-send.sh exit 0 on an undelivered steer, so a
-# blocked baseline short-circuits the whole fallback - no tail composer read,
-# no tail agent read, just the honest 'pending'.
-test_send_text_submit_blocked_baseline_never_reaches_the_busy_queue_conversion() {
-  local dir log resp fb out enter_count read_count agent_gets
+# that to 'empty' would make fm-send.sh exit 0 on an undelivered steer
+# (HelloWorldSungin/firstmate#84), so fm_backend_herdr_queued_enter_busy counts
+# only native `working` as delivery-busy and a blocked pane keeps 'pending'.
+test_send_text_submit_blocked_baseline_never_reaches_the_queued_enter_conversion() {
+  local dir log resp fb out enter_count
   dir="$TMP_ROOT/submit-blocked-baseline"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   # 1: send-text  2: baseline blocked (submit-active -> composer branch)
   # 3: rendered footer baseline, taken before the first Enter and carrying no
   #    busy token, because the approval dialog is not a turn in flight
   # 4: enter  5: composer -> pending  6: footer -> still no busy token
   # 7: enter  8: composer -> pending  9: footer -> still no busy token
-  # No turn ever starts, so the rendered-footer conversion cannot fire either.
-  # The Enter retry budget is now spent. A blocked baseline stops here, so
-  # 10.out/11.out are deliberately canned as the shape that WOULD convert
-  # (still-pending composer, still-blocked agent) and must never be consumed.
+  # 10: the retries-exhausted delivery-busy read, still blocked and therefore
+  #     not working, so the queued-Enter conversion cannot fire.
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/3.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/5.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/6.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/8.out"
   printf '  \xe2\x9d\xaf needs approval\n' > "$resp/9.out"
-  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/10.out"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/11.out"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/10.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "needs approval" 2 0.01 0.01' "$ROOT" )
   [ "$out" = pending ] || fail "a target already blocked before the send must not have its retained composer text converted to delivered, got '$out'"
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 2 ] || fail "a blocked baseline should still spend the full Enter retry budget, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 5 ] || fail "a blocked baseline must short-circuit before the tail composer re-read, made $read_count read(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 1 ] || fail "a blocked baseline must never consult native agent-state again after the baseline read, made $agent_gets agent get(s)"
   pass "fm_backend_herdr_send_text_submit: a target already blocked before the send keeps the honest 'pending' verdict instead of reading its retained composer text as a queued Enter"
-}
-
-# The mirror of the case above, and the tripwire that keeps the tail on the
-# SUBMIT vocabulary: here the target was idle before the send and only reaches
-# a permission prompt as a result of this Enter, which is proof the Enter
-# landed. fm_backend_herdr_classify_agent_status would map that blocked to
-# idle and lose the delivery, exactly as test_send_text_submit_confirms_blocked_after_enter
-# guards the in-loop path.
-test_send_text_submit_busy_queue_accepts_a_blocked_transition_after_an_idle_baseline() {
-  local dir log resp fb out enter_count read_count agent_gets
-  dir="$TMP_ROOT/submit-busy-queue-blocked-transition"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: send-text  2: baseline idle  3: enter  4: agent get -> idle
-  # 5: enter  6: agent get -> idle (every in-loop poll missed the transition)
-  # 7: pane read -> still pending (proven)
-  # 8: agent get -> blocked (this Enter reached an approval prompt)
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf needs approval\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/8.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "needs approval" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = empty ] || fail "a blocked state reached only after this Enter is submit-active proof and must convert the retained composer text to delivered, got '$out'"
-  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "the busy-queue verdict must only be reached after the full Enter retry budget, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 1 ] || fail "an idle baseline should make exactly one structural composer read in the fallback, made $read_count read(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 4 ] || fail "the fallback must re-read native agent-state rather than reusing the stale pre-Enter baseline, made $agent_gets agent get(s)"
-  pass "fm_backend_herdr_send_text_submit: a blocked state reached only as a result of this Enter still confirms delivery, keeping the tail on the submit vocabulary"
 }
 
 # Regression coverage for the 2026-07-03 incident using the NEW mechanism: a
@@ -3919,9 +3819,12 @@ test_send_text_submit_popup_autocomplete_requires_second_enter() {
   # 4: agent get -> idle (not submitted yet)
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  # 5: send-keys enter (#2) - actually submits
-  # 6: agent get -> working (submitted)
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/6.out"
+  # 5: composer still holds the placeholder fill; native idle falls through
+  #    to the shared composer verdict, which retries rather than confirming.
+  printf '  \xe2\x9d\xaf /compact\n' > "$resp/5.out"
+  # 6: send-keys enter (#2) - actually submits
+  # 7: agent get -> working (submitted)
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "/compact" 3 0.01 1.2' "$ROOT" )
@@ -3946,37 +3849,93 @@ test_send_text_submit_confirms_blocked_after_enter() {
   pass "fm_backend_herdr_send_text_submit: a post-Enter blocked state confirms delivery without retrying into the prompt"
 }
 
-# A pre-Enter "working" baseline is never, on its own, proof that THIS Enter
-# landed: the turn it reports started before the send. What decides the queued
-# vs swallowed verdict is the target's state once the Enter retry budget is
-# spent. Here that turn has finished (the tail agent read is idle) while the
-# composer still holds the message, so the honest verdict is 'pending' - and
-# the busy-queue fallback must not resurrect the stale baseline to claim
-# delivery. The companion busy case is
-# test_send_text_submit_busy_queue_is_confirmed_by_structural_composer_and_native_busy.
-test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter() {
-  local dir log resp fb out enter_count read_count agent_gets
-  dir="$TMP_ROOT/submit-preexisting-working-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: send-text  2: baseline working (a turn already in flight)
-  # 3: enter  4: pane read -> pending  5: enter  6: pane read -> pending
-  # 7: pane read -> still pending (proven)
-  # 8: agent get -> idle (the pre-existing turn ended; nothing is queued)
+test_send_text_submit_preexisting_working_pending_is_queued_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-preexisting-working-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Native working + proven pending after the retry budget is the OpenCode
+  # busy-queued Enter: the harness accepted Enter and will submit when the
+  # current turn ends. Footer transition is not the confirmation path here
+  # because the pre-Enter native status is already working, which is also why
+  # this adapter skips the pre-Enter footer read entirely on that baseline.
+  # 1: send-text  2: baseline working  3: enter  4: composer -> pending
+  # 5: the retries-exhausted delivery-busy read -> working (queued).
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
   printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/7.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/8.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
-  [ "$out" = pending ] || fail "send_text_submit must not accept preexisting working as proof that this Enter landed, got '$out'"
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "a working native baseline plus proven pending after retries is a queued Enter, got '$out'"
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
-  [ "$enter_count" -eq 2 ] || fail "preexisting-working swallowed Enter should retry Enter up to the configured count, sent $enter_count Enter(s)"
-  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 3 ] || fail "preexisting-working confirmation should fall back to composer reads, made $read_count read(s)"
-  agent_gets=$(grep -c $'\x1f''agent'$'\x1f''get' "$log")
-  [ "$agent_gets" -eq 2 ] || fail "the busy-queue fallback must re-read native agent-state instead of reusing the pre-Enter baseline, made $agent_gets agent get(s)"
-  pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message and the target is no longer submit-active"
+  [ "$enter_count" -eq 1 ] || fail "queued-Enter confirmation should use the configured retry count, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: native working + proven pending after retries reports empty (queued Enter)"
+}
+
+test_send_text_submit_preexisting_working_does_not_confirm_failed_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-preexisting-working-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: send-text  2: baseline working (no pre-Enter footer read on that
+  # baseline)  3: enter, which FAILS, so no delivery confirmation may run.
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = send-failed ] || fail "a failed Enter must not be reported as queued delivery merely because native status is working, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow preexisting working state as queued-delivery proof"
+}
+
+test_send_text_submit_idle_baseline_does_not_confirm_failed_enter() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-idle-enter-failed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = send-failed ] || fail "a failed Enter must not borrow a later native transition as delivery proof, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit should attempt the configured number of Enters, made $enter_count attempt(s)"
+  [ "$(grep -c $'\x1f''agent'$'\x1f''get' "$log")" -eq 1 ] || fail "a failed Enter must not run native delivery confirmation"
+  pass "fm_backend_herdr_send_text_submit: a failed Enter cannot borrow a later native transition as delivery proof"
+}
+
+test_send_text_submit_idle_native_empty_composer_confirms_delivery() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-idle-native-empty-composer"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Live Claude on Herdr 0.8.0 keeps agent_status idle through a landed turn.
+  # After Enter, native wait_for_working stays idle and the composer clears:
+  # that empty verdict is positive delivery, not a swallow.
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "an idle native status plus a cleared composer must confirm delivery, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a cleared composer should confirm without extra Enters, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: idle native agent-state plus empty composer reports empty (landed Claude turn)"
+}
+
+test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-idle-native-rendered-busy-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # Idle native baseline (Claude never leaves idle) with proven pending text
+  # and a generating footer after retries is a queued follow-up Enter.
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
+  printf 'thinking... esc to interrupt\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "idle native + proven pending + rendered busy after retries is a queued Enter, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: idle native baseline uses a rendered busy footer to confirm a queued Enter"
 }
 
 # --- the never-idle-native-state harness (real cursor on herdr) --------------
@@ -4180,6 +4139,21 @@ test_send_text_submit_unknown_on_capture_failure() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "send_text_submit must never retry past an unreadable target (that is a hard I/O failure, not a timing race), sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: reports 'unknown' when the post-Enter agent-get read fails (never retries past an unreadable target)"
+}
+
+test_send_text_submit_unknown_on_composer_capture_failure() {
+  local dir log resp fb out enter_count
+  dir="$TMP_ROOT/submit-composer-read-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
+  printf '1\n' > "$resp/5.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "x" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = unknown ] || fail "send_text_submit should report unknown when native status stays idle but the composer cannot be read, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "send_text_submit must not retry Enter after composer verification becomes unreadable, sent $enter_count Enter(s)"
+  pass "fm_backend_herdr_send_text_submit: an unreadable composer stops Enter retries after native status stays idle"
 }
 
 # --- fm-backend.sh dispatch wiring -------------------------------------------
@@ -4938,13 +4912,14 @@ test_wait_for_working_returns_unknown_when_never_readable
 test_wait_for_working_treats_blocked_as_submit_active
 test_send_text_submit_detects_landed_send
 test_send_text_submit_detects_swallowed_enter
-test_send_text_submit_idle_target_with_visible_unsubmitted_text_stays_pending
-test_send_text_submit_busy_queue_is_confirmed_by_structural_composer_and_native_busy
-test_send_text_submit_blocked_baseline_never_reaches_the_busy_queue_conversion
-test_send_text_submit_busy_queue_accepts_a_blocked_transition_after_an_idle_baseline
+test_send_text_submit_blocked_baseline_never_reaches_the_queued_enter_conversion
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_confirms_blocked_after_enter
-test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
+test_send_text_submit_preexisting_working_pending_is_queued_enter
+test_send_text_submit_preexisting_working_does_not_confirm_failed_enter
+test_send_text_submit_idle_baseline_does_not_confirm_failed_enter
+test_send_text_submit_idle_native_empty_composer_confirms_delivery
+test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
@@ -4955,6 +4930,7 @@ test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmat
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
+test_send_text_submit_unknown_on_composer_capture_failure
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_dispatch_composer_state_routes_by_backend
