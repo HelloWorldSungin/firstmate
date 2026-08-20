@@ -221,16 +221,20 @@ Enter, Escape, and Ctrl-C are supported.
 Slash and dollar-prefixed input uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
 Text is typed once; only Enter is retried.
 
-On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
-On an already active or unreadable baseline, it falls back to conservative composer clearance.
+On an idle or done native baseline, submit confirmation first waits for `working` or `blocked` across a bounded polling window.
+If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
+After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter, and keeps an idle pending composer as a genuine swallow.
+On an already active or unreadable baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A fully unreadable target stops retrying and reports unknown.
+blocked is not treated as a queued-Enter busy signal, so a Cursor pane that reports blocked in every state does not receive that conversion.
 
 Some harnesses never present a legibly idle native baseline at all, so the composer fallback is their only path.
 Herdr reports a Cursor pane `blocked` in every state, and Cursor's mid-turn composer renders its placeholder beside a right-aligned busy token, which is composer content and therefore `pending` on a composer that holds no user text.
 That fallback alone reported every delivered steer as unconfirmed, so it is paired with a rendered-footer transition: the pane's verified busy footer is read once before the first Enter, and an idle-to-busy transition across that Enter confirms the submit.
-It is the same semantic signal the native path uses and the same one the tmux submit core reads, so a pane already mid-turn before the text was typed still reports `pending` rather than borrowing another turn as proof of this delivery.
+It is the same semantic signal the native path uses and the same one the tmux submit core reads.
+A pane already mid-turn cannot borrow a rendered-footer transition as proof of this delivery; after retries, only proven pending text plus native `working` can establish that its Enter was accepted and queued.
 The composer verdict itself is deliberately unchanged: a right-aligned status token on the composer row stays content for every other caller, including the away-mode pre-injection guard.
-The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
+The poll density bounds the residual possibility of an extremely fast complete turn; a missed native transition falls through to the composer verdict rather than reporting a false swallow.
 Once the Enter retry budget is spent, the OpenCode busy-queue conversion in [Active limits](#active-limits) is the only way a composer that still holds the typed text reports delivery.
 
 `pane read --lines N` can return empty output when N is below the viewport height.
@@ -339,16 +343,17 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, and Herdr applies the same distinction through its structural composer read plus native agent state.
+  The retries-exhausted conversion is the shared `fm_composer_queued_enter_verdict` policy in `bin/fm-composer-lib.sh`; Herdr supplies native `working` as its delivery-busy signal, plus the pane's rendered busy footer when the native baseline was legibly idle.
   An idle pane with visible composer text remains a pending submission failure.
-  A target already blocked at a permission prompt before the send never receives the conversion either: the dialog owns the keyboard, so retained composer text there is not evidence the Enter was queued.
-  A blocked state reached only as a result of this Enter is still submit-active proof of delivery.
+  A target already blocked at a permission prompt before the send never receives the conversion either, because `blocked` is not `working`: the dialog owns the keyboard, so retained composer text there is not evidence the Enter was queued.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
 
 ```sh
 tests/fm-backend-herdr.test.sh
+tests/fm-composer-lib.test.sh
+tests/fm-herdr-submit-confirm-live-e2e.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh

@@ -924,7 +924,7 @@ test_genuinely_undelivered_steer_on_composer_supported_harness() {
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "idle" "idle" "idle")
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
-    FM_HERDR_FAKE_AGENT="claude_code" FM_HERDR_FAKE_COMPOSER='│ › unsubmitted text │' \
+    FM_HERDR_FAKE_AGENT="claude_code" FM_HERDR_FAKE_COMPOSER='  ❯ unsubmitted text' \
     "$ROOT/bin/fm-send.sh" "fm-lane-claude" "steer message" >/dev/null 2>"$err"
   rc=$?
   # A composer still holding the text is delivered-unconfirmed, not proven
