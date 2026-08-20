@@ -6,8 +6,10 @@
 #
 # .agents/skills/harness-adapters/SKILL.md is a shared head plus one variant file
 # per harness, so a spawn loads the head and the one adapter it is about to act on
-# instead of all nine. This script is the routing owner: the head's table is a
-# reader's index, and every automated or agent lookup comes through here.
+# instead of all nine. This script is the routing owner: HARNESS_DOCS below is
+# the only harness-name-to-variant mapping, the shared head deliberately carries
+# no index copy of it (a copy is what lets a lookup half-succeed), and every
+# automated or agent lookup comes through here. `--list` is the discovery path.
 #
 # It exists to make the failure loud. A split reference degrades badly when a
 # lookup half-succeeds - an agent that cannot find grok's exit path and answers

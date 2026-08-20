@@ -83,16 +83,24 @@ test_pi_and_pi_signed_share_one_variant() {
 }
 
 test_list_and_routing_table_agree_with_the_variant_directory() {
-  local listed name routed file base orphan=
+  local listed name routed file base path code orphan=
 
   listed=$("$DOC" --list) || fail "--list failed"
   [ -n "$listed" ] || fail "--list returned nothing, so this check would be vacuous"
 
   # Every name --list advertises must actually resolve; an advertised name that
-  # refuses would be a routing table that lies about its own coverage.
+  # refuses would be a routing table that lies about its own coverage. Take the
+  # resolver's exit status OUTSIDE the command substitution: a `|| fail` inside
+  # one exits only the subshell, which would make this assertion unable to fail.
   routed=
   for name in $listed; do
-    routed="$routed $(basename "$("$DOC" "$name")" || fail "--list advertises '$name' but it does not resolve")"
+    path=$("$DOC" "$name" 2>/dev/null) && code=0 || code=$?
+    [ "$code" = 0 ] \
+      || fail "--list advertises '$name' but resolving it exits $code, so the routing table lies about its own coverage"
+    [ -n "$path" ] \
+      || fail "--list advertises '$name' but the resolver printed no path for it"
+    assert_present "$path" "--list advertises '$name' but its variant file does not exist: $path"
+    routed="$routed $(basename "$path")"
   done
 
   # And every variant file on disk must be reachable from some name, or it is a
