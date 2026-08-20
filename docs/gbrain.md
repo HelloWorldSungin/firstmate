@@ -19,8 +19,8 @@ Run `bin/fm-gbrain.sh paths` for what a home actually resolves, and substitute t
 ## Pinned installation and upgrade
 
 The installed GBrain release is `v0.46.21.0` at commit `649ffe5f8baf3ff7f979c77f4de3975904cfe029`.
-The pin moved there from `v0.45.9.0` on 2026-08-19, backed up first to `data/gbrain/backups/20260819T045704Z`, and a like-for-like evaluation against the pre-upgrade baseline measured retrieval unchanged.
-The earlier pin had moved from `v0.45.0.0` on 2026-08-13, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the live upgrade evidence, the new boundary-retrieval verbs, and the unchanged privacy controls.
+The pin moved there from `v0.45.9.0` on 2026-08-19, backed up first to `data/gbrain/backups/20260819T045704Z`, and [verification/gbrain-memory-verbs.md](verification/gbrain-memory-verbs.md) records the like-for-like evaluation taken either side of that move, which measured retrieval unchanged and synthesis moved.
+The earlier pin had moved from `v0.45.0.0` on 2026-08-13, and that same verification record holds the live upgrade evidence for it, the new boundary-retrieval verbs, and the unchanged privacy controls.
 The pin before that moved from `v0.42.69.0` on 2026-08-12, and the same verification record preserves what that upgrade measured, including the capture guarantees it did not change.
 The `v0.42.69.0` pin was held for a release carrying a per-model chat-touchpoint entry for `MiniMax-M3`; `v0.44.1.0` removed that allowlist entirely, so the configured `models.think` value no longer depends on a release shipping an entry for it.
 The installation remains on GBrain's documented `git clone` plus pinned `bun install` fallback so a version upgrade does not also change the packaging path used for migration and rollback.
