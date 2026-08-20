@@ -387,36 +387,122 @@ By type:
   firstmate-note: 35
 ```
 
-`gbrain doctor --json` reports `connection` and every integrity-class check as `ok`:
+`gbrain doctor --json` applies a pending schema migration to whatever brain it opens - the 2026-08-13 entry above records that invocation moving this home's brain from schema 125 to 126 - so it is a read-only probe here only because the installed build's schema is already current, which is what this run checked first:
 
 ```text
 $ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
   OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain doctor --json 2>/dev/null | \
-  jq -r '.checks[] | select(.name | IN("connection","integrity","content_hash_duplicates","child_table_orphans","orphan_ratio","jsonb_integrity")) | "\(.name) \(.status) \(.message)"'
-connection ok Connected, 270 pages
-orphan_ratio ok Vacuous: 0 entity pages (<100). Orphan ratio not meaningful at this scale.
-integrity ok Sampled 117 pages; 7 external link(s) (no bare tweets).
-jsonb_integrity ok All JSONB columns store objects/arrays
-child_table_orphans ok All FK-child tables clean (10 tables checked)
-content_hash_duplicates ok No content-hash duplicate pairs (bare vs path-prefixed slugs)
+  /home/sungin/.local/gbrain/bin/gbrain doctor --json 2>/dev/null > /tmp/doctor-2026-08-20.json
+$ jq -r '.checks[] | select(.name == "schema_version") | .message' /tmp/doctor-2026-08-20.json
+Version 132 (latest: 132)
 ```
 
-No check name contains `outbox` or `divergence`:
+Every check this build runs, with its status, read back from that one saved run rather than from a name allowlist carried forward:
 
 ```text
-$ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
-  OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain doctor --json 2>/dev/null | \
-  jq -r '.checks[].name' | grep -E 'outbox|divergence' || echo '(none)'
-(none)
+$ jq -r '.checks[] | "\(.name) \(.status)"' /tmp/doctor-2026-08-20.json
+resolver_health fail
+retrieval_reflex_health warn
+volunteer_channels ok
+memory_verbs_usage ok
+skill_conformance ok
+skill_brain_first ok
+skills_manifest_integrity ok
+skill_currency warn
+skill_preconditions ok
+nightly_quality_probe_health ok
+extract_health ok
+conversation_facts_backlog ok
+extract_atoms_backlog ok
+conversation_format_coverage ok
+progressive_batch_audit_health ok
+conversation_parser_probe_health ok
+home_dir_in_worktree warn
+npm_squat ok
+connection ok
+pgvector ok
+rls ok
+schema_version ok
+rls_event_trigger ok
+embeddings ok
+embedding_provider ok
+embedding_column_registry ok
+embedding_env_override ok
+embedding_migration_state ok
+graph_coverage ok
+brain_score warn
+orphan_ratio ok
+integrity ok
+jsonb_integrity ok
+takes_weight_grid ok
+child_table_orphans ok
+raw_provenance ok
+source_config_shape ok
+whoknows_health ok
+cross_modal_modality_backfill ok
+unified_multimodal_coverage ok
+markdown_body_completeness ok
+oversized_pages ok
+scraper_junk_pages ok
+content_sanity_audit_recent ok
+quarantined_pages ok
+flagged_pages ok
+unverified_extractions ok
+frontmatter_integrity ok
+eval_capture ok
+contradictions ok
+facts_extraction_health ok
+effective_date_health ok
+salience_health ok
+queue_health ok
+subagent_capability ok
+facts_health ok
+image_assets ok
+ocr_health ok
+sync_freshness ok
+sync_consolidation ok
+links_extraction_lag warn
+cycle_freshness ok
+content_hash_duplicates ok
+undeclared_db_only_pages ok
+db_only_collector_collision ok
+search_mode ok
+hidden_by_search_policy ok
+eval_drift ok
+reranker_health ok
+batch_retry_health ok
+wedged_queue ok
+orphaned_private_queue ok
+autopilot_fanout_concurrency ok
+graph_signals_coverage ok
+brainstorm_health ok
+link_resolution_opportunity ok
+ze_embedding_health ok
+provider_sunset ok
+embedding_width_consistency ok
+facts_embedding_width_consistency ok
+source_routing_health ok
+oauth_confidential_client_health ok
+oauth_client_scope_health ok
+autopilot_lock_scope ok
+stale_locks ok
+cycle_phase_scope ok
+embed_staleness ok
+entity_link_coverage ok
+timeline_coverage ok
+takes_count warn
+pack_upgrade_available ok
+type_proliferation ok
+dangling_aliases ok
 ```
 
-The capture outbox is still a Firstmate artifact that GBrain has no knowledge of.
+Of the 93 checks, 86 report `ok`, among them `connection`, `integrity`, `content_hash_duplicates`, `child_table_orphans`, `orphan_ratio`, and `jsonb_integrity`.
+The seven that do not are `resolver_health`, `retrieval_reflex_health`, `skill_currency`, `home_dir_in_worktree`, `brain_score`, `links_extraction_lag`, and `takes_count`; their messages are not reproduced here, and none of them is one of the integrity-class checks named above.
+No name in the listing contains `outbox` or `divergence`, so the capture outbox is still a Firstmate artifact that GBrain has no knowledge of.
 
 #### Capturing corrections and current facts, not only pruned text
 
-A page captured into the disposable brain was still invisible to `recall`'s facts arm and appeared only in its search arm:
+A page captured into the disposable brain appeared in `recall`'s search arm, while its facts arm returned only the two remembered facts:
 
 ```text
 $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
@@ -494,7 +580,7 @@ Delivery verification and bounded retry are still Firstmate's.
 
 #### Provenance, validity, supersession
 
-On the disposable brain, the identical string was still a duplicate, the semantically contradictory pair still coexisted, and the near-duplicate still superseded:
+On the disposable brain, the identical string was still a duplicate, the semantically contradictory pair still coexisted - the facts-arm transcript above returns both `#3` and `#4` - and the near-duplicate still superseded:
 
 ```text
 $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
@@ -518,7 +604,7 @@ $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 {"id":"4","status":"superseded","status_text":"updated — fact #4 supersedes the previous version","entity_slug":"ct100","valid_until":null,"protocol_version":1}
 ```
 
-`recall {"entity":"ct100"}` returned both active claims with no stale marker on the contradictory fact, and the supersession audit log still contained only facts:
+`recall {"supersessions":true}` returned one supersession record, for fact `#2`:
 
 ```text
 $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
@@ -530,7 +616,8 @@ $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 }
 ```
 
-Provenance, validity, and supersession are still native for facts and still absent for pages.
+That projection selects `.facts` and prints three fields, so it records the supersession of `#2` by `#4` and establishes nothing beyond it.
+The `remember` receipts above carry `entity_slug` and `valid_until` and the `capture` receipts carry neither, and `data/fm-gbrain-usage-correctness-research/report.md` already records supersession as a facts-and-takes layer that pages do not reach, so provenance, validity, and supersession remain fact-scoped.
 
 #### Answer protocol over a retrieval miss
 
@@ -569,9 +656,8 @@ It was not run for the same boundary reason as before.
 #### Explicit truncation of an over-cap body
 
 `recall` still reports read-time budget packing, not capture-side truncation.
-The probe ran on the disposable brain against the three facts active at that point: `#3` and `#4` from the `remember` transcripts above, plus one earlier fact `#1` created by a probe this entry does not record.
-`#2` was expired by the supersession that created `#4`, so it is not in the set.
-A 20-token budget packed one of the three and dropped the other two; a 5000-token budget packed all three and dropped none:
+The two calls below ran on the disposable brain and differ only in `budget_tokens`.
+The projection prints the three raw fields the call returned and no item identities, so it shows what the budget accounting reported and nothing about which or how many items were packed or dropped:
 
 ```text
 $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
