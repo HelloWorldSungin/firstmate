@@ -76,7 +76,7 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 Within the Pi family, only the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` alongside `PI_CODING_AGENT=true` selects the signed identity; unmarked shared launcher ancestry remains `pi`.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
-`bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either resolution but never the cursor/agy kind and backend gates.
+`bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either resolution but never `agy`'s crew-only and herdr-only gates, and never the refusal of `muse` as a secondmate launcher.
 On `unknown`, ask the captain instead of guessing.
 A captain override always beats detection.
 When verifying a new adapter, record its env marker and command name in `bin/fm-harness.sh`.
@@ -212,8 +212,9 @@ A send or key action reporting success is not proof that the intended action hap
 OpenCode can accept and queue an Enter while leaving text visible, Grok can consume Enter in its slash popup without submitting, and Kimi can silently drop a message sent before readiness even though the send returns success.
 The shared symptom is a healthy-looking pane with no work in progress, so each adapter must verify the observable postcondition that is specific to its TUI.
 
-The shared submit core covers the popup class generically: it retries Enter and asks the shared composer classifier below whether text is still pending, so the second Enter that a `/` or `$` autocomplete popup needs is delivered without any adapter carrying its own popup logic.
-That is why a harness whose popup swallows the first Enter needs no special case, and why a harness whose first Enter submits cleanly needs no exception.
+The shared submit core covers the popup class generically: it retries Enter and asks the shared composer classifier below whether text is still pending, so the second Enter that a `/` or `$` autocomplete popup needs is delivered without any adapter carrying its own retry or its own composer read.
+Both halves stay fleet-wide and no adapter may copy either: a harness whose popup swallows the first Enter needs no adapter-side submit logic, and a harness whose first Enter submits cleanly needs no exception.
+What is still harness-keyed is the pre-Enter settle `bin/fm-send.sh` applies where the popup trigger cannot be told apart from ordinary text - the `$<skill>` settle scoped to `harness=codex`, whose rationale is owned by [the codex variant file](harnesses/codex.md).
 Each adapter's own postcondition - which token, transcript record, or lifecycle event proves the turn actually started - is in its variant file.
 
 ## Trust and first-launch dialogs
