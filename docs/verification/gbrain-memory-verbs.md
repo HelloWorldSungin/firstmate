@@ -320,7 +320,7 @@ Unlike the disposable-brain probes elsewhere in this file, the synthesis half of
 
 Measured 2026-08-20 against `gbrain 0.46.21.0` at commit `649ffe5f8baf3ff7f979c77f4de3975904cfe029`, with Bun `1.3.14`.
 Read-only probes ran against this home's brain at the paths `bin/fm-gbrain.sh paths` resolves.
-Probes that had to write ran against a disposable PGLite brain under `.probe-tmp` inside this worktree; that directory was removed after the probes.
+Probes that had to write ran against a disposable PGLite brain under `.probe-tmp` inside this worktree; that directory was removed after the probes, and `.probe-tmp/` is in `.gitignore` so an interrupted re-measurement cannot leave a brain database staged for commit.
 
 The installed version and commit:
 
@@ -346,7 +346,7 @@ archive     /home/sungin/firstmate/data/gbrain/archive
 Two prior scouts already established the shape of this install: `data/fm-gbrain-usage-correctness-research/report.md` and `data/fm-gbrain-release-and-unused-features/report.md`.
 This entry does not re-measure what those reports already measured; it refreshes the closing table with live probes for each claim.
 
-## What this leaves to Firstmate
+### What this leaves to Firstmate after `v0.46.21.0`
 
 | Capture guarantee | State after `v0.46.21.0` |
 | --- | --- |
@@ -358,7 +358,7 @@ This entry does not re-measure what those reports already measured; it refreshes
 | Evaluation gates for integrity and currency | Firstmate's. `eval brainbench` grades harness memory conformance over its own fixtures, not this corpus. |
 | Explicit truncation of an over-cap body | Firstmate's. `recall`'s `dropped_count` is read-time packing, a different mechanism. |
 
-### Audit and health that fail on outbox-to-index divergence
+#### Audit and health that fail on outbox-to-index divergence
 
 Outbox and active-index counts still disagree on this home:
 
@@ -387,7 +387,22 @@ By type:
   firstmate-note: 35
 ```
 
-`gbrain doctor --json` reports `connection: ok - Connected, 270 pages` and every integrity-class check as `ok`, and no check name contains `outbox` or `divergence`:
+`gbrain doctor --json` reports `connection` and every integrity-class check as `ok`:
+
+```text
+$ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
+  OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain doctor --json 2>/dev/null | \
+  jq -r '.checks[] | select(.name | IN("connection","integrity","content_hash_duplicates","child_table_orphans","orphan_ratio","jsonb_integrity")) | "\(.name) \(.status) \(.message)"'
+connection ok Connected, 270 pages
+orphan_ratio ok Vacuous: 0 entity pages (<100). Orphan ratio not meaningful at this scale.
+integrity ok Sampled 117 pages; 7 external link(s) (no bare tweets).
+jsonb_integrity ok All JSONB columns store objects/arrays
+child_table_orphans ok All FK-child tables clean (10 tables checked)
+content_hash_duplicates ok No content-hash duplicate pairs (bare vs path-prefixed slugs)
+```
+
+No check name contains `outbox` or `divergence`:
 
 ```text
 $ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
@@ -399,7 +414,7 @@ $ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
 
 The capture outbox is still a Firstmate artifact that GBrain has no knowledge of.
 
-### Capturing corrections and current facts, not only pruned text
+#### Capturing corrections and current facts, not only pruned text
 
 A page captured into the disposable brain was still invisible to `recall`'s facts arm and appeared only in its search arm:
 
@@ -447,7 +462,7 @@ $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 
 The storage primitives are native, but the triggers that decide when to correct a page or write a current fact are still Firstmate's.
 
-### Verified delivery and bounded retry drain
+#### Verified delivery and bounded retry drain
 
 `gbrain capture --json` still returns a structured receipt with status, chunks, and content hash:
 
@@ -460,17 +475,24 @@ $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
  "written":false,"source_kind":"capture-cli","captured_at":"2026-08-20T05:17:50.626Z"}
 ```
 
-[`../../bin/fm-gbrain-capture-lib.sh`](../../bin/fm-gbrain-capture-lib.sh) still caps the body at `FM_GBRAIN_CAPTURE_MAX_BYTES` default 65536 and parses only `.slug` from the receipt:
+[`../../bin/fm-gbrain-capture-lib.sh`](../../bin/fm-gbrain-capture-lib.sh) still caps the body at `FM_GBRAIN_CAPTURE_MAX_BYTES` default 65536:
 
 ```text
-$ grep -n 'FM_GBRAIN_CAPTURE_MAX_BYTES\|head -c' ../../bin/fm-gbrain-capture-lib.sh
+$ grep -n 'FM_GBRAIN_CAPTURE_MAX_BYTES\|head -c' bin/fm-gbrain-capture-lib.sh
 36:FM_GBRAIN_CAPTURE_MAX_BYTES=${FM_GBRAIN_CAPTURE_MAX_BYTES:-65536}
 391:  head -c "$FM_GBRAIN_CAPTURE_MAX_BYTES" "$raw" \
 ```
 
+The receipt is parsed in [`../../bin/fm-gbrain-capture.sh`](../../bin/fm-gbrain-capture.sh), not in the library, and it still takes `.slug` alone and discards `status`, `chunks`, and `content_hash`, unchanged from the delivery-receipt section above:
+
+```text
+$ grep -n "jq -r '\.slug // empty'" bin/fm-gbrain-capture.sh
+189:  page=$(printf '%s\n' "$out" | sed -n '/^[[:space:]]*{/,$p' | jq -r '.slug // empty' 2>/dev/null)
+```
+
 Delivery verification and bounded retry are still Firstmate's.
 
-### Provenance, validity, supersession
+#### Provenance, validity, supersession
 
 On the disposable brain, the identical string was still a duplicate, the semantically contradictory pair still coexisted, and the near-duplicate still superseded:
 
@@ -510,7 +532,7 @@ $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 
 Provenance, validity, and supersession are still native for facts and still absent for pages.
 
-### Answer protocol over a retrieval miss
+#### Answer protocol over a retrieval miss
 
 An off-corpus nonsense query still returned a populated result list with no "absent" signal.
 The printed blend score stayed high while the `rerank_score` stayed low, matching the finding in `data/fm-gbrain-usage-correctness-research/report.md`:
@@ -528,7 +550,7 @@ score=0.7832682666346772 rerank_score=0.00007668914622627199 evidence=keyword_ex
 
 Nothing native returns a query-level miss bit, so the answer protocol is still Firstmate's.
 
-### Evaluation gates for integrity and currency
+#### Evaluation gates for integrity and currency
 
 `gbrain eval brainbench` still grades cross-harness memory conformance against bundled fixtures, not this corpus:
 
@@ -544,10 +566,12 @@ Integrity and currency gates for Firstmate's captured corpus are still Firstmate
 `gbrain eval suspected-contradictions` still exists as the closest native relative, but it still judges sampled query pairs with an LLM through the configured model, which is hosted on this fleet.
 It was not run for the same boundary reason as before.
 
-### Explicit truncation of an over-cap body
+#### Explicit truncation of an over-cap body
 
 `recall` still reports read-time budget packing, not capture-side truncation.
-On the disposable brain with four facts, a 20-token budget dropped two facts and a 5000-token budget dropped none:
+The probe ran on the disposable brain against the three facts active at that point: `#3` and `#4` from the `remember` transcripts above, plus one earlier fact `#1` created by a probe this entry does not record.
+`#2` was expired by the supersession that created `#4`, so it is not in the set.
+A 20-token budget packed one of the three and dropped the other two; a 5000-token budget packed all three and dropped none:
 
 ```text
 $ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
