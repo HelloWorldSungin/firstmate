@@ -24,7 +24,8 @@ archive=$(printf '%s' "$paths" | jq -er '.archive')
 ```
 
 The command blocks below guard these variables, so an unresolved value refuses instead of silently creating or rewriting a brain under `$HOME/.gbrain`.
-The upgrade, backup, and `reinit-pglite` blocks resolve the same values again behind their own guard, because a step that rewrites or copies a brain must not inherit a stale variable from an earlier shell.
+The upgrade, backup, and `reinit-pglite` blocks resolve the same values again behind their own guard, because a step that rewrites or copies a brain wholesale must not inherit a stale variable from an earlier shell.
+The configuration and import blocks read the shared values instead, behind a guard that catches an unresolved value but not a stale one.
 The guards catch a value that was never resolved, while re-resolution replaces one that is real but stale, so the two cover different failures and neither replaces the other.
 As one example of what that returns, the `/home/sungin/firstmate` home carries no `config/gbrain-local.json` and so resolves `/home/sungin/firstmate/data/gbrain`; read that as one deployment's values rather than as where a brain lives.
 A hardcoded brain path is wrong for every home but the one it was written from, and it goes on looking right after the deployment it named is gone.
@@ -336,16 +337,18 @@ It also clears the brain's own database-plane configuration.
 The reranker, the hosted synthesis model, and the provider base URLs are stored there, so a reinitialized brain silently retrieves without reranking until [Initialize and configure retrieval](#initialize-and-configure-retrieval) is applied again.
 Re-apply that configuration before measuring or trusting the rebuilt brain, then restore the documents from whichever source the previous section identified.
 Run the block below from the Firstmate code root.
+It follows an exported `FM_HOME` and wipes whatever brain that resolves to, so confirm which home the environment names before pasting it.
 
 ```sh
 FM_HOME=${FM_HOME:-/home/sungin/firstmate}
 paths=$(FM_HOME="$FM_HOME" bin/fm-gbrain.sh paths --json)
 gbrain_home=$(printf '%s' "$paths" | jq -er '.gbrain_home')
 pglite=$(printf '%s' "$paths" | jq -er '.pglite')
-if [ ! -d "$gbrain_home/.gbrain" ] || [ -z "$pglite" ]; then
+if [ ! -d "$gbrain_home/.gbrain" ] || [ ! -d "$pglite" ]; then
   printf 'refusing to reinitialize: %s did not resolve an initialized brain runtime and an index path\n' "$FM_HOME" >&2
   exit 1
 fi
+printf 'reinitializing the brain for %s at %s\n' "$FM_HOME" "$pglite"
 GBRAIN_HOME=$gbrain_home \
 OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
 PATH=/home/sungin/.local/gbrain/bin:$PATH \
