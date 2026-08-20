@@ -321,6 +321,7 @@ Unlike the disposable-brain probes elsewhere in this file, the synthesis half of
 Measured 2026-08-20 against `gbrain 0.46.21.0` at commit `649ffe5f8baf3ff7f979c77f4de3975904cfe029`, with Bun `1.3.14`.
 Read-only probes ran against this home's brain at the paths `bin/fm-gbrain.sh paths` resolves.
 Probes that had to write ran against a disposable PGLite brain under `.probe-tmp` inside this worktree; that directory was removed after the probes, and `.probe-tmp/` is in `.gitignore` so an interrupted re-measurement cannot leave a brain database staged for commit.
+`core/config.ts` rejects a relative `GBRAIN_HOME`, so every disposable-brain command below passes it as `$PWD/.probe-tmp/runtime` and is run from the repository root.
 
 The installed version and commit:
 
@@ -343,7 +344,26 @@ pglite      /home/sungin/firstmate/data/gbrain/pglite
 archive     /home/sungin/firstmate/data/gbrain/archive
 ```
 
+The disposable brain was created for this entry and used for every probe that writes:
+
+```text
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain init --pglite --non-interactive \
+  --path "$PWD/.probe-tmp/pglite" --embedding-model ollama:snowflake-arctic-embed2:568m \
+  --embedding-dimensions 1024 2>&1 | grep -E 'PGLite|Embedding:|schema|migration'
+Setting up local brain with PGLite (no server needed)...
+  Embedding: ollama:snowflake-arctic-embed2:568m (1024d)
+  Setting up brain schema (v132)...
+  127 migration(s) applied
+[init] Using schema pack: gbrain-base-v2 (override with --schema-pack <name>)
+0 pages. Engine: PGLite (local Postgres).
+```
+
+Its probes ran as one session in this order: the two captures, the `remember` calls, then the `recall` reads.
+The sections below group them by the table row they answer rather than by that order, so a `recall` transcript can show facts a later section records creating.
+
 Two prior scouts already established the shape of this install: `data/fm-gbrain-usage-correctness-research/report.md` and `data/fm-gbrain-release-and-unused-features/report.md`.
+Both sit in the home's gitignored `data/` tree and are unreachable from a checkout of this repository, so every claim below that leans on them also carries its own transcript here, and this entry stays the durable copy of the observation.
 This entry does not re-measure what those reports already measured; it refreshes the closing table with live probes for each claim.
 
 ### What this leaves to Firstmate after `v0.46.21.0`
@@ -387,7 +407,7 @@ By type:
   firstmate-note: 35
 ```
 
-`gbrain doctor --json` applies a pending schema migration to whatever brain it opens - the 2026-08-13 entry above records that invocation moving this home's brain from schema 125 to 126 - so it is a read-only probe here only because the installed build's schema is already current, which is what this run checked first:
+`gbrain doctor --json` applies a pending schema migration to whatever brain it opens - the 2026-08-13 entry above records that invocation moving this home's brain from schema 125 to 126 - so it is a read-only probe here only because the installed build's schema is already current, which the run's own output reports rather than a check that preceded it:
 
 ```text
 $ GBRAIN_HOME=/home/sungin/firstmate/data/gbrain/runtime \
@@ -502,64 +522,78 @@ No name in the listing contains `outbox` or `divergence`, so the capture outbox 
 
 #### Capturing corrections and current facts, not only pruned text
 
-A page captured into the disposable brain appeared in `recall`'s search arm, while its facts arm returned only the two remembered facts:
+Capturing the same slug twice, with the file rewritten in between, returned two receipts carrying different `content_hash` values:
 
 ```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call recall '{"entity":"ct100"}' 2>/dev/null | \
-  jq -c '.facts[] | {id, fact}'
-{"id":4,"fact":"CT100 OHLCV service is inactive today"}
-{"id":3,"fact":"CT100 OHLCV service is active and enabled"}
+$ printf '# CT100 OHLCV service is now active\n\nCT100 OHLCV service is now active\n' > .probe-tmp/probe.md
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain capture --file .probe-tmp/probe.md \
+  --slug probe/ct100-state --json 2>/dev/null
+{
+  "slug": "probe/ct100-state",
+  "status": "created_or_updated",
+  "chunks": 1,
+  "content_hash": "17baeb21ad4bc67c228ef9d03495cae771cdb16cc7164c241c0b71abbf0495b8",
+  "written": false,
+  "source_kind": "capture-cli",
+  "captured_at": "2026-08-20T18:13:56.205Z"
+}
 
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call recall '{"query":"CT100 OHLCV service state"}' 2>/dev/null | jq '.results'
-[
-  {
-    "slug": "probe/ct100-state",
-    "title": "CT100 OHLCV service is now active",
-    "chunk": "# CT100 OHLCV service is now active\n\nCT100 OHLCV service is now active",
-    "evidence": "high_vector_match",
-    "create_safety": "exists",
-    "provenance": "probe/ct100-state"
-  }
-]
+$ printf '# CT100 OHLCV service is now inactive\n\nCT100 OHLCV service is now inactive\n' > .probe-tmp/probe.md
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain capture --file .probe-tmp/probe.md \
+  --slug probe/ct100-state --json 2>/dev/null
+{
+  "slug": "probe/ct100-state",
+  "status": "created_or_updated",
+  "chunks": 1,
+  "content_hash": "d0f466f9c37ac14b9df0e1ec3b871cab5dfb343bc2d6eb37e5260484c90d3c0a",
+  "written": false,
+  "source_kind": "capture-cli",
+  "captured_at": "2026-08-20T18:13:57.018Z"
+}
+```
+
+The receipt cannot say on its own which of the two happened: `created_or_updated` is one collapsed status, and `written` is the write-through-to-file flag rather than a database signal.
+What settles it is the brain's own count after both calls, one page rather than two:
+
+```text
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain stats 2>/dev/null | head -3
+Pages:     1
+Chunks:    1
+Embedded:  1
+```
+
+That page was still invisible to `recall`'s facts arm and appeared only in its search arm, whose stored chunk is the second body:
+
+```text
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"entity":"ct100"}' 2>/dev/null | \
+  jq -c '{facts: [.facts[] | {id, fact}], results: (.results|length)}'
+{"facts":[{"id":3,"fact":"CT100 OHLCV service is inactive today"},{"id":2,"fact":"CT100 OHLCV service is active and enabled"}],"results":0}
+
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"query":"CT100 OHLCV service state"}' 2>/dev/null | \
+  jq -c '{facts: (.facts|length), results: [.results[] | {slug, chunk}]}'
+{"facts":2,"results":[{"slug":"probe/ct100-state","chunk":"# CT100 OHLCV service is now inactive\n\nCT100 OHLCV service is now inactive"}]}
 ```
 
 `remember` still requires provenance:
 
 ```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain call remember '{"fact":"CT100 OHLCV service is inactive"}' 2>&1
-UPGRADE_AVAILABLE 0.46.21.0 0.46.23.0
-gbrain 0.46.21.0 -> 0.46.23.0 available. Run: gbrain self-upgrade
+UPGRADE_AVAILABLE 0.46.21.0 0.46.24.0
+gbrain 0.46.21.0 -> 0.46.24.0 available. Run: gbrain self-upgrade
 Missing required parameter: provenance
-```
-
-Same-slug recapture with changed content updated the page:
-
-```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain capture --file .probe-tmp/probe.md \
-  --slug probe/ct100-state --json 2>/dev/null
-{"slug":"probe/ct100-state","status":"created_or_updated","chunks":1,
- "content_hash":"5d1283b2e50f988ae5b61ae0f9f3e7275557835d6ffc3047be00de353a1c94ba",
- "written":false,"source_kind":"capture-cli","captured_at":"2026-08-20T05:18:06.366Z"}
 ```
 
 The storage primitives are native, but the triggers that decide when to correct a page or write a current fact are still Firstmate's.
 
 #### Verified delivery and bounded retry drain
 
-`gbrain capture --json` still returns a structured receipt with status, chunks, and content hash:
-
-```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain capture --file .probe-tmp/probe.md \
-  --slug probe/receipt-shape --json 2>/dev/null
-{"slug":"probe/receipt-shape","status":"created_or_updated","chunks":1,
- "content_hash":"4749d0165f81a26a4e8373aac747e7a9832c5b0beb89eddbe0bc94f05bc53581",
- "written":false,"source_kind":"capture-cli","captured_at":"2026-08-20T05:17:50.626Z"}
-```
+`gbrain capture --json` still returns a structured receipt carrying `status`, `chunks`, `content_hash`, `written`, `source_kind`, and `captured_at`; the two receipts recorded above are that shape.
 
 [`../../bin/fm-gbrain-capture-lib.sh`](../../bin/fm-gbrain-capture-lib.sh) still caps the body at `FM_GBRAIN_CAPTURE_MAX_BYTES` default 65536:
 
@@ -580,44 +614,53 @@ Delivery verification and bounded retry are still Firstmate's.
 
 #### Provenance, validity, supersession
 
-On the disposable brain, the identical string was still a duplicate, the semantically contradictory pair still coexisted - the facts-arm transcript above returns both `#3` and `#4` - and the near-duplicate still superseded:
+On the disposable brain, the identical string was still a duplicate, the semantically contradictory pair still coexisted, and the near-duplicate still superseded:
 
 ```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain call remember \
-  '{"fact":"CT100 OHLCV service is inactive","entity":"ct100","provenance":"probe"}' 2>/dev/null
+  '{"fact":"CT100 OHLCV service is inactive","entity":"ct100","provenance":"probe"}' 2>/dev/null | jq -c
+{"id":"1","status":"inserted","status_text":"remembered as fact #1","entity_slug":"ct100","valid_until":null,"protocol_version":1}
+
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call remember \
+  '{"fact":"CT100 OHLCV service is inactive","entity":"ct100","provenance":"probe"}' 2>/dev/null | jq -c
+{"id":"1","status":"duplicate","status_text":"already knew this — kept fact #1","entity_slug":"ct100","valid_until":null,"protocol_version":1}
+
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call remember \
+  '{"fact":"CT100 OHLCV service is active and enabled","entity":"ct100","provenance":"probe"}' 2>/dev/null | jq -c
 {"id":"2","status":"inserted","status_text":"remembered as fact #2","entity_slug":"ct100","valid_until":null,"protocol_version":1}
 
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
   /home/sungin/.local/gbrain/bin/gbrain call remember \
-  '{"fact":"CT100 OHLCV service is inactive","entity":"ct100","provenance":"probe"}' 2>/dev/null
-{"id":"2","status":"duplicate","status_text":"already knew this — kept fact #2","entity_slug":"ct100","valid_until":null,"protocol_version":1}
-
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call remember \
-  '{"fact":"CT100 OHLCV service is active and enabled","entity":"ct100","provenance":"probe"}' 2>/dev/null
-{"id":"3","status":"inserted","status_text":"remembered as fact #3","entity_slug":"ct100","valid_until":null,"protocol_version":1}
-
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call remember \
-  '{"fact":"CT100 OHLCV service is inactive today","entity":"ct100","provenance":"probe"}' 2>/dev/null
-{"id":"4","status":"superseded","status_text":"updated — fact #4 supersedes the previous version","entity_slug":"ct100","valid_until":null,"protocol_version":1}
+  '{"fact":"CT100 OHLCV service is inactive today","entity":"ct100","provenance":"probe"}' 2>/dev/null | jq -c
+{"id":"3","status":"superseded","status_text":"updated — fact #3 supersedes the previous version","entity_slug":"ct100","valid_until":null,"protocol_version":1}
 ```
 
-`recall {"supersessions":true}` returned one supersession record, for fact `#2`:
+The two survivors carry no stale marker: widening the entity projection to the supersession fields returns `expired_at` and `superseded_by` as `null` on both `#3` and `#2`, and no page in the same response:
 
 ```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call recall '{"supersessions":true}' 2>/dev/null | jq '.facts[] | {id, expired_at, superseded_by}'
-{
-  "id": 2,
-  "expired_at": "2026-08-20T05:17:22.051Z",
-  "superseded_by": 4
-}
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"entity":"ct100"}' 2>/dev/null | \
+  jq -c '{facts: [.facts[] | {id, fact, expired_at, superseded_by}], results: (.results|length)}'
+{"facts":[{"id":3,"fact":"CT100 OHLCV service is inactive today","expired_at":null,"superseded_by":null},{"id":2,"fact":"CT100 OHLCV service is active and enabled","expired_at":null,"superseded_by":null}],"results":0}
 ```
 
-That projection selects `.facts` and prints three fields, so it records the supersession of `#2` by `#4` and establishes nothing beyond it.
-The `remember` receipts above carry `entity_slug` and `valid_until` and the `capture` receipts carry neither, and `data/fm-gbrain-usage-correctness-research/report.md` already records supersession as a facts-and-takes layer that pages do not reach, so provenance, validity, and supersession remain fact-scoped.
+The supersession audit log has no page arm to hide one in: its top-level keys are `facts`, `protocol_version`, and `total`, and the one record it holds is the expiry of `#1` by `#3`:
+
+```text
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"supersessions":true}' 2>/dev/null | jq -c 'keys'
+["facts","protocol_version","total"]
+
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"supersessions":true}' 2>/dev/null | \
+  jq -c '[.facts[] | {id, expired_at, superseded_by}]'
+[{"id":1,"expired_at":"2026-08-20T18:14:12.783Z","superseded_by":3}]
+```
+
+The `remember` receipts carry `entity_slug` and `valid_until` and the `capture` receipts carry neither, and the supersession log has no arm a page could appear in, so provenance, validity, and supersession stay fact-scoped - the same split `data/fm-gbrain-usage-correctness-research/report.md` records as a facts-and-takes layer pages do not reach.
 
 #### Answer protocol over a retrieval miss
 
@@ -656,26 +699,21 @@ It was not run for the same boundary reason as before.
 #### Explicit truncation of an over-cap body
 
 `recall` still reports read-time budget packing, not capture-side truncation.
-The two calls below ran on the disposable brain and differ only in `budget_tokens`.
-The projection prints the three raw fields the call returned and no item identities, so it shows what the budget accounting reported and nothing about which or how many items were packed or dropped:
+The two calls below differ only in `budget_tokens`, and the projection names the facts each one returned, so the inventory behind the counts is the two active facts the section above records:
 
 ```text
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call recall '{"budget_tokens":20}' 2>/dev/null | jq '{budget_tokens, budget_used, dropped_count}'
-{
-  "budget_tokens": 20,
-  "budget_used": 10,
-  "dropped_count": 2
-}
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"budget_tokens":20}' 2>/dev/null | \
+  jq -c '{budget_tokens, budget_used, dropped_count, facts: [.facts[].id]}'
+{"budget_tokens":20,"budget_used":10,"dropped_count":1,"facts":[3]}
 
-$ GBRAIN_HOME=.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
-  /home/sungin/.local/gbrain/bin/gbrain call recall '{"budget_tokens":5000}' 2>/dev/null | jq '{budget_tokens, budget_used, dropped_count}'
-{
-  "budget_tokens": 5000,
-  "budget_used": 24,
-  "dropped_count": 0
-}
+$ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 \
+  /home/sungin/.local/gbrain/bin/gbrain call recall '{"budget_tokens":5000}' 2>/dev/null | \
+  jq -c '{budget_tokens, budget_used, dropped_count, facts: [.facts[].id]}'
+{"budget_tokens":5000,"budget_used":21,"dropped_count":0,"facts":[3,2]}
 ```
+
+At 20 tokens the call returned `#3` and reported one dropped; at 5000 it returned `#3` and `#2` and reported none.
 
 Firstmate's own body cap at 65536 bytes and the absence of a truncation marker in the outbox record are unchanged, so explicit truncation signalling is still Firstmate's.
 
