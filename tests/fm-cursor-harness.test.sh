@@ -19,7 +19,6 @@
 #      not clear it and whichever marker is tested first wins.
 #   4. The transcript fold brackets a turn: a trailing turn_ended is idle, a
 #      later role:user is busy, and an unresolvable binding is unknown.
-#   5. Cursor is a crewmate/scout adapter only and refuses a secondmate launch.
 set -u
 
 # shellcheck source=tests/lib.sh

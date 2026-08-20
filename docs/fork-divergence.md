@@ -20,7 +20,7 @@ The fork carries an Antigravity CLI adapter so workers can use the operator's pa
 Upstream has no agy support at all, so every part of it is fork-local.
 It is deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise that CLI without treating screen text as authority.
 It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
-The adapter contract lives in [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
+The adapter contract lives in the [`harness-adapters` skill's agy variant file](../.agents/skills/harness-adapters/harnesses/agy.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
 Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
 This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
 
