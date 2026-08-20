@@ -519,7 +519,7 @@ brain dangling_aliases ok
 Of the 93 checks, 86 report `ok`, and that first column is the build's own classification: 54 `brain`, 24 `ops`, 10 `skill`, 5 `meta`.
 `brain` is the class `core/doctor-categories.ts` describes as the data-integrity signals, and it is not uniformly clean here: three of the seven non-`ok` checks belong to it, each `warn` - `brain_score`, `links_extraction_lag`, and `takes_count`.
 The other four are `resolver_health` (`fail`), `retrieval_reflex_health`, and `skill_currency` in `skill`, and `home_dir_in_worktree` in `ops`; their messages are not reproduced here.
-The five integrity checks the 2026-08-13 entry named all report `ok` - `integrity`, `content_hash_duplicates`, `child_table_orphans`, `orphan_ratio`, and `jsonb_integrity` - as does `connection`, which this build files under `ops` rather than `brain`.
+The five integrity checks named in the 2026-08-12 `v0.45.0.0` measurement, under `The v0.45.0.0 bootstrap checks do not apply to this deployment` above, all report `ok` - `integrity`, `content_hash_duplicates`, `child_table_orphans`, `orphan_ratio`, and `jsonb_integrity` - as does `connection`, which this build files under `ops` rather than `brain`.
 The build scores those classes itself, out of the same saved run:
 
 ```text
