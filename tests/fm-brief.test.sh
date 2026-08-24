@@ -421,7 +421,7 @@ test_ship_mode_is_explicit_not_registry() {
   pass "fm-brief.sh: the explicit ship mode wins over the registered posture"
 }
 
-# yolo is firstmate's approval authority and never reaches the worker, and a scout
+# yolo is firstmate's merge authority and never reaches the worker, and a scout
 # or charter carries no delivery contract. Each must refuse rather than accept and
 # discard the flag, which would look recorded but change nothing.
 test_delivery_flags_are_refused_where_they_do_not_apply() {
@@ -1046,15 +1046,15 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" sample-investigation sample --scout >/dev/null 2>&1
   scout="$home/data/sample-investigation/brief.md"
-  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$scout" \
-    "scout brief did not load the unresolved-decision policy before done"
+  assert_grep "$ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md" "$scout" \
+    "scout brief did not load the captain-call policy before done"
   assert_grep "pass its shared completion gate for the report and any visual review" "$scout" \
     "scout brief did not cross-reference visual-review completion"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='sample reviews' \
     "$ROOT/bin/fm-brief.sh" sample-mate --secondmate --no-projects >/dev/null 2>&1
   charter="$home/data/sample-mate/brief.md"
-  assert_grep "load \`decision-hold-lifecycle\`" "$charter" \
-    "secondmate charter did not load the shared decision policy for detailed investigations"
+  assert_grep "load \`captain-hold-lifecycle\`" "$charter" \
+    "secondmate charter did not load the shared captain-call policy for detailed investigations"
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
@@ -1249,7 +1249,7 @@ assert_design_dod_exact() {
       IFS= read -r -d '' expected <<'EOF' || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/captain-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
 Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 The final status summary must name the ADR path and concisely state the decisions taken.
 This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.
@@ -1265,7 +1265,7 @@ While you sit parked on a backgrounded `axi run` or `axi respond` call, rule 4's
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies the authority contract in its `AGENTS.md` and obtains any required captain decision.
+  Firstmate applies `ask-user-authority` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.
 - Avoid `--yes`: it would silently bypass firstmate's authority check and any required captain escalation.
 
@@ -1276,7 +1276,7 @@ EOF
       IFS= read -r -d '' expected <<'EOF' || true
 # Definition of done
 Delivery contract: mode=direct-PR
-Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/captain-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
 Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 The final status summary must name the ADR path and concisely state the decisions taken.
 This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.
@@ -1289,7 +1289,7 @@ EOF
       IFS= read -r -d '' expected <<'EOF' || true
 # Definition of done
 Delivery contract: mode=local-only
-Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Before reporting the ADR ready, read and follow `__ROOT__/.agents/skills/captain-hold-lifecycle/SKILL.md` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
 Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 The final status summary must name the ADR path and concisely state the decisions taken.
 This ADR ships **local-only**: no remote, no PR, no pipeline.

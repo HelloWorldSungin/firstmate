@@ -371,16 +371,29 @@ worker_stop_active_execution() {
   WORKER_ACTIVE_JOB=
 }
 
+# Ignore, rather than restore the default disposition for, the signals this
+# handler answers. A replacement stops a Linux worker by signalling its whole
+# isolated group, and the supervisor in that group forwards a second stop signal
+# to this same serving child, so a repeat is the normal case and not an
+# exception. Restoring the default let that second signal kill the shutdown part
+# way through, which left the ownership lock behind holding a half-written temp
+# file that no later worker could clear, so every replacement then failed to
+# report ready. A shutdown that hangs is still stopped: the caller escalates to
+# KILL, which no disposition can block.
 worker_shutdown() {
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
   WORKER_STOP=1
-  worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
-  if ! worker_stop_active_execution; then
+  worker_publish_quarantine || {
+    worker_error "cannot guard worker ownership for shutdown"
+    trap worker_shutdown HUP INT TERM
+    return 0
+  }
+  worker_stop_active_execution || {
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
-  fi
+  }
   worker_clear_quarantine || {
     worker_error "could not clear guarded worker ownership after shutdown"
     WORKER_RELEASE_OWNERSHIP=0

@@ -26,7 +26,9 @@ While supervision is still needed and away mode remains inactive, an actionable 
 
 After an actionable Pi or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
 At the readiness deadline, the adapter gives stdout and stderr already queued for delivery one event-loop check turn to settle before it reports a timeout.
-It then sends TERM and waits one retirement timeout for the child to exit.
+It confirms the handling handoff against that successor before scheduling the follow-up, retries once against the current generation and successor, and treats a failed confirmation as a restoration failure.
+A failed confirmation is classified, never swallowed, and surfaces exactly one typed message after a successor that is no longer alive is retired.
+The adapter then sends TERM and waits one retirement timeout for the child to exit before the next lock-verified exponential retry.
 The exit verdict likewise settles for one event-loop check turn so an exit already queued at the deadline wins over timeout.
 An arm observed exited when that settled verdict runs gets one additional retirement-timeout grace for its close and stream teardown, while an arm still running then fails retirement.
 If the unready arm remains running when the settled exit verdict runs or misses the bounded close grace, the adapter keeps ownership, starts no overlapping retry, and delivers the typed fallback.
@@ -35,9 +37,9 @@ After the configured retry bound is exhausted, it delivers the original wake wit
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
-The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher or auto-arm claim is present.
-For every supported arm path, a successor that observes an accepted down stretch emits `check: rearm-resurface` through the ordinary durable handling path before settling into its live wait.
-That recovery presentation includes all unacknowledged queue rows, the cursor-folded OPEN DECISIONS set, and still-unread informational status lines, so a still-open decision or a buried `note:` answer reappears even when recovery has no queue row of its own.
+The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher is live and no auto-arm claim is still deciding, so a leftover claim whose own decision already finished cannot suppress it ([`turnend-guard.md`](turnend-guard.md#harness-integrations) owns that boundary).
+The recovery-episode contract below owns once-per-generation announcement.
+A handling successor does not re-announce; it enters its poll loop immediately and keeps scanning signals, stale panes, and checks.
 The model no longer re-arms after ordinary wakes.
 No PreToolUse hook denies fleet commands based on watcher status.
 A genuine auto-arm failure describes the automatic mechanism as broken and never directs a routine manual background arm.
@@ -51,7 +53,9 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 ## Recovery episode acknowledgement
 
 A recovery episode is one generation of `state/.watcher-down`, and it is retired only by the generation-bound acknowledgement the drain prints as `WAKE_ACK_REQUIRED`.
-Every watcher close and every durable queue append publishes downtime, so a downtime republication of any pending episode reuses its generation instead of minting a new one.
+An unacknowledged downtime generation is announced at most once: the first recovery marks that generation announced, and later arms wait until a new down stretch mints a new generation.
+A non-successor watcher start after an announced-but-unacked episode is a new down stretch and mints a fresh generation so buried decisions still resurface once.
+Every watcher close and every durable queue append publishes downtime, so a downtime republication of any pending episode reuses its generation instead of minting a new one, and an already-announced generation stays announced.
 That reuse keeps a watcher close inside the handling window from orphaning the acknowledgement already presented and trapping later arms in repeated recovery presentation.
 An acknowledgement carries two separable facts: queue-row consumption is bound to the monotonic `--ack-through` sequence, while only retiring the episode is bound to `--recovery-generation`.
 A generation mismatch therefore does not block consumption of rows through that sequence; it is a non-fatal result that names its own remedy - re-drain, then acknowledge the newer episode.
@@ -85,11 +89,13 @@ The same suite deterministically stalls the event loop across the readiness and 
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 It also covers the Pi away-mode hand-off in the Ownership section, while `FM_AFK_PI_DUAL_SUPERVISION_E2E=1 tests/fm-afk-pi-dual-supervision-e2e.test.sh` exercises that contract with a real Pi primary and away supervisor.
 `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
+`tests/fm-watch-recovery-loop.test.sh` covers the once-per-generation announcement bound with the real Pi extension against a refused handling handshake, and a handling successor that must surface a real crew event instead of going blind.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination, and a cleanup-staged stop-signal burst that must release both the singleton lock and its owner directory.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
+It also covers abandoned single-flight claims: a claim the ledger shows already finished, and one whose recorded pid-identity no longer matches its live pid while the ledger still reads arming or is absent entirely, are both reclaimed so a lapsed home re-arms, while an identity-matched claim still arming, one the ledger does not name, and the guard's own terminal check keep the gate closed ([`turnend-guard.md`](turnend-guard.md) owns that boundary).
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
-`tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
+`tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset; [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full coverage, including the abandoned-claim cases.
 
 ## Active limits and verification
 

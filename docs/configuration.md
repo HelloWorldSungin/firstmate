@@ -567,6 +567,66 @@ The locked bootstrap inheritance pass uses the same placement-specific behavior;
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 
+## Watched tool updates (config/watched-tools.json)
+
+`config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
+When it is present and the check is armed, [`bin/fm-tool-update-check.sh`](../bin/fm-tool-update-check.sh) reports two conditions, and keeps them deliberately distinct:
+
+- `<tool> update available` means a newer version exists at the tool's update source.
+- `<tool> update not in effect` means a newer copy is already installed on this host, but `PATH` still resolves an older one.
+
+The second condition is the reason the check exists.
+An update can install correctly and stay inert because an earlier `PATH` entry still holds an older copy, and a check that only asks whether a newer version is published reports that host as up to date.
+The script therefore runs every copy of a watched command found on `PATH` and asks it for its own version, rather than trusting one lookup or reading a version out of a directory name.
+It only reports; it never installs, updates, fetches, or changes `PATH`, a version manager, or any installed tool.
+
+This section is the single owner of the canonical schema.
+`bin/fm-tool-update-check.sh` owns probe mechanics, cadence, and the report record.
+
+```json
+{
+  "tools": [
+    {
+      "name": "<label used in the report>",
+      "command": "<optional bare executable name to find on PATH>",
+      "version_args": ["<optional args that make it print its version, default --version>"],
+      "announce_pattern": "<optional extended regex matching the tool's own update announcement>",
+      "announce_args": ["<optional args for the command that carries that announcement, default version_args>"],
+      "git": {
+        "repo": "<optional absolute path to a local clone>",
+        "remote": "<optional remote name, default origin>",
+        "branch": "<optional branch, default the remote's own default branch>"
+      }
+    }
+  ]
+}
+```
+
+Each entry needs a `name` and at least one of `command` or `git`; an entry may carry both.
+A `command` entry gives the `PATH` comparison above, and adding `announce_pattern` also reports the tool's own update announcement, which is how a tool that already reports its own updates is read rather than reimplemented.
+A tool does not always announce a new release on the command that prints its version: `no-mistakes --version` prints only the version, while its other commands carry the announcement.
+`announce_args` names the command to search for the announcement in that case, and it is asked only of the copy `PATH` resolves; without it the version probe's own output is searched.
+An `announce_pattern` that is not a usable extended regular expression stops `arm`, and during a sweep it is reported as that one tool's own check failure so one broken pattern never stops the other watched tools from being checked.
+A `git` entry reports how many commits the local clone is behind its remote branch, and stays silent when the clone is current or ahead.
+An omitted `branch` uses the remote's default branch, taken from the clone's own record of it and otherwise asked of the remote directly, so a `--single-branch` clone still resolves.
+Both probe kinds are read-only and bounded, and a probe that cannot answer is reported as a check failure rather than assumed current.
+See [`docs/examples/watched-tools.json`](examples/watched-tools.json) for a starting point to copy into local `config/watched-tools.json`.
+
+Arm the check once per home with `bin/fm-tool-update-check.sh arm`.
+That writes `state/tool-updates.check.sh` and binds its bytes with `bin/fm-check-register.sh`, so the existing watcher polls it on its normal cadence and turns its one line into a `check:` wake; no separate schedule is involved.
+The armed check runs whenever that home has a watcher running, and arming alone does not make watcher supervision required, so a home with no in-flight work and no other reason to watch does not start a watcher just for this check.
+`bin/fm-tool-update-check.sh disarm` removes the shim, its trust binding, and the report record.
+The check prints nothing when everything is current, and `state/.tool-updates` records the findings the last report was made from so the same pending update is reported once instead of on every poll.
+A changed or returning condition is reported again.
+Adding, removing, or changing a watched tool is an edit to this file and needs no code change or re-arming.
+This file is not inherited by secondmate homes, so each home watches the tools it actually depends on.
+
+`FM_TOOL_UPDATE_INTERVAL` (default 900 seconds, `0` to probe on every run) sets how often probes actually run, `FM_TOOL_UPDATE_PROBE_SECS` (default 5) bounds one probe, and `FM_TOOL_UPDATE_BUDGET_SECS` (default 20) bounds a whole sweep.
+A sweep that runs out of budget says which tool it did not reach rather than reporting the rest as current.
+The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the watcher kills prints nothing and records nothing and would then repeat that silence on every poll.
+So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
+A budget that is not a whole number from 1 to 120 is still refused outright.
+
 ## Relay (.env)
 
 Relay lets a firstmate instance answer public mentions and act on normal reversible mention requests through firstmate's normal lifecycle.
@@ -714,8 +774,8 @@ Announcement ordering is adapter-declared through `bin/fm-procevent-<adapter>.sh
 The remote-secondmate reply adapter declares itself self-announcing: a captured reply reaches its local status mirror and settles its correlated pending-reply expectation without any handler step, the mirrored status bytes are the single wake for one remote note through the same signal classification a local secondmate's append gets, a byte-identical replayed capture adds no bytes and stays quiet, and only a capture the adapter could not fully apply is published as a `check` wake, whose adapter handling remains idempotent.
 
 Keyed captain answers use one more seam of the same kind, and the runner still decides nothing about them.
-Some sources carry the captain's answer to a durable decision, and what such an answer means is owned once by `bin/fm-decision-hold.sh`'s keyed-answer intake rather than by any channel.
-A source bound with `bin/fm-decision-hold.sh bind` therefore has each captured result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints is piped straight into that intake.
+Some sources carry the captain's answer to a captain-held task, and what such an answer means is owned once by `bin/fm-captain-hold.sh`'s keyed-answer intake rather than by any channel.
+A source bound with `bin/fm-captain-hold.sh bind` therefore has each captured result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints is piped straight into that intake.
 A binding can select one decision origin or the script's cross-origin mode; the command header owns the exact forms and key interpretation.
 The adapter reports only what the captain chose; the intake owns every rule about what happens next, so the runner names no adapter, parses no result, and carries no decision rule, and a future source needs nothing here beyond an `answers` command and a binding.
 Feeding is independent of handling: it never acknowledges a result and never suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.
@@ -799,6 +859,10 @@ FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either s
 FM_GBRAIN_MAINTENANCE_STATE=   # optional operator announcement fm-gbrain-health.sh surfaces on the dashboard GBrain panel: ready | upgrading | reindexing; see docs/gbrain.md "Announce a maintenance window"
 FM_GBRAIN_MAINTENANCE_DETAIL=   # optional free text shown with that announcement, e.g. the release being installed
 FM_RECALL_TIMEOUT=      # optional seconds per fm-recall.sh retrieval call, overriding its per-command defaults (search 60, think 300); search sizes its result-provenance pass from the same value, once per corpus it reads
+FM_TOOL_UPDATE_INTERVAL=900   # seconds between watched-tool probe sweeps; 0 probes on every run, other values must be 60..86400
+FM_TOOL_UPDATE_PROBE_SECS=5   # 1..30 seconds allowed for one version or git probe
+FM_TOOL_UPDATE_BUDGET_SECS=20   # 1..120 seconds allowed for a whole watched-tool sweep; cut to fit FM_CHECK_TIMEOUT, and the cut is reported
+FM_TOOL_UPDATE_NOW=     # test override for the watched-tool sweep clock; the sweep budget still uses real time
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_WHEN_OUTPUT_TAIL_BYTES=8192          # bound on the command-output tail inside one condition->action outcome document
@@ -848,6 +912,9 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalati
 FM_RUN_STRANDED_SILENCE_SECS=1800  # how long an actively-executing no-mistakes step may report NO activity before a wedge escalation stops being held for it. Both supervisors consult bin/fm-run-progress.sh at the escalation point only, so a crew parked on a run that is still moving stops alarming for as long as the hold lasts (bounded by FM_RUN_PROGRESS_HOLD_MAX below), while a stranded run and a confidently dead agent still alarm. docs/architecture.md owns the always-on watcher's no-evidence fallback for a surviving declared wait. Above the pipeline's own 10m step_quiet_warning on purpose: that marker is a liveness clue, and review or test steps routinely go 10-18 minutes on one opening line. Raising it delays a real wedge alarm by the same amount
 FM_RUN_PROGRESS_NM_TIMEOUT=10      # seconds allowed for that bounded `no-mistakes axi status` read; a read that cannot complete is no evidence and never positive evidence that may hold a wedge escalation
 FM_RUN_PROGRESS_HOLD_MAX=15        # consecutive run-progress holds one pane may spend before it wedge-escalates anyway, in both supervisors. Run progress is evidence about the RUN, not about the WORKER, so a moving pipeline may DELAY an alarm but never silence it: past the cap the escalation fires however healthy the run looks, carrying the progress detail so it reads as "still moving, this pane is not". 15 holds x FM_STALE_ESCALATE_SECS (240) is one hour, the same allowance FM_BUSY_TURN_MAX_SECS and FM_PAUSE_RESURFACE_SECS already give a live-but-quiet endpoint, and it clears this repo's own routine pipeline steps (review 11m median, test 6m) so only a genuinely long step ever reaches it. The forced escalation resets the hold count, not the escalation count. Raising it widens the blind window for a hung worker by the same amount; lowering it re-introduces routine noise on long healthy steps
+FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'   # directory names the wedge detector's task-worktree write probe skips; the default keeps .git out so a supervisor's own read-only git command can never look like crew progress; set it to the empty string to prune nothing, which widens the probe to the whole depth-bounded tree rather than disabling it
+FM_WORKTREE_WRITE_MAXDEPTH=6       # depth that same probe walks below the recorded worktree; it runs only at the moment a wedge escalation would otherwise fire, never on every poll; no probe knob applies to a secondmate, whose recorded worktree is a provisioned home the probe skips entirely
+FM_WORKTREE_WRITE_TIMEOUT=10       # wall-clock seconds that one walk may take, so a worktree on a hung mount cannot stall the watcher poll that started it; hitting the bound reads as no write evidence, which leaves the escalation schedule exactly as it was; a value that is not a positive integer falls back to the default
 FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wake debug log
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's best-effort clone refresh; unset/blank defaults to max(20, 5 + 3 * origin-backed-project-count)
 FM_BOOTSTRAP_USAGE_TIMEOUT=120       # seconds allowed for bootstrap's best-effort token-usage refresh, which runs only when data/usage.db exists; blank, non-numeric, or zero falls back to 120, because zero is what GNU timeout reads as "no timeout"

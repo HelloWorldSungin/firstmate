@@ -101,6 +101,13 @@ No test guards `CONTRIBUTING.md`'s content, so this ledger entry is the only sta
 
 ## Retired divergences
 
+### Separate decision-hold lifecycle - retired 2026-08-24
+
+The fork's separate decision records and `decision-hold-lifecycle` completion owner were retired in favor of upstream's ordinary task held for the captain, adopted with `kunchenguid/firstmate#2728`.
+This was a capability collision under the remote-doctor precedent: both implementations preserved unresolved captain calls across investigation completion, but upstream made the backlog task itself the identity and removed the parallel decision concept.
+The fork's compatible guarantee for interactive design tasks survives by loading `captain-hold-lifecycle`, using `bin/fm-captain-hold.sh verify` during non-forced design teardown, and pinning that gate in `tests/fm-captain-hold-lifecycle.test.sh`.
+The old skill and command remain only as one-release compatibility pointers for already-dispatched work; the old mechanism document and standalone test suite were retired after their surviving coverage moved to the upstream owner.
+
 ### Fork-local remote doctor - retired 2026-08-04
 
 The fork's own 53-line `bin/fm-remote-doctor.sh` design was retired in favor of upstream's remote-second-mate implementation.
