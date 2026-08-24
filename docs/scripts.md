@@ -137,7 +137,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
 | `fm-run-attribution-legacy-transition.sh` | Migrate legacy task branch identity only from a matching recorded GitHub PR head, then diagnose every task still unreadable |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
-| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub URL, and close one eligible recorded work item on a forge with a write adapter or report why it cannot |
+| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub or GitLab URL, and close one eligible recorded work item on a forge with a write adapter or report why it cannot |
 | `fm-pr-status.sh`        | Refresh and cache one task PR's normalized review, check, and mergeability observation |
 | `fm-issue-ref.sh`        | Resolve work-item references against a project's declared issue tracker, refusing to guess a forge |
 | `fm-issue-status.sh`     | Add optional cached work-item title and open/closed enrichment per forge, with best-effort per-host lookup spacing |
@@ -160,6 +160,11 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-x-dismiss.sh`        | Dismiss a skipped Relay mention at the relay without replying                        |
 | `fm-x-link.sh`           | Link a spawned task to its originating Relay mention in task meta                    |
 | `fm-x-followup.sh`       | Detect, post, and cap completion follow-ups for a Relay-linked task                  |
-| `fm-public-followup-lib.sh` | Shared relay-activation gate, O(1) presence checks, and private transport paths for promised public replies |
-| `fm-public-followup.sh`  | Reconcile typed terminal work results into a public commitment and deliver its final reply once |
+| `fm-public-followup-lib.sh` | Shared Relay gate, open-loop registry state, expiry classification, locking, and private transport paths |
+| `fm-public-followup.sh`  | Reconcile and deliver typed public commitments, then rechain or explicitly retire their retained loops |
 | `fm-public-followup-emit.sh` | Report one typed terminal work result into the home that owes the public reply    |
+| `fm-inbox.sh`            | The captain's out-of-band capture surface: queue a note, dictate one, read status, ask a side question |
+| `fm-voice-relay.py`      | Hold the spoken conversation on this host, answer from the records, and hand real work to `fm-inbox.sh` ([voice-relay.md](voice-relay.md)) |
+| `fm-voice-client.py`     | The laptop end of the spoken interface: capture, playback, and turn timing over SSH; audio devices unverified |
+| `fm_voice_frame.py`      | The wire format both machines share, copied to the laptop beside the client          |
+| `fm_voice_records.py`    | What a spoken answer may read, and the handover that queues real work                |
