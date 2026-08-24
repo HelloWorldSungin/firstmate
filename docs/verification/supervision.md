@@ -465,6 +465,23 @@ The singleton lock is released in every measured case.
 Current limit: the herdr push path in `event_wait_or_sleep` waits inside a foreground command substitution, so a push-capable home remains up to `FM_POLL` deaf to its own stop signal.
 That reader owns a fifo directory and a child reader process that it removes on its own return path, so interrupting it from the caller would leak both on every stop.
 
+### Recovery-loop continuity
+
+The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.
+The regression forced handling confirmation to fail, observed one recovery follow-up across the former repeat window, confirmed the successor remained live, and then proved a separate handling successor durably queued a crew event within the bounded poll window.
+
+```sh
+bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh
+```
+
+Observed output:
+
+```text
+ok - a resurfacing handling successor stays alive and supervises instead of going blind
+ok - unacknowledged recovery is announced at most once per generation and the successor stays alive
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=59357
+```
+
 Deterministic entry points:
 
 ```sh
@@ -472,6 +489,7 @@ tests/fm-pi-watch-extension.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-watcher-lock.test.sh
 tests/fm-watch-arm.test.sh
+tests/fm-watch-recovery-loop.test.sh
 tests/fm-wake-queue.test.sh
 tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh

@@ -8,7 +8,7 @@
 # makes the status fold reflect the decision without relying on worker bookkeeping.
 #
 # This script bundles the close line with the validation-trigger send. It follows
-# bin/fm-decision-hold.sh's ownership pattern for a status transition firstmate
+# bin/fm-captain-hold.sh's ownership pattern for a status transition firstmate
 # completes.
 #
 # Usage:

@@ -112,7 +112,7 @@
 # Ship and design briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
-# There is no --yolo flag here. The worker never owns approval decisions, so yolo is
+# There is no --yolo flag here. The worker never owns merge decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -243,10 +243,10 @@ for a in "$@"; do
     --pr-target=*) PR_TARGET=${a#--pr-target=}; PR_TARGET_SET=1 ;;
     --continue-branch) want_value=continue-branch ;;
     --continue-branch=*) CONTINUE_BRANCH=${a#--continue-branch=}; CONTINUE_BRANCH_SET=1 ;;
-    # yolo never reaches the worker: it is firstmate's approval authority, not a
+    # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
-    --yolo|--yolo=*) echo "error: --yolo is not a brief input; pass it to bin/fm-spawn.sh, which records the task's approval posture" >&2; exit 1 ;;
+    --yolo|--yolo=*) echo "error: --yolo is not a brief input; pass it to bin/fm-spawn.sh, which records the task's merge posture" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -448,7 +448,7 @@ Marked requests also carry a privacy-safe \`corr=<id>\` token after the marker; 
 Optional helper: \`bin/fm-secondmate-report.sh\` can append a correlated status line for you, but a plain \`echo\` that includes the same \`corr=<id>\` is equally valid - do not depend on the helper being present.
 For a terse result, a status line is the whole answer.
 For a detailed answer (an investigation, a plan, an audit), write it to a doc under your home's \`data/\` and append a status line that points to that doc - the scout-report pattern - so the main firstmate is woken and can read it.
-Before treating an investigation or visual review as complete, load \`decision-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
+Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
 A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
 
 ${BRAIN_SECTION}# Escalation to main firstmate
@@ -670,7 +670,7 @@ ${BRAIN_SECTION}# Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.
-Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
+Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
@@ -734,7 +734,7 @@ The ADR must stand alone with context, decision, rationale, relevant alternative
 EOF
   DESIGN_SECTION=${DESIGN_SECTION%$'\n'}
   IFS= read -r -d '' DESIGN_DOD <<EOF || true
-Before reporting the ADR ready, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
+Before reporting the ADR ready, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for every unresolved decision surfaced by the interview or ADR.
 Inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 The final status summary must name the ADR path and concisely state the decisions taken.
 EOF
@@ -897,7 +897,7 @@ While you sit parked on a backgrounded \`axi run\` or \`axi respond\` call, rule
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
+  Firstmate applies \`ask-user-authority\` and obtains any required captain decision.
 $DOD_NO_MISTAKES_ASK
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 

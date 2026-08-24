@@ -36,7 +36,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-remote-doctor.sh`    | Check, and with `--fix` repair, one remote account's second-mate readiness (remote job worker, Herdr, Aqua launch agents, PATH, and required tools) |
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
-| `fm-decision-hold.sh`    | Create, verify, complete, close, and repair durable captain-held decisions       |
+| `fm-captain-hold.sh`     | Hold tasks for the captain, record answers, gate completion, and report status/backlog divergence |
+| `fm-decision-hold.sh`    | One-release compatibility shim mapping retired decision commands onto `fm-captain-hold.sh` |
 | `fm-design-skills.sh`    | Resolve and verify the captain-installed mattpocock grilling and domain-modeling skills without changing the plugin |
 | `fm-brief.sh`            | Scaffold ship or interactive ADR design briefs with explicit `--mode`, plus scout, secondmate-charter, and Herdr-lab briefs, with opt-in work-item traceability |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
@@ -114,7 +115,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor for the bootstrap diagnostic                  |
 | `fm-quota-sidecar.sh`    | Read the host-published LLM quota sidecar as additive dispatch evidence, degrading anything not fresh and successful to explicit UNKNOWN |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
-| `fm-wake-drain.sh`       | Present durable watcher wakes, unread informational status lines, and OPEN DECISIONS, consume acknowledged rows through their sequence, retire only the matching recovery generation, then assert supervision health |
+| `fm-wake-drain.sh`       | Present durable watcher wakes, unread informational status lines, OPEN DECISIONS, and captain-call RECORD DIVERGENCE, consume acknowledged rows through their sequence, retire only the matching recovery generation, then assert supervision health |
 | `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher identity/health helpers |
 | `fm-classify-lib.sh`     | Shared wake-classification vocabulary, durable keyed-decision folds and scans, and unread informational status-line selection |
 | `fm-send.sh`             | Send one verified literal line or supported key through the target's recorded backend |
@@ -127,6 +128,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-peek.sh`             | Print a bounded tail of a crewmate endpoint                                          |
 | `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
+| `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
 | `fm-issue-lib.sh`        | Own the registry tracker declaration, the accepted work-item reference forms, and their project-scoped resolution |
 | `fm-forge-lib.sh`        | Own per-host forge credential resolution, the argv-free authenticated transport, and the tracker write-operation allowlist |

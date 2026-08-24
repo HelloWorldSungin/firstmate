@@ -10,7 +10,7 @@ Exact task chronology, branch names, temporary homes, local paths, process ids, 
 
 The `design-profile` skill owns the operating contract; this section records its reusable verification coverage rather than a second copy of that contract.
 The 2026-08-13 surface audit covered dependency resolution, generated brief output, help wording, branch and delivery metadata, worktree isolation, backend launch, status and run reconciliation, work-item milestones, landing, outcome publication, decision inventory, teardown, recovery, subagent routing, and public completion follow-up.
-The inspected entry points were `.agents/skills/design-profile/SKILL.md`, `bin/fm-design-skills.sh`, `bin/fm-brief.sh`, `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, `bin/fm-crew-state.sh`, `bin/fm-run-progress.sh`, `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-lib.sh`, `bin/fm-outcome-manifest.sh`, `bin/fm-decision-hold.sh`, `bin/fm-teardown.sh`, `bin/fm-subagent-pretool-check.sh`, `.agents/skills/work-item-visibility/SKILL.md`, `.agents/skills/stuck-crewmate-recovery/SKILL.md`, and `.agents/skills/fmx-respond/SKILL.md`.
+The inspected entry points were `.agents/skills/design-profile/SKILL.md`, `bin/fm-design-skills.sh`, `bin/fm-brief.sh`, `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, `bin/fm-crew-state.sh`, `bin/fm-run-progress.sh`, `bin/fm-pr-check.sh`, `bin/fm-pr-merge.sh`, `bin/fm-merge-local.sh`, `bin/fm-outcome-lib.sh`, `bin/fm-outcome-manifest.sh`, `bin/fm-captain-hold.sh`, the compatibility shim `bin/fm-decision-hold.sh`, `bin/fm-teardown.sh`, `bin/fm-subagent-pretool-check.sh`, `.agents/skills/work-item-visibility/SKILL.md`, `.agents/skills/stuck-crewmate-recovery/SKILL.md`, and `.agents/skills/fmx-respond/SKILL.md`.
 The focused regressions below exercise the worker-facing ADR-only wording, tracked-output lifecycle, decision inventory, teardown, and cross-harness launch paths.
 
 ### Design delivery wording
@@ -75,7 +75,7 @@ all fm-pointer-check tests passed
 The following focused command was run on 2026-08-13 from the repository root.
 
 ```sh
-bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-task-delivery.test.sh tests/fm-spawn-batch.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-crew-state.test.sh tests/fm-run-progress.test.sh tests/fm-issue-linkage.test.sh tests/fm-outcome-manifest.test.sh tests/fm-decision-hold-lifecycle.test.sh tests/fm-teardown.test.sh tests/fm-subagent-pretool-check.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
+bin/fm-test-run.sh tests/fm-brief.test.sh tests/fm-task-delivery.test.sh tests/fm-spawn-batch.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-crew-state.test.sh tests/fm-run-progress.test.sh tests/fm-issue-linkage.test.sh tests/fm-outcome-manifest.test.sh tests/fm-captain-hold-lifecycle.test.sh tests/fm-teardown.test.sh tests/fm-subagent-pretool-check.test.sh tests/fm-documentation-audiences.test.sh tests/fm-pointer-check.test.sh
 ```
 
 The bounded output included these suite-completion markers.
@@ -89,7 +89,7 @@ all fm-crew-state tests passed
 all fm-run-progress tests passed
 all fm-issue-linkage tests passed
 all fm-outcome-manifest tests passed
-all fm-decision-hold-lifecycle tests passed
+all fm-captain-hold-lifecycle tests passed
 all fm-teardown tests passed
 all fm-subagent-pretool-check tests passed
 all fm-documentation-audiences tests passed

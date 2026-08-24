@@ -67,7 +67,7 @@ The ADR must stand alone with context, decision, rationale, relevant alternative
 The task authors no tracked project change except the ADR, including no product code, `CONTEXT.md`, `AGENTS.md`, or `CLAUDE.md`, and does not implement the selected design.
 Before delivery, require the worker to inspect the branch diff and confirm the ADR is the only worker-authored tracked project change.
 
-Before the ADR is ready, load `decision-hold-lifecycle` and inventory every unresolved captain choice surfaced by the interview or ADR.
+Before the ADR is ready, load `captain-hold-lifecycle` and inventory every unresolved captain choice surfaced by the interview or ADR.
 The task follows its selected delivery path exactly like another tracked documentation change.
 Under no-mistakes, the same worker validates and ships the ADR through the pipeline.
 Under direct-PR, the worker opens the ADR PR directly.

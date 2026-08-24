@@ -149,7 +149,7 @@ It is published for one reason: it is the clock a renderer falls back to when a 
 A surface reaching for it before the status log or the turn marker would be reading a dispatch time as an activity time; it is a last resort, not a third activity clock.
 
 It is deliberately the recorded VALUE and not the age of the `state/<id>.meta` file, because those two mean different things.
-The file is rewritten after dispatch by firstmate's own routine actions: [`bin/fm-pr-check.sh`](../bin/fm-pr-check.sh) rebuilds it when it records a PR, [`bin/fm-promote.sh`](../bin/fm-promote.sh) rewrites it on a kind flip, and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) appends to it.
+The file is rewritten after dispatch by firstmate's own routine actions: [`bin/fm-pr-check.sh`](../bin/fm-pr-check.sh) rebuilds it when it records a PR, [`bin/fm-promote.sh`](../bin/fm-promote.sh) rewrites it on a kind flip, and [`bin/fm-captain-hold.sh`](../bin/fm-captain-hold.sh) appends to it.
 Its mtime therefore means "when anything last touched this record", and using it as an activity clock would let arming a PR check on a hung task silently re-buy that task a full quiet window.
 Every one of those writers preserves the `spawned_at` line, so the stamped epoch stays what it says it is.
 

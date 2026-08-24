@@ -142,7 +142,7 @@ family_for_basename() {
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
-    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|fm-design-skills.test.sh|fm-model-verify.test.sh|\
+    fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|fm-design-skills.test.sh|fm-model-verify.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
@@ -161,8 +161,8 @@ family_for_basename() {
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
-    fm-wake-drain-unread-status.test.sh|\
-    fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
+    fm-wake-drain-unread-status.test.sh|fm-tool-update-check.test.sh|\
+    fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -301,7 +301,7 @@ tests/fm-cd-pretool-check.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-composer-lib.test.sh
 tests/fm-crew-state.test.sh
-tests/fm-decision-hold-lifecycle.test.sh
+tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-ensure-agents-md.test.sh
 tests/fm-grok-harness.test.sh
 tests/fm-herdr-lab.test.sh
@@ -328,7 +328,7 @@ list_portable_parallel_1() {
   cat <<'EOF'
 tests/fm-x-mode.test.sh
 tests/fm-cd-pretool-check.test.sh
-tests/fm-decision-hold-lifecycle.test.sh
+tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-test-run.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-grok-harness.test.sh
@@ -518,8 +518,10 @@ tests/fm-wake-drain-unread-status.test.sh 4000
 tests/fm-wake-queue.test.sh 29947
 tests/fm-watch-arm.test.sh 55806
 tests/fm-watch-checkpoint.test.sh 5231
+tests/fm-watch-recovery-loop.test.sh 58721
 tests/fm-watch-triage.test.sh 210485
 tests/fm-watcher-lock.test.sh 37556
+tests/fm-tool-update-check.test.sh 12846
 EOF
 }
 
@@ -1020,6 +1022,7 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
       printf '%s\n' secondmate
+      printf '%s\n' watcher-wake-lock
       ;;
     # Task-knowledge capture rides that scoping and hooks the teardown step
     # between manifest publication and cleanup, so it selects both.
@@ -1031,7 +1034,7 @@ families_for_changed_path() {
       ;;
     bin/fm-teardown.sh)
       printf '%s\n' '__script__:fm-gbrain-capture.test.sh'
-      printf '%s\n' '__script__:fm-decision-hold-lifecycle.test.sh'
+      printf '%s\n' '__script__:fm-captain-hold-lifecycle.test.sh'
       printf '%s\n' pr-forge
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
@@ -1099,7 +1102,7 @@ families_for_changed_path() {
     bin/fm-lint.sh|bin/fm-lint-workflows.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-install-actionlint.sh|\
     bin/fm-brief.sh|bin/fm-design-skills.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
-    bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
+    bin/fm-captain-hold.sh|bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-quota-sidecar.sh|bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
