@@ -140,7 +140,8 @@ The capture outbox is a Firstmate artifact that GBrain has no knowledge of, so n
 ```
 
 `src/commands/capture.ts` is byte-identical between the two tags, so this is not an upgrade gain.
-[`../../bin/fm-gbrain-capture.sh`](../../bin/fm-gbrain-capture.sh) parses the receipt for `.slug` alone and discards `status`, `chunks`, and `content_hash`, which are the values a stricter delivery postcondition and a later parity audit would compare against.
+[`../../bin/fm-gbrain-capture.sh`](../../bin/fm-gbrain-capture.sh) parses the receipt for `.slug` alone and discards `status`, `chunks`, and `content_hash`, which are the values a stricter delivery postcondition would compare against.
+The stored-versus-served parity audit that [`../gbrain-capture.md`](../gbrain-capture.md) owns does not need them: it compares captured slugs against the index's own page listing, which answers whether the page still exists rather than what one delivery carried.
 
 ## `think` is reachable by a read-only share, and cannot persist through it
 

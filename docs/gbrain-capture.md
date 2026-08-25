@@ -28,6 +28,12 @@ That is why "no raw tool arguments, no environment values, no private file excer
 The composed body is capped at `FM_GBRAIN_CAPTURE_MAX_BYTES` (65536 by default) so an enqueue on the cleanup path costs a bounded read and a bounded write however large a report grew.
 An unusually long report is captured truncated at that cap rather than refused, so raise the cap before a backfill if a home's reports routinely exceed it.
 
+A cut body says so, in the body.
+The cut appends a marker naming the byte count, after redaction so the redactor cannot rewrite it, and the page a reader opens carries that marker at the end of what survived.
+The record carries `truncated: true` and `captured_bytes` beside it, so an audit can count cut documents without reading prose, and `status` reports that count.
+The marker names how much was kept rather than how much was lost: the cap bounds the read as well, so at the point of the cut the only known fact is the byte count that survived.
+It is part of the body, so it is part of the content version - a body that starts hitting the cap is a new revision and is re-delivered, and a record captured before the marker existed is counted as truncated only once it is recomposed.
+
 ## Redaction happens before enqueue
 
 Once a body reaches the outbox it is on disk, so redaction runs before the record is written, not before delivery.
@@ -78,11 +84,13 @@ The receipt always names the page address, even while the item is pending, becau
 ## Retrying and backfilling
 
 ```sh
-bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, redacted
+bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, truncated, redacted
 bin/fm-gbrain-capture.sh process                # retry every pending item
 bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted, and re-deliver one already captured
-bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report
+bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report, refreshing any whose source changed
 bin/fm-gbrain-capture.sh backfill --dry-run     # report what a sweep would capture
+bin/fm-gbrain-capture.sh audit                  # compare what the outbox says was captured against what the index serves
+bin/fm-gbrain-capture.sh sweep --force          # run the periodic refresh and audit right now
 ```
 
 Retry is bounded: an item that fails `FM_GBRAIN_CAPTURE_MAX_ATTEMPTS` times (default 5) stops being retried by an ordinary run and waits for `--force`, so one permanently broken document cannot consume every later run's budget.
@@ -91,6 +99,42 @@ A refused document is counted and receipted without stopping the sweep, and `bac
 Backfill writes each task's `state/<id>.gbrain` receipt but never republishes a manifest that is already on disk, so a task captured after its own teardown is found through `status` and `show` rather than through its manifest, while a task captured during teardown carries the reference in the manifest itself.
 
 Run a backfill once after adopting a brain, and after a long outage.
+
+## A page goes stale when its source is edited, so the refresh is on a clock
+
+Capture fires at cleanup.
+A report edited after that never reaches capture again, because the task it belonged to is gone - and the page keeps serving the old body with nothing marking it stale.
+That is not hypothetical: two reports were edited after capture and their pages were never refreshed, one of them keeping a finding the captain had voided, which a live query then returned at rank 1.
+
+The fix is a clock rather than a rule, because a rule that says "recapture after you edit a report" is a habit and habits are what this failed on.
+`sweep` recomposes every captured task, re-delivers the ones whose content hash moved to the same page, and then audits stored against served.
+A session start arms it unconditionally; it runs at most once per `FM_GBRAIN_CAPTURE_SWEEP_INTERVAL` (default 6 hours), is inert and silent in a home with no brain, and prints only what an operator must act on.
+The worst case is therefore one interval of staleness rather than forever.
+
+The refresh itself is `backfill`, not a second recomposition path: `backfill` already recomposes each task and re-delivers a changed body to the same page, so a separate path would only be one more thing to drift.
+It now names and counts what it corrected - `refreshed <id>` and a `refreshed=` total - so a sweep reports the drift it closed instead of folding it into the ordinary captured count.
+`bin/fm-recall.sh` judges the same drift at query time and marks a result stale; that is the read side telling a reader not to trust a page, and this is the write side making the page true again.
+
+## Captured is not the same as served
+
+An outbox record marked captured proves the page was **accepted** once.
+It does not prove the page still exists: GBrain soft-deletes, and a soft-deleted row is absent from ordinary retrieval while the record that produced it still reads as archived.
+Measured on this fleet, capture reported 291 archived while the index served 288 pages, and the three missing documents were soft-deleted and unreachable by search.
+
+`audit` compares the two sides directly, from the outbox's own captured slugs and the index's page listing:
+
+- `ok` - every captured document is served.
+- `gap` - it names each captured document the index no longer serves, and exits non-zero.
+- `inconclusive` - the listing could not be read, or came back at exactly its own `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` ceiling and may be incomplete.
+  A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
+
+It writes its verdict to `state/.gbrain-audit`, and that record is what the operator-facing surfaces replay:
+the GBrain panel's Capture card turns degraded and names the missing count, and a session start relays the same verdict on a `GBRAIN_CAPTURE:` line.
+Neither surface re-measures it, because the dashboard polls continuously and re-opening the index on every poll would put a repeated index read behind a poll that has to stay cheap.
+A home where the audit has never run reports that it has never run, rather than reporting a zero gap nobody measured.
+
+A gap is not automatically a fault: a page deleted deliberately shows up here too.
+Recapture the document with `backfill` if it should still be served, or restore it in GBrain if it was deleted by mistake.
 
 The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
 It is read once more at query time: [`bin/fm-recall.sh`](../bin/fm-recall.sh) judges whether a page it is about to serve still matches the live source it was composed from, using that record's stored body and capture time, so a body truncated at the cap or rewritten by redaction leaves the comparison with no evidence rather than with agreement.

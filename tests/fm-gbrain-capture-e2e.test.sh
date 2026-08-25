@@ -120,8 +120,34 @@ test_the_task_survives_its_volatile_records() {
   pass "the captured knowledge outlives the task's own records"
 }
 
+# The audit's verdict comes from GBrain's own page listing and from what a
+# soft-delete does to it. A stub can only confirm the assumption written into
+# the stub, so the case that matters - a record still marked captured whose page
+# has left ordinary retrieval - is proved against the real binary here.
+test_the_audit_sees_a_page_that_left_the_index() {
+  local slug out
+  slug=$(cap status --json | jq -r '.documents[] | select(.source.id == "ship-live") | .slug')
+  [ -n "$slug" ] || fail "the stored record must name its page"
+  out=$(cap audit --timeout 120 2>&1) || fail "an audit with the page served must pass: $out"
+  printf '%s' "$out" | grep -q 'state      ok' || fail "a matching audit must read ok: $out"
+
+  brain delete "$slug" >/dev/null 2>&1 || fail "the disposable page must be deletable"
+  out=$(cap audit --timeout 120 2>&1) && fail "an audit that found a gap must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' || fail "a deleted page must read as a gap: $out"
+  printf '%s' "$out" | grep -qF "$slug" || fail "the audit must name the missing page: $out"
+
+  # And the repair closes it, from the same durable record.
+  cap process --document "$(cap status --json | jq -r '.documents[] | select(.source.id == "ship-live") | .document_id')" \
+    --force --timeout 120 >/dev/null || fail "re-delivery must succeed"
+  out=$(cap audit --timeout 120 2>&1) || true
+  printf '%s' "$out" | grep -q 'state      ok' \
+    || fail "re-delivering the record must close the gap: $out"
+  pass "the audit sees a page that left the real index, and sees the repair close it"
+}
+
 test_capture_is_retrievable_from_the_real_brain
 test_recapture_updates_one_page
 test_the_task_survives_its_volatile_records
+test_the_audit_sees_a_page_that_left_the_index
 
 echo "all fm-gbrain-capture-e2e tests passed"

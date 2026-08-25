@@ -280,6 +280,46 @@ test_capture_status_reports_pending_failed_and_last_error() {
   pass "capture status reports pending/failed/unreadable counts and last_error"
 }
 
+# A record marked archived proves the page was accepted once, not that the index
+# still serves it, so the panel has to be able to show a parity gap. The verdict
+# is REPLAYED from the durable audit record rather than measured here, because
+# this command runs on every dashboard poll. Fail by: measuring it here, or
+# reporting a home that has never been audited as a clean zero gap.
+test_the_parity_verdict_is_replayed_and_never_invented() {
+  local home out bindir
+  home=$(make_ready_home with-audit)
+  bindir=$(make_script_dir "$TMP_ROOT/bin-audit")
+  install_capture_stub "$bindir" '{"schema":"fm-gbrain-capture-status.v1","totals":{"archived":291,"pending":0,"failed":0,"unreadable":0,"truncated":2},"documents":[]}'
+  patch_curl "$TMP_ROOT/probe"
+
+  # Never audited: that is what it says, rather than a zero nobody measured.
+  out=$(run_health "$home" "$bindir" "$TMP_ROOT/probe")
+  printf '%s' "$out" | jq -e '
+    .capture.audit.state == "unknown" and .capture.audit.missing == null
+  ' >/dev/null || fail "an unaudited home must report unknown, not a clean gap: $out"
+  printf '%s' "$out" | jq -e '.capture.truncated == 2' >/dev/null \
+    || fail "the cut-body count must reach the panel: $out"
+
+  jq -n '{schema: "fm-gbrain-capture-audit.v1", generated: "2026-08-25T00:00:00Z",
+          home: "h", state: "gap", stored: 291, active: 288, missing: 3, truncated: 2,
+          missing_slugs: ["firstmate/h/task/a", "firstmate/h/task/b", "firstmate/h/task/c"],
+          detail: "3 captured document(s) are absent from the active index"}' \
+    > "$home/state/.gbrain-audit"
+  out=$(run_health "$home" "$bindir" "$TMP_ROOT/probe")
+  printf '%s' "$out" | jq -e '
+    .capture.audit.state == "gap" and .capture.audit.missing == 3
+      and .capture.audit.stored == 291 and .capture.audit.active == 288
+      and .capture.audit.observed == "2026-08-25T00:00:00Z"
+  ' >/dev/null || fail "the recorded parity gap must reach the panel: $out"
+
+  # A damaged record is the same answer as no record: nothing was compared.
+  printf '%s\n' 'not json at all' > "$home/state/.gbrain-audit"
+  out=$(run_health "$home" "$bindir" "$TMP_ROOT/probe")
+  printf '%s' "$out" | jq -e '.capture.audit.state == "unknown"' >/dev/null \
+    || fail "an unreadable audit record must read as unknown: $out"
+  pass "the stored-versus-served verdict is replayed from its record and never invented"
+}
+
 # The maintenance field is the only place a paused upgrade or reindex can
 # appear; the script reads FM_GBRAIN_MAINTENANCE_STATE rather than inferring
 # it. An upgrade announcement renders as upgrading with the operator's
@@ -412,6 +452,7 @@ test_healthy_home_reports_ok
 test_degraded_embedding_makes_retrieval_degraded
 test_degraded_synthesis_leaves_retrieval_ok
 test_capture_status_reports_pending_failed_and_last_error
+test_the_parity_verdict_is_replayed_and_never_invented
 test_maintenance_override_is_surfaced_verbatim
 test_unsupported_capture_schema_is_reported_not_fatal
 test_capture_status_timeout_is_reported_not_fatal

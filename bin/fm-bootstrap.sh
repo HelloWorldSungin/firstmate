@@ -27,6 +27,7 @@
 #                 "USAGE_STORE: skipped|failed: <detail>",
 #                 "GBRAIN_SERVING_CREDENTIAL: <why hosted synthesis is reachable on a serving home, or why the verdict could not be reached>",
 #                 "GBRAIN_PIN: <drift between the recorded GBrain pin and the installed release, or why a side could not be read>",
+#                 "GBRAIN_CAPTURE: <captured task knowledge the brain no longer serves, or why the capture sweep could not finish>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
@@ -120,11 +121,23 @@
 #          and a home with no GBrain installed are both silent; drift, a side
 #          that could not be read, and a read that could not be bounded each
 #          report themselves on a single GBRAIN_PIN line.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the ten MUTATING sweeps
+#          The captured-knowledge sweep runs bin/fm-gbrain-capture.sh in a home
+#          that has an initialized brain, at most every
+#          FM_GBRAIN_CAPTURE_SWEEP_INTERVAL seconds (default 6h) and bounded by
+#          FM_BOOTSTRAP_CAPTURE_TIMEOUT (blank, non-numeric or zero falls back to
+#          120s). It is the structural re-capture trigger: a durable report or
+#          manifest edited after its page was written is recomposed and
+#          re-delivered to the same page here, so a page can go stale only for
+#          one interval rather than until somebody remembers. It then audits what
+#          the outbox says was captured against what the index actually serves.
+#          A sweep that corrected nothing and found no gap is silent; refreshed
+#          pages, a parity gap, and a sweep that could not finish each report
+#          themselves on GBRAIN_CAPTURE lines.
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eleven MUTATING sweeps
 #          (PR-check migration, endpoint-binding migration, run-attribution
 #          transition, secondmate_sync, secondmate_liveness_sweep,
 #          secondmate_handoff_resume, x_mode_setup, fleet_sync, board_sweep,
-#          usage_store_refresh)
+#          gbrain_capture_sweep, usage_store_refresh)
 #          while still printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
@@ -515,6 +528,54 @@ gbrain_pin_drift_check() {
       echo "GBRAIN_PIN: unknown - bin/fm-gbrain-pin-check.sh exited $status: ${out:-no output}"
       ;;
   esac
+  return 0
+}
+
+# The structural re-capture trigger, and the parity audit that proves it worked,
+# armed where it is cheap: once per locked session start, on the sweep's own
+# interval, in a home that has a brain.
+#
+# bin/fm-gbrain-capture.sh sweep owns all of that - the interval, the inertness
+# of a home with no brain, what gets refreshed, and what the audit compares - so
+# this is a bounded call and a prefix, not a second copy of the policy. Its
+# output is already only the actionable lines; everything else is silence.
+#
+# The sweep is home-local: the index and the embedding endpoint are on this
+# machine, so it belongs to the local phase and contacts no host.
+gbrain_capture_sweep() {
+  [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ] && return 0
+  [ -x "$SCRIPT_DIR/fm-gbrain-capture.sh" ] || return 0
+  local timeout=${FM_BOOTSTRAP_CAPTURE_TIMEOUT:-120} tmp status=0 line
+  # Zero falls back with the blank and the non-numeric for the reason
+  # usage_store_refresh records: zero is not a bound to any runner underneath.
+  case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
+  [ "$timeout" -ge 1 ] || timeout=120
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-gbrain-capture-sweep.XXXXXX" 2>/dev/null) || return 0
+  fm_run_timed "$timeout" "$SCRIPT_DIR/fm-gbrain-capture.sh" sweep >"$tmp" 2>/dev/null || status=$?
+  case "$status" in
+    0 | 1)
+      # The sweep exits 1 when it has something to say, so an exit 1 with an
+      # empty file means it stopped before saying it. Reporting that as silence
+      # would hide exactly the sweep failure this line exists to surface.
+      if [ "$status" -eq 1 ] && [ ! -s "$tmp" ]; then
+        echo "GBRAIN_CAPTURE: the captured-knowledge sweep stopped without reporting why; run bin/fm-gbrain-capture.sh sweep --force by hand to see it"
+      fi
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "GBRAIN_CAPTURE: $line"
+      done < "$tmp"
+      ;;
+    124 | 137)
+      echo "GBRAIN_CAPTURE: unknown - the captured-knowledge sweep did not finish within ${timeout}s, so an edited report may still be serving its old page and the served pages were compared against nothing"
+      ;;
+    125)
+      echo "GBRAIN_CAPTURE: unknown - the bounded runner could not start, so the captured-knowledge sweep did not run"
+      ;;
+    *)
+      echo "GBRAIN_CAPTURE: the captured-knowledge sweep exited $status; run bin/fm-gbrain-capture.sh sweep --force by hand to see why"
+      ;;
+  esac
+  rm -f "$tmp"
   return 0
 }
 
@@ -1545,6 +1606,7 @@ fi
 local_phase && gbrain_serving_credential_check
 local_phase && gbrain_pin_drift_check
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
+  local_phase && gbrain_capture_sweep
   local_phase && usage_store_refresh
 fi
 local_phase && secondmate_handoff_detect

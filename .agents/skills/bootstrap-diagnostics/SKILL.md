@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, GBRAIN_CAPTURE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -110,5 +110,15 @@ When any diagnostic needs captain attention, report the plain consequence and re
   `bin/fm-gbrain-pin-check.sh` owns the comparison and re-prints the same verdict on demand, and `fm_gbrain_documented_pin` in `bin/fm-gbrain-lib.sh` is the single reader of the record - never grep the pin out of the doc yourself.
   Never resolve this line by running an upgrade or a migration; moving a brain under new code is the captain-gated seven-step procedure `docs/gbrain.md` owns, not a remediation for a diagnostic.
   A home with no GBrain installed, and a host whose two sides agree, both stay silent, so this line appearing at all means there is something to read.
+- `GBRAIN_CAPTURE: <what the sweep corrected, found, or could not finish>` - the periodic captured-knowledge sweep ran and has something an operator must act on.
+  [`docs/gbrain-capture.md`](../../../docs/gbrain-capture.md) owns the sweep, the audit, and their verdicts; this is only what to do with each line.
+  A `refreshed <task>` line is completed work, not a fault: that task's durable report changed after its page was written and the sweep re-delivered it, so the page a search returns is true again.
+  Relay it only if the captain is waiting on that finding, because a page that was serving a superseded or voided conclusion may already have been read.
+  A parity line naming captured documents the index no longer serves is the real finding, and it is not automatically a fault: a page deleted deliberately reads the same as one lost.
+  Read the named documents from `bin/fm-gbrain-capture.sh audit`, then either recapture them with `bin/fm-gbrain-capture.sh backfill` if they should still be served, or leave them and record why, because a gap re-reported every sweep with no decision behind it is how a real one gets ignored.
+  An `inconclusive` line means the two sides were compared against nothing, so treat it as an unread check rather than a clean one: raise `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` when the listing hit its ceiling, and repair the index read when it could not be listed at all.
+  A line saying the sweep did not finish or could not start is the same class - nothing was compared and nothing may have been refreshed - so run `bin/fm-gbrain-capture.sh sweep --force` by hand and read what it says before deciding anything.
+  The sweep stamps its interval before it runs, so a repeated failure reports itself once per interval rather than on every session start; do not force it repeatedly to chase the same error.
+  A home with no brain never raises this line at all.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.

@@ -64,6 +64,18 @@ set -u
 $([ "$mode" = slow ] && printf 'sleep 2')
 SH
       cat >> "$home/fakebin/gbrain" <<'SH'
+# The audit reads the index's page listing, so the stub answers `list` from the
+# pages it has actually stored: deleting a page file is then exactly what a
+# soft-delete looks like from outside, which is the whole case being tested.
+if [ "${1:-}" = list ]; then
+  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 3; }
+  for page in "$FM_TEST_PAGES"/*.md; do
+    [ -e "$page" ] || continue
+    page=${page##*/}
+    printf '%s\tfirstmate-task\t2026-08-25\ttitle\n' "$(printf '%s' "${page%.md}" | tr '_' '/')"
+  done
+  exit 0
+fi
 [ "${1:-}" = capture ] || { echo "unsupported gbrain call: $*" >&2; exit 2; }
 shift
 slug=""; file=""
@@ -673,6 +685,148 @@ test_teardown_in_a_home_without_a_brain_is_unchanged() {
   pass "teardown in a home without a brain behaves exactly as before"
 }
 
+# --- the cut body says so ---------------------------------------------------
+
+test_a_truncated_body_is_marked_rather_than_left_looking_complete() {
+  local home page
+  home=$(make_home truncation)
+  seed_manifest "$home" scout-big "Investigate the drain"
+  # Comfortably past the cap, with a distinctive tail that must NOT survive: a
+  # marker on a body that was never actually cut would prove nothing.
+  {
+    printf '# Report\n\n'
+    awk 'BEGIN { while (i++ < 3000) print "the drain retried twice and the cache key was off by one" }'
+    printf '\nTHE-TAIL-THAT-IS-LOST\n'
+  } | seed_report "$home" scout-big
+  cap "$home" task scout-big --require-brain >/dev/null || fail "capture must succeed"
+
+  page=$(find "$home/pages" -name '*.md' | head -1)
+  [ -n "$page" ] || fail "the document must have been delivered"
+  grep -q 'THE-TAIL-THAT-IS-LOST' "$page" && fail "the body must actually have been cut"
+  grep -q 'Capture truncated at' "$page" \
+    || fail "a cut page must carry a marker its reader can see"
+  [ "$(item_field "$home" scout-big '.truncated')" = true ] \
+    || fail "a cut record must say so without anyone parsing its prose"
+  [ "$(item_field "$home" scout-big '.captured_bytes')" -gt 0 ] \
+    || fail "a cut record must name how much it kept"
+  cap "$home" status --json | jq -e '.totals.truncated == 1' >/dev/null \
+    || fail "status must count cut bodies"
+
+  # The counterpart: a body that fits is not marked, so the marker means
+  # something rather than appearing on every page.
+  seed_manifest "$home" ship-small "Add the widget"
+  printf '# Report\n\nshort and complete\n' | seed_report "$home" ship-small
+  cap "$home" task ship-small --require-brain >/dev/null || fail "the small capture must succeed"
+  [ "$(item_field "$home" ship-small '.truncated')" = false ] \
+    || fail "a body that fits must not be marked truncated"
+  cap "$home" show "$(doc_id_for "$home" ship-small)" | jq -r '.body' | grep -q 'Capture truncated' \
+    && fail "a body that fits must carry no marker"
+  pass "a body cut at the cap is marked on the page and on the record"
+}
+
+# --- captured is not the same as served -------------------------------------
+
+test_the_audit_names_a_captured_document_the_index_no_longer_serves() {
+  local home out
+  home=$(make_home audit)
+  seed_manifest "$home" ship-a "Add the widget"
+  seed_manifest "$home" ship-b "Fix the drain"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
+  out=$(cap "$home" audit 2>&1) || fail "an audit with both pages served must pass: $out"
+  printf '%s' "$out" | grep -q 'state      ok' || fail "a matching audit must read ok: $out"
+
+  # Exactly what a soft-delete looks like from outside: the record still says
+  # captured, and the page is gone from the listing.
+  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
+  out=$(cap "$home" audit 2>&1) && fail "an audit that found a gap must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' || fail "the audit must report the gap: $out"
+  printf '%s' "$out" | grep -q 'task/ship-b' || fail "the audit must name the missing document: $out"
+  printf '%s' "$out" | grep -q 'missing    1' || fail "the audit must count the gap: $out"
+
+  # The durable record is what the dashboard and the session start replay, so it
+  # has to carry the same verdict rather than being re-derived by each of them.
+  jq -e '.schema == "fm-gbrain-capture-audit.v1" and .state == "gap" and .missing == 1' \
+    "$home/state/.gbrain-audit" >/dev/null \
+    || fail "the audit must leave its verdict on disk"
+  pass "the audit names a captured document the index no longer serves"
+}
+
+test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap() {
+  local home out
+  home=$(make_home audit-inconclusive)
+  seed_manifest "$home" ship-a "Add the widget"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver the task"
+
+  # A false gap is what would train an operator to ignore a real one, so a
+  # listing that answered nothing must never be read as "every page is gone".
+  fake_gbrain "$home" fail
+  out=$(cap "$home" audit 2>&1) && fail "an audit that compared nothing must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "an unreadable listing must be inconclusive: $out"
+  printf '%s' "$out" | grep -q 'missing    0' \
+    || fail "an unreadable listing must claim no missing documents: $out"
+
+  # The same rule for a listing that came back exactly at its own ceiling.
+  fake_gbrain "$home" ok
+  out=$(FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES=1 cap "$home" audit 2>&1) \
+    && fail "a listing at its ceiling must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "a listing at its own ceiling must be inconclusive: $out"
+  pass "a listing that proved nothing is inconclusive rather than a gap"
+}
+
+# --- the periodic refresh ---------------------------------------------------
+
+test_a_report_edited_after_capture_is_refreshed_by_the_sweep() {
+  local home page out
+  home=$(make_home sweep)
+  seed_manifest "$home" scout-a "Investigate the drain"
+  printf '# Report\n\nthe cache key is off by one\n' | seed_report "$home" scout-a
+  cap "$home" task scout-a --require-brain >/dev/null || fail "capture must succeed"
+  page=$(find "$home/pages" -name '*.md' | head -1)
+  grep -q 'off by one' "$page" || fail "the first capture must carry the finding"
+
+  # The defect this closes: the report is edited after cleanup already ran, so
+  # nothing about the edit ever reaches capture again.
+  printf '\nVOIDED: that finding was wrong.\n' >> "$home/data/scout-a/report.md"
+  out=$(cap "$home" sweep --force 2>&1) && fail "a sweep that refreshed a page must exit non-zero"
+  printf '%s' "$out" | grep -q 'refreshed scout-a' || fail "the sweep must name what it refreshed: $out"
+  grep -q 'VOIDED' "$page" || fail "the sweep must re-deliver the edited body to the same page"
+  [ "$(pages_count "$home")" = 1 ] || fail "a refresh must update the page, not add one"
+
+  # Nothing changed since: the sweep is silent and says so by exiting 0.
+  cap "$home" sweep --force >/dev/null 2>&1 || fail "a sweep with nothing to correct must be silent"
+  pass "a report edited after capture is refreshed onto the same page"
+}
+
+test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain() {
+  local home out
+  home=$(make_home sweep-interval)
+  seed_manifest "$home" scout-a "Investigate the drain"
+  printf '# Report\n\nfirst\n' | seed_report "$home" scout-a
+  cap "$home" task scout-a --require-brain >/dev/null || fail "capture must succeed"
+  cap "$home" sweep --force >/dev/null 2>&1 || true
+  [ -f "$home/state/.gbrain-capture-sweep" ] || fail "a sweep must stamp its interval"
+
+  # Inside the interval the sweep does not run at all, so a session start can
+  # arm it unconditionally without paying for it every time.
+  printf '\nsecond\n' >> "$home/data/scout-a/report.md"
+  out=$(cap "$home" sweep 2>&1) || fail "a sweep inside its interval must be silent"
+  [ -z "$out" ] || fail "a sweep inside its interval must print nothing: $out"
+  out=$(cap "$home" sweep --interval 0 2>&1) && fail "an elapsed interval must run the sweep"
+  printf '%s' "$out" | grep -q 'refreshed scout-a' || fail "the elapsed sweep must refresh: $out"
+
+  # A home with no brain is untouched: no output, and no new files.
+  home=$(make_home sweep-nobrain --no-brain)
+  seed_manifest "$home" ship-a "Add the widget"
+  out=$(cap "$home" sweep --force 2>&1) || fail "a sweep without a brain must exit 0"
+  [ -z "$out" ] || fail "a sweep without a brain must print nothing: $out"
+  [ ! -e "$home/state/.gbrain-capture-sweep" ] || fail "a home with no brain must get no sweep marker"
+  [ ! -e "$home/state/.gbrain-audit" ] || fail "a home with no brain must get no audit record"
+  [ ! -d "$home/data/gbrain-outbox" ] || fail "a home with no brain must create no outbox"
+  pass "the sweep respects its interval and stays inert without a brain"
+}
+
 test_capture_is_inert_without_a_brain
 test_representative_secrets_are_redacted_before_they_reach_disk
 test_an_unterminated_private_key_is_refused_rather_than_stored
@@ -688,6 +842,11 @@ test_retry_is_bounded_and_force_resumes_it
 test_a_partially_written_record_is_reported_not_believed
 test_backfill_is_restartable_and_reports_counts
 test_backfill_records_a_refusal_without_stopping
+test_a_truncated_body_is_marked_rather_than_left_looking_complete
+test_the_audit_names_a_captured_document_the_index_no_longer_serves
+test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap
+test_a_report_edited_after_capture_is_refreshed_by_the_sweep
+test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain
 test_status_reports_archived_pending_skipped_and_redacted
 test_a_note_goes_through_the_same_path
 test_teardown_captures_and_the_manifest_carries_the_receipt

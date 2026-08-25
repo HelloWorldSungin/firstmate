@@ -1251,6 +1251,92 @@ write_gbrain_record() {  # <code-root> <version> <commit>
   printf "$GBRAIN_PIN_RECORD" "$2" "$3" > "$1/docs/gbrain.md"
 }
 
+# The captured-knowledge sweep itself lives in bin/fm-gbrain-capture.sh, which
+# owns the interval, the refresh, and the audit. What bootstrap owns is arming
+# it and relaying its verdict under this family's prefix, plus the one guarantee
+# that has to survive both: a home with no brain sees no new line and gets no
+# new files. Fail by: dropping the presence gate, or relaying a silent sweep.
+test_bootstrap_relays_the_capture_sweep_and_stays_inert_without_a_brain() {
+  local case_dir home fakebin out
+  case_dir="$TMP_ROOT/gbrain-capture-sweep"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/state" "$home/data/scout-a"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  # No brain at all: the arming runs and the home is untouched by it.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_CAPTURE:" \
+    "a home with no brain must say nothing about captured knowledge"
+  [ ! -e "$home/state/.gbrain-capture-sweep" ] \
+    || fail "a home with no brain must get no sweep marker"
+  [ ! -d "$home/data/gbrain-outbox" ] \
+    || fail "a home with no brain must get no capture outbox"
+
+  # Now give it a brain and a captured task, and edit the durable source after
+  # the page was written - the exact shape a page goes stale in.
+  mkdir -p "$home/data/gbrain/runtime" "$home/data/gbrain/pglite" "$home/pages"
+  touch "$home/data/gbrain/runtime/mock_initialized"
+  printf '%s\n' '{"version":1}' > "$home/config/gbrain.json"
+  cat > "$fakebin/gbrain" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = capture ]; then
+  slug=""; file=""
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in --slug) slug=$2; shift 2 ;; --file) file=$2; shift 2 ;; *) shift ;; esac
+  done
+  mkdir -p "$FM_TEST_PAGES"
+  cp "$file" "$FM_TEST_PAGES/$(printf '%s' "$slug" | tr '/' '_').md"
+  printf '{"slug":"%s"}\n' "$slug"
+  exit 0
+fi
+if [ "${1:-}" = list ]; then
+  for page in "$FM_TEST_PAGES"/*.md; do
+    [ -e "$page" ] || continue
+    page=${page##*/}
+    printf '%s\tfirstmate-task\t2026-08-25\ttitle\n' "$(printf '%s' "${page%.md}" | tr '_' '/')"
+  done
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gbrain"
+  jq -n '{schema: "fm-outcome-manifest.v1", task_id: "scout-a", title: "Investigate the drain",
+          kind: "scout", outcome: {state: "done"}, timestamps: {completed: "2026-08-01T00:00:00Z"}}' \
+    > "$home/data/scout-a/outcome.json"
+  printf '# Report\n\nthe cache key is off by one\n' > "$home/data/scout-a/report.md"
+
+  # The first sweep is an ordinary capture and says nothing.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_TEST_PAGES="$home/pages" FM_GBRAIN_CAPTURE_SWEEP_INTERVAL=0 \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_CAPTURE:" \
+    "a sweep that captured a new task and found no gap must be silent"
+  [ -f "$home/state/.gbrain-capture-sweep" ] || fail "the sweep must stamp its interval"
+
+  printf '\nVOIDED: that finding was wrong.\n' >> "$home/data/scout-a/report.md"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_TEST_PAGES="$home/pages" FM_GBRAIN_CAPTURE_SWEEP_INTERVAL=0 \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "GBRAIN_CAPTURE: refreshed scout-a" \
+    "an edited report must be refreshed and reported under this family's prefix"
+  grep -q VOIDED "$home/pages/"*.md || fail "the refreshed page must carry the edited body"
+
+  # A detect-only run is read-only by contract, so it must not sweep at all.
+  printf '\nAND ANOTHER EDIT.\n' >> "$home/data/scout-a/report.md"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_TEST_PAGES="$home/pages" FM_GBRAIN_CAPTURE_SWEEP_INTERVAL=0 \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "GBRAIN_CAPTURE:" \
+    "a detect-only run must not run the mutating sweep"
+  grep -q "AND ANOTHER EDIT" "$home/pages/"*.md \
+    && fail "a detect-only run must not have re-delivered anything"
+  pass "bootstrap arms the capture sweep, relays its verdict, and stays inert without a brain"
+}
+
 test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise() {
   local case_dir home fakebin out
   case_dir="$TMP_ROOT/gbrain-pin-drift"
@@ -1949,6 +2035,7 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_relays_vault_drift_in_both_modes
 test_bootstrap_relays_gbrain_serving_credential_in_both_modes
+test_bootstrap_relays_the_capture_sweep_and_stays_inert_without_a_brain
 test_bootstrap_reports_gbrain_pin_drift_and_stays_quiet_otherwise
 test_bootstrap_finds_the_gbrain_fm_gbrain_bin_names
 test_bootstrap_surfaces_an_unresolvable_fm_gbrain_bin

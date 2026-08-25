@@ -154,13 +154,24 @@ export function buildGBrainHealth(envelope) {
   // outbox. The counts are what the operator needs in either case, so they are
   // always rendered and the reason is appended rather than replacing them.
   const capture = h.capture || {};
-  const captureState = capture.enabled === false ? "off" : capture.failed > 0 ? "degraded" : capture.pending > 0 ? "pending" : "ready";
+  // A record marked archived proves the page was accepted once, not that the
+  // index still serves it, so a parity gap is a degraded capture even when
+  // every outbox record reads clean. It ranks above pending because a pending
+  // item still holds its knowledge and a missing page does not.
+  const audit = capture.audit || {};
+  const captureState = capture.enabled === false ? "off"
+    : capture.failed > 0 || audit.state === "gap" ? "degraded"
+    : capture.pending > 0 ? "pending" : "ready";
   const captureDetail = [
     `${capture.archived ?? 0} archived`,
     `${capture.pending ?? 0} pending`,
     `${capture.failed ?? 0} failed`,
     capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
   ].join(" / ")
+    + (audit.state === "gap" ? ` · ${audit.missing ?? 0} captured document(s) the index no longer serves` : "")
+    + (audit.state === "inconclusive" ? " · the last stored-versus-served audit could not compare the two sides" : "")
+    + (audit.state === "unknown" ? " · no stored-versus-served audit has run yet" : "")
+    + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"
       : "")
@@ -170,7 +181,7 @@ export function buildGBrainHealth(envelope) {
     tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
     value: captureState,
     detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry.",
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry. A gap means a document the outbox calls archived is no longer served by the index.",
   });
 
   const maintenance = h.maintenance || {};
