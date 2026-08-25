@@ -128,6 +128,9 @@
 # For a no-mistakes ship, "done:" means the PR is open with checks green, so the
 # implementation handoff before validation uses blocked:, not the pause verb.
 # Design tasks instead use ADR-specific no-mistakes handoff wording in the generated brief.
+# Every scaffold also carries the steering-inbox receive-and-ack section:
+# process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
+# handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -382,6 +385,20 @@ fi
 mkdir -p "$DATA/$ID"
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
+
+# The receive-and-ack half of the steering-inbox contract, included in every
+# scaffold kind. The record format, doorbell line, and re-ring ladder are
+# owned by bin/fm-task-inbox-lib.sh; the doorbell itself is self-describing,
+# so this section is reinforcement for the natural-checkpoint habit, not the
+# only carrier of the instruction.
+IFS= read -r -d '' INBOX_SECTION <<EOF || true
+# Firstmate instruction inbox
+Firstmate steers you through durable message files in $INBOX_DIR.
+When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
+The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
+EOF
+INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
 # Brain retrieval is on demand and only worth mentioning to a worker whose home
 # actually has an index to read, so the instruction appears when this home has
@@ -450,6 +467,9 @@ For a terse result, a status line is the whole answer.
 For a detailed answer (an investigation, a plan, an audit), write it to a doc under your home's \`data/\` and append a status line that points to that doc - the scout-report pattern - so the main firstmate is woken and can read it.
 Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
 A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
+A request arriving through the instruction inbox below follows the same marker and reply rules.
+
+$INBOX_SECTION
 
 ${BRAIN_SECTION}# Escalation to main firstmate
 Handle routine work yourself.
@@ -665,6 +685,8 @@ The report is your only task-authored deliverable, so anything worth keeping mus
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$INBOX_SECTION
 
 ${BRAIN_SECTION}# Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -992,6 +1014,8 @@ $DECISION_RULE
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$INBOX_SECTION
 
 ${BRAIN_SECTION}${PROJECT_MEMORY_SECTION}$DOD
 EOF

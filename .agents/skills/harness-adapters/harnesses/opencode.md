@@ -13,7 +13,7 @@ If a pane shows the exit banner, relaunch with `--continue` to resume the sessio
 
 **Busy-queued Enter (opencode 1.18.4).**
 While opencode is mid-turn, the composer accepts Enter as a "send when the turn ends" keystroke but does not clear the typed text from the composer until the turn actually finishes.
-Without a conversion, every `fm-send` to a busy opencode pane exits non-zero on a false "Enter swallowed", and every daemon escalation that lands while the primary is mid-turn is treated as wedged.
+Without a conversion, every typed-plane `fm-send` to a busy opencode pane exits non-zero on a false "Enter swallowed", and every daemon escalation that lands while the primary is mid-turn is treated as wedged.
 This is the observation the shared head's busy-queued-Enter exception was built from; opencode carries no adapter-specific handling of its own.
 
 **Primary-session guard fact (verified 2026-07-08, OpenCode 1.17.6).**

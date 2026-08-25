@@ -208,8 +208,8 @@ The adapter starts and polls a named server before workspace, tab, pane, or agen
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
 
-Literal text and Enter are separate operations for ordinary steers on composer-verifiable harnesses.
-Cursor and agy instead use Herdr's atomic `agent prompt` operation after a zero-text probe proves that operation exists on the named session server and the live native identity matches any supplied harness metadata.
+Literal text and Enter are separate operations on `fm-send.sh`'s typed plane; ordinary local text steers instead use the durable steering inbox and send only its best-effort constant doorbell through this adapter.
+On that typed plane, cursor and agy use Herdr's atomic `agent prompt` operation after a zero-text probe proves that operation exists on the named session server and the live native identity matches any supplied harness metadata.
 A successful response proves only that Herdr queued terminal input.
 Delivery is confirmed when the same native agent session appends the exact input as an accepted user message in its transcript.
 A missing receipt remains `unverifiable` even when the transport reports success or returns an unreadable success payload.
@@ -218,8 +218,8 @@ A transport failure without a machine-readable rejection is unverifiable because
 `bin/fm-send.sh` owns the distinct exit statuses for known-undelivered and unverifiable results.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
 Enter, Escape, and Ctrl-C are supported.
-Slash and dollar-prefixed input uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
-Text is typed once; only Enter is retried.
+Typed-plane slash input, and dollar-prefixed skill input for Codex, uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
+Typed-plane text is typed once; only Enter is retried.
 
 On an idle or done native baseline, submit confirmation first waits for `working` or `blocked` across a bounded polling window.
 If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
@@ -291,7 +291,7 @@ It is a separate, classification-only predicate beside the stricter lone-idle-sh
 `bin/backends/herdr.sh`'s `fm_backend_herdr_agent_state` owns the exact contract.
 
 The session-start sweep uses this probe.
-Mid-session secondmate liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
+Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
 
 ## Push events and polling fallback
 
@@ -342,7 +342,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
-- Mid-session secondmate liveness is not implemented.
+- Mid-session secondmate agent-process liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The retries-exhausted conversion is the shared `fm_composer_queued_enter_verdict` policy in `bin/fm-composer-lib.sh`; Herdr supplies native `working` as its delivery-busy signal, plus the pane's rendered busy footer when the native baseline was legibly idle.
   An idle pane with visible composer text remains a pending submission failure.

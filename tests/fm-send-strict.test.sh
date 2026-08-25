@@ -107,8 +107,11 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=lost dispatch" "exact id should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit with Enter"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=Firstmate instruction waiting" \
+    "exact id should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit the doorbell with Enter"
+  grep -qF 'lost dispatch' "$home/state/mpf-lane-m8.inbox/001.msg" \
+    || fail "exact id should record the steer in the task inbox"
   pass "fm-send strict: exact task/lane ids resolve through home metadata"
 }
 
@@ -197,17 +200,20 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=hello captain" "healthy send should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit with Enter"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=Firstmate instruction waiting" \
+    "healthy send should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit the doorbell with Enter"
+  grep -qF 'hello captain' "$home/state/lane-ok.inbox/001.msg" \
+    || fail "healthy send should record the steer in the task inbox"
   assert_contains "$(cat "$err")" "requested message WILL still be sent" "fm-send guard banner should keep send-specific continuation wording"
-  pass "fm-send strict: healthy fm-<id> sends still type once and submit"
+  pass "fm-send strict: healthy fm-<id> sends record the steer and ring once"
 }
 
 # Would fail if the queued-wakes branch printed a bare warning again: this send
 # trips only that warning (healthy auto-arm beacon, pending queue), so the
 # continue line cannot come from the watcher-down banner. A silent successful
-# send plus a bare warning is the incident this pins. Exit 0 plus the tmux log
-# prove the advisory guard did not stop delivery.
+# send plus a bare warning is the incident this pins. Exit 0 plus the durable
+# inbox record and its doorbell prove the advisory guard did not stop delivery.
 test_queued_wake_warning_does_not_block_send() {
   local dir fb home err log rc got
   dir="$TMP_ROOT/queued-wake-send"; mkdir -p "$dir"
@@ -221,8 +227,11 @@ test_queued_wake_warning_does_not_block_send() {
     "$SEND" lane-wake "steer once" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "queued-wakes warning must stay advisory; the send must still succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-wake literal=1 arg=steer once" "queued-wakes warning stopped the send from typing"
+  assert_contains "$got" "target=sess:fm-lane-wake literal=1 arg=Firstmate instruction waiting" \
+    "queued-wakes warning stopped the send from ringing the doorbell"
   assert_contains "$got" "target=sess:fm-lane-wake literal=0 arg=Enter" "queued-wakes warning stopped the send from submitting"
+  grep -qF 'steer once' "$home/state/lane-wake.inbox/001.msg" \
+    || fail "queued-wakes warning stopped the send from recording the steer"
   assert_contains "$(cat "$err")" "queued wakes pending - drain them" "send did not surface the queued-wakes warning"
   assert_not_contains "$(cat "$err")" "WATCHER DOWN" \
     "this send must trip only queued wakes so the continue line cannot come from the watcher banner"
@@ -267,16 +276,32 @@ test_scout_text_send_reopens_completion_gate() {
   reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 1 ] || fail "key-only scout control reopened completion gate"
 
+  # An ordinary steer is delivered by the durable inbox record, so the failure
+  # that must NOT reopen the gate is an unwritable record rather than a pane
+  # that would not take the doorbell. A regular file where the inbox directory
+  # belongs is what makes the enqueue fail.
+  rm -rf "$home/state/scout-followup.inbox"
+  : > "$home/state/scout-followup.inbox"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" scout-followup "message that cannot be recorded" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "unrecordable scout follow-up should return nonzero"
+  reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
+  [ "$reviewed" = 1 ] || fail "unrecordable scout follow-up reopened completion gate"
+  rm -f "$home/state/scout-followup.inbox"
+
+  # The typed plane still exists for an explicit backend target, and keeps its
+  # own delivery contract: a proven send failure restores the gate, while an
+  # unconfirmed submit (exit 3) leaves it open because delivery is unknown.
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
     FM_FAKE_TMUX_SEND_FAIL_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
-    "$SEND" scout-followup "message that cannot land" >/dev/null 2>"$err"; rc=$?
+    "$SEND" sess:fm-scout-followup "message that cannot land" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "failed scout follow-up should return nonzero"
   reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 1 ] || fail "failed scout follow-up reopened completion gate"
 
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
     FM_FAKE_TMUX_DEAD_TARGET=sess:fm-scout-followup FM_SEND_SETTLE=0 \
-    "$SEND" scout-followup "message with unknown delivery" >/dev/null 2>"$err"; rc=$?
+    "$SEND" sess:fm-scout-followup "message with unknown delivery" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "unconfirmed scout follow-up should return nonzero"
   reviewed=$(grep '^decisions_reviewed=' "$meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 0 ] || fail "unconfirmed scout follow-up restored stale completion"
