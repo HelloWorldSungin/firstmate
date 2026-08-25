@@ -90,8 +90,9 @@
 # that is the only plane a value is accepted from here. A file-plane value is
 # one this host can see and the running search does not use, and judging a row
 # against it would be a statement about a measurement that never happened. The
-# read is lazy, taken only for a corpus that returned rows to judge, bounded by
-# a short slice of what is LEFT of the budget --timeout granted, and run with
+# read is lazy, taken only for a corpus whose rows carry a rerank_score and can
+# therefore be judged, bounded by a short slice of what is LEFT of the budget
+# --timeout granted with the runner's kill grace reserved out of it, and run with
 # GBrain's connect retry ladder disabled so a served brain fails fast instead of
 # spending clock no caller sanctioned. Anything short of a database answer
 # inside that slice is the pinned module default (0.35). The answer object
@@ -110,7 +111,8 @@
 #            it is named as unjudged rather than tied to a floor it was never
 #            measured against, and when nothing could be judged the answer
 #            carries no verdict. `corpora` carries each corpus's own top
-#            rerank_score, whether it was judged, and whether it cleared.
+#            rerank_score, whether it was judged, and whether it cleared, while
+#            `floors` alone owns the floor and the plane it came from.
 #   none     the corpus was read and returned no rows. That is absence of an
 #            indexed match, never evidence that the queried thing is absent.
 # `answer` is omitted when no corpus was read, so a retrieval failure cannot be
@@ -947,7 +949,6 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
           | {corpus: $corpus,
              top_rerank_score: $top,
              judged: ($top != null),
-             autocut_min_top: floor_for($corpus),
              cleared: ($top != null and $top >= floor_for($corpus))} ] as $corpora
         | [$corpora[] | select(.judged) | .corpus] as $judged_names
         | [$corpora[] | select(.judged | not) | .corpus] as $unjudged_names
@@ -993,19 +994,29 @@ EOF
 # to avoid.
 #
 # The read is an engine connect, so it is fenced three ways. It is lazy, taken
-# only when the local corpus returned rows to judge. It is bounded by a short
-# slice of what is LEFT of the budget the caller granted, so it can never push
-# the run past a consumer's kill deadline. And it disables GBrain's connect
-# retry ladder, because on a home whose brain is being served the daemon holds
-# the index's exclusive lock and walking that ladder spends seconds only to
-# arrive at the pinned default anyway. Anything short of a db-plane answer
-# inside that slice is the pinned default, disclosed as such.
+# only when the local corpus returned rows that CAN be judged, meaning rows that
+# carry a rerank_score. It is bounded by a short slice of what is LEFT of the
+# budget the caller granted, with the runner's kill grace reserved out of that
+# remainder, so the run's real ceiling stays at the deadline rather than one
+# grace past it. And it disables GBrain's connect retry ladder, because on a
+# home whose brain is being served the daemon holds the index's exclusive lock
+# and walking that ladder spends seconds only to arrive at the pinned default
+# anyway. Anything short of a db-plane answer inside that slice is the pinned
+# default, disclosed as such.
 RECALL_FLOOR_READ_MAX_SECONDS=2
 
+# The bound a caller sanctioned is the whole run, not the retrieval calls alone,
+# and the runner that enforces this read's own bound spends its kill grace ON
+# TOP of the seconds it was given: it arms `timeout -k <grace> <slice>`, so a
+# slice of N can occupy N + grace before this command gets control back. The
+# grace is therefore reserved out of what is left rather than borrowed from the
+# margin a consumer held back for its own kill. A remainder too small to hold
+# both is no budget at all, and the read is skipped for the pinned default.
 recall_floor_read_slice() {  # -> seconds this run may spend, or non-zero
-  local left=$RECALL_FLOOR_READ_MAX_SECONDS
+  local grace=${FM_TIMEOUT_KILL_GRACE:-1} left=$RECALL_FLOOR_READ_MAX_SECONDS
+  case $grace in '' | *[!0-9]* | 0) grace=1 ;; esac
   if [ -n "$RECALL_DEADLINE" ]; then
-    left=$((RECALL_DEADLINE - SECONDS))
+    left=$((RECALL_DEADLINE - SECONDS - grace))
     [ "$left" -le "$RECALL_FLOOR_READ_MAX_SECONDS" ] || left=$RECALL_FLOOR_READ_MAX_SECONDS
   fi
   [ "$left" -ge 1 ] || return 1
@@ -1092,7 +1103,13 @@ trim_recall_read_log() {  # <file>
 # on forever, and a section this run cannot enter costs the record, never the
 # search.
 RECALL_LOG_LOCK_STALE_SECONDS=30
-RECALL_LOG_LOCK_MAX_WAIT_SECONDS=1
+# The ceiling is counted in polls rather than in SECONDS, because SECONDS is
+# whole-second granular: a bound of "SECONDS + 1" is really anywhere from zero
+# to one second depending on where in the current second the run started, so a
+# run that arrived late in a second would give up after a single pause and drop
+# a record it could have written. Twenty polls at the pause below is a bound
+# that means the same thing on every run.
+RECALL_LOG_LOCK_MAX_POLLS=20
 
 # A holder that died mid-section leaves its directory behind, so a stale hold is
 # swept by age. The sweep has to be single-winner or it recreates the very
@@ -1133,14 +1150,13 @@ recall_log_lock_pause() {
 # the reason an operator is told the brain was unreachable. Past the budget the
 # lock is tried exactly once and the record is dropped.
 recall_read_log_lock() {  # <lock-dir> -> 0 when held
-  local lock=$1 deadline=$((SECONDS + RECALL_LOG_LOCK_MAX_WAIT_SECONDS))
-  if [ -n "$RECALL_DEADLINE" ] && [ "$RECALL_DEADLINE" -lt "$deadline" ]; then
-    deadline=$RECALL_DEADLINE
-  fi
+  local lock=$1 polls=0
   while :; do
     mkdir "$lock" 2>/dev/null && return 0
     recall_log_lock_sweep_stale "$lock"
-    [ "$SECONDS" -lt "$deadline" ] || return 1
+    polls=$((polls + 1))
+    [ "$polls" -lt "$RECALL_LOG_LOCK_MAX_POLLS" ] || return 1
+    [ -z "$RECALL_DEADLINE" ] || [ "$SECONDS" -lt "$RECALL_DEADLINE" ] || return 1
     recall_log_lock_pause
   done
 }
@@ -1318,8 +1334,18 @@ cmd_search() {
   # and only after the run's deadline has been set and every retrieval leg has
   # spent what it was granted. A search that found nothing needs no floor and
   # reads no plane, and a run whose budget is already gone reads none either.
+  # A corpus is judgeable only when its own rows carry a rerank_score, which is
+  # the same predicate the answer uses to decide `judged`. A corpus without one
+  # is never measured against a floor, so reading a plane for it would spend an
+  # engine connect on a number that is then thrown away - the whole cost this
+  # read is fenced against, and the ordinary case on a brain whose reranker is
+  # off.
   local judged_corpora
-  judged_corpora=$(printf '%s' "$results" | jq -r '[.[].source] | unique[]' 2>/dev/null || true)
+  judged_corpora=$(printf '%s' "$results" | jq -r '
+    [ ([.[].source] | unique)[] as $c
+      | select([.[] | select(.source == $c) | .rerank_score
+                | select(type == "number")] | length > 0)
+      | $c ][]' 2>/dev/null || true)
   if [ "$answered" -eq 1 ] && [ -n "$judged_corpora" ]; then
     for corpus in $judged_corpora; do
       [ "$corpus" != local ] || resolve_local_autocut_floor

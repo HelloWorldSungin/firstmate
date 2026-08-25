@@ -180,7 +180,7 @@ The search reply cannot be asked for the floor instead.
 The autocut verdict travels on `SearchMeta` for `--explain` and capture rather than on that array, and `AutocutDecision` at the pin is only `{applied, signal, cut, kept, total, gapRatio}`, which names neither the floor nor whether the weak-top branch fired: that branch returns the same no-op as a list with no cliff.
 
 So `bin/fm-recall.sh` reads the database plane through `gbrain config get` and accepts the number only when stderr reports that the database plane answered, treating a file/env answer as no answer at all.
-That read is an engine connect, so it is fenced three ways: it is taken lazily and only for a corpus that returned rows to judge, it is bounded by a short slice of what is left of the budget `--timeout` granted, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
+That read is an engine connect, so it is fenced three ways: it is taken lazily and only for a corpus whose rows carry a `rerank_score` and can therefore be judged, it is bounded by a short slice of what is left of the budget `--timeout` granted with the runner's kill grace reserved out of that remainder so the run's real ceiling stays at the deadline rather than one grace past it, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
 Anything short of a database answer inside that slice is the pinned default, disclosed as `pinned-default` rather than as a setting the wrapper read.
 The main brain is read over MCP and has no database plane this host can query at all, so it is judged against the pinned default and says so rather than borrowing this home's value.
 
@@ -190,7 +190,7 @@ Judging the merged list's head instead would let whichever corpus led the merge 
 Taking the maximum across the merged list would be wrong in the other direction, because two brains' rerank scores are different quantities and are not comparable with each other.
 `answer.no_confident_match` is true only when no corpus cleared, and when one did, `answer.confident_corpora` names which, so a caller can tell local knowledge from fleet knowledge.
 A corpus whose rows carry no `rerank_score` at all is left unjudged rather than counted a miss, and it is named as unjudged rather than folded into a sentence about a floor it was never measured against.
-`answer.corpora` carries each corpus's own top score, whether it was judged, and whether it cleared, and `answer.floors` carries a floor only for the corpora that were actually judged.
+`answer.corpora` carries each corpus's own top score, whether it was judged, and whether it cleared, while `answer.floors` is the single owner of the floor and its provenance and carries a row only for the corpora that were actually judged.
 `create_safety` is printed and is not the miss bit.
 
 A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search; a home with no local index writes nothing.
@@ -199,7 +199,7 @@ The line carries the query, the disposition of the read, each corpus's own top s
 The disposition separates `unread`, `unjudged`, `miss`, and `hit`, so a run that never reached a corpus cannot serialize as a read that returned an unjudgeable top row.
 The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECALL_JSONL_MAX_BYTES`.
 The append and the trim that follows it run under one advisory lock, because concurrent searches against one home would otherwise let a trim built from a stale tail overwrite the newest lines the cap exists to keep.
-That lock is a directory, a stale hold is claimed by an atomic rename so only one sweeper can remove it, and the wait for it is bounded by whichever comes first of a short ceiling or the run's own remaining budget, because the record is best-effort and must never be why a caller's kill deadline fires.
+That lock is the directory `state/recall.jsonl.lock` beside the log, a stale hold left by a killed run is claimed by an atomic rename so only one sweeper can remove it and is swept by age on the next search after 30 seconds, and the wait for it is bounded by whichever comes first of a short ceiling or the run's own remaining budget, because the record is best-effort and must never be why a caller's kill deadline fires.
 Past the cap the oldest lines go and the newest tail stays, a record larger than the cap on its own is kept rather than dropped, and the file is always safe to delete or trim.
 
 ```sh

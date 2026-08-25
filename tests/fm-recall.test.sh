@@ -1536,6 +1536,7 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
   "the floor itself is not a miss"
 
 stub_reply "$SEARCH_HIT"
+rm -f "$FM_STUB_ARGV.config"
 run_recall "$MAIN_HOME" search --json --scope local teardown
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
   || fail "a row with no rerank_score stays nearest pages: $RECALL_OUT"
@@ -1547,6 +1548,11 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
   || fail "a corpus with no rerank_score must be reported unjudged: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors | length')" -eq 0 ] \
   || fail "a corpus that was never judged must not be tied to a floor: $RECALL_OUT"
+# A corpus that cannot be judged is never measured against a floor, so reading
+# the brain's configuration plane for it would spend an engine connect on a
+# number nothing can use. On a brain whose reranker is off that is every search.
+[ ! -e "$FM_STUB_ARGV.config" ] \
+  || fail "an unjudgeable corpus must not pay a knob read: $(cat "$FM_STUB_ARGV.config")"
 
 # The floor is GBrain's knob, not a constant this wrapper carries. An operator
 # who tunes their brain's search.autocut_min_top must move the verdict with it,
@@ -1563,6 +1569,17 @@ expect_code 0 "$RECALL_RC" "a tuned floor is still an ordinary read: $RECALL_OUT
   || fail "the brain's own tuned floor must be the one reported: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = db-config ] \
   || fail "a tuned floor comes from the brain database plane: $RECALL_OUT"
+# The knob read is a second engine connect, so it must reach THIS home's brain
+# and must not walk the connect retry ladder a served home would make it spin
+# through. Both are what keep the read inside the budget on a busy host.
+assert_grep "GBRAIN_HOME=$MAIN_HOME/data/gbrain/runtime" "$FM_STUB_ENV.config" \
+  "the floor read must target the home under test, not another brain"
+assert_grep "GBRAIN_NO_RETRY_CONNECT=1" "$FM_STUB_ENV.config" \
+  "the floor read must disable the connect retry ladder so a served brain fails fast"
+[ "$(sed -n 1p "$FM_STUB_ARGV.config")" = config ] \
+  || fail "the floor read must ask for configuration: $(cat "$FM_STUB_ARGV.config")"
+[ "$(sed -n 3p "$FM_STUB_ARGV.config")" = search.autocut_min_top ] \
+  || fail "the floor read must ask for GBrain's own knob: $(cat "$FM_STUB_ARGV.config")"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
   || fail "0.40 must be a miss against a brain floor of 0.50: $RECALL_OUT"
 ANSWER_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
@@ -1838,6 +1855,10 @@ expect_code 0 "$RECALL_RC" "a mixed-stamp two-corpus read should answer: $RECALL
   || fail "the unstamped corpus must be reported unjudged: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | join(",")')" = local ] \
   || fail "a corpus that was never measured must carry no floor: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(.judged | not) | select(has("autocut_min_top"))] | length')" -eq 0 ] \
+  || fail "an unjudged corpus must not be handed a floor on the answer either: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(has("autocut_min_top"))] | length')" -eq 0 ] \
+  || fail "floors is the single owner of the floor and its provenance: $RECALL_OUT"
 MIXED_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
 assert_contains "$MIXED_NOTICE" "No confident match" \
   "the aggregate verdict is still a miss: [$MIXED_NOTICE]"
