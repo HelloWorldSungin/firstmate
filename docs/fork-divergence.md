@@ -22,6 +22,8 @@ It is deliberately crew-only and Herdr-only because Herdr supplies the native id
 It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
 The adapter contract lives in the [`harness-adapters` skill's agy variant file](../.agents/skills/harness-adapters/harnesses/agy.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
 Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
+Upstream's durable steering inbox (`kunchenguid/firstmate#2856`, reached 2026-08-25) moved ordinary local text off the typed submit path, so both verdicts now describe the typed plane alone - a harness-native invocation or an explicit backend target - while an ordinary steer's delivery is its durable record.
+The distinction itself is unchanged and still exits 3 either way; a round that touches the send verdicts must re-read which plane it is changing before assuming a verdict is dead code.
 This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
 
 ### Pinned ShellCheck download retry budget
@@ -44,6 +46,15 @@ Where both sources cover a provider, `quota-axi` wins for selection and the side
 Stale, missing, error, and unmodeled sidecar results all remain disclosed eligibility uncertainty and never become headroom, runway, a healthy default, or a block.
 [`.agents/skills/quota-array-dispatch`](../.agents/skills/quota-array-dispatch/SKILL.md) owns that freshness and degradation policy, and [`docs/configuration.md`](configuration.md) owns the `fm-quota-sidecar.v1` producer contract.
 This divergence went unrecorded from its introduction until 2026-08-19, which is why the collision arrived mid-merge instead of as a known one.
+
+### Scout completion gate reopened by a firstmate steer
+
+A steer to a scout that already reported its captain calls reviewed reopens that completion gate in `bin/fm-send.sh`, because the follow-up can surface new calls and a stale `decisions_reviewed=1` would let teardown erase the task past the gate `captain-hold-lifecycle` owns.
+Upstream has no equivalent, and the reopen lives inside an upstream-owned script, so it is a recurring merge cost rather than a fork-only file.
+Its trigger is whatever counts as delivery on the plane the steer takes: a confirmed submit on the typed plane, restored when the send proves failed and deliberately left open when the submit is unconfirmed; and the durable enqueue on the steering-inbox plane upstream added in `kunchenguid/firstmate#2856`, restored when the record cannot be written.
+That second half was added on 2026-08-25 when the inbox plane first collided with this divergence: an ordinary local steer stopped reaching the typed path at all, which would have silently retired the gate.
+[`tests/fm-send-strict.test.sh`](../tests/fm-send-strict.test.sh) pins both planes, including the failure directions, so a future round that changes plane selection fails loudly instead of dropping the gate.
+This divergence went unrecorded from its introduction on 2026-08-12 until 2026-08-25.
 
 ### Watcher restart hand-over
 
