@@ -76,7 +76,7 @@ Set `PATH=/home/sungin/.local/gbrain/bin:$PATH` for operations that cause GBrain
 An upgrade changes the code that reads and writes the fleet's memory, so it is a deliberate, gated operation rather than a routine refresh.
 GBrain's own `gbrain upgrade` and its `self_upgrade` notification are not the fleet's path, because they bypass the pin, the backup, and the gate below.
 Every upgrade runs these seven steps in order, and any one of them failing is a rollback rather than a reason to continue.
-Any `gbrain` command that opens the brain applies whatever migrations are pending as part of connecting, so no step that reaches the brain is a read-only inspection while installed code is ahead of the brain's schema, and the backup therefore comes before every step that touches it.
+Any `gbrain` command that opens the brain applies whatever migrations are pending as part of connecting, so no step that reaches the brain is a read-only inspection while installed code is ahead of the brain's schema.
 
 1. **Pin.** The version in force is the one recorded above, and it moves only by editing this file in the same change that performs the upgrade.
    Select the new tag explicitly; `latest` is not a pin.
@@ -86,13 +86,9 @@ Any `gbrain` command that opens the brain applies whatever migrations are pendin
    [`bin/fm-gbrain-pin-check.sh`](../bin/fm-gbrain-pin-check.sh) is the mechanical reader of both sides: it compares the recorded pin with what the installed executable reports and fails on drift, so a pin left behind by an upgrade is a finding rather than something a reviewer has to notice.
    Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
    Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
-2. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 7.
-   This is the first step that touches the brain, because [`bin/fm-gbrain-eval.sh`](../bin/fm-gbrain-eval.sh) reaches it through `gbrain call search` and migrates on connect exactly as `gbrain doctor --json` does.
-   Step 7 is the last rollback trigger, so a backup discarded after the step-6 smoke tests is one a failing gate can no longer restore.
+2. **Back up.** Quiesce writers including task-teardown capture, record the current source commit, take the backup below, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 7.
 3. **Baseline.** Record an evaluation run on the current version, now that step 2 has a copy of the brain as it stood before this run could migrate it, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
-4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
-   That reading is taken after the connect has already applied whatever was pending, so it is a post-migration reading that cannot detect a schema mismatch before the fact and does not deliver a pre-flight compatibility check.
-   The release notes are the pre-flight half of this step, and a genuine pre-migration version reading comes from the step-2 backup rather than from this command.
+4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes; checking the schema version with `gbrain doctor --json` applies pending migrations on connect and reports post-migration state.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
