@@ -88,7 +88,7 @@ Any `gbrain` command that opens the brain applies whatever migrations are pendin
    Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
 2. **Back up.** Quiesce writers including task-teardown capture, record the current source commit, take the backup below, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 7.
 3. **Baseline.** Record an evaluation run on the current version, now that step 2 has a copy of the brain as it stood before this run could migrate it, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
-4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes; checking the schema version with `gbrain doctor --json` applies pending migrations on connect and reports post-migration state.
+4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
@@ -169,10 +169,8 @@ An unreadable serving relationship, declared plane, runtime plane, or credential
 
 ### Announce a maintenance window
 
-The announced maintenance window spans upgrade steps 2 through 7, because the brain is under the operator's hands from the backup until the gate passes.
-The brain stops answering while upgrade steps 2, 4, and 5 run, which are the backup, the compatibility check, and the upgrade and migrate, and the same is true of a reindex or an embedding migration below.
-The step-3 baseline evaluation needs the brain to answer search queries, as the step-6 smoke tests and the step-7 gate do, and that traffic is the operator's own rather than a sign the window has ended.
-Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free text in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage, and unset it once the step-7 gate passes.
+The brain cannot serve ordinary traffic during an upgrade; announce the maintenance window by setting `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` before starting the upgrade steps, and unset it once the step-7 gate passes.
+A reindex or an embedding migration below is announced the same way with `reindexing`, and any free text goes in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage.
 `bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
 The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
 For the installed user service that means a systemd drop-in: [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) rewrites its environment file on every install and carries only the names [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) documents.
