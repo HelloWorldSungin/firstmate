@@ -116,21 +116,39 @@ Both the SSE framing and the in-band `isError` refusal are unpacked by the wrapp
 
 A search is a writer, which is why [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) names it in the backup precondition and why the dashboard's unit grants the brain directory ([dashboard-service-unit.md](dashboard-service-unit.md)).
 
-Measured 2026-08-11 against the operator's own brain at `/home/sungin/firstmate/data/gbrain`, by taking an md5 of every file under it before and after each `bin/fm-recall.sh search` and diffing the two manifests.
+Measured against the operator's own brain at `/home/sungin/firstmate/data/gbrain`, by taking an md5 of every file under it before and after each `bin/fm-recall.sh search` and diffing the two manifests, excluding the backups directory.
 Content hashes rather than mtimes: an mtime probe is too coarse here and had already produced a false negative on this exact question.
-Each measurement was bracketed by an idle window with no search running, which reported 0 changed files over 30 seconds and again over 45 seconds, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
+Each measurement was bracketed by an idle window with no search running, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
 
-Three consecutive searches, each returning results with the local source `ok`, rewrote 26, 27, and 27 files under the PGLite directory:
+The 2026-08-11 measurement recorded three consecutive searches rewriting 26, 27, and 27 files under the PGLite directory, with idle windows of 0 changed files over 30 and 45 seconds, and a run-to-run range of 7 to 27 that was never zero for a search that succeeded.
+That measurement was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus floor read adds a second `gbrain config get` connect on a search with a judgeable local corpus.
+The counts below supersede it.
+
+Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0`, idle window first: 0 files changed over 15 seconds across 1434 files hashed.
+
+`gbrain config get search.autocut_min_top` on its own, three runs, changed 3, 4, and 4 files, always drawn from:
 
 ```
+pglite/.gbrain-lock/lock
 pglite/global/pg_control
 pglite/pg_wal/<segment>
-pglite/pg_xact/0000
-pglite/base/5/<relation files>
+pglite/postmaster.pid
 ```
 
-Three in a row make this steady state rather than a cold-start or first-open artifact, and it is not an artifact of the service sandbox either: it happens both under the dashboard unit's restrictions and in an ordinary shell.
-Counts vary run to run, 7 to 27 observed, but were never zero for a search that actually succeeded.
+So the floor read is itself a writer of a handful of PGLite control files, even on this brain, where the key is absent from every plane.
+
+Three consecutive `bin/fm-recall.sh search --json --scope local` runs on the two-connect path, each with the local source `ok`, changed 32, 11, and 8 files, taking 17.02s, 1.18s, and 1.16s of wall clock; all three disclosed the floor as a pinned default.
+
+State this plainly rather than absorbing it.
+The second connect adds 3 to 4 control files per search, not a second full search write, so this is not 26 plus 26.
+The first two-connect run of the session wrote 32 files, which is above the previously published maximum of 27.
+The two runs after it wrote 11 and 8, inside the old 7-to-27 range.
+A search is still a writer, the floor read is now a second one, and the backup precondition in [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) rests on both.
+
+The same three runs are what sizes the floor read's own ceiling.
+With the connect retry ladder disabled and the index lock free, `gbrain config get search.autocut_min_top` took 0.299s, 0.311s, and 0.300s, exiting 1 with `Config key not found: search.autocut_min_top` on stderr.
+This fleet has never stored that key in the database plane, so the floor its searches apply is the bundle default 0.35, and disclosing `pinned-default` for this brain is accurate rather than a shrug.
+`bin/fm-recall.sh` bounds the read at 1 second, more than three times the measured wall clock and still inside the one-second remainder a dashboard-shaped run tends to leave.
 
 ## Refreshing this record
 
@@ -181,7 +199,11 @@ The autocut verdict travels on `SearchMeta` for `--explain` and capture rather t
 
 So `bin/fm-recall.sh` reads the database plane through `gbrain config get` and accepts the number only when stderr reports that the database plane answered, treating a file/env answer as no answer at all.
 That read is an engine connect, so it is fenced three ways: it is taken lazily and only for a corpus whose rows carry a `rerank_score` and can therefore be judged, it is bounded by a short slice of what is left of the budget `--timeout` granted with the runner's kill grace reserved out of that remainder so the run's real ceiling stays at the deadline rather than one grace past it, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
-Anything short of a database answer inside that slice is the pinned default, disclosed as `pinned-default` rather than as a setting the wrapper read.
+Anything short of a database answer inside that slice is the pinned default, and which of two facts that is gets disclosed rather than blurred.
+A brain that answered and holds no usable value of its own really does apply the pinned default, and that reads as `pinned-default`.
+A brain that could not be asked - the budget did not fit, the read was killed, the index lock was held, the binary is missing - applies whatever it applies, and that reads as `unconfirmed-default` instead, because this host does not know.
+The main brain has no database plane this host can query at all, so its floor is always `unconfirmed-default`.
+A value GBrain would itself refuse falls through to the bundle default inside GBrain too, so an out-of-range database answer is a confirmed `pinned-default` rather than an unknown one.
 The main brain is read over MCP and has no database plane this host can query at all, so it is judged against the pinned default and says so rather than borrowing this home's value.
 
 `bin/fm-recall.sh` judges confidence per corpus rather than from the head of the merged list.

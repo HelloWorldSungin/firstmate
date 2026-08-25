@@ -98,6 +98,10 @@
 # inside that slice is the pinned module default (0.35). The answer object
 # discloses, per judged corpus, the floor used and where it came from, so the
 # fallback is stated rather than passed off as a setting this command read.
+# That fallback is disclosed two ways, because they are two different facts:
+# `pinned-default` when the brain was asked and holds no usable value of its
+# own, and `unconfirmed-default` when it could not be asked at all and this
+# command therefore does not know what the brain applies.
 # Only corpora that were actually judged carry a floor.
 #
 # When a corpus answered, the document carries an `answer` object:
@@ -946,7 +950,8 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
     --arg none "$ANSWER_NONE_NOTICE" '
     def where($source):
       if $source == "db-config" then "the brain database plane"
-      else "the pinned GBrain default" end;
+      elif $source == "pinned-default" then "the pinned GBrain default this brain has not overridden"
+      else "the pinned GBrain default, this brain having gone unread" end;
     def floor_for($corpus):
       ([$floor_input[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
       // $default_floor;
@@ -1024,8 +1029,16 @@ EOF
 # home whose brain is being served the daemon holds the index's exclusive lock
 # and walking that ladder spends seconds only to arrive at the pinned default
 # anyway. Anything short of a db-plane answer inside that slice is the pinned
-# default, disclosed as such.
-RECALL_FLOOR_READ_MAX_SECONDS=2
+# default, disclosed either as the value the brain applies or as one this
+# command could not confirm.
+# Sized from a measurement, not a guess. Measured 2026-08-25 against this
+# fleet's brain with the connect retry ladder disabled, `gbrain config get
+# search.autocut_min_top` took 0.299s, 0.311s, and 0.300s over three runs with
+# the index lock free. One second is more than three times that, and it still
+# fits the one-second remainder a dashboard-shaped run tends to leave. Re-take
+# the measurement before moving this number; the record is in
+# docs/verification/gbrain-retrieval.md.
+RECALL_FLOOR_READ_MAX_SECONDS=1
 
 # The bound a caller sanctioned is the whole run, not the retrieval calls alone,
 # and the runner that enforces this read's own bound spends its kill grace ON
@@ -1045,12 +1058,22 @@ recall_floor_read_slice() {  # -> seconds this run may spend, or non-zero
   printf '%s\n' "$left"
 }
 
+# Two different things end at the pinned default, and saying them with one word
+# would be a false statement about what was searched. A brain that was ASKED and
+# holds no usable value really does apply the pinned default, and saying so is
+# accurate. A brain that could not be asked - the budget did not fit, the read
+# was killed, the index lock was held, the binary is missing - applies whatever
+# it applies, and this command does not know. The first is `pinned-default`; the
+# second is `unconfirmed-default`, and the notice renders it as a floor this
+# command could not confirm rather than as a setting the brain does not have.
 RECALL_LOCAL_FLOOR=""
+RECALL_LOCAL_FLOOR_SOURCE=unconfirmed-default
 RECALL_LOCAL_FLOOR_READ=0
 resolve_local_autocut_floor() {
   [ "$RECALL_LOCAL_FLOOR_READ" -eq 0 ] || return 0
   RECALL_LOCAL_FLOOR_READ=1
   RECALL_LOCAL_FLOOR=""
+  RECALL_LOCAL_FLOOR_SOURCE=unconfirmed-default
   [ -n "${FM_GBRAIN_HOME_DIR:-}" ] || return 0
   command -v "$GBRAIN_BIN" >/dev/null 2>&1 || return 0
   local slice out_file err_file rc=0 value
@@ -1067,24 +1090,45 @@ resolve_local_autocut_floor() {
       fm_run_timed "$slice" "$GBRAIN_BIN" config get search.autocut_min_top
   ) >"$out_file" 2>"$err_file" || rc=$?
   if [ "$rc" -eq 0 ] && grep -q '^\[config\] source: db plane' "$err_file"; then
+    # The database plane answered. A value GBrain would itself refuse falls
+    # through to the bundle default there too, so an unusable answer is a
+    # confirmed pinned default rather than an unknown one.
     value=$(head -n 1 "$out_file" | tr -d '[:space:]')
     RECALL_LOCAL_FLOOR=$(jq -rn --arg v "$value" \
       'try (($v | tonumber) as $n | select($n >= 0 and $n <= 1) | $n) catch empty' \
       2>/dev/null) || RECALL_LOCAL_FLOOR=""
+    if [ -n "$RECALL_LOCAL_FLOOR" ]; then
+      RECALL_LOCAL_FLOOR_SOURCE=db-config
+    else
+      RECALL_LOCAL_FLOOR_SOURCE=pinned-default
+    fi
+  elif [ "$rc" -eq 1 ] && grep -q '^Config key not found' "$err_file"; then
+    # The connect completed and the key is in no plane at all, so the bundle
+    # default is what this brain applies.
+    RECALL_LOCAL_FLOOR_SOURCE=pinned-default
+  elif [ "$rc" -eq 0 ] && grep -q '^\[config\] source: file/env plane' "$err_file" \
+       && ! grep -q 'shadowed at runtime' "$err_file"; then
+    # The file plane answered and GBrain reported no database value behind it.
+    # Search reads only the database plane, so an empty one means the bundle
+    # default is the applied floor even though the number printed is not.
+    RECALL_LOCAL_FLOOR_SOURCE=pinned-default
   fi
   rm -f "$out_file" "$err_file"
   return 0
 }
 
 # The main brain is read over MCP and has no database plane this host can query,
-# so it is judged against the pinned default and says so. Borrowing this home's
-# value for it would claim a setting the fleet brain never reported.
+# so its floor is the pinned default and is disclosed as unconfirmed: nothing
+# here knows whether the fleet brain overrode it. Borrowing this home's value
+# for it would claim a setting the fleet brain never reported.
 autocut_floor_row() {  # <corpus> -> floor row
   local corpus=$1 value source
-  if [ "$corpus" = local ] && [ -n "$RECALL_LOCAL_FLOOR" ]; then
-    value=$RECALL_LOCAL_FLOOR; source=db-config
+  if [ "$corpus" != local ]; then
+    value=$AUTOCUT_MIN_TOP_DEFAULT; source=unconfirmed-default
+  elif [ -n "$RECALL_LOCAL_FLOOR" ]; then
+    value=$RECALL_LOCAL_FLOOR; source=$RECALL_LOCAL_FLOOR_SOURCE
   else
-    value=$AUTOCUT_MIN_TOP_DEFAULT; source=pinned-default
+    value=$AUTOCUT_MIN_TOP_DEFAULT; source=$RECALL_LOCAL_FLOOR_SOURCE
   fi
   jq -cn --arg c "$corpus" --argjson v "$value" --arg s "$source" \
     '{corpus: $c, autocut_min_top: $v, source: $s}'

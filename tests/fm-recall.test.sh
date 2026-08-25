@@ -1637,11 +1637,17 @@ RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=1.7 FM_STUB_AUTOCUT_PL
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
   || fail "a floor outside [0, 1] is what GBrain refuses and must not be used: $RECALL_OUT"
 
-# A brain that never stored the knob answers not-found, which is the fallback.
+# A brain that never stored the knob answers not-found after a connect that did
+# complete, so the pinned default is a fact about this brain rather than a gap
+# in what the read could find out, and the notice has to say which one it is.
 stub_reply "$TUNED_ROW"
 run_recall "$MAIN_HOME" search --json --scope local "a brain that left its floor alone"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
   || fail "a brain with no stored knob is judged against the pinned default: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "has not overridden" \
+  "an answered read must not read like a read that never happened: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice | contains("gone unread")')" = false ] \
+  || fail "a brain that answered was not left unread: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
   || fail "0.40 clears the pinned default of 0.35: $RECALL_OUT"
 
@@ -1689,8 +1695,12 @@ unset FM_STUB_CONFIG_SLEEP
 expect_code 0 "$RECALL_RC" "a budgeted two-leg search must answer inside its own ceiling: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.sources[].source] | sort | join(",")')" = "local,main" ] \
   || fail "the structured per-source document must survive the run: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
-  || fail "a knob read that could not finish inside the budget is the pinned default: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = unconfirmed-default ] \
+  || fail "a knob read that could not finish must not claim the brain has no value: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "having gone unread" \
+  "a floor the brain was never asked for must read as unconfirmed: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice | contains("has not overridden")')" = false ] \
+  || fail "a killed read cannot claim the brain stored nothing: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
   || fail "a knob read that could not finish must not invent a floor: $RECALL_OUT"
 
@@ -1780,7 +1790,7 @@ assert_contains "$CROSS_NOTICE" "Judged and short of its own floor: local" \
   || fail "both rows must still be listed: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | sort | join(",")')" = "local,main" ] \
   || fail "both corpora that were read must disclose their floor: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].source')" = pinned-default ] \
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].source')" = unconfirmed-default ] \
   || fail "the main brain has no database plane this host can query and must say so: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].autocut_min_top == 0.35')" = true ] \
   || fail "the fleet corpus must be judged against the pinned default, not a borrowed local value: $RECALL_OUT"
@@ -2008,8 +2018,15 @@ jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
 CUT_HOME=$(make_home "$TMP_ROOT/cut")
 mkdir -p "$CUT_HOME/data/gbrain/pglite" "$CUT_HOME/state"
 CUT_FILE="$CUT_HOME/state/recall.jsonl"
+# The cap is computed from the file BEFORE the read under test appends to it,
+# so the two queries have to be the same length or the cut lands a byte off the
+# brace and the case stops being able to fail on its own defect.
+CUT_SEED_QUERY="a record with interior braces."
+CUT_TRIM_QUERY="the read that trims on a brace"
+[ "${#CUT_SEED_QUERY}" -eq "${#CUT_TRIM_QUERY}" ] \
+  || fail "the interior-brace fixture needs equal-length queries: ${#CUT_SEED_QUERY} vs ${#CUT_TRIM_QUERY}"
 stub_reply "$SEARCH_MISS"
-run_recall "$CUT_HOME" search --json --scope local "a record with interior braces"
+run_recall "$CUT_HOME" search --json --scope local "$CUT_SEED_QUERY"
 [ "$(jq -s 'length' "$CUT_FILE")" -eq 1 ] \
   || fail "the seed read must leave one record: $(cat "$CUT_FILE")"
 CUT_REC=$(cat "$CUT_FILE")
@@ -2024,12 +2041,16 @@ CUT_CAP=$((CUT_TOTAL - (${#CUT_REC} + 1) * 3 - CUT_INNER + 1))
 stub_reply "$SEARCH_MISS"
 RECALL_RC=0
 RECALL_OUT=$(FM_HOME="$CUT_HOME" FM_RECALL_JSONL_MAX_BYTES="$CUT_CAP" \
-  bash "$CLI" search --json --scope local "the read that trims on a brace" 2>&1) || RECALL_RC=$?
+  bash "$CLI" search --json --scope local "$CUT_TRIM_QUERY" 2>&1) || RECALL_RC=$?
 expect_code 0 "$RECALL_RC" "a trim that cuts inside a record must not fail the search: $RECALL_OUT"
 jq -e -s 'all(.[]; has("schema"))' "$CUT_FILE" >/dev/null 2>&1 \
   || fail "a cut inside a record must leave no partial line: $(head -1 "$CUT_FILE")"
-[ "$(jq -s -r '.[-1].query' "$CUT_FILE")" = "the read that trims on a brace" ] \
+[ "$(jq -s -r '.[-1].query' "$CUT_FILE")" = "$CUT_TRIM_QUERY" ] \
   || fail "the newest read must survive a cut that lands inside a record: $(tail -1 "$CUT_FILE")"
+# The fixture is only a regression guard if the cut really lands on the brace.
+CUT_START=$((CUT_TOTAL + ${#CUT_REC} + 1 - CUT_CAP))
+[ "$(printf '%s' "$CUT_REC" | cut -c "$((CUT_START % (${#CUT_REC} + 1) + 1))")" = "{" ] \
+  || fail "the cut must land on an interior brace, not beside one: offset $CUT_START"
 
 # A record larger than the cap on its own must be kept: emptying the file would
 # throw away the very read the trim was called to preserve.
