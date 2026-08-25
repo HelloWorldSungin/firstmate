@@ -121,7 +121,7 @@ Content hashes rather than mtimes: an mtime probe is too coarse here and had alr
 Each measurement was bracketed by an idle window with no search running, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
 
 The 2026-08-11 measurement recorded three consecutive searches rewriting 26, 27, and 27 files under the PGLite directory, with idle windows of 0 changed files over 30 and 45 seconds, and a run-to-run range of 7 to 27 that was never zero for a search that succeeded.
-That measurement was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus floor read adds a second `gbrain config get` connect on a search with a judgeable local corpus.
+That measurement was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus knob read adds `gbrain config get` connects on a search with a judgeable local corpus.
 The counts below supersede it.
 
 Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0`, idle window first: 0 files changed over 15 seconds across 1434 files hashed.
@@ -135,7 +135,7 @@ pglite/pg_wal/<segment>
 pglite/postmaster.pid
 ```
 
-So the floor read is itself a writer of a handful of PGLite control files, even on this brain, where the key is absent from every plane.
+So the knob read is itself a writer of a handful of PGLite control files, even on this brain, where the key is absent from every plane.
 
 Three consecutive `bin/fm-recall.sh search --json --scope local` runs on the two-connect path, each with the local source `ok`, changed 32, 11, and 8 files, taking 17.02s, 1.18s, and 1.16s of wall clock; all three disclosed the floor as a pinned default.
 
@@ -143,12 +143,18 @@ State this plainly rather than absorbing it.
 The second connect adds 3 to 4 control files per search, not a second full search write, so this is not 26 plus 26.
 The first two-connect run of the session wrote 32 files, which is above the previously published maximum of 27.
 The two runs after it wrote 11 and 8, inside the old 7-to-27 range.
-A search is still a writer, the floor read is now a second one, and the backup precondition in [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) rests on both.
+A search is still a writer, the knob read is now a second one, and the backup precondition in [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) rests on both.
 
-The same three runs are what sizes the floor read's own ceiling.
+These counts are already one connect behind the code and are published that way rather than quietly restated.
+They were taken when the knob read asked for one key; it now asks for two, because `search.autocut_min_top` is only a floor while `search.autocut` is on and the pin resolves exactly one key per `gbrain config get` process.
+Both keys are asked inside the one bounded slice, so nothing new is charged to the run's budget, but the engine is connected twice rather than once.
+Scaling the measured 3-to-4 control files per connect gives roughly 6 to 8 for the knob read on a judgeable local corpus; that arithmetic has NOT been re-measured end to end, and it is the number to re-take first when this record is refreshed.
+
+The same three runs are what sizes the knob read's own ceiling.
 With the connect retry ladder disabled and the index lock free, `gbrain config get search.autocut_min_top` took 0.299s, 0.311s, and 0.300s, exiting 1 with `Config key not found: search.autocut_min_top` on stderr.
 This fleet has never stored that key in the database plane, so the floor its searches apply is the bundle default 0.35, and disclosing `pinned-default` for this brain is accurate rather than a shrug.
-`bin/fm-recall.sh` bounds the read at 1 second, more than three times the measured wall clock and still inside the one-second remainder a dashboard-shaped run tends to leave.
+`bin/fm-recall.sh` bounds the read at 1 second, which now has two such reads to cover rather than one: twice the measured 0.30s still leaves room under the bound, and the bound still fits the one-second remainder a dashboard-shaped run tends to leave.
+That doubling is the reason to re-take this timing before the bound is trusted on a brain slower than this one.
 
 ## Refreshing this record
 
@@ -198,7 +204,11 @@ The search reply cannot be asked for the floor instead.
 The autocut verdict travels on `SearchMeta` for `--explain` and capture rather than on that array, and `AutocutDecision` at the pin is only `{applied, signal, cut, kept, total, gapRatio}`, which names neither the floor nor whether the weak-top branch fired: that branch returns the same no-op as a list with no cliff.
 
 So `bin/fm-recall.sh` reads the database plane through `gbrain config get` and accepts the number only when stderr reports that the database plane answered, treating a file/env answer as no answer at all.
-That read is an engine connect, so it is fenced three ways: it is taken lazily and only for a corpus whose rows carry a `rerank_score` and can therefore be judged, it is bounded by a short slice of what is left of the budget `--timeout` granted with the runner's kill grace reserved out of that remainder so the run's real ceiling stays at the deadline rather than one grace past it, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
+It reads two keys that way, not one.
+`applyAutocut` is called at the pin only when `resolvedMode.autocut` is true (`src/core/search/hybrid.ts`), and `search.autocut` is that master toggle (`src/core/search/mode.ts`), so `search.autocut_min_top` is the applied floor only while the toggle is on.
+The pin has no path that returns both from one connect: `gbrain config get` resolves exactly one key per process (`src/commands/config.ts`), there is no parent-key or multi-key form, and `gbrain search modes --json` attributes `autocut_min_top` but does not carry the `autocut` toggle in its resolved-knob roster (`src/core/search/modes-report.ts`).
+The wrapper therefore asks both keys inside ONE bounded slice and one process group, which costs two connects and no extra budget, and it asks the toggle first so a slice that runs out mid-read costs the tuned floor - a fallback the answer already discloses - rather than the toggle, whose absence would put the wrong verdict on the answer.
+That read connects to the engine, so it is fenced three ways: it is taken lazily and only for a corpus whose rows carry a `rerank_score` and can therefore be judged, it is bounded by a short slice of what is left of the budget `--timeout` granted with the runner's kill grace reserved out of that remainder so the run's real ceiling stays at the deadline rather than one grace past it, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
 Anything short of a database answer inside that slice is the pinned default, and which of two facts that is gets disclosed rather than blurred.
 A brain that answered and holds no usable value of its own really does apply the pinned default, and that reads as `pinned-default`.
 A brain that could not be asked - the budget did not fit, the read was killed, the index lock was held, the binary is missing - applies whatever it applies, and that reads as `unconfirmed-default` instead, because this host does not know.
@@ -212,6 +222,10 @@ Judging the merged list's head instead would let whichever corpus led the merge 
 Taking the maximum across the merged list would be wrong in the other direction, because two brains' rerank scores are different quantities and are not comparable with each other.
 `answer.no_confident_match` is true only when no corpus cleared, and when one did, `answer.confident_corpora` names which, so a caller can tell local knowledge from fleet knowledge.
 A corpus whose rows carry no `rerank_score` at all is left unjudged rather than counted a miss, and it is named as unjudged rather than folded into a sentence about a floor it was never measured against.
+A corpus whose brain answers from its database plane that `search.autocut` is off is left unjudged the same way, because GBrain applied no weak-top floor to those rows at all and a verdict taken against one would describe a measurement the search never made.
+The notice keeps the two reasons apart, since rows that carry a score and rows that carry none are different facts about the read.
+Only a database plane that answers and says off does this: the pin reads a stored value as on for `1` or `true` alone, a key stored in no plane is the reranked bundles' own `autocut: true` rather than an off, a file/env value is not what search reads, and a read that could not happen at all is not a fact about the brain.
+Each of those keeps the ordinary path, judged against a floor the answer already discloses as one this command could not confirm.
 `answer.corpora` carries each corpus's own top score, whether it was judged, and whether it cleared, while `answer.floors` is the single owner of the floor and its provenance and carries a row only for the corpora that were actually judged.
 When one corpus clears and another was judged and fell short, the notice names the one that fell short, because a consumer that renders only `kind` and `notice` would otherwise learn which brain holds the answer without learning which one does not.
 `create_safety` is printed and is not the miss bit.

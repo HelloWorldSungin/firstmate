@@ -63,6 +63,9 @@ if [ "${1:-}" = config ]; then
 fi
 : > "$STUB_ARGV"
 for a in "$@"; do printf '%s\n' "$a" >> "$STUB_ARGV"; done
+# One knob read asks for more than one key, and each key is its own question,
+# so the keys accumulate in a second file rather than overwriting each other.
+[ "${1:-}" != config ] || printf '%s\n' "${3:-}" >> "$FM_STUB_ARGV.config.keys"
 {
   printf 'GBRAIN_HOME=%s\n' "${GBRAIN_HOME:-}"
   printf 'OLLAMA_BASE_URL=%s\n' "${OLLAMA_BASE_URL:-}"
@@ -86,6 +89,17 @@ if [ "${1:-}" = config ] && [ "${2:-}" = get ]; then
         printf '[config] source: file/env plane (~/.gbrain/config.json or env)\n' >&2
       fi
       exit 0 ;;
+    # The master toggle answers on the same path. An unset variable is the
+    # ordinary brain, which stores the key in no plane at all.
+    search.autocut)
+      [ -n "${FM_STUB_AUTOCUT:-}" ] || { printf 'Config key not found: %s\n' "$3" >&2; exit 1; }
+      printf '%s\n' "$FM_STUB_AUTOCUT"
+      if [ "${FM_STUB_AUTOCUT_TOGGLE_PLANE:-db}" = db ]; then
+        printf '[config] source: db plane\n' >&2
+      else
+        printf '[config] source: file/env plane (~/.gbrain/config.json or env)\n' >&2
+      fi
+      exit 0 ;;
     *) printf 'Config key not found: %s\n' "$3" >&2; exit 1 ;;
   esac
 fi
@@ -104,12 +118,14 @@ stub_reply() {  # <json-file-content>
   printf '%s\n' "$1" > "$TMP_ROOT/stub-out.json"
   export FM_STUB_OUT="$TMP_ROOT/stub-out.json"
   export FM_STUB_RC=0
-  unset FM_STUB_STDERR FM_STUB_SLEEP FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE 2>/dev/null || true
+  unset FM_STUB_STDERR FM_STUB_SLEEP FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE \
+    FM_STUB_AUTOCUT FM_STUB_AUTOCUT_TOGGLE_PLANE 2>/dev/null || true
 }
 
 stub_fail() {  # <rc> <stderr>
   export FM_STUB_RC=$1 FM_STUB_STDERR=$2
-  unset FM_STUB_OUT FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE 2>/dev/null || true
+  unset FM_STUB_OUT FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE \
+    FM_STUB_AUTOCUT FM_STUB_AUTOCUT_TOGGLE_PLANE 2>/dev/null || true
 }
 
 SEARCH_HIT='[{"slug":"teardown-notes","title":"Teardown Notes","chunk_text":"Teardown refuses unlanded work.","score":0.91,"stale":false}]'
@@ -1558,7 +1574,7 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
   "the floor itself is not a miss"
 
 stub_reply "$SEARCH_HIT"
-rm -f "$FM_STUB_ARGV.config"
+rm -f "$FM_STUB_ARGV.config" "$FM_STUB_ARGV.config.keys"
 run_recall "$MAIN_HOME" search --json --scope local teardown
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
   || fail "a row with no rerank_score stays nearest pages: $RECALL_OUT"
@@ -1573,8 +1589,8 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
 # A corpus that cannot be judged is never measured against a floor, so reading
 # the brain's configuration plane for it would spend an engine connect on a
 # number nothing can use. On a brain whose reranker is off that is every search.
-[ ! -e "$FM_STUB_ARGV.config" ] \
-  || fail "an unjudgeable corpus must not pay a knob read: $(cat "$FM_STUB_ARGV.config")"
+[ ! -e "$FM_STUB_ARGV.config.keys" ] \
+  || fail "an unjudgeable corpus must not pay a knob read: $(cat "$FM_STUB_ARGV.config.keys")"
 
 # The floor is GBrain's knob, not a constant this wrapper carries. An operator
 # who tunes their brain's search.autocut_min_top must move the verdict with it,
@@ -1583,6 +1599,7 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
 # value is only the applied floor when the database is what answered.
 TUNED_ROW='[{"slug":"tuned","title":"Tuned","chunk_text":"above the pinned default, below this brain floor.","score":0.6,"rerank_score":0.40,"cosine":0.3,"evidence":"weak_semantic","create_safety":"unknown","stale":false}]'
 stub_reply "$TUNED_ROW"
+rm -f "$FM_STUB_ARGV.config.keys"
 RECALL_RC=0
 RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=0.50 FM_STUB_AUTOCUT_PLANE=db \
   bash "$CLI" search --json --scope local "a brain that tuned its own floor" 2>&1) || RECALL_RC=$?
@@ -1600,8 +1617,12 @@ assert_grep "GBRAIN_NO_RETRY_CONNECT=1" "$FM_STUB_ENV.config" \
   "the floor read must disable the connect retry ladder so a served brain fails fast"
 [ "$(sed -n 1p "$FM_STUB_ARGV.config")" = config ] \
   || fail "the floor read must ask for configuration: $(cat "$FM_STUB_ARGV.config")"
-[ "$(sed -n 3p "$FM_STUB_ARGV.config")" = search.autocut_min_top ] \
-  || fail "the floor read must ask for GBrain's own knob: $(cat "$FM_STUB_ARGV.config")"
+grep -qx 'search.autocut_min_top' "$FM_STUB_ARGV.config.keys" \
+  || fail "the floor read must ask for GBrain's own knob: $(cat "$FM_STUB_ARGV.config.keys")"
+# A floor only applies while the toggle GBrain gates it on is on, so the same
+# read asks for that toggle too rather than assuming it.
+grep -qx 'search.autocut' "$FM_STUB_ARGV.config.keys" \
+  || fail "the knob read must ask for the master toggle: $(cat "$FM_STUB_ARGV.config.keys")"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
   || fail "0.40 must be a miss against a brain floor of 0.50: $RECALL_OUT"
 ANSWER_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
@@ -1670,6 +1691,71 @@ assert_contains "$RECALL_OUT" "has not overridden" \
   || fail "0.40 clears the pinned default of 0.35: $RECALL_OUT"
 
 pass "each corpus is judged against the floor its own brain configured, and a plane holding no usable floor discloses the fallback"
+
+# search.autocut_min_top is only a floor while search.autocut is on: GBrain
+# calls applyAutocut at all only when the toggle resolves true. A brain whose
+# database plane turns it off applied NO weak-top floor to these rows, so a
+# verdict taken against one would describe a measurement the search never made.
+# That corpus is left unjudged - the same outcome a corpus with no rerank_score
+# already gets - rather than reported a miss.
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT=false FM_STUB_AUTOCUT_TOGGLE_PLANE=db \
+  bash "$CLI" search --json --scope local "a brain that turned autocut off" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "autocut off is still an ordinary read: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.corpora[0].top_rerank_score == 0.0004')" = true ] \
+  || fail "the score is still reported, it is the verdict that is withheld: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.corpora[0].judged')" = false ] \
+  || fail "a corpus its brain applies no floor to must not be judged: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.corpora[0].cleared')" = false ] \
+  || fail "an unjudged corpus cannot have cleared anything: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r 'has("answer") and (.answer | has("no_confident_match"))')" = false ] \
+  || fail "0.0004 must not be a miss against a floor the search never applied: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors | length')" -eq 0 ] \
+  || fail "a corpus that was never measured must carry no floor: $RECALL_OUT"
+AUTOCUT_OFF_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
+assert_not_contains "$AUTOCUT_OFF_NOTICE" "No confident match" \
+  "a corpus with no floor applied is unjudged, not a miss: [$AUTOCUT_OFF_NOTICE]"
+assert_contains "$AUTOCUT_OFF_NOTICE" "turns search.autocut off" \
+  "the notice must name why the corpus went unjudged: [$AUTOCUT_OFF_NOTICE]"
+assert_not_contains "$AUTOCUT_OFF_NOTICE" "no returned row carried a rerank_score" \
+  "these rows did carry a rerank_score, so that is not the reason: [$AUTOCUT_OFF_NOTICE]"
+RECALL_RC=0
+AUTOCUT_OFF_HUMAN=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT=false FM_STUB_AUTOCUT_TOGGLE_PLANE=db \
+  bash "$CLI" search --scope local "a brain that turned autocut off" 2>/dev/null) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "human output must answer too: [$AUTOCUT_OFF_HUMAN]"
+assert_not_contains "$AUTOCUT_OFF_HUMAN" "No confident match" \
+  "human output must not report a miss the search never measured: [$AUTOCUT_OFF_HUMAN]"
+assert_contains "$AUTOCUT_OFF_HUMAN" "turns search.autocut off" \
+  "human output must carry the reason the corpus went unjudged: [$AUTOCUT_OFF_HUMAN]"
+
+# The pin reads the stored toggle as on for `1` and `true` alone, so those two
+# keep today's verdict rather than joining the unjudged path.
+for on_value in 1 true; do
+  stub_reply "$SEARCH_MISS"
+  RECALL_RC=0
+  RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT="$on_value" FM_STUB_AUTOCUT_TOGGLE_PLANE=db \
+    bash "$CLI" search --json --scope local "a brain that left autocut on" 2>&1) || RECALL_RC=$?
+  expect_code 0 "$RECALL_RC" "autocut on is an ordinary read: $RECALL_OUT"
+  [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
+    || fail "search.autocut=$on_value still applies the floor, so 0.0004 is a miss: $RECALL_OUT"
+done
+
+# The toggle obeys the same plane rule as the floor. A file/env answer is one
+# this host can see and the running search does not read, so it cannot suppress
+# a verdict any more than it can move one.
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT=false FM_STUB_AUTOCUT_TOGGLE_PLANE=file \
+  bash "$CLI" search --json --scope local "a toggle the file plane answered" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a file-plane toggle must not fail the search: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.corpora[0].judged')" = true ] \
+  || fail "a file-plane toggle is not what search reads and must not withhold the verdict: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
+  || fail "the verdict must stand when the database plane never said otherwise: $RECALL_OUT"
+
+pass "a corpus whose brain turns autocut off in its database plane is left unjudged rather than measured against a floor the search never applied"
+
 
 # --- 17b. the floor read never spends clock the caller did not grant --------
 #
@@ -1922,6 +2008,28 @@ assert_contains "$MIXED_NOTICE" "No confident match" \
   "the aggregate verdict is still a miss: [$MIXED_NOTICE]"
 assert_contains "$MIXED_NOTICE" "no returned row carried a rerank_score: main" \
   "the notice must name the corpus that was never judged: [$MIXED_NOTICE]"
+# A corpus its brain applies no floor to must not drag a confident sibling down
+# either, and it must not be reported as having fallen short of a floor nothing
+# measured it against. It is named unjudged, with the reason that is true of it.
+main_reply "$MAIN_CONFIDENT"
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  FM_STUB_AUTOCUT=false FM_STUB_AUTOCUT_TOGGLE_PLANE=db \
+  bash "$CLI" search --json --scope all "one brain applies a floor and one does not" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "an unfloored corpus beside a confident one still answers: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | join(",")')" = main ] \
+  || fail "the corpus that was judged and cleared must be the one named: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "an unjudged corpus must not turn a confident sibling into a miss: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | join(",")')" = main ] \
+  || fail "a corpus its brain applies no floor to must carry no floor row: $RECALL_OUT"
+UNFLOORED_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
+assert_not_contains "$UNFLOORED_NOTICE" "short of its own floor" \
+  "a corpus with no floor applied cannot have fallen short of one: [$UNFLOORED_NOTICE]"
+assert_contains "$UNFLOORED_NOTICE" "turns search.autocut off" \
+  "the notice must name why the sibling went unjudged: [$UNFLOORED_NOTICE]"
+
 pass "confidence is judged per corpus against that corpus's own floor, the answer names which corpora cleared, and a corpus that stamped no score is named unjudged rather than measured"
 
 # --- 19. a read against a local index leaves a bounded, honest record --------
@@ -1990,12 +2098,32 @@ UNJUDGED_REC=$(jq -s '.[2]' "$INDEXED_HOME/state/recall.jsonl")
 [ "$(printf '%s' "$UNJUDGED_REC" | jq -r .no_confident_match)" = null ] \
   || fail "an unjudged read must not claim a verdict it was never given: $UNJUDGED_REC"
 
+# The other way a read goes unjudged records the same way: the rows carried a
+# rerank_score, but the brain applies no floor to measure them against, so the
+# trail must not remember a miss the caller was never told about.
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$INDEXED_HOME" FM_STUB_AUTOCUT=false FM_STUB_AUTOCUT_TOGGLE_PLANE=db \
+  bash "$CLI" search --json --scope local "a brain that turned autocut off" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "an unfloored read is still a read: $RECALL_OUT"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 4 ] \
+  || fail "an unfloored read must still be recorded: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+UNFLOORED_REC=$(jq -s '.[3]' "$INDEXED_HOME/state/recall.jsonl")
+[ "$(printf '%s' "$UNFLOORED_REC" | jq -r .disposition)" = unjudged ] \
+  || fail "a read against a brain applying no floor is unjudged, not a miss: $UNFLOORED_REC"
+[ "$(printf '%s' "$UNFLOORED_REC" | jq -r .no_confident_match)" = null ] \
+  || fail "an unfloored read must not record a verdict the caller never got: $UNFLOORED_REC"
+[ "$(printf '%s' "$UNFLOORED_REC" | jq -r '.rank1_rerank_score == 0.0004')" = true ] \
+  || fail "the score the rows did carry is still recorded: $UNFLOORED_REC"
+[ "$(printf '%s' "$UNFLOORED_REC" | jq -r '.corpus_tops[0].judged')" = false ] \
+  || fail "the per-corpus record must say the corpus was not judged: $UNFLOORED_REC"
+
 stub_fail 1 "No brain configured. Run: gbrain init"
 run_recall "$INDEXED_HOME" search --json --scope local teardown
 expect_code 3 "$RECALL_RC" "a failed read against an indexed home is still a retrieval failure"
-[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 4 ] \
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 5 ] \
   || fail "a failed read against an indexed home must still leave a record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
-FAIL_REC=$(jq -s '.[3]' "$INDEXED_HOME/state/recall.jsonl")
+FAIL_REC=$(jq -s '.[4]' "$INDEXED_HOME/state/recall.jsonl")
 [ "$(printf '%s' "$FAIL_REC" | jq -r .disposition)" = unread ] \
   || fail "a run that reached no corpus must be recorded as unread: $FAIL_REC"
 [ "$(printf '%s' "$FAIL_REC" | jq -r .answer_kind)" = null ] \
@@ -2022,7 +2150,7 @@ run_recall "$INDEXED_HOME" think --json "what is the tea-state filter"
 expect_code 0 "$RECALL_RC" "think against the indexed home must actually complete: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r .synthesis.state)" = ok ] \
   || fail "the think reply must be read as a real synthesis: $RECALL_OUT"
-[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 4 ] \
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 5 ] \
   || fail "think must not append a search-read record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 
 # The log is home-wide and nothing removes it, so the bound is the retention
