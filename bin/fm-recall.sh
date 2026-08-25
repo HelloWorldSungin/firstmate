@@ -132,7 +132,9 @@
 # disposition names which of four things happened - unread, unjudged, miss, or
 # hit - so a corpus that was never read can never serialize as a read that
 # returned an unjudgeable row. That is a local record of the read, never of what
-# the caller then decided, and nothing is sent anywhere. think never writes it.
+# the caller then decided, and nothing is sent anywhere. The query is recorded
+# as the text that was asked, so nothing leaves the host but the file does hold
+# this home's own private content until it is deleted. think never writes it.
 # The file is home-wide and size-capped rather than unbounded: the append and
 # the trim that follows it run under one advisory lock, bounded by the run's own
 # remaining budget, so concurrent searches cannot overwrite each other's newest

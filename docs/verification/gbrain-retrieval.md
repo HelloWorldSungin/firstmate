@@ -226,6 +226,12 @@ That lock is the directory `state/recall.jsonl.lock` beside the log, a stale hol
 Past the cap the oldest lines go and the newest tail stays, a record larger than the cap on its own is kept rather than dropped, and the file is always safe to delete or trim.
 The trim selects whole lines from the newest end until the cap is reached rather than cutting on a byte offset, because a record of this shape carries interior braces of its own and no leading-character test can tell a cut fragment from a whole line.
 
+`state/recall.jsonl` is a partial delivery of D2 in [`../adr/0001-brain-read-mount.md`](../adr/0001-brain-read-mount.md), which is still proposed and awaiting captain review, and it should be read as neither that trail nor as unrelated to it.
+It shares D2's append condition and D2's exclusion exactly: one append per `search` in a home whose local index directory is present, decided before the read rather than from its outcome, and `think` never appends.
+Of the six fields D2 names for the record - record id, timestamp, caller seam, query hash, exit state, result count - the `fm-recall-read.v1` line carries the timestamp, as `at`, and carries none of record id, caller seam, exit state, or result count, so it cannot name a read to a later record, measure adoption by seam, or count returned rows.
+The sixth diverges rather than being merely absent: the line carries `query` as the text that was asked, where D2 decides on a query hash and never query text, so free-text queries do land in a file on disk in this home and this file holds private home content until it is deleted.
+Everything else on the line - `disposition`, `answer_kind`, `rank1_corpus`, `rank1_rerank_score`, `corpus_tops`, `no_confident_match`, and `confident_corpora` - is this wrapper's own record of the miss verdict rather than a D2 field.
+
 ```sh
 bin/fm-test-run.sh tests/fm-recall.test.sh
 ```
