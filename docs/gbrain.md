@@ -86,8 +86,9 @@ Any `gbrain` command that opens the brain applies whatever migrations are pendin
    [`bin/fm-gbrain-pin-check.sh`](../bin/fm-gbrain-pin-check.sh) is the mechanical reader of both sides: it compares the recorded pin with what the installed executable reports and fails on drift, so a pin left behind by an upgrade is a finding rather than something a reviewer has to notice.
    Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
    Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
-2. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
+2. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 7.
    This is the first step that touches the brain, because [`bin/fm-gbrain-eval.sh`](../bin/fm-gbrain-eval.sh) reaches it through `gbrain call search` and migrates on connect exactly as `gbrain doctor --json` does.
+   Step 7 is the last rollback trigger, so a backup discarded after the step-6 smoke tests is one a failing gate can no longer restore.
 3. **Baseline.** Record an evaluation run on the current version, now that step 2 has a copy of the brain as it stood before this run could migrate it, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
    That reading is taken after the connect has already applied whatever was pending, so it is a post-migration reading that cannot detect a schema mismatch before the fact and does not deliver a pre-flight compatibility check.
@@ -172,7 +173,9 @@ An unreadable serving relationship, declared plane, runtime plane, or credential
 
 ### Announce a maintenance window
 
-The brain stops answering while upgrade steps 2, 3, 4, and 5 run, and the same is true of a reindex or an embedding migration below.
+The announced maintenance window spans upgrade steps 2 through 7, because the brain is under the operator's hands from the backup until the gate passes.
+The brain stops answering while upgrade steps 2, 4, and 5 run, which are the backup, the compatibility check, and the upgrade and migrate, and the same is true of a reindex or an embedding migration below.
+The step-3 baseline evaluation needs the brain to answer search queries, as the step-6 smoke tests and the step-7 gate do, and that traffic is the operator's own rather than a sign the window has ended.
 Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free text in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage, and unset it once the step-7 gate passes.
 `bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
 The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
