@@ -897,6 +897,7 @@ FM_GBRAIN_TIMEOUT=10    # seconds allowed per main-brain token mint, in either s
 FM_GBRAIN_MAINTENANCE_STATE=   # optional operator announcement fm-gbrain-health.sh surfaces on the dashboard GBrain panel: ready | upgrading | reindexing; see docs/gbrain.md "Announce a maintenance window"
 FM_GBRAIN_MAINTENANCE_DETAIL=   # optional free text shown with that announcement, e.g. the release being installed
 FM_RECALL_TIMEOUT=      # optional seconds per fm-recall.sh retrieval call, overriding its per-command defaults (search 60, think 300); search sizes its result-provenance pass from the same value, once per corpus it reads
+FM_RECALL_JSONL_MAX_BYTES=262144   # size cap for the home-wide fm-recall.sh search-read log at state/recall.jsonl; past the cap the oldest lines are dropped and the newest tail is kept
 FM_TOOL_UPDATE_INTERVAL=900   # seconds between watched-tool probe sweeps; 0 probes on every run, other values must be 60..86400
 FM_TOOL_UPDATE_PROBE_SECS=5   # 1..30 seconds allowed for one version or git probe
 FM_TOOL_UPDATE_BUDGET_SECS=20   # 1..120 seconds allowed for a whole watched-tool sweep; cut to fit FM_CHECK_TIMEOUT, and the cut is reported
