@@ -951,7 +951,7 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
     def where($source):
       if $source == "db-config" then "the brain database plane"
       elif $source == "pinned-default" then "the pinned GBrain default this brain has not overridden"
-      else "the pinned GBrain default, this brain having gone unread" end;
+      else "the pinned GBrain default, standing in for a floor this command could not read from that brain" end;
     def floor_for($corpus):
       ([$floor_input[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
       // $default_floor;
@@ -1064,8 +1064,8 @@ recall_floor_read_slice() {  # -> seconds this run may spend, or non-zero
 # accurate. A brain that could not be asked - the budget did not fit, the read
 # was killed, the index lock was held, the binary is missing - applies whatever
 # it applies, and this command does not know. The first is `pinned-default`; the
-# second is `unconfirmed-default`, and the notice renders it as a floor this
-# command could not confirm rather than as a setting the brain does not have.
+# second is `unconfirmed-default`, and the notice attributes that gap to the
+# read this command could not complete rather than to the brain it searched.
 RECALL_LOCAL_FLOOR=""
 RECALL_LOCAL_FLOOR_SOURCE=unconfirmed-default
 RECALL_LOCAL_FLOOR_READ=0

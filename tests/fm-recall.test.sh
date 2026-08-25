@@ -1646,8 +1646,8 @@ run_recall "$MAIN_HOME" search --json --scope local "a brain that left its floor
   || fail "a brain with no stored knob is judged against the pinned default: $RECALL_OUT"
 assert_contains "$RECALL_OUT" "has not overridden" \
   "an answered read must not read like a read that never happened: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice | contains("gone unread")')" = false ] \
-  || fail "a brain that answered was not left unread: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice | contains("could not read from that brain")')" = false ] \
+  || fail "a brain that answered its knob was read, not merely attempted: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
   || fail "0.40 clears the pinned default of 0.35: $RECALL_OUT"
 
@@ -1697,8 +1697,8 @@ expect_code 0 "$RECALL_RC" "a budgeted two-leg search must answer inside its own
   || fail "the structured per-source document must survive the run: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = unconfirmed-default ] \
   || fail "a knob read that could not finish must not claim the brain has no value: $RECALL_OUT"
-assert_contains "$RECALL_OUT" "having gone unread" \
-  "a floor the brain was never asked for must read as unconfirmed: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "could not read from that brain" \
+  "an unfinished floor read must be blamed on the read, not on the brain: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice | contains("has not overridden")')" = false ] \
   || fail "a killed read cannot claim the brain stored nothing: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
@@ -1707,9 +1707,12 @@ assert_contains "$RECALL_OUT" "having gone unread" \
 # The same run with a brain that answers its knob promptly still finishes inside
 # the same ceiling and uses the value the database plane reported, so the case
 # above is the budget doing its job rather than the read never being attempted.
+# The main leg spends one second less than its own share here, because the slice
+# gate compares whole SECONDS ticks and a leg that spends its entire share would
+# leave the assertion riding on which side of a tick the run happened to start.
 stub_reply "$SEARCH_MISS"
 RECALL_RC=0
-RECALL_OUT=$(FM_HOME="$FLOOR_HANG_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=4 \
+RECALL_OUT=$(FM_HOME="$FLOOR_HANG_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=3 \
   FM_STUB_AUTOCUT_MIN_TOP=0.50 FM_STUB_AUTOCUT_PLANE=db \
   fm_run_timed 8 bash "$CLI" search --json --scope all --timeout 3 "a prompt knob read" 2>&1) \
   || RECALL_RC=$?
@@ -1792,6 +1795,12 @@ assert_contains "$CROSS_NOTICE" "Judged and short of its own floor: local" \
   || fail "both corpora that were read must disclose their floor: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].source')" = unconfirmed-default ] \
   || fail "the main brain has no database plane this host can query and must say so: $RECALL_OUT"
+# The same sentence names main as the corpus holding the confident match, so it
+# cannot also say main went unread; the floor is what could not be read.
+assert_contains "$CROSS_NOTICE" "could not read from that brain" \
+  "the unreadable floor plane must be disclosed as such: [$CROSS_NOTICE]"
+[ "$(printf '%s' "$CROSS_NOTICE" | grep -c 'unread')" -eq 0 ] \
+  || fail "a corpus that answered and was judged was not left unread: [$CROSS_NOTICE]"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].autocut_min_top == 0.35')" = true ] \
   || fail "the fleet corpus must be judged against the pinned default, not a borrowed local value: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(.corpus == "main")][0].top_rerank_score == 0.978')" = true ] \

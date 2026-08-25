@@ -202,9 +202,9 @@ That read is an engine connect, so it is fenced three ways: it is taken lazily a
 Anything short of a database answer inside that slice is the pinned default, and which of two facts that is gets disclosed rather than blurred.
 A brain that answered and holds no usable value of its own really does apply the pinned default, and that reads as `pinned-default`.
 A brain that could not be asked - the budget did not fit, the read was killed, the index lock was held, the binary is missing - applies whatever it applies, and that reads as `unconfirmed-default` instead, because this host does not know.
-The main brain has no database plane this host can query at all, so its floor is always `unconfirmed-default`.
+The notice attributes that gap to the read rather than to the brain, because a corpus only carries a floor at all when it returned rows and was judged, so the brain was searched and it is the floor plane that went unread.
+The main brain is read over MCP and has no database plane this host can query at all, so its floor is always `unconfirmed-default` rather than this home's value borrowed across.
 A value GBrain would itself refuse falls through to the bundle default inside GBrain too, so an out-of-range database answer is a confirmed `pinned-default` rather than an unknown one.
-The main brain is read over MCP and has no database plane this host can query at all, so it is judged against the pinned default and says so rather than borrowing this home's value.
 
 `bin/fm-recall.sh` judges confidence per corpus rather than from the head of the merged list.
 Each corpus's own pool of returned rows is judged against that corpus's own floor, which is the quantity GBrain applies the knob to, and a corpus clears when its own top `rerank_score` is a number that is not below its floor.
