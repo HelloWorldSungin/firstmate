@@ -78,6 +78,7 @@ config/secondmate-harness  harness, optional model, and effort the primary uses 
 config/backlog-backend  backlog backend override; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Backlog backend"; section 10)
 config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Runtime backend")
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited (docs/configuration.md "Pi Calm preference")
+config/pi-supervision-branch  Pi-only explicit project autonomy grants for the in-process supervision branch on a Pi primary; LOCAL, gitignored, and not inherited (docs/configuration.md "Pi supervision branch"; docs/pi-supervision-branch.md)
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Startup memory budget")
 config/stow-pass-horizon  optional presence flag opting this home in to /stow's default-off pass-count decay horizon; LOCAL, gitignored, and not inherited; see docs/configuration.md "Stow pass horizon"
 config/herdr-presentation-spaces  Herdr visual-projection opt-out or opt-in; LOCAL, gitignored; inherited by secondmate homes (docs/herdr-backend.md "Presentation spaces")
@@ -118,6 +119,7 @@ state/               runtime records and signals; gitignored
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
+  <id>.inbox/       durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, re-rung and escalated by the watcher, removed by teardown (bin/fm-task-inbox-lib.sh)
   <id>.meta          task metadata written by fm-spawn; bin/fm-spawn.sh's header owns its base fields, docs/configuration.md "Runtime backend" owns backend-specific fields, and fm-promote, bin/fm-run-attribution-legacy-transition.sh, fm-pr-check, fm-pr-merge, and fm-x-link own the fields they add (sections 7 and 14)
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority (docs/herdr-backend.md "Presentation spaces")
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution (section 7; bin/fm-watch.sh)
@@ -125,6 +127,9 @@ state/               runtime records and signals; gitignored
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record for the static poll publication (bin/fm-pr-lib.sh)
   <id>.pr-poll-retirement  private crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire (bin/fm-pr-lib.sh)
+  branch-outcomes.jsonl .branch-outcomes-cursor  Pi supervision-branch durable outcome store and its read cursor; bin/fm-branch-outcome.sh owns the format
+  branch-session/ .branch-session .branch-mirror-cursor  the branch's persistent conversation, its pointer, and the dialog-mirror cursor; extension-owned (docs/pi-supervision-branch.md)
+  .lease-<task>      per-task supervision lease naming which actor (main or branch) may change that task; bin/fm-lease-lib.sh owns the contract the guarded scripts enforce
   .pr-check-quarantine/  private non-runnable storage for checks neutralized by the non-executing migration
   .pr-check-migration.log .pr-check-migration-scan-v1 .pr-check-migration-v1  private legacy-check migration outcomes and completion markers (bin/fm-pr-check-migrate.sh)
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
@@ -324,7 +329,8 @@ The spawn must resolve a genuine isolated task worktree distinct from the primar
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship, design, or scout work as under way.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
-Steer a worker with short single-line messages through fail-closed `fm-send`; put long instructions in a file.
+Steer a worker with ordinary text through fail-closed `fm-send`: the message becomes a durable record in the task's steering inbox (multi-line text is legal, local and remote alike) and the worker's terminal receives only a constant doorbell line, with the watcher re-ringing an unacknowledged local message and escalating a stuck one (`bin/fm-task-inbox-lib.sh`; `bin/fm-send.sh` owns the typed-plane carve-outs).
+A remote secondmate steer rides the same durable-inbox model through the remote transport; after an unconfirmed delivery, only the exact `FM_PENDING_REPLY_EXISTING_CORR=<id>` resend command printed by `fm-send` is safe because it preserves the request body for remote enqueue deduplication (`bin/fm-send.sh` header).
 When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--resolve-key` so the answer itself closes that decision record at answer time, identically for local and remote workers (contract: `bin/fm-send.sh` header).
 `fm-send` is the data plane for text the worker should read; never use its key or text paths for interrupt, exit, or other lifecycle control, because routing-marked lifecycle text becomes chat the worker reasons about instead of executing.
 Drive a worker's lifecycle through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](docs/agent-control.md)).
