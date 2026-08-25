@@ -71,20 +71,35 @@
 # printed score explains one corpus's row and never orders across corpora.
 # The printed score is also not that ranking within one corpus: rerank reorders
 # rows while leaving the pre-rerank blend in .score, so rank 1 may show a lower
-# number than rank 2. Order is the verdict; the number is a blend for that row.
+# number than rank 2. Order is the verdict; .score is a blend for that row.
+# Each row also carries rerank_score, cosine, evidence, and create_safety when
+# GBrain supplied them. rerank_score is the confidence signal; .score is not.
+# create_safety is surfaced and is never the miss bit.
 #
 # Answer protocol. A corpus that was read always answers, and the engine
 # essentially always returns rows, including for queries whose topic is absent.
-# There is no calibrated score threshold that separates a hit from nonsense, so
-# this command never invents one. When a corpus answered, the document carries
-# an `answer` object that says what the rows are:
+# A non-empty list is therefore not a find. Rank-1 rerank_score is judged
+# against GBrain's search.autocut_min_top, the weak-top floor GBrain already
+# defines (module default 0.35); this command does not invent a different
+# threshold. When a corpus answered, the document carries an `answer` object
+# that says what the rows are:
 #   nearest  rows are the nearest indexed pages, not answers. A listed page may
 #            be unrelated to the query. Absence of a match is not absence of
-#            the queried thing.
+#            the queried thing. When rank-1 rerank_score is below
+#            search.autocut_min_top, no_confident_match is true and the notice
+#            says so plainly. When rerank_score is missing, the rows stay
+#            nearest and are not judged a miss.
 #   none     the corpus was read and returned no rows. That is absence of an
 #            indexed match, never evidence that the queried thing is absent.
 # `answer` is omitted when no corpus was read, so a retrieval failure cannot be
 # rendered as "not found".
+#
+# A search in a home whose local index directory exists appends one JSON line
+# to state/recall.jsonl recording the query, the rank-1 rerank_score, and
+# whether the caller was told there was no confident match. That is a local
+# record of the read, never of what the caller then decided, and nothing is
+# sent anywhere. think never writes it. A home with no local index writes
+# nothing, so a fleet that has not adopted a brain keeps today's path.
 # Each local result also carries provenance from this home's capture outbox and
 # the live source that outbox was composed from, when those records exist:
 #   captured_at        when the outbox revision was marked captured, or null
@@ -167,6 +182,9 @@ LIMIT_MAX=50
 EXCERPT_MAX=4000
 ANSWER_MAX_CEILING=100000
 TIMEOUT_MAX=3600
+# GBrain's search.autocut_min_top module default (DEFAULT_AUTOCUT.minTopScore).
+# Reused as the weak-top floor; do not replace with a Firstmate-invented value.
+AUTOCUT_MIN_TOP=0.35
 
 usage() { awk 'NR == 1 {next} !/^#/ {exit} {sub(/^# ?/, ""); print}' "${BASH_SOURCE[0]}"; }
 
@@ -492,6 +510,10 @@ shape_results() {  # <source> <results-json> <excerpt-chars>
         slug: text(.slug),
         title: text(.title),
         score: (if (.score | type) == "number" then .score else null end),
+        rerank_score: (if (.rerank_score | type) == "number" then .rerank_score else null end),
+        cosine: (if (.cosine | type) == "number" then .cosine else null end),
+        evidence: (if .evidence == null then null else text(.evidence) end),
+        create_safety: (if .create_safety == null then null else text(.create_safety) end),
         stale: (.stale == true),
         excerpt: capped(.chunk_text; $cap)
       } ]
@@ -503,7 +525,8 @@ EOF
 # Provenance is judged from this home's capture outbox and the live source that
 # outbox was composed from. It is presentation: it never changes result order,
 # never drops a row, and never rewrites an excerpt from the live file.
-ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; the printed score is a pre-rerank blend and does not order this list. Where a live source disagrees with a page, the live source wins.'
+ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; score is a pre-rerank blend; rerank_score is the confidence signal. Where a live source disagrees with a page, the live source wins.'
+ANSWER_WEAK_NOTICE='No confident match. Rank-1 rerank_score is below search.autocut_min_top (0.35). These are still the nearest indexed pages, not answers. A listed page may be unrelated to the query. No confident match is not evidence that the queried thing is absent. Where a live source disagrees with a page, the live source wins.'
 ANSWER_NONE_NOTICE='No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.'
 
 recall_stat_mtime() {  # <path> -> epoch seconds, or empty
@@ -809,6 +832,56 @@ source_row() {  # <source> <state> <brain> <count> [detail]
   '
 }
 
+# Rank-1 rerank_score is judged against GBrain's search.autocut_min_top. A
+# missing rerank_score is not a miss: this command does not invent a signal
+# GBrain did not stamp. create_safety is not consulted.
+search_answer_json() {  # <results-json> -> answer object
+  jq -c --argjson floor "$AUTOCUT_MIN_TOP" \
+    --arg nearest "$ANSWER_NEAREST_NOTICE" \
+    --arg weak "$ANSWER_WEAK_NOTICE" \
+    --arg none "$ANSWER_NONE_NOTICE" '
+    if length == 0 then
+      {kind: "none", notice: $none, no_confident_match: true}
+    else
+      (.[0].rerank_score) as $r
+      | if ($r | type) == "number" and $r < $floor then
+          {kind: "nearest", notice: $weak, no_confident_match: true}
+        elif ($r | type) == "number" then
+          {kind: "nearest", notice: $nearest, no_confident_match: false}
+        else
+          {kind: "nearest", notice: $nearest}
+        end
+    end
+  ' <<EOF
+$1
+EOF
+}
+
+# Presence-gated on the local index directory, the same predicate the brief
+# scaffold uses. A write failure never fails the search it records.
+append_recall_read_record() {  # <doc-json>
+  [ -n "${HOME_PATH:-}" ] || return 0
+  [ -n "${FM_GBRAIN_PGLITE:-}" ] && [ -d "$FM_GBRAIN_PGLITE" ] || return 0
+  local dir="$HOME_PATH/state" line
+  mkdir -p "$dir" 2>/dev/null || return 0
+  line=$(printf '%s' "$1" | jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    {
+      schema: "fm-recall-read.v1",
+      at: $at,
+      query: .query,
+      rank1_rerank_score: (
+        if ((.results[0].rerank_score // null) | type) == "number"
+        then .results[0].rerank_score
+        else null end
+      ),
+      no_confident_match: (.answer.no_confident_match == true)
+    }
+  ' 2>/dev/null) || return 0
+  [ -n "$line" ] || return 0
+  printf '%s\n' "$line" >> "$dir/recall.jsonl" 2>/dev/null || return 0
+  return 0
+}
+
 # --- search -----------------------------------------------------------------
 
 cmd_search() {
@@ -911,24 +984,18 @@ cmd_search() {
     fi
   fi
 
-  local sources doc answer_kind="" answer_notice=""
+  local sources doc answer_json="null"
   results=$(annotate_search_results "$results" "$HOME_PATH")
+  results=$(printf '%s' "$results" | jq -c "$JQ_MERGE_BY_RANK"'. | merge_by_rank')
   if [ "$answered" -eq 1 ]; then
-    if [ "$(printf '%s' "$results" | jq 'length')" -eq 0 ]; then
-      answer_kind=none
-      answer_notice=$ANSWER_NONE_NOTICE
-    else
-      answer_kind=nearest
-      answer_notice=$ANSWER_NEAREST_NOTICE
-    fi
+    answer_json=$(search_answer_json "$results")
   fi
   sources=$(printf '%s\n' ${rows[@]+"${rows[@]}"} | jq -c -s 'map(select(. != null))')
   doc=$(jq -c -n --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$query" \
-    --arg akind "$answer_kind" --arg anote "$answer_notice" \
-    --argjson src "$sources" --argjson res "$results" "$JQ_MERGE_BY_RANK"'
+    --argjson src "$sources" --argjson res "$results" --argjson ans "$answer_json" '
     {schema: $s, command: "search", home: $h, query: $q, sources: $src,
-     results: ($res | merge_by_rank)}
-    + (if $akind == "" then {} else {answer: {kind: $akind, notice: $anote}} end)')
+     results: $res}
+    + (if $ans == null then {} else {answer: $ans} end)')
 
   if [ "$JSON_MODE" -eq 1 ]; then
     printf '%s\n' "$doc" | jq '.'
@@ -940,9 +1007,11 @@ cmd_search() {
       (if (.answer | not) then "not searched: no corpus could be read - this says nothing about whether it exists"
        elif (.results | length) == 0 then "no match in this brain - the brain may simply not hold it"
        else (.results[]
-             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
+             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .rerank_score != null then "  rerank=" + (.rerank_score | tostring) else "" end)\(if .cosine != null then "  cosine=" + (.cosine | tostring) else "" end)\(if .evidence then "  evidence=" + .evidence else "" end)\(if .create_safety then "  create_safety=" + .create_safety else "" end)\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
        end)'
   fi
+
+  append_recall_read_record "$doc"
 
   # No corpus answered, so an empty result list here would be the one lie this
   # command must never tell: "nothing was found" reads the same as "nothing

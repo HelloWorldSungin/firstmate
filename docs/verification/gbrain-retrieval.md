@@ -136,7 +136,7 @@ Counts vary run to run, 7 to 27 observed, but were never zero for a search that 
 
 Two suites rebuild the wrapper's claims, and neither asserts anything about the wrapper's source:
 
-- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, and the caps.
+- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, the caps, the rank-1 rerank miss verdict, and the presence-gated read record.
 - `tests/fm-gbrain-readonly-e2e.test.sh` is the live proof and drives the wrapper against two real brains and the real read-only share:
 
 ```sh
@@ -146,3 +146,17 @@ FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=<path-to-gbrain> bin/fm-test-run.sh tests/fm-
 Re-run both after any GBrain upgrade.
 The index-write measurement has no suite behind it: redo it by hand as described there, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
 The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.
+
+## Rank-1 `rerank_score` is the miss signal the wrapper used to drop
+
+Verified 2026-08-25 against the portable suite `tests/fm-recall.test.sh`.
+Live corpus measurements that show why the printed blend cannot answer the miss question, and why `search.autocut_min_top` (0.35) is the floor this wrapper reuses rather than a Firstmate-invented threshold, remain in [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20) and are not restated here.
+
+GBrain already returns `rerank_score`, `cosine`, `evidence`, and `create_safety` on every search row.
+`bin/fm-recall.sh` now copies those fields onto the `fm-recall.v1` document, judges rank-1 `rerank_score` against GBrain's `search.autocut_min_top`, and says `No confident match` when the top rerank is below that floor.
+`create_safety` is printed and is not the miss bit.
+A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search, carrying the query, the rank-1 rerank score, and whether that miss verdict was given; a home with no local index writes nothing.
+
+```sh
+bin/fm-test-run.sh tests/fm-recall.test.sh
+```

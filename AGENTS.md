@@ -115,6 +115,7 @@ state/               runtime records and signals; gitignored
   <id>.kimi-turnend-token   firstmate-owned Kimi hook registry token for the task; removed by teardown
   <id>.pr-status     cached normalized PR observation, refreshed only by bin/fm-pr-status.sh so read-only consumers never call a forge; removed by teardown
   <id>.gbrain        GBrain capture receipt written by bin/fm-gbrain-capture.sh; absent means the home has no brain, never an error; removed by teardown
+  recall.jsonl       append-only local record of each fm-recall.sh search read; owned by bin/fm-recall.sh; presence-gated on a local index; never sent anywhere
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown

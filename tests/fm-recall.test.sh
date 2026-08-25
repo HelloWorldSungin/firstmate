@@ -774,10 +774,11 @@ pass "a search that never started, one that was refused, and one that found noth
 
 # --- 11. the answer protocol: nearest pages, provenance, live source wins ----
 #
-# The engine returns rows for queries whose topic is absent, and the score
-# cannot separate a hit from nonsense, so a threshold would lie. Rows are
-# presented as nearest pages, never as answers, and a miss is absence of a
-# match rather than absence of the thing. A served page carries its capture
+# The engine returns rows for queries whose topic is absent. The printed blend
+# score cannot separate a hit from nonsense; rank-1 rerank_score is the signal
+# that can, and it is judged in the section that follows this provenance block.
+# Rows are presented as nearest pages, never as answers, and a miss is absence
+# of a match rather than absence of the thing. A served page carries its capture
 # date and the live source's state, so a voided or superseded finding cannot
 # be read as current. Where the live source disagrees, that disagreement is
 # named and the live source wins; the page is not dropped or rewritten.
@@ -1401,5 +1402,135 @@ expect_code 3 "$RECALL_RC" "a non-integer retrieval budget must stay a named ret
 assert_not_contains "$RECALL_OUT" "value too great for base" \
   "a bad budget must not surface as a raw shell arithmetic error"
 pass "a retrieval budget that is not a positive integer keeps the documented exit contract"
+
+# --- 16. rerank_score is the miss signal, and a read leaves a local record ---
+#
+# GBrain already stamps rerank_score, cosine, evidence, and create_safety.
+# The wrapper used to drop them and print the pre-rerank blend, which cannot
+# separate a hit from nonsense. Rank-1 rerank_score is judged against GBrain's
+# search.autocut_min_top (0.35). create_safety is printed and is not the miss
+# bit: under this embedding its labels point the wrong way.
+#
+# The audit trail is presence-gated on the local index directory. A home with
+# no brain keeps today's path: no new file, same stdout and exit.
+
+assert_absent "$MAIN_HOME/state/recall.jsonl" \
+  "a home with no local index must not grow a recall record"
+
+SEARCH_MISS='[{"slug":"unrelated-page","title":"Unrelated","chunk_text":"a nearest page that is not the queried thing.","score":0.78,"rerank_score":0.0004,"cosine":0.22,"evidence":"keyword_exact","create_safety":"probable","stale":false}]'
+SEARCH_HIT_RERANK='[{"slug":"tea-state-filter-trap","title":"Tea-state filter","chunk_text":"The tea-state filter trap.","score":0.41,"rerank_score":0.978,"cosine":0.52,"evidence":"weak_semantic","create_safety":"unknown","stale":false}]'
+SEARCH_FLOOR='[{"slug":"at-floor","title":"At floor","chunk_text":"exactly the weak-top floor.","score":0.5,"rerank_score":0.35,"cosine":0.4,"evidence":"weak_semantic","create_safety":"unknown","stale":false}]'
+
+stub_reply "$SEARCH_MISS"
+run_recall "$MAIN_HOME" search --json --scope local "trombone slide for baroque A=415"
+expect_code 0 "$RECALL_RC" "a weak-top list is still a successful read: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].rerank_score == 0.0004')" = true ] \
+  || fail "rerank_score must be copied onto the result: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].cosine == 0.22')" = true ] \
+  || fail "cosine must be copied onto the result: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].evidence')" = keyword_exact ] \
+  || fail "evidence must be copied onto the result: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].create_safety')" = probable ] \
+  || fail "create_safety must be copied onto the result: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
+  || fail "a weak-top list is still nearest pages: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
+  || fail "rank-1 rerank_score below search.autocut_min_top must be a miss: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "No confident match" \
+  "the miss must be named plainly"
+assert_not_contains "$RECALL_OUT" "does not exist" \
+  "a miss must not be readable as absence of the queried thing"
+assert_absent "$MAIN_HOME/state/recall.jsonl" \
+  "create_safety=probable must not write a record in a home with no index"
+
+run_recall_split "$MAIN_HOME" search --scope local "trombone slide for baroque A=415"
+assert_contains "$RECALL_STDOUT" "No confident match" \
+  "human output must say there is no confident match: [$RECALL_STDOUT]"
+assert_contains "$RECALL_STDOUT" "rerank=0.0004" \
+  "human output must print the rerank score: [$RECALL_STDOUT]"
+assert_contains "$RECALL_STDOUT" "create_safety=probable" \
+  "human output must surface create_safety without acting on it: [$RECALL_STDOUT]"
+
+stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$MAIN_HOME" search --json --scope local "why does a small candle store produce nearly a terabyte"
+expect_code 0 "$RECALL_RC" "a confident hit should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results[0].rerank_score == 0.978')" = true ] \
+  || fail "a hit must keep its rerank_score: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
+  || fail "a confident hit is still nearest pages: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "rank-1 rerank_score at 0.978 must not be a miss: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "No confident match" \
+  "a confident hit must not be framed as a miss"
+
+stub_reply "$SEARCH_FLOOR"
+run_recall "$MAIN_HOME" search --json --scope local "exactly the weak-top floor"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "rerank_score equal to search.autocut_min_top is not below the floor: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "No confident match" \
+  "the floor itself is not a miss"
+
+stub_reply "$SEARCH_HIT"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
+  || fail "a row with no rerank_score stays nearest pages: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r 'has("answer") and (.answer | has("no_confident_match"))')" = false ] \
+  || fail "a missing rerank_score must not be judged a miss or a hit: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "No confident match" \
+  "absence of rerank_score is not a miss"
+
+INDEXED_HOME=$(make_home "$TMP_ROOT/indexed")
+mkdir -p "$INDEXED_HOME/data/gbrain/pglite" "$INDEXED_HOME/state"
+
+stub_reply "$SEARCH_MISS"
+run_recall "$INDEXED_HOME" search --json --scope local "trombone slide for baroque A=415"
+expect_code 0 "$RECALL_RC" "a miss against an indexed home should answer"
+assert_present "$INDEXED_HOME/state/recall.jsonl" \
+  "a read against a local index must leave a durable record"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 1 ] \
+  || fail "one search must append one record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .schema "$INDEXED_HOME/state/recall.jsonl")" = fm-recall-read.v1 ] \
+  || fail "the record must carry its schema: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .query "$INDEXED_HOME/state/recall.jsonl")" = "trombone slide for baroque A=415" ] \
+  || fail "the record must carry the query: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r '.rank1_rerank_score == 0.0004' "$INDEXED_HOME/state/recall.jsonl")" = true ] \
+  || fail "the record must carry rank-1 rerank_score: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .no_confident_match "$INDEXED_HOME/state/recall.jsonl")" = true ] \
+  || fail "the record must say the caller was told there was no confident match: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+
+stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$INDEXED_HOME" search --json --scope local "why does a small candle store produce nearly a terabyte"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 2 ] \
+  || fail "a second search must append a second record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+HIT_REC=$(jq -s '.[1]' "$INDEXED_HOME/state/recall.jsonl")
+[ "$(printf '%s' "$HIT_REC" | jq -r .query)" = "why does a small candle store produce nearly a terabyte" ] \
+  || fail "the hit record must carry its own query: $HIT_REC"
+[ "$(printf '%s' "$HIT_REC" | jq -r '.rank1_rerank_score == 0.978')" = true ] \
+  || fail "the hit record must carry rank-1 rerank_score: $HIT_REC"
+[ "$(printf '%s' "$HIT_REC" | jq -r .no_confident_match)" = false ] \
+  || fail "a confident hit must not be recorded as a miss: $HIT_REC"
+
+stub_fail 1 "No brain configured. Run: gbrain init"
+run_recall "$INDEXED_HOME" search --json --scope local teardown
+expect_code 3 "$RECALL_RC" "a failed read against an indexed home is still a retrieval failure"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 3 ] \
+  || fail "a failed read against an indexed home must still leave a record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+FAIL_REC=$(jq -s '.[2]' "$INDEXED_HOME/state/recall.jsonl")
+[ "$(printf '%s' "$FAIL_REC" | jq -r .no_confident_match)" = false ] \
+  || fail "a retrieval failure must not be recorded as a no-confident-match verdict: $FAIL_REC"
+[ "$(printf '%s' "$FAIL_REC" | jq -r .rank1_rerank_score)" = null ] \
+  || fail "a retrieval failure has no rank-1 rerank_score: $FAIL_REC"
+
+stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$INDEXED_HOME" think --json "what is the tea-state filter"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 3 ] \
+  || fail "think must not append a search-read record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+
+stub_fail 1 "No brain configured. Run: gbrain init"
+run_recall "$MAIN_HOME" search --json --scope local teardown
+expect_code 3 "$RECALL_RC" "a home with no index still fails retrieval the way it always did"
+assert_absent "$MAIN_HOME/state/recall.jsonl" \
+  "a home with no local index must still write no recall record after a failed read"
+pass "rerank_score names a miss against search.autocut_min_top, create_safety is not the miss bit, and a local index leaves a read record"
 
 echo "all fm-recall tests passed"
