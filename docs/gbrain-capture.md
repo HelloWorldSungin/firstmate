@@ -100,6 +100,16 @@ Backfill writes each task's `state/<id>.gbrain` receipt but never republishes a 
 
 Run a backfill once after adopting a brain, and after a long outage.
 
+The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
+It is read once more at query time: [`bin/fm-recall.sh`](../bin/fm-recall.sh) judges whether a page it is about to serve still matches the live source it was composed from, using that record's stored body and capture time, so a body truncated at the cap or rewritten by redaction leaves the comparison with no evidence rather than with agreement.
+`bin/fm-recall.sh --help` owns that comparison and the page states it produces.
+
+## Recovering from a damaged record
+
+An outbox record is written atomically, so a crash leaves the previous complete record or none.
+A record that is nevertheless unreadable - hand-edited, or damaged on disk - is reported as `unreadable` by `status` and named by `process`; it is never treated as delivered and never delivered blind.
+Recapturing the task recomposes the record from the durable manifest and report and repairs it.
+
 ## A page goes stale when its source is edited, so the refresh is on a clock
 
 Capture fires at cleanup.
@@ -135,13 +145,3 @@ A home where the audit has never run reports that it has never run, rather than 
 
 A gap is not automatically a fault: a page deleted deliberately shows up here too.
 Recapture the document with `backfill` if it should still be served, or restore it in GBrain if it was deleted by mistake.
-
-The outbox is also what a capture-fed home rebuilds its index FROM, because such a home has no markdown archive to import; [`gbrain.md`](gbrain.md) owns that rebuild and the migration procedure that depends on it.
-It is read once more at query time: [`bin/fm-recall.sh`](../bin/fm-recall.sh) judges whether a page it is about to serve still matches the live source it was composed from, using that record's stored body and capture time, so a body truncated at the cap or rewritten by redaction leaves the comparison with no evidence rather than with agreement.
-`bin/fm-recall.sh --help` owns that comparison and the page states it produces.
-
-## Recovering from a damaged record
-
-An outbox record is written atomically, so a crash leaves the previous complete record or none.
-A record that is nevertheless unreadable - hand-edited, or damaged on disk - is reported as `unreadable` by `status` and named by `process`; it is never treated as delivered and never delivered blind.
-Recapturing the task recomposes the record from the durable manifest and report and repairs it.
