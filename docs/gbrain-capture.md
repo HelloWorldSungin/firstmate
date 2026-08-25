@@ -152,9 +152,16 @@ Measured on this fleet, capture reported 291 archived while the index served 288
   A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
   The verdict is decided from whether the listing command succeeded, never from whether it happened to explain itself, so a listing that dies without a message is inconclusive rather than a gap naming every captured document.
 
-A listing is the only thing that can say a page is absent, and absence from a listing is what EVERY way a listing can fail looks like, so the listing only proposes candidates and a direct read decides.
-Each candidate is asked for by slug with `gbrain get`, and it is reported missing only when that read fails the same way this brain fails for a slug the home never captured - a signature the audit learns by asking for one.
-A candidate the listing dropped but the brain still returns names the listing untrustworthy rather than the page gone, and a read that could not answer either way reaches no verdict at all.
+A listing is the only thing that can say a page is absent, and absence from a listing is what EVERY way a listing can fail looks like, so the listing only proposes candidates and a pair of direct reads decides.
+GBrain answers every failure with the same status - a page that is not there, a brain that is not there, an index that will not open - so a failing read carries no information about which of those happened, and the verdict rests on a read that SUCCEEDS:
+
+1. `gbrain get <slug>`, and a page that comes back is served by ordinary retrieval, so the listing that proposed it as a candidate was wrong.
+2. Otherwise `gbrain get <slug> --include-deleted`, and a page that comes back there is in the store and hidden from ordinary retrieval, which is positive proof of exactly the soft-delete this audit exists to find.
+   An unavailable brain cannot produce that answer, because it fails both reads.
+3. Neither read answered, which is either a page purged outright or an index that could not answer, and nothing here distinguishes them, so that candidate reaches no verdict.
+
+A page purged rather than soft-deleted is therefore reported as inconclusive rather than as a gap.
+That is deliberate: GBrain soft-deletes, which is the population this audit was built for and measured against, and a purge is an operator act on a page the outbox can still recapture.
 `FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES` (default 25) bounds that verification: a candidate set larger than it is better evidence that the listing is wrong than that the pages are gone, so it is reported inconclusive rather than verified one read at a time.
 
 Every direction the listing can fail, and what each does:
@@ -170,12 +177,11 @@ Every direction the listing can fail, and what each does:
 | its columns move, so no row's first field is a slug | inconclusive - same path |
 | it silently caps below the requested limit | inconclusive - the pages it dropped are still served |
 | a shared brain returns only other homes' rows | inconclusive - same, and the prefix already scopes the comparison |
-| the direct reads themselves fail | inconclusive - a page the listing does name is read back first, and a brain that cannot return that one is not trusted to say any page is gone |
-| a complete listing and a genuinely deleted page | `gap`, which is the finding the audit exists for |
+| the direct reads themselves fail | inconclusive - a gap needs a read that succeeded under `--include-deleted`, and a brain that cannot answer fails both reads |
+| a complete listing and a genuinely soft-deleted page | `gap`, which is the finding the audit exists for |
 
-One direction stays narrowly open rather than being hidden.
-When the listing names no page at all there is no served page to read back, so the absence signature is the only evidence available, and a brain that failed every read that same way would report a gap.
-An oversized candidate set is refused rather than verified, which bounds that to a home whose whole corpus is small enough to have been lost.
+No direction reports a gap on evidence it does not have.
+The cost of that is the purged-page case above, which is named rather than hidden: a page that no longer exists at all reaches no verdict, because from here it is indistinguishable from an index that could not answer.
 
 Every count in the verdict says how far it can be trusted, and `bounds` in the record carries that for each one:
 
@@ -196,12 +202,17 @@ Only a verdict earns the card's green dot, because green is the positive claim t
 - `gap` and a failed delivery are proven faults, so the card reads `degraded` in red.
 - `inconclusive` reads `unverified` on the hollow ring, because an audit that could not compare the two sides must never be shown as a clean bill - that is the same complacency the fail-closed rule above exists to prevent.
   An outbox record that could not be read at all reads `unreadable` on the same ring, for the same reason and with the count beside the archived, pending and failed ones.
+  A verdict record that cannot be parsed, or that carries a schema this reader does not recognize, reads `unreadable` there too: an audit ran and nobody can read what it decided, which is a could-not-read rather than a home nobody has checked.
 - `unknown` reads `unaudited` in blue, which is the panel's tone for a card making no claim in either direction.
   A home whose first sweep has not landed yet has nothing to read and nothing wrong with it, so it is neither counted as a nominal system in the panel's collapsed summary nor counted there as unreadable, and it does not turn that summary's dot into the hollow ring.
   Its wording is kept apart from the `unverified` wording for the same reason: one means an audit ran and could not compare, the other means none has run here yet.
 
 A home with no brain is not an unaudited home; it renders nothing about capture at all, the way it did before GBrain existed.
 A configured home whose local index is not bootstrapped keeps its own `off` state ahead of all of these.
+
+The panel's collapsed summary above the card strip carries the same ranking, because the strip sits behind a disclosure that starts closed and that one line is what an operator reads first.
+It leads with the worst state it found and never states the nominal count ahead of a fault: a proven fault outranks a could-not-read, which outranks a did-not-check, which outranks clean.
+A card that makes no claim is counted as neither nominal nor unreadable, so a home whose first sweep has not landed is not reported as damaged and a confirmed gap is not reported as nominal.
 
 A gap is not automatically a fault: a page deleted deliberately shows up here too.
 Recapture the document if it should still be served, or restore it in GBrain if it was deleted by mistake.

@@ -132,6 +132,26 @@ test_the_audit_sees_a_page_that_left_the_index() {
   printf '%s' "$out" | grep -q 'state      ok' || fail "a matching audit must read ok: $out"
 
   brain delete "$slug" >/dev/null 2>&1 || fail "the disposable page must be deletable"
+
+  # The pair the audit's verdict rests on, proved against the real binary rather
+  # than against an assumption written into a stub. Every gbrain failure exits
+  # 1 - a page that is not there, a brain that is not there, an index that will
+  # not open - so a failing read carries no information at all. Only the second
+  # read SUCCEEDING distinguishes a soft-deleted page from a brain that cannot
+  # answer, and only a working brain can produce it.
+  brain get "$slug" >/dev/null 2>&1 \
+    && fail "ordinary retrieval must stop serving a soft-deleted page"
+  brain get "$slug" --include-deleted 2>/dev/null | grep -q 'non-reranked ordering' \
+    || fail "the store must still return a soft-deleted page under --include-deleted"
+  brain get "firstmate/never-captured-zzz/task/nope" --include-deleted >/dev/null 2>&1 \
+    && fail "a slug that was never captured must not be returned by either read"
+  # The store answers a page that is not there and a brain that is not there
+  # with the same status, which is why the verdict may never be read off one.
+  brain get "firstmate/never-captured-zzz/task/nope" >/dev/null 2>&1
+  [ "$?" = 1 ] || fail "gbrain must answer a missing page with its universal failure status"
+  GBRAIN_HOME="$TMP_ROOT/no-such-brain" "$GBRAIN_BIN" get "$slug" >/dev/null 2>&1
+  [ "$?" = 1 ] || fail "gbrain must answer a missing brain with that same status"
+
   out=$(cap audit --timeout 120 2>&1) && fail "an audit that found a gap must exit non-zero"
   printf '%s' "$out" | grep -q 'state      gap' || fail "a deleted page must read as a gap: $out"
   printf '%s' "$out" | grep -qF "$slug" || fail "the audit must name the missing page: $out"

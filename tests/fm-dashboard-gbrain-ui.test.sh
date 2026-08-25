@@ -379,7 +379,8 @@ function observedSecondsAgo(seconds) {
 
 {
   const view = buildGBrainHealth(captureAuditEnvelope({
-    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
   }));
   const captureCard = view.cards.find((c) => c.label === "Capture");
   // Blue, not the hollow ring: this home has not earned green, and nothing here
@@ -392,6 +393,37 @@ function observedSecondsAgo(seconds) {
     captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
   check("a never-audited home does not borrow the inconclusive wording",
     !captureCard.detail.includes("could not compare"));
+  check("a never-audited home renders the reason it was given, not a substitute",
+    captureCard.detail.includes("no captured-versus-served audit has run in this home yet"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+}
+
+// --- an audit whose own verdict cannot be read -------------------------------
+//
+// A record damaged on disk, or written by a schema this reader does not know,
+// means an audit DID run and nobody can read what it decided. Reporting that as
+// a home that simply has not been checked would be a fleet-wide false all-clear
+// the moment the record's schema moves, so it is a could-not-read like any
+// other and takes the hollow ring rather than blue.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "unreadable", stored: null, active: null, missing: null, observed: null,
+      detail: "an audit ran in this home and its record could not be read",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("an unreadable verdict never renders green", captureCard.tone, "unknown");
+  equal("an unreadable verdict is not rendered as never-audited", captureCard.tone !== "blue", true);
+  equal("an unreadable verdict says so on the card face", captureCard.value, "unreadable");
+  check("an unreadable verdict says an audit did run",
+    captureCard.detail.includes("an audit ran in this home and its record could not be read"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an unreadable verdict is never called no fault",
+    !captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("an unreadable verdict does not claim no audit has run",
+    !captureCard.detail.includes("has run in this home yet"));
 }
 
 // --- a damaged outbox record --------------------------------------------------
@@ -432,7 +464,8 @@ function observedSecondsAgo(seconds) {
   const clean = { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" };
   const gap = { state: "gap", missing: 3, observed: observedSecondsAgo(90), detail: "3 absent" };
   const inconclusive = { state: "inconclusive", missing: 0, observed: observedSecondsAgo(90), detail: "not compared" };
-  const unaudited = { state: "unknown", missing: null, observed: null, detail: "never run" };
+  const unaudited = { state: "unknown", missing: null, observed: null,
+    detail: "no captured-versus-served audit has run in this home yet" };
   const stateOf = (capture) =>
     buildGBrainHealth(captureAuditEnvelope(capture)).cards.find((c) => c.label === "Capture").value;
 
@@ -475,7 +508,8 @@ function observedSecondsAgo(seconds) {
   // Not yet audited: one fewer nominal, because it has not earned that one -
   // but nothing here is unreadable and nothing here is a fault.
   const unaudited = summaryFor({
-    audit: { state: "unknown", missing: null, observed: null, detail: "never run" },
+    audit: { state: "unknown", missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
   });
   equal("an unaudited home is not counted as nominal", unaudited.text, "5 systems nominal");
   check("an unaudited home is never counted as unreadable", !unaudited.text.includes("unreadable"),
@@ -486,7 +520,7 @@ function observedSecondsAgo(seconds) {
   // A damaged record is the state the word "unreadable" belongs to, and it does
   // flip the ring - which is exactly what must not happen for the case above.
   const damaged = summaryFor({ unreadable: 2, audit: clean });
-  equal("a damaged record is counted as unreadable", damaged.text, "5 systems nominal · 1 unreadable");
+  equal("a damaged record is counted as unreadable", damaged.text, "1 unreadable · 5 systems nominal");
   equal("a damaged record flips the summary to the hollow ring", damaged.tone, "unknown");
 
   // An audit that ran and could not compare is the same class as a damaged
@@ -494,10 +528,37 @@ function observedSecondsAgo(seconds) {
   const unverified = summaryFor({
     audit: { state: "inconclusive", missing: null, observed: observedSecondsAgo(90), detail: "not compared" },
   });
-  equal("an audit that could not compare is counted as unreadable", unverified.text, "5 systems nominal · 1 unreadable");
+  equal("an audit that could not compare is counted as unreadable", unverified.text, "1 unreadable · 5 systems nominal");
   equal("an audit that could not compare flips the ring", unverified.tone, "unknown");
 
   check("not-audited and could-not-read never read the same", unaudited.text !== unverified.text);
+
+  // The state that matters most, and the one the summary used to paint green:
+  // a confirmed parity gap. The card strip is behind a closed disclosure, so
+  // this line is the whole of what an operator sees.
+  const gap = summaryFor({
+    audit: { state: "gap", missing: 3, observed: observedSecondsAgo(90), detail: "3 absent" },
+  });
+  equal("a confirmed gap leads the summary", gap.text, "1 degraded · 5 systems nominal");
+  equal("a confirmed gap never keeps the green dot", gap.tone, "red");
+  check("a confirmed gap never reads like a never-audited home", gap.text !== unaudited.text);
+  check("a confirmed gap never reads like a clean home", gap.text !== healthy.text);
+  equal("a confirmed gap is not counted as unreadable", gap.unreadable, 0);
+
+  // A queued item is not a proven fault but is not nominal either, and it
+  // outranks a could-not-read the same way it does on the card.
+  const queued = summaryFor({ pending: 4, audit: clean });
+  equal("a queued item is named rather than folded into nominal", queued.text, "1 degrading · 5 systems nominal");
+  equal("a queued item takes the amber dot", queued.tone, "amber");
+
+  // Precedence at the aggregate, same sense as the card: a proven fault
+  // outranks a could-not-read, which outranks a did-not-check, which outranks
+  // clean.
+  const worst = summaryFor({
+    unreadable: 2,
+    audit: { state: "gap", missing: 1, observed: observedSecondsAgo(90), detail: "1 absent" },
+  });
+  equal("a proven fault outranks everything else in the summary", worst.tone, "red");
 
   // No cards at all means the envelope never arrived, which is an unknown
   // rather than a clean bill.
@@ -607,9 +668,10 @@ function observedSecondsAgo(seconds) {
   // A home that has never been audited has no observation to age, and must keep
   // saying it has never run rather than borrowing an age from anywhere.
   const never = buildGBrainHealth(captureAuditEnvelope({
-    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
   })).cards.find((c) => c.label === "Capture");
-  check("an unaudited home says no audit has run", never.detail.includes("no stored-versus-served audit has run in this home yet"),
+  check("an unaudited home says no audit has run", never.detail.includes("no captured-versus-served audit has run in this home yet"),
     `received ${JSON.stringify(never.detail)}`);
   check("an unaudited home renders no age at all", !never.detail.includes("audited "),
     `received ${JSON.stringify(never.detail)}`);

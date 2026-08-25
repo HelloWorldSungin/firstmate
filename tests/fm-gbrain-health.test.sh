@@ -312,11 +312,24 @@ test_the_parity_verdict_is_replayed_and_never_invented() {
       and .capture.audit.observed == "2026-08-25T00:00:00Z"
   ' >/dev/null || fail "the recorded parity gap must reach the panel: $out"
 
-  # A damaged record is the same answer as no record: nothing was compared.
+  # A damaged record is NOT the same answer as no record: an audit ran here and
+  # its verdict cannot be read, which is a could-not-read rather than a home
+  # nobody has checked yet.
   printf '%s\n' 'not json at all' > "$home/state/.gbrain-audit"
   out=$(run_health "$home" "$bindir" "$TMP_ROOT/probe")
-  printf '%s' "$out" | jq -e '.capture.audit.state == "unknown"' >/dev/null \
-    || fail "an unreadable audit record must read as unknown: $out"
+  printf '%s' "$out" | jq -e '.capture.audit.state == "unreadable" and .capture.audit.missing == null' >/dev/null \
+    || fail "a damaged audit record must read as unreadable, not as never audited: $out"
+
+  # The reachable version of the same case: a record this reader does not know
+  # how to parse because its schema moved. Reporting that as never-audited would
+  # be a fleet-wide false all-clear waiting on a version bump.
+  jq -n '{schema: "fm-gbrain-capture-audit.v2", generated: "2026-08-25T00:00:00Z",
+          home: "h", state: "ok"}' > "$home/state/.gbrain-audit"
+  out=$(run_health "$home" "$bindir" "$TMP_ROOT/probe")
+  printf '%s' "$out" | jq -e '.capture.audit.state == "unreadable"' >/dev/null \
+    || fail "an unrecognized audit schema must read as unreadable: $out"
+  printf '%s' "$out" | jq -e '.capture.audit.detail | test("could not be read")' >/dev/null \
+    || fail "an unreadable verdict must say an audit ran and could not be read: $out"
   pass "the stored-versus-served verdict is replayed from its record and never invented"
 }
 

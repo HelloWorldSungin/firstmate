@@ -196,7 +196,11 @@ export function buildGBrainHealth(envelope) {
   // every outbox record reads clean. It ranks above pending because a pending
   // item still holds its knowledge and a missing page does not.
   const audit = capture.audit || {};
-  const auditState = stateValue(audit.state, ["ok", "gap", "inconclusive"]);
+  const auditState = stateValue(audit.state, ["ok", "gap", "inconclusive", "unreadable"]);
+  // The health script already knows why there is no verdict and says so; the
+  // panel renders that rather than substituting a sentence of its own, because
+  // the two reasons are not interchangeable and only one of them is benign.
+  const auditReason = text(audit.detail);
   const auditAge = auditAgeSuffix(audit.observed);
   // Green is a positive claim: every record is delivered, every record could be
   // read, and a parity check ran and passed. Anything that did not reach a
@@ -206,16 +210,17 @@ export function buildGBrainHealth(envelope) {
   // of them takes red or amber either: a proven failure and a queued item both
   // still outrank them.
   //
-  // The three not-green states are not one state. A damaged record and an audit
-  // that ran and could not compare are both something that could not be READ,
-  // which is the hollow ring. A home whose first sweep has not landed yet has
-  // nothing to read and nothing wrong with it, so it takes blue: it is not
-  // counted as nominal, because it has not earned that, and not counted as
-  // unreadable either, because nothing here is damaged.
+  // The not-green states are not one state. A damaged outbox record, an audit
+  // that ran and could not compare, and an audit whose own record cannot be
+  // read are all something that could not be READ, which is the hollow ring. A
+  // home whose first sweep has not landed yet has nothing to read and nothing
+  // wrong with it, so it takes blue: it is not counted as nominal, because it
+  // has not earned that, and not counted as unreadable either, because nothing
+  // here is damaged.
   const captureState = capture.enabled === false ? "off"
     : capture.failed > 0 || auditState === "gap" ? "degraded"
     : capture.pending > 0 ? "pending"
-    : capture.unreadable > 0 ? "unreadable"
+    : capture.unreadable > 0 || auditState === "unreadable" ? "unreadable"
     : auditState === "inconclusive" ? "unverified"
     : auditState === "unknown" ? "unaudited"
     : "ready";
@@ -229,7 +234,8 @@ export function buildGBrainHealth(envelope) {
     + (auditState === "gap" ? ` · ${missingClause(audit.missing)}${auditAge}` : "")
     + (auditState === "inconclusive" ? ` · the last stored-versus-served audit ran and could not compare the two sides${auditAge}` : "")
     + (auditState === "ok" ? ` · every captured document is served${auditAge}` : "")
-    + (auditState === "unknown" ? " · no stored-versus-served audit has run in this home yet, which is not a fault" : "")
+    + (auditState === "unknown" ? ` · ${auditReason || "no stored-versus-served audit has run in this home yet"}, which is not a fault` : "")
+    + (auditState === "unreadable" ? ` · ${auditReason || "an audit ran in this home and its record could not be read"}, so its verdict is unknown` : "")
     + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"
@@ -240,7 +246,7 @@ export function buildGBrainHealth(envelope) {
     tone: CAPTURE_TONES[captureState] ?? "unknown",
     value: captureState,
     detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified means the parity check ran and could not compare the two sides; unaudited means it has not run here yet. Neither is a finding.",
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind, or a parity verdict that cannot be read. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified means the parity check ran and could not compare the two sides; unaudited means it has not run here yet, which is the one state of the three that is not a finding.",
   });
 
   const maintenance = h.maintenance || {};
@@ -259,22 +265,36 @@ export function buildGBrainHealth(envelope) {
 }
 
 // The collapsed one-line summary above the card list is the first thing an
-// operator reads, and until now its vocabulary lived inside the painter where
-// no test could reach it - which is how a card meaning "not audited yet" came
-// to be counted under the word "unreadable". It belongs here with the rest of
-// the display model: green counts as nominal, the hollow ring is the only thing
-// called unreadable, and a card that makes no claim at all is counted as
-// neither. No cards means the health envelope never arrived, which is an
-// unknown rather than a clean bill.
+// operator reads - the card strip sits behind a disclosure that starts closed -
+// so this line has to carry the same distinctions the cards do rather than
+// flattening them into a claim. It belongs here with the rest of the display
+// model, where a test can reach it.
+//
+// It leads with the worst thing it found, and it never states the nominal count
+// ahead of a fault: a proven fault outranks a could-not-read, which outranks a
+// did-not-check, which outranks clean. Blue is counted in none of them, because
+// a card making no claim is neither a fault nor damage. No cards means the
+// health envelope never arrived, which is an unknown rather than a clean bill.
 export function gbrainHealthSummary(cards) {
   const list = Array.isArray(cards) ? cards : [];
-  if (list.length === 0) return { tone: "unknown", text: "health unread", nominal: 0, unreadable: 0 };
+  if (list.length === 0) {
+    return { tone: "unknown", text: "health unread", nominal: 0, degraded: 0, degrading: 0, unreadable: 0 };
+  }
   const nominal = list.filter((card) => card.tone === "green").length;
+  const degraded = list.filter((card) => card.tone === "red").length;
+  const degrading = list.filter((card) => card.tone === "amber").length;
   const unreadable = list.filter((card) => card.tone === "unknown").length;
+  const parts = [];
+  if (degraded > 0) parts.push(`${degraded} degraded`);
+  if (degrading > 0) parts.push(`${degrading} degrading`);
+  if (unreadable > 0) parts.push(`${unreadable} unreadable`);
+  parts.push(`${nominal} ${nominal === 1 ? "system" : "systems"} nominal`);
   return {
-    tone: unreadable > 0 ? "unknown" : "green",
-    text: `${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`,
+    tone: degraded > 0 ? "red" : degrading > 0 ? "amber" : unreadable > 0 ? "unknown" : "green",
+    text: parts.join(" · "),
     nominal,
+    degraded,
+    degrading,
     unreadable,
   };
 }

@@ -68,7 +68,7 @@ SH
 # pages it has actually stored: deleting a page file is then exactly what a
 # soft-delete looks like from outside, which is the whole case being tested.
 if [ "${1:-}" = list ]; then
-  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 3; }
+  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 1; }
   for page in "$FM_TEST_PAGES"/*.md; do
     [ -e "$page" ] || continue
     page=${page##*/}
@@ -86,17 +86,36 @@ if [ "${1:-}" = list ]; then
   exit 0
 fi
 # A direct read is what a reported gap actually rests on, so the stub answers
-# `get` from the same stored pages and refuses a page it does not have with its
-# own distinct status, the way a real not-found differs from a real error.
+# `get` the way gbrain 0.46.21.0 does, measured against the pinned binary: EVERY
+# failure exits 1, whether the page is not there, the brain is not there, or the
+# index cannot be opened. A stub with a distinct not-found code would prove a
+# discrimination the real binary does not have. A soft-deleted page stays in the
+# store and is returned only under --include-deleted, which is the one answer a
+# brain that cannot answer is unable to fake.
 if [ "${1:-}" = get ]; then
-  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 3; }
-  page="$FM_TEST_PAGES/$(printf '%s' "${2:-}" | tr '/' '_').md"
-  if [ -f "$page" ] && [ -z "${FM_TEST_GET_BROKEN:-}" ]; then cat "$page"; exit 0; fi
-  [ -z "${FM_TEST_GET_BROKEN:-}" ] || { echo "the index is locked by another writer" >&2; exit 7; }
-  echo "no such page: ${2:-}" >&2
-  exit 4
+  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 1; }
+  shift
+  slug=""; include_deleted=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --include-deleted) include_deleted=1; shift ;;
+      *) slug=$1; shift ;;
+    esac
+  done
+  # An index that cannot answer, for every slug or for one. Its failure is
+  # byte-identical to a page that is not there, which is the whole point.
+  case "${FM_TEST_READS_DOWN:-}" in
+    '') ;;
+    *) case "$slug" in *"$FM_TEST_READS_DOWN"*) echo "No brain configured" >&2; exit 1 ;; esac ;;
+  esac
+  page="$FM_TEST_PAGES/$(printf '%s' "$slug" | tr '/' '_').md"
+  deleted="$FM_TEST_PAGES/.deleted/$(printf '%s' "$slug" | tr '/' '_').md"
+  [ -f "$page" ] && { cat "$page"; exit 0; }
+  [ "$include_deleted" = 1 ] && [ -f "$deleted" ] && { cat "$deleted"; exit 0; }
+  echo "Error [page_not_found]" >&2
+  exit 1
 fi
-[ "${1:-}" = capture ] || { echo "unsupported gbrain call: $*" >&2; exit 2; }
+[ "${1:-}" = capture ] || { echo "unsupported gbrain call: $*" >&2; exit 1; }
 shift
 slug=""; file=""
 while [ $# -gt 0 ]; do
@@ -107,8 +126,8 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 3; }
-[ -n "${GBRAIN_HOME:-}" ] || { echo "a capture must name the home's own brain" >&2; exit 4; }
+[ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 1; }
+[ -n "${GBRAIN_HOME:-}" ] || { echo "a capture must name the home's own brain" >&2; exit 1; }
 mkdir -p "$FM_TEST_PAGES"
 cp "$file" "$FM_TEST_PAGES/$(printf '%s' "$slug" | tr '/' '_').md"
 # GBrain 0.42.69.0 prefixes its JSON receipt with any import warnings, so the
@@ -160,6 +179,31 @@ item_field() {  # <home> <task-id> <jq-path>
 }
 
 pages_count() { find "$1/pages" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' '; }
+
+# What GBrain's own delete does, and the population Gap 3 measured: the page
+# leaves ordinary retrieval and the listing while the store still holds it.
+soft_delete_page() {  # <home> <slug-fragment>
+  local home=$1 fragment=$2 page found=0
+  mkdir -p "$home/pages/.deleted"
+  for page in "$home/pages/"*"$fragment"*.md; do
+    [ -e "$page" ] || continue
+    mv "$page" "$home/pages/.deleted/${page##*/}"
+    found=1
+  done
+  [ "$found" = 1 ] || fail "no page matched $fragment to soft-delete"
+}
+
+# The other way a page can leave: purged outright, so the store no longer holds
+# it and neither read can answer.
+purge_page() {  # <home> <slug-fragment>
+  local home=$1 fragment=$2 page found=0
+  for page in "$home/pages/"*"$fragment"*.md "$home/pages/.deleted/"*"$fragment"*.md; do
+    [ -e "$page" ] || continue
+    rm -f "$page"
+    found=1
+  done
+  [ "$found" = 1 ] || fail "no page matched $fragment to purge"
+}
 
 # The reported cause of a silent listing failure: the listing builds its slugs in
 # a printf | awk | sort pipeline that runs under pipefail, so a member that dies
@@ -767,7 +811,7 @@ test_the_audit_names_a_captured_document_the_index_no_longer_serves() {
 
   # Exactly what a soft-delete looks like from outside: the record still says
   # captured, and the page is gone from the listing.
-  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
+  soft_delete_page "$home" _task_ship-b
   out=$(cap "$home" audit 2>&1) && fail "an audit that found a gap must exit non-zero"
   printf '%s' "$out" | grep -q 'state      gap' || fail "the audit must report the gap: $out"
   printf '%s' "$out" | grep -q 'task/ship-b' || fail "the audit must name the missing document: $out"
@@ -855,7 +899,7 @@ test_a_capped_listing_keeps_its_counts_as_bounds() {
   seed_manifest "$home" ship-a "Add the widget"
   seed_manifest "$home" ship-b "Fix the drain"
   cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
-  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
+  soft_delete_page "$home" _task_ship-b
 
   out=$(FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES=1 cap "$home" audit 2>&1) \
     && fail "a listing at its ceiling must exit non-zero"
@@ -905,24 +949,49 @@ test_a_gap_rests_on_a_direct_read_rather_than_on_the_listing() {
   printf '%s' "$out" | grep -q 'state      inconclusive' \
     || fail "an unparseable listing must be inconclusive: $out"
 
-  # A read that could not answer either way is not evidence of absence.
-  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
-  out=$(FM_TEST_GET_BROKEN=1 cap "$home" audit 2>&1) \
+  # The case that matters most, and the one an exit code cannot see: the listing
+  # succeeded and named this home's pages, then the index stopped answering. On
+  # the real binary that failure is exit 1, the same status a page that is not
+  # there returns, so a verdict read off the exit code would name documents that
+  # are all still served.
+  soft_delete_page "$home" _task_ship-b
+  out=$(FM_TEST_READS_DOWN=firstmate/ cap "$home" audit 2>&1) \
     && fail "an audit whose reads failed must exit non-zero"
   printf '%s' "$out" | grep -q 'state      gap' \
     && fail "a read that could not answer must never confirm a gap: $out"
   printf '%s' "$out" | grep -q 'state      inconclusive' \
     || fail "an unreadable candidate must be inconclusive: $out"
 
-  # And the finding the audit exists for still lands: the page really is gone,
-  # the direct read says so, and the gap names it.
-  out=$(cap "$home" audit 2>&1) && fail "a genuinely deleted page must exit non-zero"
-  printf '%s' "$out" | grep -q 'state      gap' || fail "a deleted page must still be a gap: $out"
-  printf '%s' "$out" | grep -qF "$slug" || fail "the gap must name the deleted page: $out"
+  # The narrower and sharper version: the listing succeeds, a page it named
+  # reads back fine, and only THIS candidate's reads fail - a locked row, a
+  # corrupt page. Its failure status is the same one a missing page returns, so
+  # a verdict read off that status names a document that is still in the store.
+  out=$(FM_TEST_READS_DOWN=task/ship-b cap "$home" audit 2>&1) \
+    && fail "an audit with an unreadable candidate must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "one candidate the index could not answer for must never be a gap: $out"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "a candidate that answered neither read must be inconclusive: $out"
+
+  # And the finding the audit exists for still lands, on the one answer only a
+  # working brain can give: ordinary retrieval refuses the page and the store
+  # returns it under --include-deleted.
+  out=$(cap "$home" audit 2>&1) && fail "a soft-deleted page must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' || fail "a soft-deleted page must be a gap: $out"
+  printf '%s' "$out" | grep -qF "$slug" || fail "the gap must name the soft-deleted page: $out"
   jq -e '.state == "gap" and .missing == 1 and .bounds.missing == "exact"' \
     "$home/state/.gbrain-audit" >/dev/null \
     || fail "a verified gap must record an exact count: $(cat "$home/state/.gbrain-audit")"
-  pass "a gap rests on a direct read rather than on absence from the listing"
+
+  # A page purged outright answers neither read, and nothing here distinguishes
+  # that from an index that could not answer, so it reaches no verdict.
+  purge_page "$home" _task_ship-b
+  out=$(cap "$home" audit 2>&1) && fail "an unverifiable candidate must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "a candidate neither read answered must never be a gap: $out"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "a purged page must reach no verdict: $out"
+  pass "a gap rests on a read that succeeded rather than on one that failed"
 }
 
 test_a_candidate_set_past_the_probe_ceiling_is_refused_rather_than_verified() {

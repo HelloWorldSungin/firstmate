@@ -43,13 +43,16 @@
 #                           audit is {state, stored, active, missing, observed,
 #                           detail} replayed from the durable record the
 #                           stored-versus-served audit last wrote, where state
-#                           is one of ok | gap | inconclusive | unknown. It is
-#                           REPLAYED, never measured here: this command runs on
-#                           every dashboard poll and the audit opens the index,
-#                           so measuring it here would put a repeated index read
-#                           behind a poll that must stay cheap. unknown means no
-#                           audit has run in this home yet, and observed is how
-#                           old the answer is.
+#                           is one of ok | gap | inconclusive | unreadable |
+#                           unknown. It is REPLAYED, never measured here: this
+#                           command runs on every dashboard poll and the audit
+#                           opens the index, so measuring it here would put a
+#                           repeated index read behind a poll that must stay
+#                           cheap. unknown means no audit has run in this home
+#                           yet; unreadable means one ran and its record cannot
+#                           be parsed or carries an unrecognized schema, which
+#                           is a could-not-read rather than a not-yet-checked.
+#                           observed is how old the answer is.
 #   retrieval               {state, embedding, reranker, main_brain} where
 #                           state is the worst of the three probes below.
 #                           embedding/reranker/main_brain are each {state,
@@ -347,10 +350,15 @@ retrieval_overall() {  # <embedding> <reranker> <main_brain> -> echoes row
 # The stored-versus-served verdict, replayed from the record the audit wrote.
 # It is never measured here: this runs on every dashboard poll, and opening the
 # index once per poll to re-derive an answer that changes on a sweep interval
-# would put a repeated index read behind a poll that has to stay cheap. A record
-# that is absent, unreadable, or of an unrecognized schema all mean the same
-# thing to a reader - nothing has been compared - so all three say so rather
-# than reporting a zero gap nobody measured.
+# would put a repeated index read behind a poll that has to stay cheap.
+#
+# None of these reports a zero gap nobody measured, but the two ways of having
+# no verdict are NOT the same and are not reported as one. An absent record
+# means no audit has run here, which is a home that has not been checked and is
+# not a fault. A record that cannot be parsed, or that carries a schema this
+# reader does not recognize - a v2 written by a newer Firstmate, say - means an
+# audit DID run and its verdict cannot be read, which is a could-not-read like
+# any other and must never render as a home that simply has not been checked.
 capture_audit() {  # -> echoes row
   local path doc
   path="${FM_STATE_OVERRIDE:-$FM_HOME/state}/.gbrain-audit"
@@ -361,8 +369,8 @@ capture_audit() {  # -> echoes row
   fi
   doc=$(cat "$path" 2>/dev/null) || doc=""
   if ! printf '%s' "$doc" | jq -e '.schema == "fm-gbrain-capture-audit.v1"' >/dev/null 2>&1; then
-    jq -cn '{state: "unknown", stored: null, active: null, missing: null, observed: null,
-             detail: "the captured-versus-served audit record could not be read"}'
+    jq -cn '{state: "unreadable", stored: null, active: null, missing: null, observed: null,
+             detail: "an audit ran in this home and its record could not be read"}'
     return 0
   fi
   printf '%s' "$doc" | jq -c '{state: .state, stored: .stored, active: .active,

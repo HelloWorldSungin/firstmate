@@ -1244,7 +1244,7 @@ function renderKnowledge() {
   // so the collapsed summary and the cards below it cannot drift apart.
   const summary = gbrainHealthSummary(health.cards);
   healthButton.append(
-    summary.tone === "unknown" ? element("span", "ring") : dot("green"),
+    summary.tone === "unknown" ? element("span", "ring") : dot(summary.tone),
     document.createTextNode(` ${summary.text}`),
     element("span", "chev", state.gbrain.healthOpen ? "▲" : "▼"),
   );

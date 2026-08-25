@@ -71,10 +71,13 @@
 #             records no active or missing count at all, and a capped one
 #             records active as a floor and missing as a ceiling whose named
 #             documents are candidates rather than findings.
-#             A gap rests on a direct read, never on absence from the listing:
-#             the listing proposes candidates and each one is asked for by slug,
-#             so a page the listing dropped but the brain still serves names the
-#             listing untrustworthy instead of naming the page gone.
+#             A gap rests on a read that SUCCEEDED, never on absence from the
+#             listing and never on a failing read: the listing proposes
+#             candidates, each is asked for by slug, and only a page ordinary
+#             retrieval refuses while --include-deleted returns it is counted
+#             missing. A page the listing dropped but the brain still serves
+#             names the listing untrustworthy instead of naming the page gone,
+#             and a candidate neither read answers reaches no verdict.
 #   sweep     The structural re-capture trigger. A page goes stale when the
 #             durable report it was composed from is edited after delivery, and
 #             nothing about that edit reaches capture, because teardown already
@@ -811,25 +814,30 @@ list_active_slugs() {  # <timeout> <slug-prefix>
   printf '%s\n' "$out" | awk -F'\t' -v p="$prefix" 'NF >= 2 && index($1, p) == 1 { print $1 }' | sort -u
 }
 
-# A slug this home can never have captured, used to learn what THIS brain does
-# when asked for a page that is not there. Comparing a candidate's failure
-# against that signature is what lets an absent page be told from a brain that
-# could not answer, without this script having to know GBrain's exit codes.
-absence_probe_slug() { printf '%sfm-audit-probe/no-such-page\n' "$1"; }
-
-# Ask the index for one page directly.
-#   0  the page came back, so it is served whatever the listing said
-#   1  the read answered exactly the way it answers for a page that is not there
-#   2  the read could not tell us either way
-probe_page() {  # <slug> <timeout> <absent-signature>
-  local slug=$1 seconds=$2 absent=$3 out rc=0
+# Ask the index for one page directly, as a PAIR of reads, so the verdict rests
+# on a read that succeeded rather than on one that failed. GBrain answers every
+# failure with exit 1 - a page that is not there, a brain that is not there, an
+# index that cannot be opened - so a failing read carries no information about
+# which of those happened, and no learned signature can make it carry any.
+#
+#   0  ordinary retrieval serves it, so the listing that proposed it was wrong
+#   1  ordinary retrieval does not serve it AND the store still returns it under
+#      --include-deleted, which is positive proof of the soft-delete this audit
+#      exists to find; an unavailable brain cannot produce this, because it
+#      fails both reads
+#   2  neither read answered, so nothing is established either way
+probe_page() {  # <slug> <timeout>
+  local slug=$1 seconds=$2 out rc=0
   out=$(run_gbrain "$seconds" get "$slug" 2>/dev/null) || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    [ -n "$out" ] && return 0
-    return 2
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    return 0
   fi
   case "$rc" in 124 | 137 ) return 2 ;; esac
-  [ -n "$absent" ] && [ "$rc" = "$absent" ] && return 1
+  rc=0
+  out=$(run_gbrain "$seconds" get "$slug" --include-deleted 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    return 1
+  fi
   return 2
 }
 
@@ -848,8 +856,7 @@ cmd_audit() {
   local tag prefix docs stored_file active_file missing_file confirmed_file
   local stored truncated active missing state detail="" listing_error="" listing_failed=0
   local active_bound=exact missing_bound=exact
-  local candidates absent_rc="" probe_out="" present=0 untold=0 slug probe_rc=0
-  local control="" control_failed=0
+  local candidates present=0 untold=0 slug probe_rc=0
   tag=$(fm_gbrain_capture_home_tag "$FM_HOME")
   prefix="firstmate/$tag/"
   docs=$(status_documents)
@@ -900,20 +907,21 @@ cmd_audit() {
   #                                        candidates the brain still serves
   #   a shared brain lists other homes     closed - same, and the prefix filter
   #   only                                 already scopes what is compared
-  #   the direct reads themselves fail     closed - a page the listing DOES
-  #                                        name is read back first, and a brain
-  #                                        that cannot return that one is not
-  #                                        trusted to say any page is gone
-  #   a complete listing, page deleted     REPORTED - the direct read confirms
-  #                                        the page is gone, which is the gap
+  #   the direct reads themselves fail     closed - a gap needs a read that
+  #                                        SUCCEEDED under --include-deleted,
+  #                                        and a brain that cannot answer fails
+  #                                        both reads
+  #   a complete listing, page deleted     REPORTED - the store returns the page
+  #                                        under --include-deleted while
+  #                                        ordinary retrieval does not, which is
+  #                                        the gap
   #
-  # One direction stays narrowly open and is stated rather than hidden: when the
-  # listing names NO page at all there is no served page to read back, so the
-  # absence signature - what this brain answers for a slug the home never
-  # captured - is the only evidence available, and a brain that failed every
-  # read that same way would report a gap. A candidate set larger than the probe
-  # ceiling is refused rather than verified, which bounds that to a home whose
-  # whole corpus is small enough to be gone.
+  # One case is deliberately NOT reported, and it is a real narrowing: a page
+  # that was purged outright rather than soft-deleted answers neither read, and
+  # so does an index that cannot be opened. Nothing distinguishes them from
+  # here, so that candidate is inconclusive. GBrain soft-deletes, which is the
+  # population this audit was built for and measured against; a purge is a
+  # deliberate operator act on a page the outbox can still recapture.
   #
   # The failures also do not record the same thing. Nothing was measured against
   # an unreadable listing, so both counts go null: a zero there would be a claim
@@ -941,46 +949,22 @@ cmd_audit() {
     missing_bound=at-most
     detail="the listing left $candidates candidate(s), past the $AUDIT_MAX_PROBES the audit will verify one read at a time; a candidate set that large is better evidence that the listing is wrong than that the pages are gone, so nothing is reported missing until it shrinks or FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES is raised"
   elif [ "$candidates" -gt 0 ]; then
-    # The listing only proposes; a direct read decides. A page the listing
-    # omitted but the brain still returns proves the listing wrong rather than
-    # the page gone, and a read that could not tell us proves nothing at all -
-    # neither may become a gap.
-    # A read that fails proves absence only once reads are known to work, so a
-    # page the listing DOES name is read back first. If that page does not come
-    # back either, the read path is what is broken, and no candidate's failure
-    # may be read as its page being gone.
-    control=$(head -n 1 "$active_file" 2>/dev/null)
-    if [ -n "$control" ]; then
-      probe_page "$control" "$seconds" "" || control_failed=1
-    fi
-    # What this brain does when asked for a page it never had. A candidate that
-    # fails the same way is absent; a candidate that fails any other way, or a
-    # brain that answers this probe at all, tells us nothing.
-    absent_rc=""
-    probe_out=$(run_gbrain "$seconds" get "$(absence_probe_slug "$prefix")" 2>/dev/null) || absent_rc=$?
-    case "$absent_rc" in '' | 0 | 124 | 137 ) absent_rc="" ;; esac
-    [ -z "$probe_out" ] || absent_rc=""
+    # The listing only proposes; a pair of direct reads decides. A page the
+    # listing omitted but ordinary retrieval still returns proves the listing
+    # wrong rather than the page gone, and a candidate neither read could answer
+    # proves nothing at all - neither may become a gap.
     : > "$confirmed_file"
     while IFS= read -r slug; do
       [ -n "$slug" ] || continue
-      if [ "$control_failed" -eq 1 ]; then
-        untold=$((untold + 1))
-        continue
-      fi
       probe_rc=0
-      probe_page "$slug" "$seconds" "$absent_rc" || probe_rc=$?
+      probe_page "$slug" "$seconds" || probe_rc=$?
       case "$probe_rc" in
         0) present=$((present + 1)) ;;
         1) printf '%s\n' "$slug" >> "$confirmed_file" ;;
         *) untold=$((untold + 1)) ;;
       esac
     done < "$missing_file"
-    if [ "$control_failed" -eq 1 ]; then
-      state=inconclusive
-      active_bound=at-least
-      missing_bound=at-most
-      detail="the index did not return a page its own listing says it serves, so its reads answered nothing this audit could use; the $candidates named here are unverified candidates"
-    elif [ "$present" -gt 0 ]; then
+    if [ "$present" -gt 0 ]; then
       state=inconclusive
       active_bound=at-least
       missing_bound=at-most
@@ -989,12 +973,12 @@ cmd_audit() {
       state=inconclusive
       active_bound=at-least
       missing_bound=at-most
-      detail="$untold of $candidates candidate(s) could not be read back either way, so the audit reached no verdict; the documents named here are unverified candidates"
+      detail="$untold of $candidates candidate(s) answered neither read, so nothing distinguishes a page that was purged from an index that could not answer, and the audit reached no verdict; the documents named here are unverified candidates"
     else
       state=gap
       missing=$(grep -c . < "$confirmed_file" | tr -cd '0-9')
       cat "$confirmed_file" > "$missing_file"
-      detail="$missing captured document(s) were asked for directly and the index did not return them; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
+      detail="$missing captured document(s) are in the store and hidden from ordinary retrieval; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
     fi
   else
     state=ok
