@@ -75,7 +75,8 @@ Set `PATH=/home/sungin/.local/gbrain/bin:$PATH` for operations that cause GBrain
 
 An upgrade changes the code that reads and writes the fleet's memory, so it is a deliberate, gated operation rather than a routine refresh.
 GBrain's own `gbrain upgrade` and its `self_upgrade` notification are not the fleet's path, because they bypass the pin, the backup, and the gate below.
-Every upgrade runs these seven steps in order, and any one of them failing is a rollback rather than a reason to continue:
+Every upgrade runs these seven steps in order, and any one of them failing is a rollback rather than a reason to continue.
+Any `gbrain` command that opens the brain applies whatever migrations are pending as part of connecting, so no step that reaches the brain is a read-only inspection while installed code is ahead of the brain's schema, and the backup therefore comes before every step that touches it.
 
 1. **Pin.** The version in force is the one recorded above, and it moves only by editing this file in the same change that performs the upgrade.
    Select the new tag explicitly; `latest` is not a pin.
@@ -85,16 +86,19 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    [`bin/fm-gbrain-pin-check.sh`](../bin/fm-gbrain-pin-check.sh) is the mechanical reader of both sides: it compares the recorded pin with what the installed executable reports and fails on drift, so a pin left behind by an upgrade is a finding rather than something a reviewer has to notice.
    Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
    Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
-2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
-3. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
+2. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
+   This is the first step that touches the brain, because [`bin/fm-gbrain-eval.sh`](../bin/fm-gbrain-eval.sh) reaches it through `gbrain call search` and migrates on connect exactly as `gbrain doctor --json` does.
+3. **Baseline.** Record an evaluation run on the current version, now that step 2 has a copy of the brain as it stood before this run could migrate it, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
 4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
+   That reading is taken after the connect has already applied whatever was pending, so it is a post-migration reading that cannot detect a schema mismatch before the fact and does not deliver a pre-flight compatibility check.
+   The release notes are the pre-flight half of this step, and a genuine pre-migration version reading comes from the step-2 backup rather than from this command.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
-7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
+7. **Gate.** Re-run the evaluation and compare it to the step-3 baseline with `bin/fm-gbrain-eval.sh compare`.
    A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
 
-Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-3 backup recorded there.
+Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-2 backup recorded there.
 Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
 To upgrade deliberately, select a newer verified GBrain tag, then run the block below from the Firstmate code root.
@@ -168,7 +172,7 @@ An unreadable serving relationship, declared plane, runtime plane, or credential
 
 ### Announce a maintenance window
 
-The brain stops answering while upgrade steps 3, 4, and 5 run, and the same is true of a reindex or an embedding migration below.
+The brain stops answering while upgrade steps 2, 3, 4, and 5 run, and the same is true of a reindex or an embedding migration below.
 Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free text in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage, and unset it once the step-7 gate passes.
 `bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
 The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
@@ -371,11 +375,11 @@ Neither is reversible from inside GBrain: `migrate embeddings` writes no `.bak` 
 Run every step of a first migration on a disposable copy of the index before touching the live one.
 Copy the index and the runtime directory to scratch, point a scratch home's `brain_root` at the copy, and rewrite the copy's `database_path`; a scratch home with the same outbox reports the same corpus revision, so the copy's evaluation is directly comparable to the live baseline.
 
-1. Record a baseline evaluation run, and plan the change with `--dry-run`, which reports the source and target models, both dimensions, the chunk count, and that the stored vectors will be deleted.
-2. Take the backup above, under the no-writer precondition stated with it.
+1. Take the backup above, under the no-writer precondition stated with it, before any step that opens the brain.
+2. Record a baseline evaluation run, and plan the change with `--dry-run`, which reports the source and target models, both dimensions, the chunk count, and that the stored vectors will be deleted.
 3. Migrate with `gbrain migrate embeddings --to <provider:model> --dim <N> --yes`, under this home's `GBRAIN_HOME` and `OLLAMA_BASE_URL`.
 4. Verify with `gbrain doctor --json`, whose `embedding_provider` check reports the live model, its measured dimension, and whether the database agrees, and whose `embedding_width_consistency` check compares the schema width with the configured one.
-5. Re-run the evaluation and `compare` it with the step-1 baseline.
+5. Re-run the evaluation and `compare` it with the step-2 baseline.
 
 Verify a migration with the evaluation, never with `gbrain stats`.
 A half-finished migration still reports every chunk as embedded there, while retrieval quality has already fallen; `gbrain doctor` catches it only as an `embed_staleness` warning.
