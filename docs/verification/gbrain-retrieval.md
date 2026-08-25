@@ -150,11 +150,12 @@ The synthesis-flag observation above is the one most worth re-confirming: if a f
 ## `rerank_score` is the miss signal the wrapper used to drop, and it is judged per corpus
 
 This section separates two kinds of claim, because they need different evidence.
-Claims about what GBrain does are read from the installed pin `v0.46.21.0`, which [../gbrain.md](../gbrain.md) records as the installed release.
+Claims about what GBrain does are read from the installed pin `v0.46.21.0`, which [../gbrain.md](../gbrain.md) records as the installed release, and each one names the file it was read from.
 Claims about what `bin/fm-recall.sh` does with what GBrain returns are wrapper contract, rebuilt by the portable suite `tests/fm-recall.test.sh` on 2026-08-25.
-That suite is stub-driven, so it proves the wrapper's behavior and proves nothing about what a live GBrain stamps; the live proof for that is [gbrain-memory-verbs.md](gbrain-memory-verbs.md) and `tests/fm-gbrain-readonly-e2e.test.sh`.
+That suite is stub-driven, so it proves the wrapper's behavior and proves nothing about what a live GBrain stamps.
+The only live measurement of search-row fields in this repo is [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20); `tests/fm-gbrain-readonly-e2e.test.sh` drives real brains but asserts on the read-only share, scoped refusals, context packs, and delta cursors, and never inspects these fields, so it is not cited for them.
 
-Why the printed blend cannot answer the miss question is measured live in [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20), and is not restated here.
+Why the printed blend cannot answer the miss question is measured live in [gbrain-memory-verbs.md](gbrain-memory-verbs.md), and is not restated here.
 That record ran `gbrain call search` against the real corpus with an off-corpus nonsense query and measured `score` at roughly 0.78 to 0.81 while `rerank_score` on the same rows ran from about 0.00008 to 0.0037.
 It records `score`, `rerank_score`, `evidence`, and `create_safety`; it records nothing about `cosine` and nothing about autocut, so neither is cited to it.
 
@@ -166,13 +167,22 @@ At the pin, `src/core/types.ts` declares `cosine?`, `rerank_score?`, `evidence?`
 
 The floor is GBrain's own `search.autocut_min_top`, not a Firstmate-invented threshold.
 The bundle default is `DEFAULT_AUTOCUT.minTopScore = 0.35` in GBrain's own `src/core/search/autocut.ts` at the pin, and `src/core/search/mode.ts` accepts an operator value in [0, 1] over it.
-The wrapper reads that knob from GBrain's configuration FILE plane at `$GBRAIN_HOME/.gbrain/config.json`, which is the plane `gbrain config get` itself resolves ahead of the database plane at `src/commands/config.ts`.
-It deliberately does not shell out to `gbrain config get`, because at the pin that command routes through `connectEngine` in `src/cli.ts`, which takes the index's exclusive lock behind `connectWithRetry`'s three-attempt backoff in `src/core/db.ts`.
-On a home whose brain is being served that read would spend seconds outside the budget `--timeout` grants, and a caller whose kill deadline is sized to that budget would get a timeout instead of the per-source document that names which corpus could not be read.
-The consequence is that GBrain's own autocut reads this knob from the brain's database plane through `engine.getConfig`, which this wrapper cannot see without that connect, so a floor stored only there reads here as the pinned default.
-That is disclosed rather than hidden: every answer carries, per judged corpus, the floor used and whether it came from that brain's config file, from this home's config file, or from the pinned default.
-The main brain is read over MCP and has no configuration plane this host can query at all, so it borrows this home's readable value when there is one and the pinned default otherwise, disclosed the same way.
-The floor is read lazily and only when a corpus returned rows to judge, so a search that found nothing reads no plane.
+
+Which plane holds the floor a search actually applied was checked at the pin, because two planes disagree and only one of them is the answer.
+`gbrain config get` prefers the file/env plane over the database plane and prints which one answered on stderr (`src/commands/config.ts`).
+Search does not share that order: `loadSearchModeConfig` resolves every search knob through `engine.getConfig` alone (`src/core/search/mode.ts`), and `PGliteEngine.getConfig` is a read of the database `config` table (`src/core/pglite-engine.ts`).
+`autocutFromConfig` in `src/core/search/autocut.ts` is the only function at the pin that reads the nested file-plane shape, and nothing in `src` calls it.
+`gbrain config set search.autocut_min_top` falls through to `engine.setConfig`, so the supported way to tune the knob writes the database plane; only `push.allow_unverified_remote` and `hooks.stop_push_debounce_min` are routed to the file plane.
+A floor found in the configuration file is therefore a value this host can see, not a value the running search applied, and the wrapper does not judge against it.
+
+The search reply cannot be asked for the floor instead.
+`gbrain call search` returns a JSON array of result rows, which is what `reply_shape_ok` requires, and it carries no search metadata.
+The autocut verdict travels on `SearchMeta` for `--explain` and capture rather than on that array, and `AutocutDecision` at the pin is only `{applied, signal, cut, kept, total, gapRatio}`, which names neither the floor nor whether the weak-top branch fired: that branch returns the same no-op as a list with no cliff.
+
+So `bin/fm-recall.sh` reads the database plane through `gbrain config get` and accepts the number only when stderr reports that the database plane answered, treating a file/env answer as no answer at all.
+That read is an engine connect, so it is fenced three ways: it is taken lazily and only for a corpus that returned rows to judge, it is bounded by a short slice of what is left of the budget `--timeout` granted, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
+Anything short of a database answer inside that slice is the pinned default, disclosed as `pinned-default` rather than as a setting the wrapper read.
+The main brain is read over MCP and has no database plane this host can query at all, so it is judged against the pinned default and says so rather than borrowing this home's value.
 
 `bin/fm-recall.sh` judges confidence per corpus rather than from the head of the merged list.
 Each corpus's own pool of returned rows is judged against that corpus's own floor, which is the quantity GBrain applies the knob to, and a corpus clears when its own top `rerank_score` is a number that is not below its floor.
@@ -189,6 +199,7 @@ The line carries the query, the disposition of the read, each corpus's own top s
 The disposition separates `unread`, `unjudged`, `miss`, and `hit`, so a run that never reached a corpus cannot serialize as a read that returned an unjudgeable top row.
 The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECALL_JSONL_MAX_BYTES`.
 The append and the trim that follows it run under one advisory lock, because concurrent searches against one home would otherwise let a trim built from a stale tail overwrite the newest lines the cap exists to keep.
+That lock is a directory, a stale hold is claimed by an atomic rename so only one sweeper can remove it, and the wait for it is bounded by whichever comes first of a short ceiling or the run's own remaining budget, because the record is best-effort and must never be why a caller's kill deadline fires.
 Past the cap the oldest lines go and the newest tail stays, a record larger than the cap on its own is kept rather than dropped, and the file is always safe to delete or trim.
 
 ```sh

@@ -86,16 +86,18 @@
 # scores are not the same quantity, so the corpus that happened to lead the
 # merge must not decide the other corpus's verdict.
 #
-# The floor is read from GBrain's own configuration FILE plane under the
-# resolved GBRAIN_HOME, never through a command that connects to the brain: an
-# engine connect takes the index's exclusive lock behind a retry ladder and
-# would spend clock outside the budget --timeout grants, costing the per-source
-# document on exactly the slow brain that needs it. GBrain's autocut resolves
-# this knob from the brain's database plane, which is out of reach here, so a
-# floor stored only there reads as the pinned module default (0.35). That is
-# why the answer object discloses, per corpus, the floor used and which plane
-# it came from: the fallback is stated, never passed off as a setting this
-# command read. Only corpora that were actually judged carry a floor.
+# The floor GBrain actually applies comes from the brain's DATABASE plane, so
+# that is the only plane a value is accepted from here. A file-plane value is
+# one this host can see and the running search does not use, and judging a row
+# against it would be a statement about a measurement that never happened. The
+# read is lazy, taken only for a corpus that returned rows to judge, bounded by
+# a short slice of what is LEFT of the budget --timeout granted, and run with
+# GBrain's connect retry ladder disabled so a served brain fails fast instead of
+# spending clock no caller sanctioned. Anything short of a database answer
+# inside that slice is the pinned module default (0.35). The answer object
+# discloses, per judged corpus, the floor used and where it came from, so the
+# fallback is stated rather than passed off as a setting this command read.
+# Only corpora that were actually judged carry a floor.
 #
 # When a corpus answered, the document carries an `answer` object:
 #   nearest  rows are the nearest indexed pages, not answers. A listed page may
@@ -123,8 +125,10 @@
 # returned an unjudgeable row. That is a local record of the read, never of what
 # the caller then decided, and nothing is sent anywhere. think never writes it.
 # The file is home-wide and size-capped rather than unbounded: the append and
-# the trim that follows it run under one advisory lock so concurrent searches
-# cannot overwrite each other's newest lines, past the cap the oldest lines are
+# the trim that follows it run under one advisory lock, bounded by the run's own
+# remaining budget, so concurrent searches cannot overwrite each other's newest
+# lines and a record nobody promised is never why a caller's deadline fires.
+# Past the cap the oldest lines are
 # dropped and the newest tail is kept, and it is always safe to delete or trim
 # because the next search recreates it. A home with no local index writes
 # nothing, so a fleet that has not adopted a brain keeps today's path.
@@ -191,6 +195,8 @@
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
 #   FM_RECALL_TIMEOUT  default seconds per retrieval call, overriding the
 #                      per-command defaults above
+#   FM_GBRAIN_TIMEOUT  unused by search; the floor read is bounded by the run's
+#                      own remaining budget instead
 #   FM_RECALL_JSONL_MAX_BYTES  size cap for state/recall.jsonl
 #                      (default 262144)
 set -euo pipefail
@@ -213,11 +219,12 @@ EXCERPT_MAX=4000
 ANSWER_MAX_CEILING=100000
 TIMEOUT_MAX=3600
 # GBrain owns the weak-top floor and resolves search.autocut_min_top per-call,
-# then config, then bundle, so the effective value is a property of the brain
-# being read rather than of this wrapper. This is DEFAULT_AUTOCUT.minTopScore at
-# the pinned release, used when the brain's configuration file plane holds no
-# value, and every use of it is disclosed on the answer as a fallback rather
-# than as a setting. Do not replace it with a Firstmate-invented value.
+# then from the brain's database plane, then from its bundle, so the effective
+# value is a property of the brain being read rather than of this wrapper. This
+# is DEFAULT_AUTOCUT.minTopScore at the pinned release, used whenever the
+# database plane does not answer inside the run's budget, and every use of it is
+# disclosed on the answer as a fallback rather than as a setting. Do not replace
+# it with a Firstmate-invented value.
 AUTOCUT_MIN_TOP_DEFAULT=0.35
 
 # state/recall.jsonl is home-wide and append-only, so it needs a bound rather
@@ -919,8 +926,7 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
     --arg unjudged_tail "$ANSWER_UNJUDGED_TAIL" \
     --arg none "$ANSWER_NONE_NOTICE" '
     def where($source):
-      if $source == "config-file" then "its own config file"
-      elif $source == "local-config-file" then "this home config file"
+      if $source == "db-config" then "the brain database plane"
       else "the pinned GBrain default" end;
     def floor_for($corpus):
       ([$floor_input[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
@@ -975,25 +981,37 @@ $1
 EOF
 }
 
-# The floor is read from the plane this command can read WITHOUT connecting to
-# the brain: GBrain's own configuration file at $GBRAIN_HOME/.gbrain/config.json,
-# which is the plane `gbrain config get` itself resolves ahead of the database.
-# An engine-backed read is refused here on purpose. `gbrain config get` routes
-# through GBrain's connectEngine, which takes the index's exclusive lock behind
-# a multi-attempt backoff, so on a home whose brain is being served it spends
-# seconds no caller sanctioned and then falls back to this same default anyway.
-# Spending a caller's retrieval budget on a knob read costs the per-source
-# document, which is the only surface that says WHICH corpus could not be read
-# and the only one carrying the rows that did come back.
+# The floor GBrain actually applies lives in the brain's DATABASE plane. At the
+# pinned release `applyAutocut` is handed `resolvedMode.autocut_min_top`, which
+# `loadSearchModeConfig` resolves through `engine.getConfig` alone, and that is
+# the DB `config` table; the nested file-plane shape has one reader in the pin
+# and nothing calls it. `gbrain config get` reports the file/env plane ahead of
+# the database, so its answer is NOT the floor unless it says the database
+# answered. This command therefore accepts a value only from the db plane: a
+# file-plane number is a value this host can see, never a value the search used,
+# and judging a row against it would be the false statement this surface exists
+# to avoid.
 #
-# GBrain's autocut reads this knob from the brain's database plane, which is
-# out of reach here, so a floor stored only there reads as the pinned default.
-# That is why every answer discloses which value each corpus was judged against
-# and where it came from: this command never presents a floor as a setting it
-# did not actually read.
-#
-# Resolved lazily, and only when a corpus returned rows to judge, so a search
-# that found nothing reads no plane at all.
+# The read is an engine connect, so it is fenced three ways. It is lazy, taken
+# only when the local corpus returned rows to judge. It is bounded by a short
+# slice of what is LEFT of the budget the caller granted, so it can never push
+# the run past a consumer's kill deadline. And it disables GBrain's connect
+# retry ladder, because on a home whose brain is being served the daemon holds
+# the index's exclusive lock and walking that ladder spends seconds only to
+# arrive at the pinned default anyway. Anything short of a db-plane answer
+# inside that slice is the pinned default, disclosed as such.
+RECALL_FLOOR_READ_MAX_SECONDS=2
+
+recall_floor_read_slice() {  # -> seconds this run may spend, or non-zero
+  local left=$RECALL_FLOOR_READ_MAX_SECONDS
+  if [ -n "$RECALL_DEADLINE" ]; then
+    left=$((RECALL_DEADLINE - SECONDS))
+    [ "$left" -le "$RECALL_FLOOR_READ_MAX_SECONDS" ] || left=$RECALL_FLOOR_READ_MAX_SECONDS
+  fi
+  [ "$left" -ge 1 ] || return 1
+  printf '%s\n' "$left"
+}
+
 RECALL_LOCAL_FLOOR=""
 RECALL_LOCAL_FLOOR_READ=0
 resolve_local_autocut_floor() {
@@ -1001,36 +1019,37 @@ resolve_local_autocut_floor() {
   RECALL_LOCAL_FLOOR_READ=1
   RECALL_LOCAL_FLOOR=""
   [ -n "${FM_GBRAIN_HOME_DIR:-}" ] || return 0
-  local file="$FM_GBRAIN_HOME_DIR/.gbrain/config.json"
-  [ -f "$file" ] || return 0
-  # `set` stores a dotted key flat and `get` resolves flat before nested, so
-  # both spellings are read the same way GBrain reads them. A value outside
-  # [0, 1] is what GBrain itself refuses, so it is left unread rather than used.
-  RECALL_LOCAL_FLOOR=$(jq -r '
-    if type != "object" then empty
-    else
-      (if has("search.autocut_min_top") then .["search.autocut_min_top"]
-       elif (.search | type) == "object" then .search.autocut_min_top
-       else null end) as $v
-      | if $v == null then empty
-        else (try ($v | tostring | tonumber) catch null) as $n
-          | if $n != null and $n >= 0 and $n <= 1 then $n else empty end
-        end
-    end
-  ' "$file" 2>/dev/null) || RECALL_LOCAL_FLOOR=""
+  command -v "$GBRAIN_BIN" >/dev/null 2>&1 || return 0
+  local slice out_file err_file rc=0 value
+  slice=$(recall_floor_read_slice) || return 0
+  out_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall-floor.XXXXXX" 2>/dev/null) || return 0
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-recall-floor.XXXXXX" 2>/dev/null) || {
+    rm -f "$out_file"
+    return 0
+  }
+  # Scratch that could not be created is not a setup failure: it costs the
+  # knob, never the run, so the exit contract stays exactly where it was.
+  (
+    GBRAIN_HOME="$FM_GBRAIN_HOME_DIR" GBRAIN_NO_RETRY_CONNECT=1 \
+      fm_run_timed "$slice" "$GBRAIN_BIN" config get search.autocut_min_top
+  ) >"$out_file" 2>"$err_file" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q '^\[config\] source: db plane' "$err_file"; then
+    value=$(head -n 1 "$out_file" | tr -d '[:space:]')
+    RECALL_LOCAL_FLOOR=$(jq -rn --arg v "$value" \
+      'try (($v | tonumber) as $n | select($n >= 0 and $n <= 1) | $n) catch empty' \
+      2>/dev/null) || RECALL_LOCAL_FLOOR=""
+  fi
+  rm -f "$out_file" "$err_file"
   return 0
 }
 
-# The main brain is read over MCP and has no configuration plane this host can
-# query at all, so its floor falls back to this home's readable value and then
-# to the pinned default. Which of the three was used is carried on the row
-# rather than silently substituted.
-autocut_floor_row() {  # <corpus> <own-value-or-empty> -> floor row
-  local corpus=$1 own=$2 value source
-  if [ -n "$own" ]; then
-    value=$own; source=config-file
-  elif [ -n "$RECALL_LOCAL_FLOOR" ]; then
-    value=$RECALL_LOCAL_FLOOR; source=local-config-file
+# The main brain is read over MCP and has no database plane this host can query,
+# so it is judged against the pinned default and says so. Borrowing this home's
+# value for it would claim a setting the fleet brain never reported.
+autocut_floor_row() {  # <corpus> -> floor row
+  local corpus=$1 value source
+  if [ "$corpus" = local ] && [ -n "$RECALL_LOCAL_FLOOR" ]; then
+    value=$RECALL_LOCAL_FLOOR; source=db-config
   else
     value=$AUTOCUT_MIN_TOP_DEFAULT; source=pinned-default
   fi
@@ -1073,21 +1092,56 @@ trim_recall_read_log() {  # <file>
 # on forever, and a section this run cannot enter costs the record, never the
 # search.
 RECALL_LOG_LOCK_STALE_SECONDS=30
-RECALL_LOG_LOCK_TRIES=40
+RECALL_LOG_LOCK_MAX_WAIT_SECONDS=1
+
+# A holder that died mid-section leaves its directory behind, so a stale hold is
+# swept by age. The sweep has to be single-winner or it recreates the very
+# interleaving the lock prevents: two waiters that sampled the same stale mtime
+# would each remove the directory, and the second would remove the lock the
+# first had already re-created. Renaming the directory IS the claim, because a
+# rename is atomic and only one sweeper can win it.
+recall_log_lock_sweep_stale() {  # <lock-dir>
+  local lock=$1 held now claimed
+  held=$(recall_stat_mtime "$lock")
+  [ -n "$held" ] || return 0
+  now=$(date +%s 2>/dev/null || printf '')
+  case $now in '' | *[!0-9]*) return 0 ;; esac
+  [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ] || return 0
+  claimed="$lock.stale.$$"
+  mv "$lock" "$claimed" 2>/dev/null || return 0
+  rmdir "$claimed" 2>/dev/null || rm -rf "$claimed" 2>/dev/null || true
+  return 0
+}
+
+# A host whose sleep refuses a fractional argument must not turn each pause into
+# a whole second, so the shape of the pause is probed once and a host without
+# one spins on mkdir alone rather than sleeping.
+RECALL_LOG_LOCK_PAUSE=unknown
+recall_log_lock_pause() {
+  case $RECALL_LOG_LOCK_PAUSE in
+    yes) sleep 0.05 2>/dev/null || true ;;
+    no) : ;;
+    *) if sleep 0.05 2>/dev/null; then RECALL_LOG_LOCK_PAUSE=yes; else RECALL_LOG_LOCK_PAUSE=no; fi ;;
+  esac
+  return 0
+}
+
+# The wait is bounded by whichever comes first: a short ceiling of its own, or
+# what is LEFT of the budget the caller granted. This runs after the document
+# has already been printed, and a consumer that kills the run on its own
+# deadline discards that document, so a record nobody promised must never be
+# the reason an operator is told the brain was unreachable. Past the budget the
+# lock is tried exactly once and the record is dropped.
 recall_read_log_lock() {  # <lock-dir> -> 0 when held
-  local lock=$1 tries=0 held now
+  local lock=$1 deadline=$((SECONDS + RECALL_LOG_LOCK_MAX_WAIT_SECONDS))
+  if [ -n "$RECALL_DEADLINE" ] && [ "$RECALL_DEADLINE" -lt "$deadline" ]; then
+    deadline=$RECALL_DEADLINE
+  fi
   while :; do
     mkdir "$lock" 2>/dev/null && return 0
-    held=$(recall_stat_mtime "$lock")
-    now=$(date +%s 2>/dev/null || printf '0')
-    case $now in '' | *[!0-9]*) now=0 ;; esac
-    if [ -n "$held" ] && [ "$now" -gt 0 ] \
-       && [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ]; then
-      rmdir "$lock" 2>/dev/null || true
-    fi
-    tries=$((tries + 1))
-    [ "$tries" -lt "$RECALL_LOG_LOCK_TRIES" ] || return 1
-    sleep 0.05 2>/dev/null || sleep 1
+    recall_log_lock_sweep_stale "$lock"
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    recall_log_lock_pause
   done
 }
 
@@ -1177,7 +1231,7 @@ cmd_search() {
   # still reaches the fleet's shared corpus, which needs only curl and a token,
   # and a home whose main brain is stopped still reads its own index.
   local rows=() results='[]' answered=0 owner=0 params shaped count
-  local local_state="" local_detail="" local_count=0 answered_corpora=()
+  local local_state="" local_detail="" local_count=0
   if fm_gbrain_is_main_brain_owner "$HOME_PATH"; then owner=1; fi
 
   local read_local=0 read_main=0 main_is_local=0
@@ -1227,7 +1281,6 @@ cmd_search() {
       fi
     fi
     rows+=("$(source_row local "$local_state" "$FM_GBRAIN_BRAIN_ROOT" "$local_count" "$local_detail")")
-    [ "$local_state" != ok ] || answered_corpora+=(local)
   fi
 
   if [ "$read_main" -eq 1 ]; then
@@ -1251,7 +1304,6 @@ cmd_search() {
       count=$(printf '%s' "$shaped" | jq 'length')
       results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
       rows+=("$(source_row main ok "$MAIN_MCP_URL" "$count")")
-      answered_corpora+=(main)
       answered=1
     else
       rows+=("$(source_row main degraded "$MAIN_MCP_URL" 0 "$MAIN_ERR")")
@@ -1262,16 +1314,16 @@ cmd_search() {
   results=$(annotate_search_results "$results" "$HOME_PATH")
   results=$(printf '%s' "$results" | jq -c "$JQ_MERGE_BY_RANK"'. | merge_by_rank')
 
-  # The floor is only read when there are rows to judge, and only after the
-  # run's deadline has been set and every retrieval leg has spent what it was
-  # granted. A search that found nothing needs no floor and reads no plane.
-  if [ "$answered" -eq 1 ] && [ "$(printf '%s' "$results" | jq 'length')" -gt 0 ]; then
-    resolve_local_autocut_floor
-    for corpus in ${answered_corpora[@]+"${answered_corpora[@]}"}; do
-      case $corpus in
-        local) floor_rows+=("$(autocut_floor_row local "$RECALL_LOCAL_FLOOR")") ;;
-        main) floor_rows+=("$(autocut_floor_row main "")") ;;
-      esac
+  # The floor is read only for a corpus that actually returned rows to judge,
+  # and only after the run's deadline has been set and every retrieval leg has
+  # spent what it was granted. A search that found nothing needs no floor and
+  # reads no plane, and a run whose budget is already gone reads none either.
+  local judged_corpora
+  judged_corpora=$(printf '%s' "$results" | jq -r '[.[].source] | unique[]' 2>/dev/null || true)
+  if [ "$answered" -eq 1 ] && [ -n "$judged_corpora" ]; then
+    for corpus in $judged_corpora; do
+      [ "$corpus" != local ] || resolve_local_autocut_floor
+      floor_rows+=("$(autocut_floor_row "$corpus")")
     done
     floors=$(printf '%s\n' ${floor_rows[@]+"${floor_rows[@]}"} | jq -c -s 'map(select(. != null))')
   fi

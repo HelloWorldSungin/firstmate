@@ -33,23 +33,42 @@ STUB="$STUB_DIR/gbrain"
 cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 set -u
-: > "$FM_STUB_ARGV"
-for a in "$@"; do printf '%s\n' "$a" >> "$FM_STUB_ARGV"; done
+# The knob read and the operation call are recorded to separate files. They are
+# different questions - what the wrapper asked the brain to retrieve, and what
+# it asked about its configuration - and the wrapper does not fix their order,
+# so one shared file would make every argv assertion depend on that order.
+STUB_ARGV=$FM_STUB_ARGV
+STUB_ENV=$FM_STUB_ENV
+if [ "${1:-}" = config ]; then
+  STUB_ARGV="$FM_STUB_ARGV.config"
+  STUB_ENV="$FM_STUB_ENV.config"
+fi
+: > "$STUB_ARGV"
+for a in "$@"; do printf '%s\n' "$a" >> "$STUB_ARGV"; done
 {
   printf 'GBRAIN_HOME=%s\n' "${GBRAIN_HOME:-}"
   printf 'OLLAMA_BASE_URL=%s\n' "${OLLAMA_BASE_URL:-}"
   printf 'MINIMAX_API_KEY_SET=%s\n' "$(if [ -n "${MINIMAX_API_KEY:-}" ]; then echo yes; else echo no; fi)"
   printf 'MINIMAX_API_KEY=%s\n' "${MINIMAX_API_KEY:-}"
-} > "$FM_STUB_ENV"
-# A real brain answers `config get` from its own configuration plane, and the
-# wrapper reads its weak-top floor there before it retrieves anything. It is
-# answered ahead of the retrieval reply so a case that fails, sleeps, or checks
-# what argv the retrieval call carried is unaffected by the extra read.
+  printf 'GBRAIN_NO_RETRY_CONNECT=%s\n' "${GBRAIN_NO_RETRY_CONNECT:-}"
+} > "$STUB_ENV"
+# A real `gbrain config get` prints the value on stdout and names the plane that
+# answered on stderr, and it prefers the file/env plane over the database. Only
+# the database plane is the floor a search actually applied, so the stub speaks
+# both dialects and a case chooses which one answers.
 if [ "${1:-}" = config ] && [ "${2:-}" = get ]; then
   [ "${FM_STUB_CONFIG_SLEEP:-0}" = 0 ] || sleep "$FM_STUB_CONFIG_SLEEP"
   case "${3:-}" in
-    search.autocut_min_top) printf '%s\n' "${FM_STUB_AUTOCUT_MIN_TOP:-0.35}"; exit 0 ;;
-    *) printf 'Config key not found\n'; exit 1 ;;
+    search.autocut_min_top)
+      [ -n "${FM_STUB_AUTOCUT_MIN_TOP:-}" ] || { printf 'Config key not found: %s\n' "$3" >&2; exit 1; }
+      printf '%s\n' "$FM_STUB_AUTOCUT_MIN_TOP"
+      if [ "${FM_STUB_AUTOCUT_PLANE:-db}" = db ]; then
+        printf '[config] source: db plane\n' >&2
+      else
+        printf '[config] source: file/env plane (~/.gbrain/config.json or env)\n' >&2
+      fi
+      exit 0 ;;
+    *) printf 'Config key not found: %s\n' "$3" >&2; exit 1 ;;
   esac
 fi
 [ "${FM_STUB_SLEEP:-0}" = 0 ] || sleep "$FM_STUB_SLEEP"
@@ -67,12 +86,12 @@ stub_reply() {  # <json-file-content>
   printf '%s\n' "$1" > "$TMP_ROOT/stub-out.json"
   export FM_STUB_OUT="$TMP_ROOT/stub-out.json"
   export FM_STUB_RC=0
-  unset FM_STUB_STDERR FM_STUB_SLEEP FM_STUB_AUTOCUT_MIN_TOP 2>/dev/null || true
+  unset FM_STUB_STDERR FM_STUB_SLEEP FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE 2>/dev/null || true
 }
 
 stub_fail() {  # <rc> <stderr>
   export FM_STUB_RC=$1 FM_STUB_STDERR=$2
-  unset FM_STUB_OUT FM_STUB_AUTOCUT_MIN_TOP 2>/dev/null || true
+  unset FM_STUB_OUT FM_STUB_AUTOCUT_MIN_TOP FM_STUB_AUTOCUT_PLANE 2>/dev/null || true
 }
 
 SEARCH_HIT='[{"slug":"teardown-notes","title":"Teardown Notes","chunk_text":"Teardown refuses unlanded work.","score":0.91,"stale":false}]'
@@ -1532,17 +1551,18 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
 # The floor is GBrain's knob, not a constant this wrapper carries. An operator
 # who tunes their brain's search.autocut_min_top must move the verdict with it,
 # so a row that clears 0.35 and misses 0.50 is judged by the brain's own value.
-# The knob is set where GBrain's own file plane keeps it, which is the plane
-# this wrapper reads without ever connecting to the brain.
+# GBrain's autocut resolves that knob from the brain's database plane, so a
+# value is only the applied floor when the database is what answered.
 TUNED_ROW='[{"slug":"tuned","title":"Tuned","chunk_text":"above the pinned default, below this brain floor.","score":0.6,"rerank_score":0.40,"cosine":0.3,"evidence":"weak_semantic","create_safety":"unknown","stale":false}]'
-write_gbrain_config_plane "$MAIN_HOME" '{"engine":"pglite","search":{"autocut_min_top":0.50}}'
 stub_reply "$TUNED_ROW"
-run_recall "$MAIN_HOME" search --json --scope local "a brain that tuned its own floor"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=0.50 FM_STUB_AUTOCUT_PLANE=db \
+  bash "$CLI" search --json --scope local "a brain that tuned its own floor" 2>&1) || RECALL_RC=$?
 expect_code 0 "$RECALL_RC" "a tuned floor is still an ordinary read: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.5')" = true ] \
   || fail "the brain's own tuned floor must be the one reported: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = config-file ] \
-  || fail "a tuned floor comes from the brain's own config file: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = db-config ] \
+  || fail "a tuned floor comes from the brain database plane: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
   || fail "0.40 must be a miss against a brain floor of 0.50: $RECALL_OUT"
 ANSWER_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
@@ -1551,36 +1571,56 @@ assert_contains "$ANSWER_NOTICE" "0.5" \
 assert_not_contains "$ANSWER_NOTICE" "0.35" \
   "the notice must not quote a floor this read did not use: [$ANSWER_NOTICE]"
 
-# `gbrain config set` stores a dotted key flat, and `config get` resolves the
-# flat spelling first, so the wrapper must read the same shape GBrain writes.
-write_gbrain_config_plane "$MAIN_HOME" '{"engine":"pglite","search.autocut_min_top":0.50}'
+# The same number answered by the file/env plane is a value this host can see
+# and the running search never applied, so it must not move the verdict and must
+# not be presented as the brain's own setting.
 stub_reply "$TUNED_ROW"
-run_recall "$MAIN_HOME" search --json --scope local "a brain whose knob is stored flat"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.5')" = true ] \
-  || fail "a flat dotted key must be read the way GBrain reads it: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
-  || fail "a flat dotted key must move the verdict too: $RECALL_OUT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=0.50 FM_STUB_AUTOCUT_PLANE=file \
+  bash "$CLI" search --json --scope local "a floor the file plane answered" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a file-plane answer must not fail the search: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
+  || fail "a file-plane value is not the floor the search applied: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
+  || fail "a file-plane value must not become the floor: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "0.40 must not be judged a miss against a floor autocut never used: $RECALL_OUT"
+
+# Hand-writing the knob into GBrain's configuration file is the same story: the
+# file plane is not the plane autocut reads, so the verdict must not move.
+write_gbrain_config_plane "$MAIN_HOME" '{"engine":"pglite","search":{"autocut_min_top":0.50}}'
+stub_reply "$TUNED_ROW"
+run_recall "$MAIN_HOME" search --json --scope local "a knob written into the config file only"
+expect_code 0 "$RECALL_RC" "a config-file knob must not fail the search: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
+  || fail "a config-file knob is not the applied floor: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "a config-file knob must not move the verdict: $RECALL_OUT"
+clear_gbrain_config_plane "$MAIN_HOME"
 
 # A value GBrain itself would refuse is not a floor, so it is left unread.
-write_gbrain_config_plane "$MAIN_HOME" '{"engine":"pglite","search":{"autocut_min_top":"not-a-number"}}'
 stub_reply "$TUNED_ROW"
-run_recall "$MAIN_HOME" search --json --scope local "a plane holding a value that is not a floor"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=not-a-number FM_STUB_AUTOCUT_PLANE=db \
+  bash "$CLI" search --json --scope local "a plane holding a value that is not a floor" 2>&1) || RECALL_RC=$?
 expect_code 0 "$RECALL_RC" "an unreadable floor must not fail the search: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
   || fail "a value that is not a floor falls back to GBrain's pinned default: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
   || fail "a fallback floor must be disclosed as a fallback: $RECALL_OUT"
 
-write_gbrain_config_plane "$MAIN_HOME" '{"engine":"pglite","search":{"autocut_min_top":1.7}}'
 stub_reply "$TUNED_ROW"
-run_recall "$MAIN_HOME" search --json --scope local "a plane holding a floor outside the range"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=1.7 FM_STUB_AUTOCUT_PLANE=db \
+  bash "$CLI" search --json --scope local "a plane holding a floor outside the range" 2>&1) || RECALL_RC=$?
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
   || fail "a floor outside [0, 1] is what GBrain refuses and must not be used: $RECALL_OUT"
 
-# The same row, judged by the same brain with its floor left alone, clears.
-clear_gbrain_config_plane "$MAIN_HOME"
+# A brain that never stored the knob answers not-found, which is the fallback.
 stub_reply "$TUNED_ROW"
 run_recall "$MAIN_HOME" search --json --scope local "a brain that left its floor alone"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
+  || fail "a brain with no stored knob is judged against the pinned default: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
   || fail "0.40 clears the pinned default of 0.35: $RECALL_OUT"
 
@@ -1588,18 +1628,17 @@ pass "each corpus is judged against the floor its own brain configured, and a pl
 
 # --- 17b. the floor read never spends clock the caller did not grant --------
 #
-# `gbrain config get` connects to the engine, which takes the index's exclusive
-# lock behind a retry ladder, so a floor read routed through it would spend wall
-# clock outside the budget --timeout grants. A caller whose kill deadline is
-# sized to that budget - the dashboard runs `--scope all --timeout 6` and kills
-# at 13s - would then get a timeout instead of the per-source document, which is
-# the only surface naming which corpus could not be read.
+# The floor read connects to the engine, which takes the index's exclusive lock,
+# so a read that is not bounded by the run's own budget spends wall clock the
+# caller never granted. A caller whose kill deadline is sized to that budget -
+# the dashboard runs `--scope all --timeout 6` and kills at 13s - would then get
+# a timeout instead of the per-source document, which is the only surface naming
+# which corpus could not be read.
 #
-# The stub answers `config get` and can be made to hang on it. The outer bound
-# below mirrors the dashboard's arithmetic: two legs at 3s is a 6s ceiling, the
-# main brain spends 4s of it, and the kill lands at 8s. A run that consults the
-# engine for its floor cannot finish inside that; a run that reads the file
-# plane never wakes the hang at all.
+# The stub can be made to hang on `config get`. The outer bound below mirrors
+# the dashboard's arithmetic: two legs at 3s is a 6s ceiling, the main brain
+# spends 4s of it, and the kill lands at 8s. A brain that will not answer the
+# knob must cost the knob and nothing else.
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$ROOT/bin/fm-timeout-lib.sh"
 
@@ -1613,7 +1652,6 @@ mkdir -p "$FLOOR_HANG_HOME/config/gbrain-secrets"
 printf 'gbrain_cs_fake\n' > "$FLOOR_HANG_HOME/config/gbrain-secrets/main-brain-client-secret"
 chmod 0600 "$FLOOR_HANG_HOME/config/gbrain-secrets/main-brain-client-secret"
 jq -n '{version: 1, client_id: "fake-client"}' > "$FLOOR_HANG_HOME/config/gbrain-local.json"
-write_gbrain_config_plane "$FLOOR_HANG_HOME" '{"engine":"pglite","search":{"autocut_min_top":0.50}}'
 {
   printf 'event: message\n'
   printf 'data: %s\n' "$(jq -cn --arg t "$SEARCH_MISS" '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
@@ -1630,10 +1668,23 @@ unset FM_STUB_CONFIG_SLEEP
 expect_code 0 "$RECALL_RC" "a budgeted two-leg search must answer inside its own ceiling: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.sources[].source] | sort | join(",")')" = "local,main" ] \
   || fail "the structured per-source document must survive the run: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.5')" = true ] \
-  || fail "the tuned floor must still be the one used: $RECALL_OUT"
-[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = config-file ] \
-  || fail "the floor must come from the file plane, which needs no engine: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = pinned-default ] \
+  || fail "a knob read that could not finish inside the budget is the pinned default: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
+  || fail "a knob read that could not finish must not invent a floor: $RECALL_OUT"
+
+# The same run with a brain that answers its knob promptly still finishes inside
+# the same ceiling and uses the value the database plane reported, so the case
+# above is the budget doing its job rather than the read never being attempted.
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$FLOOR_HANG_HOME" PATH="$FAKE_BIN:$PATH" FM_FAKE_CURL_SLEEP=4 \
+  FM_STUB_AUTOCUT_MIN_TOP=0.50 FM_STUB_AUTOCUT_PLANE=db \
+  fm_run_timed 8 bash "$CLI" search --json --scope all --timeout 3 "a prompt knob read" 2>&1) \
+  || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a prompt knob read must still answer inside the ceiling: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "local")][0].autocut_min_top == 0.5')" = true ] \
+  || fail "a database-plane knob must be the floor the local corpus is judged against: $RECALL_OUT"
 
 # A search that found nothing has nothing to judge, so it reads no plane and
 # stays kind=none without consulting a floor at all.
@@ -1655,7 +1706,7 @@ expect_code 0 "$RECALL_RC" "an empty two-corpus read must answer inside its ceil
   || fail "an empty result list is still no confident match: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors | length')" -eq 0 ] \
   || fail "a search with nothing to judge must consult no floor: $RECALL_OUT"
-pass "the floor is read from a plane that needs no brain connect, lazily, and never outside the run budget"
+pass "the floor read is lazy, fenced by the run budget, and falls back to the pinned default rather than overrunning"
 
 # --- 18. the verdict is per corpus, never the head of the merged list --------
 #
@@ -1703,7 +1754,9 @@ assert_contains "$RECALL_OUT" "Confident match in main" \
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | sort | join(",")')" = "local,main" ] \
   || fail "both corpora that were read must disclose their floor: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].source')" = pinned-default ] \
-  || fail "the main brain has no plane this host can read and must say where its floor came from: $RECALL_OUT"
+  || fail "the main brain has no database plane this host can query and must say so: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].autocut_min_top == 0.35')" = true ] \
+  || fail "the fleet corpus must be judged against the pinned default, not a borrowed local value: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(.corpus == "main")][0].top_rerank_score == 0.978')" = true ] \
   || fail "the answer must carry the score the fleet corpus was judged on: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(.corpus == "local")][0].top_rerank_score == 0.0004')" = true ] \
@@ -1928,7 +1981,16 @@ expect_code 0 "$RECALL_RC" "an oversized record must not fail the search that wr
 
 # Concurrent searches against one home share the file, so the append and the
 # trim that follows it must not let one run overwrite another's newest line.
-: > "$CAP_FILE"
+# The file starts OVER the cap, so every one of these runs takes the trim path:
+# below the cap the trim returns at its size guard and the case would prove only
+# that append-mode writes do not interleave, which needs no lock at all.
+CAP_I=0
+while [ "$CAP_I" -lt 400 ]; do
+  printf '{"schema":"fm-recall-read.v1","at":"2026-08-25T00:00:00Z","query":"filler read %s","disposition":"unread"}\n' "$CAP_I"
+  CAP_I=$((CAP_I + 1))
+done > "$CAP_FILE"
+[ "$(wc -c < "$CAP_FILE" | tr -d '[:space:]')" -gt 4096 ] \
+  || fail "the concurrency fixture must start over the cap it is testing"
 stub_reply "$SEARCH_HIT_RERANK"
 CONC_PIDS=""
 CONC_I=0
@@ -1939,10 +2001,13 @@ while [ "$CONC_I" -lt 6 ]; do
   CONC_I=$((CONC_I + 1))
 done
 for CONC_PID in $CONC_PIDS; do wait "$CONC_PID" || true; done
-[ "$(jq -s 'length' "$CAP_FILE")" -eq 6 ] \
-  || fail "every concurrent read must keep its own record: $(jq -s 'length' "$CAP_FILE") of 6"
+[ "$(wc -c < "$CAP_FILE" | tr -d '[:space:]')" -le 4096 ] \
+  || fail "the concurrent runs must have taken the trim path: $(wc -c < "$CAP_FILE") bytes"
+CONC_KEPT=$(jq -s -r '[.[] | select(.query | startswith("concurrent read "))] | length' "$CAP_FILE")
+[ "$CONC_KEPT" -eq 6 ] \
+  || fail "every concurrent read must survive its siblings' trims: $CONC_KEPT of 6"
 jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
-  || fail "concurrent appends must not interleave into a partial record: $(cat "$CAP_FILE")"
+  || fail "a concurrent trim must not leave a partial record: $(head -1 "$CAP_FILE")"
 
 # Deleting it is a supported thing to do: the next search recreates it.
 rm -f "$CAP_FILE"
