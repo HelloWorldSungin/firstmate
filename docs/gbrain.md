@@ -86,15 +86,15 @@ Every upgrade runs these seven steps in order, and any one of them failing is a 
    Run it after step 5, and expect it to report `skipped` wherever no GBrain is installed, which is a genuine absence of evidence rather than a pass.
    Session start runs it too, through [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh), so a pin left behind by an upgrade performed outside this procedure surfaces as a `GBRAIN_PIN:` diagnostic on the next session rather than waiting for a reviewer to notice; a home with no GBrain installed and a run that agrees both stay silent.
 2. **Baseline.** Record an evaluation run on the current version first, because there is nothing to compare an upgraded brain against otherwise ([Measuring retrieval quality](#measuring-retrieval-quality)).
-3. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
-4. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
+3. **Back up.** Record the current source commit, take the backup below with no writer running, record the resulting backup path in the upgrade's delivery evidence, and keep it until the upgraded brain has passed step 6.
+4. **Compatibility check.** Read the release notes between the two tags for schema, embedding, reranker, and MCP changes, and check the installed schema version with `gbrain doctor --json`, whose `schema_version` check reports the brain's version and the version the code expects.
 5. **Upgrade and migrate.** Check out the new tag in the pinned source checkout, reinstall with `--frozen-lockfile --ignore-scripts`, then apply migrations with `--no-autopilot-install`, exactly as the commands below do.
 6. **Smoke tests.** `gbrain doctor --json` must report `connection`, `schema_version`, `embeddings`, `embedding_provider`, `embedding_width_consistency`, and `reranker_health` as `ok`.
    Then run `tests/fm-recall.test.sh` for the wrapper contract and the live `tests/fm-gbrain-readonly-e2e.test.sh` for the real read-only share, and refresh [verification/gbrain-retrieval.md](verification/gbrain-retrieval.md).
 7. **Gate.** Re-run the evaluation and compare it to the step-2 baseline with `bin/fm-gbrain-eval.sh compare`.
    A metric that falls below the evaluation set's threshold is a rollback trigger, not a new normal.
 
-Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-4 backup recorded there.
+Rolling back is checking out the pre-upgrade commit recorded in the upgrade's delivery evidence, reinstalling from that commit's lockfile, and restoring the step-3 backup recorded there.
 Restore its archive or outbox, index, and runtime configuration together, because an index from one version under a runtime configuration from another is the one state neither the pin nor the smoke tests can detect.
 
 To upgrade deliberately, select a newer verified GBrain tag, then run the block below from the Firstmate code root.
@@ -168,7 +168,7 @@ An unreadable serving relationship, declared plane, runtime plane, or credential
 
 ### Announce a maintenance window
 
-The brain stops answering while upgrade steps 4 and 5 run, and the same is true of a reindex or an embedding migration below.
+The brain stops answering while upgrade steps 3, 4, and 5 run, and the same is true of a reindex or an embedding migration below.
 Set `FM_GBRAIN_MAINTENANCE_STATE` to `upgrading` or `reindexing`, with any free text in `FM_GBRAIN_MAINTENANCE_DETAIL`, so the window reads as deliberate care rather than as an unexplained outage, and unset it once the step-7 gate passes.
 `bin/fm-gbrain-health.sh` never infers the state, because only the operator's announcement has the timing to be true.
 The dashboard's GBrain panel is what renders it, and it reads the value from the dashboard server's own environment rather than from any home's configuration.
