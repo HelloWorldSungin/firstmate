@@ -133,6 +133,9 @@
 # the trim that follows it run under one advisory lock, bounded by the run's own
 # remaining budget, so concurrent searches cannot overwrite each other's newest
 # lines and a record nobody promised is never why a caller's deadline fires.
+# The lock directory and the scratch names the trim and the stale sweep leave
+# behind when a run is killed mid-section are swept by age on a later search, so
+# none of them is a durable artifact and all of them are safe to delete.
 # Past the cap the oldest lines are
 # dropped and the newest tail is kept, and it is always safe to delete or trim
 # because the next search recreates it. A home with no local index writes
@@ -200,8 +203,10 @@
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
 #   FM_RECALL_TIMEOUT  default seconds per retrieval call, overriding the
 #                      per-command defaults above
-#   FM_GBRAIN_TIMEOUT  unused by search; the floor read is bounded by the run's
-#                      own remaining budget instead
+#   FM_GBRAIN_TIMEOUT  seconds allowed for the main brain's token mint, which a
+#                      main-scoped or all-scoped search makes before the MCP
+#                      read (default 10). The floor read does not use it and is
+#                      bounded by the run's own remaining budget instead.
 #   FM_RECALL_JSONL_MAX_BYTES  size cap for state/recall.jsonl
 #                      (default 262144)
 set -euo pipefail
@@ -1148,6 +1153,29 @@ RECALL_LOG_LOCK_MAX_POLLS=20
 # would each remove the directory, and the second would remove the lock the
 # first had already re-created. Renaming the directory IS the claim, because a
 # rename is atomic and only one sweeper can win it.
+# The trim's scratch file and a claimed stale-lock directory are each removed by
+# the invocation that made them, so a run killed in between leaves one behind
+# under a name nothing else would ever look at. They are swept by the same age
+# rule the lock itself uses, and from the append path rather than the contention
+# path, because a home nobody is competing for never reaches the lock sweep at
+# all. The age is what keeps a live run's scratch safe: a trim finishes in
+# milliseconds, so anything this old belongs to a run that is gone.
+recall_log_sweep_leftovers() {  # <log-file>
+  local file=$1 leftover held now=""
+  for leftover in "$file".trim.* "$file".lock.stale.*; do
+    [ -e "$leftover" ] || continue
+    if [ -z "$now" ]; then
+      now=$(date +%s 2>/dev/null || printf '')
+      case $now in '' | *[!0-9]*) return 0 ;; esac
+    fi
+    held=$(recall_stat_mtime "$leftover")
+    [ -n "$held" ] || continue
+    [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ] || continue
+    rm -rf "$leftover" 2>/dev/null || true
+  done
+  return 0
+}
+
 recall_log_lock_sweep_stale() {  # <lock-dir>
   local lock=$1 held now claimed
   held=$(recall_stat_mtime "$lock")
@@ -1194,6 +1222,7 @@ recall_read_log_lock() {  # <lock-dir> -> 0 when held
 
 recall_read_log_append() {  # <file> <line>
   local file=$1 line=$2 lock="$1.lock"
+  recall_log_sweep_leftovers "$file"
   recall_read_log_lock "$lock" || return 0
   { printf '%s\n' "$line" >> "$file" 2>/dev/null \
       && trim_recall_read_log "$file"; } || true

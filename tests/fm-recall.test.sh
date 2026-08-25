@@ -2083,6 +2083,31 @@ CONC_KEPT=$(jq -s -r '[.[] | select(.query | startswith("concurrent read "))] | 
 [ "$CONC_KEPT" -eq "$(jq -s -r '[.[] | select(.query | startswith("concurrent read ")) | .query] | unique | length' "$CAP_FILE")" ] \
   || fail "a raced trim must not duplicate a record: $(cat "$CAP_FILE")"
 
+# The trim and the stale-lock sweep each leave a scratch name behind when a run
+# is killed between creating it and removing it, and nothing else would ever
+# look at those names. A later search sweeps them by the same age rule the lock
+# uses, and leaves a fresh one alone because a live run may still be inside it.
+SWEEP_HOME=$(make_home "$TMP_ROOT/sweep")
+mkdir -p "$SWEEP_HOME/data/gbrain/pglite" "$SWEEP_HOME/state"
+SWEEP_OLD_TRIM="$SWEEP_HOME/state/recall.jsonl.trim.999999"
+SWEEP_OLD_CLAIM="$SWEEP_HOME/state/recall.jsonl.lock.stale.999999"
+SWEEP_NEW_TRIM="$SWEEP_HOME/state/recall.jsonl.trim.999998"
+printf 'abandoned scratch\n' > "$SWEEP_OLD_TRIM"
+mkdir -p "$SWEEP_OLD_CLAIM"
+touch -d '2026-08-01T00:00:00Z' "$SWEEP_OLD_TRIM" "$SWEEP_OLD_CLAIM"
+printf 'a live run is still inside this\n' > "$SWEEP_NEW_TRIM"
+stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$SWEEP_HOME" search --json --scope local "a read that sweeps what a killed run left"
+expect_code 0 "$RECALL_RC" "a sweep must never fail the search it runs under: $RECALL_OUT"
+assert_absent "$SWEEP_OLD_TRIM" \
+  "an abandoned trim scratch must be swept by age"
+assert_absent "$SWEEP_OLD_CLAIM" \
+  "an abandoned stale-lock claim must be swept by age"
+assert_present "$SWEEP_NEW_TRIM" \
+  "a scratch young enough to belong to a live run must be left alone"
+assert_present "$SWEEP_HOME/state/recall.jsonl" \
+  "the read that swept must still leave its own record"
+
 # Deleting it is a supported thing to do: the next search recreates it.
 rm -f "$CAP_FILE"
 stub_reply "$SEARCH_HIT_RERANK"
