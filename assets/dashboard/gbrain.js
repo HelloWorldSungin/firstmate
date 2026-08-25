@@ -86,10 +86,9 @@ function auditAgeSuffix(observed) {
   return ` (audited ${ageLabel((Date.now() - at) / 1000)})`;
 }
 
-// The audit records a count only where it measured one, so a missing count can
-// be absent by design - an audit that could not list the index measured neither
-// side. Defaulting that to zero would turn "we did not count" into "we counted
-// none", which is the whole failure the null exists to prevent.
+// Green is reserved for a positive claim, so every state that has not earned
+// one takes a tone that does not make it: the hollow ring for something that
+// could not be read, and blue for a card making no claim in either direction.
 const CAPTURE_TONES = {
   ready: "green",
   pending: "amber",
@@ -100,6 +99,10 @@ const CAPTURE_TONES = {
   off: "unknown",
 };
 
+// The audit records a count only where it measured one, so a missing count can
+// be absent by design - an audit that could not list the index measured neither
+// side. Defaulting that to zero would turn "we did not count" into "we counted
+// none", which is the whole failure the null exists to prevent.
 function missingClause(missing) {
   if (typeof missing !== "number" || !Number.isFinite(missing)) {
     return "the index no longer serves captured documents this audit did not count";

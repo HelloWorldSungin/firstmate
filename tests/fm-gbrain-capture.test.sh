@@ -72,9 +72,29 @@ if [ "${1:-}" = list ]; then
   for page in "$FM_TEST_PAGES"/*.md; do
     [ -e "$page" ] || continue
     page=${page##*/}
-    printf '%s\tfirstmate-task\t2026-08-25\ttitle\n' "$(printf '%s' "${page%.md}" | tr '_' '/')"
+    slug=$(printf '%s' "${page%.md}" | tr '_' '/')
+    # A listing can drop a page the index still serves, and it can answer with
+    # rows nothing recognizes as a slug. Both look identical to a page that is
+    # gone, which is the whole reason a gap may not rest on this listing.
+    case "${FM_TEST_LIST_OMIT:-}" in '') ;; *) case "$slug" in *"$FM_TEST_LIST_OMIT"*) continue ;; esac ;; esac
+    if [ -n "${FM_TEST_LIST_GARBLE:-}" ]; then
+      printf 'row without any tab-separated slug\n'
+    else
+      printf '%s\tfirstmate-task\t2026-08-25\ttitle\n' "$slug"
+    fi
   done
   exit 0
+fi
+# A direct read is what a reported gap actually rests on, so the stub answers
+# `get` from the same stored pages and refuses a page it does not have with its
+# own distinct status, the way a real not-found differs from a real error.
+if [ "${1:-}" = get ]; then
+  [ -n "${FM_TEST_PAGES:-}" ] || { echo "the fake brain needs FM_TEST_PAGES" >&2; exit 3; }
+  page="$FM_TEST_PAGES/$(printf '%s' "${2:-}" | tr '/' '_').md"
+  if [ -f "$page" ] && [ -z "${FM_TEST_GET_BROKEN:-}" ]; then cat "$page"; exit 0; fi
+  [ -z "${FM_TEST_GET_BROKEN:-}" ] || { echo "the index is locked by another writer" >&2; exit 7; }
+  echo "no such page: ${2:-}" >&2
+  exit 4
 fi
 [ "${1:-}" = capture ] || { echo "unsupported gbrain call: $*" >&2; exit 2; }
 shift
@@ -855,6 +875,122 @@ test_a_capped_listing_keeps_its_counts_as_bounds() {
   pass "a capped listing keeps its counts and marks which way each can be wrong"
 }
 
+# Absence from a listing is what EVERY way a listing can fail looks like, so a
+# gap may not rest on it. The listing proposes; a direct read decides.
+test_a_gap_rests_on_a_direct_read_rather_than_on_the_listing() {
+  local home out slug
+  home=$(make_home audit-verified)
+  seed_manifest "$home" ship-a "Add the widget"
+  seed_manifest "$home" ship-b "Fix the drain"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
+
+  # A listing that drops a page the index still serves reads exactly like a
+  # deleted page. The direct read is what tells them apart.
+  slug=$(cap "$home" status --json | jq -r '.documents[] | select(.source.id == "ship-b") | .slug')
+  out=$(FM_TEST_LIST_OMIT=ship-b cap "$home" audit 2>&1) \
+    && fail "a listing that dropped a served page must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "a page the brain still serves must never be reported missing: $out"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "a listing proved wrong must be inconclusive: $out"
+  printf '%s' "$out" | grep -q 'still serves' \
+    || fail "the detail must name the listing as the untrustworthy side: $out"
+
+  # A listing whose rows carry no slug at all is the same class, and it is the
+  # one that would otherwise name every captured document as absent.
+  out=$(FM_TEST_LIST_GARBLE=1 cap "$home" audit 2>&1) \
+    && fail "a listing with no parseable rows must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "an unparseable listing must never become a gap: $out"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "an unparseable listing must be inconclusive: $out"
+
+  # A read that could not answer either way is not evidence of absence.
+  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
+  out=$(FM_TEST_GET_BROKEN=1 cap "$home" audit 2>&1) \
+    && fail "an audit whose reads failed must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "a read that could not answer must never confirm a gap: $out"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "an unreadable candidate must be inconclusive: $out"
+
+  # And the finding the audit exists for still lands: the page really is gone,
+  # the direct read says so, and the gap names it.
+  out=$(cap "$home" audit 2>&1) && fail "a genuinely deleted page must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' || fail "a deleted page must still be a gap: $out"
+  printf '%s' "$out" | grep -qF "$slug" || fail "the gap must name the deleted page: $out"
+  jq -e '.state == "gap" and .missing == 1 and .bounds.missing == "exact"' \
+    "$home/state/.gbrain-audit" >/dev/null \
+    || fail "a verified gap must record an exact count: $(cat "$home/state/.gbrain-audit")"
+  pass "a gap rests on a direct read rather than on absence from the listing"
+}
+
+test_a_candidate_set_past_the_probe_ceiling_is_refused_rather_than_verified() {
+  local home out
+  home=$(make_home audit-probe-cap)
+  seed_manifest "$home" ship-a "Add the widget"
+  seed_manifest "$home" ship-b "Fix the drain"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
+
+  # A listing that named nothing makes every captured document a candidate. A
+  # candidate set that large is better evidence that the listing is wrong than
+  # that the pages are gone, so it is refused rather than read one page at a time.
+  out=$(FM_TEST_LIST_GARBLE=1 FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES=1 cap "$home" audit 2>&1) \
+    && fail "a candidate set past the ceiling must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "an oversized candidate set must be inconclusive: $out"
+  printf '%s' "$out" | grep -q 'FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES' \
+    || fail "the detail must name the ceiling that stopped it: $out"
+  jq -e '.state == "inconclusive" and .bounds.missing == "at-most" and .bounds.active == "at-least"' \
+    "$home/state/.gbrain-audit" >/dev/null \
+    || fail "a refused verification must still bound what it measured: $(cat "$home/state/.gbrain-audit")"
+  pass "a candidate set past the probe ceiling is refused rather than verified"
+}
+
+# --- our own rewrites are not the source changing ---------------------------
+
+# The truncation marker is part of the stored body, and the stored body is what
+# decides whether a page needs rewriting - so this pipeline can move a body
+# nobody edited. What the refreshed line claims is that the SOURCE changed, so
+# it fires from a fingerprint of the durable source instead.
+test_a_body_this_pipeline_rewrote_is_not_named_as_a_source_change() {
+  local home page out before after
+  home=$(make_home source-fingerprint)
+  seed_manifest "$home" scout-a "Investigate the drain"
+  {
+    printf '# Report\n\n'
+    awk 'BEGIN { while (i++ < 200) print "the cache key is off by one" }'
+  } | seed_report "$home" scout-a
+  cap "$home" task scout-a --require-brain >/dev/null || fail "capture must succeed"
+  page=$(find "$home/pages" -name '*.md' | head -1)
+  grep -q 'Capture truncated at' "$page" && fail "the first capture must not have been cut"
+  before=$(item_field "$home" scout-a '.source_version')
+  { [ -n "$before" ] && [ "$before" != null ]; } \
+    || fail "a captured task must record what it was captured from"
+
+  # The cap moves, so OUR marker rewrites the stored body while the report on
+  # disk is byte for byte what it was.
+  out=$(FM_GBRAIN_CAPTURE_MAX_BYTES=800 cap "$home" sweep --force 2>&1) || true
+  printf '%s' "$out" | grep -q '^refreshed ' \
+    && fail "a body this pipeline rewrote must not be named as a source change: $out"
+  grep -q 'Capture truncated at' "$page" \
+    || fail "the page must still be corrected, silently"
+  [ "$(item_field "$home" scout-a '.truncated')" = true ] || fail "the record must say it was cut"
+  after=$(item_field "$home" scout-a '.source_version')
+  [ "$before" = "$after" ] || fail "an untouched source must keep its fingerprint: $before -> $after"
+
+  # The positive counterpart on the same record: an edited report IS a source
+  # change, and the sweep that delivers it says so.
+  printf '\nVOIDED: that finding was wrong.\n' >> "$home/data/scout-a/report.md"
+  out=$(cap "$home" sweep --force 2>&1) && fail "a sweep that refreshed a page must exit non-zero"
+  printf '%s' "$out" | grep -q 'refreshed scout-a' \
+    || fail "an edited report must still be named: $out"
+  grep -q 'VOIDED' "$page" || fail "the named refresh must be true on the page"
+  [ "$(item_field "$home" scout-a '.source_version')" = "$before" ] \
+    && fail "an edited report must move the source fingerprint"
+  pass "a body this pipeline rewrote is re-delivered without claiming the source changed"
+}
+
 # --- the periodic refresh ---------------------------------------------------
 
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep() {
@@ -993,6 +1129,9 @@ test_the_audit_names_a_captured_document_the_index_no_longer_serves
 test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap
 test_a_listing_that_fails_without_a_message_is_still_inconclusive
 test_a_capped_listing_keeps_its_counts_as_bounds
+test_a_gap_rests_on_a_direct_read_rather_than_on_the_listing
+test_a_candidate_set_past_the_probe_ceiling_is_refused_rather_than_verified
+test_a_body_this_pipeline_rewrote_is_not_named_as_a_source_change
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep
 test_a_refresh_is_named_once_on_the_sweep_that_delivers_it
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain

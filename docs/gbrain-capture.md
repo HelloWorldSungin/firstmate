@@ -125,6 +125,17 @@ The refresh itself is `backfill`, not a second recomposition path: `backfill` al
 It now names and counts what it corrected - `refreshed <id>` and a `refreshed=` total - so a sweep reports the drift it closed instead of folding it into the ordinary captured count.
 Both are claims about a delivery rather than about a recomposition, so neither is made until that document reached the index: a run that recomposed a changed body but could not deliver it reports its errors and says nothing about a refresh, because the page is still serving the body the source moved away from.
 The record itself remembers which content version the index was last given, and only a landed delivery moves it, so a refresh whose first delivery failed is still named exactly once - on the later sweep that finally delivers it - rather than being corrected in silence.
+
+What the `refreshed` line claims is that the SOURCE changed, so it is fired from a fingerprint of the source rather than from the stored body:
+
+- The content version hashes the composed, redacted body, and it must move whenever that body moves, because that is what re-delivers a page that needs rewriting.
+- The source version hashes `data/<id>/outcome.json` and `data/<id>/report.md` as they sit on disk, before composition, before redaction, and before the cap.
+  A note has none, because a note's body arrives through `/stow` rather than from anything on disk to re-read.
+- Only the source version may back a claim about the source, because everything this pipeline writes into a body is in the content version and none of it is a change in the thing being captured: the truncation marker, the redaction placeholders, the schema string in the front matter, the front-matter rendering, the heading and its bullet list, the section headings, and the YAML escaping.
+  Manifest-derived values stay source-derived either way, because the manifest's own bytes are part of the source fingerprint.
+
+A body this pipeline rewrote on its own is therefore re-delivered silently: the page is corrected, and nothing claims a report changed that nobody edited.
+The first sweep after the truncation marker shipped is exactly that case, and a record captured before the source fingerprint existed has no recorded source for its served page, so its first re-delivery is silent too rather than guessed at.
 `bin/fm-recall.sh` judges the same drift at query time and marks a result stale; that is the read side telling a reader not to trust a page, and this is the write side making the page true again.
 
 ## Captured is not the same as served
@@ -140,6 +151,31 @@ Measured on this fleet, capture reported 291 archived while the index served 288
 - `inconclusive` - the listing could not be read, or came back at exactly its own `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` ceiling and may be incomplete.
   A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
   The verdict is decided from whether the listing command succeeded, never from whether it happened to explain itself, so a listing that dies without a message is inconclusive rather than a gap naming every captured document.
+
+A listing is the only thing that can say a page is absent, and absence from a listing is what EVERY way a listing can fail looks like, so the listing only proposes candidates and a direct read decides.
+Each candidate is asked for by slug with `gbrain get`, and it is reported missing only when that read fails the same way this brain fails for a slug the home never captured - a signature the audit learns by asking for one.
+A candidate the listing dropped but the brain still returns names the listing untrustworthy rather than the page gone, and a read that could not answer either way reaches no verdict at all.
+`FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES` (default 25) bounds that verification: a candidate set larger than it is better evidence that the listing is wrong than that the pages are gone, so it is reported inconclusive rather than verified one read at a time.
+
+Every direction the listing can fail, and what each does:
+
+| direction | outcome |
+| --- | --- |
+| `gbrain` is not installed | inconclusive |
+| the listing exits non-zero | inconclusive |
+| the listing times out | inconclusive |
+| it exits non-zero with nothing on stderr | inconclusive - the exit status is the signal, never the text |
+| it returns exactly its row ceiling | inconclusive, with `active` a floor and `missing` a ceiling |
+| it exits 0 with no parseable rows | inconclusive - the direct read returns the candidates |
+| its columns move, so no row's first field is a slug | inconclusive - same path |
+| it silently caps below the requested limit | inconclusive - the pages it dropped are still served |
+| a shared brain returns only other homes' rows | inconclusive - same, and the prefix already scopes the comparison |
+| the direct reads themselves fail | inconclusive - a page the listing does name is read back first, and a brain that cannot return that one is not trusted to say any page is gone |
+| a complete listing and a genuinely deleted page | `gap`, which is the finding the audit exists for |
+
+One direction stays narrowly open rather than being hidden.
+When the listing names no page at all there is no served page to read back, so the absence signature is the only evidence available, and a brain that failed every read that same way would report a gap.
+An oversized candidate set is refused rather than verified, which bounds that to a home whose whole corpus is small enough to have been lost.
 
 Every count in the verdict says how far it can be trusted, and `bounds` in the record carries that for each one:
 

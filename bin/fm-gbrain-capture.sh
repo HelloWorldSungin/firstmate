@@ -71,6 +71,10 @@
 #             records no active or missing count at all, and a capped one
 #             records active as a floor and missing as a ceiling whose named
 #             documents are candidates rather than findings.
+#             A gap rests on a direct read, never on absence from the listing:
+#             the listing proposes candidates and each one is asked for by slug,
+#             so a page the listing dropped but the brain still serves names the
+#             listing untrustworthy instead of naming the page gone.
 #   sweep     The structural re-capture trigger. A page goes stale when the
 #             durable report it was composed from is edited after delivery, and
 #             nothing about that edit reaches capture, because teardown already
@@ -112,6 +116,9 @@
 #   FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES  ceiling on one audit listing (default:
 #                                    4000); a listing that returns exactly this
 #                                    many rows is reported as inconclusive
+#   FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES  candidates the audit will verify with a
+#                                    direct read before calling the listing
+#                                    untrustworthy instead (default: 25)
 #   FM_GBRAIN_CAPTURE_SWEEP_INTERVAL seconds between sweeps (default: 21600)
 #
 # docs/gbrain-capture.md owns the contract; bin/fm-gbrain-capture-lib.sh owns
@@ -265,6 +272,14 @@ write_receipt() {  # <task-id> <status> <receipt> <detail>
 manifest_path() { printf '%s/%s/outcome.json\n' "$DATA" "$1"; }
 report_path() { printf '%s/%s/report.md\n' "$DATA" "$1"; }
 
+# The fingerprint of a task's durable source, which is exactly the two files
+# compose_task_body is allowed to read. Empty when the task has no durable
+# source at all, which is also what a note has: a note's body arrives from
+# /stow rather than from anything on disk this could re-read.
+task_source_version() {  # <task-id>
+  fm_gbrain_capture_source_version "$(manifest_path "$1")" "$(report_path "$1")" 2>/dev/null || printf ''
+}
+
 # The backslash is escaped BEFORE the quote, so the escape this adds is not
 # itself re-escaped. Both matter inside a double-quoted YAML scalar: a title
 # containing "C:\Users" would otherwise read as a unicode escape, and one ending
@@ -345,14 +360,14 @@ compose_task_body() {  # <task-id> <out>
 # stdout: a command substitution would run the build in a subshell and lose
 # every refusal reason it is supposed to surface.
 ENQUEUED_DOC_ID=""
-enqueue() {  # <kind> <source-id> <title> <raw-body-file>
-  local kind=$1 source_id=$2 title=$3 raw=$4 tag doc_id previous staged rc=0
+enqueue() {  # <kind> <source-id> <title> <raw-body-file> [<source-version>]
+  local kind=$1 source_id=$2 title=$3 raw=$4 source_version=${5:-} tag doc_id previous staged rc=0
   ENQUEUED_DOC_ID=""
   tag=$(fm_gbrain_capture_home_tag "$FM_HOME")
   doc_id=$(fm_gbrain_capture_document_id "$tag" "$kind" "$source_id")
   previous=$(fm_gbrain_capture_item_read "$DATA" "$doc_id" 2>/dev/null) || previous=""
   staged=$(mktemp) || { fm_gbrain_capture_fail "could not stage the outbox record"; return 2; }
-  fm_gbrain_capture_item_build "$FM_HOME" "$kind" "$source_id" "$title" "$raw" "$staged" "$previous" || rc=$?
+  fm_gbrain_capture_item_build "$FM_HOME" "$kind" "$source_id" "$title" "$raw" "$staged" "$previous" "$source_version" || rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -f "$staged"
     return "$rc"
@@ -409,7 +424,8 @@ process_item() {  # <document-id> <timeout> <force>
     # shellcheck disable=SC2016  # jq program text; $a/$page/$now are jq variables
     item_update "$doc_id" '.status = "captured" | .attempts = ($a | tonumber) | .last_error = null
       | .gbrain_document = $page | .captured_at = $now | .updated_at = $now
-      | .delivered_version = .content_version' \
+      | .delivered_version = .content_version
+      | .delivered_source_version = .source_version' \
       --arg a "$((attempts + 1))" --arg page "$page" --arg now "$now" || return 1
     printf '%s captured %s\n' "$doc_id" "$page"
     return 0
@@ -462,7 +478,7 @@ cmd_task() {
     [ "$require" -eq 1 ] && die "task $id has no durable manifest or report to capture"
     return 0
   }
-  enqueue task "$id" "$title" "$raw" || rc=$?
+  enqueue task "$id" "$title" "$raw" "$(task_source_version "$id")" || rc=$?
   doc_id=$ENQUEUED_DOC_ID
   rm -f "$raw"
   if [ "$rc" -eq 1 ]; then
@@ -623,7 +639,7 @@ cmd_backfill() {
       continue
     fi
     rc=0
-    enqueue task "$id" "$title" "$raw" || rc=$?
+    enqueue task "$id" "$title" "$raw" "$(task_source_version "$id")" || rc=$?
     doc_id=$ENQUEUED_DOC_ID
     rm -f "$raw"
     if [ "$rc" -eq 1 ]; then
@@ -640,12 +656,16 @@ cmd_backfill() {
     n=$((n + 1))
     enqueued=$((enqueued + 1))
     item=$(fm_gbrain_capture_item_read "$DATA" "$doc_id") || item='{}'
-    # The drift signal is the record's own memory of what the index was last
-    # given, not a diff of this run: a refresh whose first delivery failed is
-    # still a refresh on the sweep that finally lands it, and a record that has
-    # never been delivered is a first capture rather than a correction.
+    # The drift signal is the record's own memory of what SOURCE the index was
+    # last given, not a diff of this run and not a diff of the composed body: a
+    # refresh whose first delivery failed is still a refresh on the sweep that
+    # finally lands it, a record that has never been delivered is a first
+    # capture rather than a correction, and a body this pipeline rewrote on its
+    # own - a truncation marker, a new redaction class, a schema bump - moves
+    # the page without anyone having touched the report it came from.
     drifted=$(printf '%s' "$item" | jq -r '
-      if ((.delivered_version // "") != "") and (.delivered_version != .content_version)
+      if ((.delivered_source_version // "") != "") and ((.source_version // "") != "")
+         and (.delivered_source_version != .source_version)
       then 1 else 0 end') || drifted=0
     # Already captured at this exact content version: a rerun re-delivers
     # nothing, which is what makes the whole sweep cheap to restart.
@@ -750,6 +770,11 @@ cmd_status() {
 
 FM_GBRAIN_CAPTURE_AUDIT_SCHEMA=fm-gbrain-capture-audit.v1
 AUDIT_MAX_PAGES=${FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES:-4000}
+# A gap is expected to be a handful of documents. A candidate set larger than
+# this is stronger evidence that the listing is wrong than that the pages are
+# gone, so it is reported as inconclusive instead of being verified one read at
+# a time - which also bounds what an audit costs the index.
+AUDIT_MAX_PROBES=${FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES:-25}
 
 # The audit's durable result, so the surfaces that report a gap - the dashboard
 # panel and the session-start sweep - read one observation instead of each
@@ -786,6 +811,28 @@ list_active_slugs() {  # <timeout> <slug-prefix>
   printf '%s\n' "$out" | awk -F'\t' -v p="$prefix" 'NF >= 2 && index($1, p) == 1 { print $1 }' | sort -u
 }
 
+# A slug this home can never have captured, used to learn what THIS brain does
+# when asked for a page that is not there. Comparing a candidate's failure
+# against that signature is what lets an absent page be told from a brain that
+# could not answer, without this script having to know GBrain's exit codes.
+absence_probe_slug() { printf '%sfm-audit-probe/no-such-page\n' "$1"; }
+
+# Ask the index for one page directly.
+#   0  the page came back, so it is served whatever the listing said
+#   1  the read answered exactly the way it answers for a page that is not there
+#   2  the read could not tell us either way
+probe_page() {  # <slug> <timeout> <absent-signature>
+  local slug=$1 seconds=$2 absent=$3 out rc=0
+  out=$(run_gbrain "$seconds" get "$slug" 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    [ -n "$out" ] && return 0
+    return 2
+  fi
+  case "$rc" in 124 | 137 ) return 2 ;; esac
+  [ -n "$absent" ] && [ "$rc" = "$absent" ] && return 1
+  return 2
+}
+
 cmd_audit() {
   local json_mode=0 seconds=$CAPTURE_TIMEOUT
   while [ $# -gt 0 ]; do
@@ -798,15 +845,18 @@ cmd_audit() {
   case "$seconds" in ''|*[!0-9]*|0) die "--timeout takes a positive number of seconds" ;; esac
   brain_ready || die "$FM_GBRAIN_CAPTURE_ERROR"
 
-  local tag prefix docs stored_file active_file missing_file
+  local tag prefix docs stored_file active_file missing_file confirmed_file
   local stored truncated active missing state detail="" listing_error="" listing_failed=0
   local active_bound=exact missing_bound=exact
+  local candidates absent_rc="" probe_out="" present=0 untold=0 slug probe_rc=0
+  local control="" control_failed=0
   tag=$(fm_gbrain_capture_home_tag "$FM_HOME")
   prefix="firstmate/$tag/"
   docs=$(status_documents)
   stored_file=$(mktemp) || die "could not stage the audit"
   active_file=$(mktemp) || { rm -f "$stored_file"; die "could not stage the audit"; }
   missing_file=$(mktemp) || { rm -f "$stored_file" "$active_file"; die "could not stage the audit"; }
+  confirmed_file=$(mktemp) || { rm -f "$stored_file" "$active_file" "$missing_file"; die "could not stage the audit"; }
   printf '%s' "$docs" | jq -r '.[] | select(.status == "captured") | .slug' | sort -u > "$stored_file"
   stored=$(grep -c . < "$stored_file" | tr -cd '0-9')
   truncated=$(printf '%s' "$docs" | jq '[.[] | select(.truncated == true)] | length')
@@ -827,21 +877,51 @@ cmd_audit() {
   active=$(grep -c . < "$active_file" | tr -cd '0-9')
   comm -23 "$stored_file" "$active_file" > "$missing_file"
   missing=$(grep -c . < "$missing_file" | tr -cd '0-9')
+  candidates=$missing
 
-  # Fail closed in both directions a listing can lie: a listing that did not
-  # complete proves nothing, and a listing returned at exactly its own ceiling
-  # may have dropped the very pages this is looking for. Neither is reported as
-  # a gap, because a false gap is what would train an operator to ignore a real
-  # one.
+  # Every direction this listing can be wrong, and what each one does here. A
+  # gap rests on a page the brain itself failed to return, never on absence from
+  # a listing, because absence from a listing is the one thing every failure
+  # below looks like:
   #
-  # The two failures are not the same failure, so they do not record the same
-  # thing. Nothing was measured against an unreadable listing, so both counts go
-  # null: a zero there would be a claim nobody made. A capped listing DID
-  # measure, and throwing that away would be the opposite dishonesty - it is
-  # merely partial, and partial in known directions. Every page it did name is
-  # served, so active is a floor; every page it did not name looks absent
-  # whether or not it is, so missing is a ceiling and its slugs are candidates
-  # rather than findings.
+  #   gbrain is not installed              closed - listing fails, inconclusive
+  #   the listing exits non-zero           closed - inconclusive
+  #   the listing times out                closed - inconclusive
+  #   it exits non-zero saying nothing     closed - the exit status is the
+  #                                        signal, never the stderr text
+  #   it returns exactly its row ceiling   closed - may be truncated, so
+  #                                        inconclusive with bounded counts
+  #   it exits 0 with no parseable rows    closed - every stored slug becomes a
+  #                                        candidate and the direct read returns
+  #                                        them, so the listing is named wrong
+  #   its columns move, so no row's first  closed - same path: candidates that
+  #   field is a slug                      the brain still serves
+  #   it silently caps below the limit     closed - the pages it dropped are
+  #                                        candidates the brain still serves
+  #   a shared brain lists other homes     closed - same, and the prefix filter
+  #   only                                 already scopes what is compared
+  #   the direct reads themselves fail     closed - a page the listing DOES
+  #                                        name is read back first, and a brain
+  #                                        that cannot return that one is not
+  #                                        trusted to say any page is gone
+  #   a complete listing, page deleted     REPORTED - the direct read confirms
+  #                                        the page is gone, which is the gap
+  #
+  # One direction stays narrowly open and is stated rather than hidden: when the
+  # listing names NO page at all there is no served page to read back, so the
+  # absence signature - what this brain answers for a slug the home never
+  # captured - is the only evidence available, and a brain that failed every
+  # read that same way would report a gap. A candidate set larger than the probe
+  # ceiling is refused rather than verified, which bounds that to a home whose
+  # whole corpus is small enough to be gone.
+  #
+  # The failures also do not record the same thing. Nothing was measured against
+  # an unreadable listing, so both counts go null: a zero there would be a claim
+  # nobody made. A capped listing DID measure, and throwing that away would be
+  # the opposite dishonesty - it is merely partial, and partial in known
+  # directions. Every page it did name is served, so active is a floor; every
+  # page it did not name looks absent whether or not it is, so missing is a
+  # ceiling and its slugs are candidates rather than findings.
   if [ "$listing_failed" -eq 1 ]; then
     state=inconclusive
     active=""
@@ -855,9 +935,67 @@ cmd_audit() {
     active_bound=at-least
     missing_bound=at-most
     detail="the index listing came back at its $AUDIT_MAX_PAGES-row ceiling, so it may be incomplete: active is at least $active, missing is at most $missing and its documents are unverified candidates; raise FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES and run the audit again"
-  elif [ "$missing" -gt 0 ]; then
-    state=gap
-    detail="$missing captured document(s) are absent from the active index; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
+  elif [ "$candidates" -gt "$AUDIT_MAX_PROBES" ]; then
+    state=inconclusive
+    active_bound=at-least
+    missing_bound=at-most
+    detail="the listing left $candidates candidate(s), past the $AUDIT_MAX_PROBES the audit will verify one read at a time; a candidate set that large is better evidence that the listing is wrong than that the pages are gone, so nothing is reported missing until it shrinks or FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES is raised"
+  elif [ "$candidates" -gt 0 ]; then
+    # The listing only proposes; a direct read decides. A page the listing
+    # omitted but the brain still returns proves the listing wrong rather than
+    # the page gone, and a read that could not tell us proves nothing at all -
+    # neither may become a gap.
+    # A read that fails proves absence only once reads are known to work, so a
+    # page the listing DOES name is read back first. If that page does not come
+    # back either, the read path is what is broken, and no candidate's failure
+    # may be read as its page being gone.
+    control=$(head -n 1 "$active_file" 2>/dev/null)
+    if [ -n "$control" ]; then
+      probe_page "$control" "$seconds" "" || control_failed=1
+    fi
+    # What this brain does when asked for a page it never had. A candidate that
+    # fails the same way is absent; a candidate that fails any other way, or a
+    # brain that answers this probe at all, tells us nothing.
+    absent_rc=""
+    probe_out=$(run_gbrain "$seconds" get "$(absence_probe_slug "$prefix")" 2>/dev/null) || absent_rc=$?
+    case "$absent_rc" in '' | 0 | 124 | 137 ) absent_rc="" ;; esac
+    [ -z "$probe_out" ] || absent_rc=""
+    : > "$confirmed_file"
+    while IFS= read -r slug; do
+      [ -n "$slug" ] || continue
+      if [ "$control_failed" -eq 1 ]; then
+        untold=$((untold + 1))
+        continue
+      fi
+      probe_rc=0
+      probe_page "$slug" "$seconds" "$absent_rc" || probe_rc=$?
+      case "$probe_rc" in
+        0) present=$((present + 1)) ;;
+        1) printf '%s\n' "$slug" >> "$confirmed_file" ;;
+        *) untold=$((untold + 1)) ;;
+      esac
+    done < "$missing_file"
+    if [ "$control_failed" -eq 1 ]; then
+      state=inconclusive
+      active_bound=at-least
+      missing_bound=at-most
+      detail="the index did not return a page its own listing says it serves, so its reads answered nothing this audit could use; the $candidates named here are unverified candidates"
+    elif [ "$present" -gt 0 ]; then
+      state=inconclusive
+      active_bound=at-least
+      missing_bound=at-most
+      detail="the index still serves $present document(s) its own listing left out, so the listing cannot be trusted and nothing is reported missing from it; the $candidates named here are unverified candidates"
+    elif [ "$untold" -gt 0 ]; then
+      state=inconclusive
+      active_bound=at-least
+      missing_bound=at-most
+      detail="$untold of $candidates candidate(s) could not be read back either way, so the audit reached no verdict; the documents named here are unverified candidates"
+    else
+      state=gap
+      missing=$(grep -c . < "$confirmed_file" | tr -cd '0-9')
+      cat "$confirmed_file" > "$missing_file"
+      detail="$missing captured document(s) were asked for directly and the index did not return them; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
+    fi
   else
     state=ok
     detail="every captured document is served by the active index"
@@ -884,7 +1022,7 @@ cmd_audit() {
                 active: $active_bound, missing: $missing_bound,
                 missing_slugs: $missing_bound},
        detail: $detail}')
-  rm -f "$stored_file" "$active_file" "$missing_file"
+  rm -f "$stored_file" "$active_file" "$missing_file" "$confirmed_file"
 
   # Written before it is printed, so a caller that only reads the durable record
   # sees this run even if its own stdout is discarded.
@@ -962,7 +1100,7 @@ cmd_sweep() {
   brain_ready || return 0
   [ "$force" -eq 1 ] || sweep_due "$interval" || return 0
 
-  local marker tmp said=0 rc=0
+  local marker tmp said=0 rc=0 lines
   marker=$(sweep_marker_path)
   mkdir -p "$STATE" 2>/dev/null || true
   # Stamped BEFORE the work, so a sweep killed part-way waits out its interval
@@ -977,15 +1115,15 @@ cmd_sweep() {
   # Only the refreshed pages are reported. A sweep that captured a newly torn
   # down task, or re-read 300 unchanged ones, is routine and says nothing; a
   # page that was serving a stale body until this moment is the finding.
-  if grep '^refreshed ' "$tmp" >/dev/null 2>&1; then
-    grep '^refreshed ' "$tmp"
+  if lines=$(grep '^refreshed ' "$tmp"); then
+    printf '%s\n' "$lines"
     said=1
   fi
   # A refusal is credential-shaped content in a durable report, which is a
   # finding about that report rather than routine sweep noise, and backfill
   # deliberately does not fail on it - so it would be silent here otherwise.
-  if grep '^refused ' "$tmp" >/dev/null 2>&1; then
-    grep '^refused ' "$tmp"
+  if lines=$(grep '^refused ' "$tmp"); then
+    printf '%s\n' "$lines"
     said=1
   fi
   if [ "$rc" -ne 0 ]; then
