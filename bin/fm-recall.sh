@@ -112,7 +112,10 @@
 #            measured against, and when nothing could be judged the answer
 #            carries no verdict. `corpora` carries each corpus's own top
 #            rerank_score, whether it was judged, and whether it cleared, while
-#            `floors` alone owns the floor and the plane it came from.
+#            `floors` alone owns the floor and the plane it came from. When one
+#            corpus clears and another was judged and fell short, the notice
+#            names the one that fell short, so a caller reading only the notice
+#            still learns which brain does not hold this.
 #   none     the corpus was read and returned no rows. That is absence of an
 #            indexed match, never evidence that the queried thing is absent.
 # `answer` is omitted when no corpus was read, so a retrieval failure cannot be
@@ -585,6 +588,13 @@ ANSWER_WEAK_TAIL=' These are still the nearest indexed pages, not answers. A lis
 ANSWER_CONFIDENT_HEAD='Confident match in '
 ANSWER_CONFIDENT_MID=', judged against search.autocut_min_top ('
 ANSWER_CONFIDENT_TAIL='). '
+# When one corpus clears and another was judged and fell short, the caller is
+# told which one fell short: that a sibling brain holds this and the corpus that
+# missed does not is the actionable half of a mixed read, and the notice is the
+# only surface a whitelisting consumer renders. A corpus that was never judged
+# is not named here, because it was never measured against a floor at all.
+ANSWER_SHORTFALL_HEAD='Judged and short of its own floor: '
+ANSWER_SHORTFALL_TAIL='. '
 # A corpus that stamped no rerank_score was never measured against a floor, so
 # it is named as unjudged rather than folded into a sentence about floors.
 ANSWER_UNJUDGED_HEAD=' Not judged at all, because no returned row carried a rerank_score: '
@@ -924,6 +934,8 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
     --arg conf_head "$ANSWER_CONFIDENT_HEAD" \
     --arg conf_mid "$ANSWER_CONFIDENT_MID" \
     --arg conf_tail "$ANSWER_CONFIDENT_TAIL" \
+    --arg shortfall_head "$ANSWER_SHORTFALL_HEAD" \
+    --arg shortfall_tail "$ANSWER_SHORTFALL_TAIL" \
     --arg unjudged_head "$ANSWER_UNJUDGED_HEAD" \
     --arg unjudged_tail "$ANSWER_UNJUDGED_TAIL" \
     --arg none "$ANSWER_NONE_NOTICE" '
@@ -954,13 +966,18 @@ search_answer_json() {  # <results-json> <floors-json> -> answer object
         | [$corpora[] | select(.judged | not) | .corpus] as $unjudged_names
         | [$corpora[] | select(.cleared) | .corpus] as $cleared
         | [$floor_input[] | select(.corpus as $c | $judged_names | index($c))] as $floors
+        | [$corpora[] | select(.judged and (.cleared | not)) | .corpus] as $short
         | (if ($unjudged_names | length) == 0 then ""
            else $unjudged_head + ($unjudged_names | join(" and ")) + $unjudged_tail
            end) as $unjudged_text
+        | (if ($cleared | length) == 0 or ($short | length) == 0 then ""
+           else $shortfall_head + ($short | join(" and ")) + $shortfall_tail
+           end) as $shortfall_text
         | if ($cleared | length) > 0 then
             {kind: "nearest",
              notice: ($conf_head + ($cleared | join(" and ")) + $conf_mid
-                      + render($floors) + $conf_tail + $nearest + $unjudged_text),
+                      + render($floors) + $conf_tail + $shortfall_text
+                      + $nearest + $unjudged_text),
              no_confident_match: false,
              confident_corpora: $cleared,
              corpora: $corpora,
@@ -1078,17 +1095,31 @@ trim_recall_read_log() {  # <file>
   case $size in '' | *[!0-9]*) return 0 ;; esac
   [ "$size" -gt "$RECALL_JSONL_MAX_BYTES" ] || return 0
   tmp="$file.trim.$$"
-  # A byte-sized tail can cut mid-record, so a leading partial line is dropped.
-  # When the newest record is itself larger than the cap that would drop the
-  # very read this trim was called to preserve, so the tail falls back to that
-  # one whole record and the file is left over the cap rather than emptied.
-  if tail -c "$RECALL_JSONL_MAX_BYTES" "$file" 2>/dev/null \
-       | awk 'NR > 1 || /^[{]/' > "$tmp" 2>/dev/null; then
-    if [ -s "$tmp" ]; then
-      mv -f "$tmp" "$file" 2>/dev/null || true
-    elif tail -n 1 "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-      mv -f "$tmp" "$file" 2>/dev/null || true
-    fi
+  # Whole lines are taken from the newest end until the cap is reached, so a
+  # partial record cannot survive by construction. A byte-sized tail cannot
+  # promise that: its cut lands inside a record whenever the offset falls there,
+  # and a record of this shape carries interior braces of its own, so no
+  # leading-character test can tell a fragment from a whole line - it would keep
+  # the fragment and leave the file unreadable to any reader that parses the
+  # whole log. The newest record is kept even when it alone exceeds the cap,
+  # because dropping it would discard the very read this trim was called to
+  # preserve.
+  if LC_ALL=C awk -v max="$RECALL_JSONL_MAX_BYTES" '
+       { line[NR] = $0; len[NR] = length($0) + 1 }
+       END {
+         if (NR == 0) exit
+         total = 0
+         start = NR + 1
+         for (i = NR; i >= 1; i--) {
+           if (total + len[i] > max) break
+           total += len[i]
+           start = i
+         }
+         if (start > NR) start = NR
+         for (i = start; i <= NR; i++) print line[i]
+       }
+     ' "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$file" 2>/dev/null || true
   fi
   rm -f "$tmp" 2>/dev/null || true
   return 0

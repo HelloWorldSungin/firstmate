@@ -191,6 +191,7 @@ Taking the maximum across the merged list would be wrong in the other direction,
 `answer.no_confident_match` is true only when no corpus cleared, and when one did, `answer.confident_corpora` names which, so a caller can tell local knowledge from fleet knowledge.
 A corpus whose rows carry no `rerank_score` at all is left unjudged rather than counted a miss, and it is named as unjudged rather than folded into a sentence about a floor it was never measured against.
 `answer.corpora` carries each corpus's own top score, whether it was judged, and whether it cleared, while `answer.floors` is the single owner of the floor and its provenance and carries a row only for the corpora that were actually judged.
+When one corpus clears and another was judged and fell short, the notice names the one that fell short, because a consumer that renders only `kind` and `notice` would otherwise learn which brain holds the answer without learning which one does not.
 `create_safety` is printed and is not the miss bit.
 
 A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search; a home with no local index writes nothing.
@@ -201,6 +202,7 @@ The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECA
 The append and the trim that follows it run under one advisory lock, because concurrent searches against one home would otherwise let a trim built from a stale tail overwrite the newest lines the cap exists to keep.
 That lock is the directory `state/recall.jsonl.lock` beside the log, a stale hold left by a killed run is claimed by an atomic rename so only one sweeper can remove it and is swept by age on the next search after 30 seconds, and the wait for it is bounded by whichever comes first of a short ceiling or the run's own remaining budget, because the record is best-effort and must never be why a caller's kill deadline fires.
 Past the cap the oldest lines go and the newest tail stays, a record larger than the cap on its own is kept rather than dropped, and the file is always safe to delete or trim.
+The trim selects whole lines from the newest end until the cap is reached rather than cutting on a byte offset, because a record of this shape carries interior braces of its own and no leading-character test can tell a cut fragment from a whole line.
 
 ```sh
 bin/fm-test-run.sh tests/fm-recall.test.sh

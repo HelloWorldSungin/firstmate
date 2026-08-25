@@ -1527,6 +1527,10 @@ expect_code 0 "$RECALL_RC" "a confident hit should answer: $RECALL_OUT"
   || fail "the answer must name the corpus that cleared its floor: $RECALL_OUT"
 assert_not_contains "$RECALL_OUT" "No confident match" \
   "a confident hit must not be framed as a miss"
+# Nothing else was judged here, so there is no shortfall to report and the
+# notice must not manufacture one.
+assert_not_contains "$RECALL_OUT" "short of its own floor" \
+  "a single-corpus hit has no corpus that fell short: $RECALL_OUT"
 
 stub_reply "$SEARCH_FLOOR"
 run_recall "$MAIN_HOME" search --json --scope local "exactly the weak-top floor"
@@ -1766,6 +1770,12 @@ assert_not_contains "$RECALL_OUT" "No confident match" \
   "a confident match in the fleet brain must never be announced as a miss"
 assert_contains "$RECALL_OUT" "Confident match in main" \
   "the caller must be told which corpus holds the confident match"
+# A whitelisting consumer renders the notice alone, so a mixed read has to say
+# on that surface which brain was judged and did not hold this. Otherwise the
+# caller learns more from a failure than from a success.
+CROSS_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
+assert_contains "$CROSS_NOTICE" "Judged and short of its own floor: local" \
+  "a mixed read must name the corpus that was judged and fell short: [$CROSS_NOTICE]"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 2 ] \
   || fail "both rows must still be listed: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | sort | join(",")')" = "local,main" ] \
@@ -1860,6 +1870,10 @@ expect_code 0 "$RECALL_RC" "a mixed-stamp two-corpus read should answer: $RECALL
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.corpora[] | select(has("autocut_min_top"))] | length')" -eq 0 ] \
   || fail "floors is the single owner of the floor and its provenance: $RECALL_OUT"
 MIXED_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
+# The sibling here was never judged, so the notice must not say it fell short of
+# a floor it was never measured against.
+assert_not_contains "$MIXED_NOTICE" "short of its own floor" \
+  "an unjudged sibling must not be reported as having fallen short: [$MIXED_NOTICE]"
 assert_contains "$MIXED_NOTICE" "No confident match" \
   "the aggregate verdict is still a miss: [$MIXED_NOTICE]"
 assert_contains "$MIXED_NOTICE" "no returned row carried a rerank_score: main" \
@@ -1987,6 +2001,36 @@ jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
 [ "$(jq -s -r '.[-1].query' "$CAP_FILE")" = "the newest read of all" ] \
   || fail "the newest read must survive the trim: $(tail -1 "$CAP_FILE")"
 
+# A byte-sized tail would cut inside a record whenever the offset lands there,
+# and this record shape carries interior braces of its own, so a guard that
+# keeps a leading line starting with a brace keeps the fragment. The trim must
+# leave whole records only, whatever the cap happens to slice through.
+CUT_HOME=$(make_home "$TMP_ROOT/cut")
+mkdir -p "$CUT_HOME/data/gbrain/pglite" "$CUT_HOME/state"
+CUT_FILE="$CUT_HOME/state/recall.jsonl"
+stub_reply "$SEARCH_MISS"
+run_recall "$CUT_HOME" search --json --scope local "a record with interior braces"
+[ "$(jq -s 'length' "$CUT_FILE")" -eq 1 ] \
+  || fail "the seed read must leave one record: $(cat "$CUT_FILE")"
+CUT_REC=$(cat "$CUT_FILE")
+CUT_I=0
+while [ "$CUT_I" -lt 40 ]; do printf '%s\n' "$CUT_REC"; CUT_I=$((CUT_I + 1)); done > "$CUT_FILE"
+# Cap the log so the byte boundary falls exactly on an interior brace of a
+# record, which is the offset a leading-brace guard cannot tell from a record.
+CUT_TOTAL=$(wc -c < "$CUT_FILE" | tr -d '[:space:]')
+CUT_INNER=$(printf '%s' "$CUT_REC" | awk '{ print index($0, "[{\"corpus\"") + 1 }')
+CUT_CAP=$((CUT_TOTAL - (${#CUT_REC} + 1) * 3 - CUT_INNER + 1))
+[ "$CUT_CAP" -gt 0 ] || fail "the interior-brace fixture must leave a positive cap"
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$CUT_HOME" FM_RECALL_JSONL_MAX_BYTES="$CUT_CAP" \
+  bash "$CLI" search --json --scope local "the read that trims on a brace" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a trim that cuts inside a record must not fail the search: $RECALL_OUT"
+jq -e -s 'all(.[]; has("schema"))' "$CUT_FILE" >/dev/null 2>&1 \
+  || fail "a cut inside a record must leave no partial line: $(head -1 "$CUT_FILE")"
+[ "$(jq -s -r '.[-1].query' "$CUT_FILE")" = "the read that trims on a brace" ] \
+  || fail "the newest read must survive a cut that lands inside a record: $(tail -1 "$CUT_FILE")"
+
 # A record larger than the cap on its own must be kept: emptying the file would
 # throw away the very read the trim was called to preserve.
 BIG_QUERY=$(head -c 6000 /dev/zero | tr '\0' 'q')
@@ -2021,14 +2065,23 @@ while [ "$CONC_I" -lt 6 ]; do
   CONC_PIDS="$CONC_PIDS $!"
   CONC_I=$((CONC_I + 1))
 done
-for CONC_PID in $CONC_PIDS; do wait "$CONC_PID" || true; done
+CONC_FAILED=0
+for CONC_PID in $CONC_PIDS; do wait "$CONC_PID" || CONC_FAILED=$((CONC_FAILED + 1)); done
+# The record is best-effort by contract: a run that cannot enter the section
+# drops its line and still answers. So the contract under contention is that
+# every search succeeds, the log stays readable, and nothing half-written is
+# left behind - not that all six lines land, which the lock does not promise.
+[ "$CONC_FAILED" -eq 0 ] \
+  || fail "a contended read log must never fail the search: $CONC_FAILED of 6 exited non-zero"
 [ "$(wc -c < "$CAP_FILE" | tr -d '[:space:]')" -le 4096 ] \
   || fail "the concurrent runs must have taken the trim path: $(wc -c < "$CAP_FILE") bytes"
-CONC_KEPT=$(jq -s -r '[.[] | select(.query | startswith("concurrent read "))] | length' "$CAP_FILE")
-[ "$CONC_KEPT" -eq 6 ] \
-  || fail "every concurrent read must survive its siblings' trims: $CONC_KEPT of 6"
 jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
   || fail "a concurrent trim must not leave a partial record: $(head -1 "$CAP_FILE")"
+CONC_KEPT=$(jq -s -r '[.[] | select(.query | startswith("concurrent read "))] | length' "$CAP_FILE")
+[ "$CONC_KEPT" -ge 1 ] \
+  || fail "a contended read log must still record the reads it admitted: $CONC_KEPT of 6"
+[ "$CONC_KEPT" -eq "$(jq -s -r '[.[] | select(.query | startswith("concurrent read ")) | .query] | unique | length' "$CAP_FILE")" ] \
+  || fail "a raced trim must not duplicate a record: $(cat "$CAP_FILE")"
 
 # Deleting it is a supported thing to do: the next search recreates it.
 rm -f "$CAP_FILE"
