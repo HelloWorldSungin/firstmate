@@ -132,11 +132,53 @@ pglite/base/5/<relation files>
 Three in a row make this steady state rather than a cold-start or first-open artifact, and it is not an artifact of the service sandbox either: it happens both under the dashboard unit's restrictions and in an ordinary shell.
 Counts vary run to run, 7 to 27 observed, but were never zero for a search that actually succeeded.
 
+That entry was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus knob read adds `gbrain config get` connects on a search with a judgeable local corpus.
+The counts below supersede its per-search totals; its method and its file list still stand for what the search's own connect rewrites.
+
+Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0` by that same md5-manifest method, this time excluding the backups directory; idle window first: 0 files changed over 15 seconds across 1436 files hashed.
+Every count and timing below describes the TWO-key floor read, which asks `search.autocut` first and then `search.autocut_min_top` inside one bounded slice.
+They replace an earlier set of 2026-08-25 figures taken when the read asked one key, which are stale evidence rather than a second opinion and so are not carried alongside these.
+
+The two-key floor read on its own, three runs, changed 5, 4, and 4 files.
+Runs 2 and 3 changed exactly this four-file control set, which is the same set the one-key read wrote, because the second connect rewrites that set again rather than adding a distinct file:
+
+```
+pglite/.gbrain-lock/lock
+pglite/global/pg_control
+pglite/pg_wal/<segment>
+pglite/postmaster.pid
+```
+
+Run 1's fifth file was `runtime/.gbrain/last-update-check`, written by GBrain's version check rather than by the read.
+So the knob read is itself a writer of a handful of PGLite control files, even on this brain, where neither key answers from the database plane.
+
+Three consecutive `bin/fm-recall.sh search --json --scope local` runs on the two-key path, each with the local source `ok`, changed 32, 10, and 8 files, taking 16.40s, 1.49s, and 1.49s of wall clock; all three disclosed the floor as a pinned default.
+
+State this plainly rather than absorbing it.
+The knob read adds a handful of control files per search, not a second full search write, so this is not 26 plus 26.
+The first knob-read run of the session wrote 32 files, which is above the previously published maximum of 27.
+The two runs after it wrote 10 and 8, inside the old 7-to-27 range.
+A search is still a writer, the knob read is now a second one, and the backup precondition in [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) rests on both.
+
+The second key does not move these counts materially, which is worth saying plainly rather than leaving implied.
+Against the superseded one-key figures of 32, 11, and 8 files at 17.02s, 1.18s, and 1.16s, the two-key read measures 32, 10, and 8 files at 16.40s, 1.49s, and 1.49s.
+The first-run maximum is unchanged at 32, and the difference between 11 and 10 is inside the ordinary run-to-run range this section already records, so the backup precondition rests on the same maximum it did before.
+
+These counts and timings are bound to the two-key floor read shape rather than to the wrapper in general, and that shape exists because `search.autocut_min_top` is only a floor while `search.autocut` is on, and the pin resolves exactly one key per `gbrain config get` process.
+Any later change to how many keys the floor read asks, or to what slice it asks them in, must move this measurement in the SAME commit rather than leaving the record to be re-derived afterwards.
+
+The three floor-read-alone runs above are what size the knob read's own ceiling.
+With the connect retry ladder disabled and the index lock free, the two-key floor read took 0.602s, 0.598s, and 0.604s, both keys exiting 1 with `Config key not found: search.<key>` on stderr.
+This fleet stores neither key in the database plane, so the floor its searches apply is the bundle default 0.35, and disclosing `pinned-default` for this brain is accurate rather than a shrug.
+`bin/fm-recall.sh` bounds the read at 1 second, which is about 1.66 times that measured wall clock and still fits the one-second remainder a dashboard-shaped run tends to leave.
+The bound itself does not move; what changed is that it is now sized against a directly measured two-key read rather than against a doubled single-key one.
+Re-take this timing before the bound is trusted on a brain slower than this one.
+
 ## Refreshing this record
 
 Two suites rebuild the wrapper's claims, and neither asserts anything about the wrapper's source:
 
-- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, and the caps.
+- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, the caps, the per-corpus rerank miss verdict, and the presence-gated read record.
 - `tests/fm-gbrain-readonly-e2e.test.sh` is the live proof and drives the wrapper against two real brains and the real read-only share:
 
 ```sh
@@ -144,5 +186,85 @@ FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=<path-to-gbrain> bin/fm-test-run.sh tests/fm-
 ```
 
 Re-run both after any GBrain upgrade.
-The index-write measurement has no suite behind it: redo it by hand as described there, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
+The index-write measurement has no suite behind it: redo it by hand as described there, redo it in the same commit as any change to the floor read's shape as the binding stated with those counts requires, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
 The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.
+
+## `rerank_score` is the miss signal the wrapper used to drop, and it is judged per corpus
+
+This section separates two kinds of claim, because they need different evidence.
+Claims about what GBrain does are read from the installed pin `v0.46.21.0`, which [../gbrain.md](../gbrain.md) records as the installed release, and each one names the file it was read from.
+Claims about what `bin/fm-recall.sh` does with what GBrain returns are wrapper contract, rebuilt by the portable suite `tests/fm-recall.test.sh` on 2026-08-25.
+That suite is stub-driven, so it proves the wrapper's behavior and proves nothing about what a live GBrain stamps.
+The only live measurement of search-row fields in this repo is [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20); `tests/fm-gbrain-readonly-e2e.test.sh` drives real brains but asserts on the read-only share, scoped refusals, context packs, and delta cursors, and never inspects these fields, so it is not cited for them.
+
+Why the printed blend cannot answer the miss question is measured live in [gbrain-memory-verbs.md](gbrain-memory-verbs.md), and is not restated here.
+That record ran `gbrain call search` against the real corpus with an off-corpus nonsense query and measured `score` at roughly 0.78 to 0.81 while `rerank_score` on the same rows ran from about 0.00008 to 0.0037.
+It records `score`, `rerank_score`, `evidence`, and `create_safety`; it records nothing about `cosine` and nothing about autocut, so neither is cited to it.
+
+None of the four surfaced fields is guaranteed on every row, and the wrapper is written for that.
+At the pin, `src/core/types.ts` declares `cosine?`, `rerank_score?`, `evidence?`, and `create_safety?` all optional.
+`cosine` is documented there as absent on keyword-only and no-embedding paths, and `rerank_score` as undefined when no reranker fired and stamped only on the reranked head.
+`cosine` has no live measurement anywhere in this repo and is surfaced unverified.
+`bin/fm-recall.sh` copies each of the four onto the `fm-recall.v1` document when the retrieval path produced it and carries null when it did not.
+
+The floor is GBrain's own `search.autocut_min_top`, not a Firstmate-invented threshold.
+The bundle default is `DEFAULT_AUTOCUT.minTopScore = 0.35` in GBrain's own `src/core/search/autocut.ts` at the pin, and `src/core/search/mode.ts` accepts an operator value in [0, 1] over it.
+
+Which plane holds the floor a search actually applied was checked at the pin, because two planes disagree and only one of them is the answer.
+`gbrain config get` prefers the file/env plane over the database plane and prints which one answered on stderr (`src/commands/config.ts`).
+Search does not share that order: `loadSearchModeConfig` resolves every search knob through `engine.getConfig` alone (`src/core/search/mode.ts`), and `PGliteEngine.getConfig` is a read of the database `config` table (`src/core/pglite-engine.ts`).
+`autocutFromConfig` in `src/core/search/autocut.ts` is the only function at the pin that reads the nested file-plane shape, and nothing in `src` calls it.
+`gbrain config set search.autocut_min_top` falls through to `engine.setConfig`, so the supported way to tune the knob writes the database plane; only `push.allow_unverified_remote` and `hooks.stop_push_debounce_min` are routed to the file plane.
+A floor found in the configuration file is therefore a value this host can see, not a value the running search applied, and the wrapper does not judge against it.
+
+The search reply cannot be asked for the floor instead.
+`gbrain call search` returns a JSON array of result rows, which is what `reply_shape_ok` requires, and it carries no search metadata.
+The autocut verdict travels on `SearchMeta` for `--explain` and capture rather than on that array, and `AutocutDecision` at the pin is only `{applied, signal, cut, kept, total, gapRatio}`, which names neither the floor nor whether the weak-top branch fired: that branch returns the same no-op as a list with no cliff.
+
+So `bin/fm-recall.sh` reads the database plane through `gbrain config get` and accepts the number only when stderr reports that the database plane answered, treating a file/env answer as no answer at all.
+It reads two keys that way, not one.
+`applyAutocut` is called at the pin only when `resolvedMode.autocut` is true (`src/core/search/hybrid.ts`), and `search.autocut` is that master toggle (`src/core/search/mode.ts`), so `search.autocut_min_top` is the applied floor only while the toggle is on.
+The pin has no path that returns both from one connect: `gbrain config get` resolves exactly one key per process (`src/commands/config.ts`), there is no parent-key or multi-key form, and `gbrain search modes --json` attributes `autocut_min_top` but does not carry the `autocut` toggle in its resolved-knob roster (`src/core/search/modes-report.ts`).
+The wrapper therefore asks both keys inside ONE bounded slice and one process group, which costs two connects and no extra budget, and it asks the toggle first so a slice that runs out mid-read costs the tuned floor - a fallback the answer already discloses - rather than the toggle, whose absence would put the wrong verdict on the answer.
+That read connects to the engine, so it is fenced three ways: it is taken lazily and only for a corpus whose rows carry a `rerank_score` and can therefore be judged, it is bounded by a short slice of what is left of the budget `--timeout` granted with the runner's kill grace reserved out of that remainder so the run's real ceiling stays at the deadline rather than one grace past it, and it runs with GBrain's connect retry ladder disabled so a home whose daemon holds the index lock fails fast instead of spending seconds to arrive at the same fallback.
+Anything short of a database answer inside that slice is the pinned default, and which of two facts that is gets disclosed rather than blurred.
+A brain that answered and holds no usable value of its own really does apply the pinned default, and that reads as `pinned-default`.
+A brain that could not be asked - the budget did not fit, the read was killed, the index lock was held, the binary is missing - applies whatever it applies, and that reads as `unconfirmed-default` instead, because this host does not know.
+The notice attributes that gap to the read rather than to the brain, because a corpus only carries a floor at all when it returned rows and was judged, so the brain was searched and it is the floor plane that went unread.
+The main brain is read over MCP and has no database plane this host can query at all, so its floor is always `unconfirmed-default` rather than this home's value borrowed across.
+A value GBrain would itself refuse falls through to the bundle default inside GBrain too, so an out-of-range database answer is a confirmed `pinned-default` rather than an unknown one.
+
+`bin/fm-recall.sh` judges confidence per corpus rather than from the head of the merged list.
+Each corpus's own pool of returned rows is judged against that corpus's own floor, which is the quantity GBrain applies the knob to, and a corpus clears when its own top `rerank_score` is a number that is not below its floor.
+Judging the merged list's head instead would let whichever corpus led the merge decide the other's verdict, and the merge puts this home's own index first on an equal rank, so a confident fleet answer at merged position 2 would be announced as `No confident match`.
+Taking the maximum across the merged list would be wrong in the other direction, because two brains' rerank scores are different quantities and are not comparable with each other.
+`answer.no_confident_match` is true only when no corpus cleared, and when one did, `answer.confident_corpora` names which, so a caller can tell local knowledge from fleet knowledge.
+A corpus whose rows carry no `rerank_score` at all is left unjudged rather than counted a miss, and it is named as unjudged rather than folded into a sentence about a floor it was never measured against.
+A corpus whose brain answers from its database plane that `search.autocut` is off is left unjudged the same way, because GBrain applied no weak-top floor to those rows at all and a verdict taken against one would describe a measurement the search never made.
+The notice keeps the two reasons apart, since rows that carry a score and rows that carry none are different facts about the read.
+Only a database plane that answers and says off does this: the pin reads a stored value as on for `1` or `true` alone, a key stored in no plane is the reranked bundles' own `autocut: true` rather than an off, a file/env value is not what search reads, and a read that could not happen at all is not a fact about the brain.
+Each of those keeps the ordinary path, judged against a floor the answer already discloses as one this command could not confirm.
+`answer.corpora` carries each corpus's own top score, whether it was judged, and whether it cleared, while `answer.floors` is the single owner of the floor and its provenance and carries a row only for the corpora that were actually judged.
+When one corpus clears and another was judged and fell short, the notice names the one that fell short, because a consumer that renders only `kind` and `notice` would otherwise learn which brain holds the answer without learning which one does not.
+`create_safety` is printed and is not the miss bit.
+
+A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search; a home with no local index writes nothing.
+The line carries `query_hash`, the disposition of the read, each corpus's own top score in `corpus_tops`, and whether that miss verdict was given.
+`rank1_rerank_score` is the head of the merged list and is named with the `rank1_corpus` it came from, because on a two-corpus read that row can belong to a corpus the verdict is not about.
+The disposition separates `unread`, `unjudged`, `miss`, and `hit`, so a run that never reached a corpus cannot serialize as a read that returned an unjudgeable top row.
+The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECALL_JSONL_MAX_BYTES`.
+The append and the trim that follows it run under one advisory lock, because concurrent searches against one home would otherwise let a trim built from a stale tail overwrite the newest lines the cap exists to keep.
+That lock is the directory `state/recall.jsonl.lock` beside the log, a stale hold left by a killed run is claimed by an atomic rename so only one sweeper can remove it and is swept by age on the next search after 30 seconds, and the wait for it is bounded by whichever comes first of a short ceiling or the run's own remaining budget, because the record is best-effort and must never be why a caller's kill deadline fires.
+Past the cap the oldest lines go and the newest tail stays, a record larger than the cap on its own is kept rather than dropped, and the file is always safe to delete or trim.
+The trim selects whole lines from the newest end until the cap is reached rather than cutting on a byte offset, because a record of this shape carries interior braces of its own and no leading-character test can tell a cut fragment from a whole line.
+
+`state/recall.jsonl` is a partial delivery of D2 in [`../adr/0001-brain-read-mount.md`](../adr/0001-brain-read-mount.md), which is still proposed and awaiting captain review, and it should be read as neither that trail nor as unrelated to it.
+It shares D2's append condition and D2's exclusion exactly: one append per `search` in a home whose local index directory is present, decided before the read rather than from its outcome, and `think` never appends.
+Of the six fields D2 names for the record - record id, timestamp, caller seam, query hash, exit state, result count - the `fm-recall-read.v1` line carries timestamp, query hash, and result count.
+The query hash is unkeyed SHA-256 of the UTF-8 joined query, hex lowercase: it buys that free-text queries never land in a file on disk, and it does not buy resistance to a guess.
+Record id, caller seam, and exit state are not yet carried, so this file cannot yet name a read to a later record or measure adoption by seam.
+Everything else on the line - `disposition`, `answer_kind`, `rank1_corpus`, `rank1_rerank_score`, `corpus_tops`, `no_confident_match`, and `confident_corpora` - is this wrapper's own record of the miss verdict rather than a D2 field.
+
+```sh
+bin/fm-test-run.sh tests/fm-recall.test.sh
+```

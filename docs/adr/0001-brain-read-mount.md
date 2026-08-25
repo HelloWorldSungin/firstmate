@@ -31,7 +31,7 @@ The same pressure applies to `AGENTS.md` (71,876 bytes, ~23.9k estimated tokens,
 
 **The write side is enforced; the read side is prose.**
 `data/fm-gbrain-usage-inventory/report.md` (2026-08-19) established that capture runs as a structural teardown step while not one enforced read step exists anywhere in the fleet: no skill references recall, session start emits nothing from the brain, and the only read instruction is one always-loaded sentence plus a static section in generated briefs.
-Recall is unmeasurable by construction - `fm-recall.sh` writes no log, no marker, nothing durable - so whether the instruction has ever been followed cannot be established.
+Recall was unmeasurable by construction on 2026-08-19 - `fm-recall.sh` wrote no log, no marker, nothing durable - so whether the instruction had ever been followed could not be established.
 One round-trip defect is proven: a learning pruned into the brain on 2026-08-05 was re-derived and re-admitted to always-loaded memory on 2026-08-16, with nothing intercepting it.
 
 **Retrieval is fast, local, and good - but cannot signal a miss.**

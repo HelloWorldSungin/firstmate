@@ -71,20 +71,95 @@
 # printed score explains one corpus's row and never orders across corpora.
 # The printed score is also not that ranking within one corpus: rerank reorders
 # rows while leaving the pre-rerank blend in .score, so rank 1 may show a lower
-# number than rank 2. Order is the verdict; the number is a blend for that row.
+# number than rank 2. Order is the verdict; .score is a blend for that row.
+# Each row also carries rerank_score, cosine, evidence, and create_safety when
+# GBrain supplied them. rerank_score is the confidence signal; .score is not.
+# create_safety is surfaced and is never the miss bit.
 #
 # Answer protocol. A corpus that was read always answers, and the engine
 # essentially always returns rows, including for queries whose topic is absent.
-# There is no calibrated score threshold that separates a hit from nonsense, so
-# this command never invents one. When a corpus answered, the document carries
-# an `answer` object that says what the rows are:
+# A non-empty list is therefore not a find. Confidence is judged PER CORPUS:
+# each corpus's own pool of returned rows is judged against that corpus's own
+# search.autocut_min_top, the weak-top floor GBrain applies to one corpus's top
+# rerank_score whenever its master toggle search.autocut is on. This command
+# does not invent a different threshold, and it never judges on the head of the
+# merged list: two brains' scores are not the same quantity, so the corpus that
+# happened to lead the merge must not decide the other corpus's verdict.
+#
+# search.autocut is read from the same plane and in the same bounded slice,
+# because a floor is only a floor while the toggle it hangs on is on. A brain
+# whose DATABASE plane turns autocut off applies no weak-top floor at all, and
+# a corpus read from it is left UNJUDGED - it is named as unjudged rather than
+# reported a miss, and it carries no floor row, because measuring it against a
+# number the search never used would be the false statement this surface exists
+# to avoid. Only a database plane that ANSWERS and says off leaves a corpus
+# unjudged: a key stored in no plane is not off (the reranked bundles ship the
+# toggle on), a file-plane value is not what search reads, and a read that could
+# not happen at all is not a fact about the brain.
+#
+# The floor GBrain actually applies comes from the brain's DATABASE plane, so
+# that is the only plane a value is accepted from here. A file-plane value is
+# one this host can see and the running search does not use, and judging a row
+# against it would be a statement about a measurement that never happened. The
+# read is lazy, taken only for a corpus whose rows carry a rerank_score and can
+# therefore be judged, bounded by a short slice of what is LEFT of the budget
+# --timeout granted with the runner's kill grace reserved out of it, and run with
+# GBrain's connect retry ladder disabled so a served brain fails fast instead of
+# spending clock no caller sanctioned. Anything short of a database answer
+# inside that slice is the pinned module default (0.35). The answer object
+# discloses, per judged corpus, the floor used and where it came from, so the
+# fallback is stated rather than passed off as a setting this command read.
+# That fallback is disclosed two ways, because they are two different facts:
+# `pinned-default` when the brain was asked and holds no usable value of its
+# own, and `unconfirmed-default` when it could not be asked at all and this
+# command therefore does not know what the brain applies.
+# Only corpora that were actually judged carry a floor.
+#
+# When a corpus answered, the document carries an `answer` object:
 #   nearest  rows are the nearest indexed pages, not answers. A listed page may
 #            be unrelated to the query. Absence of a match is not absence of
-#            the queried thing.
+#            the queried thing. A corpus clears when its own top rerank_score
+#            is a number that is not below its own floor, and the corpora that
+#            cleared are named in confident_corpora. no_confident_match is true
+#            only when NO corpus cleared. A corpus whose rows carry no
+#            rerank_score at all, and a corpus whose brain turns autocut off in
+#            its database plane, are left unjudged rather than counted a miss.
+#            Each is named as unjudged, with the reason it was not judged,
+#            rather than tied to a floor it was never measured against, and
+#            when nothing could be judged the answer carries no verdict.
+#            `corpora` carries each corpus's own top rerank_score, whether it
+#            was judged, and whether it cleared, while `floors` alone owns the
+#            floor and the plane it came from. When one
+#            corpus clears and another was judged and fell short, the notice
+#            names the one that fell short, so a caller reading only the notice
+#            still learns which brain does not hold this.
 #   none     the corpus was read and returned no rows. That is absence of an
 #            indexed match, never evidence that the queried thing is absent.
 # `answer` is omitted when no corpus was read, so a retrieval failure cannot be
 # rendered as "not found".
+#
+# A search in a home whose local index directory exists appends one JSON line
+# to state/recall.jsonl recording a query hash, never the query text, what the
+# read returned, each corpus's own top rerank_score, the rank-1 rerank_score
+# with the corpus it came from, and whether the caller was told there was no
+# confident match. The hash is unkeyed SHA-256 of the UTF-8 joined query, hex
+# lowercase: it buys that free-text queries never land in a file on disk, and
+# it does not buy resistance to a guess. The disposition names which of four
+# things happened - unread, unjudged, miss, or hit - so a corpus that was never
+# read can never serialize as a read that returned an unjudgeable row. That is
+# a local record of the read, never of what the caller then decided, and
+# nothing is sent anywhere. think never writes it.
+# The file is home-wide and size-capped rather than unbounded: the append and
+# the trim that follows it run under one advisory lock, bounded by the run's own
+# remaining budget, so concurrent searches cannot overwrite each other's newest
+# lines and a record nobody promised is never why a caller's deadline fires.
+# The lock directory and the scratch names the trim and the stale sweep leave
+# behind when a run is killed mid-section are swept by age on a later search, so
+# none of them is a durable artifact and all of them are safe to delete.
+# Past the cap the oldest lines are
+# dropped and the newest tail is kept, and it is always safe to delete or trim
+# because the next search recreates it. A home with no local index writes
+# nothing, so a fleet that has not adopted a brain keeps today's path.
 # Each local result also carries provenance from this home's capture outbox and
 # the live source that outbox was composed from, when those records exist:
 #   captured_at        when the outbox revision was marked captured, or null
@@ -148,6 +223,12 @@
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
 #   FM_RECALL_TIMEOUT  default seconds per retrieval call, overriding the
 #                      per-command defaults above
+#   FM_GBRAIN_TIMEOUT  seconds allowed for the main brain's token mint, which a
+#                      main-scoped or all-scoped search makes before the MCP
+#                      read (default 10). The floor read does not use it and is
+#                      bounded by the run's own remaining budget instead.
+#   FM_RECALL_JSONL_MAX_BYTES  size cap for state/recall.jsonl
+#                      (default 262144)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -167,6 +248,20 @@ LIMIT_MAX=50
 EXCERPT_MAX=4000
 ANSWER_MAX_CEILING=100000
 TIMEOUT_MAX=3600
+# GBrain owns the weak-top floor and resolves search.autocut_min_top per-call,
+# then from the brain's database plane, then from its bundle, so the effective
+# value is a property of the brain being read rather than of this wrapper. This
+# is DEFAULT_AUTOCUT.minTopScore at the pinned release, used whenever the
+# database plane does not answer inside the run's budget, and every use of it is
+# disclosed on the answer as a fallback rather than as a setting. Do not replace
+# it with a Firstmate-invented value.
+AUTOCUT_MIN_TOP_DEFAULT=0.35
+
+# state/recall.jsonl is home-wide and append-only, so it needs a bound rather
+# than an owner that removes it. Past the cap the oldest lines go and the newest
+# tail stays, which keeps the newest read and makes the file safe to delete.
+RECALL_JSONL_MAX_BYTES=${FM_RECALL_JSONL_MAX_BYTES:-262144}
+case $RECALL_JSONL_MAX_BYTES in '' | *[!0-9]* | 0) RECALL_JSONL_MAX_BYTES=262144 ;; esac
 
 usage() { awk 'NR == 1 {next} !/^#/ {exit} {sub(/^# ?/, ""); print}' "${BASH_SOURCE[0]}"; }
 
@@ -346,10 +441,14 @@ setup_failure() {  # <detail>
   [ -n "$SETUP_DETAIL" ] || SETUP_DETAIL=$1
 }
 
-# The only place this command asks for scratch space, so the exit-5 contract
+# The only place a retrieval LEG asks for scratch space, so the exit-5 contract
 # cannot drift as legs are added: a leg either gets a path back or the setup
 # failure is already recorded by the time this returns non-zero, and the
 # sentence the operator reads is written once.
+# resolve_local_autocut_floor is the one deliberate exception and takes its own
+# scratch directly. It must NOT reach setup_failure: a knob read that cannot
+# find a temporary directory costs the knob, never the run, because the corpora
+# were all still asked. A future leg that reaches a corpus belongs here instead.
 RECALL_SCRATCH=""
 RECALL_SCRATCH_ERR=""
 recall_scratch_file() {  # <what-was-never-asked> -> 0 with RECALL_SCRATCH set
@@ -492,6 +591,10 @@ shape_results() {  # <source> <results-json> <excerpt-chars>
         slug: text(.slug),
         title: text(.title),
         score: (if (.score | type) == "number" then .score else null end),
+        rerank_score: (if (.rerank_score | type) == "number" then .rerank_score else null end),
+        cosine: (if (.cosine | type) == "number" then .cosine else null end),
+        evidence: (if .evidence == null then null else text(.evidence) end),
+        create_safety: (if .create_safety == null then null else text(.create_safety) end),
         stale: (.stale == true),
         excerpt: capped(.chunk_text; $cap)
       } ]
@@ -503,7 +606,31 @@ EOF
 # Provenance is judged from this home's capture outbox and the live source that
 # outbox was composed from. It is presentation: it never changes result order,
 # never drops a row, and never rewrites an excerpt from the live file.
-ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; the printed score is a pre-rerank blend and does not order this list. Where a live source disagrees with a page, the live source wins.'
+ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A listed page may be unrelated to the query. No indexed match is not evidence that the queried thing is absent. Order is the brain ranking; score is a pre-rerank blend; rerank_score is the confidence signal. Where a live source disagrees with a page, the live source wins.'
+# The weak and confident notices are assembled around the floors this run
+# actually judged against, so a retuned knob can never leave a notice quoting a
+# floor the code no longer uses.
+ANSWER_WEAK_HEAD='No confident match. Top rerank_score stayed below search.autocut_min_top in '
+ANSWER_WEAK_TAIL=' These are still the nearest indexed pages, not answers. A listed page may be unrelated to the query. No confident match is not evidence that the queried thing is absent. Where a live source disagrees with a page, the live source wins.'
+ANSWER_CONFIDENT_HEAD='Confident match in '
+ANSWER_CONFIDENT_MID=', judged against search.autocut_min_top ('
+# When one corpus clears and another was judged and fell short, the caller is
+# told which one fell short: that a sibling brain holds this and the corpus that
+# missed does not is the actionable half of a mixed read, and the notice is the
+# only surface a whitelisting consumer renders. A corpus that was never judged
+# is not named here, because it was never measured against a floor at all.
+ANSWER_SHORTFALL_HEAD='Judged and short of its own floor: '
+ANSWER_SHORTFALL_TAIL='. '
+# A corpus that stamped no rerank_score was never measured against a floor, so
+# it is named as unjudged rather than folded into a sentence about floors.
+ANSWER_UNJUDGED_HEAD=' Not judged at all, because no returned row carried a rerank_score: '
+ANSWER_UNJUDGED_TAIL='.'
+# The other way a corpus goes unjudged, and it is a different fact: the brain
+# applied no weak-top floor, so there is nothing this read could have measured
+# against. Saying it with the sentence above would name a signal the rows
+# actually carry as missing.
+ANSWER_AUTOCUT_OFF_HEAD=' Not judged at all, because that brain turns search.autocut off in its database plane, so GBrain applied no weak-top floor to: '
+ANSWER_AUTOCUT_OFF_TAIL='.'
 ANSWER_NONE_NOTICE='No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.'
 
 recall_stat_mtime() {  # <path> -> epoch seconds, or empty
@@ -809,6 +936,518 @@ source_row() {  # <source> <state> <brain> <count> [detail]
   '
 }
 
+# Each corpus is judged against its OWN returned pool and its OWN effective
+# floor, which is the quantity GBrain applies search.autocut_min_top to. The
+# head of the merged list is not that quantity: the merge interleaves by rank
+# and puts this home's own index first on an equal rank, so a verdict taken
+# from merged rank 1 would let the local corpus decide the main brain's
+# verdict, and a confident fleet answer sitting at position 2 would be
+# announced as no confident match. Taking the maximum across the merged list
+# would be just as wrong in the other direction, because two brains' rerank
+# scores are different quantities and are not comparable to each other.
+#
+# A corpus clears when its own top rerank_score is a number that is not below
+# its floor, so a score equal to the floor is not a miss. The read is a miss
+# only when NO corpus cleared. Two different corpora are left UNJUDGED rather
+# than counted a miss, and the notice keeps them apart because they are two
+# different facts: one whose pool carries no rerank_score at all, where this
+# command does not invent a signal GBrain did not stamp, and one named in
+# $unapplied, whose brain applies no weak-top floor for this command to measure
+# against. Neither is named a miss and neither is tied to a floor it was never
+# measured against. `corpora` carries what each corpus was judged on and
+# `floors` carries the floor each JUDGED corpus was judged against, so a caller
+# can tell a miss that covered every brain from one where a brain with its
+# reranker off was never judged. create_safety is never consulted.
+search_answer_json() {  # <results-json> <floors-json> <unapplied-json> -> answer object
+  jq -c --argjson floor_input "$2" \
+    --argjson unapplied "$3" \
+    --argjson default_floor "$AUTOCUT_MIN_TOP_DEFAULT" \
+    --arg nearest "$ANSWER_NEAREST_NOTICE" \
+    --arg weak_head "$ANSWER_WEAK_HEAD" \
+    --arg weak_tail "$ANSWER_WEAK_TAIL" \
+    --arg conf_head "$ANSWER_CONFIDENT_HEAD" \
+    --arg conf_mid "$ANSWER_CONFIDENT_MID" \
+    --arg shortfall_head "$ANSWER_SHORTFALL_HEAD" \
+    --arg shortfall_tail "$ANSWER_SHORTFALL_TAIL" \
+    --arg unjudged_head "$ANSWER_UNJUDGED_HEAD" \
+    --arg unjudged_tail "$ANSWER_UNJUDGED_TAIL" \
+    --arg autocut_off_head "$ANSWER_AUTOCUT_OFF_HEAD" \
+    --arg autocut_off_tail "$ANSWER_AUTOCUT_OFF_TAIL" \
+    --arg none "$ANSWER_NONE_NOTICE" '
+    def where($source):
+      if $source == "db-config" then "the brain database plane"
+      elif $source == "pinned-default" then "the pinned GBrain default this brain has not overridden"
+      else "the pinned GBrain default, standing in for a floor this command could not read from that brain" end;
+    def floor_for($corpus):
+      ([$floor_input[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
+      // $default_floor;
+    def render($floors):
+      $floors
+      | map(.corpus + " " + (.autocut_min_top | tostring) + " from " + where(.source))
+      | join(", ");
+    . as $rows
+    | if ($rows | length) == 0 then
+        {kind: "none", notice: $none, no_confident_match: true,
+         confident_corpora: [], corpora: [], floors: []}
+      else
+        [ ([$rows[].source] | unique)[] as $corpus
+          | ([$rows[] | select(.source == $corpus) | .rerank_score
+              | select(type == "number")]
+             | if length == 0 then null else max end) as $top
+          | ($top != null and (($unapplied | index($corpus)) == null)) as $judged
+          | {corpus: $corpus,
+             top_rerank_score: $top,
+             judged: $judged,
+             cleared: ($judged and $top >= floor_for($corpus))} ] as $corpora
+        | [$corpora[] | select(.judged) | .corpus] as $judged_names
+        | [$corpora[] | select(.judged | not) | select(.top_rerank_score == null)
+           | .corpus] as $unscored_names
+        | [$corpora[] | select(.judged | not) | select(.top_rerank_score != null)
+           | .corpus] as $unfloored_names
+        | [$corpora[] | select(.cleared) | .corpus] as $cleared
+        | [$floor_input[] | select(.corpus as $c | $judged_names | index($c))] as $floors
+        | [$corpora[] | select(.judged and (.cleared | not)) | .corpus] as $short
+        | ((if ($unscored_names | length) == 0 then ""
+            else $unjudged_head + ($unscored_names | join(" and ")) + $unjudged_tail
+            end)
+           + (if ($unfloored_names | length) == 0 then ""
+              else $autocut_off_head + ($unfloored_names | join(" and "))
+                   + $autocut_off_tail
+              end)) as $unjudged_text
+        | (if ($cleared | length) == 0 or ($short | length) == 0 then ""
+           else $shortfall_head + ($short | join(" and ")) + $shortfall_tail
+           end) as $shortfall_text
+        | if ($cleared | length) > 0 then
+            {kind: "nearest",
+             notice: ($conf_head + ($cleared | join(" and ")) + $conf_mid
+                      + render($floors) + "). " + $shortfall_text
+                      + $nearest + $unjudged_text),
+             no_confident_match: false,
+             confident_corpora: $cleared,
+             corpora: $corpora,
+             floors: $floors}
+          elif ($judged_names | length) > 0 then
+            {kind: "nearest",
+             notice: ($weak_head + ($judged_names | join(" and ")) + " ("
+                      + render($floors) + ")." + $unjudged_text + $weak_tail),
+             no_confident_match: true,
+             confident_corpora: [],
+             corpora: $corpora,
+             floors: $floors}
+          else
+            {kind: "nearest", notice: ($nearest + $unjudged_text),
+             corpora: $corpora, floors: []}
+          end
+      end
+  ' <<EOF
+$1
+EOF
+}
+
+# The floor GBrain actually applies lives in the brain's DATABASE plane, and so
+# does the toggle that decides whether it applies one at all. At the pinned
+# release `applyAutocut` is called only when `resolvedMode.autocut` is true and
+# is then handed `resolvedMode.autocut_min_top`; `loadSearchModeConfig` resolves
+# both through `engine.getConfig` alone, and that is the DB `config` table. The
+# nested file-plane shape has one reader in the pin and nothing calls it.
+# `gbrain config get` reports the file/env plane ahead of the database, so its
+# answer is NOT what search applies unless it says the database answered. This
+# command therefore accepts either knob only from the db plane: a file-plane
+# number is a value this host can see, never a value the search used, and
+# judging a row against it would be the false statement this surface exists to
+# avoid.
+#
+# Both knobs are read, because a floor is only a floor while its toggle is on,
+# and a corpus whose brain turns autocut off must be left unjudged rather than
+# measured against a number the search never applied. They are read in ONE
+# bounded slice, and they cost two connects because `gbrain config get` resolves
+# exactly one key per process at the pin (src/commands/config.ts): there is no
+# parent key, no multi-key form, and `gbrain search modes --json` attributes
+# autocut_min_top but not the autocut toggle, so no supported path returns both
+# from one connect. The toggle is asked FIRST, so a slice that runs out mid-read
+# costs the tuned floor - a fallback this command already discloses - rather
+# than the toggle, whose absence would put the wrong verdict on the answer.
+#
+# The read connects to the engine, so it is fenced three ways. It is lazy, taken
+# only when the local corpus returned rows that CAN be judged, meaning rows that
+# carry a rerank_score. It is bounded by a short slice of what is LEFT of the
+# budget the caller granted, with the runner's kill grace reserved out of that
+# remainder, so the run's real ceiling stays at the deadline rather than one
+# grace past it. And it disables GBrain's connect retry ladder, because on a
+# home whose brain is being served the daemon holds the index's exclusive lock
+# and walking that ladder spends seconds only to arrive at the pinned default
+# anyway. Anything short of a db-plane answer inside that slice is the pinned
+# default, disclosed either as the value the brain applies or as one this
+# command could not confirm.
+# Sized from a measurement of THIS two-key read, not from arithmetic over a
+# one-key one. Measured 2026-08-25 against this fleet's brain with the connect
+# retry ladder disabled and the index lock free, both keys inside this one
+# slice took 0.602s, 0.598s, and 0.604s over three runs, so one second is about
+# 1.66 times the measured wall clock while still fitting the one-second
+# remainder a dashboard-shaped run tends to leave. Those figures are owned by
+# docs/verification/gbrain-retrieval.md, which also binds them to this read's
+# shape: change how many keys are asked, or in what slice, and the measurement
+# moves in the same commit as the change.
+RECALL_FLOOR_READ_MAX_SECONDS=1
+
+# The bound a caller sanctioned is the whole run, not the retrieval calls alone,
+# and the runner that enforces this read's own bound spends its kill grace ON
+# TOP of the seconds it was given: it arms `timeout -k <grace> <slice>`, so a
+# slice of N can occupy N + grace before this command gets control back. The
+# grace is therefore reserved out of what is left rather than borrowed from the
+# margin a consumer held back for its own kill. A remainder too small to hold
+# both is no budget at all, and the read is skipped for the pinned default.
+recall_floor_read_slice() {  # -> seconds this run may spend, or non-zero
+  local grace=${FM_TIMEOUT_KILL_GRACE:-1} left=$RECALL_FLOOR_READ_MAX_SECONDS
+  case $grace in '' | *[!0-9]* | 0) grace=1 ;; esac
+  if [ -n "$RECALL_DEADLINE" ]; then
+    left=$((RECALL_DEADLINE - SECONDS - grace))
+    [ "$left" -le "$RECALL_FLOOR_READ_MAX_SECONDS" ] || left=$RECALL_FLOOR_READ_MAX_SECONDS
+  fi
+  [ "$left" -ge 1 ] || return 1
+  printf '%s\n' "$left"
+}
+
+# Which plane answered is the same question for both knobs, so it is asked once
+# here rather than open-coded per key. A key the read never reached at all is
+# `unknown` and is never confused with an answer: the rc file is written only
+# after that key's own `config get` returned, so a slice that expired between
+# the two leaves the second one absent rather than looking like a refusal.
+recall_config_plane() {  # <dir> <key> -> db | not-found | file-plane | unknown
+  local dir=$1 key=$2 rc
+  rc=$(head -n 1 "$dir/$key.rc" 2>/dev/null || true)
+  case $rc in '' | *[!0-9]*) printf 'unknown\n'; return 0 ;; esac
+  if [ "$rc" -eq 0 ] && grep -q '^\[config\] source: db plane' "$dir/$key.err" 2>/dev/null; then
+    printf 'db\n'
+  elif [ "$rc" -eq 1 ] && grep -q '^Config key not found' "$dir/$key.err" 2>/dev/null; then
+    # The connect completed and the key is in no plane at all, so the bundle
+    # default is what this brain applies.
+    printf 'not-found\n'
+  elif [ "$rc" -eq 0 ] && grep -q '^\[config\] source: file/env plane' "$dir/$key.err" 2>/dev/null \
+       && ! grep -q 'shadowed at runtime' "$dir/$key.err" 2>/dev/null; then
+    # The file plane answered and GBrain reported no database value behind it.
+    # Search reads only the database plane, so an empty one means the bundle
+    # value is what this brain applies even though the number printed is not.
+    printf 'file-plane\n'
+  else
+    printf 'unknown\n'
+  fi
+}
+
+# Two different things end at the pinned default, and saying them with one word
+# would be a false statement about what was searched. A brain that was ASKED and
+# holds no usable value really does apply the pinned default, and saying so is
+# accurate. A brain that could not be asked - the budget did not fit, the read
+# was killed, the index lock was held, the binary is missing - applies whatever
+# it applies, and this command does not know. The first is `pinned-default`; the
+# second is `unconfirmed-default`, and the notice attributes that gap to the
+# read this command could not complete rather than to the brain it searched.
+#
+# The toggle has no such pair, and deliberately so. Only a database plane that
+# ANSWERS and says off leaves the corpus unjudged. A key stored in no plane is
+# the reranked bundles' own `autocut: true`, a file-plane value is not what
+# search reads, and a read that could not happen is not a fact about the brain:
+# each of those keeps today's path, judged against a floor this command already
+# discloses as one it could not confirm.
+RECALL_LOCAL_FLOOR=""
+RECALL_LOCAL_FLOOR_SOURCE=unconfirmed-default
+RECALL_LOCAL_AUTOCUT_OFF=0
+RECALL_LOCAL_FLOOR_READ=0
+resolve_local_autocut_floor() {
+  [ "$RECALL_LOCAL_FLOOR_READ" -eq 0 ] || return 0
+  RECALL_LOCAL_FLOOR_READ=1
+  RECALL_LOCAL_FLOOR=""
+  RECALL_LOCAL_FLOOR_SOURCE=unconfirmed-default
+  RECALL_LOCAL_AUTOCUT_OFF=0
+  [ -n "${FM_GBRAIN_HOME_DIR:-}" ] || return 0
+  command -v "$GBRAIN_BIN" >/dev/null 2>&1 || return 0
+  local slice dir value
+  slice=$(recall_floor_read_slice) || return 0
+  # Scratch that could not be created is not a setup failure: it costs the
+  # knob, never the run, so the exit contract stays exactly where it was.
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-recall-floor.XXXXXX" 2>/dev/null) || return 0
+  # One slice, one process group, both keys. The child keeps each key's streams
+  # apart because the plane is reported on stderr and the value on stdout, and
+  # the acceptance rule is per key. The keys are literals, so nothing a caller
+  # typed reaches this shell. It clears errexit for itself because a key stored
+  # in no plane is an ordinary rc 1 and must not stop the other key from being
+  # asked, and a caller that exported SHELLOPTS would otherwise arm it here.
+  (
+    # shellcheck disable=SC2016 # Positional parameters expand inside the child bash, not here.
+    GBRAIN_HOME="$FM_GBRAIN_HOME_DIR" GBRAIN_NO_RETRY_CONNECT=1 \
+      fm_run_timed "$slice" "${BASH:-bash}" -c '
+        set +e
+        for key in autocut autocut_min_top; do
+          "$1" config get "search.$key" > "$2/$key.out" 2> "$2/$key.err"
+          printf "%s\n" "$?" > "$2/$key.rc"
+        done
+      ' fm-recall-floor-read "$GBRAIN_BIN" "$dir"
+  ) >/dev/null 2>&1 || true
+  if [ "$(recall_config_plane "$dir" autocut)" = db ]; then
+    # GBrain reads this value as on only for `1` or `true`; anything else
+    # stored is the operator turning autocut off, and off means no floor was
+    # applied to this corpus at all.
+    value=$(head -n 1 "$dir/autocut.out" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    case $value in 1 | true) ;; *) RECALL_LOCAL_AUTOCUT_OFF=1 ;; esac
+  fi
+  case $(recall_config_plane "$dir" autocut_min_top) in
+    db)
+      # The database plane answered. A value GBrain would itself refuse falls
+      # through to the bundle default there too, so an unusable answer is a
+      # confirmed pinned default rather than an unknown one.
+      value=$(head -n 1 "$dir/autocut_min_top.out" 2>/dev/null | tr -d '[:space:]')
+      RECALL_LOCAL_FLOOR=$(jq -rn --arg v "$value" \
+        'try (($v | tonumber) as $n | select($n >= 0 and $n <= 1) | $n) catch empty' \
+        2>/dev/null) || RECALL_LOCAL_FLOOR=""
+      if [ -n "$RECALL_LOCAL_FLOOR" ]; then
+        RECALL_LOCAL_FLOOR_SOURCE=db-config
+      else
+        RECALL_LOCAL_FLOOR_SOURCE=pinned-default
+      fi
+      ;;
+    not-found | file-plane) RECALL_LOCAL_FLOOR_SOURCE=pinned-default ;;
+  esac
+  rm -rf "$dir"
+  return 0
+}
+
+# The main brain is read over MCP and has no database plane this host can query,
+# so its floor is the pinned default and is disclosed as unconfirmed: nothing
+# here knows whether the fleet brain overrode it. Borrowing this home's value
+# for it would claim a setting the fleet brain never reported.
+autocut_floor_row() {  # <corpus> -> floor row
+  local corpus=$1 value source
+  if [ "$corpus" != local ]; then
+    value=$AUTOCUT_MIN_TOP_DEFAULT; source=unconfirmed-default
+  elif [ -n "$RECALL_LOCAL_FLOOR" ]; then
+    value=$RECALL_LOCAL_FLOOR; source=$RECALL_LOCAL_FLOOR_SOURCE
+  else
+    value=$AUTOCUT_MIN_TOP_DEFAULT; source=$RECALL_LOCAL_FLOOR_SOURCE
+  fi
+  jq -cn --arg c "$corpus" --argjson v "$value" --arg s "$source" \
+    '{corpus: $c, autocut_min_top: $v, source: $s}'
+}
+
+# The log is home-wide and append-only, so the bound is the retention story: no
+# task owns it and no teardown removes it. Past the cap the oldest lines are
+# dropped and the newest tail is kept, so the read that just happened always
+# survives and a delete or a trim can never fail the search that follows.
+trim_recall_read_log() {  # <file>
+  local file=$1 size tmp
+  size=$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]')
+  case $size in '' | *[!0-9]*) return 0 ;; esac
+  [ "$size" -gt "$RECALL_JSONL_MAX_BYTES" ] || return 0
+  tmp="$file.trim.$$"
+  # Whole lines are taken from the newest end until the cap is reached, so a
+  # partial record cannot survive by construction. A byte-sized tail cannot
+  # promise that: its cut lands inside a record whenever the offset falls there,
+  # and a record of this shape carries interior braces of its own, so no
+  # leading-character test can tell a fragment from a whole line - it would keep
+  # the fragment and leave the file unreadable to any reader that parses the
+  # whole log. The newest record is kept even when it alone exceeds the cap,
+  # because dropping it would discard the very read this trim was called to
+  # preserve.
+  if LC_ALL=C awk -v max="$RECALL_JSONL_MAX_BYTES" '
+       { line[NR] = $0; len[NR] = length($0) + 1 }
+       END {
+         if (NR == 0) exit
+         total = 0
+         start = NR + 1
+         for (i = NR; i >= 1; i--) {
+           if (total + len[i] > max) break
+           total += len[i]
+           start = i
+         }
+         if (start > NR) start = NR
+         for (i = start; i <= NR; i++) print line[i]
+       }
+     ' "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$file" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+# The append and the trim that follows it are ONE critical section, because the
+# file is home-wide: crewmates and the dashboard search the same home at once,
+# and a trim built from a tail snapshot taken before another search appended
+# would overwrite exactly the newest lines the cap exists to keep. mkdir is the
+# atomic primitive every host has, so it is the whole mechanism rather than one
+# arm of two. A holder that died mid-section is swept by age instead of waited
+# on forever, and a section this run cannot enter costs the record, never the
+# search.
+RECALL_LOG_LOCK_STALE_SECONDS=30
+# The ceiling is counted in polls rather than in SECONDS, because SECONDS is
+# whole-second granular: a bound of "SECONDS + 1" is really anywhere from zero
+# to one second depending on where in the current second the run started, so a
+# run that arrived late in a second would give up after a single pause and drop
+# a record it could have written. Twenty polls at the pause below is a bound
+# that means the same thing on every run.
+RECALL_LOG_LOCK_MAX_POLLS=20
+
+# A holder that died mid-section leaves its directory behind, so a stale hold is
+# swept by age. The sweep has to be single-winner or it recreates the very
+# interleaving the lock prevents: two waiters that sampled the same stale mtime
+# would each remove the directory, and the second would remove the lock the
+# first had already re-created. Renaming the directory IS the claim, because a
+# rename is atomic and only one sweeper can win it.
+# The trim's scratch file and a claimed stale-lock directory are each removed by
+# the invocation that made them, so a run killed in between leaves one behind
+# under a name nothing else would ever look at. They are swept by the same age
+# rule the lock itself uses, and from the append path rather than the contention
+# path, because a home nobody is competing for never reaches the lock sweep at
+# all. The age is what keeps a live run's scratch safe: a trim finishes in
+# milliseconds, so anything this old belongs to a run that is gone.
+recall_log_sweep_leftovers() {  # <log-file>
+  local file=$1 leftover held now=""
+  for leftover in "$file".trim.* "$file".lock.stale.*; do
+    [ -e "$leftover" ] || continue
+    if [ -z "$now" ]; then
+      now=$(date +%s 2>/dev/null || printf '')
+      case $now in '' | *[!0-9]*) return 0 ;; esac
+    fi
+    held=$(recall_stat_mtime "$leftover")
+    [ -n "$held" ] || continue
+    [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ] || continue
+    rm -rf "$leftover" 2>/dev/null || true
+  done
+  return 0
+}
+
+recall_log_lock_sweep_stale() {  # <lock-dir>
+  local lock=$1 held now claimed
+  held=$(recall_stat_mtime "$lock")
+  [ -n "$held" ] || return 0
+  now=$(date +%s 2>/dev/null || printf '')
+  case $now in '' | *[!0-9]*) return 0 ;; esac
+  [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ] || return 0
+  claimed="$lock.stale.$$"
+  mv "$lock" "$claimed" 2>/dev/null || return 0
+  rmdir "$claimed" 2>/dev/null || rm -rf "$claimed" 2>/dev/null || true
+  return 0
+}
+
+# A host whose sleep refuses a fractional argument must not turn each pause into
+# a whole second, so the shape of the pause is probed once and a host without
+# one spins on mkdir alone rather than sleeping.
+RECALL_LOG_LOCK_PAUSE=unknown
+recall_log_lock_pause() {
+  case $RECALL_LOG_LOCK_PAUSE in
+    yes) sleep 0.05 2>/dev/null || true ;;
+    no) : ;;
+    *) if sleep 0.05 2>/dev/null; then RECALL_LOG_LOCK_PAUSE=yes; else RECALL_LOG_LOCK_PAUSE=no; fi ;;
+  esac
+  return 0
+}
+
+# The wait is bounded by whichever comes first: a short ceiling of its own, or
+# what is LEFT of the budget the caller granted. This runs after the document
+# has already been printed, and a consumer that kills the run on its own
+# deadline discards that document, so a record nobody promised must never be
+# the reason an operator is told the brain was unreachable. Past the budget the
+# lock is tried exactly once and the record is dropped.
+recall_read_log_lock() {  # <lock-dir> -> 0 when held
+  local lock=$1 polls=0
+  while :; do
+    mkdir "$lock" 2>/dev/null && return 0
+    recall_log_lock_sweep_stale "$lock"
+    polls=$((polls + 1))
+    [ "$polls" -lt "$RECALL_LOG_LOCK_MAX_POLLS" ] || return 1
+    [ -z "$RECALL_DEADLINE" ] || [ "$SECONDS" -lt "$RECALL_DEADLINE" ] || return 1
+    recall_log_lock_pause
+  done
+}
+
+recall_read_log_append() {  # <file> <line>
+  local file=$1 line=$2 lock="$1.lock"
+  recall_log_sweep_leftovers "$file"
+  recall_read_log_lock "$lock" || return 0
+  { printf '%s\n' "$line" >> "$file" 2>/dev/null \
+      && trim_recall_read_log "$file"; } || true
+  rmdir "$lock" 2>/dev/null || true
+  return 0
+}
+
+# Presence-gated on the local index directory, the same predicate the brief
+# scaffold uses. A write failure never fails the search it records.
+#
+# The record answers three things about the read: what was asked, whether a
+# corpus was read at all, and what the read returned. The disposition is what
+# keeps those separable - a run that never reached a corpus would otherwise
+# serialize as a successful read whose top row carried no rerank_score, which
+# is the one question an audit trail of reads exists to answer.
+#
+# The score the verdict was actually taken from is per corpus, so the record
+# carries corpus_tops. rank1_rerank_score is the head of the MERGED list and is
+# named with the corpus it came from, because on a two-corpus read that row can
+# belong to a corpus the verdict is not about.
+recall_query_hash() {  # <query> -> unkeyed SHA-256 hex, or non-zero
+  local digest
+  if command -v shasum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | shasum -a 256 | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | sha256sum | awk '{print $1}')
+  else
+    return 1
+  fi
+  case $digest in
+    *[!0-9a-f]* | '') return 1 ;;
+  esac
+  [ "${#digest}" -eq 64 ] || return 1
+  printf '%s\n' "$digest"
+}
+
+append_recall_read_record() {  # <doc-json>
+  [ -n "${HOME_PATH:-}" ] || return 0
+  [ -n "${FM_GBRAIN_PGLITE:-}" ] && [ -d "$FM_GBRAIN_PGLITE" ] || return 0
+  local dir="$HOME_PATH/state" file line query hash result_count
+  mkdir -p "$dir" 2>/dev/null || return 0
+  file="$dir/recall.jsonl"
+  # A missing hasher skips the record rather than writing the query: the trail
+  # is best-effort, and plaintext on disk is the one outcome it must not have.
+  query=$(printf '%s' "$1" | jq -r '.query // empty' 2>/dev/null) || return 0
+  hash=$(recall_query_hash "$query") || return 0
+  result_count=$(printf '%s' "$1" | jq -r '(.results // []) | length' 2>/dev/null) || return 0
+  case $result_count in '' | *[!0-9]*) return 0 ;; esac
+  line=$(printf '%s' "$1" | jq -c \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg query_hash "$hash" \
+    --argjson result_count "$result_count" '
+    (if (.answer | type) == "object" then .answer else null end) as $a
+    | ($a != null and ($a | has("no_confident_match"))) as $judged
+    | {
+      schema: "fm-recall-read.v1",
+      timestamp: $timestamp,
+      query_hash: $query_hash,
+      result_count: $result_count,
+      disposition: (
+        if $a == null then "unread"
+        elif ($judged | not) then "unjudged"
+        elif $a.no_confident_match then "miss"
+        else "hit" end
+      ),
+      answer_kind: (if $a == null then null else $a.kind end),
+      rank1_corpus: (.results[0].source // null),
+      rank1_rerank_score: (
+        if ((.results[0].rerank_score // null) | type) == "number"
+        then .results[0].rerank_score
+        else null end
+      ),
+      corpus_tops: (
+        if $a == null then null
+        else [ ($a.corpora // [])[]
+               | {corpus, top_rerank_score, judged, cleared} ]
+        end
+      ),
+      no_confident_match: (if $judged then $a.no_confident_match else null end),
+      confident_corpora: (if $a == null then null else ($a.confident_corpora // null) end)
+    }
+  ' 2>/dev/null) || return 0
+  [ -n "$line" ] || return 0
+  recall_read_log_append "$file" "$line"
+  return 0
+}
+
 # --- search -----------------------------------------------------------------
 
 cmd_search() {
@@ -911,24 +1550,53 @@ cmd_search() {
     fi
   fi
 
-  local sources doc answer_kind="" answer_notice=""
+  local sources doc corpus floor_rows=() floors='[]' answer_json="null"
+  local unfloored=() unapplied='[]'
   results=$(annotate_search_results "$results" "$HOME_PATH")
+  results=$(printf '%s' "$results" | jq -c "$JQ_MERGE_BY_RANK"'. | merge_by_rank')
+
+  # The floor is read only for a corpus that actually returned rows to judge,
+  # and only after the run's deadline has been set and every retrieval leg has
+  # spent what it was granted. A search that found nothing needs no floor and
+  # reads no plane, and a run whose budget is already gone reads none either.
+  # A corpus is judgeable only when its own rows carry a rerank_score, which is
+  # the same predicate the answer uses to decide `judged`. A corpus without one
+  # is never measured against a floor, so reading a plane for it would spend an
+  # engine connect on a number that is then thrown away - the whole cost this
+  # read is fenced against, and the ordinary case on a brain whose reranker is
+  # off.
+  local judged_corpora
+  judged_corpora=$(printf '%s' "$results" | jq -r '
+    [ ([.[].source] | unique)[] as $c
+      | select([.[] | select(.source == $c) | .rerank_score
+                | select(type == "number")] | length > 0)
+      | $c ][]' 2>/dev/null || true)
+  # A corpus whose brain answered that it turns autocut off applied no floor to
+  # these rows, so it takes no floor row and is handed to the answer as one it
+  # must leave unjudged. The verdict and the disclosure move together: a corpus
+  # that carries no floor is never one the notice reports a shortfall for.
+  if [ "$answered" -eq 1 ] && [ -n "$judged_corpora" ]; then
+    for corpus in $judged_corpora; do
+      [ "$corpus" != local ] || resolve_local_autocut_floor
+      if [ "$corpus" = local ] && [ "$RECALL_LOCAL_AUTOCUT_OFF" -eq 1 ]; then
+        unfloored+=("$corpus")
+        continue
+      fi
+      floor_rows+=("$(autocut_floor_row "$corpus")")
+    done
+    floors=$(printf '%s\n' ${floor_rows[@]+"${floor_rows[@]}"} | jq -c -s 'map(select(. != null))')
+    unapplied=$(printf '%s\n' ${unfloored[@]+"${unfloored[@]}"} \
+      | jq -R -s 'split("\n") | map(select(. != ""))')
+  fi
   if [ "$answered" -eq 1 ]; then
-    if [ "$(printf '%s' "$results" | jq 'length')" -eq 0 ]; then
-      answer_kind=none
-      answer_notice=$ANSWER_NONE_NOTICE
-    else
-      answer_kind=nearest
-      answer_notice=$ANSWER_NEAREST_NOTICE
-    fi
+    answer_json=$(search_answer_json "$results" "$floors" "$unapplied")
   fi
   sources=$(printf '%s\n' ${rows[@]+"${rows[@]}"} | jq -c -s 'map(select(. != null))')
   doc=$(jq -c -n --arg s "$SCHEMA" --arg h "$HOME_PATH" --arg q "$query" \
-    --arg akind "$answer_kind" --arg anote "$answer_notice" \
-    --argjson src "$sources" --argjson res "$results" "$JQ_MERGE_BY_RANK"'
+    --argjson src "$sources" --argjson res "$results" --argjson ans "$answer_json" '
     {schema: $s, command: "search", home: $h, query: $q, sources: $src,
-     results: ($res | merge_by_rank)}
-    + (if $akind == "" then {} else {answer: {kind: $akind, notice: $anote}} end)')
+     results: $res}
+    + (if $ans == null then {} else {answer: $ans} end)')
 
   if [ "$JSON_MODE" -eq 1 ]; then
     printf '%s\n' "$doc" | jq '.'
@@ -940,9 +1608,11 @@ cmd_search() {
       (if (.answer | not) then "not searched: no corpus could be read - this says nothing about whether it exists"
        elif (.results | length) == 0 then "no match in this brain - the brain may simply not hold it"
        else (.results[]
-             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
+             | "\(.citation)  score=\((.score // 0) | tostring | .[0:6])\(if .rerank_score != null then "  rerank=" + (.rerank_score | tostring) else "" end)\(if .cosine != null then "  cosine=" + (.cosine | tostring) else "" end)\(if .evidence then "  evidence=" + .evidence else "" end)\(if .create_safety then "  create_safety=" + .create_safety else "" end)\(if .stale then " (stale)" else "" end)\(if .captured_at then "  captured=" + .captured_at else "" end)\(if .source_state then "  source=" + .source_state else "" end)\(if .source_state == "drifted" then " (live source wins)" else "" end)\(if .source_updated_at then "  live=" + .source_updated_at else "" end)\n  \(.excerpt)")
        end)'
   fi
+
+  append_recall_read_record "$doc"
 
   # No corpus answered, so an empty result list here would be the one lie this
   # command must never tell: "nothing was found" reads the same as "nothing
