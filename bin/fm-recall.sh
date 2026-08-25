@@ -80,16 +80,24 @@
 # essentially always returns rows, including for queries whose topic is absent.
 # A non-empty list is therefore not a find. Confidence is judged PER CORPUS:
 # each corpus's own pool of returned rows is judged against that corpus's own
-# effective search.autocut_min_top, the weak-top floor GBrain already defines
-# and applies to one corpus's top rerank_score. This command does not invent a
-# different threshold, and it never judges on the head of the merged list: two
-# brains' scores are not the same quantity, so the corpus that happened to lead
-# the merge must not decide the other corpus's verdict. The effective floor is
-# read from each brain's own configuration plane; the pinned module default
-# (0.35) is a disclosed fallback for a plane that could not be read, never a
-# silent override of an operator's own setting. The floors actually used, and
-# where each came from, are reported on the answer object. When a corpus
-# answered, the document carries an `answer` object that says what the rows are:
+# search.autocut_min_top, the weak-top floor GBrain already defines and applies
+# to one corpus's top rerank_score. This command does not invent a different
+# threshold, and it never judges on the head of the merged list: two brains'
+# scores are not the same quantity, so the corpus that happened to lead the
+# merge must not decide the other corpus's verdict.
+#
+# The floor is read from GBrain's own configuration FILE plane under the
+# resolved GBRAIN_HOME, never through a command that connects to the brain: an
+# engine connect takes the index's exclusive lock behind a retry ladder and
+# would spend clock outside the budget --timeout grants, costing the per-source
+# document on exactly the slow brain that needs it. GBrain's autocut resolves
+# this knob from the brain's database plane, which is out of reach here, so a
+# floor stored only there reads as the pinned module default (0.35). That is
+# why the answer object discloses, per corpus, the floor used and which plane
+# it came from: the fallback is stated, never passed off as a setting this
+# command read. Only corpora that were actually judged carry a floor.
+#
+# When a corpus answered, the document carries an `answer` object:
 #   nearest  rows are the nearest indexed pages, not answers. A listed page may
 #            be unrelated to the query. Absence of a match is not absence of
 #            the queried thing. A corpus clears when its own top rerank_score
@@ -97,23 +105,29 @@
 #            cleared are named in confident_corpora. no_confident_match is true
 #            only when NO corpus cleared. A corpus whose rows carry no
 #            rerank_score at all is left unjudged rather than counted a miss,
-#            and when nothing could be judged the answer carries no verdict.
+#            it is named as unjudged rather than tied to a floor it was never
+#            measured against, and when nothing could be judged the answer
+#            carries no verdict. `corpora` carries each corpus's own top
+#            rerank_score, whether it was judged, and whether it cleared.
 #   none     the corpus was read and returned no rows. That is absence of an
 #            indexed match, never evidence that the queried thing is absent.
 # `answer` is omitted when no corpus was read, so a retrieval failure cannot be
 # rendered as "not found".
 #
 # A search in a home whose local index directory exists appends one JSON line
-# to state/recall.jsonl recording the query, what the read returned, the rank-1
-# rerank_score, and whether the caller was told there was no confident match.
-# The disposition names which of those four things happened - unread, unjudged,
-# miss, or hit - so a corpus that was never read can never serialize as a read
-# that returned an unjudgeable row. That is a local record of the read, never
-# of what the caller then decided, and nothing is sent anywhere. think never
-# writes it. The file is size-capped rather than unbounded: past the cap the
-# oldest lines are dropped and the newest tail is kept, so it is always safe to
-# delete or trim and the next search recreates it. A home with no local index
-# writes nothing, so a fleet that has not adopted a brain keeps today's path.
+# to state/recall.jsonl recording the query, what the read returned, each
+# corpus's own top rerank_score, the rank-1 rerank_score with the corpus it came
+# from, and whether the caller was told there was no confident match. The
+# disposition names which of four things happened - unread, unjudged, miss, or
+# hit - so a corpus that was never read can never serialize as a read that
+# returned an unjudgeable row. That is a local record of the read, never of what
+# the caller then decided, and nothing is sent anywhere. think never writes it.
+# The file is home-wide and size-capped rather than unbounded: the append and
+# the trim that follows it run under one advisory lock so concurrent searches
+# cannot overwrite each other's newest lines, past the cap the oldest lines are
+# dropped and the newest tail is kept, and it is always safe to delete or trim
+# because the next search recreates it. A home with no local index writes
+# nothing, so a fleet that has not adopted a brain keeps today's path.
 # Each local result also carries provenance from this home's capture outbox and
 # the live source that outbox was composed from, when those records exist:
 #   captured_at        when the outbox revision was marked captured, or null
@@ -177,8 +191,6 @@
 #   FM_GBRAIN_BIN      gbrain executable (default: gbrain on PATH)
 #   FM_RECALL_TIMEOUT  default seconds per retrieval call, overriding the
 #                      per-command defaults above
-#   FM_GBRAIN_TIMEOUT  seconds allowed for the bounded read of a brain's own
-#                      search.autocut_min_top (default 10)
 #   FM_RECALL_JSONL_MAX_BYTES  size cap for state/recall.jsonl
 #                      (default 262144)
 set -euo pipefail
@@ -202,10 +214,10 @@ ANSWER_MAX_CEILING=100000
 TIMEOUT_MAX=3600
 # GBrain owns the weak-top floor and resolves search.autocut_min_top per-call,
 # then config, then bundle, so the effective value is a property of the brain
-# being read rather than of this wrapper. It is read from each brain's own
-# plane. This is DEFAULT_AUTOCUT.minTopScore at the pinned release, used only
-# when no plane could be read at all, and every use of it is disclosed on the
-# answer. Do not replace it with a Firstmate-invented value.
+# being read rather than of this wrapper. This is DEFAULT_AUTOCUT.minTopScore at
+# the pinned release, used when the brain's configuration file plane holds no
+# value, and every use of it is disclosed on the answer as a fallback rather
+# than as a setting. Do not replace it with a Firstmate-invented value.
 AUTOCUT_MIN_TOP_DEFAULT=0.35
 
 # state/recall.jsonl is home-wide and append-only, so it needs a bound rather
@@ -557,11 +569,17 @@ ANSWER_NEAREST_NOTICE='These are the nearest indexed pages, not answers. A liste
 # The weak and confident notices are assembled around the floors this run
 # actually judged against, so a retuned knob can never leave a notice quoting a
 # floor the code no longer uses.
-ANSWER_WEAK_HEAD='No confident match. No corpus top rerank_score reached its own search.autocut_min_top ('
-ANSWER_WEAK_TAIL='). These are still the nearest indexed pages, not answers. A listed page may be unrelated to the query. No confident match is not evidence that the queried thing is absent. Where a live source disagrees with a page, the live source wins.'
+ANSWER_WEAK_HEAD='No confident match. Top rerank_score stayed below search.autocut_min_top in '
+ANSWER_WEAK_MID=' ('
+ANSWER_WEAK_AFTER=').'
+ANSWER_WEAK_TAIL=' These are still the nearest indexed pages, not answers. A listed page may be unrelated to the query. No confident match is not evidence that the queried thing is absent. Where a live source disagrees with a page, the live source wins.'
 ANSWER_CONFIDENT_HEAD='Confident match in '
 ANSWER_CONFIDENT_MID=', judged against search.autocut_min_top ('
 ANSWER_CONFIDENT_TAIL='). '
+# A corpus that stamped no rerank_score was never measured against a floor, so
+# it is named as unjudged rather than folded into a sentence about floors.
+ANSWER_UNJUDGED_HEAD=' Not judged at all, because no returned row carried a rerank_score: '
+ANSWER_UNJUDGED_TAIL='.'
 ANSWER_NONE_NOTICE='No indexed match. That is absence of a match in this brain, not evidence that the queried thing is absent.'
 
 recall_stat_mtime() {  # <path> -> epoch seconds, or empty
@@ -880,55 +898,76 @@ source_row() {  # <source> <state> <brain> <count> [detail]
 # A corpus clears when its own top rerank_score is a number that is not below
 # its floor, so a score equal to the floor is not a miss. The read is a miss
 # only when NO corpus cleared. A corpus whose pool carries no rerank_score at
-# all is left unjudged rather than counted a miss: this command does not invent
-# a signal GBrain did not stamp. create_safety is never consulted.
+# all is left UNJUDGED rather than counted a miss: this command does not invent
+# a signal GBrain did not stamp, and it does not name a floor that corpus was
+# never measured against. `corpora` carries what each corpus was judged on and
+# `floors` carries the floor each JUDGED corpus was judged against, so a caller
+# can tell a miss that covered every brain from one where a brain with its
+# reranker off was never judged. create_safety is never consulted.
 search_answer_json() {  # <results-json> <floors-json> -> answer object
-  jq -c --argjson floors "$2" \
+  jq -c --argjson floor_input "$2" \
     --argjson default_floor "$AUTOCUT_MIN_TOP_DEFAULT" \
     --arg nearest "$ANSWER_NEAREST_NOTICE" \
     --arg weak_head "$ANSWER_WEAK_HEAD" \
+    --arg weak_mid "$ANSWER_WEAK_MID" \
+    --arg weak_after "$ANSWER_WEAK_AFTER" \
     --arg weak_tail "$ANSWER_WEAK_TAIL" \
     --arg conf_head "$ANSWER_CONFIDENT_HEAD" \
     --arg conf_mid "$ANSWER_CONFIDENT_MID" \
     --arg conf_tail "$ANSWER_CONFIDENT_TAIL" \
+    --arg unjudged_head "$ANSWER_UNJUDGED_HEAD" \
+    --arg unjudged_tail "$ANSWER_UNJUDGED_TAIL" \
     --arg none "$ANSWER_NONE_NOTICE" '
     def where($source):
-      if $source == "config" then "its own config"
-      elif $source == "local-config" then "this home config"
+      if $source == "config-file" then "its own config file"
+      elif $source == "local-config-file" then "this home config file"
       else "the pinned GBrain default" end;
     def floor_for($corpus):
-      ([$floors[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
+      ([$floor_input[] | select(.corpus == $corpus)] | .[0] | .autocut_min_top)
       // $default_floor;
+    def render($floors):
+      $floors
+      | map(.corpus + " " + (.autocut_min_top | tostring) + " from " + where(.source))
+      | join(", ");
     . as $rows
-    | ($floors
-       | map(.corpus + " " + (.autocut_min_top | tostring) + " from " + where(.source))
-       | join(", ")) as $floors_text
     | if ($rows | length) == 0 then
         {kind: "none", notice: $none, no_confident_match: true,
-         confident_corpora: [], floors: $floors}
+         confident_corpora: [], corpora: [], floors: []}
       else
         [ ([$rows[].source] | unique)[] as $corpus
+          | ([$rows[] | select(.source == $corpus) | .rerank_score
+              | select(type == "number")]
+             | if length == 0 then null else max end) as $top
           | {corpus: $corpus,
-             top: ([$rows[] | select(.source == $corpus) | .rerank_score
-                    | select(type == "number")] | if length == 0 then null else max end),
-             floor: floor_for($corpus)} ] as $judged
-        | [$judged[] | select(.top != null and .top >= .floor) | .corpus] as $cleared
-        | [$judged[] | select(.top != null)] as $judgeable
+             top_rerank_score: $top,
+             judged: ($top != null),
+             autocut_min_top: floor_for($corpus),
+             cleared: ($top != null and $top >= floor_for($corpus))} ] as $corpora
+        | [$corpora[] | select(.judged) | .corpus] as $judged_names
+        | [$corpora[] | select(.judged | not) | .corpus] as $unjudged_names
+        | [$corpora[] | select(.cleared) | .corpus] as $cleared
+        | [$floor_input[] | select(.corpus as $c | $judged_names | index($c))] as $floors
+        | (if ($unjudged_names | length) == 0 then ""
+           else $unjudged_head + ($unjudged_names | join(" and ")) + $unjudged_tail
+           end) as $unjudged_text
         | if ($cleared | length) > 0 then
             {kind: "nearest",
              notice: ($conf_head + ($cleared | join(" and ")) + $conf_mid
-                      + $floors_text + $conf_tail + $nearest),
+                      + render($floors) + $conf_tail + $nearest + $unjudged_text),
              no_confident_match: false,
              confident_corpora: $cleared,
+             corpora: $corpora,
              floors: $floors}
-          elif ($judgeable | length) > 0 then
+          elif ($judged_names | length) > 0 then
             {kind: "nearest",
-             notice: ($weak_head + $floors_text + $weak_tail),
+             notice: ($weak_head + ($judged_names | join(" and ")) + $weak_mid
+                      + render($floors) + $weak_after + $unjudged_text + $weak_tail),
              no_confident_match: true,
              confident_corpora: [],
+             corpora: $corpora,
              floors: $floors}
           else
-            {kind: "nearest", notice: $nearest, floors: $floors}
+            {kind: "nearest", notice: $nearest, corpora: $corpora, floors: []}
           end
       end
   ' <<EOF
@@ -936,37 +975,64 @@ $1
 EOF
 }
 
-# GBrain resolves search.autocut_min_top per-call, then config, then bundle, so
-# the only honest floor is the one that brain would use. It is read through the
-# same bounded runtime-config path bin/fm-gbrain-eval.sh reads its own knobs
-# through. A plane this process cannot read - no binary, no key, a non-numeric
-# value, a timeout - leaves the floor unset, and the caller discloses the
-# fallback rather than presenting it as the brain's own setting.
+# The floor is read from the plane this command can read WITHOUT connecting to
+# the brain: GBrain's own configuration file at $GBRAIN_HOME/.gbrain/config.json,
+# which is the plane `gbrain config get` itself resolves ahead of the database.
+# An engine-backed read is refused here on purpose. `gbrain config get` routes
+# through GBrain's connectEngine, which takes the index's exclusive lock behind
+# a multi-attempt backoff, so on a home whose brain is being served it spends
+# seconds no caller sanctioned and then falls back to this same default anyway.
+# Spending a caller's retrieval budget on a knob read costs the per-source
+# document, which is the only surface that says WHICH corpus could not be read
+# and the only one carrying the rows that did come back.
+#
+# GBrain's autocut reads this knob from the brain's database plane, which is
+# out of reach here, so a floor stored only there reads as the pinned default.
+# That is why every answer discloses which value each corpus was judged against
+# and where it came from: this command never presents a floor as a setting it
+# did not actually read.
+#
+# Resolved lazily, and only when a corpus returned rows to judge, so a search
+# that found nothing reads no plane at all.
 RECALL_LOCAL_FLOOR=""
+RECALL_LOCAL_FLOOR_READ=0
 resolve_local_autocut_floor() {
+  [ "$RECALL_LOCAL_FLOOR_READ" -eq 0 ] || return 0
+  RECALL_LOCAL_FLOOR_READ=1
   RECALL_LOCAL_FLOOR=""
   [ -n "${FM_GBRAIN_HOME_DIR:-}" ] || return 0
-  command -v "$GBRAIN_BIN" >/dev/null 2>&1 || return 0
-  fm_gbrain_runtime_config_get "$FM_GBRAIN_HOME_DIR" "$GBRAIN_BIN" search.autocut_min_top
-  [ "$FM_GBRAIN_RUNTIME_CONFIG_STATE" = present ] || return 0
-  RECALL_LOCAL_FLOOR=$(jq -rn --arg v "$FM_GBRAIN_RUNTIME_CONFIG_VALUE" \
-    'try (($v | tonumber) as $n | select($n >= 0 and $n <= 1) | $n) catch empty' \
-    2>/dev/null) || RECALL_LOCAL_FLOOR=""
+  local file="$FM_GBRAIN_HOME_DIR/.gbrain/config.json"
+  [ -f "$file" ] || return 0
+  # `set` stores a dotted key flat and `get` resolves flat before nested, so
+  # both spellings are read the same way GBrain reads them. A value outside
+  # [0, 1] is what GBrain itself refuses, so it is left unread rather than used.
+  RECALL_LOCAL_FLOOR=$(jq -r '
+    if type != "object" then empty
+    else
+      (if has("search.autocut_min_top") then .["search.autocut_min_top"]
+       elif (.search | type) == "object" then .search.autocut_min_top
+       else null end) as $v
+      | if $v == null then empty
+        else (try ($v | tostring | tonumber) catch null) as $n
+          | if $n != null and $n >= 0 and $n <= 1 then $n else empty end
+        end
+    end
+  ' "$file" 2>/dev/null) || RECALL_LOCAL_FLOOR=""
   return 0
 }
 
-# The main brain is read over MCP, which has no config-get of its own, so its
-# floor falls back to this home's readable value and then to the pinned
-# default. Which of the three was used is carried on the row rather than
-# silently substituted.
+# The main brain is read over MCP and has no configuration plane this host can
+# query at all, so its floor falls back to this home's readable value and then
+# to the pinned default. Which of the three was used is carried on the row
+# rather than silently substituted.
 autocut_floor_row() {  # <corpus> <own-value-or-empty> -> floor row
   local corpus=$1 own=$2 value source
   if [ -n "$own" ]; then
-    value=$own; source=config
+    value=$own; source=config-file
   elif [ -n "$RECALL_LOCAL_FLOOR" ]; then
-    value=$RECALL_LOCAL_FLOOR; source=local-config
+    value=$RECALL_LOCAL_FLOOR; source=local-config-file
   else
-    value=$AUTOCUT_MIN_TOP_DEFAULT; source=default
+    value=$AUTOCUT_MIN_TOP_DEFAULT; source=pinned-default
   fi
   jq -cn --arg c "$corpus" --argjson v "$value" --arg s "$source" \
     '{corpus: $c, autocut_min_top: $v, source: $s}'
@@ -982,13 +1048,55 @@ trim_recall_read_log() {  # <file>
   case $size in '' | *[!0-9]*) return 0 ;; esac
   [ "$size" -gt "$RECALL_JSONL_MAX_BYTES" ] || return 0
   tmp="$file.trim.$$"
-  # A byte-sized tail can cut mid-record, so the first surviving line is kept
-  # only when it is a whole one. The newest record is never the cut one.
+  # A byte-sized tail can cut mid-record, so a leading partial line is dropped.
+  # When the newest record is itself larger than the cap that would drop the
+  # very read this trim was called to preserve, so the tail falls back to that
+  # one whole record and the file is left over the cap rather than emptied.
   if tail -c "$RECALL_JSONL_MAX_BYTES" "$file" 2>/dev/null \
        | awk 'NR > 1 || /^[{]/' > "$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$file" 2>/dev/null || true
+    if [ -s "$tmp" ]; then
+      mv -f "$tmp" "$file" 2>/dev/null || true
+    elif tail -n 1 "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+      mv -f "$tmp" "$file" 2>/dev/null || true
+    fi
   fi
   rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+# The append and the trim that follows it are ONE critical section, because the
+# file is home-wide: crewmates and the dashboard search the same home at once,
+# and a trim built from a tail snapshot taken before another search appended
+# would overwrite exactly the newest lines the cap exists to keep. mkdir is the
+# atomic primitive every host has, so it is the whole mechanism rather than one
+# arm of two. A holder that died mid-section is swept by age instead of waited
+# on forever, and a section this run cannot enter costs the record, never the
+# search.
+RECALL_LOG_LOCK_STALE_SECONDS=30
+RECALL_LOG_LOCK_TRIES=40
+recall_read_log_lock() {  # <lock-dir> -> 0 when held
+  local lock=$1 tries=0 held now
+  while :; do
+    mkdir "$lock" 2>/dev/null && return 0
+    held=$(recall_stat_mtime "$lock")
+    now=$(date +%s 2>/dev/null || printf '0')
+    case $now in '' | *[!0-9]*) now=0 ;; esac
+    if [ -n "$held" ] && [ "$now" -gt 0 ] \
+       && [ "$((now - held))" -ge "$RECALL_LOG_LOCK_STALE_SECONDS" ]; then
+      rmdir "$lock" 2>/dev/null || true
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt "$RECALL_LOG_LOCK_TRIES" ] || return 1
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+}
+
+recall_read_log_append() {  # <file> <line>
+  local file=$1 line=$2 lock="$1.lock"
+  recall_read_log_lock "$lock" || return 0
+  { printf '%s\n' "$line" >> "$file" 2>/dev/null \
+      && trim_recall_read_log "$file"; } || true
+  rmdir "$lock" 2>/dev/null || true
   return 0
 }
 
@@ -1000,6 +1108,11 @@ trim_recall_read_log() {  # <file>
 # keeps those separable - a run that never reached a corpus would otherwise
 # serialize as a successful read whose top row carried no rerank_score, which
 # is the one question an audit trail of reads exists to answer.
+#
+# The score the verdict was actually taken from is per corpus, so the record
+# carries corpus_tops. rank1_rerank_score is the head of the MERGED list and is
+# named with the corpus it came from, because on a two-corpus read that row can
+# belong to a corpus the verdict is not about.
 append_recall_read_record() {  # <doc-json>
   [ -n "${HOME_PATH:-}" ] || return 0
   [ -n "${FM_GBRAIN_PGLITE:-}" ] && [ -d "$FM_GBRAIN_PGLITE" ] || return 0
@@ -1020,18 +1133,24 @@ append_recall_read_record() {  # <doc-json>
         else "hit" end
       ),
       answer_kind: (if $a == null then null else $a.kind end),
+      rank1_corpus: (.results[0].source // null),
       rank1_rerank_score: (
         if ((.results[0].rerank_score // null) | type) == "number"
         then .results[0].rerank_score
         else null end
+      ),
+      corpus_tops: (
+        if $a == null then null
+        else [ ($a.corpora // [])[]
+               | {corpus, top_rerank_score, judged, cleared} ]
+        end
       ),
       no_confident_match: (if $judged then $a.no_confident_match else null end),
       confident_corpora: (if $a == null then null else ($a.confident_corpora // null) end)
     }
   ' 2>/dev/null) || return 0
   [ -n "$line" ] || return 0
-  printf '%s\n' "$line" >> "$file" 2>/dev/null || return 0
-  trim_recall_read_log "$file"
+  recall_read_log_append "$file" "$line"
   return 0
 }
 
@@ -1058,12 +1177,8 @@ cmd_search() {
   # still reaches the fleet's shared corpus, which needs only curl and a token,
   # and a home whose main brain is stopped still reads its own index.
   local rows=() results='[]' answered=0 owner=0 params shaped count
-  local local_state="" local_detail="" local_count=0 floor_rows=()
+  local local_state="" local_detail="" local_count=0 answered_corpora=()
   if fm_gbrain_is_main_brain_owner "$HOME_PATH"; then owner=1; fi
-
-  # Read before any retrieval call, so a suite that inspects the last argv the
-  # brain received still sees the search it was asked about.
-  resolve_local_autocut_floor
 
   local read_local=0 read_main=0 main_is_local=0
   case $SCOPE in
@@ -1112,7 +1227,7 @@ cmd_search() {
       fi
     fi
     rows+=("$(source_row local "$local_state" "$FM_GBRAIN_BRAIN_ROOT" "$local_count" "$local_detail")")
-    [ "$local_state" != ok ] || floor_rows+=("$(autocut_floor_row local "$RECALL_LOCAL_FLOOR")")
+    [ "$local_state" != ok ] || answered_corpora+=(local)
   fi
 
   if [ "$read_main" -eq 1 ]; then
@@ -1136,17 +1251,30 @@ cmd_search() {
       count=$(printf '%s' "$shaped" | jq 'length')
       results=$(jq -c -n --argjson a "$results" --argjson b "$shaped" '$a + $b')
       rows+=("$(source_row main ok "$MAIN_MCP_URL" "$count")")
-      floor_rows+=("$(autocut_floor_row main "")")
+      answered_corpora+=(main)
       answered=1
     else
       rows+=("$(source_row main degraded "$MAIN_MCP_URL" 0 "$MAIN_ERR")")
     fi
   fi
 
-  local sources doc floors answer_json="null"
+  local sources doc corpus floor_rows=() floors='[]' answer_json="null"
   results=$(annotate_search_results "$results" "$HOME_PATH")
   results=$(printf '%s' "$results" | jq -c "$JQ_MERGE_BY_RANK"'. | merge_by_rank')
-  floors=$(printf '%s\n' ${floor_rows[@]+"${floor_rows[@]}"} | jq -c -s 'map(select(. != null))')
+
+  # The floor is only read when there are rows to judge, and only after the
+  # run's deadline has been set and every retrieval leg has spent what it was
+  # granted. A search that found nothing needs no floor and reads no plane.
+  if [ "$answered" -eq 1 ] && [ "$(printf '%s' "$results" | jq 'length')" -gt 0 ]; then
+    resolve_local_autocut_floor
+    for corpus in ${answered_corpora[@]+"${answered_corpora[@]}"}; do
+      case $corpus in
+        local) floor_rows+=("$(autocut_floor_row local "$RECALL_LOCAL_FLOOR")") ;;
+        main) floor_rows+=("$(autocut_floor_row main "")") ;;
+      esac
+    done
+    floors=$(printf '%s\n' ${floor_rows[@]+"${floor_rows[@]}"} | jq -c -s 'map(select(. != null))')
+  fi
   if [ "$answered" -eq 1 ]; then
     answer_json=$(search_answer_json "$results" "$floors")
   fi
