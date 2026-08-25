@@ -139,6 +139,15 @@ Measured on this fleet, capture reported 291 archived while the index served 288
 - `gap` - it names each captured document the index no longer serves, and exits non-zero.
 - `inconclusive` - the listing could not be read, or came back at exactly its own `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` ceiling and may be incomplete.
   A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
+  The verdict is decided from whether the listing command succeeded, never from whether it happened to explain itself, so a listing that dies without a message is inconclusive rather than a gap naming every captured document.
+
+Every count in the verdict says how far it can be trusted, and `bounds` in the record carries that for each one:
+
+- `exact` - measured and believed whole, which is what `stored` and `truncated` always are, because both are counted from this home's own outbox.
+- `at-least` - measured against a listing known to be partial, so the true value is this or higher. `active` is a floor on the ceiling branch: every page the listing named really is served, and the ones it dropped are still served too.
+- `at-most` - the same partial listing in the other direction, so the true value is this or lower. `missing` is a ceiling on that branch, because a page the listing dropped looks absent whether or not it is, and `missing_slugs` there names unverified candidates rather than findings.
+- `unmeasured` - the count is `null` and nothing was compared, which is what both `active` and `missing` are when the listing could not be read at all.
+  A `null` is not a zero: an audit that could not count says so rather than reporting none, and `missing_slugs` is empty only because there was nothing to name.
 
 It writes its verdict to `state/.gbrain-audit`, and that record is what the operator-facing surfaces replay:
 the GBrain panel's Capture card turns degraded and names the missing count, and a session start relays the same verdict on a `GBRAIN_CAPTURE:` line.
@@ -149,9 +158,11 @@ A home where the audit has never run reports that it has never run, rather than 
 Only a verdict earns the card's green dot, because green is the positive claim that the parity check ran and passed:
 
 - `gap` and a failed delivery are proven faults, so the card reads `degraded` in red.
-- `inconclusive` reads `unverified` and `unknown` reads `unaudited`, both on the hollow ring, because an audit with no verdict must never be shown as a clean bill - that is the same complacency the fail-closed rule above exists to prevent.
-  The two are kept apart in the wording as well: one means an audit ran and could not compare the two sides, the other means none has run yet, which is not a fault.
-- An outbox record that could not be read at all reads `unreadable` on the same hollow ring, for the same reason and with the count beside the archived, pending and failed ones.
+- `inconclusive` reads `unverified` on the hollow ring, because an audit that could not compare the two sides must never be shown as a clean bill - that is the same complacency the fail-closed rule above exists to prevent.
+  An outbox record that could not be read at all reads `unreadable` on the same ring, for the same reason and with the count beside the archived, pending and failed ones.
+- `unknown` reads `unaudited` in blue, which is the panel's tone for a card making no claim in either direction.
+  A home whose first sweep has not landed yet has nothing to read and nothing wrong with it, so it is neither counted as a nominal system in the panel's collapsed summary nor counted there as unreadable, and it does not turn that summary's dot into the hollow ring.
+  Its wording is kept apart from the `unverified` wording for the same reason: one means an audit ran and could not compare, the other means none has run here yet.
 
 A home with no brain is not an unaudited home; it renders nothing about capture at all, the way it did before GBrain existed.
 A configured home whose local index is not bootstrapped keeps its own `off` state ahead of all of these.

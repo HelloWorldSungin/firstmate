@@ -141,6 +141,16 @@ item_field() {  # <home> <task-id> <jq-path>
 
 pages_count() { find "$1/pages" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' '; }
 
+# The reported cause of a silent listing failure: the listing builds its slugs in
+# a printf | awk | sort pipeline that runs under pipefail, so a member that dies
+# without a message returns non-zero with nothing on stderr. awk is reached
+# nowhere else on the audit path, so shadowing it on the fake bin's PATH
+# reproduces exactly that failure and nothing else.
+mute_awk() {  # <home>
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$1/fakebin/awk"
+  chmod +x "$1/fakebin/awk"
+}
+
 # --- inert without a brain --------------------------------------------------
 
 test_capture_is_inert_without_a_brain() {
@@ -763,8 +773,10 @@ test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap() {
   out=$(cap "$home" audit 2>&1) && fail "an audit that compared nothing must exit non-zero"
   printf '%s' "$out" | grep -q 'state      inconclusive' \
     || fail "an unreadable listing must be inconclusive: $out"
+  printf '%s' "$out" | grep -q 'missing    not measured' \
+    || fail "an unreadable listing must claim nothing about missing documents: $out"
   printf '%s' "$out" | grep -q 'missing    0' \
-    || fail "an unreadable listing must claim no missing documents: $out"
+    && fail "an unreadable listing must not report a count nobody measured: $out"
 
   # The same rule for a listing that came back exactly at its own ceiling.
   fake_gbrain "$home" ok
@@ -773,6 +785,74 @@ test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap() {
   printf '%s' "$out" | grep -q 'state      inconclusive' \
     || fail "a listing at its own ceiling must be inconclusive: $out"
   pass "a listing that proved nothing is inconclusive rather than a gap"
+}
+
+# The fail-closed rule has to be decided from whether the listing WORKED, never
+# from whether it explained itself. A listing that dies without a message once
+# emptied the active set while leaving the failure invisible, which turned every
+# captured document into a reported gap - the largest false gap the design can
+# produce, on the exact branch that exists to prevent one.
+test_a_listing_that_fails_without_a_message_is_still_inconclusive() {
+  local home out record
+  home=$(make_home audit-mute)
+  seed_manifest "$home" ship-a "Add the widget"
+  seed_manifest "$home" ship-b "Fix the drain"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
+
+  mute_awk "$home"
+  out=$(cap "$home" audit 2>&1) \
+    && fail "an audit that compared nothing must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      inconclusive' \
+    || fail "a listing that failed silently must be inconclusive: $out"
+  printf '%s' "$out" | grep -q 'state      gap' \
+    && fail "a listing that answered nothing must never name a gap: $out"
+  printf '%s' "$out" | grep -q 'ship-a' \
+    && fail "a listing that answered nothing must name no missing document: $out"
+
+  # Nothing was compared, so nothing is counted: a zero here would be a claim
+  # nobody measured, and the durable record is what every surface replays.
+  record=$home/state/.gbrain-audit
+  jq -e '.state == "inconclusive" and .active == null and .missing == null
+         and (.missing_slugs | length) == 0
+         and .bounds.active == "unmeasured" and .bounds.missing == "unmeasured"
+         and .stored == 2 and .bounds.stored == "exact"' "$record" >/dev/null \
+    || fail "an unmeasured side must be recorded as unmeasured: $(cat "$record")"
+  printf '%s' "$out" | grep -q 'active     not measured' \
+    || fail "the human output must say the active side was not measured: $out"
+  printf '%s' "$out" | grep -q 'missing    not measured' \
+    || fail "the human output must say nothing was compared: $out"
+  printf '%s' "$out" | grep -q 'without saying why' \
+    || fail "a failure with no message must still name itself: $out"
+  pass "a listing that failed without a message is inconclusive, not a gap"
+}
+
+# The opposite dishonesty: a capped listing DID measure, so discarding what it
+# found would be as wrong as inventing what it did not. Its counts are kept and
+# marked with the direction each one can be wrong in.
+test_a_capped_listing_keeps_its_counts_as_bounds() {
+  local home out record
+  home=$(make_home audit-capped)
+  seed_manifest "$home" ship-a "Add the widget"
+  seed_manifest "$home" ship-b "Fix the drain"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver both tasks"
+  rm -f "$home/pages/firstmate_"*"_task_ship-b.md"
+
+  out=$(FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES=1 cap "$home" audit 2>&1) \
+    && fail "a listing at its ceiling must exit non-zero"
+  record=$home/state/.gbrain-audit
+  jq -e '.state == "inconclusive" and .active == 1 and .missing == 1
+         and .bounds.active == "at-least" and .bounds.missing == "at-most"
+         and (.missing_slugs | length) == 1' "$record" >/dev/null \
+    || fail "a partial listing must keep the counts it measured: $(cat "$record")"
+  printf '%s' "$out" | grep -q 'active     at least 1' \
+    || fail "a partial active count must read as a floor: $out"
+  printf '%s' "$out" | grep -q 'missing    at most 1' \
+    || fail "a partial missing count must read as a ceiling: $out"
+  printf '%s' "$out" | grep -q '  candidate .*task/ship-b' \
+    || fail "a partial listing must name its documents as candidates: $out"
+  printf '%s' "$out" | grep -qE '^  missing  ' \
+    && fail "a candidate must not be presented as a finding: $out"
+  pass "a capped listing keeps its counts and marks which way each can be wrong"
 }
 
 # --- the periodic refresh ---------------------------------------------------
@@ -911,6 +991,8 @@ test_backfill_records_a_refusal_without_stopping
 test_a_truncated_body_is_marked_rather_than_left_looking_complete
 test_the_audit_names_a_captured_document_the_index_no_longer_serves
 test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap
+test_a_listing_that_fails_without_a_message_is_still_inconclusive
+test_a_capped_listing_keeps_its_counts_as_bounds
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep
 test_a_refresh_is_named_once_on_the_sweep_that_delivers_it
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain

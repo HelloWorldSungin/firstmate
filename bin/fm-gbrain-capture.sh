@@ -67,6 +67,10 @@
 #             and exits non-zero when the two sides disagree. It refuses to call
 #             a listing complete that came back exactly at its own limit, so a
 #             capped read is reported as inconclusive rather than as a gap.
+#             Every count says how far it can be trusted: a listing that failed
+#             records no active or missing count at all, and a capped one
+#             records active as a floor and missing as a ceiling whose named
+#             documents are candidates rather than findings.
 #   sweep     The structural re-capture trigger. A page goes stale when the
 #             durable report it was composed from is edited after delivery, and
 #             nothing about that edit reaches capture, because teardown already
@@ -795,7 +799,8 @@ cmd_audit() {
   brain_ready || die "$FM_GBRAIN_CAPTURE_ERROR"
 
   local tag prefix docs stored_file active_file missing_file
-  local stored truncated active missing state detail="" listing_error=""
+  local stored truncated active missing state detail="" listing_error="" listing_failed=0
+  local active_bound=exact missing_bound=exact
   tag=$(fm_gbrain_capture_home_tag "$FM_HOME")
   prefix="firstmate/$tag/"
   docs=$(status_documents)
@@ -806,10 +811,17 @@ cmd_audit() {
   stored=$(grep -c . < "$stored_file" | tr -cd '0-9')
   truncated=$(printf '%s' "$docs" | jq '[.[] | select(.truncated == true)] | length')
 
+  # The failure is recorded where it is actually known - the exit status - and
+  # never re-derived from whatever the listing happened to write to stderr. A
+  # listing that dies without a message is still a listing that answered
+  # nothing, and inferring "it worked" from an empty error string is how an
+  # emptied active set turns into a gap naming every captured document.
   if list_active_slugs "$seconds" "$prefix" > "$active_file" 2>"$missing_file"; then
-    listing_error=""
+    listing_failed=0
   else
+    listing_failed=1
     listing_error=$(tr -s '[:space:]' ' ' < "$missing_file" | cut -c1-200)
+    [ -n "$listing_error" ] || listing_error="the index listing failed without saying why"
     : > "$active_file"
   fi
   active=$(grep -c . < "$active_file" | tr -cd '0-9')
@@ -821,16 +833,28 @@ cmd_audit() {
   # may have dropped the very pages this is looking for. Neither is reported as
   # a gap, because a false gap is what would train an operator to ignore a real
   # one.
-  if [ -n "$listing_error" ]; then
+  #
+  # The two failures are not the same failure, so they do not record the same
+  # thing. Nothing was measured against an unreadable listing, so both counts go
+  # null: a zero there would be a claim nobody made. A capped listing DID
+  # measure, and throwing that away would be the opposite dishonesty - it is
+  # merely partial, and partial in known directions. Every page it did name is
+  # served, so active is a floor; every page it did not name looks absent
+  # whether or not it is, so missing is a ceiling and its slugs are candidates
+  # rather than findings.
+  if [ "$listing_failed" -eq 1 ]; then
     state=inconclusive
-    missing=0
-    detail="the index could not be listed, so nothing was compared: $listing_error"
+    active=""
+    active_bound=unmeasured
+    missing=""
+    missing_bound=unmeasured
+    detail="the index could not be listed, so neither side was measured: $listing_error"
     : > "$missing_file"
   elif [ "$AUDIT_ROWS" -ge "$AUDIT_MAX_PAGES" ]; then
     state=inconclusive
-    missing=0
-    detail="the index listing came back at its $AUDIT_MAX_PAGES-row ceiling, so it may be incomplete; raise FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES and run the audit again"
-    : > "$missing_file"
+    active_bound=at-least
+    missing_bound=at-most
+    detail="the index listing came back at its $AUDIT_MAX_PAGES-row ceiling, so it may be incomplete: active is at least $active, missing is at most $missing and its documents are unverified candidates; raise FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES and run the audit again"
   elif [ "$missing" -gt 0 ]; then
     state=gap
     detail="$missing captured document(s) are absent from the active index; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
@@ -847,13 +871,18 @@ cmd_audit() {
     --arg state "$state" \
     --arg detail "$detail" \
     --argjson stored "${stored:-0}" \
-    --argjson active "${active:-0}" \
-    --argjson missing "${missing:-0}" \
+    --argjson active "${active:-null}" \
+    --argjson missing "${missing:-null}" \
     --argjson truncated "$truncated" \
+    --arg active_bound "$active_bound" \
+    --arg missing_bound "$missing_bound" \
     --rawfile missing_slugs "$missing_file" '
       {schema: $schema, generated: $generated, home: $home, state: $state,
        stored: $stored, active: $active, missing: $missing, truncated: $truncated,
        missing_slugs: ($missing_slugs | split("\n") | map(select(length > 0))),
+       bounds: {stored: "exact", truncated: "exact",
+                active: $active_bound, missing: $missing_bound,
+                missing_slugs: $missing_bound},
        detail: $detail}')
   rm -f "$stored_file" "$active_file" "$missing_file"
 
@@ -874,12 +903,17 @@ cmd_audit() {
     printf '%s\n' "$document"
   else
     printf '%s' "$document" | jq -r '
+      .bounds.missing as $b |
       "state      \(.state)",
       "stored     \(.stored) captured record(s)",
-      "active     \(.active) page(s) the index serves for this home",
-      "missing    \(.missing) captured record(s) the index no longer serves",
+      (if .bounds.active == "unmeasured" then "active     not measured; the index was never listed"
+       elif .bounds.active == "at-least" then "active     at least \(.active) page(s) the index serves for this home; the listing was partial"
+       else "active     \(.active) page(s) the index serves for this home" end),
+      (if .bounds.missing == "unmeasured" then "missing    not measured; the two sides were never compared"
+       elif .bounds.missing == "at-most" then "missing    at most \(.missing) captured record(s) the index no longer serves; a partial listing makes a served page look absent"
+       else "missing    \(.missing) captured record(s) the index no longer serves" end),
       "truncated  \(.truncated) stored bod(ies) cut at the capture cap",
-      (.missing_slugs[] | "  missing  \(.)"),
+      (.missing_slugs[] | if $b == "at-most" then "  candidate \(.)" else "  missing  \(.)" end),
       "detail     \(.detail)"'
   fi
   [ "$state" = ok ]

@@ -24,7 +24,7 @@ node - "$MODULE" <<'NODE' || fail "dashboard gbraintron panel data behavior fail
 const { pathToFileURL } = require("node:url");
 
 (async () => {
-const { buildGBrainHealth, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES, paintGBrainPanel, paintGBrainSearchResults } = await import(pathToFileURL(process.argv[2]).href);
+const { buildGBrainHealth, gbrainHealthSummary, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES, paintGBrainPanel, paintGBrainSearchResults } = await import(pathToFileURL(process.argv[2]).href);
 
 const failures = [];
 function check(label, condition, detail = "") {
@@ -382,7 +382,11 @@ function observedSecondsAgo(seconds) {
     audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
   }));
   const captureCard = view.cards.find((c) => c.label === "Capture");
-  equal("a never-audited home never renders green", captureCard.tone, "unknown");
+  // Blue, not the hollow ring: this home has not earned green, and nothing here
+  // is damaged either, so it must not be counted under the summary's word for
+  // a card that could not be read.
+  equal("a never-audited home never renders green", captureCard.tone, "blue");
+  equal("a never-audited home is not rendered as unreadable", captureCard.tone !== "unknown", true);
   equal("a never-audited home says so on the card face", captureCard.value, "unaudited");
   check("a never-audited home is not called a fault",
     captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
@@ -407,8 +411,9 @@ function observedSecondsAgo(seconds) {
   equal("a damaged record says so on the card face", captureCard.value, "unreadable");
   check("the unreadable count sits beside the other counts",
     captureCard.detail.includes("2 unreadable"), `received ${JSON.stringify(captureCard.detail)}`);
-  check("a damaged record is named in prose too",
-    captureCard.detail.includes("2 outbox record(s) could not be read"));
+  check("a damaged record is counted once, not restated",
+    captureCard.detail.match(/unreadable/g).length === 1,
+    `received ${JSON.stringify(captureCard.detail)}`);
   check("a clean home still shows a zero unreadable count",
     buildGBrainHealth(captureAuditEnvelope({
       audit: { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
@@ -449,6 +454,78 @@ function observedSecondsAgo(seconds) {
     stateOf({ audit: clean }), "ready");
   equal("ready is the one state that earns the green dot",
     buildGBrainHealth(captureAuditEnvelope({ audit: clean })).cards.find((c) => c.label === "Capture").tone, "green");
+}
+
+// --- the collapsed summary an operator reads first ---------------------------
+//
+// The card strip is behind a disclosure; the one-line summary above it is not.
+// It is where a state that reads correctly on its own card can still be
+// mislabelled, because it collapses six cards into one dot and one count - so
+// checked-and-clean, could-not-read, and not-checked-yet have to stay apart
+// here too, not only on the card.
+
+{
+  const summaryFor = (capture) => gbrainHealthSummary(buildGBrainHealth(captureAuditEnvelope(capture)).cards);
+  const clean = { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" };
+
+  const healthy = summaryFor({ audit: clean });
+  equal("an audited healthy home counts every system nominal", healthy.text, "6 systems nominal");
+  equal("an audited healthy home keeps the filled dot", healthy.tone, "green");
+
+  // Not yet audited: one fewer nominal, because it has not earned that one -
+  // but nothing here is unreadable and nothing here is a fault.
+  const unaudited = summaryFor({
+    audit: { state: "unknown", missing: null, observed: null, detail: "never run" },
+  });
+  equal("an unaudited home is not counted as nominal", unaudited.text, "5 systems nominal");
+  check("an unaudited home is never counted as unreadable", !unaudited.text.includes("unreadable"),
+    `received ${JSON.stringify(unaudited.text)}`);
+  equal("an unaudited home does not raise the unreadable count", unaudited.unreadable, 0);
+  equal("an unaudited home keeps the filled dot", unaudited.tone, "green");
+
+  // A damaged record is the state the word "unreadable" belongs to, and it does
+  // flip the ring - which is exactly what must not happen for the case above.
+  const damaged = summaryFor({ unreadable: 2, audit: clean });
+  equal("a damaged record is counted as unreadable", damaged.text, "5 systems nominal · 1 unreadable");
+  equal("a damaged record flips the summary to the hollow ring", damaged.tone, "unknown");
+
+  // An audit that ran and could not compare is the same class as a damaged
+  // record - something could not be read - and reads that way here too.
+  const unverified = summaryFor({
+    audit: { state: "inconclusive", missing: null, observed: observedSecondsAgo(90), detail: "not compared" },
+  });
+  equal("an audit that could not compare is counted as unreadable", unverified.text, "5 systems nominal · 1 unreadable");
+  equal("an audit that could not compare flips the ring", unverified.tone, "unknown");
+
+  check("not-audited and could-not-read never read the same", unaudited.text !== unverified.text);
+
+  // No cards at all means the envelope never arrived, which is an unknown
+  // rather than a clean bill.
+  const unread = gbrainHealthSummary([]);
+  equal("no cards reads as health unread", unread.text, "health unread");
+  equal("no cards keeps the hollow ring", unread.tone, "unknown");
+  equal("a non-array is treated as no cards", gbrainHealthSummary(undefined).text, "health unread");
+  equal("one nominal system is singular", gbrainHealthSummary([{ tone: "green" }]).text, "1 system nominal");
+}
+
+// --- a gap whose count was never measured ------------------------------------
+//
+// missing is null whenever the audit could not count it, so a default of zero
+// here would turn "we did not count" into "we counted none" - the same collapse
+// the record's own null exists to prevent.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "gap", stored: 291, active: null, missing: null, observed: observedSecondsAgo(90), detail: "unmeasured" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("an uncounted gap still degrades the card", captureCard.value, "degraded");
+  check("an uncounted gap is never rendered as zero missing",
+    !captureCard.detail.includes("0 captured document(s)"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an uncounted gap says the count is missing",
+    captureCard.detail.includes("this audit did not count"),
+    `received ${JSON.stringify(captureCard.detail)}`);
 }
 
 // --- a home with no brain is not an unaudited home ---------------------------

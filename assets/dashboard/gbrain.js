@@ -86,6 +86,27 @@ function auditAgeSuffix(observed) {
   return ` (audited ${ageLabel((Date.now() - at) / 1000)})`;
 }
 
+// The audit records a count only where it measured one, so a missing count can
+// be absent by design - an audit that could not list the index measured neither
+// side. Defaulting that to zero would turn "we did not count" into "we counted
+// none", which is the whole failure the null exists to prevent.
+const CAPTURE_TONES = {
+  ready: "green",
+  pending: "amber",
+  degraded: "red",
+  unaudited: "blue",
+  unverified: "unknown",
+  unreadable: "unknown",
+  off: "unknown",
+};
+
+function missingClause(missing) {
+  if (typeof missing !== "number" || !Number.isFinite(missing)) {
+    return "the index no longer serves captured documents this audit did not count";
+  }
+  return `${missing} captured document(s) the index no longer serves`;
+}
+
 // --- the data layer ---------------------------------------------------------
 //
 // The data layer never touches the DOM. Every value below is one observation
@@ -176,12 +197,18 @@ export function buildGBrainHealth(envelope) {
   const auditAge = auditAgeSuffix(audit.observed);
   // Green is a positive claim: every record is delivered, every record could be
   // read, and a parity check ran and passed. Anything that did not reach a
-  // verdict - a damaged record, an audit that could not compare, an audit that
-  // has never run - takes the hollow ring instead, because a surface that
+  // verdict takes a tone that makes no such claim, because a surface that
   // cannot tell "checked, clean" from "could not check" misleads in exactly the
   // direction the audit fails closed to avoid. None of them is a fault, so none
   // of them takes red or amber either: a proven failure and a queued item both
-  // still outrank an unknown.
+  // still outrank them.
+  //
+  // The three not-green states are not one state. A damaged record and an audit
+  // that ran and could not compare are both something that could not be READ,
+  // which is the hollow ring. A home whose first sweep has not landed yet has
+  // nothing to read and nothing wrong with it, so it takes blue: it is not
+  // counted as nominal, because it has not earned that, and not counted as
+  // unreadable either, because nothing here is damaged.
   const captureState = capture.enabled === false ? "off"
     : capture.failed > 0 || auditState === "gap" ? "degraded"
     : capture.pending > 0 ? "pending"
@@ -196,11 +223,10 @@ export function buildGBrainHealth(envelope) {
     `${capture.unreadable ?? 0} unreadable`,
     capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
   ].join(" / ")
-    + (auditState === "gap" ? ` · ${audit.missing ?? 0} captured document(s) the index no longer serves${auditAge}` : "")
+    + (auditState === "gap" ? ` · ${missingClause(audit.missing)}${auditAge}` : "")
     + (auditState === "inconclusive" ? ` · the last stored-versus-served audit ran and could not compare the two sides${auditAge}` : "")
     + (auditState === "ok" ? ` · every captured document is served${auditAge}` : "")
     + (auditState === "unknown" ? " · no stored-versus-served audit has run in this home yet, which is not a fault" : "")
-    + (capture.unreadable > 0 ? ` · ${capture.unreadable} outbox record(s) could not be read` : "")
     + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"
@@ -208,10 +234,10 @@ export function buildGBrainHealth(envelope) {
     + (capture.last_error ? " · the last capture attempt failed" : "");
   cards.push({
     label: "Capture",
-    tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
+    tone: CAPTURE_TONES[captureState] ?? "unknown",
     value: captureState,
     detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified and unaudited both mean the parity check has no verdict yet, never that it found one.",
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified means the parity check ran and could not compare the two sides; unaudited means it has not run here yet. Neither is a finding.",
   });
 
   const maintenance = h.maintenance || {};
@@ -227,6 +253,27 @@ export function buildGBrainHealth(envelope) {
   const tones = cards.map((card) => card.tone);
   const overall = { tone: worstTone(tones) || "unknown", label: "GBrain" };
   return { cards, overall, status, config: cfg, noBrain: false };
+}
+
+// The collapsed one-line summary above the card list is the first thing an
+// operator reads, and until now its vocabulary lived inside the painter where
+// no test could reach it - which is how a card meaning "not audited yet" came
+// to be counted under the word "unreadable". It belongs here with the rest of
+// the display model: green counts as nominal, the hollow ring is the only thing
+// called unreadable, and a card that makes no claim at all is counted as
+// neither. No cards means the health envelope never arrived, which is an
+// unknown rather than a clean bill.
+export function gbrainHealthSummary(cards) {
+  const list = Array.isArray(cards) ? cards : [];
+  if (list.length === 0) return { tone: "unknown", text: "health unread", nominal: 0, unreadable: 0 };
+  const nominal = list.filter((card) => card.tone === "green").length;
+  const unreadable = list.filter((card) => card.tone === "unknown").length;
+  return {
+    tone: unreadable > 0 ? "unknown" : "green",
+    text: `${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`,
+    nominal,
+    unreadable,
+  };
 }
 
 // --- the rendering layer ----------------------------------------------------

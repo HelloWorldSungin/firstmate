@@ -262,8 +262,8 @@ The first pass after adoption performs a one-time revalidation sweep of editable
 
 ## Completion receipt
 
-Run `bin/fm-gbrain-capture.sh status` as part of every sweep and translate its counts into the receipt below.
-It reports what is archived, pending, failed, unreadable, and how many values were redacted.
+Run `bin/fm-gbrain-capture.sh status` as part of every sweep and translate every count it reports into the receipt below.
+[`docs/gbrain-capture.md`](../../../docs/gbrain-capture.md) owns which counts exist and what each one means; do not keep a second list of them here, and do not decide a count is uninteresting because this file does not name it.
 It does not report a refusal, because a refused body deliberately becomes no record at all.
 `note` is the subcommand this skill calls, and a refused note writes no `state/<id>.gbrain` receipt, because a receipt is keyed to a task id and a note has none: take a refusal from `note`'s non-zero exit and the reason it prints on stderr.
 That answer is specific to `note` and does not generalise, because `task` and `backfill` refuse by writing a receipt and still exiting 0, so a rule written for them would find nothing here.
@@ -273,7 +273,7 @@ Report the outcome in plain captain-facing language with all of these facts:
 
 - effective startup-memory budget and total estimated tokens before and after;
 - one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, using only `unchanged`, `added`, `rewritten`, `pruned`, `routed`, `archived`, or `proposed-offload`; adding or replacing a migration marker is `rewritten`, never a new action verb such as `migrated`;
-- what was archived into the brain, what it refused to store and why, how many values it redacted, and anything still waiting to be stored;
+- what was archived into the brain, what it refused to store and why, how many values it redacted, anything stored only in part because its body was cut at the capture cap, and anything still waiting to be stored;
 - each durable finding filed outside memory and its authoritative owner;
 - each archived entry's reason, each autonomous offload's live destination and actual relief, and, when a pinned candidate was proposed, the `proposed-offload` section with every candidate's fields;
 - every unresolved exception, including a primary-owned shared-file constraint in a secondmate home, and every concrete captain decision opened for an over-budget result;
