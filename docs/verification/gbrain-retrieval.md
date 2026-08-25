@@ -217,7 +217,7 @@ When one corpus clears and another was judged and fell short, the notice names t
 `create_safety` is printed and is not the miss bit.
 
 A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search; a home with no local index writes nothing.
-The line carries the query, the disposition of the read, each corpus's own top score in `corpus_tops`, and whether that miss verdict was given.
+The line carries `query_hash`, the disposition of the read, each corpus's own top score in `corpus_tops`, and whether that miss verdict was given.
 `rank1_rerank_score` is the head of the merged list and is named with the `rank1_corpus` it came from, because on a two-corpus read that row can belong to a corpus the verdict is not about.
 The disposition separates `unread`, `unjudged`, `miss`, and `hit`, so a run that never reached a corpus cannot serialize as a read that returned an unjudgeable top row.
 The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECALL_JSONL_MAX_BYTES`.
@@ -228,8 +228,9 @@ The trim selects whole lines from the newest end until the cap is reached rather
 
 `state/recall.jsonl` is a partial delivery of D2 in [`../adr/0001-brain-read-mount.md`](../adr/0001-brain-read-mount.md), which is still proposed and awaiting captain review, and it should be read as neither that trail nor as unrelated to it.
 It shares D2's append condition and D2's exclusion exactly: one append per `search` in a home whose local index directory is present, decided before the read rather than from its outcome, and `think` never appends.
-Of the six fields D2 names for the record - record id, timestamp, caller seam, query hash, exit state, result count - the `fm-recall-read.v1` line carries the timestamp, as `at`, and carries none of record id, caller seam, exit state, or result count, so it cannot name a read to a later record, measure adoption by seam, or count returned rows.
-The sixth diverges rather than being merely absent: the line carries `query` as the text that was asked, where D2 decides on a query hash and never query text, so free-text queries do land in a file on disk in this home and this file holds private home content until it is deleted.
+Of the six fields D2 names for the record - record id, timestamp, caller seam, query hash, exit state, result count - the `fm-recall-read.v1` line carries timestamp, query hash, and result count.
+The query hash is unkeyed SHA-256 of the UTF-8 joined query, hex lowercase: it buys that free-text queries never land in a file on disk, and it does not buy resistance to a guess.
+Record id, caller seam, and exit state are not yet carried, so this file cannot yet name a read to a later record or measure adoption by seam.
 Everything else on the line - `disposition`, `answer_kind`, `rank1_corpus`, `rank1_rerank_score`, `corpus_tops`, `no_confident_match`, and `confident_corpora` - is this wrapper's own record of the miss verdict rather than a D2 field.
 
 ```sh

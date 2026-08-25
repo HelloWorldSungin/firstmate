@@ -126,15 +126,16 @@
 # rendered as "not found".
 #
 # A search in a home whose local index directory exists appends one JSON line
-# to state/recall.jsonl recording the query, what the read returned, each
-# corpus's own top rerank_score, the rank-1 rerank_score with the corpus it came
-# from, and whether the caller was told there was no confident match. The
-# disposition names which of four things happened - unread, unjudged, miss, or
-# hit - so a corpus that was never read can never serialize as a read that
-# returned an unjudgeable row. That is a local record of the read, never of what
-# the caller then decided, and nothing is sent anywhere. The query is recorded
-# as the text that was asked, so nothing leaves the host but the file does hold
-# this home's own private content until it is deleted. think never writes it.
+# to state/recall.jsonl recording a query hash, never the query text, what the
+# read returned, each corpus's own top rerank_score, the rank-1 rerank_score
+# with the corpus it came from, and whether the caller was told there was no
+# confident match. The hash is unkeyed SHA-256 of the UTF-8 joined query, hex
+# lowercase: it buys that free-text queries never land in a file on disk, and
+# it does not buy resistance to a guess. The disposition names which of four
+# things happened - unread, unjudged, miss, or hit - so a corpus that was never
+# read can never serialize as a read that returned an unjudgeable row. That is
+# a local record of the read, never of what the caller then decided, and
+# nothing is sent anywhere. think never writes it.
 # The file is home-wide and size-capped rather than unbounded: the append and
 # the trim that follows it run under one advisory lock, bounded by the run's own
 # remaining budget, so concurrent searches cannot overwrite each other's newest
@@ -1289,19 +1290,45 @@ recall_read_log_append() {  # <file> <line>
 # carries corpus_tops. rank1_rerank_score is the head of the MERGED list and is
 # named with the corpus it came from, because on a two-corpus read that row can
 # belong to a corpus the verdict is not about.
+recall_query_hash() {  # <query> -> unkeyed SHA-256 hex, or non-zero
+  local digest
+  if command -v shasum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | shasum -a 256 | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | sha256sum | awk '{print $1}')
+  else
+    return 1
+  fi
+  case $digest in
+    *[!0-9a-f]* | '') return 1 ;;
+  esac
+  [ "${#digest}" -eq 64 ] || return 1
+  printf '%s\n' "$digest"
+}
+
 append_recall_read_record() {  # <doc-json>
   [ -n "${HOME_PATH:-}" ] || return 0
   [ -n "${FM_GBRAIN_PGLITE:-}" ] && [ -d "$FM_GBRAIN_PGLITE" ] || return 0
-  local dir="$HOME_PATH/state" file line
+  local dir="$HOME_PATH/state" file line query hash result_count
   mkdir -p "$dir" 2>/dev/null || return 0
   file="$dir/recall.jsonl"
-  line=$(printf '%s' "$1" | jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+  # A missing hasher skips the record rather than writing the query: the trail
+  # is best-effort, and plaintext on disk is the one outcome it must not have.
+  query=$(printf '%s' "$1" | jq -r '.query // empty' 2>/dev/null) || return 0
+  hash=$(recall_query_hash "$query") || return 0
+  result_count=$(printf '%s' "$1" | jq -r '(.results // []) | length' 2>/dev/null) || return 0
+  case $result_count in '' | *[!0-9]*) return 0 ;; esac
+  line=$(printf '%s' "$1" | jq -c \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg query_hash "$hash" \
+    --argjson result_count "$result_count" '
     (if (.answer | type) == "object" then .answer else null end) as $a
     | ($a != null and ($a | has("no_confident_match"))) as $judged
     | {
       schema: "fm-recall-read.v1",
-      at: $at,
-      query: .query,
+      timestamp: $timestamp,
+      query_hash: $query_hash,
+      result_count: $result_count,
       disposition: (
         if $a == null then "unread"
         elif ($judged | not) then "unjudged"

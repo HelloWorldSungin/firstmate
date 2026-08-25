@@ -23,6 +23,24 @@ TMP_ROOT=$(fm_test_tmproot fm-recall)
 STUB_DIR="$TMP_ROOT/stub"
 mkdir -p "$STUB_DIR"
 
+sha256_text() {  # <text>
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else
+    fail "shasum or sha256sum is required"
+  fi
+}
+
+assert_trail_hides_query() {  # <file> <query>
+  if grep -F -q -- "$2" "$1"; then
+    fail "the trail must not contain the query text: $2 in $(cat "$1")"
+  fi
+  jq -e -s 'all(.[]; (has("query") | not) and (.query_hash | type == "string"))' "$1" >/dev/null \
+    || fail "every trail line must carry query_hash and must not carry query: $(cat "$1")"
+}
+
 # --- the recording gbrain stub ----------------------------------------------
 #
 # It writes every argument it was given, one per line, plus the environment
@@ -1814,6 +1832,13 @@ assert_contains "$CROSS_NOTICE" "could not read from that brain" \
 [ "$(jq -s 'length' "$SM_HOME/state/recall.jsonl")" -ge 1 ] \
   || fail "a two-corpus read against an indexed home must leave a record"
 CROSS_REC=$(jq -s '.[-1]' "$SM_HOME/state/recall.jsonl")
+assert_trail_hides_query "$SM_HOME/state/recall.jsonl" "who owns the fleet retention policy"
+[ "$(printf '%s' "$CROSS_REC" | jq -r .query_hash)" = "$(sha256_text "who owns the fleet retention policy")" ] \
+  || fail "the two-corpus record must hash the asked text: $CROSS_REC"
+[ "$(printf '%s' "$CROSS_REC" | jq -r .timestamp | grep -c .)" -eq 1 ] \
+  || fail "the record must carry D2's timestamp name: $CROSS_REC"
+[ "$(printf '%s' "$CROSS_REC" | jq -r '.result_count == 2')" = true ] \
+  || fail "the record must carry D2's result count: $CROSS_REC"
 [ "$(printf '%s' "$CROSS_REC" | jq -r .disposition)" = hit ] \
   || fail "a cleared fleet corpus is a hit: $CROSS_REC"
 [ "$(printf '%s' "$CROSS_REC" | jq -r '.confident_corpora | join(",")')" = main ] \
@@ -1913,8 +1938,13 @@ assert_present "$INDEXED_HOME/state/recall.jsonl" \
   || fail "one search must append one record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 [ "$(jq -r .schema "$INDEXED_HOME/state/recall.jsonl")" = fm-recall-read.v1 ] \
   || fail "the record must carry its schema: $(cat "$INDEXED_HOME/state/recall.jsonl")"
-[ "$(jq -r .query "$INDEXED_HOME/state/recall.jsonl")" = "trombone slide for baroque A=415" ] \
-  || fail "the record must carry the query: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+assert_trail_hides_query "$INDEXED_HOME/state/recall.jsonl" "trombone slide for baroque A=415"
+[ "$(jq -r .query_hash "$INDEXED_HOME/state/recall.jsonl")" = "$(sha256_text "trombone slide for baroque A=415")" ] \
+  || fail "the record must carry the unkeyed SHA-256 of the query: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .timestamp "$INDEXED_HOME/state/recall.jsonl" | grep -c .)" -eq 1 ] \
+  || fail "the record must carry timestamp, not at: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r '.result_count == 1' "$INDEXED_HOME/state/recall.jsonl")" = true ] \
+  || fail "the record must carry result_count: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 [ "$(jq -r '.rank1_rerank_score == 0.0004' "$INDEXED_HOME/state/recall.jsonl")" = true ] \
   || fail "the record must carry rank-1 rerank_score: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 [ "$(jq -r .no_confident_match "$INDEXED_HOME/state/recall.jsonl")" = true ] \
@@ -1929,8 +1959,9 @@ run_recall "$INDEXED_HOME" search --json --scope local "why does a small candle 
 [ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 2 ] \
   || fail "a second search must append a second record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 HIT_REC=$(jq -s '.[1]' "$INDEXED_HOME/state/recall.jsonl")
-[ "$(printf '%s' "$HIT_REC" | jq -r .query)" = "why does a small candle store produce nearly a terabyte" ] \
-  || fail "the hit record must carry its own query: $HIT_REC"
+assert_trail_hides_query "$INDEXED_HOME/state/recall.jsonl" "why does a small candle store produce nearly a terabyte"
+[ "$(printf '%s' "$HIT_REC" | jq -r .query_hash)" = "$(sha256_text "why does a small candle store produce nearly a terabyte")" ] \
+  || fail "the hit record must hash its own query: $HIT_REC"
 [ "$(printf '%s' "$HIT_REC" | jq -r '.rank1_rerank_score == 0.978')" = true ] \
   || fail "the hit record must carry rank-1 rerank_score: $HIT_REC"
 [ "$(printf '%s' "$HIT_REC" | jq -r .no_confident_match)" = false ] \
@@ -1973,8 +2004,8 @@ FAIL_REC=$(jq -s '.[3]' "$INDEXED_HOME/state/recall.jsonl")
   || fail "a retrieval failure must not be recorded as a no-confident-match verdict: $FAIL_REC"
 [ "$(printf '%s' "$FAIL_REC" | jq -r .rank1_rerank_score)" = null ] \
   || fail "a retrieval failure has no rank-1 rerank_score: $FAIL_REC"
-[ "$(printf '%s' "$FAIL_REC" | jq -S 'del(.at, .query)')" \
-  != "$(printf '%s' "$UNJUDGED_REC" | jq -S 'del(.at, .query)')" ] \
+[ "$(printf '%s' "$FAIL_REC" | jq -S 'del(.timestamp, .query_hash)')" \
+  != "$(printf '%s' "$UNJUDGED_REC" | jq -S 'del(.timestamp, .query_hash)')" ] \
   || fail "a corpus that was never read must not serialize like one that returned an unjudgeable row: $FAIL_REC"
 
 # think reads this home's brain through the hosted provider and completes, so
@@ -2002,7 +2033,7 @@ mkdir -p "$CAP_HOME/data/gbrain/pglite" "$CAP_HOME/state"
 CAP_FILE="$CAP_HOME/state/recall.jsonl"
 CAP_I=0
 while [ "$CAP_I" -lt 400 ]; do
-  printf '{"schema":"fm-recall-read.v1","at":"2026-08-25T00:00:00Z","query":"filler read %s","disposition":"unread"}\n' "$CAP_I"
+  printf '{"schema":"fm-recall-read.v1","timestamp":"2026-08-25T00:00:00Z","query_hash":"%s","disposition":"unread"}\n' "$(sha256_text "filler read $CAP_I")"
   CAP_I=$((CAP_I + 1))
 done > "$CAP_FILE"
 CAP_BEFORE=$(wc -c < "$CAP_FILE" | tr -d '[:space:]')
@@ -2017,8 +2048,9 @@ CAP_AFTER=$(wc -c < "$CAP_FILE" | tr -d '[:space:]')
 [ "$CAP_AFTER" -lt "$CAP_BEFORE" ] || fail "the read log must actually shrink past the cap"
 jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
   || fail "a trim must not leave a partial record behind: $(head -1 "$CAP_FILE")"
-[ "$(jq -s -r '.[-1].query' "$CAP_FILE")" = "the newest read of all" ] \
+[ "$(jq -s -r '.[-1].query_hash' "$CAP_FILE")" = "$(sha256_text "the newest read of all")" ] \
   || fail "the newest read must survive the trim: $(tail -1 "$CAP_FILE")"
+assert_trail_hides_query "$CAP_FILE" "the newest read of all"
 
 # A byte-sized tail would cut inside a record whenever the offset lands there,
 # and this record shape carries interior braces of its own, so a guard that
@@ -2054,25 +2086,32 @@ RECALL_OUT=$(FM_HOME="$CUT_HOME" FM_RECALL_JSONL_MAX_BYTES="$CUT_CAP" \
 expect_code 0 "$RECALL_RC" "a trim that cuts inside a record must not fail the search: $RECALL_OUT"
 jq -e -s 'all(.[]; has("schema"))' "$CUT_FILE" >/dev/null 2>&1 \
   || fail "a cut inside a record must leave no partial line: $(head -1 "$CUT_FILE")"
-[ "$(jq -s -r '.[-1].query' "$CUT_FILE")" = "$CUT_TRIM_QUERY" ] \
+[ "$(jq -s -r '.[-1].query_hash' "$CUT_FILE")" = "$(sha256_text "$CUT_TRIM_QUERY")" ] \
   || fail "the newest read must survive a cut that lands inside a record: $(tail -1 "$CUT_FILE")"
+assert_trail_hides_query "$CUT_FILE" "$CUT_TRIM_QUERY"
 # The fixture is only a regression guard if the cut really lands on the brace.
 CUT_START=$((CUT_TOTAL + ${#CUT_REC} + 1 - CUT_CAP))
 [ "$(printf '%s' "$CUT_REC" | cut -c "$((CUT_START % (${#CUT_REC} + 1) + 1))")" = "{" ] \
   || fail "the cut must land on an interior brace, not beside one: offset $CUT_START"
 
 # A record larger than the cap on its own must be kept: emptying the file would
-# throw away the very read the trim was called to preserve.
-BIG_QUERY=$(head -c 6000 /dev/zero | tr '\0' 'q')
+# throw away the very read the trim was called to preserve. Query hashing keeps
+# a search line small, so this case sizes the cap below one real hashed record
+# rather than inflating the query.
 stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$CAP_HOME" search --json --scope local "the only read that must survive"
+OVER_LINE=$(tail -n 1 "$CAP_FILE")
+OVER_LEN=$((${#OVER_LINE} + 1))
+[ "$OVER_LEN" -gt 64 ] || fail "a hashed record must still be a whole JSON line: $OVER_LINE"
 RECALL_RC=0
-RECALL_OUT=$(FM_HOME="$CAP_HOME" FM_RECALL_JSONL_MAX_BYTES=4096 \
-  bash "$CLI" search --json --scope local "$BIG_QUERY" 2>&1) || RECALL_RC=$?
+RECALL_OUT=$(FM_HOME="$CAP_HOME" FM_RECALL_JSONL_MAX_BYTES=64 \
+  bash "$CLI" search --json --scope local "the oversized newest read" 2>&1) || RECALL_RC=$?
 expect_code 0 "$RECALL_RC" "an oversized record must not fail the search that wrote it: $RECALL_OUT"
 [ "$(jq -s 'length' "$CAP_FILE")" -eq 1 ] \
   || fail "an oversized record must leave exactly itself behind: $(wc -c < "$CAP_FILE") bytes"
-[ "$(jq -s -r '.[-1].query' "$CAP_FILE")" = "$BIG_QUERY" ] \
+[ "$(jq -s -r '.[-1].query_hash' "$CAP_FILE")" = "$(sha256_text "the oversized newest read")" ] \
   || fail "an oversized record must survive rather than empty the file"
+assert_trail_hides_query "$CAP_FILE" "the oversized newest read"
 
 # Concurrent searches against one home share the file, so the append and the
 # trim that follows it must not let one run overwrite another's newest line.
@@ -2081,7 +2120,7 @@ expect_code 0 "$RECALL_RC" "an oversized record must not fail the search that wr
 # that append-mode writes do not interleave, which needs no lock at all.
 CAP_I=0
 while [ "$CAP_I" -lt 400 ]; do
-  printf '{"schema":"fm-recall-read.v1","at":"2026-08-25T00:00:00Z","query":"filler read %s","disposition":"unread"}\n' "$CAP_I"
+  printf '{"schema":"fm-recall-read.v1","timestamp":"2026-08-25T00:00:00Z","query_hash":"%s","disposition":"unread"}\n' "$(sha256_text "filler read $CAP_I")"
   CAP_I=$((CAP_I + 1))
 done > "$CAP_FILE"
 [ "$(wc -c < "$CAP_FILE" | tr -d '[:space:]')" -gt 4096 ] \
@@ -2107,11 +2146,25 @@ for CONC_PID in $CONC_PIDS; do wait "$CONC_PID" || CONC_FAILED=$((CONC_FAILED + 
   || fail "the concurrent runs must have taken the trim path: $(wc -c < "$CAP_FILE") bytes"
 jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
   || fail "a concurrent trim must not leave a partial record: $(head -1 "$CAP_FILE")"
-CONC_KEPT=$(jq -s -r '[.[] | select(.query | startswith("concurrent read "))] | length' "$CAP_FILE")
+CONC_KEPT=$(
+  CONC_J=0
+  CONC_N=0
+  while [ "$CONC_J" -lt 6 ]; do
+    CONC_H=$(sha256_text "concurrent read $CONC_J")
+    CONC_N=$((CONC_N + $(jq -s --arg h "$CONC_H" '[.[] | select(.query_hash == $h)] | length' "$CAP_FILE")))
+    CONC_J=$((CONC_J + 1))
+  done
+  printf '%s\n' "$CONC_N"
+)
 [ "$CONC_KEPT" -ge 1 ] \
   || fail "a contended read log must still record the reads it admitted: $CONC_KEPT of 6"
-[ "$CONC_KEPT" -eq "$(jq -s -r '[.[] | select(.query | startswith("concurrent read ")) | .query] | unique | length' "$CAP_FILE")" ] \
-  || fail "a raced trim must not duplicate a record: $(cat "$CAP_FILE")"
+CONC_J=0
+while [ "$CONC_J" -lt 6 ]; do
+  CONC_H=$(sha256_text "concurrent read $CONC_J")
+  [ "$(jq -s --arg h "$CONC_H" '[.[] | select(.query_hash == $h)] | length' "$CAP_FILE")" -le 1 ] \
+    || fail "a raced trim must not duplicate a record: $(cat "$CAP_FILE")"
+  CONC_J=$((CONC_J + 1))
+done
 
 # The trim and the stale-lock sweep each leave a scratch name behind when a run
 # is killed between creating it and removing it, and nothing else would ever
@@ -2152,6 +2205,6 @@ run_recall "$MAIN_HOME" search --json --scope local teardown
 expect_code 3 "$RECALL_RC" "a home with no index still fails retrieval the way it always did"
 assert_absent "$MAIN_HOME/state/recall.jsonl" \
   "a home with no local index must still write no recall record after a failed read"
-pass "a read against a local index leaves a bounded record that says what was asked, whether a corpus was read, and what it returned"
+pass "a read against a local index leaves a bounded record that hashes what was asked, whether a corpus was read, and what it returned"
 
 echo "all fm-recall tests passed"
