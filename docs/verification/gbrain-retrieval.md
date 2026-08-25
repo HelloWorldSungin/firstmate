@@ -136,7 +136,7 @@ Counts vary run to run, 7 to 27 observed, but were never zero for a search that 
 
 Two suites rebuild the wrapper's claims, and neither asserts anything about the wrapper's source:
 
-- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, the caps, the rank-1 rerank miss verdict, and the presence-gated read record.
+- `tests/fm-recall.test.sh` is portable and needs no GBrain installation. A recording stub captures the exact argv and JSON that reached the executable, which is what makes the argument-safety claim provable rather than assertable; it also covers home resolution from each supported task location, the local/hosted failure split, the SSE and refusal parsing, the caps, the per-corpus rerank miss verdict, and the presence-gated read record.
 - `tests/fm-gbrain-readonly-e2e.test.sh` is the live proof and drives the wrapper against two real brains and the real read-only share:
 
 ```sh
@@ -147,15 +147,31 @@ Re-run both after any GBrain upgrade.
 The index-write measurement has no suite behind it: redo it by hand as described there, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
 The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.
 
-## Rank-1 `rerank_score` is the miss signal the wrapper used to drop
+## `rerank_score` is the miss signal the wrapper used to drop, and it is judged per corpus
 
 Verified 2026-08-25 against the portable suite `tests/fm-recall.test.sh`.
-Live corpus measurements that show why the printed blend cannot answer the miss question, and why `search.autocut_min_top` (0.35) is the floor this wrapper reuses rather than a Firstmate-invented threshold, remain in [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20) and are not restated here.
+Live corpus measurements that show why the printed blend cannot answer the miss question remain in [gbrain-memory-verbs.md](gbrain-memory-verbs.md) (2026-08-20) and are not restated here; that record measures `score` at roughly 0.78 to 0.81 while `rerank_score` on the same rows runs from about 0.00008 to 0.0037.
+It records nothing about autocut, so the floor's provenance is cited separately below rather than borrowed from it.
+
+The floor is GBrain's own `search.autocut_min_top`, not a Firstmate-invented threshold.
+GBrain resolves that knob per-call, then from the brain's configuration, then from its bundle default, so the only honest value is the one the brain being read would itself use.
+`bin/fm-recall.sh` therefore reads the effective value from each brain's own configuration plane through the same bounded `gbrain config get` path `bin/fm-gbrain-eval.sh` reads its own knobs through.
+The bundle default is `DEFAULT_AUTOCUT.minTopScore = 0.35` in GBrain's own `src/core/search/autocut.ts` at the pinned release `v0.46.21.0`, which [../gbrain.md](../gbrain.md) records as the installed release.
+The wrapper falls back to that pinned default only when a plane cannot be read at all - no binary, no key, a non-numeric value, or a timeout - and it discloses on every answer which floor each corpus was judged against and whether that value came from configuration or from the fallback.
+The main brain is read over MCP and has no configuration plane this host can query, so it borrows this home's readable value when there is one and the pinned default otherwise, disclosed the same way.
 
 GBrain already returns `rerank_score`, `cosine`, `evidence`, and `create_safety` on every search row.
-`bin/fm-recall.sh` now copies those fields onto the `fm-recall.v1` document, judges rank-1 `rerank_score` against GBrain's `search.autocut_min_top`, and says `No confident match` when the top rerank is below that floor.
+`bin/fm-recall.sh` now copies those fields onto the `fm-recall.v1` document and judges confidence per corpus rather than from the head of the merged list.
+Each corpus's own pool of returned rows is judged against that corpus's own floor, which is the quantity GBrain applies the knob to, and a corpus clears when its own top `rerank_score` is a number that is not below its floor.
+Judging the merged list's head instead would let whichever corpus led the merge decide the other's verdict, and the merge puts this home's own index first on an equal rank, so a confident fleet answer at merged position 2 would be announced as `No confident match`.
+Taking the maximum across the merged list would be wrong in the other direction, because two brains' rerank scores are different quantities and are not comparable with each other.
+`answer.no_confident_match` is true only when no corpus cleared, and when one did, `answer.confident_corpora` names which, so a caller can tell local knowledge from fleet knowledge.
+A corpus whose rows carry no `rerank_score` at all is left unjudged rather than counted a miss.
 `create_safety` is printed and is not the miss bit.
-A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search, carrying the query, the rank-1 rerank score, and whether that miss verdict was given; a home with no local index writes nothing.
+
+A home whose local index directory exists appends one JSON line to `state/recall.jsonl` for each search, carrying the query, the disposition of the read, the rank-1 rerank score, and whether that miss verdict was given; a home with no local index writes nothing.
+The disposition separates `unread`, `unjudged`, `miss`, and `hit`, so a run that never reached a corpus cannot serialize as a read that returned an unjudgeable top row.
+The file is home-wide and size-capped at 262144 bytes, overridable with `FM_RECALL_JSONL_MAX_BYTES`; past the cap the oldest lines go and the newest tail stays, so it is always safe to delete or trim.
 
 ```sh
 bin/fm-test-run.sh tests/fm-recall.test.sh

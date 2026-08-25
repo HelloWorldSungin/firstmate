@@ -41,6 +41,16 @@ for a in "$@"; do printf '%s\n' "$a" >> "$FM_STUB_ARGV"; done
   printf 'MINIMAX_API_KEY_SET=%s\n' "$(if [ -n "${MINIMAX_API_KEY:-}" ]; then echo yes; else echo no; fi)"
   printf 'MINIMAX_API_KEY=%s\n' "${MINIMAX_API_KEY:-}"
 } > "$FM_STUB_ENV"
+# A real brain answers `config get` from its own configuration plane, and the
+# wrapper reads its weak-top floor there before it retrieves anything. It is
+# answered ahead of the retrieval reply so a case that fails, sleeps, or checks
+# what argv the retrieval call carried is unaffected by the extra read.
+if [ "${1:-}" = config ] && [ "${2:-}" = get ]; then
+  case "${3:-}" in
+    search.autocut_min_top) printf '%s\n' "${FM_STUB_AUTOCUT_MIN_TOP:-0.35}"; exit 0 ;;
+    *) printf 'Config key not found\n'; exit 1 ;;
+  esac
+fi
 [ "${FM_STUB_SLEEP:-0}" = 0 ] || sleep "$FM_STUB_SLEEP"
 [ -z "${FM_STUB_STDERR:-}" ] || printf '%s\n' "$FM_STUB_STDERR" >&2
 [ -z "${FM_STUB_OUT:-}" ] || cat "$FM_STUB_OUT"
@@ -56,12 +66,12 @@ stub_reply() {  # <json-file-content>
   printf '%s\n' "$1" > "$TMP_ROOT/stub-out.json"
   export FM_STUB_OUT="$TMP_ROOT/stub-out.json"
   export FM_STUB_RC=0
-  unset FM_STUB_STDERR FM_STUB_SLEEP 2>/dev/null || true
+  unset FM_STUB_STDERR FM_STUB_SLEEP FM_STUB_AUTOCUT_MIN_TOP 2>/dev/null || true
 }
 
 stub_fail() {  # <rc> <stderr>
   export FM_STUB_RC=$1 FM_STUB_STDERR=$2
-  unset FM_STUB_OUT 2>/dev/null || true
+  unset FM_STUB_OUT FM_STUB_AUTOCUT_MIN_TOP 2>/dev/null || true
 }
 
 SEARCH_HIT='[{"slug":"teardown-notes","title":"Teardown Notes","chunk_text":"Teardown refuses unlanded work.","score":0.91,"stale":false}]'
@@ -1403,13 +1413,14 @@ assert_not_contains "$RECALL_OUT" "value too great for base" \
   "a bad budget must not surface as a raw shell arithmetic error"
 pass "a retrieval budget that is not a positive integer keeps the documented exit contract"
 
-# --- 16. rerank_score is the miss signal, and a read leaves a local record ---
+# --- 17. rerank_score names a miss against the brain's own floor ------------
 #
 # GBrain already stamps rerank_score, cosine, evidence, and create_safety.
 # The wrapper used to drop them and print the pre-rerank blend, which cannot
-# separate a hit from nonsense. Rank-1 rerank_score is judged against GBrain's
-# search.autocut_min_top (0.35). create_safety is printed and is not the miss
-# bit: under this embedding its labels point the wrong way.
+# separate a hit from nonsense. Confidence is judged per corpus against that
+# corpus's own effective search.autocut_min_top, read from that brain's own
+# configuration plane rather than assumed. create_safety is printed and is not
+# the miss bit: under this embedding its labels point the wrong way.
 #
 # The audit trail is presence-gated on the local index directory. A home with
 # no brain keeps today's path: no new file, same stdout and exit.
@@ -1435,13 +1446,24 @@ expect_code 0 "$RECALL_RC" "a weak-top list is still a successful read: $RECALL_
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
   || fail "a weak-top list is still nearest pages: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
-  || fail "rank-1 rerank_score below search.autocut_min_top must be a miss: $RECALL_OUT"
+  || fail "a top rerank_score below search.autocut_min_top must be a miss: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | length')" -eq 0 ] \
+  || fail "a miss must name no corpus as clearing its floor: $RECALL_OUT"
 assert_contains "$RECALL_OUT" "No confident match" \
   "the miss must be named plainly"
 assert_not_contains "$RECALL_OUT" "does not exist" \
   "a miss must not be readable as absence of the queried thing"
 assert_absent "$MAIN_HOME/state/recall.jsonl" \
   "create_safety=probable must not write a record in a home with no index"
+
+# The floor is disclosed rather than assumed: the answer names the value each
+# corpus was judged against and where that value came from.
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "local")] | length')" -eq 1 ] \
+  || fail "the corpus that was read must disclose the floor it was judged against: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
+  || fail "the brain's own configured floor must be the one used: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = config ] \
+  || fail "a floor read from the brain's plane must say so: $RECALL_OUT"
 
 run_recall_split "$MAIN_HOME" search --scope local "trombone slide for baroque A=415"
 assert_contains "$RECALL_STDOUT" "No confident match" \
@@ -1459,7 +1481,9 @@ expect_code 0 "$RECALL_RC" "a confident hit should answer: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.kind')" = nearest ] \
   || fail "a confident hit is still nearest pages: $RECALL_OUT"
 [ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
-  || fail "rank-1 rerank_score at 0.978 must not be a miss: $RECALL_OUT"
+  || fail "a top rerank_score at 0.978 must not be a miss: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | join(",")')" = local ] \
+  || fail "the answer must name the corpus that cleared its floor: $RECALL_OUT"
 assert_not_contains "$RECALL_OUT" "No confident match" \
   "a confident hit must not be framed as a miss"
 
@@ -1479,6 +1503,139 @@ run_recall "$MAIN_HOME" search --json --scope local teardown
 assert_not_contains "$RECALL_OUT" "No confident match" \
   "absence of rerank_score is not a miss"
 
+# The floor is GBrain's knob, not a constant this wrapper carries. An operator
+# who tunes their brain's search.autocut_min_top must move the verdict with it,
+# so a row that clears 0.35 and misses 0.50 is judged by the brain's own value.
+TUNED_ROW='[{"slug":"tuned","title":"Tuned","chunk_text":"above the pinned default, below this brain floor.","score":0.6,"rerank_score":0.40,"cosine":0.3,"evidence":"weak_semantic","create_safety":"unknown","stale":false}]'
+stub_reply "$TUNED_ROW"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=0.50 \
+  bash "$CLI" search --json --scope local "a brain that tuned its own floor" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a tuned floor is still an ordinary read: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.5')" = true ] \
+  || fail "the brain's own tuned floor must be the one reported: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = config ] \
+  || fail "a tuned floor comes from the brain's configuration: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
+  || fail "0.40 must be a miss against a brain floor of 0.50: $RECALL_OUT"
+ANSWER_NOTICE=$(printf '%s' "$RECALL_OUT" | jq -r '.answer.notice')
+assert_contains "$ANSWER_NOTICE" "0.5" \
+  "the notice must print the floor actually used, not a second copy of the default: [$ANSWER_NOTICE]"
+assert_not_contains "$ANSWER_NOTICE" "0.35" \
+  "the notice must not quote a floor this read did not use: [$ANSWER_NOTICE]"
+
+# The same row, judged by the same brain with its floor left alone, clears.
+stub_reply "$TUNED_ROW"
+run_recall "$MAIN_HOME" search --json --scope local "a brain that left its floor alone"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "0.40 clears the pinned default of 0.35: $RECALL_OUT"
+
+# A plane that cannot be read falls back to the pinned GBrain default and says
+# so, rather than presenting the fallback as the brain's own setting.
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$MAIN_HOME" FM_STUB_AUTOCUT_MIN_TOP=not-a-number \
+  bash "$CLI" search --json --scope local "an unreadable configuration plane" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "an unreadable floor must not fail the search: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].autocut_min_top == 0.35')" = true ] \
+  || fail "an unreadable plane falls back to GBrain's pinned default: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.floors[0].source')" = default ] \
+  || fail "a fallback floor must be disclosed as a fallback: $RECALL_OUT"
+
+pass "each corpus is judged against the floor its own brain configured, and an unreadable plane discloses the fallback"
+
+# --- 18. the verdict is per corpus, never the head of the merged list --------
+#
+# A non-owner home with its own index AND the fleet's read-only main-brain
+# share, on the default --scope all a dashboard drives. The merge interleaves by
+# rank and puts this home's own index first, so the weak local row leads while
+# the answer lives in the main brain. A verdict read off merged rank 1 tells the
+# caller there is no confident match while the confident match sits at position
+# 2, which is the exact false statement this whole surface exists to prevent.
+
+mkdir -p "$SM_HOME/data/gbrain/pglite"
+jq -n '{version: 1,
+        local: {embedding_base_url: "http://127.0.0.1:11434/v1"},
+        main_brain: {mcp_url: "http://127.0.0.1:9/mcp", token_url: "http://127.0.0.1:9/token",
+                     mount: "fm-main", scopes: "read", secret: "main-brain-client-secret"}}' \
+  > "$SM_HOME/config/gbrain.json"
+
+MAIN_CONFIDENT='[{"slug":"fleet-answer","title":"Fleet Answer","chunk_text":"the fleet brain holds the retention policy.","score":0.31,"rerank_score":0.978,"cosine":0.61,"evidence":"strong_semantic","create_safety":"unknown","stale":false}]'
+main_reply() {  # <results-json>
+  {
+    printf 'event: message\n'
+    printf 'data: %s\n' "$(jq -cn --arg t "$1" '{result: {content: [{type: "text", text: $t}]}, jsonrpc: "2.0", id: 1}')"
+  } > "$FM_FAKE_MCP_REPLY"
+}
+
+main_reply "$MAIN_CONFIDENT"
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all "who owns the fleet retention policy" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a two-corpus read should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.results[].citation] | join(",")')" \
+  = "local:unrelated-page,main:fleet-answer" ] \
+  || fail "the merge must be left alone: the weak local row still leads: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "a confident main-brain hit at merged position 2 must not be reported as no confident match: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | join(",")')" = main ] \
+  || fail "the answer must name the fleet brain as the corpus that cleared: $RECALL_OUT"
+assert_not_contains "$RECALL_OUT" "No confident match" \
+  "a confident match in the fleet brain must never be announced as a miss"
+assert_contains "$RECALL_OUT" "Confident match in main" \
+  "the caller must be told which corpus holds the confident match"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.results | length')" -eq 2 ] \
+  || fail "both rows must still be listed: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[].corpus] | sort | join(",")')" = "local,main" ] \
+  || fail "both corpora that were read must disclose their floor: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '[.answer.floors[] | select(.corpus == "main")][0].source')" = local-config ] \
+  || fail "the main brain has no plane this host can read and must say where its floor came from: $RECALL_OUT"
+assert_rows_match_results "$RECALL_OUT" "the two-corpus per-corpus verdict"
+
+# The mirror: the local corpus clearing while the fleet brain is weak names the
+# local corpus, so a caller can tell its own knowledge from the fleet's.
+main_reply "$SEARCH_MISS"
+stub_reply "$SEARCH_HIT_RERANK"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all "what does this home itself know" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a two-corpus read should answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | join(",")')" = local ] \
+  || fail "a confident local hit must name the local corpus: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "a confident local hit is not a miss: $RECALL_OUT"
+
+# Neither corpus clearing is the only way to reach a miss across two corpora.
+main_reply "$SEARCH_MISS"
+stub_reply "$SEARCH_MISS"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all "a topic neither brain holds" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "two weak corpora still answer: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = true ] \
+  || fail "a miss needs every corpus to fall short of its own floor: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | length')" -eq 0 ] \
+  || fail "no corpus cleared, so none may be named: $RECALL_OUT"
+assert_contains "$RECALL_OUT" "No confident match" \
+  "two weak corpora must be named as no confident match"
+
+# A corpus with no rerank_score at all is unjudged rather than a miss, so it
+# cannot drag a confident sibling down.
+main_reply "$MAIN_CONFIDENT"
+stub_reply "$SEARCH_HIT"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$SM_HOME" PATH="$FAKE_BIN:$PATH" \
+  bash "$CLI" search --json --scope all "an unstamped local corpus" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "an unstamped corpus beside a confident one still answers: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.confident_corpora | join(",")')" = main ] \
+  || fail "an unstamped corpus must not be counted as clearing: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r '.answer.no_confident_match')" = false ] \
+  || fail "an unstamped corpus must not turn a confident sibling into a miss: $RECALL_OUT"
+pass "confidence is judged per corpus against that corpus's own floor, and the answer names which corpora cleared"
+
+# --- 19. a read against a local index leaves a bounded, honest record --------
+
 INDEXED_HOME=$(make_home "$TMP_ROOT/indexed")
 mkdir -p "$INDEXED_HOME/data/gbrain/pglite" "$INDEXED_HOME/state"
 
@@ -1497,6 +1654,10 @@ assert_present "$INDEXED_HOME/state/recall.jsonl" \
   || fail "the record must carry rank-1 rerank_score: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 [ "$(jq -r .no_confident_match "$INDEXED_HOME/state/recall.jsonl")" = true ] \
   || fail "the record must say the caller was told there was no confident match: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .disposition "$INDEXED_HOME/state/recall.jsonl")" = miss ] \
+  || fail "a judged miss must be recorded as one: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+[ "$(jq -r .answer_kind "$INDEXED_HOME/state/recall.jsonl")" = nearest ] \
+  || fail "the record must carry the answer kind the caller was given: $(cat "$INDEXED_HOME/state/recall.jsonl")"
 
 stub_reply "$SEARCH_HIT_RERANK"
 run_recall "$INDEXED_HOME" search --json --scope local "why does a small candle store produce nearly a terabyte"
@@ -1509,28 +1670,101 @@ HIT_REC=$(jq -s '.[1]' "$INDEXED_HOME/state/recall.jsonl")
   || fail "the hit record must carry rank-1 rerank_score: $HIT_REC"
 [ "$(printf '%s' "$HIT_REC" | jq -r .no_confident_match)" = false ] \
   || fail "a confident hit must not be recorded as a miss: $HIT_REC"
+[ "$(printf '%s' "$HIT_REC" | jq -r .disposition)" = hit ] \
+  || fail "a judged hit must be recorded as one: $HIT_REC"
+[ "$(printf '%s' "$HIT_REC" | jq -r '.confident_corpora | join(",")')" = local ] \
+  || fail "the record must carry which corpus cleared: $HIT_REC"
+
+# A read that returned a top row with no rerank_score is a read that happened.
+# It must not serialize the way a run that never reached a corpus does, which is
+# the question this trail exists to answer.
+stub_reply "$SEARCH_HIT"
+run_recall "$INDEXED_HOME" search --json --scope local teardown
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 3 ] \
+  || fail "an unjudged read is still a read and must be recorded: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+UNJUDGED_REC=$(jq -s '.[2]' "$INDEXED_HOME/state/recall.jsonl")
+[ "$(printf '%s' "$UNJUDGED_REC" | jq -r .disposition)" = unjudged ] \
+  || fail "a read whose top row carried no rerank_score is unjudged: $UNJUDGED_REC"
+[ "$(printf '%s' "$UNJUDGED_REC" | jq -r .answer_kind)" = nearest ] \
+  || fail "an unjudged read still answered and must carry its kind: $UNJUDGED_REC"
+[ "$(printf '%s' "$UNJUDGED_REC" | jq -r .no_confident_match)" = null ] \
+  || fail "an unjudged read must not claim a verdict it was never given: $UNJUDGED_REC"
 
 stub_fail 1 "No brain configured. Run: gbrain init"
 run_recall "$INDEXED_HOME" search --json --scope local teardown
 expect_code 3 "$RECALL_RC" "a failed read against an indexed home is still a retrieval failure"
-[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 3 ] \
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 4 ] \
   || fail "a failed read against an indexed home must still leave a record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
-FAIL_REC=$(jq -s '.[2]' "$INDEXED_HOME/state/recall.jsonl")
-[ "$(printf '%s' "$FAIL_REC" | jq -r .no_confident_match)" = false ] \
+FAIL_REC=$(jq -s '.[3]' "$INDEXED_HOME/state/recall.jsonl")
+[ "$(printf '%s' "$FAIL_REC" | jq -r .disposition)" = unread ] \
+  || fail "a run that reached no corpus must be recorded as unread: $FAIL_REC"
+[ "$(printf '%s' "$FAIL_REC" | jq -r .answer_kind)" = null ] \
+  || fail "a run that reached no corpus has no answer kind: $FAIL_REC"
+[ "$(printf '%s' "$FAIL_REC" | jq -r .no_confident_match)" = null ] \
   || fail "a retrieval failure must not be recorded as a no-confident-match verdict: $FAIL_REC"
 [ "$(printf '%s' "$FAIL_REC" | jq -r .rank1_rerank_score)" = null ] \
   || fail "a retrieval failure has no rank-1 rerank_score: $FAIL_REC"
+[ "$(printf '%s' "$FAIL_REC" | jq -S 'del(.at, .query)')" \
+  != "$(printf '%s' "$UNJUDGED_REC" | jq -S 'del(.at, .query)')" ] \
+  || fail "a corpus that was never read must not serialize like one that returned an unjudgeable row: $FAIL_REC"
 
-stub_reply "$SEARCH_HIT_RERANK"
+# think reads this home's brain through the hosted provider and completes, so
+# the count below is evidence about think's write path rather than about a
+# refusal that happened before any corpus was reached.
+jq '.think = {base_url: "https://api.example.invalid/v1", model: "minimax:MiniMax-M3", secret: "minimax-key"}' \
+  "$INDEXED_HOME/config/gbrain.json" > "$TMP_ROOT/g.json" \
+  && mv "$TMP_ROOT/g.json" "$INDEXED_HOME/config/gbrain.json"
+mkdir -p "$INDEXED_HOME/config/gbrain-secrets"
+printf 'test-hosted-credential-value\n' > "$INDEXED_HOME/config/gbrain-secrets/minimax-key"
+chmod 0600 "$INDEXED_HOME/config/gbrain-secrets/minimax-key"
+stub_reply '{"question":"q","answer":"The tea-state filter trap [tea-state-filter-trap].","citations":[{"page_slug":"tea-state-filter-trap"}],"pagesGathered":2,"modelUsed":"minimax:MiniMax-M3","warnings":[],"synthesisOk":true}'
 run_recall "$INDEXED_HOME" think --json "what is the tea-state filter"
-[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 3 ] \
+expect_code 0 "$RECALL_RC" "think against the indexed home must actually complete: $RECALL_OUT"
+[ "$(printf '%s' "$RECALL_OUT" | jq -r .synthesis.state)" = ok ] \
+  || fail "the think reply must be read as a real synthesis: $RECALL_OUT"
+[ "$(jq -s 'length' "$INDEXED_HOME/state/recall.jsonl")" -eq 4 ] \
   || fail "think must not append a search-read record: $(cat "$INDEXED_HOME/state/recall.jsonl")"
+
+# The log is home-wide and nothing removes it, so the bound is the retention
+# story. Past the cap the oldest lines go and the newest read stays, and every
+# surviving line is still a whole record.
+CAP_HOME=$(make_home "$TMP_ROOT/capped")
+mkdir -p "$CAP_HOME/data/gbrain/pglite" "$CAP_HOME/state"
+CAP_FILE="$CAP_HOME/state/recall.jsonl"
+CAP_I=0
+while [ "$CAP_I" -lt 400 ]; do
+  printf '{"schema":"fm-recall-read.v1","at":"2026-08-25T00:00:00Z","query":"filler read %s","disposition":"unread"}\n' "$CAP_I"
+  CAP_I=$((CAP_I + 1))
+done > "$CAP_FILE"
+CAP_BEFORE=$(wc -c < "$CAP_FILE" | tr -d '[:space:]')
+[ "$CAP_BEFORE" -gt 4096 ] || fail "the fixture must exceed the cap it is testing"
+stub_reply "$SEARCH_HIT_RERANK"
+RECALL_RC=0
+RECALL_OUT=$(FM_HOME="$CAP_HOME" FM_RECALL_JSONL_MAX_BYTES=4096 \
+  bash "$CLI" search --json --scope local "the newest read of all" 2>&1) || RECALL_RC=$?
+expect_code 0 "$RECALL_RC" "a trim must never fail the search it records: $RECALL_OUT"
+CAP_AFTER=$(wc -c < "$CAP_FILE" | tr -d '[:space:]')
+[ "$CAP_AFTER" -le 4096 ] || fail "the read log must be trimmed to its cap, got $CAP_AFTER bytes"
+[ "$CAP_AFTER" -lt "$CAP_BEFORE" ] || fail "the read log must actually shrink past the cap"
+jq -e -s 'all(.[]; has("schema"))' "$CAP_FILE" >/dev/null 2>&1 \
+  || fail "a trim must not leave a partial record behind: $(head -1 "$CAP_FILE")"
+[ "$(jq -s -r '.[-1].query' "$CAP_FILE")" = "the newest read of all" ] \
+  || fail "the newest read must survive the trim: $(tail -1 "$CAP_FILE")"
+
+# Deleting it is a supported thing to do: the next search recreates it.
+rm -f "$CAP_FILE"
+stub_reply "$SEARCH_HIT_RERANK"
+run_recall "$CAP_HOME" search --json --scope local "after the log was deleted"
+expect_code 0 "$RECALL_RC" "deleting the read log must not fail the next search: $RECALL_OUT"
+assert_present "$CAP_FILE" "the next search must recreate the read log"
+[ "$(jq -s 'length' "$CAP_FILE")" -eq 1 ] \
+  || fail "a recreated log starts from the read that recreated it: $(cat "$CAP_FILE")"
 
 stub_fail 1 "No brain configured. Run: gbrain init"
 run_recall "$MAIN_HOME" search --json --scope local teardown
 expect_code 3 "$RECALL_RC" "a home with no index still fails retrieval the way it always did"
 assert_absent "$MAIN_HOME/state/recall.jsonl" \
   "a home with no local index must still write no recall record after a failed read"
-pass "rerank_score names a miss against search.autocut_min_top, create_safety is not the miss bit, and a local index leaves a read record"
+pass "a read against a local index leaves a bounded record that says what was asked, whether a corpus was read, and what it returned"
 
 echo "all fm-recall tests passed"
