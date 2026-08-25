@@ -116,15 +116,26 @@ Both the SSE framing and the in-band `isError` refusal are unpacked by the wrapp
 
 A search is a writer, which is why [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) names it in the backup precondition and why the dashboard's unit grants the brain directory ([dashboard-service-unit.md](dashboard-service-unit.md)).
 
-Measured against the operator's own brain at `/home/sungin/firstmate/data/gbrain`, by taking an md5 of every file under it before and after each `bin/fm-recall.sh search` and diffing the two manifests, excluding the backups directory.
+Measured 2026-08-11 against the operator's own brain at `/home/sungin/firstmate/data/gbrain`, by taking an md5 of every file under it before and after each `bin/fm-recall.sh search` and diffing the two manifests.
 Content hashes rather than mtimes: an mtime probe is too coarse here and had already produced a false negative on this exact question.
-Each measurement was bracketed by an idle window with no search running, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
+Each measurement was bracketed by an idle window with no search running, which reported 0 changed files over 30 seconds and again over 45 seconds, so the brain was quiescent and the changes below are attributable to the search rather than to a background writer.
 
-The 2026-08-11 measurement recorded three consecutive searches rewriting 26, 27, and 27 files under the PGLite directory, with idle windows of 0 changed files over 30 and 45 seconds, and a run-to-run range of 7 to 27 that was never zero for a search that succeeded.
-That measurement was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus knob read adds `gbrain config get` connects on a search with a judgeable local corpus.
-The counts below supersede it.
+Three consecutive searches, each returning results with the local source `ok`, rewrote 26, 27, and 27 files under the PGLite directory:
 
-Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0`, idle window first: 0 files changed over 15 seconds across 1434 files hashed.
+```
+pglite/global/pg_control
+pglite/pg_wal/<segment>
+pglite/pg_xact/0000
+pglite/base/5/<relation files>
+```
+
+Three in a row make this steady state rather than a cold-start or first-open artifact, and it is not an artifact of the service sandbox either: it happens both under the dashboard unit's restrictions and in an ordinary shell.
+Counts vary run to run, 7 to 27 observed, but were never zero for a search that actually succeeded.
+
+That entry was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus knob read adds `gbrain config get` connects on a search with a judgeable local corpus.
+The counts below supersede its per-search totals; its method and its file list still stand for what the search's own connect rewrites.
+
+Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0` by that same md5-manifest method, this time excluding the backups directory; idle window first: 0 files changed over 15 seconds across 1434 files hashed.
 
 `gbrain config get search.autocut_min_top` on its own, three runs, changed 3, 4, and 4 files, always drawn from:
 
