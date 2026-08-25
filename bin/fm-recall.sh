@@ -1079,14 +1079,15 @@ EOF
 # anyway. Anything short of a db-plane answer inside that slice is the pinned
 # default, disclosed either as the value the brain applies or as one this
 # command could not confirm.
-# Sized from a measurement, not a guess. Measured 2026-08-25 against this
-# fleet's brain with the connect retry ladder disabled, `gbrain config get
-# search.autocut_min_top` took 0.299s, 0.311s, and 0.300s over three runs with
-# the index lock free. Both keys are asked inside this one slice, so the budget
-# it has to cover is twice that measured single read, and one second still
-# leaves room over it while fitting the one-second remainder a dashboard-shaped
-# run tends to leave. Re-take the measurement before moving this number; the
-# record is in docs/verification/gbrain-retrieval.md.
+# Sized from a measurement of THIS two-key read, not from arithmetic over a
+# one-key one. Measured 2026-08-25 against this fleet's brain with the connect
+# retry ladder disabled and the index lock free, both keys inside this one
+# slice took 0.602s, 0.598s, and 0.604s over three runs, so one second is about
+# 1.66 times the measured wall clock while still fitting the one-second
+# remainder a dashboard-shaped run tends to leave. Those figures are owned by
+# docs/verification/gbrain-retrieval.md, which also binds them to this read's
+# shape: change how many keys are asked, or in what slice, and the measurement
+# moves in the same commit as the change.
 RECALL_FLOOR_READ_MAX_SECONDS=1
 
 # The bound a caller sanctioned is the whole run, not the retrieval calls alone,

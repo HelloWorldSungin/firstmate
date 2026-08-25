@@ -135,9 +135,12 @@ Counts vary run to run, 7 to 27 observed, but were never zero for a search that 
 That entry was taken when a search meant ONE engine connect, and that premise no longer holds: the per-corpus knob read adds `gbrain config get` connects on a search with a judgeable local corpus.
 The counts below supersede its per-search totals; its method and its file list still stand for what the search's own connect rewrites.
 
-Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0` by that same md5-manifest method, this time excluding the backups directory; idle window first: 0 files changed over 15 seconds across 1434 files hashed.
+Re-measured 2026-08-25 against the same brain at pin `v0.46.21.0` by that same md5-manifest method, this time excluding the backups directory; idle window first: 0 files changed over 15 seconds across 1436 files hashed.
+Every count and timing below describes the TWO-key floor read, which asks `search.autocut` first and then `search.autocut_min_top` inside one bounded slice.
+They replace an earlier set of 2026-08-25 figures taken when the read asked one key, which are stale evidence rather than a second opinion and so are not carried alongside these.
 
-`gbrain config get search.autocut_min_top` on its own, three runs, changed 3, 4, and 4 files, always drawn from:
+The two-key floor read on its own, three runs, changed 5, 4, and 4 files.
+Runs 2 and 3 changed exactly this four-file control set, which is the same set the one-key read wrote, because the second connect rewrites that set again rather than adding a distinct file:
 
 ```
 pglite/.gbrain-lock/lock
@@ -146,26 +149,30 @@ pglite/pg_wal/<segment>
 pglite/postmaster.pid
 ```
 
-So the knob read is itself a writer of a handful of PGLite control files, even on this brain, where the key is absent from every plane.
+Run 1's fifth file was `runtime/.gbrain/last-update-check`, written by GBrain's version check rather than by the read.
+So the knob read is itself a writer of a handful of PGLite control files, even on this brain, where neither key answers from the database plane.
 
-Three consecutive `bin/fm-recall.sh search --json --scope local` runs on the two-connect path, each with the local source `ok`, changed 32, 11, and 8 files, taking 17.02s, 1.18s, and 1.16s of wall clock; all three disclosed the floor as a pinned default.
+Three consecutive `bin/fm-recall.sh search --json --scope local` runs on the two-key path, each with the local source `ok`, changed 32, 10, and 8 files, taking 16.40s, 1.49s, and 1.49s of wall clock; all three disclosed the floor as a pinned default.
 
 State this plainly rather than absorbing it.
-The second connect adds 3 to 4 control files per search, not a second full search write, so this is not 26 plus 26.
-The first two-connect run of the session wrote 32 files, which is above the previously published maximum of 27.
-The two runs after it wrote 11 and 8, inside the old 7-to-27 range.
+The knob read adds a handful of control files per search, not a second full search write, so this is not 26 plus 26.
+The first knob-read run of the session wrote 32 files, which is above the previously published maximum of 27.
+The two runs after it wrote 10 and 8, inside the old 7-to-27 range.
 A search is still a writer, the knob read is now a second one, and the backup precondition in [`../gbrain.md`](../gbrain.md#archive-backup-and-rebuild) rests on both.
 
-These counts are already one connect behind the code and are published that way rather than quietly restated.
-They were taken when the knob read asked for one key; it now asks for two, because `search.autocut_min_top` is only a floor while `search.autocut` is on and the pin resolves exactly one key per `gbrain config get` process.
-Both keys are asked inside the one bounded slice, so nothing new is charged to the run's budget, but the engine is connected twice rather than once.
-Scaling the measured 3-to-4 control files per connect gives roughly 6 to 8 for the knob read on a judgeable local corpus; that arithmetic has NOT been re-measured end to end, and it is the number to re-take first when this record is refreshed.
+The second key does not move these counts materially, which is worth saying plainly rather than leaving implied.
+Against the superseded one-key figures of 32, 11, and 8 files at 17.02s, 1.18s, and 1.16s, the two-key read measures 32, 10, and 8 files at 16.40s, 1.49s, and 1.49s.
+The first-run maximum is unchanged at 32, and the difference between 11 and 10 is inside the ordinary run-to-run range this section already records, so the backup precondition rests on the same maximum it did before.
 
-The same three runs are what sizes the knob read's own ceiling.
-With the connect retry ladder disabled and the index lock free, `gbrain config get search.autocut_min_top` took 0.299s, 0.311s, and 0.300s, exiting 1 with `Config key not found: search.autocut_min_top` on stderr.
-This fleet has never stored that key in the database plane, so the floor its searches apply is the bundle default 0.35, and disclosing `pinned-default` for this brain is accurate rather than a shrug.
-`bin/fm-recall.sh` bounds the read at 1 second, which now has two such reads to cover rather than one: twice the measured 0.30s still leaves room under the bound, and the bound still fits the one-second remainder a dashboard-shaped run tends to leave.
-That doubling is the reason to re-take this timing before the bound is trusted on a brain slower than this one.
+These counts and timings are bound to the two-key floor read shape rather than to the wrapper in general, and that shape exists because `search.autocut_min_top` is only a floor while `search.autocut` is on, and the pin resolves exactly one key per `gbrain config get` process.
+Any later change to how many keys the floor read asks, or to what slice it asks them in, must move this measurement in the SAME commit rather than leaving the record to be re-derived afterwards.
+
+The three floor-read-alone runs above are what size the knob read's own ceiling.
+With the connect retry ladder disabled and the index lock free, the two-key floor read took 0.602s, 0.598s, and 0.604s, both keys exiting 1 with `Config key not found: search.<key>` on stderr.
+This fleet stores neither key in the database plane, so the floor its searches apply is the bundle default 0.35, and disclosing `pinned-default` for this brain is accurate rather than a shrug.
+`bin/fm-recall.sh` bounds the read at 1 second, which is about 1.66 times that measured wall clock and still fits the one-second remainder a dashboard-shaped run tends to leave.
+The bound itself does not move; what changed is that it is now sized against a directly measured two-key read rather than against a doubled single-key one.
+Re-take this timing before the bound is trusted on a brain slower than this one.
 
 ## Refreshing this record
 
@@ -179,7 +186,7 @@ FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=<path-to-gbrain> bin/fm-test-run.sh tests/fm-
 ```
 
 Re-run both after any GBrain upgrade.
-The index-write measurement has no suite behind it: redo it by hand as described there, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
+The index-write measurement has no suite behind it: redo it by hand as described there, redo it in the same commit as any change to the floor read's shape as the binding stated with those counts requires, and redo it in particular if a future version claims to open the index read-only, because the backup precondition it supports would change with it.
 The synthesis-flag observation above is the one most worth re-confirming: if a future version starts exiting non-zero when it has no model, the wrapper's verdict stays correct, but a version that stops emitting `synthesisOk` would need this record and `bin/fm-recall.sh` revisited together.
 
 ## `rerank_score` is the miss signal the wrapper used to drop, and it is judged per corpus
