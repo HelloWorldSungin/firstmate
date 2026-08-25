@@ -404,7 +404,8 @@ process_item() {  # <document-id> <timeout> <force>
   if [ "$rc" -eq 0 ] && [ -n "$page" ]; then
     # shellcheck disable=SC2016  # jq program text; $a/$page/$now are jq variables
     item_update "$doc_id" '.status = "captured" | .attempts = ($a | tonumber) | .last_error = null
-      | .gbrain_document = $page | .captured_at = $now | .updated_at = $now' \
+      | .gbrain_document = $page | .captured_at = $now | .updated_at = $now
+      | .delivered_version = .content_version' \
       --arg a "$((attempts + 1))" --arg page "$page" --arg now "$now" || return 1
     printf '%s captured %s\n' "$doc_id" "$page"
     return 0
@@ -597,7 +598,7 @@ cmd_backfill() {
   brain_ready || die "$FM_GBRAIN_CAPTURE_ERROR"
 
   local scanned=0 enqueued=0 captured=0 already=0 refused=0 errors=0 refreshed=0 n=0
-  local dir id raw title doc_id rc item before_version after_version drifted
+  local dir id raw title doc_id rc item drifted
   for dir in "$DATA"/*/; do
     [ -d "$dir" ] || continue
     id=${dir%/}
@@ -618,14 +619,6 @@ cmd_backfill() {
       continue
     fi
     rc=0
-    # Read BEFORE the enqueue overwrites it: the recomposed content version is
-    # the whole drift signal, and after the write there is nothing left to
-    # compare against. This is the structural re-capture trigger - a durable
-    # source edited after its page was written produces a different hash here,
-    # and the same slug updates the same page.
-    before_version=$(fm_gbrain_capture_item_read "$DATA" \
-      "$(fm_gbrain_capture_document_id "$(fm_gbrain_capture_home_tag "$FM_HOME")" task "$id")" 2>/dev/null \
-      | jq -r '.content_version // ""') || before_version=""
     enqueue task "$id" "$title" "$raw" || rc=$?
     doc_id=$ENQUEUED_DOC_ID
     rm -f "$raw"
@@ -643,19 +636,17 @@ cmd_backfill() {
     n=$((n + 1))
     enqueued=$((enqueued + 1))
     item=$(fm_gbrain_capture_item_read "$DATA" "$doc_id") || item='{}'
-    after_version=$(printf '%s' "$item" | jq -r '.content_version // ""')
-    drifted=0
-    if [ -n "$before_version" ] && [ "$before_version" != "$after_version" ]; then
-      drifted=1
-    fi
+    # The drift signal is the record's own memory of what the index was last
+    # given, not a diff of this run: a refresh whose first delivery failed is
+    # still a refresh on the sweep that finally lands it, and a record that has
+    # never been delivered is a first capture rather than a correction.
+    drifted=$(printf '%s' "$item" | jq -r '
+      if ((.delivered_version // "") != "") and (.delivered_version != .content_version)
+      then 1 else 0 end') || drifted=0
     # Already captured at this exact content version: a rerun re-delivers
     # nothing, which is what makes the whole sweep cheap to restart.
     if [ "$(printf '%s' "$item" | jq -r '.status // ""')" = captured ]; then
       already=$((already + 1))
-      if [ "$drifted" -eq 1 ]; then
-        refreshed=$((refreshed + 1))
-        report_refreshed "$id"
-      fi
       continue
     fi
     # Claimed only once the delivery that makes it true has happened: a session

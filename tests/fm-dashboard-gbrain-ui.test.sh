@@ -63,7 +63,8 @@ const configuredEnvelope = {
       main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" },
     },
     synthesis: { state: "ok", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "ok" },
-    capture: { enabled: true, archived: 81, pending: 0, failed: 0, unreadable: 0, last_capture_at: "2026-08-05T21:07:59Z", last_error: null },
+    capture: { enabled: true, archived: 81, pending: 0, failed: 0, unreadable: 0, last_capture_at: "2026-08-05T21:07:59Z", last_error: null,
+      audit: { state: "ok", stored: 81, active: 81, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -133,7 +134,8 @@ const degradedEnvelope = {
       main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" },
     },
     synthesis: { state: "ok", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "ok" },
-    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null },
+    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null,
+      audit: { state: "ok", stored: 10, active: 10, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -201,7 +203,8 @@ const degradedSynthesisEnvelope = {
     index: { state: "ok", detail: "ok" },
     retrieval: { state: "ok", embedding: { state: "ok" }, reranker: { state: "ok" }, main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" } },
     synthesis: { state: "degraded", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "no answer at http://127.0.0.1:9999/v1" },
-    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null },
+    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null,
+      audit: { state: "ok", stored: 10, active: 10, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -357,7 +360,125 @@ function observedSecondsAgo(seconds) {
     `received ${JSON.stringify(captureCard.detail)}`);
   check("an inconclusive audit is not rendered as a gap",
     !captureCard.detail.includes("the index no longer serves"));
-  equal("an inconclusive audit does not degrade the card by itself", captureCard.value, "ready");
+  // An audit that reached no verdict is not a clean bill: green is the positive
+  // claim that the parity check ran and passed, so this takes the hollow ring.
+  equal("an inconclusive audit is not a fault", captureCard.tone !== "red" && captureCard.tone !== "amber", true);
+  equal("an inconclusive audit never renders green", captureCard.tone, "unknown");
+  equal("an inconclusive audit says so on the card face", captureCard.value, "unverified");
+  check("an inconclusive audit says an audit did run",
+    captureCard.detail.includes("audit ran and could not compare"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+}
+
+// --- a home that has never been audited ------------------------------------
+//
+// Every existing home reports this until its first sweep completes. It has not
+// earned the green dot, but it is not a fault either, so it must read as its
+// own state and never borrow the inconclusive wording, which means an audit ran
+// and could not compare the two sides.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a never-audited home never renders green", captureCard.tone, "unknown");
+  equal("a never-audited home says so on the card face", captureCard.value, "unaudited");
+  check("a never-audited home is not called a fault",
+    captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("a never-audited home does not borrow the inconclusive wording",
+    !captureCard.detail.includes("could not compare"));
+}
+
+// --- a damaged outbox record --------------------------------------------------
+//
+// An unreadable record is never treated as delivered and never delivered blind,
+// so a home holding one has not proved its capture path clean. It is a record
+// that could not be read rather than a proven failure, so it takes the same
+// hollow ring the two audit unknowns take and neither red nor amber.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    unreadable: 2, last_error: "the outbox record for firstmate/x/task/y is unreadable",
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a damaged record never renders green", captureCard.tone, "unknown");
+  equal("a damaged record says so on the card face", captureCard.value, "unreadable");
+  check("the unreadable count sits beside the other counts",
+    captureCard.detail.includes("2 unreadable"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("a damaged record is named in prose too",
+    captureCard.detail.includes("2 outbox record(s) could not be read"));
+  check("a clean home still shows a zero unreadable count",
+    buildGBrainHealth(captureAuditEnvelope({
+      audit: { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+    })).cards.find((c) => c.label === "Capture").detail.includes("0 unreadable"));
+}
+
+// --- the precedence between every Capture state -----------------------------
+//
+// One card carries eight possible states, so the order they win in is the whole
+// contract: a proven fault outranks a queued item, a queued item outranks an
+// unknown, and only a home with nothing outstanding and a passed parity check
+// reads green. The not-bootstrapped state wins over all of them, because a home
+// whose index does not exist yet has nothing to be degraded about.
+
+{
+  const clean = { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" };
+  const gap = { state: "gap", missing: 3, observed: observedSecondsAgo(90), detail: "3 absent" };
+  const inconclusive = { state: "inconclusive", missing: 0, observed: observedSecondsAgo(90), detail: "not compared" };
+  const unaudited = { state: "unknown", missing: null, observed: null, detail: "never run" };
+  const stateOf = (capture) =>
+    buildGBrainHealth(captureAuditEnvelope(capture)).cards.find((c) => c.label === "Capture").value;
+
+  equal("not bootstrapped outranks everything",
+    stateOf({ enabled: false, failed: 4, pending: 4, unreadable: 4, audit: gap }), "off");
+  equal("a failed delivery outranks a queued one",
+    stateOf({ failed: 1, pending: 4, unreadable: 4, audit: inconclusive }), "degraded");
+  equal("a parity gap outranks a queued item",
+    stateOf({ pending: 4, unreadable: 4, audit: gap }), "degraded");
+  equal("a queued item outranks a damaged record",
+    stateOf({ pending: 4, unreadable: 4, audit: inconclusive }), "pending");
+  equal("a damaged record outranks an audit with no verdict",
+    stateOf({ unreadable: 1, audit: inconclusive }), "unreadable");
+  equal("an audit that could not compare outranks one that never ran",
+    stateOf({ audit: inconclusive }), "unverified");
+  equal("a home with only a missing audit reads unaudited",
+    stateOf({ audit: unaudited }), "unaudited");
+  equal("only a clean home with a passed parity check reads ready",
+    stateOf({ audit: clean }), "ready");
+  equal("ready is the one state that earns the green dot",
+    buildGBrainHealth(captureAuditEnvelope({ audit: clean })).cards.find((c) => c.label === "Capture").tone, "green");
+}
+
+// --- a home with no brain is not an unaudited home ---------------------------
+//
+// Presence-gating: a home that never adopted GBrain shows nothing about capture
+// at all, the way it did before GBrain existed. No audit state may leak into
+// that early return and turn absence into a verdict.
+
+{
+  const view = buildGBrainHealth({
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      configured: false,
+      version: null,
+      index: { state: "absent", detail: "no brain configured" },
+      capture: {
+        enabled: false, archived: 0, pending: 0, failed: 0, unreadable: 3,
+        audit: { state: "gap", missing: 9, observed: "2026-08-05T21:00:00Z", detail: "9 absent" },
+      },
+      maintenance: { state: "ready" },
+    },
+  });
+  check("a home with no brain renders no Capture card",
+    view.cards.every((c) => c.label !== "Capture"), JSON.stringify(view.cards.map((c) => c.label)));
+  equal("a home with no brain renders only the not-configured card", view.cards.length, 1);
+  check("no audit verdict leaks into the not-configured card",
+    !view.cards[0].detail.includes("gap") && !view.cards[0].detail.includes("unreadable"));
 }
 
 {
@@ -411,7 +532,7 @@ function observedSecondsAgo(seconds) {
   const never = buildGBrainHealth(captureAuditEnvelope({
     audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
   })).cards.find((c) => c.label === "Capture");
-  check("an unaudited home says no audit has run", never.detail.includes("no stored-versus-served audit has run yet"),
+  check("an unaudited home says no audit has run", never.detail.includes("no stored-versus-served audit has run in this home yet"),
     `received ${JSON.stringify(never.detail)}`);
   check("an unaudited home renders no age at all", !never.detail.includes("audited "),
     `received ${JSON.stringify(never.detail)}`);

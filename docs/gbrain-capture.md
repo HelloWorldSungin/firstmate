@@ -124,6 +124,7 @@ The worst case is therefore one interval of staleness rather than forever.
 The refresh itself is `backfill`, not a second recomposition path: `backfill` already recomposes each task and re-delivers a changed body to the same page, so a separate path would only be one more thing to drift.
 It now names and counts what it corrected - `refreshed <id>` and a `refreshed=` total - so a sweep reports the drift it closed instead of folding it into the ordinary captured count.
 Both are claims about a delivery rather than about a recomposition, so neither is made until that document reached the index: a run that recomposed a changed body but could not deliver it reports its errors and says nothing about a refresh, because the page is still serving the body the source moved away from.
+The record itself remembers which content version the index was last given, and only a landed delivery moves it, so a refresh whose first delivery failed is still named exactly once - on the later sweep that finally delivers it - rather than being corrected in silence.
 `bin/fm-recall.sh` judges the same drift at query time and marks a result stale; that is the read side telling a reader not to trust a page, and this is the write side making the page true again.
 
 ## Captured is not the same as served
@@ -144,6 +145,16 @@ the GBrain panel's Capture card turns degraded and names the missing count, and 
 Neither surface re-measures it, because the dashboard polls continuously and re-opening the index on every poll would put a repeated index read behind a poll that has to stay cheap.
 Because it is replayed rather than re-measured, the Capture card renders how old the observation is beside the verdict: a gap already repaired by hand keeps reading red until the next sweep, and a clean answer measured weeks ago must not read like one measured minutes ago.
 A home where the audit has never run reports that it has never run, rather than reporting a zero gap nobody measured, and has no age to render.
+
+Only a verdict earns the card's green dot, because green is the positive claim that the parity check ran and passed:
+
+- `gap` and a failed delivery are proven faults, so the card reads `degraded` in red.
+- `inconclusive` reads `unverified` and `unknown` reads `unaudited`, both on the hollow ring, because an audit with no verdict must never be shown as a clean bill - that is the same complacency the fail-closed rule above exists to prevent.
+  The two are kept apart in the wording as well: one means an audit ran and could not compare the two sides, the other means none has run yet, which is not a fault.
+- An outbox record that could not be read at all reads `unreadable` on the same hollow ring, for the same reason and with the count beside the archived, pending and failed ones.
+
+A home with no brain is not an unaudited home; it renders nothing about capture at all, the way it did before GBrain existed.
+A configured home whose local index is not bootstrapped keeps its own `off` state ahead of all of these.
 
 A gap is not automatically a fault: a page deleted deliberately shows up here too.
 Recapture the document if it should still be served, or restore it in GBrain if it was deleted by mistake.

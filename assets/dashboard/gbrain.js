@@ -174,19 +174,33 @@ export function buildGBrainHealth(envelope) {
   const audit = capture.audit || {};
   const auditState = stateValue(audit.state, ["ok", "gap", "inconclusive"]);
   const auditAge = auditAgeSuffix(audit.observed);
+  // Green is a positive claim: every record is delivered, every record could be
+  // read, and a parity check ran and passed. Anything that did not reach a
+  // verdict - a damaged record, an audit that could not compare, an audit that
+  // has never run - takes the hollow ring instead, because a surface that
+  // cannot tell "checked, clean" from "could not check" misleads in exactly the
+  // direction the audit fails closed to avoid. None of them is a fault, so none
+  // of them takes red or amber either: a proven failure and a queued item both
+  // still outrank an unknown.
   const captureState = capture.enabled === false ? "off"
     : capture.failed > 0 || auditState === "gap" ? "degraded"
-    : capture.pending > 0 ? "pending" : "ready";
+    : capture.pending > 0 ? "pending"
+    : capture.unreadable > 0 ? "unreadable"
+    : auditState === "inconclusive" ? "unverified"
+    : auditState === "unknown" ? "unaudited"
+    : "ready";
   const captureDetail = [
     `${capture.archived ?? 0} archived`,
     `${capture.pending ?? 0} pending`,
     `${capture.failed ?? 0} failed`,
+    `${capture.unreadable ?? 0} unreadable`,
     capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
   ].join(" / ")
     + (auditState === "gap" ? ` · ${audit.missing ?? 0} captured document(s) the index no longer serves${auditAge}` : "")
-    + (auditState === "inconclusive" ? ` · the last stored-versus-served audit could not compare the two sides${auditAge}` : "")
+    + (auditState === "inconclusive" ? ` · the last stored-versus-served audit ran and could not compare the two sides${auditAge}` : "")
     + (auditState === "ok" ? ` · every captured document is served${auditAge}` : "")
-    + (auditState === "unknown" ? " · no stored-versus-served audit has run yet" : "")
+    + (auditState === "unknown" ? " · no stored-versus-served audit has run in this home yet, which is not a fault" : "")
+    + (capture.unreadable > 0 ? ` · ${capture.unreadable} outbox record(s) could not be read` : "")
     + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"
@@ -197,7 +211,7 @@ export function buildGBrainHealth(envelope) {
     tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
     value: captureState,
     detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry. A gap means a document the outbox calls archived is no longer served by the index.",
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified and unaudited both mean the parity check has no verdict yet, never that it found one.",
   });
 
   const maintenance = h.maintenance || {};

@@ -802,9 +802,12 @@ test_a_report_edited_after_capture_is_refreshed_by_the_sweep() {
 # A `refreshed <task>` line is relayed verbatim by a session start and read
 # there as completed work - the page a search returns is true again. So it is a
 # claim about a delivery, not about a recomposition, and a sweep that could not
-# deliver must not make it. The whole point of this change is a record that does
-# not lie about its own state.
-test_a_sweep_that_could_not_deliver_never_claims_it_refreshed_a_page() {
+# deliver must not make it. The mirror matters as much: a delivery that lands a
+# sweep later is still the correction of a page that had been serving a voided
+# conclusion, so it must be named then rather than corrected in silence. The
+# whole point of this change is a record that does not lie about its own state,
+# in either direction.
+test_a_refresh_is_named_once_on_the_sweep_that_delivers_it() {
   local home page out
   home=$(make_home sweep-refused)
   seed_manifest "$home" scout-a "Investigate the drain"
@@ -829,20 +832,37 @@ test_a_sweep_that_could_not_deliver_never_claims_it_refreshed_a_page() {
   printf '%s' "$out" | grep -q '^refreshed ' && fail "backfill must not name an undelivered refresh: $out"
   printf '%s' "$out" | grep -q 'refreshed=0' || fail "the refreshed total must count only deliveries: $out"
 
-  # Nothing is lost by the silence: the next sweep that can deliver still
-  # carries the edit onto the same page.
+  # The drift is not forgotten by the failure that delayed it. The record
+  # remembers what the index was last given, so the sweep that finally delivers
+  # is the one that names it - a page corrected in silence would leave a captain
+  # never told that a search had been returning a voided conclusion.
   fake_gbrain "$home" ok
-  cap "$home" sweep --force >/dev/null 2>&1 || true
-  grep -q 'VOIDED' "$page" || fail "a sweep that could deliver must carry the edit onto the page"
-
-  # The positive counterpart, on a drift this sweep both detected and delivered.
-  printf '\nSUPERSEDED: the drain was a red herring.\n' >> "$home/data/scout-a/report.md"
-  out=$(cap "$home" sweep --force 2>&1) && fail "a sweep that refreshed a page must exit non-zero"
-  printf '%s' "$out" | grep -q 'refreshed scout-a' \
-    || fail "a delivered refresh must name what it corrected: $out"
-  grep -q 'SUPERSEDED' "$page" || fail "a named refresh must be true on the page it names"
+  out=$(cap "$home" sweep --force 2>&1) && fail "the sweep that delivered the refresh must exit non-zero"
+  [ "$(printf '%s\n' "$out" | grep -c '^refreshed scout-a')" = 1 ] \
+    || fail "the sweep that delivered a delayed refresh must name it exactly once: $out"
+  grep -q 'VOIDED' "$page" || fail "a named refresh must be true on the page it names"
   [ "$(pages_count "$home")" = 1 ] || fail "a refresh must update the page, not add one"
-  pass "a sweep names a refreshed page only once the delivery landed"
+
+  # And exactly once: nothing has drifted since, so the next sweep is silent.
+  out=$(cap "$home" sweep --force 2>&1) || fail "a sweep with nothing to correct must exit 0"
+  [ -z "$out" ] || fail "a page already refreshed must not be named again: $out"
+
+  # The counter cannot become unconditional either: a page the index was never
+  # given is a first capture however often its report was edited on the way
+  # there, and naming that as a correction would be the same lie in reverse.
+  seed_manifest "$home" scout-b "Investigate the cache"
+  printf '# Report\n\nfirst draft\n' | seed_report "$home" scout-b
+  fake_gbrain "$home" fail
+  cap "$home" sweep --force >/dev/null 2>&1 || true
+  printf '\nsecond draft\n' >> "$home/data/scout-b/report.md"
+  fake_gbrain "$home" ok
+  out=$(cap "$home" sweep --force 2>&1) || fail "the sweep that captured it must exit 0"
+  printf '%s' "$out" | grep -q '^refreshed ' \
+    && fail "a page that was never delivered must not be named as refreshed: $out"
+  [ -z "$out" ] || fail "a first capture must leave the sweep silent: $out"
+  grep -q 'second draft' "$home/pages/"*task_scout-b.md \
+    || fail "the first capture must still carry the edited body"
+  pass "a sweep names a refreshed page once, on the sweep that delivers it"
 }
 
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain() {
@@ -892,7 +912,7 @@ test_a_truncated_body_is_marked_rather_than_left_looking_complete
 test_the_audit_names_a_captured_document_the_index_no_longer_serves
 test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep
-test_a_sweep_that_could_not_deliver_never_claims_it_refreshed_a_page
+test_a_refresh_is_named_once_on_the_sweep_that_delivers_it
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain
 test_status_reports_archived_pending_skipped_and_redacted
 test_a_note_goes_through_the_same_path

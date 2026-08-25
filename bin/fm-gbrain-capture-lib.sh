@@ -356,6 +356,7 @@ fm_gbrain_capture_item_valid() {  # <json>
     and (.attempts | type == "number" and . >= 0)
     and (.last_error == null or (.last_error | type == "string"))
     and (.gbrain_document == null or (.gbrain_document | type == "string" and length > 0))
+    and (.delivered_version == null or (.delivered_version | type == "string" and test("^sha256:[0-9a-f]+$")))
     and (.redactions | type == "array")
     and (.body | type == "string")
     and (.truncated == null or (.truncated | type == "boolean"))
@@ -484,6 +485,7 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
         attempts: $attempts,
         last_error: null,
         gbrain_document: null,
+        delivered_version: null,
         redactions: ($counts | split("\n") | map(select(length > 0) | split(" ") | {class: .[0], count: (.[1] | tonumber)}) | sort_by(.class)),
         truncated: $truncated,
         captured_bytes: $captured_bytes,
@@ -493,8 +495,17 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
         body: $body
       }') || { rm -f "$counts" "$redacted"; return 2; }
   rm -f "$counts" "$redacted"
+  # A rebuild resets status, gbrain_document and captured_at, so without this
+  # the record would forget that its page had ever been delivered at all - and
+  # a refresh whose first delivery failed could never be told from a first
+  # capture afterwards. The content version the index was last given therefore
+  # survives the rebuild the same way created_at does, and only a landed
+  # delivery moves it.
   if [ -n "$previous" ]; then
-    doc=$(printf '%s' "$doc" | jq --argjson prev "$previous" '.created_at = ($prev.created_at // .created_at)') || return 2
+    doc=$(printf '%s' "$doc" | jq --argjson prev "$previous" '
+      .created_at = ($prev.created_at // .created_at)
+      | .delivered_version = ($prev.delivered_version
+          // (if $prev.status == "captured" then $prev.content_version else null end))') || return 2
   fi
   printf '%s\n' "$doc" > "$out" || return 2
 }
