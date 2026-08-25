@@ -8,6 +8,16 @@
 #     touches the shared settings file for a non-agy task).
 # The end-to-end launch + native-detection path is covered live in
 # tests/fm-agy-smoke.test.sh; here everything is deterministic with fakes.
+#
+# Delivery-verdict cases send a "/"-prefixed message on purpose. fm-send has two
+# data planes: ordinary text becomes a durable steering-inbox record whose exit
+# status reports the RECORD, while a harness-native invocation stays on the typed
+# plane where the atomic `agent prompt` and its confirmed/known-undelivered/
+# unverifiable verdicts live. A plain steer here would exit 0 off the record and
+# assert nothing about the adapter, so these cases name the plane they test.
+# test_ordinary_agy_steer_rings_doorbell_through_atomic_prompt covers the other
+# plane: an ordinary agy steer must still reach the pane through `agent prompt`
+# rather than falling back to typed composer text.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -630,12 +640,12 @@ test_accepted_agy_prompt_is_confirmed() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
   prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
-  append_fake_prompt_receipt "$home" "$harness" "steer message" \
+  append_fake_prompt_receipt "$home" "$harness" "/steer message" \
     || fail "could not prepare prior $harness receipt"
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 0 "$rc" "accepted $harness prompt should be confirmed by the native transcript receipt"
   assert_no_grep '^error:|verdict=' "$err" \
@@ -661,12 +671,12 @@ test_matching_cached_prompt_snapshot_without_receipt_is_unverifiable() {
     "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
   fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
   prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
-  append_fake_prompt_receipt "$home" "$harness" "steer message" \
+  append_fake_prompt_receipt "$home" "$harness" "/steer message" \
     || fail "could not prepare prior $harness receipt"
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_PROMPT_RECEIPT_POLLS=1 FM_HERDR_FAKE_AGENT="$harness" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 3 "$rc" "a matching cached $harness prompt snapshot without a receipt must remain unverifiable"
   assert_contains "$(cat "$err")" "verdict=unverifiable" \
@@ -689,7 +699,7 @@ test_receipted_agy_prompt_transport_failure_is_confirmed() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_PROMPT_AFTER_WRITE=fail \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 0 "$rc" "a receipted $harness prompt must remain confirmed after a transport failure"
   assert_no_grep '^error:|verdict=' "$err" \
@@ -715,13 +725,13 @@ test_concurrent_identical_agy_sends_are_attributed() {
     FM_HERDR_PROMPT_LOCK_NAMESPACE="$case_dir/locks" FM_HERDR_FAKE_REAL_SLEEP=1 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_CONCURRENT=1 \
     FM_HERDR_FAKE_SEND_ID=A \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "same steer" >"$case_dir/a.out" 2>"$case_dir/a.err" &
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/same steer" >"$case_dir/a.out" 2>"$case_dir/a.err" &
   pid_a=$!
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_PROMPT_LOCK_NAMESPACE="$case_dir/locks" FM_HERDR_FAKE_REAL_SLEEP=1 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 FM_HERDR_FAKE_CONCURRENT=1 \
     FM_HERDR_FAKE_SEND_ID=B \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "same steer" >"$case_dir/b.out" 2>"$case_dir/b.err" &
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/same steer" >"$case_dir/b.out" 2>"$case_dir/b.err" &
   pid_b=$!
   wait "$pid_a" || rc_a=$?
   wait "$pid_b" || rc_b=$?
@@ -748,7 +758,7 @@ test_ambiguous_agy_prompt_failure_is_unverifiable() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_RETRIES=2 FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_AFTER_WRITE=fail \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 3 "$rc" "an untyped $harness transport failure must remain unverifiable"
   assert_contains "$(cat "$err")" "verdict=unverifiable" \
@@ -793,7 +803,7 @@ test_identity_mismatch_is_undelivered_and_restores_scout() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$other" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 1 "$rc" "metadata/native identity mismatch on $harness should be undelivered"
   assert_contains "$(cat "$err")" "send failed" \
@@ -819,7 +829,7 @@ test_blocked_agy_send_is_known_undelivered() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 1 "$rc" "blocked $harness target should be known undelivered"
   assert_contains "$(cat "$err")" "send failed" \
@@ -843,7 +853,7 @@ test_rejected_agy_prompt_is_known_undelivered() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_ERROR_CODE="$code" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 1 "$rc" "$code prompt rejection on $harness should be known undelivered"
   assert_contains "$(cat "$err")" "send failed" \
@@ -867,7 +877,7 @@ test_agy_send_requires_server_prompt_capability() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_CAPABILITY_ERROR_CODE=method_not_found \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 1 "$rc" "send to $harness should fail before text when its named server lacks agent.prompt"
   assert_contains "$(cat "$err")" "send failed" \
@@ -899,7 +909,7 @@ test_cached_prompt_snapshot_is_unverifiable() {
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT_AGENT="$prompt_agent" \
     FM_HERDR_FAKE_PROMPT_STATUS="$prompt_status" \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 3 "$rc" "$variant prompt-boundary snapshot on $harness should be unverifiable"
   assert_contains "$(cat "$err")" "verdict=unverifiable" \
@@ -925,7 +935,7 @@ test_genuinely_undelivered_steer_on_composer_supported_harness() {
 
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="claude_code" FM_HERDR_FAKE_COMPOSER='  ❯ unsubmitted text' \
-    "$ROOT/bin/fm-send.sh" "fm-lane-claude" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-claude" "/steer message" >/dev/null 2>"$err"
   rc=$?
   # A composer still holding the text is delivered-unconfirmed, not proven
   # undelivered: the harness may have queued the steer. fm-send reports that as
@@ -1002,7 +1012,7 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
 
   HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
     FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_PROMPT=fail \
-    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "steer message" >/dev/null 2>"$err"
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "/steer message" >/dev/null 2>"$err"
   rc=$?
   expect_code 3 "$rc" "unverifiable send on $harness should exit code 3"
   assert_contains "$(cat "$err")" "text delivery unverifiable on" \
@@ -1014,6 +1024,40 @@ test_unverifiable_send_reports_distinct_wording_and_exit_code() {
   reviewed=$(grep '^decisions_reviewed=' "$home/state/lane-$harness.meta" | tail -1 | cut -d= -f2-)
   [ "$reviewed" = 0 ] || fail "unverifiable $harness scout send restored stale completion"
   pass "unverifiable send on $harness is reported distinctly in wording and exit code"
+}
+
+
+# The doorbell for an ordinary steer is text like any other, so it must take the
+# same atomic path this adapter exists to enforce: cursor and agy are selected by
+# the harness fm-send resolves from task metadata, and a ring that omitted it
+# would silently downgrade these harnesses to the typed composer text this fleet
+# does not trust for them. Asserting the prompt log AND the absence of typed text
+# is what makes that downgrade visible instead of quietly green.
+test_ordinary_agy_steer_rings_doorbell_through_atomic_prompt() {
+  local harness=$1 case_dir home proj wt fakebin err rc
+  case_dir="$TMP_ROOT/send-doorbell-$harness"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"; err="$case_dir/send.err"
+  mkdir -p "$home/state" "$home/data" "$home/projects" "$home/config"
+  fm_git_worktree "$proj" "$wt" "fm/doorbell-$harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/lane-$harness.meta" \
+    "window=default:w1:p1" "backend=herdr" "herdr_session=default" "herdr_pane_id=w1:p1" \
+    "harness=$harness" "kind=ship" "mode=local-only" "yolo=off" "worktree=$wt" "project=$proj"
+  fakebin=$(make_herdr_signal_fakebin "$case_dir/fake" "working")
+  prepare_fake_prompt_receipt "$home" "$harness" || fail "could not prepare $harness receipt fixture"
+
+  HOME="$home" PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_SEND_SETTLE=0 \
+    FM_HERDR_FAKE_AGENT="$harness" FM_HERDR_FAKE_RECEIPT=1 \
+    "$ROOT/bin/fm-send.sh" "fm-lane-$harness" "an ordinary steer" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 0 "$rc" "an ordinary $harness steer is delivered by its durable record"
+  grep -qF 'an ordinary steer' "$home/state/lane-$harness.inbox/001.msg" \
+    || fail "ordinary $harness steer was not durably recorded"
+  [ -s "$case_dir/fake/prompt_log" ] \
+    || fail "the $harness doorbell did not use the atomic prompt"
+  assert_absent "$case_dir/fake/send_text_log" \
+    "the $harness doorbell fell back to separately typed text"
+  pass "an ordinary $harness steer rings its doorbell through the atomic prompt"
 }
 
 test_crew_only_refuses_secondmate agy
@@ -1045,5 +1089,6 @@ test_genuinely_undelivered_steer_on_composer_supported_harness
 test_live_agy_tasks_read_working_in_crew_state agy
 test_idle_unreadable_agy_tasks_read_unknown_in_crew_state agy
 test_unverifiable_send_reports_distinct_wording_and_exit_code agy
+test_ordinary_agy_steer_rings_doorbell_through_atomic_prompt agy
 
 echo "# all fm-agy-adapter tests passed"
