@@ -58,6 +58,14 @@ That second half was added on 2026-08-25 when the inbox plane first collided wit
 [`tests/fm-send-strict.test.sh`](../tests/fm-send-strict.test.sh) pins both planes, including the failure directions, so a future round that changes plane selection fails loudly instead of dropping the gate.
 This divergence went unrecorded from its introduction on 2026-08-12 until 2026-08-25.
 
+### Pre-move crash fixture does not perform the move it simulates crashing before
+
+`tests/fm-backlog-handoff.test.sh`'s pre-move crash case arrived from upstream with a `tasks-axi` stub that kills the handoff and then execs the real `mv` anyway, leaving an orphan that lands the move about a second later.
+Every later assertion that the item is still in the source backlog then holds or fails on how fast the runner is, which is why the case passes locally and failed the fork's CI on `kunchenguid/firstmate#2848`'s first round here.
+The fork's stub exits instead of moving, because the scenario it exists to build is a handoff that died BEFORE its move landed.
+Reproduced deliberately on 2026-08-25 by widening the window with a three-second wait after the simulated crash: the upstream stub fails that case and the fork's passes.
+Upstream will most likely fix this itself, at which point this entry retires in favour of whatever it lands.
+
 ### Watcher restart hand-over
 
 The fork guarantees that `bin/fm-watch-arm.sh --restart` never leaves this home without a live watcher, and never forks a second watcher while the first still holds the lock.

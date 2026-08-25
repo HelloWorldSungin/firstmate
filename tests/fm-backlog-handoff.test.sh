@@ -347,6 +347,11 @@ test_pre_move_crash_does_not_wake_until_move_lands() {
 EOF
   printf '## Queued\n\n## Done\n' > "$sub/data/backlog.md"
   real_tasks=$(command -v tasks-axi)
+  # The scenario is a handoff that died BEFORE its move landed, so this stub must
+  # never perform the move. Killing the handoff and then exec-ing the real mv
+  # would leave an orphan that lands the move about a second later, racing the
+  # rest of this case: every assertion below that the item is still in the source
+  # backlog would then hold or fail purely on how fast the runner is.
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
@@ -354,7 +359,10 @@ case " $* " in
     if [ "${1:-}" = mv ]; then
       handoff_pid=$(ps -o ppid= -p "$PPID" | tr -d '[:space:]')
       kill -KILL "$handoff_pid"
+      # Let the signal land before this stub exits, so the handoff can never
+      # observe an exit status and continue past the crash it is simulating.
       sleep 1
+      exit 1
     fi
     ;;
 esac
