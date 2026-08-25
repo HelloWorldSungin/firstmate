@@ -73,6 +73,19 @@ function ageLabel(ageSeconds) {
   return `${Math.floor(ageSeconds / 86_400)}d ago`;
 }
 
+// The stored-versus-served verdict is replayed from the record the sweep wrote,
+// never re-measured on a poll, so the verdict alone cannot say whether it was
+// measured minutes or weeks ago. A gap repaired by hand keeps reading red until
+// the next sweep completes, and a green from weeks ago reads exactly like one
+// measured just now - so the age travels with the verdict. A home that has
+// never been audited has no observation to age and keeps saying so rather than
+// borrowing one.
+function auditAgeSuffix(observed) {
+  const at = Date.parse(text(observed));
+  if (!Number.isFinite(at)) return "";
+  return ` (audited ${ageLabel((Date.now() - at) / 1000)})`;
+}
+
 // --- the data layer ---------------------------------------------------------
 //
 // The data layer never touches the DOM. Every value below is one observation
@@ -159,8 +172,10 @@ export function buildGBrainHealth(envelope) {
   // every outbox record reads clean. It ranks above pending because a pending
   // item still holds its knowledge and a missing page does not.
   const audit = capture.audit || {};
+  const auditState = stateValue(audit.state, ["ok", "gap", "inconclusive"]);
+  const auditAge = auditAgeSuffix(audit.observed);
   const captureState = capture.enabled === false ? "off"
-    : capture.failed > 0 || audit.state === "gap" ? "degraded"
+    : capture.failed > 0 || auditState === "gap" ? "degraded"
     : capture.pending > 0 ? "pending" : "ready";
   const captureDetail = [
     `${capture.archived ?? 0} archived`,
@@ -168,9 +183,10 @@ export function buildGBrainHealth(envelope) {
     `${capture.failed ?? 0} failed`,
     capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
   ].join(" / ")
-    + (audit.state === "gap" ? ` · ${audit.missing ?? 0} captured document(s) the index no longer serves` : "")
-    + (audit.state === "inconclusive" ? " · the last stored-versus-served audit could not compare the two sides" : "")
-    + (audit.state === "unknown" ? " · no stored-versus-served audit has run yet" : "")
+    + (auditState === "gap" ? ` · ${audit.missing ?? 0} captured document(s) the index no longer serves${auditAge}` : "")
+    + (auditState === "inconclusive" ? ` · the last stored-versus-served audit could not compare the two sides${auditAge}` : "")
+    + (auditState === "ok" ? ` · every captured document is served${auditAge}` : "")
+    + (auditState === "unknown" ? " · no stored-versus-served audit has run yet" : "")
     + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"

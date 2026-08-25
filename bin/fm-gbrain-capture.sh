@@ -54,8 +54,9 @@
 #             report and is not already captured at its current content version.
 #             A task whose durable source changed since its last delivery is
 #             recomposed here and re-delivered to the same page, and counted and
-#             named under refreshed, so a sweep reports drift it corrected
-#             rather than folding it into the ordinary captured count.
+#             named under refreshed once that delivery landed, so a sweep
+#             reports drift it corrected rather than folding it into the
+#             ordinary captured count or claiming a page it never reached.
 #             Restartable: each item is durable and independent, so a run that
 #             stops halfway loses nothing and a rerun resumes.
 #   audit     Compare what the outbox says was captured against what the brain
@@ -572,6 +573,12 @@ EOF
   [ "$remaining" -eq 0 ]
 }
 
+# One owner for the line a session start relays verbatim, so the claim it makes
+# cannot be printed from a place that does not yet know the delivery landed.
+report_refreshed() {  # <task-id>
+  printf 'refreshed %s: the durable source changed since its page was written\n' "$1"
+}
+
 # Restartable by construction: every enqueue and every delivery is its own
 # durable transaction, so a run that is interrupted resumes with no bookkeeping
 # beyond the outbox records themselves.
@@ -590,7 +597,7 @@ cmd_backfill() {
   brain_ready || die "$FM_GBRAIN_CAPTURE_ERROR"
 
   local scanned=0 enqueued=0 captured=0 already=0 refused=0 errors=0 refreshed=0 n=0
-  local dir id raw title doc_id rc item before_version after_version
+  local dir id raw title doc_id rc item before_version after_version drifted
   for dir in "$DATA"/*/; do
     [ -d "$dir" ] || continue
     id=${dir%/}
@@ -637,18 +644,30 @@ cmd_backfill() {
     enqueued=$((enqueued + 1))
     item=$(fm_gbrain_capture_item_read "$DATA" "$doc_id") || item='{}'
     after_version=$(printf '%s' "$item" | jq -r '.content_version // ""')
+    drifted=0
     if [ -n "$before_version" ] && [ "$before_version" != "$after_version" ]; then
-      refreshed=$((refreshed + 1))
-      printf 'refreshed %s: the durable source changed since its page was written\n' "$id"
+      drifted=1
     fi
     # Already captured at this exact content version: a rerun re-delivers
     # nothing, which is what makes the whole sweep cheap to restart.
     if [ "$(printf '%s' "$item" | jq -r '.status // ""')" = captured ]; then
       already=$((already + 1))
+      if [ "$drifted" -eq 1 ]; then
+        refreshed=$((refreshed + 1))
+        report_refreshed "$id"
+      fi
       continue
     fi
+    # Claimed only once the delivery that makes it true has happened: a session
+    # start relays this line verbatim as completed work, so a sweep whose
+    # delivery failed must not say the page is true again while it is still
+    # serving the body the durable source moved away from.
     if process_item "$doc_id" "$seconds" 0 >/dev/null; then
       captured=$((captured + 1))
+      if [ "$drifted" -eq 1 ]; then
+        refreshed=$((refreshed + 1))
+        report_refreshed "$id"
+      fi
     else
       errors=$((errors + 1))
     fi
@@ -823,7 +842,7 @@ cmd_audit() {
     : > "$missing_file"
   elif [ "$missing" -gt 0 ]; then
     state=gap
-    detail="$missing captured document(s) are absent from the active index; recapture them with backfill, or restore them in GBrain if they were deleted deliberately"
+    detail="$missing captured document(s) are absent from the active index; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
   else
     state=ok
     detail="every captured document is served by the active index"

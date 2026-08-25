@@ -123,6 +123,7 @@ The worst case is therefore one interval of staleness rather than forever.
 
 The refresh itself is `backfill`, not a second recomposition path: `backfill` already recomposes each task and re-delivers a changed body to the same page, so a separate path would only be one more thing to drift.
 It now names and counts what it corrected - `refreshed <id>` and a `refreshed=` total - so a sweep reports the drift it closed instead of folding it into the ordinary captured count.
+Both are claims about a delivery rather than about a recomposition, so neither is made until that document reached the index: a run that recomposed a changed body but could not deliver it reports its errors and says nothing about a refresh, because the page is still serving the body the source moved away from.
 `bin/fm-recall.sh` judges the same drift at query time and marks a result stale; that is the read side telling a reader not to trust a page, and this is the write side making the page true again.
 
 ## Captured is not the same as served
@@ -141,7 +142,16 @@ Measured on this fleet, capture reported 291 archived while the index served 288
 It writes its verdict to `state/.gbrain-audit`, and that record is what the operator-facing surfaces replay:
 the GBrain panel's Capture card turns degraded and names the missing count, and a session start relays the same verdict on a `GBRAIN_CAPTURE:` line.
 Neither surface re-measures it, because the dashboard polls continuously and re-opening the index on every poll would put a repeated index read behind a poll that has to stay cheap.
-A home where the audit has never run reports that it has never run, rather than reporting a zero gap nobody measured.
+Because it is replayed rather than re-measured, the Capture card renders how old the observation is beside the verdict: a gap already repaired by hand keeps reading red until the next sweep, and a clean answer measured weeks ago must not read like one measured minutes ago.
+A home where the audit has never run reports that it has never run, rather than reporting a zero gap nobody measured, and has no age to render.
 
 A gap is not automatically a fault: a page deleted deliberately shows up here too.
-Recapture the document with `backfill` if it should still be served, or restore it in GBrain if it was deleted by mistake.
+Recapture the document if it should still be served, or restore it in GBrain if it was deleted by mistake.
+
+Which recapture depends on what the document was captured from, because only one of the two kinds has a durable source to recompose from:
+
+- A task is recomposed from its manifest and report under `data/`, so `backfill` repairs it.
+- A note has no durable source under `data/` at all - `/stow` delivered it and the outbox record is the only copy - so `backfill` walks straight past it and repairs nothing.
+  Re-deliver its stored body with `bin/fm-gbrain-capture.sh process --document <document-id> --force`, taking the document id from `status --json`.
+
+Recapturing the wrong way is how a real gap gets ignored: an advised repair that silently does nothing leaves the same gap reported on every sweep.

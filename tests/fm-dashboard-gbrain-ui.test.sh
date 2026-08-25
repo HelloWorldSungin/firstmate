@@ -273,6 +273,160 @@ const capturePendingEnvelope = {
   equal("capture value when pending > 0", captureCard.value, "pending");
 }
 
+// --- captured is not the same as served -------------------------------------
+//
+// A record marked archived proves the page was accepted once, not that the
+// index still serves it. The stored-versus-served audit is the only thing that
+// can tell the operator otherwise, so a gap has to degrade the card and name
+// how many pages went, even when every outbox count reads clean.
+
+function captureAuditEnvelope(capture) {
+  return {
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      home: "/home/firstmate",
+      configured: true,
+      version: "v0.42.69.0",
+      index: { state: "ok", detail: "ok" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: {
+        enabled: true, archived: 291, pending: 0, failed: 0, unreadable: 0, truncated: 0,
+        last_capture_at: null, last_error: null, ...capture,
+      },
+      maintenance: { state: "ready", detail: null },
+    },
+  };
+}
+
+// An ISO observation a fixed distance in the past, so the assertion measures
+// the arithmetic rather than the calendar.
+function observedSecondsAgo(seconds) {
+  return new Date(Date.now() - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "gap", stored: 291, active: 288, missing: 3,
+      observed: observedSecondsAgo(90),
+      detail: "3 captured document(s) are absent from the active index",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("capture tone when the audit found a gap", captureCard.tone, "red");
+  equal("capture value when the audit found a gap", captureCard.value, "degraded");
+  check("capture detail names the missing count",
+    captureCard.detail.includes("3 captured document(s) the index no longer serves"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("a gap degrades a card whose outbox counts are clean", captureCard.detail.includes("0 failed"));
+}
+
+{
+  // pending and a gap at once: a pending item still holds its knowledge and a
+  // missing page does not, so the gap is what the operator has to read first.
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    pending: 4,
+    audit: {
+      state: "gap", stored: 291, active: 290, missing: 1,
+      observed: observedSecondsAgo(90), detail: "1 captured document is absent",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a gap outranks pending in the tone", captureCard.tone, "red");
+  equal("a gap outranks pending in the value", captureCard.value, "degraded");
+  check("a gap keeps the pending count visible", captureCard.detail.includes("4 pending"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("a gap alongside pending still names the missing count",
+    captureCard.detail.includes("1 captured document(s) the index no longer serves"));
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "inconclusive", stored: 291, active: null, missing: 0,
+      observed: observedSecondsAgo(90), detail: "the index could not be listed",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  check("an inconclusive audit says the two sides were not compared",
+    captureCard.detail.includes("could not compare the two sides"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an inconclusive audit is not rendered as a gap",
+    !captureCard.detail.includes("the index no longer serves"));
+  equal("an inconclusive audit does not degrade the card by itself", captureCard.value, "ready");
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    truncated: 2,
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a clean audit leaves the card ready", captureCard.value, "ready");
+  check("a clean audit says every captured document is served",
+    captureCard.detail.includes("every captured document is served"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("cut bodies are counted on the card", captureCard.detail.includes("2 body(ies) cut at the capture cap"));
+}
+
+// --- the replayed verdict carries its own age -------------------------------
+//
+// The verdict is replayed from the record the sweep wrote, never re-measured on
+// a poll. So a gap repaired by hand keeps reading red until the next sweep, and
+// a green measured weeks ago would otherwise read exactly like one measured
+// minutes ago. The age is what tells those apart.
+
+{
+  const fresh = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  const stale = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(14 * 86_400), detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  check("a freshly measured verdict reads as minutes old", fresh.detail.includes("(audited 1m ago)"),
+    `received ${JSON.stringify(fresh.detail)}`);
+  check("a weeks-old verdict reads as weeks old", stale.detail.includes("(audited 14d ago)"),
+    `received ${JSON.stringify(stale.detail)}`);
+  check("two verdicts of the same state are told apart by their age", fresh.detail !== stale.detail);
+}
+
+{
+  const gap = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "gap", stored: 291, active: 288, missing: 3,
+      observed: observedSecondsAgo(2 * 3_600), detail: "3 absent",
+    },
+  })).cards.find((c) => c.label === "Capture");
+  check("a replayed gap says when it was measured", gap.detail.includes("(audited 2h ago)"),
+    `received ${JSON.stringify(gap.detail)}`);
+}
+
+{
+  // A home that has never been audited has no observation to age, and must keep
+  // saying it has never run rather than borrowing an age from anywhere.
+  const never = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null, detail: "no audit yet" },
+  })).cards.find((c) => c.label === "Capture");
+  check("an unaudited home says no audit has run", never.detail.includes("no stored-versus-served audit has run yet"),
+    `received ${JSON.stringify(never.detail)}`);
+  check("an unaudited home renders no age at all", !never.detail.includes("audited "),
+    `received ${JSON.stringify(never.detail)}`);
+  check("an unaudited home is never rendered as a clean audit",
+    !never.detail.includes("every captured document is served"));
+
+  // An unreadable observation is the same case: no age rather than a bad one.
+  const unreadable = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: "not-a-timestamp", detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  check("an unparseable observation renders no age", !unreadable.detail.includes("audited unknown"),
+    `received ${JSON.stringify(unreadable.detail)}`);
+  check("an unparseable observation keeps its verdict", unreadable.detail.includes("every captured document is served"));
+}
+
 // --- the last successful capture is readable as an age ---------------------
 //
 // The panel exists to surface the last successful capture, so the age has to

@@ -799,6 +799,52 @@ test_a_report_edited_after_capture_is_refreshed_by_the_sweep() {
   pass "a report edited after capture is refreshed onto the same page"
 }
 
+# A `refreshed <task>` line is relayed verbatim by a session start and read
+# there as completed work - the page a search returns is true again. So it is a
+# claim about a delivery, not about a recomposition, and a sweep that could not
+# deliver must not make it. The whole point of this change is a record that does
+# not lie about its own state.
+test_a_sweep_that_could_not_deliver_never_claims_it_refreshed_a_page() {
+  local home page out
+  home=$(make_home sweep-refused)
+  seed_manifest "$home" scout-a "Investigate the drain"
+  printf '# Report\n\nthe cache key is off by one\n' | seed_report "$home" scout-a
+  cap "$home" task scout-a --require-brain >/dev/null || fail "capture must succeed"
+  page=$(find "$home/pages" -name '*.md' | head -1)
+  [ -n "$page" ] || fail "the first capture must have produced a page"
+
+  printf '\nVOIDED: that finding was wrong.\n' >> "$home/data/scout-a/report.md"
+  fake_gbrain "$home" fail
+  out=$(cap "$home" sweep --force 2>&1) && fail "a sweep that could not deliver must exit non-zero"
+  printf '%s' "$out" | grep -q '^refreshed ' \
+    && fail "a sweep whose delivery failed must not claim it refreshed a page: $out"
+  grep -q 'VOIDED' "$page" \
+    && fail "the page must still be serving the stale body, which is what makes the claim false"
+  printf '%s' "$out" | grep -q 'reported errors' \
+    || fail "a sweep that could not deliver must still report the failure: $out"
+
+  # The summary total is the same claim in another form, so it has to agree
+  # with the lines: nothing delivered, nothing counted as corrected.
+  out=$(cap "$home" backfill 2>&1)
+  printf '%s' "$out" | grep -q '^refreshed ' && fail "backfill must not name an undelivered refresh: $out"
+  printf '%s' "$out" | grep -q 'refreshed=0' || fail "the refreshed total must count only deliveries: $out"
+
+  # Nothing is lost by the silence: the next sweep that can deliver still
+  # carries the edit onto the same page.
+  fake_gbrain "$home" ok
+  cap "$home" sweep --force >/dev/null 2>&1 || true
+  grep -q 'VOIDED' "$page" || fail "a sweep that could deliver must carry the edit onto the page"
+
+  # The positive counterpart, on a drift this sweep both detected and delivered.
+  printf '\nSUPERSEDED: the drain was a red herring.\n' >> "$home/data/scout-a/report.md"
+  out=$(cap "$home" sweep --force 2>&1) && fail "a sweep that refreshed a page must exit non-zero"
+  printf '%s' "$out" | grep -q 'refreshed scout-a' \
+    || fail "a delivered refresh must name what it corrected: $out"
+  grep -q 'SUPERSEDED' "$page" || fail "a named refresh must be true on the page it names"
+  [ "$(pages_count "$home")" = 1 ] || fail "a refresh must update the page, not add one"
+  pass "a sweep names a refreshed page only once the delivery landed"
+}
+
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain() {
   local home out
   home=$(make_home sweep-interval)
@@ -846,6 +892,7 @@ test_a_truncated_body_is_marked_rather_than_left_looking_complete
 test_the_audit_names_a_captured_document_the_index_no_longer_serves
 test_an_index_listing_that_could_not_be_read_is_not_reported_as_a_gap
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep
+test_a_sweep_that_could_not_deliver_never_claims_it_refreshed_a_page
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain
 test_status_reports_archived_pending_skipped_and_redacted
 test_a_note_goes_through_the_same_path
