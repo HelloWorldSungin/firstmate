@@ -783,6 +783,22 @@ test_an_unreadable_release_shape_is_a_check_failure() {
   pass "an unreadable release shape is named in its tool's check failure"
 }
 
+test_an_equal_unreadable_release_prefix_is_a_check_failure() {
+  local home work out report unreadable
+  home=$(make_home git-release-unreadable-equal)
+  work=$(git_release_fixture git-release-unreadable-equal-repo)
+  unreadable=v1.2.x
+  release_tag_remote_only "$work" "$unreadable"
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin check failed" "an unreadable release suffix with an equal known prefix fell through as a clean check"
+  assert_contains "$report" "origin release tag $unreadable could not be interpreted" "the equal-prefix check failure did not name the unreadable release tag"
+  assert_not_contains "$report" "update available" "an unreadable release suffix with an equal known prefix was treated as an available update"
+  pass "an unreadable tag with an equal known prefix suppresses the release verdict"
+}
+
 test_an_older_unreadable_release_shape_is_ignored() {
   local home work out
   home=$(make_home git-release-unreadable-older)
@@ -1360,6 +1376,7 @@ test_non_semver_tags_are_not_treated_as_releases
 test_tags_without_version_information_are_ignored
 test_large_release_components_use_arbitrary_width_ordering
 test_an_unreadable_release_shape_is_a_check_failure
+test_an_equal_unreadable_release_prefix_is_a_check_failure
 test_an_older_unreadable_release_shape_is_ignored
 test_prerelease_tags_are_not_treated_as_releases
 test_a_repository_with_no_tags_is_silent

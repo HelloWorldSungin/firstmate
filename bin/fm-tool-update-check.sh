@@ -566,6 +566,22 @@ release_version_newer() {
   return 1
 }
 
+release_prefix_could_outrank() {
+  local prefix=$1 version=$2 i status
+  local -a prefix_parts=() version_parts=()
+  IFS=. read -r -a prefix_parts <<< "$prefix"
+  IFS=. read -r -a version_parts <<< "$version"
+  for ((i = 0; i < ${#prefix_parts[@]}; i++)); do
+    release_component_order "${prefix_parts[i]}" "${version_parts[i]:-0}"
+    status=$?
+    case "$status" in
+      "$RELEASE_ORDER_GREATER") return 0 ;;
+      "$RELEASE_ORDER_LESS") return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # One bounded read-only git probe. The budget check lives here rather than in the
 # callers, so no probe can be issued past the sweep deadline whatever a caller
 # does, and the budget only has to leave room for the one probe that was already
@@ -730,7 +746,7 @@ newest_release_tag() {
   budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
   for ((i = 0; i < ${#unreadable_names[@]}; i++)); do
     budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
-    if [ -z "$best_version" ] || release_version_newer "${unreadable_prefixes[i]}" "$best_version"; then
+    if [ -z "$best_version" ] || release_prefix_could_outrank "${unreadable_prefixes[i]}" "$best_version"; then
       printf '%s\n' "${unreadable_names[i]}"
       return "$RELEASE_TAG_UNREADABLE"
     fi
