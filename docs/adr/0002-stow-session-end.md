@@ -34,9 +34,30 @@ A maintainer can repeat the measurements in their own home by setting `FM_HOME` 
 FM_HOME="${FM_HOME:?set FM_HOME to the operational home being measured}" \
   bin/fm-startup-memory-budget.sh report
 
-rg -n '^## 2026-08-(15|16|18|19|20|25|26) stow$' \
-  "$FM_HOME/data/memory-archive.md"
-stat -c '%y %n' "$FM_HOME/config/stow-pass-horizon"
+awk '
+  $1 == "##" && $3 == "stow" &&
+  $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ {
+    passes++
+    per_day[$2]++
+    if (first == "" || $2 < first) first = $2
+    if (last == "" || $2 > last) last = $2
+  }
+  END {
+    repeated_days = 0
+    for (day in per_day) if (per_day[day] > 1) repeated_days++
+    if (first == "") first = "none"
+    if (last == "") last = "none"
+    printf "passes=%d first=%s last=%s days_with_multiple_passes=%d\n", \
+      passes, first, last, repeated_days
+  }
+' "$FM_HOME/data/memory-archive.md"
+if [ -e "$FM_HOME/config/stow-pass-horizon" ]; then
+  printf 'measured_at=%s pass_horizon=enabled\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+else
+  printf 'measured_at=%s pass_horizon=disabled\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+fi
 
 FM_HOME="$FM_HOME" bin/fm-gbrain-capture.sh status --json |
   jq '{totals,
@@ -47,11 +68,63 @@ FM_HOME="$FM_HOME" bin/fm-gbrain-capture.sh status --json |
            (.slug | test("^(learnings-pruned-|captain-reference-pruned-)")))] |
          length)}'
 
-rg -n '2026-08-26:.*~40.*three' "$FM_HOME/data/learnings.md"
+snapshot=$(
+  FM_HOME="$FM_HOME" bin/fm-bearings-snapshot.sh --json \
+    --all-in-flight --all-decisions --all-secondmates --all-landed \
+    --all-queued --all-recorded-prs --all-unhealthy \
+    --fields bodies,paths,endpoints
+)
+printf '%s\n' "$snapshot" | jq '
+  def card_count:
+    ((.decisions_open // []) | length) +
+    ((.in_flight // []) | length) +
+    ((.landed // []) | length) +
+    ((.gates // []) | length);
+  {measured_at: .generated,
+   card_count: card_count,
+   cards: {captains_call: .decisions_open,
+           underway: .in_flight,
+           recently_landed: .landed,
+           charted_next: .gates},
+   bodies,
+   recorded_prs,
+   endpoints}'
 ```
 
 These commands intentionally read the selected home's private records in place and do not make those records part of this repository.
 Their output must be interpreted as a new dated measurement rather than expected to equal the counts above forever.
+The pass command enumerates every dated stow heading instead of selecting the dates observed in this ADR.
+
+The record-rot measurement is a judgmental heartbeat review rather than a string count.
+Review every card emitted by the final command, refresh any suspicious worker or PR through `bin/fm-crew-state.sh <task-id>` or `bin/fm-pr-status.sh refresh <task-id>`, and consult the stronger owner named by a non-task premise.
+Count a dead premise only when that live owner contradicts an actionable premise on the card; an unavailable or inconclusive owner is not a contradiction.
+After reviewing all `card_count` cards, run the following tally command and enter the number of contradictions found:
+
+```sh
+cards_reviewed=$(printf '%s\n' "$snapshot" | jq '
+  ((.decisions_open // []) | length) +
+  ((.in_flight // []) | length) +
+  ((.landed // []) | length) +
+  ((.gates // []) | length)')
+printf 'dead premises: ' >&2
+IFS= read -r dead_premises
+case "$dead_premises" in
+  ''|*[!0-9]*) printf 'dead premises must be a whole number\n' >&2; exit 2 ;;
+esac
+[ "$dead_premises" -le "$cards_reviewed" ] || {
+  printf 'dead premises cannot exceed cards reviewed\n' >&2
+  exit 2
+}
+jq -n \
+  --arg measured_at "$(printf '%s\n' "$snapshot" | jq -r '.generated')" \
+  --argjson cards_reviewed "$cards_reviewed" \
+  --argjson dead_premises "$dead_premises" \
+  '{measured_at: $measured_at,
+    cards_reviewed: $cards_reviewed,
+    dead_premises: $dead_premises}'
+```
+
+The snapshot command is local-only because it omits `--include-prs`; any targeted PR refresh belongs to the heartbeat review and not to `/stow`.
 
 ## Decision
 
