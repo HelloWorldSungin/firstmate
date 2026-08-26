@@ -10,115 +10,27 @@ The captain described the actual ritual on 2026-08-26: "when the firstmate sessi
 The internal skill currently combines session knowledge capture, open-record persistence, a complete startup-memory curation pass, a primary-to-secondmate cascade, and a reset-safety receipt.
 Its trigger also permits periodic mid-session use.
 
-The primary home's startup memory is exactly full.
-`bin/fm-startup-memory-budget.sh report` measured 7,500 estimated tokens against an effective budget of 7,500 on 2026-08-26.
+The primary home's startup memory was exactly full at observation time.
+On 2026-08-26 in the primary home, `bin/fm-startup-memory-budget.sh report` reported 7,500 estimated tokens against an effective budget of 7,500.
 Every new startup-memory admission must therefore displace, consolidate, or offload something.
 
-The home stows frequently.
-`data/memory-archive.md` contains eight dated pass headings from 2026-08-15 through 2026-08-26, including two passes on 2026-08-19.
-The `config/stow-pass-horizon` flag was enabled on 2026-08-26, so the current memory contract now advances decay by both wall-clock age and unreinforced curation passes.
+The primary home's cold archive shows repeated archival activity, not total stow cadence.
+On 2026-08-26 in the primary home, inspection of `data/memory-archive.md` counted eight dated archival-pass headings from 2026-08-15 through 2026-08-26, including two headings dated 2026-08-19.
+The stow contract creates such a heading only when a pass archives an entry, so eight is a lower bound on full passes rather than a pass-cadence measurement.
+No durable per-pass ledger was available, and this ADR makes no claim about total stow cadence.
+On 2026-08-26 in the primary home, `config/stow-pass-horizon` was observed present, so the current memory contract advances decay by both wall-clock age and unreinforced curation passes.
 
 The brain and startup memory serve different retrieval moments.
-The capture outbox held 302 archived documents on 2026-08-26, including 41 notes and 261 task records.
-Thirty of the 41 notes use the `learnings-pruned-*` or `captain-reference-pruned-*` naming paths, which demonstrates that `/stow` currently feeds the brain mainly when knowledge leaves startup memory.
+On 2026-08-26 in the primary home, the capture outbox inventory exposed by `bin/fm-gbrain-capture.sh status --json` counted 302 archived documents: 41 notes and 261 task records.
+That same dated primary-home inventory counted 30 of the 41 notes with a `source.id` in the `learnings-pruned-*` or `captain-reference-pruned-*` families, which demonstrates that `/stow` currently feeds the brain mainly when knowledge leaves startup memory.
 The brain has no aggregate startup-style token allowance, while each captured body is independently bounded and redacted by the capture pipeline.
 The dashboard's Knowledge page provides bounded, read-only search over the resulting corpus.
 
-### Private-home evidence and reproduction
+### Private-home evidence boundary
 
-All operational-home measurements in this ADR are dated 2026-08-26 and are evidence only of that date.
-The underlying `data/`, `state/`, and `config/` content is captain-private and gitignored, so this shared ADR records only dates, counts, shapes, and commands rather than copying a replay snapshot or any record body.
-A maintainer can repeat the measurements in their own home by setting `FM_HOME` to that home's absolute path and running the following commands from the tracked Firstmate code root:
-
-```sh
-FM_HOME="${FM_HOME:?set FM_HOME to the operational home being measured}" \
-  bin/fm-startup-memory-budget.sh report
-
-awk '
-  $1 == "##" && $3 == "stow" &&
-  $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ {
-    passes++
-    per_day[$2]++
-    if (first == "" || $2 < first) first = $2
-    if (last == "" || $2 > last) last = $2
-  }
-  END {
-    repeated_days = 0
-    for (day in per_day) if (per_day[day] > 1) repeated_days++
-    if (first == "") first = "none"
-    if (last == "") last = "none"
-    printf "passes=%d first=%s last=%s days_with_multiple_passes=%d\n", \
-      passes, first, last, repeated_days
-  }
-' "$FM_HOME/data/memory-archive.md"
-if [ -e "$FM_HOME/config/stow-pass-horizon" ]; then
-  printf 'measured_at=%s pass_horizon=enabled\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-else
-  printf 'measured_at=%s pass_horizon=disabled\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-fi
-
-FM_HOME="$FM_HOME" bin/fm-gbrain-capture.sh status --json |
-  jq '{totals,
-       by_kind: (.documents | group_by(.source.kind) |
-         map({kind: .[0].source.kind, count: length})),
-       pruning_notes: ([.documents[] |
-         select(.source.kind == "note" and
-           (.source.id | test("^(learnings-pruned-|captain-reference-pruned-)")))] |
-         length)}'
-
-snapshot=$(
-  FM_HOME="$FM_HOME" bin/fm-bearings-snapshot.sh --json \
-    --all-in-flight --all-decisions --all-secondmates --all-landed \
-    --all-queued --all-recorded-prs --all-unhealthy \
-    --fields bodies,paths,endpoints
-)
-review=$(printf '%s\n' "$snapshot" | jq '
-  {measured_at: .generated,
-   cards: {captains_call: (.decisions_open // []),
-           underway: (.in_flight // []),
-           recently_landed: (.landed // []),
-           charted_next: (.gates // []),
-           secondmate_state_rows: [(.secondmates // [])[] |
-             select(.state == "externally_held" or .state == "unknown")]},
-   bodies,
-   recorded_prs,
-   endpoints}
-  | .card_count = ([.cards[] | .[]] | length)')
-printf '%s\n' "$review" | jq .
-```
-
-These commands intentionally read the selected home's private records in place and do not make those records part of this repository.
-Their output must be interpreted as a new dated measurement rather than expected to equal the counts above forever.
-The pass command enumerates every dated stow heading instead of selecting the dates observed in this ADR.
-
-The record-rot measurement is a judgmental heartbeat review rather than a string count.
-Review every card emitted by the final command, refresh any suspicious worker or PR through `bin/fm-crew-state.sh <task-id>` or `bin/fm-pr-status.sh refresh <task-id>`, and consult the stronger owner named by a non-task premise.
-Count a dead premise only when that live owner contradicts an actionable premise on the card; an unavailable or inconclusive owner is not a contradiction.
-After reviewing all `card_count` cards, run the following tally command and enter the number of contradictions found:
-
-```sh
-cards_reviewed=$(printf '%s\n' "$review" | jq '.card_count')
-printf 'dead premises: ' >&2
-IFS= read -r dead_premises
-case "$dead_premises" in
-  ''|*[!0-9]*) printf 'dead premises must be a whole number\n' >&2; exit 2 ;;
-esac
-[ "$dead_premises" -le "$cards_reviewed" ] || {
-  printf 'dead premises cannot exceed cards reviewed\n' >&2
-  exit 2
-}
-jq -n \
-  --arg measured_at "$(printf '%s\n' "$review" | jq -r '.measured_at')" \
-  --argjson cards_reviewed "$cards_reviewed" \
-  --argjson dead_premises "$dead_premises" \
-  '{measured_at: $measured_at,
-    cards_reviewed: $cards_reviewed,
-    dead_premises: $dead_premises}'
-```
-
-The snapshot command is local-only because it omits `--include-prs`; any targeted PR refresh belongs to the heartbeat review and not to `/stow`.
+Each operational observation in this ADR names what was counted, its source, its date, and the primary home in which it was observed.
+The underlying `data/`, `state/`, and `config/` content is captain-private and gitignored, so this shared ADR records only those dates, counts, shapes, and source names rather than copying a replay snapshot, record body, or configuration content.
+The observations establish the design context on 2026-08-26 and are not claims about another home or a later date.
 
 ## Decision
 
@@ -198,32 +110,13 @@ Advancing it would record an evaluation that never happened.
 
 #### Dated portability check
 
-The execution-path selector does not depend on a cross-harness context-pressure reading because Firstmate exposes no such shared adapter contract as of 2026-08-26.
-The check resolved and read the tracked adapter variants for Claude, Codex, OpenCode, Pi and pi-signed, Grok, Kimi, and Cursor with `bin/fm-harness-adapter-doc.sh`.
-It searched the repository's primary session, compaction, and adapter surfaces for context-window, remaining-token, usage, and compaction signals.
-It also searched `--help` on the installed Claude Code 2.1.246, Codex CLI 0.149.1, OpenCode 1.18.16, Pi 0.84.2, and Cursor Agent CLI 2026.08.25-3e8eec8 binaries.
+The execution-path selector does not depend on a cross-harness context-pressure reading because a 2026-08-26 portability review in the primary home found no such shared Firstmate adapter contract.
+That review resolved and read the tracked adapter variants for Claude, Codex, OpenCode, Pi and pi-signed, Grok, Kimi, and Cursor through `bin/fm-harness-adapter-doc.sh`.
+It inspected the tracked primary-session, compaction, and adapter surfaces for context-window, remaining-token, usage, and compaction signals.
+It also inspected the installed-help surfaces of Claude Code 2.1.246, Codex CLI 0.149.1, OpenCode 1.18.16, Pi 0.84.2, and Cursor Agent CLI 2026.08.25-3e8eec8.
 Grok and Kimi were not installed in this worktree's environment, so their current tracked variants were the checked surfaces.
 The review found product-specific configuration or display facts, including Claude's auto-compaction setting and Kimi's rendered context percentage, but no Firstmate helper or adapter contract that reports comparable live context pressure across all supported primary harnesses.
-A future portability review repeats those resolver, repository-search, and installed-help checks rather than treating this dated absence as permanent.
-The exact reproduction commands are:
-
-```sh
-for harness in claude codex opencode pi pi-signed grok kimi cursor; do
-  bin/fm-harness-adapter-doc.sh --print "$harness"
-done
-
-rg -n -i 'context[- ]?window|remaining[- ]?token|compaction|usage' \
-  AGENTS.md docs bin .agents/skills
-
-for cli in claude codex opencode pi cursor-agent; do
-  "$cli" --version
-  "$cli" --help
-done
-
-for cli in grok kimi; do
-  command -v "$cli" || true
-done
-```
+This is a dated absence observation, not a permanent claim about later tracked adapters or installed harness releases.
 
 ### D4. `/stow` does not reconcile durable records against live reality
 
@@ -232,7 +125,8 @@ It files records that do not yet exist and corrects records this session already
 When the correction requires a judgment the session cannot make, it leaves the record unchanged and persists the question through the existing owner.
 
 Record rot is a measured problem rather than a reason to widen `/stow`.
-The primary home's `data/learnings.md` records that a 2026-08-26 review of roughly 40 board cards found three dead premises.
+On 2026-08-26 in the primary home, a manual review inspected every card then visible on the rendered Bearings board across Captain's Call, Recently Landed, Underway, and Charted Next: approximately 40 cards, with three dead premises recorded in `data/learnings.md`.
+The inspected population was the board as rendered at that moment, excluding suppressed deferred or superseded rows and completions outside its bounded current Recently Landed baseline.
 The check belongs after the handoff gap, where it can observe the state the new session will act on, rather than immediately before a gap in which that state can change again.
 
 Existing owners retain the concern.
@@ -304,7 +198,7 @@ It would also leave the relationship between the curation receipt and the handof
 
 Rejected.
 That model makes deletion the brain's admission trigger and leaves session-produced retrieval knowledge uncaptured until memory pressure happens to evict it.
-The measured corpus shows the effect: 30 of 41 existing notes arrived through the two pruning name families.
+The 2026-08-26 primary-home capture-outbox observation shows the effect: 30 of 41 existing notes arrived through the two pruning source-id families.
 
 ### Capture the session as a journal
 
@@ -327,7 +221,7 @@ Explicit invocation intent is both portable and authoritative.
 ### Make every invocation full
 
 Rejected.
-Two passes occurred on 2026-08-19, so mid-session use is observed rather than hypothetical.
+The current trigger explicitly permits periodic mid-session use, so checkpoint use is part of the supported contract rather than an inference from archive frequency.
 Charging a cascade and complete memory evaluation to a deliberate checkpoint would make that use unnecessarily expensive.
 
 ### Reconcile repository and forge reality before reset
