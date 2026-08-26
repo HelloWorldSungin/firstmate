@@ -1113,7 +1113,7 @@ NO_MISTAKES_MIN=1.31.2
 # GATE: Raise a floor only after that version is confirmed installed on every home it applies to.
 # A floor above what a machine has installed turns that machine's session start into a MISSING diagnostic and disables dispatch-profile resolution.
 # The target and gate are reconciled by raising a floor only after installation, because installed is what permits the raise even when latest is what it aims at.
-# This batch applied that gate by holding back the quota-axi floor bump until the tool was installed everywhere.
+# The captain's approval for this batch deferred the quota-axi floor until that tool was installed everywhere; it then was, so this batch raised it - the gate deciding timing rather than blocking the bump.
 # A floor is not the minimum feature-introduced version.
 # Never lower a floor to the earliest release that happens to satisfy some depended-on behavior.
 # The tasks-axi feature probes are an independent defense-in-depth concern, not part of its floor.
