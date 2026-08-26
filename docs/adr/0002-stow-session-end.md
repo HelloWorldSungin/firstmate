@@ -6,7 +6,7 @@
 
 ## Context
 
-The captain described the actual ritual on 2026-08-26: "when the firstmate session context is filled up, I run the stow skill then clear the session."
+The home operator invokes the pass near-daily at session end, immediately before clearing context.
 The internal skill currently combines session knowledge capture, open-record persistence, a complete startup-memory curation pass, a primary-to-secondmate cascade, and a reset-safety receipt.
 Its trigger also permits periodic mid-session use.
 
@@ -37,7 +37,7 @@ The observations establish the design context on 2026-08-26 and are not claims a
 ### D1. One internal skill owns the handoff
 
 The internal `/stow` skill remains the single owner of both session handoff and startup-memory curation.
-It is redefined around the end-of-session transaction the captain actually invokes before clearing context.
+It is redefined around that end-of-session transaction.
 Startup-memory curation and the primary home's secondmate cascade remain phases inside that one owner.
 They do not become a second user-facing skill or command whose invocation order a future session must remember.
 The full path runs the existing complete startup-memory pass and the primary home's cascade rather than weakening either contract.
@@ -46,7 +46,7 @@ The same owner must also support real mid-session use without charging every inv
 The path-selection signal and the guarantees of that lighter path are decided separately below.
 
 This keeps the reset-safety claim under one contract.
-A split would make the claim depend on coordination between two skills and would expand the captain's requested redefinition into a second command.
+A split would make the claim depend on coordination between two skills and would expand the scoped redefinition into a second command.
 
 ### D2. Capture retrieval-worthy session knowledge before memory projection
 
@@ -91,7 +91,7 @@ An absent or ambiguous signal selects full.
 Neither path runs automatically through a daemon or hook.
 Both remain captain-invoked uses of the skill.
 
-This follows the interview's accepted decision that the explicit invocation supplies the pacing signal.
+The explicit invocation supplies the pacing signal.
 The worker does not self-assess context pressure.
 
 The light path captures and routes the session's retrieval-worthy findings under D2.
@@ -111,11 +111,10 @@ Advancing it would record an evaluation that never happened.
 #### Dated portability check
 
 The execution-path selector does not depend on a cross-harness context-pressure reading because a 2026-08-26 portability review in the primary home found no such shared Firstmate adapter contract.
-That review resolved and read the tracked adapter variants for Claude, Codex, OpenCode, Pi and pi-signed, Grok, Kimi, and Cursor through `bin/fm-harness-adapter-doc.sh`.
-It inspected the tracked primary-session, compaction, and adapter surfaces for context-window, remaining-token, usage, and compaction signals.
-It also inspected the installed-help surfaces of Claude Code 2.1.246, Codex CLI 0.149.1, OpenCode 1.18.16, Pi 0.84.2, and Cursor Agent CLI 2026.08.25-3e8eec8.
-Grok and Kimi were not installed in this worktree's environment, so their current tracked variants were the checked surfaces.
-The review found product-specific configuration or display facts, including Claude's auto-compaction setting and Kimi's rendered context percentage, but no Firstmate helper or adapter contract that reports comparable live context pressure across all supported primary harnesses.
+That review read nine tracked primary-harness adapter variants through `bin/fm-harness-adapter-doc.sh`.
+It inspected the tracked primary-session, compaction, and adapter surfaces for context-window, remaining-token, usage, and compaction signal shapes.
+It also inspected five installed harness help surfaces and four tracked-only adapter surfaces.
+The inspected surfaces exposed product-specific configuration or display facts but no Firstmate helper or adapter contract that reports comparable live context pressure across all nine supported primary harness variants.
 This is a dated absence observation, not a permanent claim about later tracked adapters or installed harness releases.
 
 ### D4. `/stow` does not reconcile durable records against live reality
@@ -215,7 +214,7 @@ The always-loaded projection therefore remains directly actionable.
 ### Infer mode from harness context pressure
 
 Rejected.
-No common Firstmate adapter contract exposes a comparable live reading, and the captain has already assigned handoff pacing to firstmate rather than to worker self-assessment.
+No common Firstmate adapter contract exposes a comparable live reading, and explicit invocation is the authoritative handoff-pacing signal rather than worker self-assessment.
 Explicit invocation intent is both portable and authoritative.
 
 ### Make every invocation full
