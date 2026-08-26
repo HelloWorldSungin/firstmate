@@ -720,18 +720,29 @@ test_release_versions_with_different_component_counts_are_ordered() {
 
 test_non_semver_tags_are_not_treated_as_releases() {
   local home work out
-  # A legacy-shaped tag with a larger dotted number must not win, and must not
-  # crash the probe. The real marketplace carries mattpocock-skills@1.0.0.
+  # A legacy-shaped tag must not override a newer stable release or crash the
+  # probe. The real marketplace carries mattpocock-skills@1.0.0.
   home=$(make_home git-release-legacy)
-  work=$(git_fixture git-release-legacy-repo)
-  git -C "$work" tag -a v0.9.0 -m v0.9.0
-  git -C "$work" push -q origin v0.9.0
+  work=$(git_release_fixture git-release-legacy-repo)
   release_tag_remote_only "$work" 'mattpocock-skills@1.0.0'
   write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
   out="$home/out.txt"
   run_check "$home" "$PATH" "$out"
   [ ! -s "$out" ] || fail "a non-semver tag was treated as a newer release: $(cat "$out")"
   pass "a non-semver tag is skipped rather than treated as the newest release"
+}
+
+test_tags_without_version_information_are_ignored() {
+  local home work out
+  home=$(make_home git-release-labels)
+  work=$(git_release_fixture git-release-labels-repo)
+  release_tag_remote_only "$work" latest
+  release_tag_remote_only "$work" stable
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "a tag with no version information affected the release verdict: $(cat "$out")"
+  pass "tags without version information are ignored"
 }
 
 test_large_release_components_use_arbitrary_width_ordering() {
@@ -770,6 +781,20 @@ test_an_unreadable_release_shape_is_a_check_failure() {
   assert_contains "$report" "origin release tag $unreadable could not be interpreted" "the check failure did not name the unreadable release tag"
   assert_not_contains "$report" "update available" "an unreadable release shape was treated as an available update"
   pass "an unreadable release shape is named in its tool's check failure"
+}
+
+test_an_older_unreadable_release_shape_is_ignored() {
+  local home work out
+  home=$(make_home git-release-unreadable-older)
+  work=$(git_fixture git-release-unreadable-older-repo)
+  git -C "$work" tag -a v2.0 -m v2.0
+  git -C "$work" push -q origin v2.0
+  release_tag_remote_only "$work" v1.x
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "an unreadable tag below the matching release suppressed the verdict: $(cat "$out")"
+  pass "an unreadable tag that cannot outrank the newest release is ignored"
 }
 
 test_prerelease_tags_are_not_treated_as_releases() {
@@ -1332,8 +1357,10 @@ test_a_newer_release_tag_is_reported_as_update_available
 test_release_tags_are_ordered_by_version_not_lexically
 test_release_versions_with_different_component_counts_are_ordered
 test_non_semver_tags_are_not_treated_as_releases
+test_tags_without_version_information_are_ignored
 test_large_release_components_use_arbitrary_width_ordering
 test_an_unreadable_release_shape_is_a_check_failure
+test_an_older_unreadable_release_shape_is_ignored
 test_prerelease_tags_are_not_treated_as_releases
 test_a_repository_with_no_tags_is_silent
 test_an_unanswered_release_probe_is_a_check_failure

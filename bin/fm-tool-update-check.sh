@@ -43,12 +43,12 @@
 # v1.2.0.1 is newer, and numeric components are compared at arbitrary width.
 # Annotated tags appear twice in ls-remote output (refs/tags/vX and
 # refs/tags/vX^{}) and count as one release. A tag counts as a release only
-# when it is a dotted version with an optional v prefix and nothing else, so
-# v2.0.0-rc.1 and mattpocock-skills@1.0.0 are skipped. A release-like tag whose
-# remaining shape cannot be interpreted is a check failure that names the tag.
-# A repository with no release tags is silent: there is no published release to
-# install, and that is not an error. An unanswered tags probe is a check failure,
-# never assumed current.
+# when it is a dotted version with an optional v prefix and nothing else.
+# Prereleases and names with no version information are skipped. An otherwise
+# uninterpretable tag is a named check failure only when its known numeric prefix
+# could outrank the best stable release. A repository with no release tags is
+# silent: there is no published release to install, and that is not an error.
+# An unanswered tags probe is a check failure, never assumed current.
 #
 # The watched tools live in config/watched-tools.json, which is local and
 # gitignored, and is never propagated to another home. Adding a tool is a config
@@ -524,27 +524,43 @@ EOF
 # answer. Neither git nor the bounded runner uses this value.
 GIT_PROBE_NOT_ISSUED=3
 RELEASE_TAG_UNREADABLE=4
+RELEASE_ORDER_GREATER=0
+RELEASE_ORDER_EQUAL=1
+RELEASE_ORDER_LESS=2
+
+release_component_order() {
+  local left=$1 right=$2
+  while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do
+    left=${left#0}
+  done
+  while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do
+    right=${right#0}
+  done
+  if [ "${#left}" -gt "${#right}" ]; then
+    return "$RELEASE_ORDER_GREATER"
+  elif [ "${#left}" -lt "${#right}" ]; then
+    return "$RELEASE_ORDER_LESS"
+  elif [[ "$left" > "$right" ]]; then
+    return "$RELEASE_ORDER_GREATER"
+  elif [[ "$left" < "$right" ]]; then
+    return "$RELEASE_ORDER_LESS"
+  fi
+  return "$RELEASE_ORDER_EQUAL"
+}
 
 release_version_newer() {
-  local a=$1 b=$2 i left right
+  local a=$1 b=$2 i status
   local -a ap bp
   IFS=. read -r -a ap <<< "$a"
   IFS=. read -r -a bp <<< "$b"
   i=0
   while [ "$i" -lt "${#ap[@]}" ] || [ "$i" -lt "${#bp[@]}" ]; do
-    left=${ap[i]:-0}
-    right=${bp[i]:-0}
-    while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do left=${left#0}; done
-    while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do right=${right#0}; done
-    if [ "${#left}" -gt "${#right}" ]; then
-      return 0
-    elif [ "${#left}" -lt "${#right}" ]; then
-      return 1
-    elif [[ "$left" > "$right" ]]; then
-      return 0
-    elif [[ "$left" < "$right" ]]; then
-      return 1
-    fi
+    release_component_order "${ap[i]:-0}" "${bp[i]:-0}"
+    status=$?
+    case "$status" in
+      "$RELEASE_ORDER_GREATER") return 0 ;;
+      "$RELEASE_ORDER_LESS") return 1 ;;
+    esac
     i=$((i + 1))
   done
   return 1
@@ -689,8 +705,10 @@ git_findings() {
 # a dotted version with an optional v prefix and nothing else.
 newest_release_tag() {
   local output=$1
-  local ref name version
-  local best='' best_version='' unreadable=''
+  local ref name version i
+  local best='' best_version=''
+  local -a unreadable_names=()
+  local -a unreadable_prefixes=()
   while IFS=$'\t' read -r _ ref; do
     budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
     [ -n "$ref" ] || continue
@@ -704,15 +722,19 @@ newest_release_tag() {
       fi
     elif [[ "$name" =~ ^v?[0-9]+(\.[0-9]+)+- ]]; then
       continue
-    elif [[ "$name" =~ ^v?[0-9] ]]; then
-      unreadable=$name
+    elif [[ "$name" =~ ([0-9]+(\.[0-9]+)*) ]]; then
+      unreadable_names+=("$name")
+      unreadable_prefixes+=("${BASH_REMATCH[1]}")
     fi
   done <<< "$output"
   budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
-  if [ -n "$unreadable" ]; then
-    printf '%s\n' "$unreadable"
-    return "$RELEASE_TAG_UNREADABLE"
-  fi
+  for ((i = 0; i < ${#unreadable_names[@]}; i++)); do
+    budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
+    if [ -z "$best_version" ] || release_version_newer "${unreadable_prefixes[i]}" "$best_version"; then
+      printf '%s\n' "${unreadable_names[i]}"
+      return "$RELEASE_TAG_UNREADABLE"
+    fi
+  done
   printf '%s\n' "$best"
 }
 
