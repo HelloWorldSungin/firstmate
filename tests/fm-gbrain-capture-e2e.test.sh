@@ -120,8 +120,54 @@ test_the_task_survives_its_volatile_records() {
   pass "the captured knowledge outlives the task's own records"
 }
 
+# The audit's verdict comes from GBrain's own page listing and from what a
+# soft-delete does to it. A stub can only confirm the assumption written into
+# the stub, so the case that matters - a record still marked captured whose page
+# has left ordinary retrieval - is proved against the real binary here.
+test_the_audit_sees_a_page_that_left_the_index() {
+  local slug out
+  slug=$(cap status --json | jq -r '.documents[] | select(.source.id == "ship-live") | .slug')
+  [ -n "$slug" ] || fail "the stored record must name its page"
+  out=$(cap audit --timeout 120 2>&1) || fail "an audit with the page served must pass: $out"
+  printf '%s' "$out" | grep -q 'state      ok' || fail "a matching audit must read ok: $out"
+
+  brain delete "$slug" >/dev/null 2>&1 || fail "the disposable page must be deletable"
+
+  # The pair the audit's verdict rests on, proved against the real binary rather
+  # than against an assumption written into a stub. Every gbrain failure exits
+  # 1 - a page that is not there, a brain that is not there, an index that will
+  # not open - so a failing read carries no information at all. Only the second
+  # read SUCCEEDING distinguishes a soft-deleted page from a brain that cannot
+  # answer, and only a working brain can produce it.
+  brain get "$slug" >/dev/null 2>&1 \
+    && fail "ordinary retrieval must stop serving a soft-deleted page"
+  brain get "$slug" --include-deleted 2>/dev/null | grep -q 'non-reranked ordering' \
+    || fail "the store must still return a soft-deleted page under --include-deleted"
+  brain get "firstmate/never-captured-zzz/task/nope" --include-deleted >/dev/null 2>&1 \
+    && fail "a slug that was never captured must not be returned by either read"
+  # The store answers a page that is not there and a brain that is not there
+  # with the same status, which is why the verdict may never be read off one.
+  brain get "firstmate/never-captured-zzz/task/nope" >/dev/null 2>&1
+  [ "$?" = 1 ] || fail "gbrain must answer a missing page with its universal failure status"
+  GBRAIN_HOME="$TMP_ROOT/no-such-brain" "$GBRAIN_BIN" get "$slug" >/dev/null 2>&1
+  [ "$?" = 1 ] || fail "gbrain must answer a missing brain with that same status"
+
+  out=$(cap audit --timeout 120 2>&1) && fail "an audit that found a gap must exit non-zero"
+  printf '%s' "$out" | grep -q 'state      gap' || fail "a deleted page must read as a gap: $out"
+  printf '%s' "$out" | grep -qF "$slug" || fail "the audit must name the missing page: $out"
+
+  # And the repair closes it, from the same durable record.
+  cap process --document "$(cap status --json | jq -r '.documents[] | select(.source.id == "ship-live") | .document_id')" \
+    --force --timeout 120 >/dev/null || fail "re-delivery must succeed"
+  out=$(cap audit --timeout 120 2>&1) || true
+  printf '%s' "$out" | grep -q 'state      ok' \
+    || fail "re-delivering the record must close the gap: $out"
+  pass "the audit sees a page that left the real index, and sees the repair close it"
+}
+
 test_capture_is_retrievable_from_the_real_brain
 test_recapture_updates_one_page
 test_the_task_survives_its_volatile_records
+test_the_audit_sees_a_page_that_left_the_index
 
 echo "all fm-gbrain-capture-e2e tests passed"

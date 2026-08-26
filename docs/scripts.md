@@ -77,7 +77,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-gbrain-lib.sh`       | Resolve a home's own brain, validate the three brain-configuration planes, and read a credential only from a restrictively stored file |
 | `fm-gbrain.sh`           | Inspect a home's brain configuration, and grant, rotate, revoke, or retire read-only access to the main brain |
 | `fm-gbrain-capture-lib.sh` | Derive a captured document's identity, redact a body before it reaches disk, and own the capture outbox's wire shape |
-| `fm-gbrain-capture.sh`   | Capture a finished task's knowledge into this home's own brain, with a durable outbox, bounded delivery, retry, and backfill |
+| `fm-gbrain-capture.sh`   | Capture a finished task's knowledge into this home's own brain, with a durable outbox, bounded delivery, retry, backfill, a periodic refresh sweep, and a stored-versus-served audit |
 | `fm-recall.sh`           | The retrieval surface firstmate and crewmates use to search a home's brain and the shared main brain, and to run hosted `think` |
 | `fm-gbrain-health.sh`    | Print one presence-gated, budget-bounded read-only GBrain health snapshot for the dashboard panel (schema `fm-gbrain-health.v1`) |
 | `fm-gbrain-eval.sh`      | Score a home brain's retrieval and hosted synthesis separately against a versioned evaluation set, recording the configuration and corpus revision the numbers belong to |

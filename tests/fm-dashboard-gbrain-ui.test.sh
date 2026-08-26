@@ -24,7 +24,7 @@ node - "$MODULE" <<'NODE' || fail "dashboard gbraintron panel data behavior fail
 const { pathToFileURL } = require("node:url");
 
 (async () => {
-const { buildGBrainHealth, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES, paintGBrainPanel, paintGBrainSearchResults } = await import(pathToFileURL(process.argv[2]).href);
+const { buildGBrainHealth, gbrainHealthSummary, searchFailure, searchReasonLabel, GBRAIN_HEALTHY_SOURCE_STATES, paintGBrainPanel, paintGBrainSearchResults } = await import(pathToFileURL(process.argv[2]).href);
 
 const failures = [];
 function check(label, condition, detail = "") {
@@ -63,7 +63,8 @@ const configuredEnvelope = {
       main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" },
     },
     synthesis: { state: "ok", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "ok" },
-    capture: { enabled: true, archived: 81, pending: 0, failed: 0, unreadable: 0, last_capture_at: "2026-08-05T21:07:59Z", last_error: null },
+    capture: { enabled: true, archived: 81, pending: 0, failed: 0, unreadable: 0, last_capture_at: "2026-08-05T21:07:59Z", last_error: null,
+      audit: { state: "ok", stored: 81, active: 81, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -133,7 +134,8 @@ const degradedEnvelope = {
       main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" },
     },
     synthesis: { state: "ok", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "ok" },
-    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null },
+    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null,
+      audit: { state: "ok", stored: 10, active: 10, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -201,7 +203,8 @@ const degradedSynthesisEnvelope = {
     index: { state: "ok", detail: "ok" },
     retrieval: { state: "ok", embedding: { state: "ok" }, reranker: { state: "ok" }, main_brain: { state: "absent", model: null, endpoint: null, detail: "no main brain configured" } },
     synthesis: { state: "degraded", model: "synth-test", endpoint: "http://127.0.0.1:9999/v1", detail: "no answer at http://127.0.0.1:9999/v1" },
-    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null },
+    capture: { enabled: true, archived: 10, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null,
+      audit: { state: "ok", stored: 10, active: 10, missing: 0, observed: "2026-08-05T21:00:00Z", detail: "every captured document is served" } },
     maintenance: { state: "ready", detail: null },
   },
 };
@@ -271,6 +274,417 @@ const capturePendingEnvelope = {
   const captureCard = view.cards.find((c) => c.label === "Capture");
   equal("capture tone when pending > 0", captureCard.tone, "amber");
   equal("capture value when pending > 0", captureCard.value, "pending");
+}
+
+// --- captured is not the same as served -------------------------------------
+//
+// A record marked archived proves the page was accepted once, not that the
+// index still serves it. The stored-versus-served audit is the only thing that
+// can tell the operator otherwise, so a gap has to degrade the card and name
+// how many pages went, even when every outbox count reads clean.
+
+function captureAuditEnvelope(capture) {
+  return {
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      home: "/home/firstmate",
+      configured: true,
+      version: "v0.42.69.0",
+      index: { state: "ok", detail: "ok" },
+      retrieval: { state: "ok" },
+      synthesis: { state: "ok" },
+      capture: {
+        enabled: true, archived: 291, pending: 0, failed: 0, unreadable: 0, truncated: 0,
+        last_capture_at: null, last_error: null, ...capture,
+      },
+      maintenance: { state: "ready", detail: null },
+    },
+  };
+}
+
+// An ISO observation a fixed distance in the past, so the assertion measures
+// the arithmetic rather than the calendar.
+function observedSecondsAgo(seconds) {
+  return new Date(Date.now() - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "gap", stored: 291, active: 288, missing: 3,
+      observed: observedSecondsAgo(90),
+      detail: "3 captured document(s) are absent from the active index",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("capture tone when the audit found a gap", captureCard.tone, "red");
+  equal("capture value when the audit found a gap", captureCard.value, "degraded");
+  check("capture detail names the missing count",
+    captureCard.detail.includes("3 captured document(s) the index no longer serves"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("a gap degrades a card whose outbox counts are clean", captureCard.detail.includes("0 failed"));
+}
+
+{
+  // pending and a gap at once: a pending item still holds its knowledge and a
+  // missing page does not, so the gap is what the operator has to read first.
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    pending: 4,
+    audit: {
+      state: "gap", stored: 291, active: 290, missing: 1,
+      observed: observedSecondsAgo(90), detail: "1 captured document is absent",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a gap outranks pending in the tone", captureCard.tone, "red");
+  equal("a gap outranks pending in the value", captureCard.value, "degraded");
+  check("a gap keeps the pending count visible", captureCard.detail.includes("4 pending"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("a gap alongside pending still names the missing count",
+    captureCard.detail.includes("1 captured document(s) the index no longer serves"));
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "inconclusive", stored: 291, active: null, missing: 0,
+      observed: observedSecondsAgo(90), detail: "the index could not be listed",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  check("an inconclusive audit says the two sides were not compared",
+    captureCard.detail.includes("could not compare the two sides"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an inconclusive audit is not rendered as a gap",
+    !captureCard.detail.includes("the index no longer serves"));
+  // An audit that reached no verdict is not a clean bill: green is the positive
+  // claim that the parity check ran and passed, so this takes the hollow ring.
+  equal("an inconclusive audit is not a fault", captureCard.tone !== "red" && captureCard.tone !== "amber", true);
+  equal("an inconclusive audit never renders green", captureCard.tone, "unknown");
+  equal("an inconclusive audit says so on the card face", captureCard.value, "unverified");
+  check("an inconclusive audit says an audit did run",
+    captureCard.detail.includes("audit ran and could not compare"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+}
+
+// --- a home that has never been audited ------------------------------------
+//
+// Every existing home reports this until its first sweep completes. It has not
+// earned the green dot, but it is not a fault either, so it must read as its
+// own state and never borrow the inconclusive wording, which means an audit ran
+// and could not compare the two sides.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  // Blue, not the hollow ring: this home has not earned green, and nothing here
+  // is damaged either, so it must not be counted under the summary's word for
+  // a card that could not be read.
+  equal("a never-audited home never renders green", captureCard.tone, "blue");
+  equal("a never-audited home is not rendered as unreadable", captureCard.tone !== "unknown", true);
+  equal("a never-audited home says so on the card face", captureCard.value, "unaudited");
+  check("a never-audited home is not called a fault",
+    captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("a never-audited home does not borrow the inconclusive wording",
+    !captureCard.detail.includes("could not compare"));
+  check("a never-audited home renders the reason it was given, not a substitute",
+    captureCard.detail.includes("no captured-versus-served audit has run in this home yet"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+}
+
+// --- an audit whose own verdict cannot be read -------------------------------
+//
+// A record damaged on disk, or written by a schema this reader does not know,
+// means an audit DID run and nobody can read what it decided. Reporting that as
+// a home that simply has not been checked would be a fleet-wide false all-clear
+// the moment the record's schema moves, so it is a could-not-read like any
+// other and takes the hollow ring rather than blue.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "unreadable", stored: null, active: null, missing: null, observed: null,
+      detail: "an audit ran in this home and its record could not be read",
+    },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("an unreadable verdict never renders green", captureCard.tone, "unknown");
+  equal("an unreadable verdict is not rendered as never-audited", captureCard.tone !== "blue", true);
+  equal("an unreadable verdict says so on the card face", captureCard.value, "unreadable");
+  check("an unreadable verdict says an audit did run",
+    captureCard.detail.includes("an audit ran in this home and its record could not be read"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an unreadable verdict is never called no fault",
+    !captureCard.detail.includes("not a fault"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("an unreadable verdict does not claim no audit has run",
+    !captureCard.detail.includes("has run in this home yet"));
+}
+
+// --- a damaged outbox record --------------------------------------------------
+//
+// An unreadable record is never treated as delivered and never delivered blind,
+// so a home holding one has not proved its capture path clean. It is a record
+// that could not be read rather than a proven failure, so it takes the same
+// hollow ring the two audit unknowns take and neither red nor amber.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    unreadable: 2, last_error: "the outbox record for firstmate/x/task/y is unreadable",
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a damaged record never renders green", captureCard.tone, "unknown");
+  equal("a damaged record says so on the card face", captureCard.value, "unreadable");
+  check("the unreadable count sits beside the other counts",
+    captureCard.detail.includes("2 unreadable"), `received ${JSON.stringify(captureCard.detail)}`);
+  check("a damaged record is counted once, not restated",
+    captureCard.detail.match(/unreadable/g).length === 1,
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("a clean home still shows a zero unreadable count",
+    buildGBrainHealth(captureAuditEnvelope({
+      audit: { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+    })).cards.find((c) => c.label === "Capture").detail.includes("0 unreadable"));
+}
+
+// --- the precedence between every Capture state -----------------------------
+//
+// One card carries eight possible states, so the order they win in is the whole
+// contract: a proven fault outranks a queued item, a queued item outranks an
+// unknown, and only a home with nothing outstanding and a passed parity check
+// reads green. The not-bootstrapped state wins over all of them, because a home
+// whose index does not exist yet has nothing to be degraded about.
+
+{
+  const clean = { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" };
+  const gap = { state: "gap", missing: 3, observed: observedSecondsAgo(90), detail: "3 absent" };
+  const inconclusive = { state: "inconclusive", missing: 0, observed: observedSecondsAgo(90), detail: "not compared" };
+  const unaudited = { state: "unknown", missing: null, observed: null,
+    detail: "no captured-versus-served audit has run in this home yet" };
+  const stateOf = (capture) =>
+    buildGBrainHealth(captureAuditEnvelope(capture)).cards.find((c) => c.label === "Capture").value;
+
+  equal("not bootstrapped outranks everything",
+    stateOf({ enabled: false, failed: 4, pending: 4, unreadable: 4, audit: gap }), "off");
+  equal("a failed delivery outranks a queued one",
+    stateOf({ failed: 1, pending: 4, unreadable: 4, audit: inconclusive }), "degraded");
+  equal("a parity gap outranks a queued item",
+    stateOf({ pending: 4, unreadable: 4, audit: gap }), "degraded");
+  equal("a queued item outranks a damaged record",
+    stateOf({ pending: 4, unreadable: 4, audit: inconclusive }), "pending");
+  equal("a damaged record outranks an audit with no verdict",
+    stateOf({ unreadable: 1, audit: inconclusive }), "unreadable");
+  equal("an audit that could not compare outranks one that never ran",
+    stateOf({ audit: inconclusive }), "unverified");
+  equal("a home with only a missing audit reads unaudited",
+    stateOf({ audit: unaudited }), "unaudited");
+  equal("only a clean home with a passed parity check reads ready",
+    stateOf({ audit: clean }), "ready");
+  equal("ready is the one state that earns the green dot",
+    buildGBrainHealth(captureAuditEnvelope({ audit: clean })).cards.find((c) => c.label === "Capture").tone, "green");
+}
+
+// --- the collapsed summary an operator reads first ---------------------------
+//
+// The card strip is behind a disclosure; the one-line summary above it is not.
+// It is where a state that reads correctly on its own card can still be
+// mislabelled, because it collapses six cards into one dot and one count - so
+// checked-and-clean, could-not-read, and not-checked-yet have to stay apart
+// here too, not only on the card.
+
+{
+  const summaryFor = (capture) => gbrainHealthSummary(buildGBrainHealth(captureAuditEnvelope(capture)).cards);
+  const clean = { state: "ok", missing: 0, observed: observedSecondsAgo(90), detail: "clean" };
+
+  const healthy = summaryFor({ audit: clean });
+  equal("an audited healthy home counts every system nominal", healthy.text, "6 systems nominal");
+  equal("an audited healthy home keeps the filled dot", healthy.tone, "green");
+
+  // Not yet audited: one fewer nominal, because it has not earned that one -
+  // but nothing here is unreadable and nothing here is a fault.
+  const unaudited = summaryFor({
+    audit: { state: "unknown", missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
+  });
+  equal("an unaudited home is not counted as nominal", unaudited.text, "5 systems nominal");
+  check("an unaudited home is never counted as unreadable", !unaudited.text.includes("unreadable"),
+    `received ${JSON.stringify(unaudited.text)}`);
+  equal("an unaudited home does not raise the unreadable count", unaudited.unreadable, 0);
+  equal("an unaudited home keeps the filled dot", unaudited.tone, "green");
+
+  // A damaged record is the state the word "unreadable" belongs to, and it does
+  // flip the ring - which is exactly what must not happen for the case above.
+  const damaged = summaryFor({ unreadable: 2, audit: clean });
+  equal("a damaged record is counted as unreadable", damaged.text, "1 unreadable · 5 systems nominal");
+  equal("a damaged record flips the summary to the hollow ring", damaged.tone, "unknown");
+
+  // An audit that ran and could not compare is the same class as a damaged
+  // record - something could not be read - and reads that way here too.
+  const unverified = summaryFor({
+    audit: { state: "inconclusive", missing: null, observed: observedSecondsAgo(90), detail: "not compared" },
+  });
+  equal("an audit that could not compare is counted as unreadable", unverified.text, "1 unreadable · 5 systems nominal");
+  equal("an audit that could not compare flips the ring", unverified.tone, "unknown");
+
+  check("not-audited and could-not-read never read the same", unaudited.text !== unverified.text);
+
+  // The state that matters most, and the one the summary used to paint green:
+  // a confirmed parity gap. The card strip is behind a closed disclosure, so
+  // this line is the whole of what an operator sees.
+  const gap = summaryFor({
+    audit: { state: "gap", missing: 3, observed: observedSecondsAgo(90), detail: "3 absent" },
+  });
+  equal("a confirmed gap leads the summary", gap.text, "1 degraded · 5 systems nominal");
+  equal("a confirmed gap never keeps the green dot", gap.tone, "red");
+  check("a confirmed gap never reads like a never-audited home", gap.text !== unaudited.text);
+  check("a confirmed gap never reads like a clean home", gap.text !== healthy.text);
+  equal("a confirmed gap is not counted as unreadable", gap.unreadable, 0);
+
+  // A queued item is not a proven fault but is not nominal either, and it
+  // outranks a could-not-read the same way it does on the card.
+  const queued = summaryFor({ pending: 4, audit: clean });
+  equal("a queued item is named rather than folded into nominal", queued.text, "1 degrading · 5 systems nominal");
+  equal("a queued item takes the amber dot", queued.tone, "amber");
+
+  // Precedence at the aggregate, same sense as the card: a proven fault
+  // outranks a could-not-read, which outranks a did-not-check, which outranks
+  // clean.
+  const worst = summaryFor({
+    unreadable: 2,
+    audit: { state: "gap", missing: 1, observed: observedSecondsAgo(90), detail: "1 absent" },
+  });
+  equal("a proven fault outranks everything else in the summary", worst.tone, "red");
+
+  // No cards at all means the envelope never arrived, which is an unknown
+  // rather than a clean bill.
+  const unread = gbrainHealthSummary([]);
+  equal("no cards reads as health unread", unread.text, "health unread");
+  equal("no cards keeps the hollow ring", unread.tone, "unknown");
+  equal("a non-array is treated as no cards", gbrainHealthSummary(undefined).text, "health unread");
+  equal("one nominal system is singular", gbrainHealthSummary([{ tone: "green" }]).text, "1 system nominal");
+}
+
+// --- a gap whose count was never measured ------------------------------------
+//
+// missing is null whenever the audit could not count it, so a default of zero
+// here would turn "we did not count" into "we counted none" - the same collapse
+// the record's own null exists to prevent.
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "gap", stored: 291, active: null, missing: null, observed: observedSecondsAgo(90), detail: "unmeasured" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("an uncounted gap still degrades the card", captureCard.value, "degraded");
+  check("an uncounted gap is never rendered as zero missing",
+    !captureCard.detail.includes("0 captured document(s)"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("an uncounted gap says the count is missing",
+    captureCard.detail.includes("this audit did not count"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+}
+
+// --- a home with no brain is not an unaudited home ---------------------------
+//
+// Presence-gating: a home that never adopted GBrain shows nothing about capture
+// at all, the way it did before GBrain existed. No audit state may leak into
+// that early return and turn absence into a verdict.
+
+{
+  const view = buildGBrainHealth({
+    schema: "fm-gbrain-health.v1",
+    status: { phase: "ready" },
+    config: { query_max_bytes: 1024, result_limit_max: 16 },
+    health: {
+      schema: "fm-gbrain-health.v1",
+      configured: false,
+      version: null,
+      index: { state: "absent", detail: "no brain configured" },
+      capture: {
+        enabled: false, archived: 0, pending: 0, failed: 0, unreadable: 3,
+        audit: { state: "gap", missing: 9, observed: "2026-08-05T21:00:00Z", detail: "9 absent" },
+      },
+      maintenance: { state: "ready" },
+    },
+  });
+  check("a home with no brain renders no Capture card",
+    view.cards.every((c) => c.label !== "Capture"), JSON.stringify(view.cards.map((c) => c.label)));
+  equal("a home with no brain renders only the not-configured card", view.cards.length, 1);
+  check("no audit verdict leaks into the not-configured card",
+    !view.cards[0].detail.includes("gap") && !view.cards[0].detail.includes("unreadable"));
+}
+
+{
+  const view = buildGBrainHealth(captureAuditEnvelope({
+    truncated: 2,
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  }));
+  const captureCard = view.cards.find((c) => c.label === "Capture");
+  equal("a clean audit leaves the card ready", captureCard.value, "ready");
+  check("a clean audit says every captured document is served",
+    captureCard.detail.includes("every captured document is served"),
+    `received ${JSON.stringify(captureCard.detail)}`);
+  check("cut bodies are counted on the card", captureCard.detail.includes("2 body(ies) cut at the capture cap"));
+}
+
+// --- the replayed verdict carries its own age -------------------------------
+//
+// The verdict is replayed from the record the sweep wrote, never re-measured on
+// a poll. So a gap repaired by hand keeps reading red until the next sweep, and
+// a green measured weeks ago would otherwise read exactly like one measured
+// minutes ago. The age is what tells those apart.
+
+{
+  const fresh = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(90), detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  const stale = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: observedSecondsAgo(14 * 86_400), detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  check("a freshly measured verdict reads as minutes old", fresh.detail.includes("(audited 1m ago)"),
+    `received ${JSON.stringify(fresh.detail)}`);
+  check("a weeks-old verdict reads as weeks old", stale.detail.includes("(audited 14d ago)"),
+    `received ${JSON.stringify(stale.detail)}`);
+  check("two verdicts of the same state are told apart by their age", fresh.detail !== stale.detail);
+}
+
+{
+  const gap = buildGBrainHealth(captureAuditEnvelope({
+    audit: {
+      state: "gap", stored: 291, active: 288, missing: 3,
+      observed: observedSecondsAgo(2 * 3_600), detail: "3 absent",
+    },
+  })).cards.find((c) => c.label === "Capture");
+  check("a replayed gap says when it was measured", gap.detail.includes("(audited 2h ago)"),
+    `received ${JSON.stringify(gap.detail)}`);
+}
+
+{
+  // A home that has never been audited has no observation to age, and must keep
+  // saying it has never run rather than borrowing an age from anywhere.
+  const never = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "unknown", stored: null, active: null, missing: null, observed: null,
+      detail: "no captured-versus-served audit has run in this home yet" },
+  })).cards.find((c) => c.label === "Capture");
+  check("an unaudited home says no audit has run", never.detail.includes("no captured-versus-served audit has run in this home yet"),
+    `received ${JSON.stringify(never.detail)}`);
+  check("an unaudited home renders no age at all", !never.detail.includes("audited "),
+    `received ${JSON.stringify(never.detail)}`);
+  check("an unaudited home is never rendered as a clean audit",
+    !never.detail.includes("every captured document is served"));
+
+  // An unreadable observation is the same case: no age rather than a bad one.
+  const unreadable = buildGBrainHealth(captureAuditEnvelope({
+    audit: { state: "ok", stored: 291, active: 291, missing: 0, observed: "not-a-timestamp", detail: "clean" },
+  })).cards.find((c) => c.label === "Capture");
+  check("an unparseable observation renders no age", !unreadable.detail.includes("audited unknown"),
+    `received ${JSON.stringify(unreadable.detail)}`);
+  check("an unparseable observation keeps its verdict", unreadable.detail.includes("every captured document is served"));
 }
 
 // --- the last successful capture is readable as an age ---------------------

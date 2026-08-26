@@ -18,7 +18,7 @@ import { buildHistory, formatDuration, HISTORY_LIMITS, OUTCOME_LABELS } from "./
 import { buildUsage, formatTokens, projectLabel, projectTone } from "./usage.js";
 import { buildTimeline, clockLabel, mergeTaskBackfill, outcomeTone, sourceNotice, timelineNotice, typeLabel } from "./events.js";
 import { noticeSentence, renderMarkdown, safeUrl } from "./markdown.js";
-import { buildGBrainHealth, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
+import { buildGBrainHealth, gbrainHealthSummary, GBRAIN_HEALTHY_SOURCE_STATES, searchFailure, searchReasonLabel } from "./gbrain.js";
 import { hashFor, parseHash, TASK_VIEW, viewRoute } from "./router.js";
 import { label } from "./display.js";
 import { buildBacklog, BACKLOG_LIMITS, BACKLOG_TAB_KEYS } from "./backlog.js";
@@ -1240,13 +1240,12 @@ function renderKnowledge() {
   const healthButton = element("button", "health-h");
   healthButton.type = "button";
   healthButton.setAttribute("aria-expanded", String(state.gbrain.healthOpen));
-  const nominal = health.cards.filter((card) => card.tone === "green").length;
-  const unreadable = health.cards.filter((card) => card.tone === "unknown").length;
-  // No cards means the health envelope never arrived, which is an unknown, not
-  // a clean bill: the hollow ring, never the green dot.
+  // gbrain.js owns which tones count as nominal and which count as unreadable,
+  // so the collapsed summary and the cards below it cannot drift apart.
+  const summary = gbrainHealthSummary(health.cards);
   healthButton.append(
-    health.cards.length === 0 || health.cards.some((card) => card.tone === "unknown") ? element("span", "ring") : dot("green"),
-    document.createTextNode(` ${health.cards.length === 0 ? "health unread" : `${nominal} ${nominal === 1 ? "system" : "systems"} nominal${unreadable ? ` · ${unreadable} unreadable` : ""}`}`),
+    summary.tone === "unknown" ? element("span", "ring") : dot(summary.tone),
+    document.createTextNode(` ${summary.text}`),
     element("span", "chev", state.gbrain.healthOpen ? "▲" : "▼"),
   );
   healthButton.addEventListener("click", () => { state.gbrain.healthOpen = !state.gbrain.healthOpen; render(); });

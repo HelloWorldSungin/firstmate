@@ -12,7 +12,8 @@ Capture turns each finished task into a page in the home's own brain, addressed 
 
 Capture is inert until a home has an initialized brain.
 A home that has not adopted GBrain creates no outbox, writes no receipt, and its cleanup behaves exactly as it did before.
-Inertness covers the subcommands a lifecycle step or `/stow` calls; the two operator sweeps below, `process` and `backfill`, instead name the missing index and exit non-zero, because they were asked to work on an outbox that cannot exist.
+Inertness covers the subcommands a lifecycle step or `/stow` calls, and the periodic `sweep` below, which a session start arms in every home and which therefore leaves no marker, no audit record, and no output where there is no brain.
+The three operator commands below - `process`, `backfill`, and `audit` - instead name the missing index and exit non-zero, because they were asked to work on an outbox that cannot exist.
 
 ## What is captured, and what is never read
 
@@ -27,6 +28,12 @@ That is why "no raw tool arguments, no environment values, no private file excer
 
 The composed body is capped at `FM_GBRAIN_CAPTURE_MAX_BYTES` (65536 by default) so an enqueue on the cleanup path costs a bounded read and a bounded write however large a report grew.
 An unusually long report is captured truncated at that cap rather than refused, so raise the cap before a backfill if a home's reports routinely exceed it.
+
+A cut body says so, in the body.
+The cut appends a marker naming the byte count, after redaction so the redactor cannot rewrite it, and the page a reader opens carries that marker at the end of what survived.
+The record carries `truncated: true` and `captured_bytes` beside it, so an audit can count cut documents without reading prose, and `status` reports that count.
+The marker names how much was kept rather than how much was lost: the cap bounds the read as well, so at the point of the cut the only known fact is the byte count that survived.
+It is part of the body, so it is part of the content version - a body that starts hitting the cap is a new revision and is re-delivered, and a record captured before the marker existed is counted as truncated only once it is recomposed.
 
 ## Redaction happens before enqueue
 
@@ -78,11 +85,13 @@ The receipt always names the page address, even while the item is pending, becau
 ## Retrying and backfilling
 
 ```sh
-bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, redacted
+bin/fm-gbrain-capture.sh status                 # archived, pending, failed, unreadable, truncated, redacted
 bin/fm-gbrain-capture.sh process                # retry every pending item
 bin/fm-gbrain-capture.sh process --force        # retry an item whose attempts are exhausted, and re-deliver one already captured
-bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report
+bin/fm-gbrain-capture.sh backfill               # sweep every task with a manifest or report, refreshing any whose source changed
 bin/fm-gbrain-capture.sh backfill --dry-run     # report what a sweep would capture
+bin/fm-gbrain-capture.sh audit                  # compare what the outbox says was captured against what the index serves
+bin/fm-gbrain-capture.sh sweep --force          # run the periodic refresh and audit right now
 ```
 
 Retry is bounded: an item that fails `FM_GBRAIN_CAPTURE_MAX_ATTEMPTS` times (default 5) stops being retried by an ordinary run and waits for `--force`, so one permanently broken document cannot consume every later run's budget.
@@ -101,3 +110,121 @@ It is read once more at query time: [`bin/fm-recall.sh`](../bin/fm-recall.sh) ju
 An outbox record is written atomically, so a crash leaves the previous complete record or none.
 A record that is nevertheless unreadable - hand-edited, or damaged on disk - is reported as `unreadable` by `status` and named by `process`; it is never treated as delivered and never delivered blind.
 Recapturing the task recomposes the record from the durable manifest and report and repairs it.
+
+## A page goes stale when its source is edited, so the refresh is on a clock
+
+Capture fires at cleanup.
+A report edited after that never reaches capture again, because the task it belonged to is gone - and the page keeps serving the old body with nothing marking it stale.
+That is not hypothetical: two reports were edited after capture and their pages were never refreshed, one of them keeping a finding the captain had voided, which a live query then returned at rank 1.
+
+The fix is a clock rather than a rule, because a rule that says "recapture after you edit a report" is a habit and habits are what this failed on.
+`sweep` recomposes every captured task, re-delivers the ones whose content hash moved to the same page, and then audits stored against served.
+A session start arms it unconditionally; it runs at most once per `FM_GBRAIN_CAPTURE_SWEEP_INTERVAL` (default 6 hours), is inert and silent in a home with no brain, and prints only what an operator must act on.
+The worst case is therefore one interval of staleness rather than forever.
+
+The refresh itself is `backfill`, not a second recomposition path: `backfill` already recomposes each task and re-delivers a changed body to the same page, so a separate path would only be one more thing to drift.
+It now names and counts what it corrected - `refreshed <id>` and a `refreshed=` total - so a sweep reports the drift it closed instead of folding it into the ordinary captured count.
+Both are claims about a delivery rather than about a recomposition, so neither is made until that document reached the index: a run that recomposed a changed body but could not deliver it reports its errors and says nothing about a refresh, because the page is still serving the body the source moved away from.
+The record itself remembers which content version the index was last given, and only a landed delivery moves it, so a refresh whose first delivery failed is still named exactly once - on the later sweep that finally delivers it - rather than being corrected in silence.
+
+What the `refreshed` line claims is that the SOURCE changed, so it is fired from a fingerprint of the source rather than from the stored body:
+
+- The content version hashes the composed, redacted body, and it must move whenever that body moves, because that is what re-delivers a page that needs rewriting.
+- The source version hashes `data/<id>/outcome.json` and `data/<id>/report.md` as they sit on disk, before composition, before redaction, and before the cap.
+  A note has none, because a note's body arrives through `/stow` rather than from anything on disk to re-read.
+- Only the source version may back a claim about the source, because everything this pipeline writes into a body is in the content version and none of it is a change in the thing being captured: the truncation marker, the redaction placeholders, the schema string in the front matter, the front-matter rendering, the heading and its bullet list, the section headings, and the YAML escaping.
+  Manifest-derived values stay source-derived either way, because the manifest's own bytes are part of the source fingerprint.
+
+A body this pipeline rewrote on its own is therefore re-delivered silently: the page is corrected, and nothing claims a report changed that nobody edited.
+The first sweep after the truncation marker shipped is exactly that case, and a record captured before the source fingerprint existed has no recorded source for its served page, so its first re-delivery is silent too rather than guessed at.
+`bin/fm-recall.sh` judges the same drift at query time and marks a result stale; that is the read side telling a reader not to trust a page, and this is the write side making the page true again.
+
+## Captured is not the same as served
+
+An outbox record marked captured proves the page was **accepted** once.
+It does not prove the page still exists: GBrain soft-deletes, and a soft-deleted row is absent from ordinary retrieval while the record that produced it still reads as archived.
+Measured on this fleet, capture reported 291 archived while the index served 288 pages, and the three missing documents were soft-deleted and unreachable by search.
+
+`audit` compares the two sides directly, from the outbox's own captured slugs and the index's page listing:
+
+- `ok` - every captured document is served, and it is the only verdict that exits 0.
+- `gap` - it names each captured document the index no longer serves, and exits non-zero.
+- `inconclusive` - the listing could not be read, or came back at exactly its own `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` ceiling and may be incomplete.
+  A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
+  The verdict is decided from whether the listing command succeeded, never from whether it happened to explain itself, so a listing that dies without a message is inconclusive rather than a gap naming every captured document.
+
+A listing is the only thing that can say a page is absent, and absence from a listing is what EVERY way a listing can fail looks like, so the listing only proposes candidates and a pair of direct reads decides.
+GBrain answers every failure with the same status - a page that is not there, a brain that is not there, an index that will not open - so a failing read carries no information about which of those happened, and the verdict rests on a read that SUCCEEDS:
+
+1. `gbrain get <slug>`, and a page that comes back is served by ordinary retrieval, so the listing that proposed it as a candidate was wrong.
+2. Otherwise `gbrain get <slug> --include-deleted`, and a page that comes back there is in the store and hidden from ordinary retrieval, which is positive proof of exactly the soft-delete this audit exists to find.
+   An unavailable brain cannot produce that answer, because it fails both reads.
+3. Neither read answered, which is either a page purged outright or an index that could not answer, and nothing here distinguishes them, so that candidate reaches no verdict.
+
+A page purged rather than soft-deleted is therefore reported as inconclusive rather than as a gap.
+That is deliberate: GBrain soft-deletes, which is the population this audit was built for and measured against, and a purge is an operator act on a page the outbox can still recapture.
+`FM_GBRAIN_CAPTURE_AUDIT_MAX_PROBES` (default 25) bounds that verification: a candidate set larger than it is better evidence that the listing is wrong than that the pages are gone, so it is reported inconclusive rather than verified one read at a time.
+
+Every direction the listing can fail, and what each does:
+
+| direction | outcome |
+| --- | --- |
+| `gbrain` is not installed | inconclusive |
+| the listing exits non-zero | inconclusive |
+| the listing times out | inconclusive |
+| it exits non-zero with nothing on stderr | inconclusive - the exit status is the signal, never the text |
+| it returns exactly its row ceiling | inconclusive, with `active` a floor and `missing` a ceiling |
+| it exits 0 with no parseable rows | inconclusive - the direct read returns the candidates |
+| its columns move, so no row's first field is a slug | inconclusive - same path |
+| it silently caps below the requested limit | inconclusive - the pages it dropped are still served |
+| a shared brain returns only other homes' rows | inconclusive - same, and the prefix already scopes the comparison |
+| the direct reads themselves fail | inconclusive - a gap needs a read that succeeded under `--include-deleted`, and a brain that cannot answer fails both reads |
+| a complete listing and a genuinely soft-deleted page | `gap`, which is the finding the audit exists for |
+
+No direction reports a gap on evidence it does not have.
+The cost of that is the purged-page case above, which is named rather than hidden: a page that no longer exists at all reaches no verdict, because from here it is indistinguishable from an index that could not answer.
+
+Every count in the verdict says how far it can be trusted, and `bounds` in the record carries that for each one:
+
+- `exact` - measured and believed whole, which is what `stored` and `truncated` always are, because both are counted from this home's own outbox.
+- `at-least` - measured against a listing known to be partial, so the true value is this or higher. `active` is a floor on the ceiling branch: every page the listing named really is served, and the ones it dropped are still served too.
+- `at-most` - the same partial listing in the other direction, so the true value is this or lower. `missing` is a ceiling on that branch, because a page the listing dropped looks absent whether or not it is, and `missing_slugs` there names unverified candidates rather than findings.
+- `unmeasured` - the count is `null` and nothing was compared, which is what both `active` and `missing` are when the listing could not be read at all.
+  A `null` is not a zero: an audit that could not count says so rather than reporting none, and `missing_slugs` is empty only because there was nothing to name.
+
+It writes its verdict to `state/.gbrain-audit`, and that record is what the operator-facing surfaces replay:
+the GBrain panel's Capture card turns degraded and names the missing count, and a session start relays the same verdict on a `GBRAIN_CAPTURE:` line.
+Neither surface re-measures it, because the dashboard polls continuously and re-opening the index on every poll would put a repeated index read behind a poll that has to stay cheap.
+Because it is replayed rather than re-measured, the Capture card renders how old the observation is beside the verdict: a gap already repaired by hand keeps reading red until the next sweep, and a clean answer measured weeks ago must not read like one measured minutes ago.
+A home where the audit has never run reports that it has never run, rather than reporting a zero gap nobody measured, and has no age to render.
+
+Only a verdict earns the card's green dot, because green is the positive claim that the parity check ran and passed:
+
+- `gap` and a failed delivery are proven faults, so the card reads `degraded` in red.
+- `inconclusive` reads `unverified` on the hollow ring, because an audit that could not compare the two sides must never be shown as a clean bill - that is the same complacency the fail-closed rule above exists to prevent.
+  An outbox record that could not be read at all reads `unreadable` on the same ring, for the same reason and with the count beside the archived, pending and failed ones.
+  A verdict record that cannot be parsed, or that carries a schema this reader does not recognize, reads `unreadable` there too: an audit ran and nobody can read what it decided, which is a could-not-read rather than a home nobody has checked.
+- `unknown` reads `unaudited` in blue, which is the panel's tone for a card making no claim in either direction.
+  A home whose first sweep has not landed yet has nothing to read and nothing wrong with it, so it is neither counted as a nominal system in the panel's collapsed summary nor counted there as unreadable, and it does not turn that summary's dot into the hollow ring.
+  Its wording is kept apart from the `unverified` wording for the same reason: one means an audit ran and could not compare, the other means none has run here yet.
+
+A home with no brain is not an unaudited home; it renders nothing about capture at all, the way it did before GBrain existed.
+A configured home whose local index is not bootstrapped keeps its own `off` state ahead of all of these.
+
+The panel's collapsed summary above the card strip carries the same ranking, because the strip sits behind a disclosure that starts closed and that one line is what an operator reads first.
+It leads with the worst state it found and never states the nominal count ahead of a fault: a proven fault outranks a could-not-read, which outranks a did-not-check, which outranks clean.
+A card that makes no claim is counted as neither nominal nor unreadable, so a home whose first sweep has not landed is not reported as damaged and a confirmed gap is not reported as nominal.
+
+A gap is not automatically a fault: a page deleted deliberately shows up here too.
+Recapture the document if it should still be served, or restore it in GBrain if it was deleted by mistake.
+
+The recapture is the same for both kinds, because what a gap reports is a page the index no longer serves rather than a body that went stale.
+Re-deliver the stored body with `bin/fm-gbrain-capture.sh process --document <document-id> --force`, taking the document id from `status --json`.
+
+`backfill` is the wrong repair here, for a task as much as for a note.
+It recomposes from the durable source and re-delivers only when that source moved, so it repairs a page whose body is stale and walks straight past a page that is absent: a deletion happens in the index, which leaves the outbox record still reading captured at its current content version.
+That is true of a task whose manifest and report are still under `data/` too - the source it would recompose from has not changed, so there is nothing for it to re-deliver.
+
+The sweep does not close a gap it just proved, because re-delivering a record the audit found missing is deferred to `fm-gbrain-audit-self-healing-repair`; until that lands, the verdict names a command an operator runs by hand.
+
+Recapturing the wrong way is how a real gap gets ignored: an advised repair that silently does nothing leaves the same gap reported on every sweep.

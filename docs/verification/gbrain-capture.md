@@ -13,6 +13,7 @@ FM_GBRAIN_LIVE_E2E=1 FM_GBRAIN_BIN=/home/sungin/.local/gbrain/bin/gbrain \
 ## Environment
 
 Verified 2026-08-04 against `gbrain 0.42.69.0` at `/home/sungin/.local/gbrain/bin/gbrain`, with the local embedding endpoint `http://127.0.0.1:11434/v1` serving `ollama:snowflake-arctic-embed2:568m` at 1024 dimensions.
+The stored-versus-served sections below, including the read-pair statuses the audit's verdict now rests on, were verified 2026-08-25 against `gbrain 0.46.21.0` on the same endpoint.
 The proof builds its own disposable PGLite brain under a temp home and never touches the operator's brain.
 
 ## The delivery command's receipt is structured, not a bare slug
@@ -65,9 +66,52 @@ Capturing byte-identical content again returns `"status": "skipped"`, so GBrain'
 The proof reads the page back with `gbrain get <slug>` using only the reference the durable manifest carries, after deleting the capture receipt and the report.
 The task's findings still come back, which is the guarantee the whole capture path exists for.
 
+## A deleted page leaves the listing while its record still says captured
+
+The parity audit's verdict comes from GBrain's own page listing, so it is proved against the real binary rather than a stub.
+The proof captures a task, deletes its page, and audits again; the outbox record is untouched throughout and still reads `captured`.
+
+Measured 2026-08-25 against `gbrain 0.46.21.0`, on the operator's own brain before any repair, the same disagreement the audit exists to surface:
+
+```
+$ FM_HOME=/home/sungin/firstmate bin/fm-gbrain-capture.sh audit
+state      gap
+stored     291 captured record(s)
+active     288 page(s) the index serves for this home
+missing    3 captured record(s) the index no longer serves
+truncated  0 stored bod(ies) cut at the capture cap
+  missing  firstmate/firstmate-bc8432f7/task/arknodelabs-deploy-hostkey-scan-fragile
+  missing  firstmate/firstmate-bc8432f7/task/tsa-434-scope
+  missing  firstmate/firstmate-bc8432f7/task/tsa-domain-model
+```
+
+`truncated` reads 0 there because every one of those records predates the truncation marker; two of them were in fact cut, at 65537 and 65536 bytes, and are counted only once the refresh recomposes them.
+
+## A failing read says nothing, so the verdict rests on the read that succeeds
+
+Measured 2026-08-25 against `gbrain 0.46.21.0`, read-only, on the operator's own index and on this fleet's three real soft-deleted pages:
+
+```
+$ gbrain get firstmate/firstmate-bc8432f7/task/tsa-434-scope         -> exit 1, "Error [page_not_found]"
+$ gbrain get firstmate/firstmate-bc8432f7/task/tsa-434-scope     --include-deleted                                                -> exit 0, page body returned
+$ gbrain get <a slug that was never captured>                        -> exit 1, "Error [page_not_found]"
+$ gbrain get <a slug that was never captured> --include-deleted      -> exit 1, "Error [page_not_found]"
+$ GBRAIN_HOME=/tmp/no-such-dir gbrain get <any slug>                 -> exit 1, "No brain configured"
+$ GBRAIN_HOME=/tmp/no-such-dir gbrain get <any slug> --include-deleted -> exit 1, "No brain configured"
+$ gbrain get <a served slug>                                         -> exit 0, page body returned
+```
+
+Exit 1 is GBrain's universal failure status: a page that is not there, a brain that is not there, and an index that will not open are indistinguishable from it.
+No verdict may be read off a failing read, and no learned failure signature can make one discriminating, which is why the audit asks twice and counts a document missing only when the second read SUCCEEDS.
+
+The CLI does not emit `deleted_at`, on either read, despite `gbrain get --help` in this same release documenting `--include-deleted` as surfacing a soft-deleted page with that field populated.
+A reader who keys the verdict on `deleted_at` would match nothing, turn every real gap into `inconclusive`, and produce an audit that can never report the defect it exists for.
+The observable difference is the pair of exit statuses, and nothing else.
+
 ```
 ok - a captured task is retrievable from a real brain by the receipt the manifest carries
 ok - recapturing a changed task updates the same page instead of accumulating copies
 ok - the captured knowledge outlives the task's own records
+ok - the audit sees a page that left the real index, and sees the repair close it
 all fm-gbrain-capture-e2e tests passed
 ```

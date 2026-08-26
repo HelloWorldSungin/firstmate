@@ -73,6 +73,43 @@ function ageLabel(ageSeconds) {
   return `${Math.floor(ageSeconds / 86_400)}d ago`;
 }
 
+// The stored-versus-served verdict is replayed from the record the sweep wrote,
+// never re-measured on a poll, so the verdict alone cannot say whether it was
+// measured minutes or weeks ago. A gap repaired by hand keeps reading red until
+// the next sweep completes, and a green from weeks ago reads exactly like one
+// measured just now - so the age travels with the verdict. A home that has
+// never been audited has no observation to age and keeps saying so rather than
+// borrowing one.
+function auditAgeSuffix(observed) {
+  const at = Date.parse(text(observed));
+  if (!Number.isFinite(at)) return "";
+  return ` (audited ${ageLabel((Date.now() - at) / 1000)})`;
+}
+
+// Green is reserved for a positive claim, so every state that has not earned
+// one takes a tone that does not make it: the hollow ring for something that
+// could not be read, and blue for a card making no claim in either direction.
+const CAPTURE_TONES = {
+  ready: "green",
+  pending: "amber",
+  degraded: "red",
+  unaudited: "blue",
+  unverified: "unknown",
+  unreadable: "unknown",
+  off: "unknown",
+};
+
+// The audit records a count only where it measured one, so a missing count can
+// be absent by design - an audit that could not list the index measured neither
+// side. Defaulting that to zero would turn "we did not count" into "we counted
+// none", which is the whole failure the null exists to prevent.
+function missingClause(missing) {
+  if (typeof missing !== "number" || !Number.isFinite(missing)) {
+    return "the index no longer serves captured documents this audit did not count";
+  }
+  return `${missing} captured document(s) the index no longer serves`;
+}
+
 // --- the data layer ---------------------------------------------------------
 //
 // The data layer never touches the DOM. Every value below is one observation
@@ -154,23 +191,62 @@ export function buildGBrainHealth(envelope) {
   // outbox. The counts are what the operator needs in either case, so they are
   // always rendered and the reason is appended rather than replacing them.
   const capture = h.capture || {};
-  const captureState = capture.enabled === false ? "off" : capture.failed > 0 ? "degraded" : capture.pending > 0 ? "pending" : "ready";
+  // A record marked archived proves the page was accepted once, not that the
+  // index still serves it, so a parity gap is a degraded capture even when
+  // every outbox record reads clean. It ranks above pending because a pending
+  // item still holds its knowledge and a missing page does not.
+  const audit = capture.audit || {};
+  const auditState = stateValue(audit.state, ["ok", "gap", "inconclusive", "unreadable"]);
+  // The health script already knows why there is no verdict and says so; the
+  // panel renders that rather than substituting a sentence of its own, because
+  // the two reasons are not interchangeable and only one of them is benign.
+  const auditReason = text(audit.detail);
+  const auditAge = auditAgeSuffix(audit.observed);
+  // Green is a positive claim: every record is delivered, every record could be
+  // read, and a parity check ran and passed. Anything that did not reach a
+  // verdict takes a tone that makes no such claim, because a surface that
+  // cannot tell "checked, clean" from "could not check" misleads in exactly the
+  // direction the audit fails closed to avoid. None of them is a fault, so none
+  // of them takes red or amber either: a proven failure and a queued item both
+  // still outrank them.
+  //
+  // The not-green states are not one state. A damaged outbox record, an audit
+  // that ran and could not compare, and an audit whose own record cannot be
+  // read are all something that could not be READ, which is the hollow ring. A
+  // home whose first sweep has not landed yet has nothing to read and nothing
+  // wrong with it, so it takes blue: it is not counted as nominal, because it
+  // has not earned that, and not counted as unreadable either, because nothing
+  // here is damaged.
+  const captureState = capture.enabled === false ? "off"
+    : capture.failed > 0 || auditState === "gap" ? "degraded"
+    : capture.pending > 0 ? "pending"
+    : capture.unreadable > 0 || auditState === "unreadable" ? "unreadable"
+    : auditState === "inconclusive" ? "unverified"
+    : auditState === "unknown" ? "unaudited"
+    : "ready";
   const captureDetail = [
     `${capture.archived ?? 0} archived`,
     `${capture.pending ?? 0} pending`,
     `${capture.failed ?? 0} failed`,
+    `${capture.unreadable ?? 0} unreadable`,
     capture.last_capture_at ? `last captured ${ageLabel((Date.now() - Date.parse(capture.last_capture_at)) / 1000)}` : "no successful capture",
   ].join(" / ")
+    + (auditState === "gap" ? ` · ${missingClause(audit.missing)}${auditAge}` : "")
+    + (auditState === "inconclusive" ? ` · the last stored-versus-served audit ran and could not compare the two sides${auditAge}` : "")
+    + (auditState === "ok" ? ` · every captured document is served${auditAge}` : "")
+    + (auditState === "unknown" ? ` · ${auditReason || "no stored-versus-served audit has run in this home yet"}, which is not a fault` : "")
+    + (auditState === "unreadable" ? ` · ${auditReason || "an audit ran in this home and its record could not be read"}, so its verdict is unknown` : "")
+    + (capture.truncated ? ` · ${capture.truncated} body(ies) cut at the capture cap` : "")
     + (capture.enabled === false
       ? " · the local index is not bootstrapped, so captured documents wait in the outbox"
       : "")
     + (capture.last_error ? " · the last capture attempt failed" : "");
   cards.push({
     label: "Capture",
-    tone: captureState === "ready" ? "green" : captureState === "pending" ? "amber" : captureState === "degraded" ? "red" : "unknown",
+    tone: CAPTURE_TONES[captureState] ?? "unknown",
     value: captureState,
     detail: captureDetail,
-    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry.",
+    tooltip: "The durable capture outbox. archived are in the brain; pending are queued; failed need a manual retry; unreadable are damaged records that were never delivered blind, or a parity verdict that cannot be read. degraded means a failed delivery or a document the outbox calls archived that the index no longer serves. unverified means the parity check ran and could not compare the two sides; unaudited means it has not run here yet, which is the one state of the three that is not a finding.",
   });
 
   const maintenance = h.maintenance || {};
@@ -186,6 +262,41 @@ export function buildGBrainHealth(envelope) {
   const tones = cards.map((card) => card.tone);
   const overall = { tone: worstTone(tones) || "unknown", label: "GBrain" };
   return { cards, overall, status, config: cfg, noBrain: false };
+}
+
+// The collapsed one-line summary above the card list is the first thing an
+// operator reads - the card strip sits behind a disclosure that starts closed -
+// so this line has to carry the same distinctions the cards do rather than
+// flattening them into a claim. It belongs here with the rest of the display
+// model, where a test can reach it.
+//
+// It leads with the worst thing it found, and it never states the nominal count
+// ahead of a fault: a proven fault outranks a could-not-read, which outranks a
+// did-not-check, which outranks clean. Blue is counted in none of them, because
+// a card making no claim is neither a fault nor damage. No cards means the
+// health envelope never arrived, which is an unknown rather than a clean bill.
+export function gbrainHealthSummary(cards) {
+  const list = Array.isArray(cards) ? cards : [];
+  if (list.length === 0) {
+    return { tone: "unknown", text: "health unread", nominal: 0, degraded: 0, degrading: 0, unreadable: 0 };
+  }
+  const nominal = list.filter((card) => card.tone === "green").length;
+  const degraded = list.filter((card) => card.tone === "red").length;
+  const degrading = list.filter((card) => card.tone === "amber").length;
+  const unreadable = list.filter((card) => card.tone === "unknown").length;
+  const parts = [];
+  if (degraded > 0) parts.push(`${degraded} degraded`);
+  if (degrading > 0) parts.push(`${degrading} degrading`);
+  if (unreadable > 0) parts.push(`${unreadable} unreadable`);
+  parts.push(`${nominal} ${nominal === 1 ? "system" : "systems"} nominal`);
+  return {
+    tone: degraded > 0 ? "red" : degrading > 0 ? "amber" : unreadable > 0 ? "unknown" : "green",
+    text: parts.join(" · "),
+    nominal,
+    degraded,
+    degrading,
+    unreadable,
+  };
 }
 
 // --- the rendering layer ----------------------------------------------------

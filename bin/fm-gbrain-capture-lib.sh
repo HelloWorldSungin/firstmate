@@ -20,6 +20,12 @@
 #   home, the source, and the schema version; its content version is a hash of
 #   the redacted body. Recapturing a changed body updates the SAME page rather
 #   than creating a second one, which is what makes delivery idempotent.
+#
+#   A cut body says so, in the body. The cap is a bound on what reaches the
+#   outbox, so a body that hits it is incomplete, and an incomplete body that
+#   reads as complete is worse than no body at all. The cut appends a marker the
+#   reader of the page sees and records .truncated on the record so an audit can
+#   count cut documents without parsing prose.
 
 _FM_GBRAIN_CAPTURE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_GBRAIN_CAPTURE_LIB_DIR="."
 if ! declare -F fm_gbrain_resolve_paths >/dev/null 2>&1; then
@@ -32,7 +38,9 @@ FM_GBRAIN_CAPTURE_SCHEMA=fm-gbrain-capture.v1
 FM_GBRAIN_CAPTURE_OUTBOX_SUBDIR="gbrain-outbox"
 
 # A body is capped so an enqueue on teardown's critical path costs a bounded
-# read and a bounded write no matter how large a report grew.
+# read and a bounded write no matter how large a report grew. The cap is the ONE
+# decision point for truncation: the composer reads its sources under the same
+# bound, but only the whole-body cut here marks the record and the page.
 FM_GBRAIN_CAPTURE_MAX_BYTES=${FM_GBRAIN_CAPTURE_MAX_BYTES:-65536}
 # Bounded retry: an item that has failed this many times stops being retried by
 # an ordinary process run and waits for --force, so a permanently broken item
@@ -56,6 +64,45 @@ fm_gbrain_capture_sha256() {  # <  content
   else
     cksum | awk '{printf "%08x%08x\n", $1, $2}'
   fi
+}
+
+# The fingerprint of what a record was captured FROM, as distinct from what this
+# pipeline wrote about it. It hashes the durable source bytes exactly as they
+# sit on disk: before composition, before redaction, before the cap.
+#
+# The two versions answer different questions and must not be conflated. The
+# content version answers "does the page need rewriting", so it correctly moves
+# whenever anything in the composed body moves - the truncation marker, a
+# redaction placeholder, the schema string in the front matter, the front-matter
+# rendering, the heading and its bullet list, the section headings, and
+# yaml_scalar's escaping are all ours, and every one of them would otherwise
+# read as the source having changed. This version answers "did the thing we
+# captured actually change", so only it may back a claim about the source.
+# Manifest-derived values stay source-derived either way, because the manifest's
+# own bytes are hashed here.
+#
+# Each part is framed by name and byte length so one part's content cannot be
+# read as the next part's frame, and an absent part is hashed as absent rather
+# than skipped, so a report that is deleted is a change rather than a silence.
+# Nothing is printed when no part exists at all: there is no source to fingerprint.
+fm_gbrain_capture_source_version() {  # <path>... -> sha256:<hex>
+  local path present=0 digest
+  for path in "$@"; do
+    if [ -f "$path" ] && [ ! -L "$path" ]; then present=1; fi
+  done
+  [ "$present" -eq 1 ] || return 1
+  digest=$(
+    for path in "$@"; do
+      if [ -f "$path" ] && [ ! -L "$path" ]; then
+        printf '%s %s\n' "${path##*/}" "$(wc -c < "$path" 2>/dev/null | tr -cd '0-9')"
+        cat "$path" 2>/dev/null || true
+      else
+        printf '%s absent\n' "${path##*/}"
+      fi
+    done | fm_gbrain_capture_sha256
+  ) || return 1
+  [ -n "$digest" ] || return 1
+  printf 'sha256:%s\n' "$digest"
 }
 
 # The home tag discriminates BRAINS, so it hashes the resolved home path - the
@@ -139,6 +186,15 @@ fm_gbrain_capture_item_path() {  # <data-dir> <document-id>
 
 fm_gbrain_capture_receipt_path() {  # <state-dir> <id>
   printf '%s/%s.gbrain\n' "$1" "$2"
+}
+
+# The marker a cut body carries. It is appended AFTER redaction so the redactor
+# can never rewrite it and the residual detector reads it as the ordinary prose
+# it is. It names the byte count rather than the source size, because the cap
+# bounds the read as well: at the point of the cut the only known fact is how
+# much was kept.
+fm_gbrain_capture_truncation_marker() {  # <captured-bytes>
+  printf '\n---\n\n**Capture truncated at %s bytes.** This page carries the beginning of a longer record; the rest of it was never captured. Read the durable source this page names for the remainder.\n' "$1"
 }
 
 # --- redaction --------------------------------------------------------------
@@ -339,8 +395,13 @@ fm_gbrain_capture_item_valid() {  # <json>
     and (.attempts | type == "number" and . >= 0)
     and (.last_error == null or (.last_error | type == "string"))
     and (.gbrain_document == null or (.gbrain_document | type == "string" and length > 0))
+    and (.delivered_version == null or (.delivered_version | type == "string" and test("^sha256:[0-9a-f]+$")))
+    and (.source_version == null or (.source_version | type == "string" and test("^sha256:[0-9a-f]+$")))
+    and (.delivered_source_version == null or (.delivered_source_version | type == "string" and test("^sha256:[0-9a-f]+$")))
     and (.redactions | type == "array")
     and (.body | type == "string")
+    and (.truncated == null or (.truncated | type == "boolean"))
+    and (.captured_bytes == null or (.captured_bytes | type == "number" and . >= 0))
   ' >/dev/null 2>&1
 }
 
@@ -374,9 +435,10 @@ fm_gbrain_capture_item_write() {  # <data-dir> <document-id> <json>
 # FM_GBRAIN_CAPTURE_ERROR afterwards: a command substitution would run this in a
 # subshell and lose the reason for every refusal it is supposed to report.
 # Returns 1 on refusal, 2 on an internal failure.
-fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-file> <out-file> [<previous-json>]
-  local home=$1 kind=$2 source_id=$3 title=$4 raw=$5 out=$6 previous=${7:-}
+fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-file> <out-file> [<previous-json>] [<source-version>]
+  local home=$1 kind=$2 source_id=$3 title=$4 raw=$5 out=$6 previous=${7:-} source_version=${8:-}
   local tag doc_id slug counts redacted residual now version attempts prev_status
+  local raw_bytes truncated captured_bytes
   # Cleared for the caller, which reads it after a refusal return.
   # shellcheck disable=SC2034
   FM_GBRAIN_CAPTURE_ERROR=""
@@ -388,8 +450,22 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
 
   counts=$(mktemp) || return 2
   redacted=$(mktemp) || { rm -f "$counts"; return 2; }
+  # The composed body is measured before it is cut, so a body that hit the cap
+  # is known to be incomplete rather than inferred to be from its stored length.
+  raw_bytes=$(wc -c < "$raw" 2>/dev/null | tr -cd '0-9')
+  [ -n "$raw_bytes" ] || raw_bytes=0
+  truncated=false
+  [ "$raw_bytes" -le "$FM_GBRAIN_CAPTURE_MAX_BYTES" ] || truncated=true
   head -c "$FM_GBRAIN_CAPTURE_MAX_BYTES" "$raw" \
     | fm_gbrain_capture_redact "$counts" > "$redacted" || { rm -f "$counts" "$redacted"; return 2; }
+  # Appended after redaction and before the residual guard: the redactor cannot
+  # rewrite it, the guard reads it as the ordinary prose it is, and the content
+  # version below covers it, so a body that starts hitting the cap is a new
+  # revision rather than an unchanged one.
+  if [ "$truncated" = true ]; then
+    fm_gbrain_capture_truncation_marker "$FM_GBRAIN_CAPTURE_MAX_BYTES" >> "$redacted" \
+      || { rm -f "$counts" "$redacted"; return 2; }
+  fi
   residual=$(fm_gbrain_capture_residual < "$redacted" | tr '\n' ' ')
   residual=${residual% }
   if [ -n "$residual" ]; then
@@ -403,6 +479,8 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
     return 1
   fi
 
+  captured_bytes=$(wc -c < "$redacted" 2>/dev/null | tr -cd '0-9')
+  [ -n "$captured_bytes" ] || captured_bytes=0
   version="sha256:$(fm_gbrain_capture_sha256 < "$redacted")"
   now=$(fm_gbrain_capture_now_iso)
   attempts=0
@@ -411,9 +489,16 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
     prev_status=$(printf '%s' "$previous" | jq -r '.content_version // ""')
     if [ "$prev_status" = "$version" ]; then
       # Same content: keep the record's history rather than resetting a
-      # captured document back to pending on a re-run.
+      # captured document back to pending on a re-run. The source fingerprint
+      # is still a fresh measurement of what is on disk right now, so it is
+      # recorded here; a record written before this field existed also learns
+      # what its served page was built from, because a byte-identical body is
+      # proof that this source is the one that produced it.
       rm -f "$counts" "$redacted"
-      printf '%s\n' "$previous" > "$out" || return 2
+      printf '%s\n' "$previous" | jq --arg sv "$source_version" '
+        .source_version = (if $sv == "" then .source_version else $sv end)
+        | .delivered_source_version = (.delivered_source_version
+            // (if .status == "captured" then .source_version else null end))' > "$out" || return 2
       return 0
     fi
   fi
@@ -430,8 +515,11 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
     --arg source_id "$source_id" \
     --arg title "$title" \
     --arg version "$version" \
+    --arg source_version "$source_version" \
     --arg now "$now" \
     --argjson attempts "$attempts" \
+    --argjson truncated "$truncated" \
+    --argjson captured_bytes "$captured_bytes" \
     --rawfile body "$redacted" \
     --rawfile counts "$counts" '
       {
@@ -446,15 +534,35 @@ fm_gbrain_capture_item_build() {  # <home> <kind> <source-id> <title> <raw-body-
         attempts: $attempts,
         last_error: null,
         gbrain_document: null,
+        delivered_version: null,
+        source_version: (if $source_version == "" then null else $source_version end),
+        delivered_source_version: null,
         redactions: ($counts | split("\n") | map(select(length > 0) | split(" ") | {class: .[0], count: (.[1] | tonumber)}) | sort_by(.class)),
+        truncated: $truncated,
+        captured_bytes: $captured_bytes,
         created_at: $now,
         updated_at: $now,
         captured_at: null,
         body: $body
       }') || { rm -f "$counts" "$redacted"; return 2; }
   rm -f "$counts" "$redacted"
+  # A rebuild resets status, gbrain_document and captured_at, so without this
+  # the record would forget that its page had ever been delivered at all - and
+  # a refresh whose first delivery failed could never be told from a first
+  # capture afterwards. Both delivered versions therefore survive the rebuild
+  # the same way created_at does, and only a landed delivery moves them.
+  #
+  # The source one deliberately does NOT fall back to the previous content
+  # version: a record written before this field existed has no recorded source
+  # for its served page, and inventing one would let this change's own body
+  # rewrites read as reports somebody edited.
   if [ -n "$previous" ]; then
-    doc=$(printf '%s' "$doc" | jq --argjson prev "$previous" '.created_at = ($prev.created_at // .created_at)') || return 2
+    doc=$(printf '%s' "$doc" | jq --argjson prev "$previous" '
+      .created_at = ($prev.created_at // .created_at)
+      | .delivered_version = ($prev.delivered_version
+          // (if $prev.status == "captured" then $prev.content_version else null end))
+      | .delivered_source_version = ($prev.delivered_source_version
+          // (if $prev.status == "captured" then $prev.source_version else null end))') || return 2
   fi
   printf '%s\n' "$doc" > "$out" || return 2
 }

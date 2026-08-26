@@ -148,6 +148,8 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  deferred network stage records owned by bin/fm-startup-network.sh
+  .gbrain-capture-sweep  last captured-knowledge refresh and stored-versus-served audit; its mtime is the interval, safe to delete (forces one sweep)
+  .gbrain-audit      last stored-versus-served audit verdict, replayed by the dashboard rather than re-measured; safe to delete (reads as never audited until the next sweep)
   .board-sweep       last fleet-wide project-board reconciliation sweep; its mtime is the interval, safe to delete (forces one sweep)
   .board-sweep-cursor  the last registry entry that sweep FINISHED; the next one starts after it, wrapping, so a truncated sweep cannot starve the registry's tail (safe to delete: the next sweep starts at the top)
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
@@ -569,7 +571,7 @@ When the captain asks to check or update this fleet's toolchain ("check tool upd
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `GBRAIN_PIN:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `GBRAIN_PIN:`, `GBRAIN_CAPTURE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.

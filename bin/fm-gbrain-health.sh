@@ -31,14 +31,28 @@
 #                           absent means this home has not initialized a brain
 #                           and is a normal state.
 #   capture                 {enabled, archived, pending, failed, unreadable,
-#                           last_capture_at, last_error, detail} from the
-#                           durable outbox and receipts, not from anything
-#                           GBrain keeps. The last_capture_at is the captured_at
-#                           of the most recent captured document, or null.
-#                           enabled is false when no brain is configured OR when
-#                           this home's index has not been bootstrapped yet;
-#                           detail names which of the two it is, and the counts
-#                           are reported either way.
+#                           truncated, last_capture_at, last_error, detail,
+#                           audit} from the durable outbox and receipts, not
+#                           from anything GBrain keeps. The last_capture_at is
+#                           the captured_at of the most recent captured
+#                           document, or null. truncated counts stored bodies
+#                           cut at the capture cap. enabled is false when no
+#                           brain is configured OR when this home's index has
+#                           not been bootstrapped yet; detail names which of the
+#                           two it is, and the counts are reported either way.
+#                           audit is {state, stored, active, missing, observed,
+#                           detail} replayed from the durable record the
+#                           stored-versus-served audit last wrote, where state
+#                           is one of ok | gap | inconclusive | unreadable |
+#                           unknown. It is REPLAYED, never measured here: this
+#                           command runs on every dashboard poll and the audit
+#                           opens the index, so measuring it here would put a
+#                           repeated index read behind a poll that must stay
+#                           cheap. unknown means no audit has run in this home
+#                           yet; unreadable means one ran and its record cannot
+#                           be parsed or carries an unrecognized schema, which
+#                           is a could-not-read rather than a not-yet-checked.
+#                           observed is how old the answer is.
 #   retrieval               {state, embedding, reranker, main_brain} where
 #                           state is the worst of the three probes below.
 #                           embedding/reranker/main_brain are each {state,
@@ -333,10 +347,41 @@ retrieval_overall() {  # <embedding> <reranker> <main_brain> -> echoes row
 # restarts, and process exits. fm-gbrain-capture.sh status is the single owner
 # of the count semantics.
 
+# The stored-versus-served verdict, replayed from the record the audit wrote.
+# It is never measured here: this runs on every dashboard poll, and opening the
+# index once per poll to re-derive an answer that changes on a sweep interval
+# would put a repeated index read behind a poll that has to stay cheap.
+#
+# None of these reports a zero gap nobody measured, but the two ways of having
+# no verdict are NOT the same and are not reported as one. An absent record
+# means no audit has run here, which is a home that has not been checked and is
+# not a fault. A record that cannot be parsed, or that carries a schema this
+# reader does not recognize - a v2 written by a newer Firstmate, say - means an
+# audit DID run and its verdict cannot be read, which is a could-not-read like
+# any other and must never render as a home that simply has not been checked.
+capture_audit() {  # -> echoes row
+  local path doc
+  path="${FM_STATE_OVERRIDE:-$FM_HOME/state}/.gbrain-audit"
+  if [ ! -f "$path" ] || [ -L "$path" ]; then
+    jq -cn '{state: "unknown", stored: null, active: null, missing: null, observed: null,
+             detail: "no captured-versus-served audit has run in this home yet"}'
+    return 0
+  fi
+  doc=$(cat "$path" 2>/dev/null) || doc=""
+  if ! printf '%s' "$doc" | jq -e '.schema == "fm-gbrain-capture-audit.v1"' >/dev/null 2>&1; then
+    jq -cn '{state: "unreadable", stored: null, active: null, missing: null, observed: null,
+             detail: "an audit ran in this home and its record could not be read"}'
+    return 0
+  fi
+  printf '%s' "$doc" | jq -c '{state: .state, stored: .stored, active: .active,
+    missing: .missing, observed: .generated, detail: .detail}'
+}
+
 capture_state() {  # -> echoes row
-  local out captured_at last_error pending failed archived unreadable enabled detail
+  local out captured_at last_error pending failed archived unreadable truncated enabled detail audit
+  audit=$(capture_audit)
   if [ "$CONFIGURED" != true ]; then
-    jq -cn '{enabled: false, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: null, detail: "no brain configured"}'
+    jq -cn --argjson audit "$audit" '{enabled: false, archived: 0, pending: 0, failed: 0, unreadable: 0, truncated: 0, last_capture_at: null, last_error: null, detail: "no brain configured", audit: $audit}'
     return 0
   fi
   # Capture is off on a configured home whose index has not been bootstrapped.
@@ -347,17 +392,18 @@ capture_state() {  # -> echoes row
   detail=
   [ "$enabled" = true ] || detail="the local index at $FM_HOME is not bootstrapped, so captured documents wait in the durable outbox"
   if ! out=$(fm_run_timed "$(budget_remaining)" "$SCRIPT_DIR/fm-gbrain-capture.sh" status --json 2>/dev/null); then
-    jq -cn --argjson e "$enabled" --arg d "$detail" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status could not be read", detail: (if $d == "" then null else $d end)}'
+    jq -cn --argjson e "$enabled" --arg d "$detail" --argjson audit "$audit" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, truncated: 0, last_capture_at: null, last_error: "capture status could not be read", detail: (if $d == "" then null else $d end), audit: $audit}'
     return 0
   fi
   if ! printf '%s' "$out" | jq -e '.schema == "fm-gbrain-capture-status.v1"' >/dev/null 2>&1; then
-    jq -cn --argjson e "$enabled" --arg d "$detail" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, last_capture_at: null, last_error: "capture status schema is unsupported", detail: (if $d == "" then null else $d end)}'
+    jq -cn --argjson e "$enabled" --arg d "$detail" --argjson audit "$audit" '{enabled: $e, archived: 0, pending: 0, failed: 0, unreadable: 0, truncated: 0, last_capture_at: null, last_error: "capture status schema is unsupported", detail: (if $d == "" then null else $d end), audit: $audit}'
     return 0
   fi
   archived=$(printf '%s' "$out" | jq '.totals.archived // 0')
   pending=$(printf '%s' "$out" | jq '.totals.pending // 0')
   failed=$(printf '%s' "$out" | jq '.totals.failed // 0')
   unreadable=$(printf '%s' "$out" | jq '.totals.unreadable // 0')
+  truncated=$(printf '%s' "$out" | jq '.totals.truncated // 0')
   captured_at=$(printf '%s' "$out" | jq -r '
     [ .documents[] | select(.status == "captured") | .captured_at ]
     | max // null
@@ -371,11 +417,13 @@ capture_state() {  # -> echoes row
     ] | first // null
   ')
   jq -cn --argjson e "$enabled" --argjson a "$archived" --argjson p "$pending" --argjson f "$failed" \
-    --argjson u "$unreadable" --arg at "$captured_at" --arg er "$last_error" --arg d "$detail" \
-    '{enabled: $e, archived: $a, pending: $p, failed: $f, unreadable: $u,
+    --argjson u "$unreadable" --argjson t "$truncated" --arg at "$captured_at" --arg er "$last_error" \
+    --arg d "$detail" --argjson audit "$audit" \
+    '{enabled: $e, archived: $a, pending: $p, failed: $f, unreadable: $u, truncated: $t,
       last_capture_at: (if $at == "" or $at == "null" then null else $at end),
       last_error: (if $er == "" or $er == "null" then null else $er end),
-      detail: (if $d == "" then null else $d end)}'
+      detail: (if $d == "" then null else $d end),
+      audit: $audit}'
 }
 
 # --- maintenance state ------------------------------------------------------

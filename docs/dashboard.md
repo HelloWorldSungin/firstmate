@@ -178,7 +178,7 @@ The short version worth knowing before reading it: instrumentation is one comman
 
 ## Knowledge
 
-The Knowledge page is a read-only search over this home's optional GBrain brain, with the brain's health folded into a collapsible strip: presence, pinned version, index state, retrieval health, hosted-synthesis health, durable capture outbox, and maintenance state.
+The Knowledge page is a read-only search over this home's optional GBrain brain, with the brain's health folded into a collapsible strip: presence, pinned version, index state, retrieval health, hosted-synthesis health, the durable capture outbox with its stored-versus-served parity verdict, and maintenance state.
 None of those are fleet health signals.
 The brain is presence-gated and every read of it is bounded, so a brain that is absent, stopped, or slow degrades the page and never the dashboard or Firstmate supervision.
 A home with no brain configured keeps Knowledge in the navigation and renders a quiet explanation page - nothing is broken, there is simply nothing to search - rather than demoting the destination out of primary navigation.
@@ -187,6 +187,7 @@ The health read refreshes on the history poll rather than the faster snapshot po
 
 A home without a brain reports `configured: false`, which is the normal state of a fleet that has not adopted GBrain and what renders the explanation page above.
 A configured home whose brain is not yet bootstrapped shows `index.state: absent`, which is not a fault; capture stays off and captured documents wait in the durable outbox.
+The Capture card replays the last stored-versus-served audit verdict rather than re-measuring it on a poll, so a proven parity gap reads `degraded` while an audit that could not compare the two sides, or none yet, is kept apart from a green dot; [`gbrain-capture.md`](gbrain-capture.md) owns those verdicts, the observation age shown beside them, and the repair.
 A configured home whose embedding or reranker endpoint is unreachable reports `retrieval.state: degraded` and names the leg that went, while `synthesis.state` stays `ok` because local search keeps working.
 A configured home whose hosted synthesis provider is down reports `synthesis.state: degraded` while retrieval stays `ok`.
 A brain the operator has paused for care reports `maintenance.state: upgrading` or `reindexing` with the operator's own detail text, and [`docs/gbrain.md`](gbrain.md#announce-a-maintenance-window) owns when to announce that and how to clear it.

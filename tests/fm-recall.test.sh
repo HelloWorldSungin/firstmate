@@ -1048,7 +1048,7 @@ run_recall "$MAIN_HOME" search --json --scope local utf8-tail
 # is genuinely absent, and that absence is capture's doing, not the report's, so
 # the mtime rule decides alone. FM_GBRAIN_CAPTURE_MAX_BYTES is the same knob
 # capture reads, which is what makes the ceiling testable without a 64 KiB file.
-TRUNC_ID=truncated-capture
+TRUNC_ID="truncated-capture"
 TRUNC_REPORT="$(printf 'a%.0s' $(seq 1 900))ENDOFREPORT"
 TRUNC_SLUG=$(write_outbox "$MAIN_HOME" task "$TRUNC_ID" "2026-08-11T20:00:00Z" \
   "$(printf 'a%.0s' $(seq 1 512))")
