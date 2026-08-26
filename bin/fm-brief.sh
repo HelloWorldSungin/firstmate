@@ -735,9 +735,9 @@ Do not implement the resulting design or make unrelated project changes.
 Do not create or modify any other tracked project file, including \`AGENTS.md\` or \`CLAUDE.md\`.
 
 Read and follow \`$FM_ROOT/.agents/skills/design-profile/SKILL.md\` before beginning the interview.
-Run \`$FM_ROOT/bin/fm-design-skills.sh resolve\`, then use your read tool to load the exact \`grilling\` and \`domain_modeling\` skill paths in its JSON output.
-This direct file-resolution contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling.
-If resolution fails or either file cannot be read, append \`blocked: required mattpocock design skills are unavailable; the captain must refresh them with /plugin\` and stop.
+At dispatch Firstmate prepends the exact \`grilling\` and \`domain_modeling\` paths from the resolver call whose plugin release it records for this task.
+Read only those dispatch-pinned paths, never resolve the plugin again from this worker, and stop with the binding's blocker if either exact file is unavailable.
+This direct file-binding contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling.
 Never install, update, copy, vendor, pin, or modify that plugin from this task.
 Use those skills for modeling and interrogation only.
 Do not create or update \`CONTEXT.md\`, even if a dependency instructs you to do so.

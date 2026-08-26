@@ -1377,9 +1377,11 @@ test_design_brief_is_harness_independent_and_adr_only() {
   assert_grep 'This is an interactive DESIGN task' "$brief" \
     "design brief did not declare the profile"
   assert_grep 'identical on Claude, Codex, and Pi' "$brief" \
-    "design brief did not carry the harness-independent resolution contract"
-  assert_grep 'fm-design-skills.sh resolve' "$brief" \
-    "design brief did not resolve the installed plugin dependency"
+    "design brief did not carry the harness-independent binding contract"
+  assert_grep 'dispatch-pinned paths' "$brief" \
+    "design brief did not require the dispatch-time plugin binding"
+  assert_no_grep 'fm-design-skills.sh resolve' "$brief" \
+    "design brief told the worker to resolve a potentially different plugin release"
   assert_grep 'Never install, update, copy, vendor, pin, or modify that plugin' "$brief" \
     "design brief allowed worker-owned plugin lifecycle"
   assert_grep 'Use those skills for modeling and interrogation only' "$brief" \

@@ -56,10 +56,10 @@ The model names are representative test strings that verify axis transport; they
 ### Design dependency provenance
 
 The `mattpocock-skills@mattpocock` plugin a design interview reads auto-updates under the captain's own setting, so the release that informed one design result need not be the release that informs the next.
-The 2026-08-26 addition makes `bin/fm-spawn.sh --design` resolve that plugin once at dispatch, using the same call as the dependency gate, and record `design_skills_plugin=`, `design_skills_version=`, and `design_skills_updated=` in the task's metadata, from where the completion manifest carries them past cleanup.
+The 2026-08-26 addition makes `bin/fm-spawn.sh --design` resolve that plugin once at dispatch, bind the worker-facing brief to that result's concrete skill paths, and record `design_skills_plugin=`, `design_skills_version=`, and `design_skills_updated=` in the task's metadata, from where the completion manifest carries them past cleanup.
 [`docs/fleet-data-contracts.md`](../fleet-data-contracts.md#the-design-tasks-plugin-release) owns the recorded contract.
 
-The regressions are `test_design_dispatch_records_the_release_it_resolved`, `test_ship_dispatch_records_no_release`, and `test_design_dispatch_refuses_an_unresolvable_plugin` in `tests/fm-design-skills.test.sh`, which drive real design and ship spawns against fixture plugin installs, plus `test_design_manifest_carries_the_plugin_release`, `test_manifest_omits_an_unresolved_plugin_release`, and `test_manifest_without_design_skills_stays_valid` in `tests/fm-outcome-manifest.test.sh`.
+The regressions are `test_design_dispatch_records_the_release_it_resolved`, `test_design_dispatch_binds_one_resolve_to_metadata_and_brief`, `test_design_dispatch_refuses_a_missing_pinned_path`, `test_ship_dispatch_records_no_release`, and `test_design_dispatch_refuses_an_unresolvable_plugin` in `tests/fm-design-skills.test.sh`, which drive real design and ship spawns against fixture plugin installs, plus `test_design_manifest_carries_the_plugin_release`, `test_manifest_omits_an_unresolved_plugin_release`, and `test_manifest_without_design_skills_stays_valid` in `tests/fm-outcome-manifest.test.sh`.
 
 The 2026-08-26 focused command was:
 

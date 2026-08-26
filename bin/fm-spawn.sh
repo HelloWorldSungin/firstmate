@@ -180,7 +180,8 @@
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in bin/fm-launch-lib.sh (fm_launch_template); placeholders replaced before launch:
-#     __BRIEF__    absolute path to data/<task-id>/brief.md
+#     __BRIEF__    absolute path to the worker-facing brief; design dispatches use
+#                  a per-dispatch copy carrying their pinned skill paths
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
@@ -1631,6 +1632,9 @@ fi
 DESIGN_SKILLS_PLUGIN=
 DESIGN_SKILLS_VERSION=
 DESIGN_SKILLS_UPDATED=
+DESIGN_SKILLS_GRILLING=
+DESIGN_SKILLS_DOMAIN_MODELING=
+DESIGN_SKILLS_BINDING=
 # Matches the durable manifest's free-text cap (FM_OUTCOME_TEXT_MAX in
 # bin/fm-outcome-lib.sh), so a value recorded here can always be published.
 DESIGN_SKILLS_FIELD_MAX=240
@@ -1643,6 +1647,17 @@ design_skills_field() {  # <resolve-json> <field> -> one meta-safe line
     | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//' \
     | cut -c "1-$DESIGN_SKILLS_FIELD_MAX"
 }
+design_skill_path() {  # <resolve-json> <skill-key> -> exact absolute path
+  printf '%s\n' "$1" \
+    | jq -er --arg skill "$2" '.skills[$skill] | select(type == "string" and length > 0)'
+}
+design_skill_path_is_safe() {  # <path>
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')" = "$1" ]
+}
 if [ "$KIND" = design ]; then
   DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
     echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
@@ -1651,11 +1666,27 @@ if [ "$KIND" = design ]; then
   DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
   DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
   DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
+  DESIGN_SKILLS_GRILLING=$(design_skill_path "$DESIGN_SKILLS_RECORD" grilling) || DESIGN_SKILLS_GRILLING=
+  DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$DESIGN_SKILLS_RECORD" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
   if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
-    || [ -z "$DESIGN_SKILLS_UPDATED" ]; then
-    echo "error: the installed mattpocock plugin resolved without a usable identity, version, and update stamp, so this design task's inputs could not be recorded; refusing rather than dispatching an untraceable design" >&2
+    || [ -z "$DESIGN_SKILLS_UPDATED" ] \
+    || ! design_skill_path_is_safe "$DESIGN_SKILLS_GRILLING" \
+    || ! design_skill_path_is_safe "$DESIGN_SKILLS_DOMAIN_MODELING"; then
+    echo "error: the installed mattpocock plugin resolved without a usable identity, version, update stamp, and absolute skill paths, so this design task's inputs could not be pinned and recorded; refusing rather than dispatching an untraceable design" >&2
     exit 1
   fi
+  DESIGN_SKILLS_BINDING=$(jq -cn \
+    --arg plugin "$DESIGN_SKILLS_PLUGIN" \
+    --arg version "$DESIGN_SKILLS_VERSION" \
+    --arg last_updated "$DESIGN_SKILLS_UPDATED" \
+    --arg grilling "$DESIGN_SKILLS_GRILLING" \
+    --arg domain_modeling "$DESIGN_SKILLS_DOMAIN_MODELING" \
+    '{schema:"fm-design-skills.dispatch.v1", plugin:$plugin, version:$version,
+      last_updated:$last_updated,
+      skills:{grilling:$grilling, domain_modeling:$domain_modeling}}') || {
+    echo "error: the resolved mattpocock design skills could not be serialized into the dispatch brief" >&2
+    exit 1
+  }
 fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
@@ -2423,6 +2454,48 @@ fi
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
 TASK_TMP="/tmp/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
+
+if [ "$KIND" = design ]; then
+  if [ ! -f "$DESIGN_SKILLS_GRILLING" ] || [ -L "$DESIGN_SKILLS_GRILLING" ] \
+    || [ ! -r "$DESIGN_SKILLS_GRILLING" ] \
+    || [ ! -f "$DESIGN_SKILLS_DOMAIN_MODELING" ] || [ -L "$DESIGN_SKILLS_DOMAIN_MODELING" ] \
+    || [ ! -r "$DESIGN_SKILLS_DOMAIN_MODELING" ]; then
+    echo "error: a dispatch-pinned mattpocock design skill path disappeared or became unreadable after resolution; refusing instead of silently resolving a different plugin release" >&2
+    exit 1
+  fi
+  DESIGN_DISPATCH_BRIEF="$TASK_TMP/brief.md"
+  DESIGN_DISPATCH_BRIEF_TMP="$TASK_TMP/.brief.${BASHPID:-$$}"
+  {
+    printf '%s\n' \
+      '# Dispatch-pinned design skills' \
+      'Firstmate resolved this binding once at dispatch and recorded its plugin release in the task metadata.' \
+      'Use your read tool to load exactly the `grilling` and `domain_modeling` paths in this JSON record.' \
+      'Do not run `fm-design-skills.sh resolve` or substitute another installed release.' \
+      'If either exact pinned path is missing, unreadable, or a symlink, append `blocked: dispatch-pinned mattpocock design skill is unavailable; the captain must refresh the plugin and relaunch the task` and stop.' \
+      '' \
+      '```json' \
+      "$DESIGN_SKILLS_BINDING" \
+      '```' \
+      '' \
+      '# Authored task brief'
+    awk '
+      index($0, "fm-design-skills.sh resolve") && index($0, "then use your read tool") { next }
+      $0 == "This direct file-resolution contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling." { next }
+      { print }
+    ' "$BRIEF_REAL"
+  } > "$DESIGN_DISPATCH_BRIEF_TMP" || {
+    rm -f "$DESIGN_DISPATCH_BRIEF_TMP"
+    echo "error: could not write the dispatch-pinned design brief for $ID" >&2
+    exit 1
+  }
+  mv -f "$DESIGN_DISPATCH_BRIEF_TMP" "$DESIGN_DISPATCH_BRIEF" || {
+    rm -f "$DESIGN_DISPATCH_BRIEF_TMP"
+    echo "error: could not publish the dispatch-pinned design brief for $ID" >&2
+    exit 1
+  }
+  BRIEF=$DESIGN_DISPATCH_BRIEF
+  BRIEF_REAL=$DESIGN_DISPATCH_BRIEF
+fi
 
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
