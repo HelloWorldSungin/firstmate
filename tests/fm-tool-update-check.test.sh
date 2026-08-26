@@ -697,20 +697,66 @@ test_release_tags_are_ordered_by_version_not_lexically() {
   pass "release tags are ordered by version, not by ref name"
 }
 
+test_release_versions_with_different_component_counts_are_ordered() {
+  local home work out report
+  home=$(make_home git-release-components)
+  work=$(git_fixture git-release-components-repo)
+  git -C "$work" tag -a v1.2 -m v1.2
+  git -C "$work" push -q origin v1.2
+  release_tag_remote_only "$work" v1.2.0.0
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "zero-valued trailing components changed the release order: $(cat "$out")"
+
+  release_tag_remote_only "$work" v1.2.0.1
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin update available" "a nonzero trailing component was not ordered after a shorter version"
+  assert_contains "$report" "local v1.2 is behind origin v1.2.0.1" "the differing component counts produced the wrong release order"
+  pass "missing release components compare as zero across accepted version lengths"
+}
+
 test_non_semver_tags_are_not_treated_as_releases() {
   local home work out
   # A legacy-shaped tag with a larger dotted number must not win, and must not
   # crash the probe. The real marketplace carries mattpocock-skills@1.0.0.
-  # The tag is remote-only: if 9.9.9 were read as a release, this would report
-  # an update against local v1.2.3.
   home=$(make_home git-release-legacy)
-  work=$(git_release_fixture git-release-legacy-repo)
-  release_tag_remote_only "$work" 'mattpocock-skills@9.9.9'
+  work=$(git_fixture git-release-legacy-repo)
+  git -C "$work" tag -a v0.9.0 -m v0.9.0
+  git -C "$work" push -q origin v0.9.0
+  release_tag_remote_only "$work" 'mattpocock-skills@1.0.0'
   write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
   out="$home/out.txt"
   run_check "$home" "$PATH" "$out"
   [ ! -s "$out" ] || fail "a non-semver tag was treated as a newer release: $(cat "$out")"
   pass "a non-semver tag is skipped rather than treated as the newest release"
+}
+
+test_an_unreadable_release_tag_is_a_check_failure() {
+  local home work out report older_unreadable unreadable
+  home=$(make_home git-release-unreadable)
+  work=$(git_release_fixture git-release-unreadable-repo)
+  older_unreadable=v1.9223372036854775808
+  release_tag_remote_only "$work" "$older_unreadable"
+  release_tag_remote_only "$work" v2.0
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin update available: local v1.2.3 is behind origin v2.0" "an older unreadable tag blocked the readable newest release"
+  assert_not_contains "$report" "check failed" "an unreadable tag that was not newest failed the release check"
+
+  unreadable=v9223372036854775808.0
+  release_tag_remote_only "$work" "$unreadable"
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin check failed" "an unreadable release tag fell through as a clean check"
+  assert_contains "$report" "origin release tag $unreadable could not be interpreted" "the check failure did not name the unreadable release tag"
+  assert_not_contains "$report" "update available" "an unreadable release tag was treated as an available update"
+  pass "an unreadable release tag is named in its tool's check failure"
 }
 
 test_prerelease_tags_are_not_treated_as_releases() {
@@ -1271,7 +1317,9 @@ test_a_stalled_repository_probe_is_not_reported_as_not_a_repository
 test_release_watch_is_silent_when_tags_match_even_if_the_branch_is_behind
 test_a_newer_release_tag_is_reported_as_update_available
 test_release_tags_are_ordered_by_version_not_lexically
+test_release_versions_with_different_component_counts_are_ordered
 test_non_semver_tags_are_not_treated_as_releases
+test_an_unreadable_release_tag_is_a_check_failure
 test_prerelease_tags_are_not_treated_as_releases
 test_a_repository_with_no_tags_is_silent
 test_an_unanswered_release_probe_is_a_check_failure

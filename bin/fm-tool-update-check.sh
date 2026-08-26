@@ -39,6 +39,9 @@
 # compares newest release tags instead of the branch head: git ls-remote --tags
 # on the remote, and the same read against `.` for tags the clone already has,
 # so nothing is fetched. Newest is version-aware, so v1.10.0 beats v1.9.0.
+# Missing numeric components compare as zero, so v1.2 equals v1.2.0 while
+# v1.2.0.1 is newer. If the newest tag has a component larger than
+# 9223372036854775807, the tag is named in a check failure.
 # Annotated tags appear twice in ls-remote output (refs/tags/vX and
 # refs/tags/vX^{}) and count as one release. A tag counts as a release only
 # when it is a dotted version with an optional v prefix and nothing else, so
@@ -520,6 +523,51 @@ EOF
 # a status of its own rather than a git status, so no caller can read it as an
 # answer. Neither git nor the bounded runner uses this value.
 GIT_PROBE_NOT_ISSUED=3
+RELEASE_TAG_UNREADABLE=4
+RELEASE_VERSION_COMPONENT_MAX=9223372036854775807
+
+release_version_newer() {
+  local a=$1 b=$2 i left right
+  local -a ap bp
+  IFS=. read -r -a ap <<< "$a"
+  IFS=. read -r -a bp <<< "$b"
+  i=0
+  while [ "$i" -lt "${#ap[@]}" ] || [ "$i" -lt "${#bp[@]}" ]; do
+    left=${ap[i]:-0}
+    right=${bp[i]:-0}
+    while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do left=${left#0}; done
+    while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do right=${right#0}; done
+    if [ "${#left}" -gt "${#right}" ]; then
+      return 0
+    elif [ "${#left}" -lt "${#right}" ]; then
+      return 1
+    elif [[ "$left" > "$right" ]]; then
+      return 0
+    elif [[ "$left" < "$right" ]]; then
+      return 1
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+release_version_readable() {
+  local version=$1 component normalized
+  local -a components
+  IFS=. read -r -a components <<< "$version"
+  for component in "${components[@]}"; do
+    normalized=$component
+    while [ "${#normalized}" -gt 1 ] && [ "${normalized#0}" != "$normalized" ]; do
+      normalized=${normalized#0}
+    done
+    if [ "${#normalized}" -gt "${#RELEASE_VERSION_COMPONENT_MAX}" ] \
+      || { [ "${#normalized}" -eq "${#RELEASE_VERSION_COMPONENT_MAX}" ] \
+        && [[ "$normalized" > "$RELEASE_VERSION_COMPONENT_MAX" ]]; }; then
+      return 1
+    fi
+  done
+  return 0
+}
 
 # One bounded read-only git probe. The budget check lives here rather than in the
 # callers, so no probe can be issued past the sweep deadline whatever a caller
@@ -669,12 +717,16 @@ newest_release_tag() {
     name=${name%'^{}'}
     [[ "$name" =~ ^v?[0-9]+(\.[0-9]+)+$ ]] || continue
     version=${name#v}
-    if [ -z "$best_version" ] || version_newer "$version" "$best_version"; then
+    if [ -z "$best_version" ] || release_version_newer "$version" "$best_version"; then
       best=$name
       best_version=$version
     fi
   done <<< "$output"
   budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
+  if [ -n "$best_version" ] && ! release_version_readable "$best_version"; then
+    printf '%s\n' "$best"
+    return "$RELEASE_TAG_UNREADABLE"
+  fi
   printf '%s\n' "$best"
 }
 
@@ -722,11 +774,17 @@ git_release_findings() {
   if [ "$status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
     emit "$name check failed: the time budget ran out before $remote release tags were fully parsed"
     return 0
+  elif [ "$status" -eq "$RELEASE_TAG_UNREADABLE" ]; then
+    emit "$name check failed: $remote release tag $remote_tag could not be interpreted"
+    return 0
   fi
   local_tag=$(newest_release_tag "$local_out")
   status=$?
   if [ "$status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
     emit "$name check failed: the time budget ran out before $repo release tags were fully parsed"
+    return 0
+  elif [ "$status" -eq "$RELEASE_TAG_UNREADABLE" ]; then
+    emit "$name check failed: $repo release tag $local_tag could not be interpreted"
     return 0
   fi
 
