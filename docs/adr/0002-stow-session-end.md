@@ -114,10 +114,9 @@ Advancing it would record an evaluation that never happened.
 #### Dated portability check
 
 The execution-path selector does not depend on a cross-harness context-pressure reading because a 2026-08-26 portability review in the primary home found no such shared Firstmate adapter contract.
-That review read nine tracked primary-harness adapter variants through `bin/fm-harness-adapter-doc.sh`.
+That review counted eight primary harness identities resolving through `bin/fm-harness-adapter-doc.sh` to seven distinct tracked adapter variant files; `pi` and `pi-signed` both resolved to `pi.md`.
 It inspected the tracked primary-session, compaction, and adapter surfaces for context-window, remaining-token, usage, and compaction signal shapes.
-It also inspected five installed harness help surfaces and four tracked-only adapter surfaces.
-The inspected surfaces exposed product-specific configuration or display facts but no Firstmate helper or adapter contract that reports comparable live context pressure across all nine supported primary harness variants.
+The inspected surfaces exposed product-specific configuration or display facts but no Firstmate helper or adapter contract that reports comparable live context pressure across all eight supported primary harness identities.
 This is a dated absence observation, not a permanent claim about later tracked adapters or installed harness releases.
 
 ### D4. `/stow` does not reconcile durable records against live reality
@@ -153,6 +152,7 @@ The receipt proves all of the following for the invocation:
 1. Every identified durable finding names either the stronger durable owner written under `AGENTS.md` section 6 or its own intact brain outbox document.
 2. A brain-backed finding's receipt names its document identity, as-of date, delivery state, truncation state, and redaction count.
 3. A unique finding whose capture was refused, missing, unreadable, or truncated names another durable owner holding the complete safe body, or reset safety is refused.
+   A unique finding stored with a nonzero redaction count proves that its stored body still contains the complete safe finding, names another durable owner holding that body, or reset safety is refused.
 4. Every open record this session knew was absent or wrong is filed, corrected, or explicitly left unchanged with the judgment it awaits.
 5. The primary and every home reached by the full cascade finish within their own startup-memory budgets with no unresolved ownership exception or budget decision.
 
