@@ -24,6 +24,35 @@ Thirty of the 41 notes use the `learnings-pruned-*` or `captain-reference-pruned
 The brain has no aggregate startup-style token allowance, while each captured body is independently bounded and redacted by the capture pipeline.
 The dashboard's Knowledge page provides bounded, read-only search over the resulting corpus.
 
+### Private-home evidence and reproduction
+
+All operational-home measurements in this ADR are dated 2026-08-26 and are evidence only of that date.
+The underlying `data/`, `state/`, and `config/` content is captain-private and gitignored, so this shared ADR records only dates, counts, shapes, and commands rather than copying a replay snapshot or any record body.
+A maintainer can repeat the measurements in their own home by setting `FM_HOME` to that home's absolute path and running the following commands from the tracked Firstmate code root:
+
+```sh
+FM_HOME="${FM_HOME:?set FM_HOME to the operational home being measured}" \
+  bin/fm-startup-memory-budget.sh report
+
+rg -n '^## 2026-08-(15|16|18|19|20|25|26) stow$' \
+  "$FM_HOME/data/memory-archive.md"
+stat -c '%y %n' "$FM_HOME/config/stow-pass-horizon"
+
+FM_HOME="$FM_HOME" bin/fm-gbrain-capture.sh status --json |
+  jq '{totals,
+       by_kind: (.documents | group_by(.source.kind) |
+         map({kind: .[0].source.kind, count: length})),
+       pruning_notes: ([.documents[] |
+         select(.source.kind == "note" and
+           (.slug | test("^(learnings-pruned-|captain-reference-pruned-)")))] |
+         length)}'
+
+rg -n '2026-08-26:.*~40.*three' "$FM_HOME/data/learnings.md"
+```
+
+These commands intentionally read the selected home's private records in place and do not make those records part of this repository.
+Their output must be interpreted as a new dated measurement rather than expected to equal the counts above forever.
+
 ## Decision
 
 ### D1. One internal skill owns the handoff
@@ -83,7 +112,7 @@ An absent or ambiguous signal selects full.
 Neither path runs automatically through a daemon or hook.
 Both remain captain-invoked uses of the skill.
 
-This follows the primary home's existing captain preference that firstmate is the human pacer, watches context and output quality, and calls the handoff itself.
+This follows the interview's accepted decision that the explicit invocation supplies the pacing signal.
 The worker does not self-assess context pressure.
 
 The light path captures and routes the session's retrieval-worthy findings under D2.
@@ -109,6 +138,25 @@ It also searched `--help` on the installed Claude Code 2.1.246, Codex CLI 0.149.
 Grok and Kimi were not installed in this worktree's environment, so their current tracked variants were the checked surfaces.
 The review found product-specific configuration or display facts, including Claude's auto-compaction setting and Kimi's rendered context percentage, but no Firstmate helper or adapter contract that reports comparable live context pressure across all supported primary harnesses.
 A future portability review repeats those resolver, repository-search, and installed-help checks rather than treating this dated absence as permanent.
+The exact reproduction commands are:
+
+```sh
+for harness in claude codex opencode pi pi-signed grok kimi cursor; do
+  bin/fm-harness-adapter-doc.sh --print "$harness"
+done
+
+rg -n -i 'context[- ]?window|remaining[- ]?token|compaction|usage' \
+  AGENTS.md docs bin .agents/skills
+
+for cli in claude codex opencode pi cursor-agent; do
+  "$cli" --version
+  "$cli" --help
+done
+
+for cli in grok kimi; do
+  command -v "$cli" || true
+done
+```
 
 ### D4. `/stow` does not reconcile durable records against live reality
 
@@ -117,7 +165,7 @@ It files records that do not yet exist and corrects records this session already
 When the correction requires a judgment the session cannot make, it leaves the record unchanged and persists the question through the existing owner.
 
 Record rot is a measured problem rather than a reason to widen `/stow`.
-The primary home's `data/learnings.md` records that a 2026-08-26 review of roughly 40 board cards found three dead premises: a PR merged 25 days earlier, a stuck clone that had self-healed, and a question already settled in a dated decision record.
+The primary home's `data/learnings.md` records that a 2026-08-26 review of roughly 40 board cards found three dead premises.
 The check belongs after the handoff gap, where it can observe the state the new session will act on, rather than immediately before a gap in which that state can change again.
 
 Existing owners retain the concern.
@@ -125,7 +173,7 @@ Existing owners retain the concern.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns the deterministic current-state read for a recorded worker, while [`bin/fm-pr-status.sh`](../../bin/fm-pr-status.sh) owns bounded normalized PR reads from a forge and their timestamped cache.
 [`bin/fm-project-board.sh`](../../bin/fm-project-board.sh) `reconcile` owns the bounded fleet-wide comparison of declared boards with their trackers and is armed periodically by locked startup.
 That board sweep corrects only the membership and open-versus-closed status its complete listings can establish.
-It does not pretend to resolve finer open-item, self-healed-worker, or dated-decision premises that require the heartbeat review's judgment.
+It does not pretend to resolve finer premise validity that requires the heartbeat review's judgment.
 
 This placement keeps one owner per concern and avoids a duplicate check on the wrong side of the reset boundary.
 The full `/stow` receipt explicitly says that reset-safe is never a claim that the home's durable records are correct.
