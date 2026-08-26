@@ -49,7 +49,7 @@ The manifest never contacts a forge and never reads brief contents, a prompt, a 
 | `work_items` | `data/<id>/work-items.json` | embedded so the manifest is self-contained |
 | `gbrain` | `state/<id>.gbrain`, written by [`bin/fm-gbrain-capture.sh`](../bin/fm-gbrain-capture.sh) | `status` is `absent` until a receipt exists, permanently so in a home with no brain; see [`gbrain-capture.md`](gbrain-capture.md) |
 
-Every listed manifest key is required except the additive `attribution.sessions` described below, while fields whose source may be absent retain an explicit null value with the documented type-or-null contract.
+Every listed manifest key is required except the optional design-only `design_skills` and additive `attribution.sessions` described below, while fields whose source may be absent retain an explicit null value with the documented type-or-null contract.
 A null `title` is intended for a secondmate because secondmates are never backlog items, and an absent capture receipt retains null receipt, observation, and detail fields.
 Teardown captures the task's knowledge between publishing this manifest and removing anything, then republishes it, which is how a torn-down task's manifest carries the capture receipt at all.
 Task identifiers are capped at 64 characters, general text at 240, paths at 480, source and backend tokens at 40, session identifiers at 128, receipts at 200, URLs at 512, and hosts at 253 characters.
