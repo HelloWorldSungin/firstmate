@@ -97,7 +97,10 @@ The worker does not self-assess context pressure.
 The light path captures and routes the session's retrieval-worthy findings under D2.
 It also files or corrects open records that this session actually knows are missing or wrong.
 It does not scan all startup memory, advance decay, run the secondmate cascade, or claim that the session is reset-safe.
-Its receipt says that the checkpoint is complete for the session knowledge and named record changes it processed, and that a full `/stow` remains required before clearing context.
+Before reporting checkpoint completion, it applies D5's per-finding survival proof to every finding it identified and proves that every known record correction it processed reached its durable owner.
+A finding or correction that cannot be shown to have persisted is named as not persisted, and the receipt refuses to call the checkpoint complete for that item.
+Existing unrelated audit or delivery degradation remains disclosed as service health without rewriting the persistence verdict for an intact new record.
+The receipt says that a full `/stow` remains required before clearing context even when every bounded checkpoint item persisted.
 It runs the startup-memory budget report without interpreting every memory entry, and any rejected setting, rejected file, or over-budget result triggers visible promotion to full.
 
 Light promotes to full when it discovers a must-be-present startup-memory change, an invalid memory setting or file, or a memory total above its effective budget.
@@ -168,7 +171,8 @@ A home with no configured brain can still qualify as reset-safe.
 Capture is deliberately inert there, so the home has fewer destinations and routes every durable finding through the non-brain owners that remain available under `AGENTS.md` section 6.
 If no such destination holds a complete finding, the full path refuses reset safety rather than making brain adoption mandatory or losing the finding.
 
-The light path reports only its bounded checkpoint outcome and always states that a full `/stow` remains required before reset.
+The light path reuses this per-finding survival proof only for the findings and known record corrections its invocation processed.
+It reports only that bounded checkpoint outcome and always states that a full `/stow` remains required before reset.
 
 ### D6. The public skill stays independent and unchanged
 
