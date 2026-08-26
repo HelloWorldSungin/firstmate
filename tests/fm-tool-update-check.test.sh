@@ -607,6 +607,190 @@ SH
   pass "a stalled repository probe is reported as no answer, not as not a repository"
 }
 
+# --- git release tags -------------------------------------------------------
+
+# git_release_fixture <name>: a work repo whose origin already has one annotated
+# release tag, so ls-remote --tags lists both refs/tags/vX and refs/tags/vX^{}.
+# The caller adds or drops tags to set newest-local versus newest-remote.
+git_release_fixture() {
+  local name=$1 work
+  work=$(git_fixture "$name")
+  git -C "$work" tag -a v1.2.3 -m v1.2.3
+  git -C "$work" push -q origin v1.2.3
+  git -C "$work" ls-remote --tags origin | grep -q 'refs/tags/v1.2.3^{}' \
+    || fail "the fixture did not produce an annotated tag peel, so peel handling is untested"
+  printf '%s\n' "$work"
+}
+
+# Push an annotated tag at HEAD, then drop it locally so the remote is ahead
+# without a fetch.
+release_tag_remote_only() {
+  local work=$1 tag=$2
+  git -C "$work" tag -a "$tag" -m "$tag"
+  git -C "$work" push -q origin "$tag"
+  git -C "$work" tag -d "$tag" >/dev/null
+}
+
+test_release_watch_is_silent_when_tags_match_even_if_the_branch_is_behind() {
+  local home work out
+  # The motivating false positive: a clone can be many commits behind origin
+  # while the newest published release tag is already present. A branch watch
+  # would report an update; a release watch must stay silent.
+  home=$(make_home git-release-current)
+  work=$(git_release_fixture git-release-current-repo)
+  git -C "$work" reset -q --hard HEAD~2
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "a release watch reported while newest tags match: $(cat "$out")"
+
+  # Control: the same clone watched by branch still reports the commits behind,
+  # so this case does not go quiet by disabling git probes.
+  home=$(make_home git-release-current-branch)
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"remote\":\"origin\",\"branch\":\"main\"}}]}"
+  run_check "$home" "$PATH" "$home/out.txt"
+  assert_contains "$(cat "$home/out.txt")" "plugin update available: local main is 2 commits behind origin/main" "the branch watch stopped reporting commits behind, so the silent release case proves nothing"
+  pass "matching release tags are silent even when the branch is behind"
+}
+
+test_a_newer_release_tag_is_reported_as_update_available() {
+  local home work out report head_before
+  home=$(make_home git-release-ahead)
+  work=$(git_release_fixture git-release-ahead-repo)
+  head_before=$(git -C "$work" rev-parse HEAD)
+  release_tag_remote_only "$work" v1.2.4
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin update available" "a newer published release was not reported"
+  assert_contains "$report" "v1.2.4" "the report does not name the newer release"
+  assert_contains "$report" "v1.2.3" "the report does not name the copy's current release"
+  assert_not_contains "$report" "not in effect" "a published release must not be reported as PATH skew"
+  assert_not_contains "$report" "commits behind" "a release watch must not fall through to the branch probe"
+  [ "$(git -C "$work" rev-parse HEAD)" = "$head_before" ] || fail "the check moved the watched repository's HEAD"
+  git -C "$work" diff --quiet || fail "the check left changes in the watched repository"
+  pass "a newer release tag is reported as an update available without touching the repository"
+}
+
+test_release_tags_are_ordered_by_version_not_lexically() {
+  local home work out report
+  # git ls-remote --tags sorts by ref name, so v1.10.0 sorts before v1.9.0.
+  # A lexical last-tag read would keep v1.9.0 as newest and stay silent.
+  home=$(make_home git-release-semver)
+  work=$(git_release_fixture git-release-semver-repo)
+  git -C "$work" tag -a v1.9.0 -m v1.9.0
+  git -C "$work" push -q origin v1.9.0
+  release_tag_remote_only "$work" v1.10.0
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin update available" "v1.10.0 was not treated as newer than v1.9.0"
+  assert_contains "$report" "v1.10.0" "the report does not name the numerically newer release"
+  assert_not_contains "$report" '^{}' "an annotated tag peel was reported as its own release"
+  pass "release tags are ordered by version, not by ref name"
+}
+
+test_non_semver_tags_are_not_treated_as_releases() {
+  local home work out
+  # A legacy-shaped tag with a larger dotted number must not win, and must not
+  # crash the probe. The real marketplace carries mattpocock-skills@1.0.0.
+  # The tag is remote-only: if 9.9.9 were read as a release, this would report
+  # an update against local v1.2.3.
+  home=$(make_home git-release-legacy)
+  work=$(git_release_fixture git-release-legacy-repo)
+  release_tag_remote_only "$work" 'mattpocock-skills@9.9.9'
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "a non-semver tag was treated as a newer release: $(cat "$out")"
+  pass "a non-semver tag is skipped rather than treated as the newest release"
+}
+
+test_prerelease_tags_are_not_treated_as_releases() {
+  local home work out
+  # A published release is a stable tag. An rc on the remote is not something
+  # /plugin will install, so it must not look like an update, and a later
+  # stable tag still must.
+  home=$(make_home git-release-rc)
+  work=$(git_release_fixture git-release-rc-repo)
+  release_tag_remote_only "$work" v2.0.0-rc.1
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "a prerelease tag was treated as a published release: $(cat "$out")"
+
+  release_tag_remote_only "$work" v1.2.4
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  assert_contains "$(cat "$out")" "plugin update available" "a stable release next to a prerelease was not reported"
+  assert_contains "$(cat "$out")" "v1.2.4" "the reported release was not the stable tag"
+  assert_not_contains "$(cat "$out")" "v2.0.0-rc.1" "a prerelease was named as the newest release"
+  pass "prerelease tags are ignored, and a later stable release is still reported"
+}
+
+test_a_repository_with_no_tags_is_silent() {
+  local home work out
+  # No published release means there is nothing to install. That is not an
+  # error and not an update, so the check stays silent the way a current clone
+  # does, instead of nags that the operator cannot act on.
+  home=$(make_home git-release-none)
+  work=$(git_fixture git-release-none-repo)
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "a repository with no tags produced a report: $(cat "$out")"
+  pass "a repository with no tags is silent, not an error and not an update"
+}
+
+test_an_unanswered_release_probe_is_a_check_failure() {
+  local home work dir out report head_before
+  home=$(make_home git-release-mute)
+  work=$(git_release_fixture git-release-mute-repo)
+  head_before=$(git -C "$work" rev-parse HEAD)
+
+  dir="$TMP_ROOT/git-release-mute/bin"
+  mkdir -p "$dir"
+  cat > "$dir/git" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = --tags ]; then
+    sleep 30
+    exit 0
+  fi
+done
+exec $(command -v git) "\$@"
+SH
+  chmod 0755 "$dir/git"
+
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_PROBE_SECS=1
+  report=$(cat "$out")
+  assert_not_contains "$report" "update available" "a release probe that never answered was reported as an available update"
+  assert_contains "$report" "plugin check failed" "a release probe that never answered was not reported as a check failure"
+  assert_contains "$report" "did not answer which release tags it has" "the stalled tags probe was not the reported failure"
+  [ "$(git -C "$work" rev-parse HEAD)" = "$head_before" ] || fail "the check moved the watched repository's HEAD"
+  pass "a release probe that does not answer is a check failure, never an update"
+}
+
+test_release_probes_stop_when_the_sweep_budget_is_gone() {
+  local home work slow out report
+  home=$(make_home git-release-budget)
+  work=$(git_release_fixture git-release-budget-repo)
+  release_tag_remote_only "$work" v1.2.4
+  slow="$TMP_ROOT/git-release-budget/bin"
+  make_slow_copy "$slow" "$TOOL" 30
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"command\":\"$TOOL\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$(fixture_path "$slow")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1
+  report=$(cat "$out")
+  assert_contains "$report" "check incomplete: the time budget ran out before plugin" "a sweep with no budget left did not say which tool it did not finish"
+  assert_not_contains "$report" "v1.2.4" "the release probes ran after the sweep budget was already gone"
+  pass "release probes stop and name their tool once the sweep budget is gone"
+}
+
 # --- registry and reporting contract ----------------------------------------
 
 test_absent_registry_is_silent() {
@@ -641,6 +825,16 @@ test_malformed_registry_is_reported_not_ignored() {
   rm -f "$home/state/.tool-updates"
   run_check "$home" "$PATH" "$out"
   assert_contains "$(cat "$out")" "tool herdr announce_args needs announce_pattern" "a command to search with no pattern to search for was accepted"
+
+  printf '%s\n' '{"tools":[{"name":"plugin","git":{"repo":"/tmp/plugin","watch":"tags"}}]}' > "$home/config/watched-tools.json"
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  assert_contains "$(cat "$out")" "git.watch must be branch or releases" "an unknown git.watch value was accepted"
+
+  printf '%s\n' '{"tools":[{"name":"plugin","git":{"repo":"/tmp/plugin","watch":"releases","branch":"main"}}]}' > "$home/config/watched-tools.json"
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  assert_contains "$(cat "$out")" "git.watch releases cannot set git.branch" "a release watch with a branch setting was accepted"
   pass "a malformed registry is reported instead of quietly skipped"
 }
 
@@ -1023,6 +1217,14 @@ test_missing_branch_on_a_readable_remote_is_still_reported
 test_git_probes_stop_when_the_sweep_budget_is_gone
 test_a_git_probe_that_does_not_answer_is_not_an_update
 test_a_stalled_repository_probe_is_not_reported_as_not_a_repository
+test_release_watch_is_silent_when_tags_match_even_if_the_branch_is_behind
+test_a_newer_release_tag_is_reported_as_update_available
+test_release_tags_are_ordered_by_version_not_lexically
+test_non_semver_tags_are_not_treated_as_releases
+test_prerelease_tags_are_not_treated_as_releases
+test_a_repository_with_no_tags_is_silent
+test_an_unanswered_release_probe_is_a_check_failure
+test_release_probes_stop_when_the_sweep_budget_is_gone
 test_absent_registry_is_silent
 test_malformed_registry_is_reported_not_ignored
 test_findings_are_reported_once_until_they_change
@@ -1037,3 +1239,6 @@ test_a_failed_registration_leaves_no_unregistered_shim
 test_a_failed_rearm_leaves_no_shim_the_trust_binding_lost
 test_arm_resolves_a_relative_home_into_the_shim
 test_armed_check_wakes_the_watcher_with_the_skew_report
+
+fm_test_every_defined_test_ran
+printf '\nall fm-tool-update-check tests passed\n'
