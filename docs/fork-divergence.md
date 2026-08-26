@@ -90,6 +90,23 @@ Upstream reads that footer unconditionally whenever the baseline is not legibly 
 The skip is behaviour-neutral and saves one pane read per submit, but it shifts the adapter's CLI call sequence by one on that baseline, so upstream tests that pin response indices for a `working` baseline need renumbering rather than being taken verbatim.
 That renumbering was first applied on 2026-08-20 for the two `kunchenguid/firstmate#2647` cases in [`tests/fm-backend-herdr.test.sh`](../tests/fm-backend-herdr.test.sh) that assume the extra read.
 
+### Remote job worker descendant reaping
+
+The fork stops the whole supervised process tree rather than only the serving child in [`bin/fm-remote-job-worker.sh`](../bin/fm-remote-job-worker.sh), because a `--serve` child that spawns its own commands left orphans polling after the supervisor was gone.
+`worker_reap_descendants` walks the descendant snapshot and escalates TERM to KILL, an `EXIT` trap runs it on every supervisor exit, `WORKER_STOP` stops a signalled serving child from returning to its poll loop, and exit 125 joins 0 and 75 as a terminal serving-child status the supervisor does not restart.
+That replaced upstream's global `WORKER_SUPERVISED_PID` with a supervisor-local `child_pid`, so every upstream change to the restart loop arrives referring to a variable this fork no longer has.
+It first collided on 2026-08-26 with `kunchenguid/firstmate#2942`, whose total-restart bound was adopted with the fork's `child_pid` and its terminal exit-125 branch kept, and [`tests/fm-remote-job-orphan-reap.test.sh`](../tests/fm-remote-job-orphan-reap.test.sh) pins the reaping half while `tests/fm-remote-job.test.sh` pins upstream's bound.
+This divergence went unrecorded from its introduction until 2026-08-26.
+
+### Pi away-mode supervision standby
+
+The fork's Pi watcher extension hands supervision to the away daemon while `state/.afk` exists: [`.pi/extensions/fm-primary-pi-watch.ts`](../.pi/extensions/fm-primary-pi-watch.ts) arms nothing, retires any arm child it already owns, injects no ordinary wake, and resumes exactly one extension-owned cycle once the flag clears.
+Upstream has no away-mode awareness in that extension at all, and [`docs/watcher-continuity.md`](watcher-continuity.md) owns the contract.
+The divergence lives inside an upstream-owned file and adds an away check on every delivery path, so an upstream change to wake delivery arrives beside fork guards rather than as a fork-only file.
+It first collided on 2026-08-26 with `kunchenguid/firstmate#2939`, which added a `repairFailed` argument to `deliverActionableWake`; the argument was adopted and the fork's away check kept ahead of it, so a wake that arrives while away mode is active still stays with the daemon rather than reaching the supervision branch.
+The away-standby cases in [`tests/fm-pi-watch-extension.test.sh`](../tests/fm-pi-watch-extension.test.sh) pin that behavior.
+This divergence went unrecorded from its introduction until 2026-08-26.
+
 ### Upstream tracking mechanism
 
 This fork carries the optional drift detector, bootstrap diagnostic, sync-round skill and template, and this ledger.
