@@ -922,7 +922,7 @@ SH
   cat > "$fb/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
-  '--version '*) printf '0.2.4\n' ;;
+  '--version '*) printf '0.2.5\n' ;;
   'update --help') printf '%s\n' '--archive-body' ;;
   'mv --help') printf '%s\n' '[<id>...]' ;;
   'hold --help') printf '%s\n' '--kind captain' ;;

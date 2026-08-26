@@ -28,7 +28,6 @@ Reading its report:
 - `could-not-verify (...)` names the command that failed; say so in the answer rather than silently skipping the tool or assuming installed equals latest.
 - The `latest` column is always the latest GA release; a `pre-releases up to X excluded` note means newer pre-releases exist and were deliberately not counted.
 - The `floor` column is read live from the three floor-owning files; `below floor` means bootstrap will report that tool `MISSING:` at session start.
-- `chrome-devtools-axi` shows `none` for its floor by design, not by oversight.
 
 ## Evaluate
 
