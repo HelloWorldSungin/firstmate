@@ -78,7 +78,6 @@ config/secondmate-harness  harness, optional model, and effort the primary uses 
 config/backlog-backend  backlog backend override; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Backlog backend"; section 10)
 config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Runtime backend")
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited (docs/configuration.md "Pi Calm preference")
-config/pi-supervision-branch  Pi-only explicit project autonomy grants for the in-process supervision branch on a Pi primary; LOCAL, gitignored, and not inherited (docs/configuration.md "Pi supervision branch"; docs/pi-supervision-branch.md)
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Startup memory budget")
 config/stow-pass-horizon  optional presence flag opting this home in to /stow's default-off pass-count decay horizon; LOCAL, gitignored, and not inherited; see docs/configuration.md "Stow pass horizon"
 config/herdr-presentation-spaces  Herdr visual-projection opt-out or opt-in; LOCAL, gitignored; inherited by secondmate homes (docs/herdr-backend.md "Presentation spaces")
@@ -187,7 +186,7 @@ If the session lock cannot be acquired and verified, report its exact diagnostic
 A lock-refused session must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
 
 The digest itself makes no external-network call and never waits for one.
-Every network check a session start owes - GitHub auth, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh - runs concurrently in a bounded worker owned by `bin/fm-startup-network.sh` and is reported in the digest's own `NETWORK CHECKS` section.
+Every network check a session start owes - GitHub auth, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh - runs off the digest's blocking path in a bounded worker owned by `bin/fm-startup-network.sh` and is reported in the digest's own `NETWORK CHECKS` section.
 When that section reports its checks still in progress it names exactly what is unconfirmed; treat none of those as passed until the result lands, either from `bin/fm-startup-network.sh report` or as a `check: startup-network` wake.
 
 The digest's ordered sections are lock, bootstrap, wake queue, supervision operating instructions, fleet-state digest, network checks, and context digest with its closing reminder; `bin/fm-session-start.sh`'s header owns each section's exact contents, bounds, and ordering rationale.

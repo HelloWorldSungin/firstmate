@@ -191,7 +191,7 @@ family_for_basename() {
     fm-gbrain-lib.test.sh|fm-gbrain-pin-check.test.sh|fm-recall.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
-    fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
+    fm-bootstrap.test.sh|fm-bootstrap-network-parallel.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-run-attribution-legacy-transition.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
     fm-tangle-guard.test.sh|\
@@ -418,6 +418,7 @@ tests/fm-backend-zellij.test.sh 9108
 tests/fm-backend.test.sh 25303
 tests/fm-backlog-handoff.test.sh 2455
 tests/fm-bearings-snapshot.test.sh 86937
+tests/fm-bootstrap-network-parallel.test.sh 8000
 tests/fm-bootstrap.test.sh 59805
 tests/fm-brief-repo-lib.test.sh 222
 tests/fm-busy-adapter-wiring.test.sh 15163
