@@ -663,16 +663,18 @@ newest_release_tag() {
   local ref name version
   local best='' best_version=''
   while IFS=$'\t' read -r _ ref; do
+    budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
     [ -n "$ref" ] || continue
     name=${ref#refs/tags/}
     name=${name%'^{}'}
-    printf '%s' "$name" | grep -qxE 'v?[0-9]+(\.[0-9]+)+' || continue
+    [[ "$name" =~ ^v?[0-9]+(\.[0-9]+)+$ ]] || continue
     version=${name#v}
     if [ -z "$best_version" ] || version_newer "$version" "$best_version"; then
       best=$name
       best_version=$version
     fi
   done <<< "$output"
+  budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
   printf '%s\n' "$best"
 }
 
@@ -716,7 +718,17 @@ git_release_findings() {
   fi
 
   remote_tag=$(newest_release_tag "$remote_out")
+  status=$?
+  if [ "$status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
+    emit "$name check failed: the time budget ran out before $remote release tags were fully parsed"
+    return 0
+  fi
   local_tag=$(newest_release_tag "$local_out")
+  status=$?
+  if [ "$status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
+    emit "$name check failed: the time budget ran out before $repo release tags were fully parsed"
+    return 0
+  fi
 
   [ -n "$remote_tag" ] || return 0
   if [ -n "$local_tag" ]; then

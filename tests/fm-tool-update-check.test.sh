@@ -791,6 +791,52 @@ test_release_probes_stop_when_the_sweep_budget_is_gone() {
   pass "release probes stop and name their tool once the sweep budget is gone"
 }
 
+test_release_tag_parsing_reports_when_the_sweep_budget_expires_mid_parse() {
+  local home work dir out report real_git ready ticked
+  home=$(make_home git-release-parse-budget)
+  work=$(git_fixture git-release-parse-budget-repo)
+  dir="$TMP_ROOT/git-release-parse-budget/bin"
+  ready="$TMP_ROOT/git-release-parse-budget/parse-ready"
+  ticked="$TMP_ROOT/git-release-parse-budget/parse-ticked"
+  real_git=$(command -v git)
+  mkdir -p "$dir"
+  cat > "$dir/git" <<SH
+#!/usr/bin/env bash
+if [ "\${*: -3}" = 'ls-remote --tags origin' ]; then
+  printf '1\trefs/tags/v1.2.3\n2\trefs/tags/v1.2.4\n'
+  exit 0
+fi
+if [ "\${*: -3}" = 'ls-remote --tags .' ]; then
+  printf '1\trefs/tags/v1.2.3\n'
+  : > '$ready'
+  exit 0
+fi
+exec '$real_git' "\$@"
+SH
+  cat > "$dir/date" <<SH
+#!/usr/bin/env bash
+if [ -f '$ready' ]; then
+  if [ -f '$ticked' ]; then
+    printf '1001\n'
+  else
+    : > '$ticked'
+    printf '1000\n'
+  fi
+else
+  printf '1000\n'
+fi
+SH
+  chmod 0755 "$dir/git" "$dir/date"
+
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1 FM_TOOL_UPDATE_NOW=1000
+  report=$(cat "$out")
+  assert_contains "$report" "plugin check failed: the time budget ran out before origin release tags were fully parsed" "a release-tag parse that crossed the sweep deadline did not name its unfinished work"
+  assert_not_contains "$report" "update available" "a partial release-tag parse was treated as an answered comparison"
+  pass "release-tag parsing stops and reports when its sweep budget expires"
+}
+
 # --- registry and reporting contract ----------------------------------------
 
 test_absent_registry_is_silent() {
@@ -1225,6 +1271,7 @@ test_prerelease_tags_are_not_treated_as_releases
 test_a_repository_with_no_tags_is_silent
 test_an_unanswered_release_probe_is_a_check_failure
 test_release_probes_stop_when_the_sweep_budget_is_gone
+test_release_tag_parsing_reports_when_the_sweep_budget_expires_mid_parse
 test_absent_registry_is_silent
 test_malformed_registry_is_reported_not_ignored
 test_findings_are_reported_once_until_they_change
