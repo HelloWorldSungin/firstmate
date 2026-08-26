@@ -43,6 +43,7 @@ The manifest never contacts a forge and never reads brief contents, a prompt, a 
 | `pr.head` | `state/<id>.meta`'s recorded `pr_head` | validated as a SHA or dropped |
 | `pr.status.*` | the cached observation, see [Normalized PR state](#normalized-pr-state) | never refreshed at write time |
 | `report.path`, `report.present` | `data/<id>/report.md` | the scout deliverable pointer |
+| `design_skills` | `state/<id>.meta`, recorded by [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) at dispatch | design-only and optional, see below |
 | `attribution.*` | `state/<id>.meta` | the references a later usage read needs, see below |
 | `attribution.sessions` | `state/<id>.usage-sessions` | the live session-to-task map, so token usage keeps its task after cleanup |
 | `work_items` | `data/<id>/work-items.json` | embedded so the manifest is self-contained |
@@ -70,6 +71,18 @@ Teardown's republish is one such pin, so which token a torn-down task carries re
 A home with a brain republishes the manifest so the capture receipt can reach it, and that republish supplies the completion the first write recorded rather than deriving a second one, which is exactly what `explicit` names.
 The pin is what keeps the manifest agreeing with the body already captured from it, because re-deriving would move the recorded completion forward by the whole capture window.
 A home with no brain has nothing to capture, so it never republishes and its single write records `manifest_write`.
+
+### The design task's plugin release
+
+A design interview reads two skill files from the captain's installed `mattpocock-skills@mattpocock` plugin live, and that plugin auto-updates, so the instructions behind one design result need not be the instructions behind the next.
+`design_skills` records the `plugin`, `version`, and `last_updated` that [`bin/fm-design-skills.sh`](../bin/fm-design-skills.sh) reported to the one resolve call that gates the dispatch, which is why the recorded release is exactly the one verified present when the interview started.
+A relaunch resolves again, so the value names the release resolved at the task's most recent dispatch.
+
+The key is optional and design-only: a non-design task, a design task dispatched before spawn recorded this, and any manifest published before this contract carry no `design_skills` key at all rather than a guess or an empty string.
+Its `version` and `last_updated` are provenance copied verbatim from a captain-owned plugin registry, so like `mode` they are bounded by type and length rather than by a closed vocabulary or a strict timestamp shape; refusing an unfamiliar-but-harmless string would block the teardown of the very task the record exists to explain.
+
+The manifest is the only owner of this fact.
+The ADR a design task produces deliberately does not repeat it: the ADR is a tracked project deliverable whose readers are the project's contributors, firstmate's tooling dependency is not project context, and a second copy could disagree with this one the moment either is edited.
 
 ### Attribution after teardown
 

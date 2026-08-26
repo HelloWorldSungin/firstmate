@@ -28,6 +28,10 @@ Run `bin/fm-design-skills.sh check` before scaffolding.
 If it refuses because the install or a required skill is absent, stop and ask the captain to refresh the plugin.
 Never substitute copied skill text or run an installer from a worker.
 
+That plugin auto-updates, so `fm-spawn.sh --design` resolves it once at dispatch and records the release in the task's durable record, which carries it into the completion manifest and survives cleanup ([`docs/fleet-data-contracts.md`](../../../docs/fleet-data-contracts.md#the-design-tasks-plugin-release)).
+A design result that surprises you is therefore traceable to the exact instructions that informed it.
+Do not repeat that release in the ADR: the manifest owns the fact, and the ADR is a project deliverable rather than a record of firstmate's tooling.
+
 When the captain names that plugin's skills for a task, read the resolved `ask-matt` file first and choose on its evidence, rather than reaching for whichever of its skills happens to be visible.
 Account for the choice in the same reply that reports what is being dispatched: which skills were selected and why.
 The router recommends skills that are not invokable as skills.

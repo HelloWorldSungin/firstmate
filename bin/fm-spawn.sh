@@ -141,7 +141,11 @@
 #   (fm-config-inherit-lib.sh). A successful launch clears pending inherited
 #   config reread generations because the new agent reads the converged files.
 #   --design records kind=design in the task's meta (interactive ADR deliverable;
-#   see the design-profile skill); --scout records kind=scout (report deliverable,
+#   see the design-profile skill) and, from the one bin/fm-design-skills.sh
+#   resolve that gates the dispatch, records design_skills_plugin=,
+#   design_skills_version=, and design_skills_updated= so the auto-updating
+#   plugin release that informed the interview stays readable after cleanup;
+#   --scout records kind=scout (report deliverable,
 #   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
 #   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
 #   For a ship or design brief scaffolded with fm-brief.sh --work-item, spawn validates
@@ -1615,11 +1619,43 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+# A design task reads the installed mattpocock skill files live during its
+# interview, and the captain has that plugin on auto-update, so the instructions
+# behind one design result need not be the instructions behind the next. One
+# resolve call serves as both the dispatch gate and the provenance record, so
+# what is recorded is exactly what was verified present at dispatch. Reading the
+# plugin later - at cleanup, say - could name a version that only arrived after
+# the interview ended, which is worse than recording none. A relaunch resolves
+# again, so the recorded value always names this task's most recent dispatch.
+# The resolver's own refusal already names the missing install or skill.
+DESIGN_SKILLS_PLUGIN=
+DESIGN_SKILLS_VERSION=
+DESIGN_SKILLS_UPDATED=
+# Matches the durable manifest's free-text cap (FM_OUTCOME_TEXT_MAX in
+# bin/fm-outcome-lib.sh), so a value recorded here can always be published.
+DESIGN_SKILLS_FIELD_MAX=240
+# Collapses to the same single-line, trimmed, capped shape the durable manifest
+# applies, so the emptiness check below sees exactly what would be published.
+design_skills_field() {  # <resolve-json> <field> -> one meta-safe line
+  printf '%s\n' "$1" \
+    | jq -r --arg field "$2" '.[$field] // ""' \
+    | tr -d '\000-\037\177' \
+    | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//' \
+    | cut -c "1-$DESIGN_SKILLS_FIELD_MAX"
+}
 if [ "$KIND" = design ]; then
-  "$FM_ROOT/bin/fm-design-skills.sh" check >/dev/null || {
-    echo "error: design spawn requires the captain-installed mattpocock grilling and domain-modeling skills; do not install or copy them from a worker" >&2
+  DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
+    echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
     exit 1
   }
+  DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
+  DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
+  DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
+  if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
+    || [ -z "$DESIGN_SKILLS_UPDATED" ]; then
+    echo "error: the installed mattpocock plugin resolved without a usable identity, version, and update stamp, so this design task's inputs could not be recorded; refusing rather than dispatching an untraceable design" >&2
+    exit 1
+  fi
 fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
@@ -2858,7 +2894,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo design_skills_plugin design_skills_version design_skills_updated tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2874,6 +2910,11 @@ preserve_relaunch_meta() {
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  # Design-only, and absent unless this dispatch actually resolved the plugin,
+  # so a task that never read those skills records nothing rather than a guess.
+  [ -z "$DESIGN_SKILLS_PLUGIN" ] || echo "design_skills_plugin=$DESIGN_SKILLS_PLUGIN"
+  [ -z "$DESIGN_SKILLS_VERSION" ] || echo "design_skills_version=$DESIGN_SKILLS_VERSION"
+  [ -z "$DESIGN_SKILLS_UPDATED" ] || echo "design_skills_updated=$DESIGN_SKILLS_UPDATED"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
