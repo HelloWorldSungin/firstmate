@@ -674,7 +674,7 @@ test_a_newer_release_tag_is_reported_as_update_available() {
 }
 
 test_release_tags_are_ordered_by_version_not_lexically() {
-  local home work out report
+  local home work out report release_refs release_reports
   # git ls-remote --tags sorts by ref name, so v1.10.0 sorts before v1.9.0.
   # A lexical last-tag read would keep v1.9.0 as newest and stay silent.
   home=$(make_home git-release-semver)
@@ -682,6 +682,9 @@ test_release_tags_are_ordered_by_version_not_lexically() {
   git -C "$work" tag -a v1.9.0 -m v1.9.0
   git -C "$work" push -q origin v1.9.0
   release_tag_remote_only "$work" v1.10.0
+  release_refs=$(git -C "$work" ls-remote --tags origin 'refs/tags/v1.10.0*' | awk '{ print $2 }' | LC_ALL=C sort)
+  [ "$release_refs" = $'refs/tags/v1.10.0\nrefs/tags/v1.10.0^{}' ] \
+    || fail "the annotated release fixture did not expose one tag ref and one peeled ref: $release_refs"
   write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
   out="$home/out.txt"
   run_check "$home" "$PATH" "$out"
@@ -689,6 +692,8 @@ test_release_tags_are_ordered_by_version_not_lexically() {
   assert_contains "$report" "plugin update available" "v1.10.0 was not treated as newer than v1.9.0"
   assert_contains "$report" "v1.10.0" "the report does not name the numerically newer release"
   assert_not_contains "$report" '^{}' "an annotated tag peel was reported as its own release"
+  release_reports=$(printf '%s\n' "$report" | grep -oF 'plugin update available' | wc -l | tr -d '[:space:]')
+  [ "$release_reports" = 1 ] || fail "one annotated release produced $release_reports update reports: $report"
   pass "release tags are ordered by version, not by ref name"
 }
 
