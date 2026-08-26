@@ -721,12 +721,13 @@ test_bootstrap_reports_missing_x_dependency() {
   local home fakebin out tool tool_path
   home="$TMP_ROOT/boot-missing-x"; mkdir -p "$home"
   fakebin=$(fm_fakebin "$home")
-  fm_fake_exit0 "$fakebin" tmux node no-mistakes chrome-devtools-axi curl
-  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
+  fm_fake_exit0 "$fakebin" tmux node no-mistakes curl
+  fm_fake_version_tool "$fakebin" chrome-devtools-axi FM_FAKE_CHROME_DEVTOOLS_AXI_VERSION 0.1.30
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.62
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.1.29'
+  printf '%s\n' '0.1.34'
   exit 0
 fi
 exit 0

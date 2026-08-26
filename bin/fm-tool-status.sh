@@ -28,9 +28,9 @@
 #             above GA are visible rather than mistaken for the latest.
 #
 # Version floors are read live from their owning files, never copied here:
-# GH_AXI_MIN, LAVISH_AXI_MIN, and NO_MISTAKES_MIN in bin/fm-bootstrap.sh;
-# FM_TASKS_AXI_MIN in bin/fm-tasks-axi-lib.sh; FM_QUOTA_AXI_MIN in
-# bin/fm-quota-axi-lib.sh. chrome-devtools-axi deliberately has no floor.
+# GH_AXI_MIN, LAVISH_AXI_MIN, CHROME_DEVTOOLS_AXI_MIN, and NO_MISTAKES_MIN in
+# bin/fm-bootstrap.sh; FM_TASKS_AXI_MIN in bin/fm-tasks-axi-lib.sh;
+# FM_QUOTA_AXI_MIN in bin/fm-quota-axi-lib.sh.
 # The axi-family floor policy is owned beside those constants.
 #
 # Degrade honestly: a failed lookup for one tool prints could-not-verify with
@@ -50,7 +50,7 @@ ROOT="$(cd "$SELF_DIR/.." && pwd)"
 # that this fleet must never go looking for.
 FM_TOOL_TABLE=(
   "gh-axi|npm|gh-axi|GH_AXI_MIN|fm-bootstrap"
-  "chrome-devtools-axi|npm|chrome-devtools-axi||"
+  "chrome-devtools-axi|npm|chrome-devtools-axi|CHROME_DEVTOOLS_AXI_MIN|fm-bootstrap"
   "lavish-axi|npm|lavish-axi|LAVISH_AXI_MIN|fm-bootstrap"
   "tasks-axi|npm|tasks-axi|FM_TASKS_AXI_MIN|fm-tasks-axi-lib"
   "quota-axi|npm|quota-axi|FM_QUOTA_AXI_MIN|fm-quota-axi-lib"

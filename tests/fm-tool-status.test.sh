@@ -123,6 +123,7 @@ cp "$TOOL" "$FLOOR_FIXTURE/bin/fm-tool-status.sh"
 printf '%s\n' \
   'GH_AXI_MIN=9.91.1' \
   'LAVISH_AXI_MIN=9.92.2' \
+  'CHROME_DEVTOOLS_AXI_MIN=9.94.4' \
   'NO_MISTAKES_MIN=9.93.3' >"$FLOOR_FIXTURE/bin/fm-bootstrap.sh"
 printf '%s\n' 'FM_TASKS_AXI_MIN=8.81.4' >"$FLOOR_FIXTURE/bin/fm-tasks-axi-lib.sh"
 printf '%s\n' 'FM_QUOTA_AXI_MIN=8.82.5' >"$FLOOR_FIXTURE/bin/fm-quota-axi-lib.sh"
@@ -136,12 +137,14 @@ floor_row() { # floor_row <tool> <floor-var> <value> <source-file> <label>
 }
 floor_row gh-axi GH_AXI_MIN 9.91.1 fm-bootstrap.sh "GH_AXI_MIN read from bootstrap"
 floor_row lavish-axi LAVISH_AXI_MIN 9.92.2 fm-bootstrap.sh "LAVISH_AXI_MIN read from bootstrap"
+floor_row chrome-devtools-axi CHROME_DEVTOOLS_AXI_MIN 9.94.4 fm-bootstrap.sh "CHROME_DEVTOOLS_AXI_MIN read from bootstrap"
 floor_row no-mistakes NO_MISTAKES_MIN 9.93.3 fm-bootstrap.sh "NO_MISTAKES_MIN read from bootstrap"
 floor_row tasks-axi FM_TASKS_AXI_MIN 8.81.4 fm-tasks-axi-lib.sh "FM_TASKS_AXI_MIN read from its lib"
 floor_row quota-axi FM_QUOTA_AXI_MIN 8.82.5 fm-quota-axi-lib.sh "FM_QUOTA_AXI_MIN read from its lib"
-printf '%s\n' "$FLOORS" | grep -E '^chrome-devtools-axi +none +- +no floor by design$' >/dev/null \
-  || fail "floors: chrome-devtools-axi must show no floor by design"
-pass "floors: chrome-devtools-axi reported floorless by design"
+if printf '%s\n' "$FLOORS" | grep -E '^chrome-devtools-axi +none ' >/dev/null; then
+  fail "floors: chrome-devtools-axi must show its bootstrap floor, not none"
+fi
+pass "floors: chrome-devtools-axi is no longer floorless"
 if printf '%s\n' "$FLOORS" | grep -E 'unreadable' >/dev/null; then
   fail "floors: every declared floor must resolve"
 fi
@@ -162,8 +165,8 @@ printf 'npm %s\n' "$*" >>"$(dirname "$0")/invocations.log"
 [ "$#" -eq 3 ] && [ "$1" = view ] && [ "$3" = version ] \
   || { printf 'npm stub: refused unexpected call\n' >&2; exit 64; }
 case $2 in
-  gh-axi) printf '0.1.30\n' ;;
-  chrome-devtools-axi) printf '0.1.29\n' ;;
+  gh-axi) printf '0.1.34\n' ;;
+  chrome-devtools-axi) printf '0.1.30\n' ;;
   lavish-axi) printf '0.1.50\n' ;;
   tasks-axi) printf '0.2.5\n' ;;
   quota-axi) printf '0.1.28\n' ;;
@@ -178,7 +181,7 @@ chmod +x "$FAKEBIN/npm"
 cat >"$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf 'gh-axi %s\n' "$*" >>"$(dirname "$0")/invocations.log"
-if [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '0.1.30\n'; exit 0; fi
+if [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '0.1.34\n'; exit 0; fi
 [ "$#" -eq 6 ] && [ "$1" = release ] && [ "$2" = list ] \
   && [ "$3" = --repo ] && [ "$5" = --limit ] && [ "$6" = 30 ] \
   || { printf 'gh-axi stub: refused unexpected call\n' >&2; exit 64; }
@@ -230,7 +233,7 @@ printf '%s %s\n' "$name" "$*" >>"$(dirname "$0")/invocations.log"
 [ "$#" -eq 1 ] && [ "$1" = --version ] \
   || { printf '%s stub: refused unexpected call\n' "$name" >&2; exit 64; }
 case $name in
-  chrome-devtools-axi) printf '0.1.29\n' ;;
+  chrome-devtools-axi) printf '0.1.30\n' ;;
   lavish-axi) printf '0.1.50\n' ;;
   tasks-axi) printf '0.2.5\n' ;;
   quota-axi) printf '0.1.21\n' ;;
@@ -261,14 +264,14 @@ report_row() { # report_row <tool> <grep-ERE> <label>
     || fail "report: $3; row: $(printf '%s\n' "$REPORT" | grep "^$1 " || true)"
 pass "report: $3"
 }
-report_row gh-axi '0\.1\.30 +0\.1\.2[0-9] +0\.1\.30 +npm +current$' "current tool reported current"
-# quota-axi also carries the below-floor annotation: upstream raised
-# FM_QUOTA_AXI_MIN to 0.1.29 in kunchenguid/firstmate#2574's post-consolidation
-# floor, which is above this stub's installed 0.1.21. The plain `behind` shape
+report_row gh-axi '0\.1\.34 +0\.1\.34 +0\.1\.34 +npm +current$' "current tool reported current"
+report_row chrome-devtools-axi '0\.1\.30 +0\.1\.30 +0\.1\.30 +npm +current$' "chrome-devtools-axi reports its bootstrap floor and is current"
+# quota-axi also carries the below-floor annotation: the live FM_QUOTA_AXI_MIN
+# floor is above this stub's installed 0.1.21. The plain `behind` shape
 # stays covered by the treehouse, gbrain and pi rows below. The floor-reading
 # mechanism itself is pinned independently by the floor_row cases above,
 # against a fixture floor.
-report_row quota-axi '0\.1\.21 +0\.1\.29 +0\.1\.28 +npm +behind; below floor$' "behind-and-below-floor tool reports both, with the floor beside the install"
+report_row quota-axi '0\.1\.21 +0\.1\.32 +0\.1\.28 +npm +behind; below floor$' "behind-and-below-floor tool reports both, with the floor beside the install"
 report_row no-mistakes '1\.41\.2 +1\.31\.2 +1\.48\.0 +github +behind; pre-releases up to v1\.51\.0 excluded$' "GA latest, pre-releases above it named"
 report_row treehouse '2\.1\.0 +none +2\.1\.1 +github +behind$' "github channel latest parsed"
 report_row gbrain '0\.45\.9\.0 +none +0\.45\.14\.0 +github +behind$' "four-segment versions compared"
