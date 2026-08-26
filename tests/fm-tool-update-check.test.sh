@@ -734,29 +734,42 @@ test_non_semver_tags_are_not_treated_as_releases() {
   pass "a non-semver tag is skipped rather than treated as the newest release"
 }
 
-test_an_unreadable_release_tag_is_a_check_failure() {
-  local home work out report older_unreadable unreadable
+test_large_release_components_use_arbitrary_width_ordering() {
+  local home work out report local_tag remote_tag
+  home=$(make_home git-release-large-components)
+  work=$(git_fixture git-release-large-components-repo)
+  local_tag=v9223372036854775808.0
+  git -C "$work" tag -a "$local_tag" -m "$local_tag"
+  git -C "$work" push -q origin "$local_tag"
+  write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
+  out="$home/out.txt"
+  run_check "$home" "$PATH" "$out"
+  [ ! -s "$out" ] || fail "matching large release tags did not stay silent: $(cat "$out")"
+
+  remote_tag=v9223372036854775809.0
+  release_tag_remote_only "$work" "$remote_tag"
+  rm -f "$home/state/.tool-updates"
+  run_check "$home" "$PATH" "$out"
+  report=$(cat "$out")
+  assert_contains "$report" "plugin update available: local $local_tag is behind origin $remote_tag" "large release components were not ordered at arbitrary width"
+  assert_not_contains "$report" "check failed" "a readable large release component was reported as unreadable"
+  pass "large release components are matched and ordered at arbitrary width"
+}
+
+test_an_unreadable_release_shape_is_a_check_failure() {
+  local home work out report unreadable
   home=$(make_home git-release-unreadable)
   work=$(git_release_fixture git-release-unreadable-repo)
-  older_unreadable=v1.9223372036854775808
-  release_tag_remote_only "$work" "$older_unreadable"
-  release_tag_remote_only "$work" v2.0
+  unreadable=v9.x
+  release_tag_remote_only "$work" "$unreadable"
   write_config "$home" "{\"tools\":[{\"name\":\"plugin\",\"git\":{\"repo\":\"$work\",\"watch\":\"releases\"}}]}"
   out="$home/out.txt"
   run_check "$home" "$PATH" "$out"
   report=$(cat "$out")
-  assert_contains "$report" "plugin update available: local v1.2.3 is behind origin v2.0" "an older unreadable tag blocked the readable newest release"
-  assert_not_contains "$report" "check failed" "an unreadable tag that was not newest failed the release check"
-
-  unreadable=v9223372036854775808.0
-  release_tag_remote_only "$work" "$unreadable"
-  rm -f "$home/state/.tool-updates"
-  run_check "$home" "$PATH" "$out"
-  report=$(cat "$out")
-  assert_contains "$report" "plugin check failed" "an unreadable release tag fell through as a clean check"
+  assert_contains "$report" "plugin check failed" "an unreadable release shape fell through as a clean check"
   assert_contains "$report" "origin release tag $unreadable could not be interpreted" "the check failure did not name the unreadable release tag"
-  assert_not_contains "$report" "update available" "an unreadable release tag was treated as an available update"
-  pass "an unreadable release tag is named in its tool's check failure"
+  assert_not_contains "$report" "update available" "an unreadable release shape was treated as an available update"
+  pass "an unreadable release shape is named in its tool's check failure"
 }
 
 test_prerelease_tags_are_not_treated_as_releases() {
@@ -1319,7 +1332,8 @@ test_a_newer_release_tag_is_reported_as_update_available
 test_release_tags_are_ordered_by_version_not_lexically
 test_release_versions_with_different_component_counts_are_ordered
 test_non_semver_tags_are_not_treated_as_releases
-test_an_unreadable_release_tag_is_a_check_failure
+test_large_release_components_use_arbitrary_width_ordering
+test_an_unreadable_release_shape_is_a_check_failure
 test_prerelease_tags_are_not_treated_as_releases
 test_a_repository_with_no_tags_is_silent
 test_an_unanswered_release_probe_is_a_check_failure
