@@ -1108,13 +1108,15 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
-# AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
-# version of that tool, captain-bumped periodically to keep the whole fleet on the
-# newest axi tools. It is NOT the minimum feature-introduced version. These floors
-# are expected to drift upward as new versions ship. Never lower a floor to the
-# earliest release that happens to satisfy some depended-on behavior. The
-# tasks-axi feature probes are an independent defense-in-depth concern, not part
-# of its floor.
+# AXI-FAMILY FLOOR POLICY.
+# TARGET: Every axi-family floor aims at the current latest published version of that tool, which is why floors move upward as new versions ship.
+# GATE: Raise a floor only after that version is confirmed installed on every home it applies to.
+# A floor above what a machine has installed turns that machine's session start into a MISSING diagnostic and disables dispatch-profile resolution.
+# The target and gate are reconciled by raising a floor only after installation, because installed is what permits the raise even when latest is what it aims at.
+# This batch applied that gate by holding back the quota-axi floor bump until the tool was installed everywhere.
+# A floor is not the minimum feature-introduced version.
+# Never lower a floor to the earliest release that happens to satisfy some depended-on behavior.
+# The tasks-axi feature probes are an independent defense-in-depth concern, not part of its floor.
 GH_AXI_MIN=0.1.34
 LAVISH_AXI_MIN=0.1.62
 CHROME_DEVTOOLS_AXI_MIN=0.1.30
