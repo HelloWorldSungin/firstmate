@@ -74,21 +74,19 @@ snapshot=$(
     --all-queued --all-recorded-prs --all-unhealthy \
     --fields bodies,paths,endpoints
 )
-printf '%s\n' "$snapshot" | jq '
-  def card_count:
-    ((.decisions_open // []) | length) +
-    ((.in_flight // []) | length) +
-    ((.landed // []) | length) +
-    ((.gates // []) | length);
+review=$(printf '%s\n' "$snapshot" | jq '
   {measured_at: .generated,
-   card_count: card_count,
-   cards: {captains_call: .decisions_open,
-           underway: .in_flight,
-           recently_landed: .landed,
-           charted_next: .gates},
+   cards: {captains_call: (.decisions_open // []),
+           underway: (.in_flight // []),
+           recently_landed: (.landed // []),
+           charted_next: (.gates // []),
+           secondmate_state_rows: [(.secondmates // [])[] |
+             select(.state == "externally_held" or .state == "unknown")]},
    bodies,
    recorded_prs,
-   endpoints}'
+   endpoints}
+  | .card_count = ([.cards[] | .[]] | length)')
+printf '%s\n' "$review" | jq .
 ```
 
 These commands intentionally read the selected home's private records in place and do not make those records part of this repository.
@@ -101,11 +99,7 @@ Count a dead premise only when that live owner contradicts an actionable premise
 After reviewing all `card_count` cards, run the following tally command and enter the number of contradictions found:
 
 ```sh
-cards_reviewed=$(printf '%s\n' "$snapshot" | jq '
-  ((.decisions_open // []) | length) +
-  ((.in_flight // []) | length) +
-  ((.landed // []) | length) +
-  ((.gates // []) | length)')
+cards_reviewed=$(printf '%s\n' "$review" | jq '.card_count')
 printf 'dead premises: ' >&2
 IFS= read -r dead_premises
 case "$dead_premises" in
@@ -116,7 +110,7 @@ esac
   exit 2
 }
 jq -n \
-  --arg measured_at "$(printf '%s\n' "$snapshot" | jq -r '.generated')" \
+  --arg measured_at "$(printf '%s\n' "$review" | jq -r '.measured_at')" \
   --argjson cards_reviewed "$cards_reviewed" \
   --argjson dead_premises "$dead_premises" \
   '{measured_at: $measured_at,
