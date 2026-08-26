@@ -118,6 +118,9 @@ That governs response packing at read time.
 Firstmate's own body cap is a separate mechanism at capture time, `FM_GBRAIN_CAPTURE_MAX_BYTES` in [`../../bin/fm-gbrain-capture-lib.sh`](../../bin/fm-gbrain-capture-lib.sh), still defaulting to 65536.
 The corpus still holds one body of exactly 65536 bytes, `task/arknode-npm-hardening-plan`, and the outbox record schema has no truncation field, so a cut report is still indistinguishable from one that ended naturally.
 
+Dated note, 2026-08-26: a cut body now carries a visible marker and its record carries `truncated` and `captured_bytes`, so the clause above naming their absence is preserved as what was accurate when recorded rather than as current behaviour.
+The cap itself is unchanged, and [`../gbrain-capture.md`](../gbrain-capture.md) owns the marker and those fields.
+
 ## The `v0.45.0.0` bootstrap checks do not apply to this deployment
 
 `bootstrapDoctorChecks` is gated on bootstrap state existing on the machine, and returns no checks at all when `gbrain bootstrap` has never run.
@@ -736,6 +739,9 @@ $ GBRAIN_HOME=$PWD/.probe-tmp/runtime OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 
 At 20 tokens the call returned `#3` and reported one dropped; at 5000 it returned `#3` and `#2` and reported none.
 
 Firstmate's own body cap at 65536 bytes and the absence of a truncation marker in the outbox record are unchanged, so explicit truncation signalling is still Firstmate's.
+
+Dated note, 2026-08-26: the row's verdict is unchanged - truncation signalling is Firstmate's - but the marker is no longer absent, so the sentence above is preserved as recorded rather than as current behaviour.
+[`../gbrain-capture.md`](../gbrain-capture.md) owns what a cut body and its record now carry.
 
 ## Maintaining this file
 

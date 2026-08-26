@@ -12,7 +12,8 @@ Capture turns each finished task into a page in the home's own brain, addressed 
 
 Capture is inert until a home has an initialized brain.
 A home that has not adopted GBrain creates no outbox, writes no receipt, and its cleanup behaves exactly as it did before.
-Inertness covers the subcommands a lifecycle step or `/stow` calls; the two operator sweeps below, `process` and `backfill`, instead name the missing index and exit non-zero, because they were asked to work on an outbox that cannot exist.
+Inertness covers the subcommands a lifecycle step or `/stow` calls, and the periodic `sweep` below, which a session start arms in every home and which therefore leaves no marker, no audit record, and no output where there is no brain.
+The three operator commands below - `process`, `backfill`, and `audit` - instead name the missing index and exit non-zero, because they were asked to work on an outbox that cannot exist.
 
 ## What is captured, and what is never read
 
@@ -146,7 +147,7 @@ Measured on this fleet, capture reported 291 archived while the index served 288
 
 `audit` compares the two sides directly, from the outbox's own captured slugs and the index's page listing:
 
-- `ok` - every captured document is served.
+- `ok` - every captured document is served, and it is the only verdict that exits 0.
 - `gap` - it names each captured document the index no longer serves, and exits non-zero.
 - `inconclusive` - the listing could not be read, or came back at exactly its own `FM_GBRAIN_CAPTURE_AUDIT_MAX_PAGES` ceiling and may be incomplete.
   A capped listing is never reported as a gap, because a false gap is what would train an operator to ignore a real one.
