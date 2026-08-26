@@ -2466,6 +2466,7 @@ if [ "$KIND" = design ]; then
   DESIGN_DISPATCH_BRIEF="$TASK_TMP/brief.md"
   DESIGN_DISPATCH_BRIEF_TMP="$TASK_TMP/.brief.${BASHPID:-$$}"
   {
+    # shellcheck disable=SC2016  # Backticks are literal worker-facing Markdown, not command substitutions.
     printf '%s\n' \
       '# Dispatch-pinned design skills' \
       'Firstmate resolved this binding once at dispatch and recorded its plugin release in the task metadata.' \
