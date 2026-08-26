@@ -9,6 +9,10 @@
       "git": { "repo": "/absolute/path/to/agents-on-the-go", "remote": "origin", "branch": "mainline" }
     },
     {
+      "name": "mattpocock-skills",
+      "git": { "repo": "/absolute/path/to/mattpocock-skills", "remote": "origin", "watch": "releases" }
+    },
+    {
       "name": "herdr",
       "command": "herdr",
       "version_args": ["--version"]

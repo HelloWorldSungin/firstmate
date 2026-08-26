@@ -35,7 +35,20 @@
 # install, update, uninstall, reorder PATH, or touch any version manager's
 # configuration, and it never fetches into a watched git repository. Every git
 # probe is read-only (rev-parse, symbolic-ref, ls-remote, cat-file, merge-base,
-# rev-list), so a watched project is never mutated.
+# rev-list), so a watched project is never mutated. A git.watch of releases
+# compares newest release tags instead of the branch head: git ls-remote --tags
+# on the remote, and the same read against `.` for tags the clone already has,
+# so nothing is fetched. Newest is version-aware, so v1.10.0 beats v1.9.0.
+# Missing numeric components compare as zero, so v1.2 equals v1.2.0 while
+# v1.2.0.1 is newer, and numeric components are compared at arbitrary width.
+# Annotated tags appear twice in ls-remote output (refs/tags/vX and
+# refs/tags/vX^{}) and count as one release. A tag counts as a release only
+# when it is a dotted version with an optional v prefix and nothing else.
+# Prereleases and names with no version information are skipped. An otherwise
+# uninterpretable tag is a named check failure only when its known numeric prefix
+# could outrank the best stable release. A repository with no release tags is
+# silent: there is no published release to install, and that is not an error.
+# An unanswered tags probe is a check failure, never assumed current.
 #
 # The watched tools live in config/watched-tools.json, which is local and
 # gitignored, and is never propagated to another home. Adding a tool is a config
@@ -327,6 +340,8 @@ config_validate() {
       elif ($t | has("git")) and (($t.git.repo | type) != "string" or ($t.git.repo | startswith("/") | not) or ($t.git.repo | test("[[:cntrl:]]"))) then "tool \($t.name) git.repo must be an absolute path on one line"
       elif ($t | has("git")) and ($t.git | has("remote")) and (($t.git.remote | type) != "string" or ($t.git.remote | test("^[A-Za-z0-9._-]+$") | not)) then "tool \($t.name) git.remote must be a simple remote name"
       elif ($t | has("git")) and ($t.git | has("branch")) and (($t.git.branch | type) != "string" or ($t.git.branch | test("^[A-Za-z0-9._/-]+$") | not)) then "tool \($t.name) git.branch must be a simple branch name"
+      elif ($t | has("git")) and ($t.git | has("watch")) and (($t.git.watch | type) != "string" or (($t.git.watch != "branch") and ($t.git.watch != "releases"))) then "tool \($t.name) git.watch must be branch or releases"
+      elif ($t | has("git")) and ($t.git.watch == "releases") and ($t.git | has("branch")) then "tool \($t.name) git.watch releases cannot set git.branch"
       else empty
       end;
     def problems:
@@ -367,7 +382,8 @@ config_records() {
       ((.announce_args // .version_args // ["--version"]) | join(" ")),
       (.git.repo // ""),
       (.git.remote // "origin"),
-      (.git.branch // "")
+      (.git.branch // ""),
+      (.git.watch // "branch")
     ] | join("\u001f")
   ' "$CONFIG" 2>/dev/null
 }
@@ -507,6 +523,64 @@ EOF
 # a status of its own rather than a git status, so no caller can read it as an
 # answer. Neither git nor the bounded runner uses this value.
 GIT_PROBE_NOT_ISSUED=3
+RELEASE_TAG_UNREADABLE=4
+RELEASE_ORDER_GREATER=0
+RELEASE_ORDER_EQUAL=1
+RELEASE_ORDER_LESS=2
+
+release_component_order() {
+  local left=$1 right=$2
+  while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do
+    left=${left#0}
+  done
+  while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do
+    right=${right#0}
+  done
+  if [ "${#left}" -gt "${#right}" ]; then
+    return "$RELEASE_ORDER_GREATER"
+  elif [ "${#left}" -lt "${#right}" ]; then
+    return "$RELEASE_ORDER_LESS"
+  elif [[ "$left" > "$right" ]]; then
+    return "$RELEASE_ORDER_GREATER"
+  elif [[ "$left" < "$right" ]]; then
+    return "$RELEASE_ORDER_LESS"
+  fi
+  return "$RELEASE_ORDER_EQUAL"
+}
+
+release_version_newer() {
+  local a=$1 b=$2 i status
+  local -a ap bp
+  IFS=. read -r -a ap <<< "$a"
+  IFS=. read -r -a bp <<< "$b"
+  i=0
+  while [ "$i" -lt "${#ap[@]}" ] || [ "$i" -lt "${#bp[@]}" ]; do
+    release_component_order "${ap[i]:-0}" "${bp[i]:-0}"
+    status=$?
+    case "$status" in
+      "$RELEASE_ORDER_GREATER") return 0 ;;
+      "$RELEASE_ORDER_LESS") return 1 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+release_prefix_could_outrank() {
+  local prefix=$1 version=$2 i status
+  local -a prefix_parts=() version_parts=()
+  IFS=. read -r -a prefix_parts <<< "$prefix"
+  IFS=. read -r -a version_parts <<< "$version"
+  for ((i = 0; i < ${#prefix_parts[@]}; i++)); do
+    release_component_order "${prefix_parts[i]}" "${version_parts[i]:-0}"
+    status=$?
+    case "$status" in
+      "$RELEASE_ORDER_GREATER") return 0 ;;
+      "$RELEASE_ORDER_LESS") return 1 ;;
+    esac
+  done
+  return 0
+}
 
 # One bounded read-only git probe. The budget check lives here rather than in the
 # callers, so no probe can be issued past the sweep deadline whatever a caller
@@ -642,6 +716,113 @@ git_findings() {
   return 0
 }
 
+# Newest release tag name from ls-remote --tags output, or empty. Annotated tags
+# appear twice; both peel to one name. A name counts as a release only when it is
+# a dotted version with an optional v prefix and nothing else.
+newest_release_tag() {
+  local output=$1
+  local ref name version i
+  local best='' best_version=''
+  local -a unreadable_names=()
+  local -a unreadable_prefixes=()
+  while IFS=$'\t' read -r _ ref; do
+    budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
+    [ -n "$ref" ] || continue
+    name=${ref#refs/tags/}
+    name=${name%'^{}'}
+    if [[ "$name" =~ ^v?[0-9]+(\.[0-9]+)+$ ]]; then
+      version=${name#v}
+      if [ -z "$best_version" ] || release_version_newer "$version" "$best_version"; then
+        best=$name
+        best_version=$version
+      fi
+    elif [[ "$name" =~ ^v?[0-9]+(\.[0-9]+)+- ]]; then
+      continue
+    elif [[ "$name" =~ ([0-9]+(\.[0-9]+)*) ]]; then
+      unreadable_names+=("$name")
+      unreadable_prefixes+=("${BASH_REMATCH[1]}")
+    fi
+  done <<< "$output"
+  budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
+  for ((i = 0; i < ${#unreadable_names[@]}; i++)); do
+    budget_exhausted && return "$GIT_PROBE_NOT_ISSUED"
+    if [ -z "$best_version" ] || release_prefix_could_outrank "${unreadable_prefixes[i]}" "$best_version"; then
+      printf '%s\n' "${unreadable_names[i]}"
+      return "$RELEASE_TAG_UNREADABLE"
+    fi
+  done
+  printf '%s\n' "$best"
+}
+
+# Read-only throughout: ls-remote --tags on the remote, then the same read
+# against `.` for tags this clone already has. Nothing is fetched.
+git_release_findings() {
+  local name=$1 repo=$2 remote=$3
+  local status remote_out local_out remote_tag local_tag remote_status local_status
+
+  if ! command -v git >/dev/null 2>&1; then
+    emit "$name check failed: git is not installed"
+    return 0
+  fi
+  if [ ! -d "$repo" ]; then
+    emit "$name check failed: $repo is not a directory"
+    return 0
+  fi
+  budget_allows "$name" || return 0
+  git_probe "$repo" rev-parse --git-dir >/dev/null 2>&1
+  status=$?
+  git_probe_answered "$status" "$name" "$repo" "whether it is a git repository" || return 0
+  if [ "$status" -ne 0 ]; then
+    emit "$name check failed: $repo is not a git repository"
+    return 0
+  fi
+
+  remote_out=$(git_probe "$repo" ls-remote --tags "$remote" 2>/dev/null)
+  status=$?
+  git_probe_answered "$status" "$name" "$remote" "which release tags it has" || return 0
+  if [ "$status" -ne 0 ]; then
+    emit "$name check failed: $remote could not be reached or read from $repo"
+    return 0
+  fi
+
+  local_out=$(git_probe "$repo" ls-remote --tags . 2>/dev/null)
+  status=$?
+  git_probe_answered "$status" "$name" "$repo" "which release tags it already has" || return 0
+  if [ "$status" -ne 0 ]; then
+    emit "$name check failed: $repo could not be read for release tags"
+    return 0
+  fi
+
+  remote_tag=$(newest_release_tag "$remote_out")
+  remote_status=$?
+  if [ "$remote_status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
+    emit "$name check failed: the time budget ran out before $remote release tags were fully parsed"
+    return 0
+  fi
+  local_tag=$(newest_release_tag "$local_out")
+  local_status=$?
+  if [ "$local_status" -eq "$GIT_PROBE_NOT_ISSUED" ]; then
+    emit "$name check failed: the time budget ran out before $repo release tags were fully parsed"
+    return 0
+  fi
+  if [ "$remote_status" -eq "$RELEASE_TAG_UNREADABLE" ]; then
+    emit "$name check failed: $remote release tag $remote_tag could not be interpreted"
+    return 0
+  elif [ "$local_status" -eq "$RELEASE_TAG_UNREADABLE" ]; then
+    emit "$name check failed: $repo release tag $local_tag could not be interpreted"
+    return 0
+  fi
+
+  [ -n "$remote_tag" ] || return 0
+  if [ -n "$local_tag" ]; then
+    release_version_newer "${remote_tag#v}" "${local_tag#v}" || return 0
+    emit "$name update available: local $local_tag is behind $remote $remote_tag"
+    return 0
+  fi
+  emit "$name update available: $remote has $remote_tag which this copy does not have"
+  return 0
+}
+
 # --- report record ----------------------------------------------------------
 
 RECORD_EPOCH=0
@@ -688,7 +869,7 @@ record_write() {
 # --- actions ----------------------------------------------------------------
 
 action_check() {
-  local name command_name args_joined announce announce_args repo remote branch
+  local name command_name args_joined announce announce_args repo remote branch watch
   local line now
 
   [ -f "$CONFIG" ] || return 0
@@ -709,11 +890,17 @@ action_check() {
   if ! config_validate; then
     emit "watched tool registry: $CONFIG_PROBLEM"
   else
-    while IFS=$FIELD_SEP read -r name command_name args_joined announce announce_args repo remote branch; do
+    while IFS=$FIELD_SEP read -r name command_name args_joined announce announce_args repo remote branch watch; do
       [ -n "$name" ] || continue
       budget_allows "$name" || break
       [ -z "$command_name" ] || command_findings "$name" "$command_name" "$args_joined" "$announce" "$announce_args"
-      [ -z "$repo" ] || git_findings "$name" "$repo" "$remote" "$branch"
+      if [ -n "$repo" ]; then
+        if [ "$watch" = releases ]; then
+          git_release_findings "$name" "$repo" "$remote"
+        else
+          git_findings "$name" "$repo" "$remote" "$branch"
+        fi
+      fi
     done < <(config_records)
   fi
 

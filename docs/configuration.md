@@ -617,7 +617,8 @@ This section is the single owner of the canonical schema.
       "git": {
         "repo": "<optional absolute path to a local clone>",
         "remote": "<optional remote name, default origin>",
-        "branch": "<optional branch, default the remote's own default branch>"
+        "branch": "<optional branch, default the remote's own default branch>",
+        "watch": "<optional branch or releases, default branch>"
       }
     }
   ]
@@ -629,9 +630,12 @@ A `command` entry gives the `PATH` comparison above, and adding `announce_patter
 A tool does not always announce a new release on the command that prints its version: `no-mistakes --version` prints only the version, while its other commands carry the announcement.
 `announce_args` names the command to search for the announcement in that case, and it is asked only of the copy `PATH` resolves; without it the version probe's own output is searched.
 An `announce_pattern` that is not a usable extended regular expression stops `arm`, and during a sweep it is reported as that one tool's own check failure so one broken pattern never stops the other watched tools from being checked.
-A `git` entry reports how many commits the local clone is behind its remote branch, and stays silent when the clone is current or ahead.
+A `git` entry with the default `watch` of `branch`, or with `watch` omitted, reports how many commits the local clone is behind its remote branch, and stays silent when the clone is current or ahead.
 An omitted `branch` uses the remote's default branch, taken from the clone's own record of it and otherwise asked of the remote directly, so a `--single-branch` clone still resolves.
-Both probe kinds are read-only and bounded, and a probe that cannot answer is reported as a check failure rather than assumed current.
+A `git` entry with `watch` set to `releases` compares the newest release tag on the remote with the newest release tag the local clone already has, and stays silent when they match or the clone is already ahead.
+`watch` of `releases` cannot set `branch`, because the two comparisons answer different questions.
+The script header owns which tags count as a release, how they are ordered, and what a repository with no tags reports.
+All three probe kinds are read-only and bounded, and a probe that cannot answer is reported as a check failure rather than assumed current.
 See [`docs/examples/watched-tools.json`](examples/watched-tools.json) for a starting point to copy into local `config/watched-tools.json`.
 
 Arm the check once per home with `bin/fm-tool-update-check.sh arm`.
