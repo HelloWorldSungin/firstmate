@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# Resolve the installed mattpocock design-skill dependency for a Firstmate
+# Resolve named skills from the installed mattpocock plugin for a Firstmate
 # design task without installing, updating, copying, pinning, or modifying it.
 # The captain owns plugin lifecycle through Claude's /plugin action.
 #
 # Usage:
-#   fm-design-skills.sh resolve        print a JSON capability record
-#   fm-design-skills.sh check          verify the required files and print one line
+#   fm-design-skills.sh resolve [skill-name...]
+#       print a JSON capability record
+#   fm-design-skills.sh check
+#       verify the required files and print one line
 #
 # The installed plugin registry is the identity owner for the active install
-# path. The newest registry entry by lastUpdated is selected, then the two
-# capability files the design profile requires are verified beneath that exact
-# install root. Version strings are reported as evidence, never used as a pin:
-# the profile depends on these capabilities rather than guessing which release
-# first provided them.
+# path. The newest registry entry by lastUpdated is selected, then named
+# skill files are looked up beneath that exact install root. Version strings
+# are reported as evidence, never used as a pin: the profile depends on
+# these capabilities rather than guessing which release first provided them.
+#
+# resolve always reports grilling, domain_modeling, and ask_matt.
+# Additional skill-name arguments are looked up by directory name under the
+# install's skills/ tree. Hyphens and underscores are equivalent.
+# A name the plugin does not contain is a refusal that names what was
+# looked for, never an empty path or a silently absent key.
 #
 # FM_MATTPOCOCK_PLUGIN_REGISTRY overrides the registry path for tests only.
 set -eu
@@ -23,8 +30,8 @@ usage() {
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
-  resolve|check) COMMAND=$1 ;;
-  *) echo "usage: $(basename "$0") <resolve|check>" >&2; exit 2 ;;
+  resolve|check) COMMAND=$1; shift ;;
+  *) echo "usage: $(basename "$0") <resolve|check> [skill-name...]" >&2; exit 2 ;;
 esac
 
 command -v jq >/dev/null 2>&1 || {
@@ -68,29 +75,85 @@ INSTALL_PATH=$(CDPATH='' cd -- "$INSTALL_PATH" 2>/dev/null && pwd -P) || {
   exit 1
 }
 
-GRILLING="$INSTALL_PATH/skills/productivity/grilling/SKILL.md"
-DOMAIN_MODELING="$INSTALL_PATH/skills/engineering/domain-modeling/SKILL.md"
-for skill in "$GRILLING" "$DOMAIN_MODELING"; do
-  [ -f "$skill" ] && [ ! -L "$skill" ] || {
-    echo "error: installed mattpocock plugin lacks required design skill $skill; the captain must refresh it with /plugin" >&2
-    exit 1
+skill_dir_name() {
+  printf '%s' "${1//_/-}"
+}
+
+skill_json_key() {
+  local hyphenated
+  hyphenated=$(skill_dir_name "$1")
+  printf '%s' "${hyphenated//-/_}"
+}
+
+validate_skill_name() {
+  local requested=$1
+  [[ "$requested" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || {
+    echo "error: skill name must be a simple identifier: $requested" >&2
+    return 1
   }
+}
+
+lookup_skill_path() {
+  local requested=$1
+  local name candidate found="" count=0
+  name=$(skill_dir_name "$requested")
+  for candidate in "$INSTALL_PATH/skills/"*"/$name/SKILL.md"; do
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+      found=$candidate
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -eq 1 ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  if [ "$count" -gt 1 ]; then
+    echo "error: installed mattpocock plugin has multiple skills named $name" >&2
+    return 1
+  fi
+  return 1
+}
+
+SKILLS_JSON='{}'
+
+add_skill_record() {
+  local requested=$1 path=$2 key
+  key=$(skill_json_key "$requested")
+  SKILLS_JSON=$(jq -cn --argjson acc "$SKILLS_JSON" --arg k "$key" --arg v "$path" '$acc + {($k): $v}')
+}
+
+skill_path=
+for required in grilling domain-modeling ask-matt; do
+  if ! skill_path=$(lookup_skill_path "$required"); then
+    echo "error: installed mattpocock plugin lacks required design skill $required; the captain must refresh it with /plugin" >&2
+    exit 1
+  fi
+  add_skill_record "$required" "$skill_path"
 done
 
 VERSION=$(printf '%s\n' "$ENTRY" | jq -r '.version')
 LAST_UPDATED=$(printf '%s\n' "$ENTRY" | jq -r '.lastUpdated')
+
 if [ "$COMMAND" = check ]; then
   printf 'mattpocock design skills ready: version=%s updated=%s path=%s\n' \
     "$VERSION" "$LAST_UPDATED" "$INSTALL_PATH"
   exit 0
 fi
 
+for requested in "$@"; do
+  validate_skill_name "$requested" || exit 1
+  if ! skill_path=$(lookup_skill_path "$requested"); then
+    echo "error: installed mattpocock plugin has no skill named $requested" >&2
+    exit 1
+  fi
+  add_skill_record "$requested" "$skill_path"
+done
+
 jq -n \
   --arg install_path "$INSTALL_PATH" \
   --arg version "$VERSION" \
   --arg last_updated "$LAST_UPDATED" \
-  --arg grilling "$GRILLING" \
-  --arg domain_modeling "$DOMAIN_MODELING" \
+  --argjson skills "$SKILLS_JSON" \
   '{schema:"fm-design-skills.v1", plugin:"mattpocock-skills@mattpocock",
     install_path:$install_path, version:$version, last_updated:$last_updated,
-    skills:{grilling:$grilling, domain_modeling:$domain_modeling}}'
+    skills:$skills}'

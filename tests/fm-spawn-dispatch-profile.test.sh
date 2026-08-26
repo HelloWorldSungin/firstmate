@@ -965,9 +965,11 @@ test_design_profile_resolves_on_claude_codex_and_pi() {
   plugin="$TMP_ROOT/design-plugin"
   registry="$TMP_ROOT/design-registry.json"
   mkdir -p "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}

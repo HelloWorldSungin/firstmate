@@ -18,19 +18,33 @@ This skill owns the supervisor decisions around those mechanics.
 
 ## Dependency boundary
 
-The profile uses the installed `mattpocock-skills@mattpocock` plugin's `grilling` and `domain-modeling` skills.
-`bin/fm-design-skills.sh` is the single owner of resolving those capabilities from Claude's installed-plugin registry.
+The profile uses the installed `mattpocock-skills@mattpocock` plugin.
+`bin/fm-design-skills.sh` is the single owner of resolving named skills from that plugin.
 It only reads the registry and skill files.
 It never installs, updates, copies, vendors, pins, or modifies the plugin.
 Only the captain upgrades that dependency through their own `/plugin` action.
 
 Run `bin/fm-design-skills.sh check` before scaffolding.
-If it refuses because the install or either required skill is absent, stop and ask the captain to refresh the plugin.
+If it refuses because the install or a required skill is absent, stop and ask the captain to refresh the plugin.
 Never substitute copied skill text or run an installer from a worker.
+
+When the captain names that plugin's skills for a task, read the resolved `ask-matt` file first and choose on its evidence, rather than reaching for whichever of its skills happens to be visible.
+Account for the choice in the same reply that reports what is being dispatched: which skills were selected and why.
+The router recommends skills that are not invokable as skills.
+Reaching one means resolving its path and reading the file, exactly as the design brief already does for grilling and domain-modeling.
+
+Do not import that plugin's lifecycle, file layout, or scratch-tracker conventions.
+Its `to-tickets` is firstmate's backlog plus `bin/fm-brief.sh`.
+Its `implement` is firstmate's ship task and its selected delivery mode.
+Its `code-review` is firstmate's own validation pipeline.
+Its `CONTEXT.md` is refused outright by this profile's ADR-only rule.
+Importing those would give one contract two owners.
+The router is for choosing that plugin's thinking tools.
+Firstmate's lifecycle stays firstmate's.
 
 The worker brief tells every harness to read the resolved skill files directly.
 This avoids depending on harness-specific command spelling while preserving one exact installed dependency for Claude, Codex, and Pi.
-Those dependencies supply modeling and interrogation capabilities only.
+Those dependencies supply thinking tools only.
 The profile's ADR-only contract takes precedence over any dependency direction to create or update `CONTEXT.md`.
 Every resolved term is recorded only in the ADR, which remains the sole tracked project deliverable.
 
