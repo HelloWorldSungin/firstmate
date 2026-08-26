@@ -380,6 +380,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/adr/0002-stow-session-end.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/agent-control.md",
       "audience": "maintainer-architecture"
     },
