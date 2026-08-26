@@ -978,7 +978,15 @@ cmd_audit() {
       state=gap
       missing=$(grep -c . < "$confirmed_file" | tr -cd '0-9')
       cat "$confirmed_file" > "$missing_file"
-      detail="$missing captured document(s) are in the store and hidden from ordinary retrieval; recapture a task with backfill and a note with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately"
+      # One repair for both kinds, because a page the index dropped is absent
+      # the same way whether or not the document has a durable source under
+      # data/ to recompose: backfill re-delivers only when that source MOVED,
+      # so it walks past a record whose page was deleted and leaves the same
+      # gap to be reported on every sweep. docs/gbrain-capture.md owns why, and
+      # this line stays short rather than carrying a second copy of it. The
+      # sweep does not close the gap itself because re-delivering a record the
+      # audit proved missing is deferred to fm-gbrain-audit-self-healing-repair.
+      detail="$missing captured document(s) are in the store and hidden from ordinary retrieval; re-deliver each stored body with process --document <document-id> --force, or restore them in GBrain if they were deleted deliberately - docs/gbrain-capture.md owns why that is the repair"
     fi
   else
     state=ok

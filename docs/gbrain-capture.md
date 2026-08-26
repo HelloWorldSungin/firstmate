@@ -217,10 +217,13 @@ A card that makes no claim is counted as neither nominal nor unreadable, so a ho
 A gap is not automatically a fault: a page deleted deliberately shows up here too.
 Recapture the document if it should still be served, or restore it in GBrain if it was deleted by mistake.
 
-Which recapture depends on what the document was captured from, because only one of the two kinds has a durable source to recompose from:
+The recapture is the same for both kinds, because what a gap reports is a page the index no longer serves rather than a body that went stale.
+Re-deliver the stored body with `bin/fm-gbrain-capture.sh process --document <document-id> --force`, taking the document id from `status --json`.
 
-- A task is recomposed from its manifest and report under `data/`, so `backfill` repairs it.
-- A note has no durable source under `data/` at all - `/stow` delivered it and the outbox record is the only copy - so `backfill` walks straight past it and repairs nothing.
-  Re-deliver its stored body with `bin/fm-gbrain-capture.sh process --document <document-id> --force`, taking the document id from `status --json`.
+`backfill` is the wrong repair here, for a task as much as for a note.
+It recomposes from the durable source and re-delivers only when that source moved, so it repairs a page whose body is stale and walks straight past a page that is absent: a deletion happens in the index, which leaves the outbox record still reading captured at its current content version.
+That is true of a task whose manifest and report are still under `data/` too - the source it would recompose from has not changed, so there is nothing for it to re-deliver.
+
+The sweep does not close a gap it just proved, because re-delivering a record the audit found missing is deferred to `fm-gbrain-audit-self-healing-repair`; until that lands, the verdict names a command an operator runs by hand.
 
 Recapturing the wrong way is how a real gap gets ignored: an advised repair that silently does nothing leaves the same gap reported on every sweep.

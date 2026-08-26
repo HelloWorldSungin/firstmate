@@ -1016,6 +1016,84 @@ test_a_candidate_set_past_the_probe_ceiling_is_refused_rather_than_verified() {
   pass "a candidate set past the probe ceiling is refused rather than verified"
 }
 
+# The verdict names a repair, and an operator runs what it names, so the repair
+# it names has to close the gap it reports. This is proved by RUNNING the advice
+# rather than by asserting its wording: the wording was present and readable
+# when it told an operator to backfill a soft-deleted task, and backfill
+# re-delivers nothing while the durable source has not moved, so the same gap
+# came back on every sweep. A text assertion would have passed on that.
+
+# Every repair command the verdict's detail names, one per line, with the
+# document-id placeholder left for the caller to fill. The vocabulary is this
+# script's own repair subcommands, so an operator reading the line and this test
+# reading it pick out the same commands.
+advised_repairs() {  # <detail-text>
+  local word cmd='' out=''
+  # Split deliberately: the detail is prose, and its words are what is being
+  # scanned.
+  # shellcheck disable=SC2086
+  for word in $1; do
+    word=${word//[\`\"\',;.]/}
+    case $word in
+      backfill | process | sweep)
+        [ -n "$cmd" ] && out="$out$cmd"$'\n'
+        cmd=$word ;;
+      -* | '<document-id>')
+        [ -n "$cmd" ] && cmd="$cmd $word" ;;
+      *)
+        [ -n "$cmd" ] && { out="$out$cmd"$'\n'; cmd=''; } ;;
+    esac
+  done
+  [ -n "$cmd" ] && out="$out$cmd"$'\n'
+  printf '%s' "$out"
+}
+
+test_every_repair_the_audit_advises_closes_the_gap_it_reports() {
+  local home out detail kind kindname id doc fragment repair repairs checked=0
+  home=$(make_home audit-repair)
+  seed_manifest "$home" ship-a "Add the widget"
+  cap "$home" backfill >/dev/null 2>&1 || fail "backfill must deliver the task"
+  printf 'The reranker fails over 4096 tokens and returns the non-reranked order.\n' \
+    > "$TMP_ROOT/repair-note.md"
+  cap "$home" note --id fleet-rerank --title "Reranker bound" --file "$TMP_ROOT/repair-note.md" \
+    >/dev/null || fail "the note must capture"
+
+  # Both kinds, because the advice used to split by kind and was wrong on the
+  # side nobody re-tested: a page absent from the index is absent the same way
+  # whether or not the document has a durable source under data/ to recompose.
+  for kind in task:ship-a note:fleet-rerank; do
+    kindname=${kind%%:*}
+    id=${kind#*:}
+    fragment="_${kindname}_$id"
+    doc=$(doc_id_for "$home" "$id")
+    [ -n "$doc" ] || fail "no outbox record for $id"
+
+    soft_delete_page "$home" "$fragment"
+    out=$(cap "$home" audit 2>&1) && fail "a soft-deleted $kindname must report a gap: $out"
+    detail=$(printf '%s\n' "$out" | sed -n 's/^detail  *//p')
+    repairs=$(advised_repairs "$detail")
+    [ -n "$repairs" ] || fail "the gap verdict must name a repair to run: $detail"
+
+    while IFS= read -r repair; do
+      [ -n "$repair" ] || continue
+      # Each advised repair is judged on its own, so one that works cannot cover
+      # for one that does nothing: the gap is re-opened before each, unless the
+      # repair before it left the page where it was.
+      compgen -G "$home/pages/*$fragment*.md" >/dev/null && soft_delete_page "$home" "$fragment"
+      cap "$home" audit >/dev/null 2>&1 && fail "the $kindname gap must be open before \"$repair\" runs"
+      # shellcheck disable=SC2086
+      cap "$home" ${repair//<document-id>/$doc} >/dev/null 2>&1 || true
+      out=$(cap "$home" audit 2>&1) \
+        || fail "the audit advised \"$repair\" for the missing $kindname and it left the same gap: $out"
+      checked=$((checked + 1))
+    done <<EOF
+$repairs
+EOF
+  done
+  [ "$checked" -ge 2 ] || fail "both kinds must have had their advised repair run"
+  pass "every repair the audit advises closes the gap it reports"
+}
+
 # --- our own rewrites are not the source changing ---------------------------
 
 # The truncation marker is part of the stored body, and the stored body is what
@@ -1201,6 +1279,7 @@ test_a_capped_listing_keeps_its_counts_as_bounds
 test_a_gap_rests_on_a_direct_read_rather_than_on_the_listing
 test_a_candidate_set_past_the_probe_ceiling_is_refused_rather_than_verified
 test_a_body_this_pipeline_rewrote_is_not_named_as_a_source_change
+test_every_repair_the_audit_advises_closes_the_gap_it_reports
 test_a_report_edited_after_capture_is_refreshed_by_the_sweep
 test_a_refresh_is_named_once_on_the_sweep_that_delivers_it
 test_the_sweep_runs_on_its_interval_and_is_inert_without_a_brain
