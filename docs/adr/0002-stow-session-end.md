@@ -65,7 +65,7 @@ FM_HOME="$FM_HOME" bin/fm-gbrain-capture.sh status --json |
          map({kind: .[0].source.kind, count: length})),
        pruning_notes: ([.documents[] |
          select(.source.kind == "note" and
-           (.slug | test("^(learnings-pruned-|captain-reference-pruned-)")))] |
+           (.source.id | test("^(learnings-pruned-|captain-reference-pruned-)")))] |
          length)}'
 
 snapshot=$(
