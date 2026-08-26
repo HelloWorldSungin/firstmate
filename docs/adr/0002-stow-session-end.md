@@ -157,7 +157,7 @@ The receipt proves all of the following for the invocation:
 5. The primary and every home reached by the full cascade finish within their own startup-memory budgets with no unresolved ownership exception or budget decision.
 
 The capture pipeline writes an outbox record synchronously before attempting bounded delivery.
-An intact record in `captured`, `pending`, or `failed` state after delivery attempts are exhausted therefore proves survival across reset.
+As soon as that synchronous write completes, an intact record proves survival across reset in whatever delivery state it currently holds, including `captured`, `pending`, or `failed`.
 Only `captured` proves that the finding was delivered for ordinary brain retrieval.
 A pending or failed finding is reported in captain-facing language as surviving on disk but not searchable yet, together with the next action owned by [`docs/gbrain-capture.md`](../gbrain-capture.md).
 The receipt never says merely that "the brain has it" when only the outbox does.
