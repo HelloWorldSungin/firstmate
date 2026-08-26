@@ -614,9 +614,11 @@ test_status_protocol_warns_against_self_matching_pgrep() {
   plugin="$TMP_ROOT/pgrep-warn-plugin"
   registry="$TMP_ROOT/pgrep-warn-registry.json"
   mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
@@ -768,9 +770,11 @@ test_herdr_lab_omission_is_loud_for_tracked_and_report_tasks() {
   plugin="$TMP_ROOT/herdr-gate-plugin"
   registry="$TMP_ROOT/herdr-gate-registry.json"
   mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
@@ -1352,9 +1356,11 @@ test_design_brief_is_harness_independent_and_adr_only() {
   plugin="$TMP_ROOT/design-plugin"
   registry="$TMP_ROOT/design-registry.json"
   mkdir -p "$home/data" "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
@@ -1489,9 +1495,11 @@ test_resolved_line_and_pr_attribution_guidance() {
   plugin="$TMP_ROOT/attribution-plugin"
   registry="$TMP_ROOT/attribution-registry.json"
   mkdir -p "$home/data" "$home/projects" "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
@@ -1558,7 +1566,8 @@ test_continue_branch_renders_setup_and_marker() {
   plugin="$TMP_ROOT/continue-branch-design-plugin"
   registry="$TMP_ROOT/continue-branch-design-registry.json"
   mkdir -p "$home/data" "$project" "$plugin/skills/productivity/grilling" \
-    "$plugin/skills/engineering/domain-modeling"
+    "$plugin/skills/engineering/domain-modeling" \
+    "$plugin/skills/engineering/ask-matt"
   git init -q "$project"
   git -C "$project" symbolic-ref HEAD refs/heads/main
   printf 'base\n' > "$project/base.txt"
@@ -1566,6 +1575,7 @@ test_continue_branch_renders_setup_and_marker() {
   git -C "$project" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -qm base
   printf 'grilling\n' > "$plugin/skills/productivity/grilling/SKILL.md"
   printf 'domain modeling\n' > "$plugin/skills/engineering/domain-modeling/SKILL.md"
+  printf 'ask matt\n' > "$plugin/skills/engineering/ask-matt/SKILL.md"
   jq -n --arg plugin "$plugin" '{plugins:{
     "mattpocock-skills@mattpocock":[
       {scope:"user",installPath:$plugin,version:"1.2.0",lastUpdated:"2026-08-01T00:00:00Z"}
