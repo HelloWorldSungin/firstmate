@@ -174,6 +174,91 @@ test_design_manifest_is_valid() {
   pass "design is a valid durable outcome manifest kind"
 }
 
+# The mattpocock plugin a design interview reads auto-updates, so the release
+# that informed one design result need not be the one that informs the next.
+# Spawn resolves it at dispatch and records it in task metadata; the manifest is
+# what carries it past cleanup, which is the only reason it is still readable.
+test_design_manifest_carries_the_plugin_release() {
+  local home id out
+  home=$(make_home design-provenance)
+  id=design-p
+  seed_ship_task "$home" "$id"
+  {
+    printf 'kind=design\n'
+    printf 'design_skills_plugin=mattpocock-skills@mattpocock\n'
+    printf 'design_skills_version=1.4.2\n'
+    printf 'design_skills_updated=2026-08-26T09:15:00Z\n'
+  } >> "$home/state/$id.meta"
+  printf 'done: ADR ready\n' > "$home/state/$id.status"
+
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "design manifest write failed"
+  out=$(fm "$home" "$MANIFEST" show "$id") || fail "design manifest validation failed"
+  printf '%s' "$out" | jq -e '.design_skills
+    == {plugin:"mattpocock-skills@mattpocock",version:"1.4.2",last_updated:"2026-08-26T09:15:00Z"}' \
+    >/dev/null || fail "the manifest lost the plugin release the design task was dispatched against"
+
+  # The whole point is surviving cleanup, so it must also come back through the
+  # durable history projection, which revalidates every record it returns.
+  out=$(fm "$home" "$MANIFEST" list)
+  printf '%s' "$out" | jq -e --arg id "$id" \
+    '.records | any(.task_id == $id and .design_skills.version == "1.4.2")' >/dev/null \
+    || fail "the plugin release did not survive into durable history: $out"
+  pass "a design task's manifest records the plugin release it was dispatched against"
+}
+
+# Recording a guess would be worse than recording nothing: a reader could not
+# tell an inferred version from an observed one. So a task that never resolved
+# the plugin - every non-design task, and any design task dispatched before
+# spawn recorded it - carries no key at all, not an empty string.
+test_manifest_omits_an_unresolved_plugin_release() {
+  local home id out
+  home=$(make_home design-unrecorded)
+
+  id=ship-noplugin
+  seed_ship_task "$home" "$id"
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "ship manifest write failed"
+  out=$(fm "$home" "$MANIFEST" show "$id") || fail "ship manifest validation failed"
+  printf '%s' "$out" | jq -e 'has("design_skills") | not' >/dev/null \
+    || fail "a non-design task paid for the design plugin record"
+
+  # A design task whose metadata carries only part of the record is still a task
+  # whose inputs are unknown, so it records nothing rather than half an answer.
+  id=design-partial
+  seed_ship_task "$home" "$id"
+  {
+    printf 'kind=design\n'
+    printf 'design_skills_plugin=mattpocock-skills@mattpocock\n'
+  } >> "$home/state/$id.meta"
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "partial design manifest write failed"
+  out=$(fm "$home" "$MANIFEST" show "$id") || fail "partial design manifest validation failed"
+  printf '%s' "$out" | jq -e 'has("design_skills") | not' >/dev/null \
+    || fail "an incomplete plugin record was published instead of being left out"
+  pass "a task that never resolved the plugin records no release rather than a guess"
+}
+
+# The manifest reader revalidates every record on every history read, so a
+# manifest published before this key existed must stay valid or the upgrade
+# would drop real durable history.
+test_manifest_without_design_skills_stays_valid() {
+  local home id path legacy out
+  home=$(make_home legacy-design-skills)
+  id=design-legacy
+  seed_ship_task "$home" "$id"
+  printf 'kind=design\n' >> "$home/state/$id.meta"
+  fm "$home" "$MANIFEST" write "$id" >/dev/null || fail "manifest write failed"
+  path="$home/data/$id/outcome.json"
+  legacy=$(jq -c 'del(.design_skills)' "$path") || fail "legacy manifest fixture failed"
+  printf '%s\n' "$legacy" > "$path"
+
+  fm "$home" "$MANIFEST" validate "$id" >/dev/null \
+    || fail "a manifest written before the design plugin record was invalidated by the upgrade"
+  out=$(fm "$home" "$MANIFEST" list)
+  printf '%s' "$out" | jq -e --arg id "$id" '
+    (.records | any(.task_id == $id)) and (.malformed | any(.id == $id) | not)' >/dev/null \
+    || fail "pre-upgrade durable history was reclassified as malformed: $out"
+  pass "a manifest written before the design plugin record stays valid in durable history"
+}
+
 test_secondmate_manifest_title_is_null() {
   local home out
   home=$(make_home secondmate-title)
@@ -774,6 +859,9 @@ test_free_text_is_bounded_and_single_line() {
 test_manifest_composition
 test_manifest_gbrain_and_overrides
 test_design_manifest_is_valid
+test_design_manifest_carries_the_plugin_release
+test_manifest_omits_an_unresolved_plugin_release
+test_manifest_without_design_skills_stays_valid
 test_secondmate_manifest_title_is_null
 test_manifest_without_sessions_stays_valid
 test_manifest_requires_metadata_and_allowlist

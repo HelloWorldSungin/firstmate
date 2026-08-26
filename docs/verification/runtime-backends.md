@@ -53,6 +53,27 @@ The model names are representative test strings that verify axis transport; they
 14. Claude `fm-spawn.sh`: both selection paths validate `kind=design` and record harness `claude`, model `claude-sonnet-5`, and effort `xhigh`.
 15. Claude `harness-adapters` axes: both rendered commands contain `--model 'claude-sonnet-5'` and `--effort 'xhigh'`.
 
+### Design dependency provenance
+
+The `mattpocock-skills@mattpocock` plugin a design interview reads auto-updates under the captain's own setting, so the release that informed one design result need not be the release that informs the next.
+The 2026-08-26 addition makes `bin/fm-spawn.sh --design` resolve that plugin once at dispatch, bind the worker-facing brief to that result's concrete skill paths, and record `design_skills_plugin=`, `design_skills_version=`, and `design_skills_updated=` in the task's metadata, from where the completion manifest carries them past cleanup.
+[`docs/fleet-data-contracts.md`](../fleet-data-contracts.md#the-design-tasks-plugin-release) owns the recorded contract.
+
+The regressions are `test_design_dispatch_records_the_release_it_resolved`, `test_design_dispatch_binds_one_resolve_to_metadata_and_brief`, `test_design_dispatch_refuses_a_missing_pinned_path`, `test_ship_dispatch_records_no_release`, and `test_design_dispatch_refuses_an_unresolvable_plugin` in `tests/fm-design-skills.test.sh`, which drive real design and ship spawns against fixture plugin installs, plus `test_design_manifest_carries_the_plugin_release`, `test_manifest_omits_an_unresolved_plugin_release`, and `test_manifest_without_design_skills_stays_valid` in `tests/fm-outcome-manifest.test.sh`.
+
+The 2026-08-26 focused command was:
+
+```sh
+bin/fm-test-run.sh tests/fm-design-skills.test.sh tests/fm-outcome-manifest.test.sh
+```
+
+Its bounded completion markers were:
+
+```text
+all fm-design-skills tests passed
+all fm-outcome-manifest tests passed
+```
+
 ### Focused delivery and compatibility regression
 
 The 2026-08-13 focused verification command for the three delivery rows and fifteen compatibility cells is:

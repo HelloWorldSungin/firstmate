@@ -15,7 +15,9 @@
 #
 # write composes the manifest from records that still exist at completion time:
 #   state/<id>.meta          kind, mode, yolo, project, harness, model, effort,
-#                            backend/endpoint, worktree, task temp root, traceparent
+#                            backend/endpoint, worktree, task temp root, traceparent,
+#                            and for a design task the mattpocock plugin release
+#                            bin/fm-spawn.sh resolved at dispatch
 #   data/backlog.md          the task title, from its structured row
 #   state/<id>.status        the last terminal event, for outcome state and detail
 #   data/<id>/report.md      the scout deliverable pointer
@@ -186,6 +188,20 @@ cmd_write() {
   pr_url=$(fm_outcome_kv_get "$meta" pr)
   pr_head=$(fm_outcome_kv_get "$meta" pr_head)
 
+  # The mattpocock plugin release a design interview read, recorded by
+  # bin/fm-spawn.sh at dispatch. A task that never resolved those skills - every
+  # non-design task, and any design task dispatched before spawn recorded it -
+  # carries no design_skills key at all rather than a guess or an empty string.
+  local design_plugin design_version design_updated design_skills=null
+  design_plugin=$(fm_outcome_text "$(fm_outcome_kv_get "$meta" design_skills_plugin)")
+  design_version=$(fm_outcome_text "$(fm_outcome_kv_get "$meta" design_skills_version)")
+  design_updated=$(fm_outcome_text "$(fm_outcome_kv_get "$meta" design_skills_updated)")
+  if [ -n "$design_plugin" ] && [ -n "$design_version" ] && [ -n "$design_updated" ]; then
+    design_skills=$(jq -cn --arg plugin "$design_plugin" --arg version "$design_version" \
+      --arg last_updated "$design_updated" \
+      '{plugin:$plugin,version:$version,last_updated:$last_updated}')
+  fi
+
   local created created_source='' started started_source='' completed_source
   created=$(fm_outcome_path_iso "$DATA/$id/brief.md")
   if [ -n "$created" ]; then
@@ -280,6 +296,7 @@ cmd_write() {
     --argjson usage_sessions "$usage_sessions" \
     --argjson work_items "$work_items" \
     --argjson gbrain "$gbrain" \
+    --argjson design_skills "$design_skills" \
     --arg recorded_at "$completed" \
     'def blank($v): if $v == "" then null else $v end;
      {schema:$schema,
@@ -312,7 +329,8 @@ cmd_write() {
                    sessions:$usage_sessions},
       work_items:{schema:($work_items.schema),references:($work_items.references)},
       gbrain:$gbrain,
-      recorded_at:$recorded_at}') || {
+      recorded_at:$recorded_at}
+     + (if $design_skills == null then {} else {design_skills:$design_skills} end)') || {
     echo "fm-outcome-manifest: could not compose the manifest for $id" >&2
     return 1
   }

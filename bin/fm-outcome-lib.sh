@@ -815,6 +815,10 @@ pr.status.source
 report
 report.path
 report.present
+design_skills
+design_skills.plugin
+design_skills.version
+design_skills.last_updated
 attribution
 attribution.backend
 attribution.endpoint
@@ -917,7 +921,11 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
       fm_pr_identity_valid($url_max;$host_max;$path_max)
       and (.head == null or (.head | type == "string" and test("^(?:[0-9a-f]{40}|[0-9a-f]{64})$")));
     def full_shape:
-      keys == ["attribution","effort","gbrain","harness","home","kind","mode","model","outcome","pr","project","recorded_at","report","schema","task_id","timestamp_sources","timestamps","title","work_items","yolo"]
+      # design_skills is optional and design-only, so it is removed before the
+      # key list is compared: a ship manifest and every manifest published
+      # before this contract stay byte-for-byte valid.
+      (keys | map(select(. != "design_skills")))
+        == ["attribution","effort","gbrain","harness","home","kind","mode","model","outcome","pr","project","recorded_at","report","schema","task_id","timestamp_sources","timestamps","title","work_items","yolo"]
       and .schema == $manifest_schema
       and (.task_id | fm_task_id)
       and ($expected_id == "" or .task_id == $expected_id)
@@ -960,6 +968,19 @@ fm_outcome_manifest_values_valid() {  # <manifest-json> [expected-task-id]
                   path:.pr.path,number:.pr.number,status:.pr.status}
                  | fm_pr_status_valid($pr_schema;$url_max;$host_max;$path_max;$source_max))
            end)
+      # The plugin release that informed a design interview. Its version and
+      # update stamp are provenance copied verbatim from a captain-owned plugin
+      # registry rather than values this contract generates, so like mode they
+      # are bounded by type and length instead of a closed vocabulary or a
+      # strict timestamp shape: an archive that refused an unfamiliar-but-
+      # harmless provenance string would block the teardown of the very task it
+      # exists to record.
+      and (.design_skills == null
+           or (.design_skills | type == "object"
+               and keys == ["last_updated","plugin","version"]
+               and (.plugin | fm_clean_string($text_max)) and (.plugin | length > 0)
+               and (.version | fm_clean_string($text_max)) and (.version | length > 0)
+               and (.last_updated | fm_clean_string($text_max)) and (.last_updated | length > 0)))
       and (.report | type == "object" and keys == ["path","present"])
       and (.report.path | fm_nullable_path)
       and (.report.present | type == "boolean")
