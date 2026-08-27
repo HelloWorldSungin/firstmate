@@ -107,6 +107,15 @@ It first collided on 2026-08-26 with `kunchenguid/firstmate#2939`, which added a
 The away-standby cases in [`tests/fm-pi-watch-extension.test.sh`](../tests/fm-pi-watch-extension.test.sh) pin that behavior.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
+### Fork-local no-mistakes compliance-gate event scope
+
+The fork's `Require no-mistakes` workflow omits the `edited` pull-request event and coalesces on one per-PR concurrency group, adopted on 2026-08-14 with `HelloWorldSungin/firstmate#150` for the defect in `HelloWorldSungin/firstmate#98`.
+Upstream evaluates every body edit independently on a per-event group, which on this fork left orphan failed check runs attached to a green PR after a truncated body was restored on an unchanged head.
+[`tests/fm-no-mistakes-required-gate.test.sh`](../tests/fm-no-mistakes-required-gate.test.sh) pins the trigger list and the concurrency shape, and [`CONTRIBUTING.md`](../CONTRIBUTING.md)'s gate paragraph carries the same contributor-facing statement.
+The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so upstream's step body is taken unchanged: `kunchenguid/firstmate#3027` replaced that step with the pinned shared `require-no-mistakes` action on 2026-08-26 and the fork adopted it whole, keeping only its own event scope above.
+A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
+This divergence went unrecorded from its introduction until 2026-08-26.
+
 ### Upstream tracking mechanism
 
 This fork carries the optional drift detector, bootstrap diagnostic, sync-round skill and template, and this ledger.

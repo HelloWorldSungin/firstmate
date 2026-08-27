@@ -69,7 +69,7 @@
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
-#          1.31.2.
+#          1.46.0 (structured pipeline attestation floor; see CONTRIBUTING.md).
 #          The AXI-family floor policy is owned beside GH_AXI_MIN,
 #          LAVISH_AXI_MIN, and CHROME_DEVTOOLS_AXI_MIN below; the per-tool
 #          owners point there. An installed
@@ -1187,7 +1187,7 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_TOOLS=""
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
-NO_MISTAKES_MIN=1.31.2
+NO_MISTAKES_MIN=1.46.0
 # AXI-FAMILY FLOOR POLICY.
 # TARGET: Every axi-family floor aims at the current latest published version of that tool, which is why floors move upward as new versions ship.
 # GATE: Raise a floor only after that version is confirmed installed on every home it applies to.
