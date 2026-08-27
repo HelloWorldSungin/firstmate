@@ -138,36 +138,62 @@ test_reports_drift_without_mutating_source_repo() {
   pass "upstream status reports grouped drift through a disposable object store"
 }
 
-test_instruction_surface_crosses_trigger() {
+test_instruction_surface_alone_stays_below_trigger() {
   local fixture fork upstream out
   fixture=$(make_fixture instruction)
   fork=${fixture%%|*}
   upstream=${fixture#*|}
   add_upstream_change "$upstream" bin/new-tool.sh 'feat: change runtime instructions (#201)' tool
+  add_upstream_change "$upstream" AGENTS.md 'docs: change the contract (#202)' contract
   out=$(run_status "$fork")
-  assert_contains "$out" '1 touch bin/, 0 touch AGENTS.md/skills' \
-    "summary should count bin changes on the instruction surface"
-  assert_contains "$out" 'sync trigger crossed: instruction-surface change' \
-    "one instruction-surface change should cross the standing trigger"
-  pass "instruction-surface drift crosses the sync trigger"
+  assert_contains "$out" '1 touch bin/, 1 touch AGENTS.md/skills' \
+    "summary should still report the bin and contract counts as context"
+  assert_contains "$out" 'sync trigger not crossed' \
+    "instruction-surface changes alone must no longer cross the standing trigger"
+  pass "instruction-surface drift alone stays below the sync trigger"
 }
 
-test_pending_count_crosses_trigger() {
+test_pending_count_crosses_default_threshold() {
   local fixture fork upstream out i
   fixture=$(make_fixture threshold)
   fork=${fixture%%|*}
   upstream=${fixture#*|}
   i=1
-  while [ "$i" -le 15 ]; do
+  while [ "$i" -le 49 ]; do
     add_upstream_change "$upstream" "misc-$i.txt" "change $i (#$((300 + i)))" "$i"
     i=$((i + 1))
   done
   out=$(run_status "$fork")
-  assert_contains "$out" 'behind kunchenguid/firstmate by 15 merged changes' \
+  assert_contains "$out" 'behind kunchenguid/firstmate by 49 merged changes' \
     "summary should count first-parent pending changes"
-  assert_contains "$out" 'sync trigger crossed: at least 15 pending changes' \
-    "the standing pending-count threshold should cross at 15"
-  pass "pending change volume crosses the sync trigger"
+  assert_contains "$out" 'sync trigger not crossed' \
+    "49 pending changes should stay below the default threshold"
+
+  add_upstream_change "$upstream" misc-50.txt 'change 50 (#350)' 50
+  out=$(run_status "$fork")
+  assert_contains "$out" 'behind kunchenguid/firstmate by 50 merged changes' \
+    "summary should count the fiftieth pending change"
+  assert_contains "$out" 'sync trigger crossed: at least 50 pending changes' \
+    "the standing pending-count threshold should cross at 50"
+  pass "pending change volume crosses the sync trigger at the default threshold"
+}
+
+test_threshold_is_environment_overridable() {
+  local fixture fork upstream out
+  fixture=$(make_fixture override)
+  fork=${fixture%%|*}
+  upstream=${fixture#*|}
+  add_upstream_change "$upstream" docs/a.md 'docs: first (#601)' a
+  add_upstream_change "$upstream" docs/b.md 'docs: second (#602)' b
+  out=$(FM_UPSTREAM_STATUS_THRESHOLD=2 FM_ROOT_OVERRIDE="$fork" \
+    FM_UPSTREAM_STATUS_TIMEOUT=10 "$STATUS")
+  assert_contains "$out" 'sync trigger crossed: at least 2 pending changes' \
+    "an explicit threshold should decide the trigger"
+  out=$(FM_UPSTREAM_STATUS_THRESHOLD=nonsense FM_ROOT_OVERRIDE="$fork" \
+    FM_UPSTREAM_STATUS_TIMEOUT=10 "$STATUS")
+  assert_contains "$out" 'sync trigger not crossed' \
+    "an unusable threshold should fall back to the default rather than crossing"
+  pass "the pending-count threshold is environment overridable"
 }
 
 test_current_fork_is_silent() {
@@ -267,10 +293,11 @@ test_bootstrap_relays_upstream_in_normal_and_detect_only_modes() {
   printf '%s\n' manual > "$home/config/backlog-backend"
   for mode in 0 1; do
     out=$(FM_ROOT_OVERRIDE="$fork" FM_HOME="$home" FM_BOOTSTRAP_DETECT_ONLY="$mode" \
-      FM_UPSTREAM_STATUS_TIMEOUT=10 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null || true)
+      FM_UPSTREAM_STATUS_TIMEOUT=10 FM_UPSTREAM_STATUS_THRESHOLD=1 \
+      "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null || true)
     assert_contains "$out" 'UPSTREAM: behind kunchenguid/firstmate by 1 merged changes' \
       "bootstrap detect-only=$mode should relay upstream drift"
-    assert_contains "$out" 'sync trigger crossed: instruction-surface change' \
+    assert_contains "$out" 'sync trigger crossed: at least 1 pending changes' \
       "bootstrap detect-only=$mode should relay the trigger verdict"
   done
   pass "bootstrap relays upstream drift in normal and detect-only sessions"
@@ -278,8 +305,9 @@ test_bootstrap_relays_upstream_in_normal_and_detect_only_modes() {
 
 test_absent_remote_is_inert
 test_reports_drift_without_mutating_source_repo
-test_instruction_surface_crosses_trigger
-test_pending_count_crosses_trigger
+test_instruction_surface_alone_stays_below_trigger
+test_pending_count_crosses_default_threshold
+test_threshold_is_environment_overridable
 test_current_fork_is_silent
 test_remote_fork_head_overrides_stale_tracking_ref
 test_default_is_aggregate_and_details_share_total_deadline

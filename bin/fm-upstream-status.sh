@@ -8,8 +8,14 @@
 # Without it the command exits 0 silently.
 # When upstream is current it also exits 0 silently.
 # When the fork is behind, the default output is one `UPSTREAM:` summary naming
-# the first-parent change count, instruction-surface count, and whether the
-# standing trigger was crossed.
+# the first-parent change count, the bin/ and AGENTS.md/skills counts within it,
+# and whether the standing trigger was crossed.
+# The standing trigger is pending first-parent volume alone: it crosses once the
+# fork is behind by at least FM_UPSTREAM_STATUS_THRESHOLD changes (default 50).
+# The reported subsystem counts are context for judging urgency once a reader is
+# already looking, not trigger conditions; upstream touches its instruction
+# surface in most changes, so that signal cannot distinguish a round worth
+# dispatching from ordinary upstream activity.
 # `--details` adds the measured target and merge base, pending changes grouped
 # by their primary subsystem, and paths changed on both sides of the merge base.
 # Pull-request references use owner/repo#number rather than an ambiguous bare
@@ -22,13 +28,16 @@
 # alternates, then removes that temporary repository before exiting.
 # FM_UPSTREAM_STATUS_TIMEOUT bounds the entire measurement in seconds (default
 # 20), including both fetches and all reporting work.
+# FM_UPSTREAM_STATUS_THRESHOLD sets the pending-change count at which the
+# standing trigger crosses (default 50); a non-positive or non-numeric value
+# falls back to the default.
 # FM_ROOT_OVERRIDE selects the repository, primarily for bootstrap and tests.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DETAILS=0
-THRESHOLD=15
+THRESHOLD=${FM_UPSTREAM_STATUS_THRESHOLD:-50}
 TIMEOUT=${FM_UPSTREAM_STATUS_TIMEOUT:-20}
 
 usage() {
@@ -50,6 +59,11 @@ case "$TIMEOUT" in
   ''|*[!0-9]*) TIMEOUT=20 ;;
 esac
 [ "$TIMEOUT" -ge 1 ] || TIMEOUT=20
+
+case "$THRESHOLD" in
+  ''|*[!0-9]*) THRESHOLD=50 ;;
+esac
+[ "$THRESHOLD" -ge 1 ] || THRESHOLD=50
 
 repo_label() {  # <remote-url-or-path>
   local value=$1 path owner repo
@@ -111,7 +125,7 @@ render_change() {  # <commit> <subject>
 
 measure() {
   local upstream_url origin_url common_dir range upstream_oid fork_oid merge_base
-  local behind instruction_count bin_count contract_count newest_date trigger_reasons trigger
+  local behind bin_count contract_count newest_date trigger
   local commits_file contract_group bin_group docs_group tests_group other_group
   local commit subject paths path touches_contract touches_bin touches_docs touches_tests
   local group_spec group_name group_file fork_paths upstream_paths overlap_paths overlap_count
@@ -151,9 +165,6 @@ measure() {
     git --git-dir="$measurement_repo" rev-list --first-parent --count "$range")
   [ "$behind" -gt 0 ] || exit 0
 
-  instruction_count=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
-    git --git-dir="$measurement_repo" rev-list --first-parent --count "$range" \
-      -- AGENTS.md .agents/skills bin)
   bin_count=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
     git --git-dir="$measurement_repo" rev-list --first-parent --count "$range" -- bin)
   contract_count=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
@@ -162,19 +173,8 @@ measure() {
   newest_date=$(GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects_dir" \
     git --git-dir="$measurement_repo" show -s --format=%cs "$upstream_oid")
 
-  trigger_reasons=
-  if [ "$instruction_count" -gt 0 ]; then
-    trigger_reasons='instruction-surface change'
-  fi
   if [ "$behind" -ge "$THRESHOLD" ]; then
-    if [ -n "$trigger_reasons" ]; then
-      trigger_reasons="$trigger_reasons; at least $THRESHOLD pending changes"
-    else
-      trigger_reasons="at least $THRESHOLD pending changes"
-    fi
-  fi
-  if [ -n "$trigger_reasons" ]; then
-    trigger="sync trigger crossed: $trigger_reasons"
+    trigger="sync trigger crossed: at least $THRESHOLD pending changes"
   else
     trigger='sync trigger not crossed'
   fi
