@@ -133,6 +133,7 @@ add_gh_mocks_issue_open_then_closed() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
   "issue view")
     count_file="$FM_TEST_GH_AXI_LOG.issue-views"
     count=0
@@ -161,6 +162,7 @@ add_gh_mocks_issue_closed() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
   "issue view") printf 'issue:\n  state: closed\n' ;;
 esac
 exit 0
@@ -178,6 +180,7 @@ add_gh_mocks_issue_close_fails() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
   "issue view") printf 'issue:\n  state: open\n' ;;
   "issue close") echo 'error: issue close failed' >&2; exit 1 ;;
 esac
@@ -196,6 +199,7 @@ add_gh_mocks_issue_view_fails() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
   "issue view") echo 'error: issue view failed' >&2; exit 1 ;;
 esac
 exit 0
@@ -213,6 +217,7 @@ add_gh_mocks_issue_stays_open() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
   "issue view") printf 'issue:\n  state: open\n' ;;
 esac
 exit 0

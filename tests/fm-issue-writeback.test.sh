@@ -1527,9 +1527,15 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
+  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
+  # for a merge it cannot confirm, so this stub must report the landed state
+  # the fixture is modelling before any bookkeeping runs.
   cat > "$dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
+esac
 exit 0
 SH
   chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
@@ -1566,9 +1572,15 @@ if [ "${1:-}" = api ]; then
 fi
 exit 0
 SH
+  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
+  # for a merge it cannot confirm, so this stub must report the landed state
+  # the fixture is modelling before any bookkeeping runs.
   cat > "$dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
+esac
 exit 0
 SH
   chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
