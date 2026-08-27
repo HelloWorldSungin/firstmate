@@ -386,6 +386,8 @@ run_stall_checkpoint() {  # <case-dir> [VAR=value ...]
 # contract working rather than a stalled loop. Measured 2026-08-27 on this
 # fleet's first secondmate: row=1 age=73s and row=3 age=119s both alarmed while
 # the mate was mid-turn with live crewmates reporting into its queue.
+# This test pins behavior for when secondmate busy-state arming exists and is
+# not production coverage today because it fabricates that record.
 test_busy_secondmate_does_not_alarm_on_an_aged_row() {
   local dir
   dir=$(seed_stall_mate secondmate-stall-busy 120 busy)
@@ -402,6 +404,8 @@ test_busy_secondmate_does_not_alarm_on_an_aged_row() {
 # genuinely stalled loop. It alarms on the idle threshold no matter how far the
 # bare-time backstop has been raised, because a proven verdict outranks elapsed
 # time.
+# This test pins behavior for when secondmate busy-state arming exists and is
+# not production coverage today because it fabricates that record.
 test_idle_secondmate_alarms_below_the_time_backstop() {
   local dir
   dir=$(seed_stall_mate secondmate-stall-idle 120 idle)
