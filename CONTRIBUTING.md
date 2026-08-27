@@ -12,7 +12,7 @@ Pushing through it runs an AI-driven review/test/lint pipeline in an isolated wo
 A GitHub Actions check (`Require no-mistakes`) evaluates the body when a PR targeting `main` opens, when its candidate head changes, and when the PR reopens.
 On each of those events, it requires both the deterministic signature that no-mistakes writes and a parseable structured attestation from no-mistakes v1.46.0 or newer.
 The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
-Before publishing any later commit, including a fix produced by an active gate, no-mistakes must replace the PR body attestation with one bound to that new head.
+After creating any later commit, including a fix produced by an active gate, publish it only through a fresh `git push no-mistakes` so the pipeline replaces the PR body attestation with one bound to that new head.
 Body-only edits are intentionally not evaluated because a transient failure on an unchanged head can remain attached after the body is restored.
 The pipeline owns the `## Pipeline` section of the body, so amend the body and leave that section in place; the next candidate-head or reopen event evaluates the body as it exists then.
 GitHub Actions and Dependabot are exempt so their automation keeps working; regular contributors remain subject to the contribution policy above.
