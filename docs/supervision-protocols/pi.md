@@ -21,7 +21,7 @@ When this session owns supervision and away mode is not active:
 
 While away mode is active, the away supervisor owns the only supervision cycle: `fm_watch_arm_pi` reports standby instead of arming, the extension retires any arm child it already holds, and it resumes exactly one cycle after away mode clears (`docs/watcher-continuity.md`).
 
-The supervision branch is default-on (docs/pi-supervision-branch.md): whenever this session owns the fleet lock and away mode is not active, the watcher extension hands each wholly in-scope ordinary actionable wake, plus each bare fleet-wide `heartbeat` emitted after the cheap bash-level scan flags a possibly captain-relevant finding, to the persistent in-process supervision branch instead of this conversation.
+The supervision branch is default-on (docs/pi-supervision-branch.md): whenever this session owns the fleet lock and away mode is not active, the watcher extension hands eligible task-local rows from ordinary actionable wakes, plus selected fleet-wide heartbeat reviews, to the persistent in-process supervision branch while main-only rows remain queued for this conversation.
 A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is delivered silently with no rendered note, while every other routine outcome returns as an appended, rendered note that leads with ⛵ then the dim outcome text.
 A captain-facing outcome instead opens exactly one follow-up turn on this conversation - that turn is the captain-visible result, and no separate note is printed here.
 Before MAIN steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.

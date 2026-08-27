@@ -14,7 +14,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-upstream-status.sh`  | Measure optional fork-upstream drift read-only and report the standing sync trigger verdict |
 | `fm-tool-status.sh`      | Report installed, live-floor, and latest stable tool versions without changing the host |
-| `fm-startup-network.sh`  | Run session start's network checks off its blocking path in a bounded detached worker, and publish the result inline or as a wake |
+| `fm-startup-network.sh`  | Run session start's network checks off its blocking path in a bounded detached worker, retaining every report while waking only for actionable results |
 | `fm-fleet-sync.sh`       | Refresh project clones with stale remote-pointer pruning, safe fast-forwards, self-heals, `STUCK:` reports, guarded branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
@@ -28,6 +28,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-usage.mjs`           | Collect Claude and Codex token usage into the versioned store, attribute it to tasks and to registered projects, and print rollups |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
+| `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
 | `fm-remote-job-lib.sh`   | Shared bounded remote job queue, worker readiness, LaunchAgent contract, and filesystem-composed PATH |
@@ -116,7 +117,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor for the bootstrap diagnostic                  |
 | `fm-quota-sidecar.sh`    | Read the host-published LLM quota sidecar as additive dispatch evidence, degrading anything not fresh and successful to explicit UNKNOWN |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
-| `fm-wake-drain.sh`       | Present durable watcher wakes, unread informational status lines, OPEN DECISIONS, and captain-call RECORD DIVERGENCE, consume acknowledged rows through their sequence, retire only the matching recovery generation, then assert supervision health |
+| `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, decision, divergence, recovery, and supervision checks |
+| `fm-wake-grant.sh`       | Serialize Pi supervision-branch wake-row claim activation, publication, release, and deactivation |
 | `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher identity/health helpers |
 | `fm-classify-lib.sh`     | Shared wake-classification vocabulary, durable keyed-decision folds and scans, and unread informational status-line selection |
 | `fm-send.sh`             | Steer a task via a durable inbox record plus doorbell, or send a supported key or typed harness invocation through the recorded backend |
@@ -134,7 +136,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
-| `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
+| `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication, merge-notification identity, and identity-bound retirement |
 | `fm-issue-lib.sh`        | Own the registry tracker declaration, the accepted work-item reference forms, and their project-scoped resolution |
 | `fm-forge-lib.sh`        | Own per-host forge credential resolution, the argv-free authenticated transport, and the tracker write-operation allowlist |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
@@ -143,6 +145,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-run-attribution-legacy-transition.sh` | Migrate legacy task branch identity only from a matching recorded GitHub PR head, then diagnose every task still unreadable |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub or GitLab URL, and close one eligible recorded work item on a forge with a write adapter or report why it cannot |
+| `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
 | `fm-pr-status.sh`        | Refresh and cache one task PR's normalized review, check, and mergeability observation |
 | `fm-issue-ref.sh`        | Resolve work-item references against a project's declared issue tracker, refusing to guess a forge |
 | `fm-issue-status.sh`     | Add optional cached work-item title and open/closed enrichment per forge, with best-effort per-host lookup spacing |

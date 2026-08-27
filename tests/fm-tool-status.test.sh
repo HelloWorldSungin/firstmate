@@ -272,7 +272,10 @@ report_row chrome-devtools-axi '0\.1\.30 +0\.1\.30 +0\.1\.30 +npm +current$' "ch
 # mechanism itself is pinned independently by the floor_row cases above,
 # against a fixture floor.
 report_row quota-axi '0\.1\.21 +0\.1\.32 +0\.1\.28 +npm +behind; below floor$' "behind-and-below-floor tool reports both, with the floor beside the install"
-report_row no-mistakes '1\.41\.2 +1\.31\.2 +1\.48\.0 +github +behind; pre-releases up to v1\.51\.0 excluded$' "GA latest, pre-releases above it named"
+# no-mistakes also carries the below-floor annotation, for the same reason
+# quota-axi does above: the live NO_MISTAKES_MIN floor is above this stub's
+# installed 1.41.2.
+report_row no-mistakes '1\.41\.2 +1\.46\.0 +1\.48\.0 +github +behind; below floor; pre-releases up to v1\.51\.0 excluded$' "GA latest, pre-releases above it named"
 report_row treehouse '2\.1\.0 +none +2\.1\.1 +github +behind$' "github channel latest parsed"
 report_row gbrain '0\.45\.9\.0 +none +0\.45\.14\.0 +github +behind$' "four-segment versions compared"
 report_row herdr '0\.8\.0 +none +0\.8\.0 +herdr +current; pre-releases up to preview-2026-08-04 excluded$' "herdr latest.json plus preview note"

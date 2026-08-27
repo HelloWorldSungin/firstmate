@@ -10,7 +10,8 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push to the recorded target only after every check passes, and opens a clean PR automatically.
 
 A GitHub Actions check (`Require no-mistakes`) evaluates the body when a PR targeting `main` opens, when its candidate head changes, and when the PR reopens.
-On each of those events, it fails if the body is missing the deterministic signature that no-mistakes writes.
+On each of those events, it requires both the deterministic signature that no-mistakes writes and a parseable structured attestation from no-mistakes v1.46.0 or newer.
+The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
 Body-only edits are intentionally not evaluated because a transient failure on an unchanged head can remain attached after the body is restored.
 The pipeline owns the `## Pipeline` section of the body, so amend the body and leave that section in place; the next candidate-head or reopen event evaluates the body as it exists then.
 GitHub Actions and Dependabot are exempt so their automation keeps working; regular contributors remain subject to the contribution policy above.
@@ -19,7 +20,7 @@ GitHub Actions and Dependabot are exempt so their automation keeps working; regu
 
 1. Fork the repo, then clone this repository so your local `origin` points at it, because `origin` is the repository your PR opens against.
 2. Create a branch and make your changes.
-3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (firstmate expects **no-mistakes v1.31.2+**; without a fork, plain `no-mistakes init` still works for maintainers with push access).
+3. Initialize the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/firstmate.git` (contributing to firstmate requires **no-mistakes v1.46.0+** for structured attestation; without a fork, plain `no-mistakes init` still works for maintainers with push access).
    Check the recorded push target before your first push and never leave it pointing at a repository you cannot push to.
 4. Commit your changes.
 5. Push through the gate instead of pushing to `origin`:

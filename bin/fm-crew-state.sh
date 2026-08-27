@@ -189,7 +189,7 @@ fi
 # --- status log ------------------------------------------------------------
 
 # Last non-empty status line, its physical line number, and the file metadata
-# that bounds that read.
+# that bounds that read; fm-classify-lib.sh owns leading-verb normalization.
 if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
   log_file_state() {
     stat -f '%m %z' "$LOG" 2>/dev/null || printf '0 0'
