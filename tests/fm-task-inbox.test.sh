@@ -265,6 +265,50 @@ test_concurrent_writers_never_clobber() {
   pass "inbox: concurrent writers serialize on the sequence lock and lose nothing"
 }
 
+test_writer_retries_when_competing_lock_vanishes_during_claim() {
+  local state fakebin lock once real_ln rec writer_status
+  state="$TMP_ROOT/released-claim-race/state"
+  fakebin="$TMP_ROOT/released-claim-race/fakebin"
+  lock="$state/t1.inbox/.seq.lock"
+  once="$state/claim-raced"
+  real_ln=$(command -v ln)
+  mkdir -p "$state/t1.inbox/handled" "$fakebin"
+
+  # The contender sees no lock, then the ln shim schedules a real competing
+  # lock symlink's complete acquire-release lifecycle during the contender's
+  # first claim. The public inbox write still owns the retry and the observable
+  # durable record.
+  cat > "$fakebin/ln" <<'SH'
+#!/usr/bin/env bash
+set -u
+dest=
+for arg in "$@"; do dest=$arg; done
+if [ "$dest" = "$FM_RACE_LOCK" ] && [ ! -e "$FM_RACE_ONCE" ]; then
+  owner="$FM_RACE_LOCK.competitor.$$"
+  printf 'raced\n' > "$FM_RACE_ONCE"
+  mkdir "$owner" || exit 40
+  printf '%s\n' "$$" > "$owner/pid" || exit 41
+  "$FM_REAL_LN" -s "$owner" "$FM_RACE_LOCK" || exit 42
+  rm -f "$FM_RACE_LOCK" "$owner/pid" || exit 43
+  rmdir "$owner" || exit 44
+  exit 1
+fi
+exec "$FM_REAL_LN" "$@"
+SH
+  chmod +x "$fakebin/ln"
+
+  writer_status=0
+  rec=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_REAL_LN="$real_ln" FM_RACE_LOCK="$lock" FM_RACE_ONCE="$once" \
+    bash -c '. "$1"; fm_task_inbox_write "$2" t1 "survives the released claim"' \
+      _ "$ROOT/bin/fm-task-inbox-lib.sh" "$state") || writer_status=$?
+
+  [ "$writer_status" -eq 0 ] \
+    || fail "an inbox writer failed when the competing lock vanished during its first claim"
+  [ -f "$rec" ] || fail "the retry reported no durable inbox record: $rec"
+  pass "inbox: a writer retries when a competing lock vanishes during its first claim"
+}
+
 test_ladder_writes_ignore_vanished_inbox() {
   local state rec
   state="$TMP_ROOT/vanished/state"; mkdir -p "$state"
@@ -502,6 +546,7 @@ test_idempotent_write_dedups_exact_body
 test_idempotent_write_follows_concurrent_ack
 test_handled_mv_dedups_by_sequence
 test_concurrent_writers_never_clobber
+test_writer_retries_when_competing_lock_vanishes_during_claim
 test_ladder_writes_ignore_vanished_inbox
 test_fire_and_forget_records_never_enter_the_ladder
 test_ring_ladder_policy
