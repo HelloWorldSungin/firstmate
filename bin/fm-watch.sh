@@ -96,10 +96,15 @@
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
+#           state=<verdict> source=<producer>
 #                          the oldest valid row in an endpoint-recorded local
-#                          secondmate home's durable wake queue exceeded
-#                          FM_SECONDMATE_WAKE_STALL_SECS; observation is read-only
-#                          and one parent receipt suppresses repeats for that row
+#                          secondmate home's durable wake queue outlived the age
+#                          its busy verdict allows - FM_SECONDMATE_WAKE_STALL_SECS
+#                          for a verdict the busy contract cannot establish, the
+#                          shorter FM_SECONDMATE_WAKE_IDLE_STALL_SECS when the
+#                          mate is provably idle, and never while it is provably
+#                          busy; observation is read-only and one parent receipt
+#                          suppresses repeats for that row
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -230,9 +235,25 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # override, because the dashboard's Task activity signal reads the same one out
 # of the fleet snapshot rather than inventing a second tolerance for quiet.
 BUSY_TURN_MAX_SECS=$(fm_sup_busy_turn_max_seconds)
-# A local secondmate's foreign queue is checked on every poll, but only after this
-# bounded age can it produce a parent notification.
-SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
+# A local secondmate's foreign queue is checked on every poll, but the age of its
+# oldest unacknowledged row alone never decides a stall: a row stays
+# unacknowledged for the whole handling turn by design, so an aged row on a mate
+# that is provably mid-turn is the durable-until-handled contract working. The
+# semantic busy verdict in bin/fm-busy-lib.sh is the primary signal here and
+# these two ages are its backstops.
+# SECONDMATE_WAKE_STALL_SECS is the bare-time backstop for every verdict the
+# busy contract cannot establish, which is unknown rather than idle and so must
+# still alarm; it sits above a real turn, matching the same 1800s tolerance
+# FM_RUN_STRANDED_SILENCE_SECS already carries for the same evidence, that a
+# single agent step routinely runs 10 to 18 minutes on one line.
+SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-1800}
+# SECONDMATE_WAKE_IDLE_STALL_SECS is the shorter age used when the mate is
+# PROVABLY idle, where an unacknowledged row means nothing is running to handle
+# it. A proven verdict outranks elapsed time, so this keeps a genuinely dead
+# wake loop detected in about a minute rather than at the raised backstop. It is
+# clamped to the backstop, so an idle mate is never treated as less suspicious
+# than an unestablished one.
+SECONDMATE_WAKE_IDLE_STALL_SECS=${FM_SECONDMATE_WAKE_IDLE_STALL_SECS:-60}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated, whether or not its agent is still
 # alive at its prompt (pause_state_class owns why).
@@ -491,9 +512,12 @@ secondmate_oldest_queue_row() {  # <queue-path>
 # cycles converge without a notification storm, while an empty queue removes
 # only this home's marker so a later row can be observed.
 secondmate_wake_stall_tick() {
-  local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
+  local now=$(( $(date +%s) )) backstop=$SECONDMATE_WAKE_STALL_SECS idle_secs=$SECONDMATE_WAKE_IDLE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason
-  case "$threshold" in ''|*[!0-9]*|0) threshold=60 ;; esac
+  local verdict state source threshold
+  case "$backstop" in ''|*[!0-9]*|0) backstop=1800 ;; esac
+  case "$idle_secs" in ''|*[!0-9]*|0) idle_secs=60 ;; esac
+  [ "$idle_secs" -le "$backstop" ] || idle_secs=$backstop
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -526,6 +550,25 @@ EOF
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$seq" in ''|*[!0-9]*) continue ;; esac
     age=$((now - epoch))
+    # The cheapest gate first: nothing can alarm below the shortest age any
+    # verdict allows, so the busy read is skipped entirely on a young row.
+    [ "$age" -ge "$idle_secs" ] || continue
+    # fm_busy_classify_live, not the record alone: a mate whose endpoint is gone
+    # classifies dead rather than carrying a stale busy record that would
+    # suppress this check forever. busy suppresses, idle takes the short age,
+    # and every other verdict - unknown, dead, unreadable - takes the bare-time
+    # backstop, because an unestablished verdict is never evidence of idleness.
+    verdict=$(fm_busy_classify_live "$(fm_backend_of_meta "$meta")" \
+      "$(fm_backend_target_of_meta "$meta")" "$(fm_meta_get "$meta" harness)" \
+      "$task" "$STATE")
+    state=${verdict%% *}
+    source=${verdict#* }
+    [ "$source" != "$verdict" ] || source=unrecorded
+    case "$state" in
+      busy) continue ;;
+      idle) threshold=$idle_secs ;;
+      *) threshold=$backstop ;;
+    esac
     [ "$age" -ge "$threshold" ] || continue
     row_key="$epoch-$seq"
     receipt="$receipt_dir/$row_key"
@@ -535,7 +578,7 @@ EOF
     [ "$(cat "$marker" 2>/dev/null || true)" = "$row_key" ] && continue
     [ "$(cat "$receipt" 2>/dev/null || true)" = "$row_key" ] && continue
     notify_key="secondmate-wake-loop-$task-$row_key"
-    reason="check: secondmate wake-loop stalled: mate=$task row=$seq age=${age}s"
+    reason="check: secondmate wake-loop stalled: mate=$task row=$seq age=${age}s state=$state source=$source"
     queued=$(fm_wake_queued_keys check)
     if ! printf '%s\n' "$queued" | grep -Fx "$notify_key" >/dev/null 2>&1; then
       fm_wake_append check "$notify_key" "$reason" || return 1

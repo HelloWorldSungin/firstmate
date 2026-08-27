@@ -318,6 +318,125 @@ SH
   pass "foreign secondmate queue stalls notify once, remain byte-stable, and stay quiet when empty or healthy"
 }
 
+# Seed one endpoint-recorded local secondmate whose foreign wake queue holds a
+# single row of <age-seconds>, and print its case directory. <busy-state> is the
+# semantic busy state recorded for the mate, or "none" to leave the busy
+# contract unarmed so the classifier reads unknown, which is what an
+# unconverted, never-armed, or stale-record mate looks like.
+seed_stall_mate() {  # <case-name> <age-seconds> <busy-state|none>
+  local name=$1 age=$2 busy=$3 dir state sub
+  dir=$(make_case "$name")
+  state="$dir/state"
+  sub="$dir/secondmate"
+  mkdir -p "$sub/state" "$sub/data"
+  printf '# Firstmate\n' > "$sub/AGENTS.md"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nharness=claude\nbackend=tmux\nhome=%s\n' \
+    "$sub" > "$state/mate.meta"
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - age ))" \
+    > "$sub/state/.wake-queue"
+  # The shared stub answers only the pane_current_command form of
+  # display-message, so the endpoint would read gone and every verdict would
+  # collapse to dead. Answer the liveness probe too, so this case exercises the
+  # busy verdict rather than the endpoint override.
+  cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list-windows)
+    [ -z "${FM_FAKE_TMUX_WINDOW:-}" ] || printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"
+    exit 0
+    ;;
+  capture-pane)
+    [ -z "${FM_FAKE_TMUX_CAPTURE:-}" ] || cat "$FM_FAKE_TMUX_CAPTURE" 2>/dev/null
+    exit 0
+    ;;
+  display-message)
+    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] || exit 1
+    printf '%%0\n'
+    exit 0
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$dir/fakebin/tmux"
+  if [ "$busy" != none ]; then
+    printf 'stall-gen\n' > "$state/mate.busy-gen"
+    printf 'v1 gen=stall-gen seq=1 state=%s source=fm-spawn event=turn ts=%s\n' \
+      "$busy" "$(date +%s)" > "$state/mate.busy-state"
+  fi
+  printf '%s\n' "$dir"
+}
+
+# Run one parent checkpoint over the seeded mate and print nothing; the caller
+# reads "$dir/watch.out". Extra arguments are VAR=value overrides.
+run_stall_checkpoint() {  # <case-dir> [VAR=value ...]
+  local dir=$1
+  shift
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$dir/state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_FAKE_TMUX_LOG="$dir/tmux.log" FM_FAKE_TMUX_CAPTURE="$dir/fake-tmux/pane.txt" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    env "$@" "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 3 \
+    > "$dir/watch.out" 2> "$dir/watch.err" || true
+}
+
+# A wake row stays unacknowledged for the whole handling turn BY DESIGN, so an
+# aged row on a mate that is provably mid-turn is the durable-until-handled
+# contract working rather than a stalled loop. Measured 2026-08-27 on this
+# fleet's first secondmate: row=1 age=73s and row=3 age=119s both alarmed while
+# the mate was mid-turn with live crewmates reporting into its queue.
+test_busy_secondmate_does_not_alarm_on_an_aged_row() {
+  local dir
+  dir=$(seed_stall_mate secondmate-stall-busy 120 busy)
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1
+  ! grep -F 'secondmate wake-loop stalled' "$dir/watch.out" >/dev/null \
+    || fail "a provably busy mate alarmed on a row its own turn had not finished handling: $(cat "$dir/watch.out")"
+  [ ! -s "$dir/state/.wake-queue" ] \
+    || fail "a provably busy mate published a durable stall notification"
+  pass "a provably busy secondmate does not alarm on an aged unacknowledged row"
+}
+
+# The mirror case, and the reason the check exists: a mate that is provably
+# IDLE with an unacknowledged row has nothing running to handle it, which is a
+# genuinely stalled loop. It alarms on the idle threshold no matter how far the
+# bare-time backstop has been raised, because a proven verdict outranks elapsed
+# time.
+test_idle_secondmate_alarms_below_the_time_backstop() {
+  local dir
+  dir=$(seed_stall_mate secondmate-stall-idle 120 idle)
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=999999
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
+    || fail "a provably idle mate did not alarm below the time backstop: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
+  grep -F 'state=idle' "$dir/watch.out" >/dev/null \
+    || fail "the stall alarm did not name the busy verdict it acted on"
+  [ -s "$dir/state/.wake-queue" ] || fail "the idle stall notification was not durable"
+  pass "a provably idle secondmate alarms on the idle threshold below the time backstop"
+}
+
+# The third case decides whether the check still catches a genuinely dead loop:
+# a verdict the busy contract cannot establish is UNKNOWN, never idle and never
+# busy, so it falls back to the bare-time backstop. That backstop now sits above
+# a real turn, so the same aged row is quiet at the default and alarms once the
+# backstop is lowered to it.
+test_unknown_busy_state_alarms_only_on_the_time_backstop() {
+  local dir
+  dir=$(seed_stall_mate secondmate-stall-unknown 120 none)
+  run_stall_checkpoint "$dir"
+  ! grep -F 'secondmate wake-loop stalled' "$dir/watch.out" >/dev/null \
+    || fail "an unestablished verdict alarmed below the default time backstop: $(cat "$dir/watch.out")"
+  [ ! -s "$dir/state/.wake-queue" ] \
+    || fail "an unestablished verdict published a stall notification below the backstop"
+
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=60
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
+    || fail "an unestablished verdict did not alarm on the time backstop: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
+  grep -F 'state=unknown' "$dir/watch.out" >/dev/null \
+    || fail "the backstop alarm did not name the unestablished verdict"
+  [ -s "$dir/state/.wake-queue" ] || fail "the backstop stall notification was not durable"
+  pass "an unestablished busy verdict alarms on the time backstop and not before it"
+}
+
 test_secondmate_stall_marker_rejects_symlink() {
   local dir state sub fakebin marker outside expected
   dir=$(make_case secondmate-stall-marker-symlink)
@@ -1200,6 +1319,9 @@ test_historical_annotation_skips_announced_status() {
 
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_secondmate_foreign_queue_stall_is_one_shot_and_read_only
+test_busy_secondmate_does_not_alarm_on_an_aged_row
+test_idle_secondmate_alarms_below_the_time_backstop
+test_unknown_busy_state_alarms_only_on_the_time_backstop
 test_secondmate_stall_marker_rejects_symlink
 test_acknowledged_stall_publication_survives_pre_marker_crash
 test_empty_prefix_mate_preserves_other_mate_receipt
