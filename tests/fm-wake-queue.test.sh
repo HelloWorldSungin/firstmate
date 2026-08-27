@@ -441,6 +441,41 @@ test_unknown_busy_state_alarms_only_on_the_time_backstop() {
   pass "an unestablished busy verdict alarms on the time backstop and not before it"
 }
 
+# A Zellij pane id can be reused after the mate's tab exits. The replacement
+# pane is not the mate's live endpoint even when its output has a busy
+# signature, so the aged row must still alarm on the backstop.
+test_reused_zellij_pane_cannot_suppress_a_stall_alarm() {
+  local dir state sub
+  command -v jq >/dev/null 2>&1 || fail "the Zellij endpoint-reuse case requires jq"
+  dir=$(seed_stall_mate secondmate-stall-reused-zellij-pane 120 none)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  printf 'window=firstmate:7\nkind=secondmate\nharness=grok\nbackend=zellij\nhome=%s\nendpoint_task_id=mate\nzellij_session=firstmate\nzellij_tab_id=3\nzellij_pane_id=7\n' \
+    "$sub" > "$state/mate.meta"
+  cat > "$dir/fakebin/zellij" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" list-sessions "*) printf '%s\n' firstmate ;;
+  *" action list-panes --json "*)
+    printf '%s\n' '[{"id":7,"tab_id":9,"is_plugin":false}]'
+    ;;
+  *" action list-tabs --json "*)
+    printf '%s\n' '[{"tab_id":9,"name":"fm-replacement"}]'
+    ;;
+  *" action dump-screen "*) printf '%s\n' 'Ctrl+c:cancel' ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/zellij"
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
+    || fail "a replacement Zellij pane suppressed the stalled mate's aged row: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
+  grep -F 'state=dead source=endpoint-gone' "$dir/watch.out" >/dev/null \
+    || fail "the replacement Zellij pane was not rejected as the mate's dead endpoint"
+  [ -s "$dir/state/.wake-queue" ] || fail "the reused-endpoint stall notification was not durable"
+  pass "a reused Zellij pane cannot suppress its former mate's stall alarm"
+}
+
 test_secondmate_stall_marker_rejects_symlink() {
   local dir state sub fakebin marker outside expected
   dir=$(make_case secondmate-stall-marker-symlink)
@@ -1326,6 +1361,7 @@ test_secondmate_foreign_queue_stall_is_one_shot_and_read_only
 test_busy_secondmate_does_not_alarm_on_an_aged_row
 test_idle_secondmate_alarms_below_the_time_backstop
 test_unknown_busy_state_alarms_only_on_the_time_backstop
+test_reused_zellij_pane_cannot_suppress_a_stall_alarm
 test_secondmate_stall_marker_rejects_symlink
 test_acknowledged_stall_publication_survives_pre_marker_crash
 test_empty_prefix_mate_preserves_other_mate_receipt
