@@ -316,27 +316,37 @@ test_one_broken_pattern_does_not_blind_the_rest_of_the_sweep() {
 }
 
 test_an_unchecked_announcement_source_is_not_read_as_current() {
-  local home dir out report
+  local home dir out report clock_marker
   # When the budget is gone the separate announcement command cannot run, and the
   # version probe's output never carries the announcement. Searching that output
   # anyway would present a source that was never asked as a clean result, which is
   # the same silently dead source announce_args was added to close.
   home=$(make_home announce-budget)
   dir="$TMP_ROOT/announce-budget/bin"
+  clock_marker="$TMP_ROOT/announce-budget/version-asked"
   mkdir -p "$dir"
   cat > "$dir/no-mistakes-fixture" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then
   printf 'no-mistakes version v1.46.0\n'
-  sleep 30
+  : > "$FM_ANNOUNCE_CLOCK_MARKER"
   exit 0
 fi
 printf 'A new version of no-mistakes is available: v1.46.0 -> v1.53.0\n' >&2
 SH
-  chmod 0755 "$dir/no-mistakes-fixture"
+  cat > "$dir/date" <<'SH'
+#!/usr/bin/env bash
+if [ -f "$FM_ANNOUNCE_CLOCK_MARKER" ]; then
+  printf '1001\n'
+else
+  printf '1000\n'
+fi
+SH
+  chmod 0755 "$dir/no-mistakes-fixture" "$dir/date"
   write_config "$home" '{"tools":[{"name":"no-mistakes","command":"no-mistakes-fixture","version_args":["--version"],"announce_args":["--help"],"announce_pattern":"A new version of no-mistakes is available: [^ ]+ -> [^ ]+"}]}'
   out="$home/out.txt"
-  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1
+  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1 \
+    FM_TOOL_UPDATE_NOW=1000 FM_ANNOUNCE_CLOCK_MARKER="$clock_marker"
   report=$(cat "$out")
   assert_contains "$report" "no-mistakes check failed: the time budget ran out before the update announcement was checked" "an announcement source that was never asked was not reported"
   pass "an announcement source the budget could not reach is reported, not read as current"
