@@ -371,14 +371,15 @@ SH
 # Run one parent checkpoint over the seeded mate and print nothing; the caller
 # reads "$dir/watch.out". Extra arguments are VAR=value overrides.
 run_stall_checkpoint() {  # <case-dir> [VAR=value ...]
-  local dir=$1
+  local dir=$1 status=0
   shift
   PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$dir/state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
     FM_FAKE_TMUX_LOG="$dir/tmux.log" FM_FAKE_TMUX_CAPTURE="$dir/fake-tmux/pane.txt" \
     FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     env "$@" "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 3 \
-    > "$dir/watch.out" 2> "$dir/watch.err" || true
+    > "$dir/watch.out" 2> "$dir/watch.err" || status=$?
+  return "$status"
 }
 
 # A wake row stays unacknowledged for the whole handling turn BY DESIGN, so an
@@ -389,9 +390,10 @@ run_stall_checkpoint() {  # <case-dir> [VAR=value ...]
 # This test pins behavior for when secondmate busy-state arming exists and is
 # not production coverage today because it fabricates that record.
 test_busy_secondmate_does_not_alarm_on_an_aged_row() {
-  local dir
+  local dir status=0
   dir=$(seed_stall_mate secondmate-stall-busy 120 busy)
-  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1 || status=$?
+  expect_code 124 "$status" "busy secondmate quiet checkpoint"
   ! grep -F 'secondmate wake-loop stalled' "$dir/watch.out" >/dev/null \
     || fail "a provably busy mate alarmed on a row its own turn had not finished handling: $(cat "$dir/watch.out")"
   [ ! -s "$dir/state/.wake-queue" ] \
@@ -407,9 +409,10 @@ test_busy_secondmate_does_not_alarm_on_an_aged_row() {
 # This test pins behavior for when secondmate busy-state arming exists and is
 # not production coverage today because it fabricates that record.
 test_idle_secondmate_alarms_below_the_time_backstop() {
-  local dir
+  local dir status=0
   dir=$(seed_stall_mate secondmate-stall-idle 120 idle)
-  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=999999
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=999999 || status=$?
+  expect_code 0 "$status" "idle secondmate actionable checkpoint"
   grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
     || fail "a provably idle mate did not alarm below the time backstop: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
   grep -F 'state=idle' "$dir/watch.out" >/dev/null \
@@ -424,15 +427,18 @@ test_idle_secondmate_alarms_below_the_time_backstop() {
 # a real turn, so the same aged row is quiet at the default and alarms once the
 # backstop is lowered to it.
 test_unknown_busy_state_alarms_only_on_the_time_backstop() {
-  local dir
+  local dir status=0
   dir=$(seed_stall_mate secondmate-stall-unknown 120 none)
-  run_stall_checkpoint "$dir"
+  run_stall_checkpoint "$dir" || status=$?
+  expect_code 124 "$status" "unknown secondmate quiet checkpoint"
   ! grep -F 'secondmate wake-loop stalled' "$dir/watch.out" >/dev/null \
     || fail "an unestablished verdict alarmed below the default time backstop: $(cat "$dir/watch.out")"
   [ ! -s "$dir/state/.wake-queue" ] \
     || fail "an unestablished verdict published a stall notification below the backstop"
 
-  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=60
+  status=0
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=60 || status=$?
+  expect_code 0 "$status" "unknown secondmate backstop checkpoint"
   grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
     || fail "an unestablished verdict did not alarm on the time backstop: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
   grep -F 'state=unknown' "$dir/watch.out" >/dev/null \
@@ -445,7 +451,7 @@ test_unknown_busy_state_alarms_only_on_the_time_backstop() {
 # pane is not the mate's live endpoint even when its output has a busy
 # signature, so the aged row must still alarm on the backstop.
 test_reused_zellij_pane_cannot_suppress_a_stall_alarm() {
-  local dir state sub
+  local dir state sub status=0
   command -v jq >/dev/null 2>&1 || fail "the Zellij endpoint-reuse case requires jq"
   dir=$(seed_stall_mate secondmate-stall-reused-zellij-pane 120 none)
   state="$dir/state"
@@ -467,7 +473,8 @@ esac
 exit 0
 SH
   chmod +x "$dir/fakebin/zellij"
-  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1
+  run_stall_checkpoint "$dir" FM_SECONDMATE_WAKE_STALL_SECS=1 || status=$?
+  expect_code 0 "$status" "reused Zellij pane actionable checkpoint"
   grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$dir/watch.out" >/dev/null \
     || fail "a replacement Zellij pane suppressed the stalled mate's aged row: $(cat "$dir/watch.out"); err=$(cat "$dir/watch.err")"
   grep -F 'state=dead source=endpoint-gone' "$dir/watch.out" >/dev/null \
