@@ -18,7 +18,7 @@ The primary home's cold archive shows repeated archival activity, not total stow
 On 2026-08-26 in the primary home, inspection of `data/memory-archive.md` counted eight dated archival-pass headings from 2026-08-15 through 2026-08-26, including two headings dated 2026-08-19.
 The stow contract creates such a heading only when a pass archives an entry, so eight is a lower bound on full passes rather than a pass-cadence measurement.
 No durable per-pass ledger was available, and this ADR makes no claim about total stow cadence.
-On 2026-08-26 in the primary home, `config/stow-pass-horizon` was observed present, so the current memory contract advances decay by both wall-clock age and unreinforced curation passes.
+On 2026-08-26 in the primary home, `config/stow-pass-horizon` was observed present, so that day's memory contract advanced decay by both wall-clock age and unreinforced curation passes.
 
 The brain and startup memory serve different retrieval moments.
 On 2026-08-26 in the primary home, the capture outbox inventory exposed by `bin/fm-gbrain-capture.sh status --json` counted 302 archived documents: 41 notes and 261 task records.
@@ -108,7 +108,7 @@ The promotion is reported before the full-only work begins, naming the trigger.
 It is never silent.
 
 The pass horizon does not advance on a light invocation.
-Its counter represents passes that evaluated an entry without reinforcement, and the light path evaluates no complete memory file.
+The internal [`/stow` skill](../../.agents/skills/stow/SKILL.md) owns the tick and the calendar-day cap, and the light path evaluates no complete memory file.
 Advancing it would record an evaluation that never happened.
 
 #### Dated portability check
@@ -273,7 +273,7 @@ It preserves the memory tier and pass-horizon reasons, prevents first-class capt
 
 - The ordinary end-of-session ritual remains one invocation.
 - The internal skill needs explicit full and light execution paths even though both remain under one owner.
-- The enabled pass horizon continues to count actual startup-memory curation passes rather than every invocation that takes the light path.
+- The enabled pass horizon still does not advance on a light invocation; the internal [`/stow` skill](../../.agents/skills/stow/SKILL.md) owns the tick.
 - A light invocation may visibly promote to full when its findings require a startup-memory write or reveal invalid budget state.
 - Brain note volume grows from capture-worthy findings rather than only from memory pruning, but capture remains bounded per body and filtered by retrieval value.
 - Startup-memory curation optimizes for utility and headroom rather than filling the configured allowance.
