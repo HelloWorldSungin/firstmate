@@ -80,7 +80,7 @@ config/backend  runtime session-provider backend override for new tasks; LOCAL, 
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited (docs/configuration.md "Pi Calm preference")
 config/supervision-branch-model config/supervision-branch-effort  Pi supervision-branch model and reasoning-effort pins written by /supervision-model; LOCAL, gitignored, independently settable, and not inherited (docs/configuration.md "Pi supervision branch model and effort")
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Startup memory budget")
-config/stow-pass-horizon  optional presence flag opting this home in to /stow's default-off pass-count decay horizon; LOCAL, gitignored, and not inherited; see docs/configuration.md "Stow pass horizon"
+config/stow-pass-horizon  optional presence flag opting this home in to /stow's default-off, calendar-day-capped decay horizon; LOCAL, gitignored, and not inherited; see docs/configuration.md "Stow pass horizon"
 config/herdr-presentation-spaces  Herdr visual-projection opt-out or opt-in; LOCAL, gitignored; inherited by secondmate homes (docs/herdr-backend.md "Presentation spaces")
 config/trace-context  optional default-off trace-context propagation flag; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Trace context propagation")
 config/project-board  this home's FALLBACK GitHub Projects board URL for a project whose registry entry declares no board=; LOCAL, gitignored; absent means no fallback; inherited by secondmate homes (docs/configuration.md "Project issue trackers")
@@ -117,6 +117,7 @@ state/               runtime records and signals; gitignored
   <id>.pr-status     cached normalized PR observation, refreshed only by bin/fm-pr-status.sh so read-only consumers never call a forge; removed by teardown
   <id>.gbrain        GBrain capture receipt written by bin/fm-gbrain-capture.sh; absent means the home has no brain, never an error; removed by teardown
   recall.jsonl       home-wide append-only local record of each fm-recall.sh search read; owned by bin/fm-recall.sh; presence-gated on a local index; never sent anywhere; size-capped, safe to delete, and recreated on the next search, as are the transient recall.jsonl.lock, recall.jsonl.trim.*, and recall.jsonl.lock.stale.* a killed run leaves behind for a later search to sweep by age (bin/fm-recall.sh --help owns the cap, the lock, and the sweep)
+  .stow-horizon-tick  calendar date claimed for the last /stow pass-horizon tick in an opted-in home; ignored when config/stow-pass-horizon is absent; safe to delete (the next opted-in full pass ticks once and rewrites it); see docs/configuration.md "Stow pass horizon"
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown

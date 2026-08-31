@@ -20,8 +20,9 @@ Markers are compact trailing HTML comments, deliberately cheap because marker by
 
 - `<!--a:YYYY-MM-DD-->` - an `aging` entry; the embedded date is its last-reinforced date.
 - `<!--p:YYYY-MM-DD-->` - a `perishable` entry; the embedded date is its last-reinforced date.
-- `<!--a:YYYY-MM-DD/N-->` - only in a home that has opted in to the pass horizon below: either dated marker may carry `/N`, the number of passes that evaluated the entry without reinforcing it.
+- `<!--a:YYYY-MM-DD/N-->` - only in a home that has opted in to the pass horizon below: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
   An absent `/N` means zero, so an entry the fleet keeps exercising costs no counter bytes at all, and a home that has not opted in never writes one.
+  Existing `/N` values keep their stored integer; the pass-horizon section below says what they mean after the calendar-day cap.
 - `<!--P-->` - an explicitly `pinned` entry in a file whose default tier is not `pinned`.
 - `<!--g-->` - migration-only: an unconfirmed legacy entry that has consumed its one grace cycle, carrying no date because grace is not reinforcement.
 
@@ -53,25 +54,56 @@ Marking rules:
 - A pre-existing missing or hand-dropped marker is never grounds for destructive treatment: it means the file's default tier; an unmarked entry in a default-pinned file is simply pinned, while an unmarked entry in a file whose default tier carries a clock follows the migration rule below.
 
 Decay advances only when a pass runs, so a home stowed less often than a clock experiences that clock at its stow interval.
+The optional pass horizon additionally advances at most once per calendar day, so a burst of same-day full passes still counts as one tick.
 
 ### Optional pass horizon (config/stow-pass-horizon)
 
 The wall-clock horizons above are this skill's default contract, and a home gets exactly them unless it asks for more.
-A home may opt in to a second, per-pass horizon by creating the local, gitignored `config/stow-pass-horizon` presence flag.
-While that file is absent nothing else in this section applies: no counter is written, no counter already in a file is read, and every entry decays on its date alone.
+A home may opt in to a second, calendar-day-capped evaluation horizon by creating the local, gitignored `config/stow-pass-horizon` presence flag.
+While that file is absent nothing else in this section applies: no counter is written, no counter already in a file is read, no last-tick sidecar is read or written, and every entry decays on its date alone.
 
-Opt in where admission and decay are not commensurable.
-A pass admits the findings that pass produced, so growth is a per-pass quantity, while a wall-clock horizon alone is a per-day one.
-In a home that stows daily those two rates diverge by the stow cadence, an entry the fleet keeps exercising never sits unreinforced for 30 wall-clock days, and the date horizon is evaluated vacuously every pass while the file only grows.
-A home stowed monthly already exceeds its date horizon on a single pass and gains nothing from the flag.
+Opt in where a home stows often enough that the date horizon is evaluated vacuously every pass while unused entries remain, so memory only grows against the startup-memory budget.
+A home stowed more rarely than its date horizon already expires entries on the wall clock and gains nothing from the flag.
+
+Each new tick is at most one per calendar day, not one per pass.
+A later full pass on the same calendar date leaves every `/N` unchanged.
+For a counter accumulated entirely after this cap, ten ticks reflect ten distinct calendar days on which a full pass evaluated the entry without reinforcing it, which is the intended new signal: an entry that stayed quiet across ten separate days is genuinely unused at this home's operating cadence.
+An existing counter may include multiple pre-cap ticks from one day, keeps that accumulated value, and can therefore reach its unchanged threshold in fewer distinct post-change days.
+Same-day repeats, including the automatic cascade firing a pass in every registered home each time the primary stows, are not additional signal.
+
+Do not restore a per-pass tick on the argument that a faster cadence means more growth to control.
+That step assumed a pass is caused by admission in this home, and the cascade broke the assumption: a pass now runs here whether or not this home admitted anything.
+The flag file of the home that first opted in recorded the claim verbatim: "It self-adjusts, so there is no cadence at which it is actively wrong."
+The argument was that the horizon only ever fires first and never extends an entry's life, so at low cadence it is a no-op and at high cadence it does the intended work.
+That is persuasive when more passes means more admission to control, and it is wrong once passes are not caused by admission.
+"Fires first, never extends" is then exactly what retires a still-true entry before the wall clock could vindicate it.
+
+A per-entry "tick only when this pass had an opportunity to exercise this entry" test is rejected here because opportunity is not a mechanical property of the pass.
+Reinforcement already records that this session exercised the entry.
+Opportunity-without-exercise would need a named trigger on every aging entry, which this skill does not have, or a judgment of whether the session's work was "in that domain", which is not a checkable predicate.
+Removing the horizon and relying on the wall clock alone remains a larger product call than this repair and is not taken here.
 
 While the flag is present:
 
-- An `aging` entry is stale at whichever horizon it reaches first: 10 passes that evaluated it without reinforcing it, or 30 days since its last-reinforced date.
-- A `perishable` entry is stale at whichever it reaches first: 3 unreinforced passes, or 7 days.
+- An `aging` entry is stale at whichever horizon it reaches first: 10 accumulated unreinforced ticks, or 30 days since its last-reinforced date.
+- A `perishable` entry is stale at whichever horizon it reaches first: 3 accumulated unreinforced ticks, or 7 days.
+- Apply at most one tick per calendar day for the whole home.
+  Today is the calendar date this pass would stamp on a newly written marker.
+  Read `state/.stow-horizon-tick` as a single `YYYY-MM-DD` line in that same spelling.
+  Before step 4 changes any pass-horizon counter or step 5 performs any pass-horizon-driven archival, claim today's tick by writing today to the sidecar and confirming that exact value persisted when the sidecar is absent or its first line precedes today.
+  Only a successfully persisted claim permits step 5 to increment the unreinforced counter of every dated entry step 4 did not reinforce.
+  If an eligible claim cannot be persisted, stop before step 4 mutates any memory file or archive and report the exception.
+  An interruption after the claim but before all counter mutations can undercount that date, but its retry sees today's claim and cannot double-tick it.
+  If its first line is today or later, do not increment any counter or alter the sidecar; a later date is clock-rollback evidence, not permission to tick that calendar date again.
 - Reinforcement refreshes the date and clears the counter, and nothing else clears it, so the evidence hard rule in step 4 stays the only way an entry renews its lease.
 - An existing dated marker with no `/N` reads as counter zero, so a home that opts in migrates nothing.
-- Removing the flag returns the home to the default contract on its next pass: any `/N` already written is then neither read nor advanced, and is left in place rather than rewritten.
+- An existing `/N` keeps its stored integer and still counts toward the same 10 (aging) or 3 (perishable) threshold.
+  N is ticks toward that threshold, not a new unit and not a silent conversion of pass-ticks into distinct days.
+  Ticks taken before the calendar-day cap may include more than one pass on the same day, so a pre-change N can overstate distinct-day quietness.
+  This pass does not rewrite N to reconstruct a history the marker does not store.
+  An absent sidecar on the first opted-in pass after the cap can add one tick on a day that already incremented N under the old per-pass rule, because that history is not in the sidecar; that is at most one extra tick, not a reset.
+  Reinforcement still clears N; removing the flag still leaves `/N` unread.
+- Removing the flag returns the home to the default contract on its next pass: any `/N` already written is then neither read nor advanced, and is left in place rather than rewritten, and the sidecar is neither read nor written.
 
 ## Required startup-memory pass
 
@@ -94,13 +126,15 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Prefer offloading current but conditional, narrow, project-specific, or context-specific material to a live on-demand owner, and archive stale, superseded, or low-recurrence material to the cold tier.
    Retain lower-utility material only while budget remains.
 4. Reinforce and stamp.
+   Where the optional pass horizon is enabled, perform its durable tick-claim phase before changing any memory file or archive in this step.
    Refresh an entry's last-reinforced date to today only when this session actually exercised, confirmed, or re-derived it.
    Where the optional pass horizon is enabled, refreshing that date also clears the entry's unreinforced-pass counter, and nothing else clears it.
    **Hard rule: reinforcement requires independent evidence from this session that you can name in the receipt; plausibility, importance, prior knowledge, and the entry's own text are not evidence, and any explicit statement that no confirming session evidence exists requires the no-evidence path.**
    For an unmarked `data/learnings.md` entry with no such evidence, the no-evidence path is always to append `<!--g-->` and retain it for this entire pass; never stamp or archive it during that same invocation.
    Stamp each newly written entry with today's date and its tier per the marking rules, and admit a new `perishable` entry only with its named checkable expiry condition in the prose.
 5. Evaluate every dated entry in each editable memory file against its tier clock.
-   Where the optional pass horizon is enabled, first increment the unreinforced-pass counter of every dated entry step 4 did not reinforce - that increment is the pass tick - then judge each dated entry against both of its horizons and treat it as stale at whichever it reaches first.
+   Where the optional pass horizon is enabled and today's tick claim succeeded, apply that claim by incrementing the unreinforced counters described in the pass-horizon section, then judge each dated entry against both of its horizons and treat it as stale at whichever it reaches first.
+   Where no tick was claimed, do not increment a counter or treat an entry as stale because of a new pass-horizon tick.
    Re-validate a stale `aging` entry from current evidence and refresh its date, or archive it.
    Re-confirm a stale `perishable` entry against its named condition: still open means refresh the date, while resolved, expired, or no longer checkable means archive it in this pass.
    Promote `perishable` to `aging` when its condition keeps proving durable past its expected life, and retier in place when a supersession changes an entry's lifetime.
@@ -134,6 +168,7 @@ Never describe the session as reset-safe while the memory total is over budget o
 Stale never means deleted: pruning an entry from an editable memory file always means moving it to `data/memory-archive.md`, this home's append-only, never-injected cold tier, gitignored with the rest of `data/` and never counted by the budget report.
 Each archived entry keeps its provenance under a dated pass heading: source file, tier, last-reinforced date, and the reason it left.
 Include the unreinforced-pass counter only when the optional pass horizon itself made the entry stale, using the exact reason `unreinforced <N>p`; omit the counter when the wall-clock horizon or any other reason caused archival, even if the active marker carried one.
+`p` is the pass-horizon tick count under the calendar-day cap, not a raw pass count.
 Archive provenance stays verbose rather than compact because the cold tier is never budget-counted.
 
 ```markdown
