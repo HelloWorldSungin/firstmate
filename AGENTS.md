@@ -117,7 +117,7 @@ state/               runtime records and signals; gitignored
   <id>.pr-status     cached normalized PR observation, refreshed only by bin/fm-pr-status.sh so read-only consumers never call a forge; removed by teardown
   <id>.gbrain        GBrain capture receipt written by bin/fm-gbrain-capture.sh; absent means the home has no brain, never an error; removed by teardown
   recall.jsonl       home-wide append-only local record of each fm-recall.sh search read; owned by bin/fm-recall.sh; presence-gated on a local index; never sent anywhere; size-capped, safe to delete, and recreated on the next search, as are the transient recall.jsonl.lock, recall.jsonl.trim.*, and recall.jsonl.lock.stale.* a killed run leaves behind for a later search to sweep by age (bin/fm-recall.sh --help owns the cap, the lock, and the sweep)
-  .stow-horizon-tick  calendar date of the last /stow pass-horizon tick in an opted-in home; ignored when config/stow-pass-horizon is absent; safe to delete (the next opted-in full pass ticks once and rewrites it); see docs/configuration.md "Stow pass horizon"
+  .stow-horizon-tick  calendar date claimed for the last /stow pass-horizon tick in an opted-in home; ignored when config/stow-pass-horizon is absent; safe to delete (the next opted-in full pass ticks once and rewrites it); see docs/configuration.md "Stow pass horizon"
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown

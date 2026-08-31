@@ -392,7 +392,8 @@ An existing `/N` keeps its stored integer toward the same threshold; because pre
 Opt in for a home that stows often enough that entries never sit unreinforced for a wall-clock horizon, so memory only grows against the startup-memory budget above; a home that stows rarely already exceeds its date horizon on a single pass and gains nothing.
 The flag is per home and is not inherited by secondmate homes, because stow cadence is a property of the home doing the stowing.
 Only the file's presence is read, so its contents are ignored; remove it to return to the default contract on the next pass.
-While the flag is present, the skill records the calendar date of the last tick in `state/.stow-horizon-tick`; a full pass ticks only when that date precedes today or the sidecar is absent, while a date equal to or later than today prevents a tick and a later value is preserved as clock-rollback evidence.
+While the flag is present, the skill records the calendar date claimed for the last tick in `state/.stow-horizon-tick`; a full pass ticks only when that date precedes today or the sidecar is absent, while a date equal to or later than today prevents a tick and a later value is preserved as clock-rollback evidence.
+The claim is persisted before pass-horizon counter or archival mutations, so an interrupted pass can undercount that date but cannot double-tick it on retry.
 That sidecar is ignored when the flag is absent, and deleting it can add at most one extra tick on the next opted-in full pass.
 The skill text owns the marker spelling, the tick order, existing `/N` meaning, and the superseded per-pass rationale.
 

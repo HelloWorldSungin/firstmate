@@ -90,7 +90,10 @@ While the flag is present:
 - Apply at most one tick per calendar day for the whole home.
   Today is the calendar date this pass would stamp on a newly written marker.
   Read `state/.stow-horizon-tick` as a single `YYYY-MM-DD` line in that same spelling.
-  If the sidecar is absent or its first line precedes today, increment the unreinforced counter of every dated entry step 4 did not reinforce, then write today to the sidecar, creating it if needed.
+  Before step 4 changes any pass-horizon counter or step 5 performs any pass-horizon-driven archival, claim today's tick by writing today to the sidecar and confirming that exact value persisted when the sidecar is absent or its first line precedes today.
+  Only a successfully persisted claim permits step 5 to increment the unreinforced counter of every dated entry step 4 did not reinforce.
+  If an eligible claim cannot be persisted, stop before step 4 mutates any memory file or archive and report the exception.
+  An interruption after the claim but before all counter mutations can undercount that date, but its retry sees today's claim and cannot double-tick it.
   If its first line is today or later, do not increment any counter or alter the sidecar; a later date is clock-rollback evidence, not permission to tick that calendar date again.
 - Reinforcement refreshes the date and clears the counter, and nothing else clears it, so the evidence hard rule in step 4 stays the only way an entry renews its lease.
 - An existing dated marker with no `/N` reads as counter zero, so a home that opts in migrates nothing.
@@ -123,13 +126,15 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Prefer offloading current but conditional, narrow, project-specific, or context-specific material to a live on-demand owner, and archive stale, superseded, or low-recurrence material to the cold tier.
    Retain lower-utility material only while budget remains.
 4. Reinforce and stamp.
+   Where the optional pass horizon is enabled, perform its durable tick-claim phase before changing any memory file or archive in this step.
    Refresh an entry's last-reinforced date to today only when this session actually exercised, confirmed, or re-derived it.
    Where the optional pass horizon is enabled, refreshing that date also clears the entry's unreinforced-pass counter, and nothing else clears it.
    **Hard rule: reinforcement requires independent evidence from this session that you can name in the receipt; plausibility, importance, prior knowledge, and the entry's own text are not evidence, and any explicit statement that no confirming session evidence exists requires the no-evidence path.**
    For an unmarked `data/learnings.md` entry with no such evidence, the no-evidence path is always to append `<!--g-->` and retain it for this entire pass; never stamp or archive it during that same invocation.
    Stamp each newly written entry with today's date and its tier per the marking rules, and admit a new `perishable` entry only with its named checkable expiry condition in the prose.
 5. Evaluate every dated entry in each editable memory file against its tier clock.
-   Where the optional pass horizon is enabled, apply the calendar-day tick in the pass-horizon section above, then judge each dated entry against both of its horizons and treat it as stale at whichever it reaches first.
+   Where the optional pass horizon is enabled and today's tick claim succeeded, apply that claim by incrementing the unreinforced counters described in the pass-horizon section, then judge each dated entry against both of its horizons and treat it as stale at whichever it reaches first.
+   Where no tick was claimed, do not increment a counter or treat an entry as stale because of a new pass-horizon tick.
    Re-validate a stale `aging` entry from current evidence and refresh its date, or archive it.
    Re-confirm a stale `perishable` entry against its named condition: still open means refresh the date, while resolved, expired, or no longer checkable means archive it in this pass.
    Promote `perishable` to `aging` when its condition keeps proving durable past its expected life, and retier in place when a supersession changes an entry's lifetime.

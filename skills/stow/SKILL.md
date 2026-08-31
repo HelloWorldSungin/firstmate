@@ -119,7 +119,7 @@ Rules:
 - An entry matching its file's `pinned` default carries no marker at all; every `aging` and `perishable` entry always carries its dated marker, whose letter names the tier, so a clock-carrying entry is never ambiguous with unmarked legacy material.
 - Marker and pointer bytes are part of the file's cost, so bookkeeping stays minimal by design.
 - Every governed memory file this skill curates carries at most a one-line header pointer naming this skill as the scheme owner, such as `<!-- memory tiers: see the stow skill -->`, optionally naming that file's default tier when it deviates and the pass horizon when that file opts in, as in `<!-- memory tiers: see the stow skill; pass horizon -->`.
-  After a calendar-day tick in an opted-in file, that same header records the pass date as `ticked YYYY-MM-DD`, as in `<!-- memory tiers: see the stow skill; pass horizon; ticked 2026-08-31 -->`, so a later same-day pass can see it.
+  To claim a calendar-day tick in an opted-in file, that same header records the pass date as `ticked YYYY-MM-DD`, as in `<!-- memory tiers: see the stow skill; pass horizon; ticked 2026-08-31 -->`, so a later same-day pass can see it.
   The tier semantics, marker spellings, and clocks live only in this skill and are never restated in a file header, which names an option but never the horizon lengths.
   During one-time migration, add the pointer even to a default-pinned file that contains only unmarked entries, so every governed file names its scheme owner.
 - Refresh an entry's last-reinforced date only on real evidence from the current session: the fact was used, confirmed, or re-derived.
@@ -137,7 +137,10 @@ Rules:
 - While a file is opted in, an `aging` entry there is stale at whichever comes first - 10 accumulated unreinforced ticks, or 30 days - and a `perishable` entry at whichever comes first - 3 accumulated unreinforced ticks, or 7 days.
   A counter accumulated entirely after the calendar-day cap reflects distinct tick dates, while an existing counter may include multiple pre-cap ticks from one day and can therefore reach its unchanged threshold in fewer distinct post-change days.
   Today is the calendar date this pass would stamp on a newly written marker.
-  If the file's header has no `ticked` date or its recorded date precedes today, increment the counter of every dated entry that pass did not reinforce, then write `ticked YYYY-MM-DD` for today into that file's header pointer.
+  If the file's header has no `ticked` date or its recorded date precedes today, first persist `ticked YYYY-MM-DD` for today in that header, then increment the counter of every dated entry that pass did not reinforce and perform any pass-horizon-driven archival.
+  A single atomic file replacement may persist the header claim and that file's counter mutations together; never persist a counter mutation before its header claim.
+  If an eligible claim cannot be persisted, stop before mutating that governed memory file or its archive and report the exception.
+  An interruption after the claim but before all counter mutations can undercount that date, but its retry sees today's claim and cannot double-tick it.
   If its recorded date is today or later, do not increment any counter or alter that date; a later date is clock-rollback evidence, not permission to tick that calendar date again.
   Read a dated marker with no `/N` as counter zero so nothing needs migrating, and clear the counter only by refreshing the date on real evidence.
   An existing `/N` keeps its stored integer and still counts toward the same 10 or 3 threshold; it is not a new unit and not a silent conversion of pass-ticks into distinct days.
