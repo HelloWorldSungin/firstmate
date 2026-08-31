@@ -208,7 +208,7 @@ family_for_basename() {
     fm-herdr-version-floor-live-e2e.test.sh|fm-muse-signals-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
-    fm-pi-primary-live-e2e.test.sh|\
+    fm-pi-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
@@ -1126,6 +1126,10 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     .agents/skills/quota-array-dispatch/SKILL.md)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
+      ;;
+    .agents/skills/stow/SKILL.md|skills/stow/SKILL.md)
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
       ;;

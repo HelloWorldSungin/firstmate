@@ -93,7 +93,7 @@ Markers are compact trailing HTML comments, deliberately cheap because marker by
 
 - `<!--a:YYYY-MM-DD-->` - an `aging` entry; the embedded date is its last-reinforced date.
 - `<!--p:YYYY-MM-DD-->` - a `perishable` entry; the embedded date is its last-reinforced date.
-- `<!--a:YYYY-MM-DD/N-->` - only in a file whose header pointer opts in to the pass horizon below: either dated marker may carry `/N`, ticks toward that horizon, applied at most once per calendar day.
+- `<!--a:YYYY-MM-DD/N-->` - only in a file whose header pointer opts in to the pass horizon below: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
   An absent `/N` means zero, so an entry you keep exercising costs no counter bytes at all, and a file that has not opted in never writes one.
   Existing `/N` values keep their stored integer; the pass-horizon rule below says what they mean after the calendar-day cap.
 - `<!--P-->` - an explicitly `pinned` entry in a file whose default tier is not `pinned`.
@@ -134,11 +134,11 @@ Rules:
   Reinforcement already records that this session exercised the entry.
   Opportunity-without-exercise is not a checkable predicate.
   Removing the horizon and relying on the wall clock alone is a larger product call than this repair and is not taken here.
-- While a file is opted in, an `aging` entry there is stale at whichever comes first - 10 calendar days on which a pass evaluated it without reinforcing it, or 30 days - and a `perishable` entry at whichever comes first - 3 such unreinforced calendar days, or 7 days.
+- While a file is opted in, an `aging` entry there is stale at whichever comes first - 10 accumulated unreinforced ticks, or 30 days - and a `perishable` entry at whichever comes first - 3 accumulated unreinforced ticks, or 7 days.
+  A counter accumulated entirely after the calendar-day cap reflects distinct tick dates, while an existing counter may include multiple pre-cap ticks from one day and can therefore reach its unchanged threshold in fewer distinct post-change days.
   Today is the calendar date this pass would stamp on a newly written marker.
-  If the file's header already records `ticked` as today, do not increment any counter in that file.
-  Otherwise increment the counter of every dated entry that pass did not reinforce, then write `ticked YYYY-MM-DD` for today into that file's header pointer.
-  A header that opts in but has no `ticked` date means this calendar day has not yet recorded a tick, so the increment runs once and the date is added.
+  If the file's header has no `ticked` date or its recorded date precedes today, increment the counter of every dated entry that pass did not reinforce, then write `ticked YYYY-MM-DD` for today into that file's header pointer.
+  If its recorded date is today or later, do not increment any counter or alter that date; a later date is clock-rollback evidence, not permission to tick that calendar date again.
   Read a dated marker with no `/N` as counter zero so nothing needs migrating, and clear the counter only by refreshing the date on real evidence.
   An existing `/N` keeps its stored integer and still counts toward the same 10 or 3 threshold; it is not a new unit and not a silent conversion of pass-ticks into distinct days.
   Ticks taken before the calendar-day cap may include more than one pass on the same day, so a pre-change N can overstate distinct-day quietness, and this pass does not rewrite N to reconstruct a history the marker does not store.

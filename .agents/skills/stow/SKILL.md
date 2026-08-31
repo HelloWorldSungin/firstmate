@@ -20,7 +20,7 @@ Markers are compact trailing HTML comments, deliberately cheap because marker by
 
 - `<!--a:YYYY-MM-DD-->` - an `aging` entry; the embedded date is its last-reinforced date.
 - `<!--p:YYYY-MM-DD-->` - a `perishable` entry; the embedded date is its last-reinforced date.
-- `<!--a:YYYY-MM-DD/N-->` - only in a home that has opted in to the pass horizon below: either dated marker may carry `/N`, ticks toward that horizon, applied at most once per calendar day.
+- `<!--a:YYYY-MM-DD/N-->` - only in a home that has opted in to the pass horizon below: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
   An absent `/N` means zero, so an entry the fleet keeps exercising costs no counter bytes at all, and a home that has not opted in never writes one.
   Existing `/N` values keep their stored integer; the pass-horizon section below says what they mean after the calendar-day cap.
 - `<!--P-->` - an explicitly `pinned` entry in a file whose default tier is not `pinned`.
@@ -65,9 +65,10 @@ While that file is absent nothing else in this section applies: no counter is wr
 Opt in where a home stows often enough that the date horizon is evaluated vacuously every pass while unused entries remain, so memory only grows against the startup-memory budget.
 A home stowed more rarely than its date horizon already expires entries on the wall clock and gains nothing from the flag.
 
-The tick is at most one per calendar day, not one per pass.
+Each new tick is at most one per calendar day, not one per pass.
 A later full pass on the same calendar date leaves every `/N` unchanged.
-Ten ticks therefore means ten distinct calendar days on which a full pass evaluated the entry without reinforcing it, which is the original intended signal: an entry that stayed quiet across ten separate days is genuinely unused at this home's operating cadence.
+For a counter accumulated entirely after this cap, ten ticks reflect ten distinct calendar days on which a full pass evaluated the entry without reinforcing it, which is the intended new signal: an entry that stayed quiet across ten separate days is genuinely unused at this home's operating cadence.
+An existing counter may include multiple pre-cap ticks from one day, keeps that accumulated value, and can therefore reach its unchanged threshold in fewer distinct post-change days.
 Same-day repeats, including the automatic cascade firing a pass in every registered home each time the primary stows, are not additional signal.
 
 Do not restore a per-pass tick on the argument that a faster cadence means more growth to control.
@@ -84,14 +85,13 @@ Removing the horizon and relying on the wall clock alone remains a larger produc
 
 While the flag is present:
 
-- An `aging` entry is stale at whichever horizon it reaches first: 10 calendar days on which a full pass evaluated it without reinforcing it, or 30 days since its last-reinforced date.
-- A `perishable` entry is stale at whichever it reaches first: 3 such unreinforced calendar days, or 7 days.
+- An `aging` entry is stale at whichever horizon it reaches first: 10 accumulated unreinforced ticks, or 30 days since its last-reinforced date.
+- A `perishable` entry is stale at whichever horizon it reaches first: 3 accumulated unreinforced ticks, or 7 days.
 - Apply at most one tick per calendar day for the whole home.
   Today is the calendar date this pass would stamp on a newly written marker.
   Read `state/.stow-horizon-tick` as a single `YYYY-MM-DD` line in that same spelling.
-  If that sidecar's first line is already today, do not increment any counter.
-  Otherwise increment the unreinforced counter of every dated entry step 4 did not reinforce, then write today to the sidecar, creating it if needed.
-  An absent sidecar, or one whose first line is not today, means this calendar day has not yet recorded a tick, so the increment runs once and the sidecar is overwritten with today.
+  If the sidecar is absent or its first line precedes today, increment the unreinforced counter of every dated entry step 4 did not reinforce, then write today to the sidecar, creating it if needed.
+  If its first line is today or later, do not increment any counter or alter the sidecar; a later date is clock-rollback evidence, not permission to tick that calendar date again.
 - Reinforcement refreshes the date and clears the counter, and nothing else clears it, so the evidence hard rule in step 4 stays the only way an entry renews its lease.
 - An existing dated marker with no `/N` reads as counter zero, so a home that opts in migrates nothing.
 - An existing `/N` keeps its stored integer and still counts toward the same 10 (aging) or 3 (perishable) threshold.

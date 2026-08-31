@@ -386,12 +386,14 @@ The helper's header owns exact parsing, publication, and report output mechanics
 
 `config/stow-pass-horizon` is an optional local, gitignored presence flag that opts this home in to the calendar-day-capped evaluation horizon in the internal [`/stow` skill](../.agents/skills/stow/SKILL.md).
 Without it a `/stow` pass decays memory entries on their wall-clock horizons alone - 30 days for `aging`, 7 days for `perishable` - which is the default and unchanged behavior.
-With it, an entry is also stale after 10 calendar days (`aging`) or 3 calendar days (`perishable`) on which a full pass evaluated it without reinforcing it, whichever horizon it reaches first.
-A later full pass on the same calendar date does not increment again.
+With it, an entry is also stale after 10 accumulated unreinforced ticks (`aging`) or 3 accumulated unreinforced ticks (`perishable`), whichever horizon it reaches first.
+New ticks are capped at one per calendar day, so a later full pass on the same calendar date does not increment again.
+An existing `/N` keeps its stored integer toward the same threshold; because pre-cap ticks may include multiple passes from one day, only ticks accumulated after the cap necessarily represent distinct calendar dates.
 Opt in for a home that stows often enough that entries never sit unreinforced for a wall-clock horizon, so memory only grows against the startup-memory budget above; a home that stows rarely already exceeds its date horizon on a single pass and gains nothing.
 The flag is per home and is not inherited by secondmate homes, because stow cadence is a property of the home doing the stowing.
 Only the file's presence is read, so its contents are ignored; remove it to return to the default contract on the next pass.
-While the flag is present, the skill records the calendar date of the last tick in `state/.stow-horizon-tick` so a later same-day pass can see it; that sidecar is ignored when the flag is absent, and deleting it can add at most one extra tick on the next opted-in full pass.
+While the flag is present, the skill records the calendar date of the last tick in `state/.stow-horizon-tick`; a full pass ticks only when that date precedes today or the sidecar is absent, while a date equal to or later than today prevents a tick and a later value is preserved as clock-rollback evidence.
+That sidecar is ignored when the flag is absent, and deleting it can add at most one extra tick on the next opted-in full pass.
 The skill text owns the marker spelling, the tick order, existing `/N` meaning, and the superseded per-pass rationale.
 
 ## Secondmate routes (data/secondmates.md)
