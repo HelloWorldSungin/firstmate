@@ -380,6 +380,54 @@ assert_group_gone_after_term "$PGID_DESCENDANT" \
   "TERM of a serving worker with an unregistered descendant"
 pass "serving worker shutdown reaps an unregistered descendant"
 
+# --- failed publish must not delete a replacement worker's quarantine --------
+#
+# If the lock is gone, publication fails. While this handler still reaps a
+# SIG_IGN descendant, a replacement can recreate the lock and publish. Clearing
+# unconditionally would delete that marker even though this shutdown never
+# published it.
+
+CASE_REPLACE=$(prepare_case replacement-quarantine)
+install_spawn_wrapper "$CASE_REPLACE"
+export FM_REMOTE_JOB_SPAWN_CASE=serving-descendant
+export FM_REMOTE_JOB_SPAWN_MARKER="$CASE_REPLACE/spawn.pid"
+export FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS=1
+SUP_REPLACE=$(start_linux_worker "$CASE_REPLACE")
+wait_ready "$CASE_REPLACE" || fail "replacement-quarantine: the worker did not become ready"
+PGID_REPLACE=$(fm_remote_job_process_pgid "$SUP_REPLACE") ||
+  fail "replacement-quarantine: could not resolve the worker process group"
+track_group "$PGID_REPLACE"
+SPAWN_REPLACE=$(cat "$FM_REMOTE_JOB_SPAWN_MARKER")
+case "$SPAWN_REPLACE" in ''|*[!0-9]*) fail "replacement-quarantine: no spawned pid" ;; esac
+SERVE_REPLACE=$(cat "$CASE_REPLACE/remote-jobs/worker.pid")
+case "$SERVE_REPLACE" in ''|*[!0-9]*) fail "replacement-quarantine: no serving pid" ;; esac
+LOCK_REPLACE="$CASE_REPLACE/remote-jobs/worker.lock"
+rm -rf "$LOCK_REPLACE"
+kill -TERM "$SERVE_REPLACE" 2>/dev/null || true
+for _ in $(seq 1 50); do
+  grep -q 'cannot guard worker ownership for shutdown' "$CASE_REPLACE/worker.err" 2>/dev/null && break
+  sleep 0.05
+done
+grep -q 'cannot guard worker ownership for shutdown' "$CASE_REPLACE/worker.err" ||
+  fail "replacement-quarantine: shutdown never reported a failed publication"
+kill -0 "$SERVE_REPLACE" 2>/dev/null ||
+  fail "replacement-quarantine: serving worker exited before the replacement marker could be planted"
+mkdir -m 0700 "$LOCK_REPLACE"
+printf 'replacement shutdown in progress\n' > "$LOCK_REPLACE/quarantine"
+chmod 600 "$LOCK_REPLACE/quarantine"
+assert_pid_gone_after_term "$SERVE_REPLACE" \
+  "failed-quarantine TERM with a replacement marker present"
+assert_pid_gone_after_term "$SPAWN_REPLACE" \
+  "failed-quarantine TERM with a replacement marker present"
+assert_group_gone_after_term "$PGID_REPLACE" \
+  "failed-quarantine TERM with a replacement marker present"
+[ -f "$LOCK_REPLACE/quarantine" ] ||
+  fail "failed-quarantine shutdown deleted a replacement worker's quarantine marker"
+[ "$(cat "$LOCK_REPLACE/quarantine")" = "replacement shutdown in progress" ] ||
+  fail "failed-quarantine shutdown altered a replacement worker's quarantine marker"
+pass "failed-quarantine shutdown leaves a replacement worker's quarantine marker"
+unset FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS
+
 CASE_SUPERVISOR=$(prepare_case supervisor-spawn)
 install_spawn_wrapper "$CASE_SUPERVISOR"
 export FM_REMOTE_JOB_SPAWN_CASE=supervisor-spawn

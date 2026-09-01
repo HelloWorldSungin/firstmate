@@ -34,6 +34,8 @@
 # either. fm-on's ensure path restarts a worker that gave up.
 # TERM, INT, and HUP always terminate the serving process: worker_shutdown never
 # returns to the poll loop, even when it cannot publish the ownership quarantine.
+# A shutdown that did not publish quarantine must not delete a marker a
+# replacement worker may have created at the same lock path.
 # The Linux supervisor treats serving-child exits 0, 75, and 125 as terminal
 # and does not restart them.
 set -u
@@ -384,22 +386,33 @@ worker_stop_active_execution() {
 # report ready. A shutdown that hangs is still stopped: the caller escalates to
 # KILL, which no disposition can block.
 worker_shutdown() {
+  local published=0 pause
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
   WORKER_STOP=1
   # Never return to the poll loop, even when the lock is already gone.
   # Returning lets the interrupted command fail with exit 1, which the Linux supervisor treats as a crash and restarts in the same process group.
-  worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
+  if worker_publish_quarantine; then
+    published=1
+  else
+    worker_error "cannot guard worker ownership for shutdown"
+  fi
+  # Tests hold this window with FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS so a
+  # replacement marker can be planted after publication failed and before clear.
+  pause=$(worker_bounded_setting "${FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS:-0}" 0)
+  [ "$pause" -eq 0 ] || sleep "$pause"
   if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
   fi
-  worker_clear_quarantine || {
-    worker_error "could not clear guarded worker ownership after shutdown"
-    WORKER_RELEASE_OWNERSHIP=0
-    exit 125
-  }
+  if [ "$published" -eq 1 ]; then
+    worker_clear_quarantine || {
+      worker_error "could not clear guarded worker ownership after shutdown"
+      WORKER_RELEASE_OWNERSHIP=0
+      exit 125
+    }
+  fi
   exit 0
 }
 
