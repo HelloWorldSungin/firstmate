@@ -928,7 +928,10 @@ test_arm_hup_cleans_child_and_temp_output() {
   grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  wait_for_exit "$armpid" 80
+  # Wait for the arm's HUP exit itself.
+  # wait_for_exit kills the arm after a poll clock and returns 124.
+  # That 124 is the helper's kill sentinel, not a HUP status.
+  wait "$armpid"
   status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0

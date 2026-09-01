@@ -387,16 +387,14 @@ worker_shutdown() {
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
   WORKER_STOP=1
-  worker_publish_quarantine || {
-    worker_error "cannot guard worker ownership for shutdown"
-    trap worker_shutdown HUP INT TERM
-    return 0
-  }
-  worker_stop_active_execution || {
+  # Never return to the poll loop, even when the lock is already gone.
+  # Returning lets the interrupted command fail with exit 1, which the Linux supervisor treats as a crash and restarts in the same process group.
+  worker_publish_quarantine || worker_error "cannot guard worker ownership for shutdown"
+  if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
-  }
+  fi
   worker_clear_quarantine || {
     worker_error "could not clear guarded worker ownership after shutdown"
     WORKER_RELEASE_OWNERSHIP=0
