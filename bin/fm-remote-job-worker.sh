@@ -386,7 +386,7 @@ worker_stop_active_execution() {
 # report ready. A shutdown that hangs is still stopped: the caller escalates to
 # KILL, which no disposition can block.
 worker_shutdown() {
-  local published=0 pause
+  local published=0 test_ready test_release
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
   WORKER_STOP=1
@@ -397,10 +397,14 @@ worker_shutdown() {
   else
     worker_error "cannot guard worker ownership for shutdown"
   fi
-  # Tests hold this window with FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS so a
-  # replacement marker can be planted after publication failed and before clear.
-  pause=$(worker_bounded_setting "${FM_REMOTE_JOB_TEST_PAUSE_AFTER_PUBLISH_SECONDS:-0}" 0)
-  [ "$pause" -eq 0 ] || sleep "$pause"
+  test_ready=${FM_REMOTE_JOB_TEST_PUBLISH_READY_FILE:-}
+  test_release=${FM_REMOTE_JOB_TEST_PUBLISH_RELEASE_FILE:-}
+  if [ -n "$test_ready" ] && [ -n "$test_release" ]; then
+    printf 'ready\n' > "$test_ready" || exit 125
+    while [ ! -e "$test_release" ]; do
+      sleep 0.01
+    done
+  fi
   if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
