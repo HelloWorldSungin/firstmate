@@ -34,6 +34,8 @@
 # either. fm-on's ensure path restarts a worker that gave up.
 # TERM, INT, and HUP always terminate the serving process: worker_shutdown never
 # returns to the poll loop, even when it cannot publish the ownership quarantine.
+# A shutdown that did not publish quarantine must not delete a marker a
+# replacement worker may have created at the same lock path.
 # The Linux supervisor treats serving-child exits 0, 75, and 125 as terminal
 # and does not restart them.
 set -u
@@ -384,24 +386,37 @@ worker_stop_active_execution() {
 # report ready. A shutdown that hangs is still stopped: the caller escalates to
 # KILL, which no disposition can block.
 worker_shutdown() {
+  local published=0 test_ready test_release
   # A process-group stop reaches this child directly and through its supervisor.
   trap '' HUP INT TERM
   WORKER_STOP=1
-  worker_publish_quarantine || {
+  # Never return to the poll loop, even when the lock is already gone.
+  # Returning lets the interrupted command fail with exit 1, which the Linux supervisor treats as a crash and restarts in the same process group.
+  if worker_publish_quarantine; then
+    published=1
+  else
     worker_error "cannot guard worker ownership for shutdown"
-    trap worker_shutdown HUP INT TERM
-    return 0
-  }
-  worker_stop_active_execution || {
+  fi
+  test_ready=${FM_REMOTE_JOB_TEST_PUBLISH_READY_FILE:-}
+  test_release=${FM_REMOTE_JOB_TEST_PUBLISH_RELEASE_FILE:-}
+  if [ -n "$test_ready" ] && [ -n "$test_release" ]; then
+    printf 'ready\n' > "$test_ready" || exit 125
+    while [ ! -e "$test_release" ]; do
+      sleep 0.01
+    done
+  fi
+  if ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree"
     WORKER_RELEASE_OWNERSHIP=0
     exit 125
-  }
-  worker_clear_quarantine || {
-    worker_error "could not clear guarded worker ownership after shutdown"
-    WORKER_RELEASE_OWNERSHIP=0
-    exit 125
-  }
+  fi
+  if [ "$published" -eq 1 ]; then
+    worker_clear_quarantine || {
+      worker_error "could not clear guarded worker ownership after shutdown"
+      WORKER_RELEASE_OWNERSHIP=0
+      exit 125
+    }
+  fi
   exit 0
 }
 
