@@ -1855,7 +1855,7 @@ brain_section() {  # <brief> -> the "# Brain" section up to its closing blank li
 # instruction to search again stays, and the nearest-prior-work line names the
 # closest task record and its report on stdout without entering the brief.
 test_brain_scaffold_read_embeds_found_rows() {
-  local home brief argv
+  local home brief argv ranked
   home=$(brain_home brain-found)
   mkdir -p "$home/data/prior-task"
   printf 'a completed report\n' > "$home/data/prior-task/report.md"
@@ -1903,11 +1903,34 @@ test_brain_scaffold_read_embeds_found_rows() {
   assert_contains "$SCAFFOLD_OUT" 'nearest prior work (proximity, not duplication)' \
     "a scout scaffold must print the nearest-prior-work line"
 
-  # A task record with no report is still named, by its record directory.
-  rm "$home/data/prior-task/report.md"
-  brain_scaffold "$home" found-no-report "$BRAIN_ROWS_JSON" 0 0 --mode direct-PR
-  assert_contains "$SCAFFOLD_OUT" "; record $home/data/prior-task" \
-    "a task record without a report must be named by its directory"
+  # A report-less top result is skipped for the earliest ranked task whose
+  # completed report is readable.
+  ranked="$TMP_ROOT/brain-ranked-reports.json"
+  mkdir -p "$home/data/top-without-report" "$home/data/lower-with-report"
+  printf 'a lower-ranked completed report\n' > "$home/data/lower-with-report/report.md"
+  jq -n '[
+    {slug:"firstmate/firstmate-deadbeef/task/top-without-report", title:"Top without report", chunk_text:"top", score:0.9, stale:false},
+    {slug:"firstmate/firstmate-deadbeef/task/lower-with-report", title:"Lower with report", chunk_text:"lower", score:0.8, stale:false}
+  ]' > "$ranked"
+  brain_scaffold "$home" found-outranked-report "$ranked" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with a lower-ranked readable report must succeed"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): "Lower with report" local:firstmate/firstmate-deadbeef/task/lower-with-report; live source unknown; report '"$home/data/lower-with-report/report.md" \
+    "the first readable report in ranked order must be named"
+  assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
+    "a higher-ranked task without a readable report must be skipped"
+
+  # Ranked rows with no readable completed report make no proximity claim.
+  rm "$home/data/lower-with-report/report.md"
+  brain_scaffold "$home" found-no-report "$ranked" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with no readable report must succeed"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): no local report' \
+    "ranked rows without a readable report must state that no local report exists"
+  assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
+    "the no-report line must not name a report-less task record"
+  assert_not_contains "$SCAFFOLD_OUT" 'Lower with report' \
+    "the no-report line must not claim proximity to an unreadable report"
   pass "fm-brief.sh: a found scaffold search embeds labeled rows and prints the nearest prior work"
 }
 
@@ -1973,6 +1996,7 @@ test_brain_scaffold_read_gates_embed_on_answer_contract() {
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
+  printf 'a completed legacy report\n' > "$home/data/prior-task/report.md"
   cat > "$legacy_root/bin/fm-recall.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt","source_kind":"task","source_id":"prior-task"}]}'
@@ -1987,7 +2011,7 @@ EOF
   assert_no_grep 'scaffold time' "$brief" "an unframed document must not mount as trusted context"
   assert_no_grep 'Legacy row' "$brief" "no row from an unframed document may reach the brief"
   assert_contains "$SCAFFOLD_OUT" \
-    'nearest prior work (proximity, not duplication): "Legacy row" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; record '"$home/data/prior-task" \
+    'nearest prior work (proximity, not duplication): "Legacy row" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; report '"$home/data/prior-task/report.md" \
     "the advisory line prints regardless of the embed gate"
   pass "fm-brief.sh: the embed is gated on the answer contract while the nearest-prior-work line is not"
 }

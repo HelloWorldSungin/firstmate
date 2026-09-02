@@ -474,7 +474,8 @@ BRAIN_SCAFFOLD_EMBED_MAX_BYTES=3300
 # of them can stop the scaffold. The wrapper's exit codes keep never-started
 # (5) apart from asked-and-unanswered (3); the diagnostic names which.
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
-  local doc rc=0 detail citation title kind id state where rows frame_bytes
+  local doc rc=0 detail citation="" title="" id="" state="" report="" rows frame_bytes
+  local candidate_citation candidate_title candidate_id candidate_state
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
   command -v jq >/dev/null 2>&1 || return 0
@@ -495,28 +496,27 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     echo "brain: the search returned something other than an fm-recall.v1 document; the brief carries the retrieval instruction only" >&2
     return 0
   }
-  # D4: the nearest prior work, preferring the first row this home can name as
-  # one of its own task records. Ungated, advisory, and never in the brief. The
-  # record is looked up under the brain's own home, the same place the wrapper
-  # reads provenance from, rather than under a relocated brief directory.
-  IFS=$'\t' read -r citation title kind id state <<EOF
-$(printf '%s' "$doc" | jq -r '
-    (.results // []) as $r
-    | (([ $r[] | select(.source_kind == "task" and (.source_id | type) == "string") ] | first) // ($r | first) // empty)
-    | [ (.citation // .slug // ""), (.title // "(untitled)"), (.source_kind // ""), (.source_id // ""), (.source_state // "unknown") ]
+  # D4: the nearest prior work is the first ranked task row whose completed
+  # report this home can read. Ungated, advisory, and never in the brief. Reports
+  # are looked up under the brain's own home, the same place the wrapper reads
+  # provenance from, rather than under a relocated brief directory.
+  while IFS=$'\t' read -r candidate_citation candidate_title candidate_id candidate_state; do
+    report="$FM_HOME/data/$candidate_id/report.md"
+    [ -f "$report" ] && [ -r "$report" ] || continue
+    citation=$candidate_citation
+    title=$candidate_title
+    id=$candidate_id
+    state=$candidate_state
+    break
+  done < <(printf '%s' "$doc" | jq -r '
+    .results[]
+    | select(.source_kind == "task" and (.source_id | type) == "string" and .source_id != "")
+    | [ (.citation // .slug // ""), (.title // "(untitled)"), .source_id, (.source_state // "unknown") ]
     | @tsv' 2>/dev/null)
-EOF
-  if [ -n "$citation" ]; then
-    if [ "$kind" = task ] && [ -n "$id" ] && [ -f "$FM_HOME/data/$id/report.md" ]; then
-      where="report $FM_HOME/data/$id/report.md"
-    elif [ "$kind" = task ] && [ -n "$id" ] && [ -d "$FM_HOME/data/$id" ]; then
-      where="record $FM_HOME/data/$id"
-    elif [ "$kind" = task ] && [ -n "$id" ]; then
-      where="no local record for task $id"
-    else
-      where="not a task record"
-    fi
-    BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\" $citation; live source $state; $where"
+  if [ -n "$id" ]; then
+    BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
+  elif printf '%s' "$doc" | jq -e '(.results | length) > 0' >/dev/null 2>&1; then
+    BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
   fi
   # D1: the embed, gated on the answer contract being observed in this document.
   printf '%s' "$doc" | jq -e '
