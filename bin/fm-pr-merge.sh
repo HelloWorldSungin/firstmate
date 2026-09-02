@@ -11,10 +11,12 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
-# Extra forge arguments are limited to merge-method selectors and commit-message
-# inputs because an unbounded passthrough cannot guarantee immediate execution.
-# GitHub's live PR state must also prove that the target branch does not use a
-# merge queue before the merge command runs.
+# Extra forge arguments are limited to merge-method selectors, commit-message
+# inputs, and post-execution branch cleanup because an unbounded passthrough
+# cannot guarantee immediate execution. GitLab rebase selectors are excluded
+# because they can change the source branch before a SHA-bound merge fails.
+# GitHub's live PR state must prove that neither a merge queue nor auto-merge can
+# defer execution before the merge command runs.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -42,11 +44,11 @@
 # Issue verification, closure, or write-back failures warn while returning
 # success, because the already-completed merge must never look retryable.
 #
-# After the forge command, this script confirms the PR is actually merged before
-# reporting it. A queued, pending, or unreadable result is a refusal, leaves the
-# poll armed, and records no landed outcome. bin/fm-merge-outcome-lib.sh owns a
-# confirmed merge's destination, normal-case deduplication, and at-least-once
-# recovery.
+# After an attempted forge mutation, this script confirms the PR is actually
+# merged before reporting it. A queued or pending result is a refusal, while an
+# unreadable result is actionable; each leaves the poll armed and records no
+# landed outcome. bin/fm-merge-outcome-lib.sh owns a confirmed merge's
+# destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]

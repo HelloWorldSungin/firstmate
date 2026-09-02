@@ -208,7 +208,8 @@ No armed watch is lost by upgrading.
 
 ## Merging a merge request
 
-`bin/fm-pr-merge.sh` now merges a GitLab merge request through the same recording and the same guards a GitHub pull request gets.
+The current guarded-merge contract for both forges is owned by [architecture.md](architecture.md#delivery-modes-are-explicit-per-task).
+The evidence below verifies GitLab-specific prerequisites and live merge-state fields; `tests/fm-pr-merge.test.sh` pins the complete current orchestration.
 Every run below used a throwaway `FM_HOME`, so no live task record was touched, and a `glab` wrapper that refused any `merge` subcommand outright, so no merge could reach the forge even if a check were wrong.
 That wrapper is why the open fixture merge request could be used as evidence at all: it is `mergeable` with discussions resolved, so the pipeline conditions are the only thing between it and a real merge.
 
@@ -231,21 +232,7 @@ Neither refusal armed a poll or recorded a `pr=`, so a missing tool leaves no ha
 The merge path cannot do the same: `detailed_merge_status`, `has_conflicts`, `blocking_discussions_resolved`, and the head pipeline appear only in glab's JSON.
 The poll's silence on a missing tool is safe because silence means "not merged yet"; a merge cannot be silent about it, so the requirement is reported rather than assumed.
 
-The merged half of the fixture is refused, and every failing condition is listed rather than just the first:
-
-```
-$ fm-pr-merge.sh e1 https://gitlab.com/KarotKris/gitlab-merge-watch-fixture/-/merge_requests/1
-armed: state/e1.check.sh
-error: refusing to merge https://gitlab.com/KarotKris/gitlab-merge-watch-fixture/-/merge_requests/1
-  - state is "merged", not open
-  - detailed_merge_status is "not_open", not mergeable
-  - the head pipeline status is "none", not success
-  - the head pipeline ran at "none", not at the current head 33762fcf6777c8d993220d25fb541e56c48081b9
-$ echo $?
-1
-```
-
-The open half is `mergeable`, conflict-free, and has its discussions resolved, so only the pipeline conditions refuse it.
+The open fixture is `mergeable`, conflict-free, and has its discussions resolved, so only the pipeline conditions refuse it.
 The fixture runs no CI, so its `head_pipeline` is `null`, which is reported as `none` rather than treated as nothing to check:
 
 ```
@@ -261,7 +248,7 @@ $ echo $?
 A project that runs no pipeline at all therefore cannot merge through this path.
 That is the intended reading of the requirement rather than an oversight: a successful pipeline at the head is a condition, and "there is no pipeline" does not satisfy it.
 
-Both refusals came after `pr=` was recorded and the merge poll was armed, exactly as a failing `gh-axi pr merge` does on the GitHub side, so a refusal still leaves the audit trail and the watch in place.
+This refusal came after `pr=` was recorded and the merge poll was armed, so it still leaves the audit trail and the watch in place.
 
 A recorded `pr_head=` that no longer matches the live head is reported, and the live head is what gets verified.
 The stale value below was written into the task record by hand, because a GitLab task never records one on its own:
