@@ -797,12 +797,17 @@ run_autoarm() {  # <dir> <stderr-file>
 }
 
 # The ledger the synchronous guard reads, plus the two markers that bound a
-# failure episode. The owner pid and the stamp are the only fields two separate
-# runs cannot share, so those two are normalized and everything else - the epoch
-# sequence, the recorded outcome, and the presence of each marker - has to match.
+# failure episode. Line 1's owner pid and stamp and line 2's claim identity are
+# the only fields two separate runs cannot share - the identity records the
+# claiming process's own start time and its home-scoped command line - so those
+# three are normalized and everything else, the epoch sequence, the recorded
+# outcome, and the presence of each marker, has to match. Normalizing the
+# identity here would hide a claim that recorded none, so the caller asserts the
+# line is present before comparing.
 autoarm_ledger() {  # <dir>
   local marker
-  sed -e 's/owner_pid=[0-9]*/owner_pid=PID/' -e 's/updated_at=[0-9]*/updated_at=AT/' \
+  sed -e '1s/owner_pid=[0-9]*/owner_pid=PID/' -e '1s/updated_at=[0-9]*/updated_at=AT/' \
+    -e '2s/^..*$/identity=RECORDED/' \
     "$1/state/.claude-autoarm-epoch" 2>/dev/null || printf 'epoch absent\n'
   for marker in .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed; do
     if [ -e "$1/state/$marker" ]; then printf '%s present\n' "$marker"
@@ -811,7 +816,7 @@ autoarm_ledger() {  # <dir>
 }
 
 test_instrumentation_cannot_change_what_the_stop_autoarm_decides() {
-  local root fakebin bare with bare_err with_err bare_code with_code emit_code kind
+  local root fakebin bare with bare_err with_err bare_code with_code emit_code kind home
   root=$(make_case autoarm)
   fakebin=$(fm_fakebin "$root/fake")
   ln -sf /bin/bash "$fakebin/claude"
@@ -845,6 +850,13 @@ test_instrumentation_cannot_change_what_the_stop_autoarm_decides() {
       || fail "the $kind-close auto-arm exited $bare_code alone and $with_code beside the emitter"
     diff <(sed "s|$bare|PRIMARY|g" "$bare_err") <(sed "s|$with|PRIMARY|g" "$with_err") >/dev/null \
       || fail "the $kind-close auto-arm's stderr changed when the emitter ran beside it"
+    # The identity line is normalized away above because two processes cannot
+    # share one; proving it was written keeps that normalization from turning a
+    # claim with no recorded identity into a silently equal comparison.
+    for home in "$bare" "$with"; do
+      [ -n "$(sed -n '2p' "$home/state/.claude-autoarm-epoch" 2>/dev/null)" ] \
+        || fail "the $kind-close auto-arm recorded no claim identity in $home, so the ledger comparison would be vacuous"
+    done
     [ "$(autoarm_ledger "$bare")" = "$(autoarm_ledger "$with")" ] \
       || fail "the $kind-close auto-arm's ledger changed when the emitter ran beside it"
   done

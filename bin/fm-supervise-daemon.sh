@@ -45,18 +45,21 @@
 #     only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - either a
-#     paused: external wait or a verified captain-held transfer - instead
-#     gets its own longer, self-widening pause re-surface recheck (housekeeping
-#     step 2b below), never a wedge escalation. One further hold applies at the
-#     escalation point itself: a crew whose validation run is demonstrably
-#     PROGRESSING (bin/fm-run-progress.sh, via the shared crew_wedge_progress
-#     classification) restarts its clock rather than alarming, because such a
-#     crew is quiet by design. That hold needs positive evidence of progress - a
-#     run that is absent, parked, stranded, or unreadable, or an endpoint whose
-#     agent is confidently dead, escalates exactly as before - and consecutive
-#     holds are capped (RUN_PROGRESS_HOLD_MAX_DEFAULT), because run progress is
-#     evidence about the RUN and not about the WORKER, so a moving pipeline may
-#     delay an alarm but never silence it indefinitely.
+#     paused: external wait or a verified captain-held transfer, per
+#     fm-classify-lib.sh's combined predicate - instead gets its own longer,
+#     self-widening pause re-surface recheck (housekeeping step 2b below),
+#     never a wedge escalation, whether its pane reads idle or busy; only a
+#     status append that stops declaring the wait ends that routing. One
+#     further hold applies at the escalation point itself: a crew whose
+#     validation run is demonstrably PROGRESSING (bin/fm-run-progress.sh, via
+#     the shared crew_wedge_progress classification) restarts its clock rather
+#     than alarming, because such a crew is quiet by design. That hold needs
+#     positive evidence of progress - a run that is absent, parked, stranded,
+#     or unreadable, or an endpoint whose agent is confidently dead, escalates
+#     exactly as before - and consecutive holds are capped
+#     (RUN_PROGRESS_HOLD_MAX_DEFAULT), because run progress is evidence about
+#     the RUN and not about the WORKER, so a moving pipeline may delay an
+#     alarm but never silence it indefinitely.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -100,9 +103,10 @@
 #                                   kinds.
 #          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
 #                                   as a possible wedge (default 240)
-#          FM_PAUSE_RESURFACE_SECS  base idle seconds before a declared wait
-#                                   (external or captain-held) re-surfaces as a
-#                                   recheck (default 3600)
+#          FM_PAUSE_RESURFACE_SECS  base seconds a declared wait (external or
+#                                   captain-held) stays declared, idle or busy,
+#                                   before it re-surfaces as a recheck
+#                                   (default 3600)
 #          FM_PAUSE_RESURFACE_MAX_STREAK
 #                                   doublings of that window an UNCHANGED wait
 #                                   may earn before the cadence stops widening
@@ -489,19 +493,20 @@ pause_streak_path() {  # <task-key> <state>
   printf '%s/.subsuper-pausestreak-%s' "$2" "$1"
 }
 
-# Pause marker: state/.subsuper-paused-<key> holds the epoch a declared wait was
-# first observed idle. Housekeeping ages it against pause_resurface_window (much
-# longer than a wedge) and re-surfaces the pause once per window. Recording is
-# create-if-absent so the epoch measures from when the HOLD began, immune to
-# everything that churns while the hold stands: a churny idle pane (many distinct
-# stale hashes map to one marker) and, just as deliberately, a churny paused
-# REASON. In away mode a rewritten paused line is self-handled as a routine
-# signal, so this recheck is the only thing that surfaces the hold at all, and a
-# crew that rewrote its reason each poll would never be rechecked if that restarted
-# the clock. A changed wait may reset the streak, and with it the WIDTH of the
-# next window (pause_streak_sync below), but never this epoch. The marker still
-# dies with the hold on the transitions that own it: the crew resuming, the pause
-# clearing, pause_marker_remove, clear_pause_tracking.
+# Pause marker: state/.subsuper-paused-<key> holds the epoch a declared wait (a
+# paused: external wait or a verified captain-held transfer) was first observed
+# declared, whether its pane read idle or busy. Housekeeping ages it against
+# pause_resurface_window (much longer than a wedge) and re-surfaces the pause once
+# per window. Recording is create-if-absent so the epoch measures from when the
+# HOLD began, immune to everything that churns while the hold stands: a churny
+# pane (many distinct stale hashes map to one marker) and, just as deliberately,
+# a churny paused REASON. In away mode a rewritten paused line is self-handled as
+# a routine signal, so this recheck is the only thing that surfaces the hold at
+# all, and a crew that rewrote its reason each poll would never be rechecked if
+# that restarted the clock. A changed wait may reset the streak, and with it the
+# WIDTH of the next window (pause_streak_sync below), but never this epoch. The
+# marker still dies with the hold on the transitions that own it: the crew
+# resuming, the pause clearing, pause_marker_remove, clear_pause_tracking.
 pause_marker_record() {  # <window> <state> - create if absent
   local win=$1 state=$2 task key marker
   task=$(window_to_task "$win" "$state")
@@ -1031,9 +1036,9 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
 #  2b) pause re-surface: for each declared-wait marker past its own re-surface
 #     window (pause_resurface_window, which widens while the wait is unchanged),
-#     re-peek; busy/gone -> clear; still idle + still declaring the wait -> escalate
-#     a recheck digest naming which human the wait is on, and restart the window
-#     (repeating bounded re-surface, never a wedge).
+#     re-peek; gone -> clear; still declaring the wait, on an idle OR a busy pane
+#     -> escalate a recheck digest naming which human the wait is on, and
+#     restart the window (repeating bounded re-surface, never a wedge).
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
@@ -1134,18 +1139,29 @@ housekeeping() {  # <state>
     esac
   done
 
-  # (2b) pause re-surface recheck. A declared wait idles by design,
-  # so it is rechecked on a much longer cadence than a wedge (its re-surface window)
-  # and never escalated as one - but it MUST re-surface, so a forgotten pause cannot
-  # rot invisibly. Past the window: busy (resumed) or gone -> drop; still idle and
-  # still declaring the pause -> escalate a recheck digest and reset the marker so
-  # the window repeats. Each recheck that finds the same wait unchanged widens the
-  # next window through the shared pause_resurface_window owner, so a long healthy
-  # wait costs progressively less here exactly as it does in the watcher. The
-  # streak is reconciled against the wait actually standing now before it is
-  # spent, so a wait that changed is measured at the base width rather than at a
-  # width some earlier wait earned; the marker epoch above is untouched by that,
-  # so the schedule stays anchored to when the hold began.
+  # (2b) pause re-surface recheck. A declared wait is waiting, not wedged
+  # (fm-classify-lib.sh's status_is_paused_or_captain_held owns which
+  # declarations qualify), so it is rechecked on a much longer cadence than a
+  # wedge (its own re-surface window) and never escalated as one - but it MUST
+  # re-surface, so neither a forgotten pause nor a forgotten captain hold can
+  # rot invisibly. Past the window: gone -> drop; still declaring the wait ->
+  # escalate a recheck digest and restart the marker so the window repeats. The
+  # digest names WHICH human the wait is on, because the captain is the one
+  # reading it: an external dependency for a paused: declaration, and the
+  # captain themself for a verified hold transfer.
+  # Pane busy state does NOT end the wait. A declared wait can legitimately hold
+  # a pane busy - a worker parked on a long foreground call it keeps live for as
+  # long as the wait lasts - so reading busy as "the crew resumed" retires the
+  # window of exactly the declaration that needs it. The crew's own latest status
+  # line is the authority, and the loop head above already drops the marker the
+  # moment that line stops declaring the wait.
+  # Each recheck that finds the same wait unchanged widens the next window
+  # through the shared pause_resurface_window owner, so a long healthy wait costs
+  # progressively less here exactly as it does in the watcher. The streak is
+  # reconciled against the wait actually standing now before it is spent, so a
+  # wait that changed is measured at the base width rather than at a width some
+  # earlier wait earned; the marker epoch above is untouched by that, so the
+  # schedule stays anchored to when the hold began.
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
     key="${marker##*.subsuper-paused-}"
@@ -1164,9 +1180,14 @@ housekeeping() {  # <state>
     pause_streak_sync "$streak_file" "$last" || true
     pause_secs=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
     [ "$age" -ge "$pause_secs" ] || continue
+    # Endpoint-readability probe only: exit code 2 means the capture failed, so the
+    # endpoint is gone and there is nothing left to re-surface. The busy/idle verdict
+    # is deliberately discarded here. Do NOT reinstate a `0)` arm dropping the marker
+    # on busy: migrate_watcher_pause_markers recreates it with a fresh timestamp on
+    # the very next tick while the declaration still stands, so the window would
+    # restart forever and the wait would never mature into its one recheck.
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      0) rm -f "$marker" "$streak_file" ;;
       2) rm -f "$marker" "$streak_file" ;;
       *)
         last=$(last_status_line "$state/$task.status")
@@ -1339,9 +1360,22 @@ handle_wake() {  # <reason> <state>
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               decision=$(classify_stale "$arg" "$state")
-              case "$stale_detail" in
-                idle\ *s,\ possible\ wedge,\ escalation\ *)
-                  decision="escalate|${reason#stale: }" ;;
+              # An enriched wedge reason carries the watcher's own escalation count
+              # and its "do not re-absorb on the run-step/pane state alone" demand,
+              # so it outranks this daemon's cheaper status-log absorption - EXCEPT
+              # under a current declared wait. A `pause` verdict is not run-step or
+              # pane state at all: it is the crew's own declaration that this pane
+              # waits by design, which is the one question the wedge timer cannot
+              # answer for itself. Overriding it escalated healthy declared waits
+              # once per STALE_ESCALATE_SECS for as long as the wait lasted.
+              # Housekeeping (2b) then owns the re-surface, so the wait is still
+              # bounded - by one recheck per PAUSE_RESURFACE_SECS instead.
+              case "${decision%%|*}" in
+                pause) : ;;
+                *) case "$stale_detail" in
+                     idle\ *s,\ possible\ wedge,\ escalation\ *)
+                       decision="escalate|${reason#stale: }" ;;
+                   esac ;;
               esac ;;
     check:*)  decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
