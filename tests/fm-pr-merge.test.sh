@@ -45,8 +45,8 @@
 #   (dd) a successful merge in a main home leaves a durable wake naming the PR
 #   (ee) a secondmate home with no usable parent binding says so loudly instead
 #        of merging in silence
-#   (ff) an accepted queued GitHub merge emits nothing and leaves its poll armed
-#   (gg) an accepted queued GitLab merge emits nothing and leaves its poll armed
+#   (ff) a post-command queued GitHub merge is a refusal and leaves its poll armed
+#   (gg) a post-command queued GitLab merge is a refusal and leaves its poll armed
 #   (hh) an uncommitted marker retry never loses the durable outcome
 #   (ii) distinct merged PRs for a reused task each survive queue deduplication
 #   (jj) a stale PR that omits a file added to the current default branch is
@@ -55,6 +55,8 @@
 #        operator to restore the inputs instead of offering a bypass
 #   (ll) deferred merge flags are refused before recording or comparison so the
 #        guarded base cannot change before the forge executes the merge
+#   (mm) a GitHub merge queue or unreadable immediacy state refuses before the
+#        forge call because neither can prove immediate execution
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -419,8 +421,54 @@ glab_merge_line() {
   grep -F ' mr merge ' "$1" || true
 }
 
+ensure_gh_state_mock() {
+  local case_dir=$1
+  [ -x "$case_dir/fakebin/gh" ] || return 0
+  [ ! -e "$case_dir/fakebin/gh-command" ] || return 0
+  mv "$case_dir/fakebin/gh" "$case_dir/fakebin/gh-command"
+  cat >"$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+delegate=${0%/*}/gh-command
+case "${1:-} ${2:-}" in
+  "api graphql")
+    printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
+    case_dir=${FM_TEST_WT%/wt}
+    number=
+    for arg in "$@"; do
+      case "$arg" in number=*) number=${arg#number=} ;; esac
+    done
+    [ -n "$number" ] || exit 2
+    if [ -e "$case_dir/github-merge-called-$number" ]; then
+      [ -z "${FM_TEST_GH_POST_STATE_UNAVAILABLE:-}" ] || exit 1
+      state=${FM_TEST_GH_POST_STATE:-MERGED}
+      queue_enabled=${FM_TEST_GH_POST_QUEUE_ENABLED:-false}
+      in_queue=${FM_TEST_GH_POST_IN_QUEUE:-false}
+      auto_merge=${FM_TEST_GH_POST_AUTO_MERGE:-none}
+      queue_entry=${FM_TEST_GH_POST_QUEUE_ENTRY:-none}
+    else
+      [ -z "${FM_TEST_GH_STATE_UNAVAILABLE:-}" ] || exit 1
+      state=${FM_TEST_GH_PRE_STATE:-OPEN}
+      queue_enabled=${FM_TEST_GH_QUEUE_ENABLED:-false}
+      in_queue=${FM_TEST_GH_IN_QUEUE:-false}
+      auto_merge=${FM_TEST_GH_AUTO_MERGE:-none}
+      queue_entry=${FM_TEST_GH_QUEUE_ENTRY:-none}
+    fi
+    printf 'state=%s\nbase_ref=%s\nqueue_enabled=%s\nin_queue=%s\nauto_merge=%s\nqueue_entry=%s\n' \
+      "$state" "${FM_TEST_GH_BASE_REF:-main}" "$queue_enabled" "$in_queue" "$auto_merge" "$queue_entry"
+    ;;
+  "pr merge")
+    "$delegate" "$@" || exit $?
+    : >"${FM_TEST_WT%/wt}/github-merge-called-${3:?missing pull request number}"
+    ;;
+  *) exec "$delegate" "$@" ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
 run_pr_merge() {
   local case_dir=$1 url number source_ref rc canonical remote rest; shift
+  ensure_gh_state_mock "$case_dir"
   url=${2:-}
   case "$url" in
     https://github.com/*/pull/*)
@@ -830,10 +878,10 @@ test_deferred_merge_args_refuse_before_recording_or_comparison() {
     set -e
 
     expect_code 1 "$rc" "deferred-$name: fm-pr-merge should refuse $flag"
-    assert_grep 'this path guarantees the base was compared at merge time' "$case_dir/stderr" \
-      "deferred-$name: refusal did not explain the merge-time comparison guarantee"
-    assert_grep 'deferred execution breaks that guarantee' "$case_dir/stderr" \
-      "deferred-$name: refusal did not explain why the flag is unsafe"
+    assert_grep 'auto-merge requested by' "$case_dir/stderr" \
+      "deferred-$name: refusal did not name the provider's deferring mechanism"
+    assert_grep 'would defer execution after the guarded base comparison' "$case_dir/stderr" \
+      "deferred-$name: refusal did not explain why deferred execution is unsafe"
     assert_grep 'merge when the PR is actually ready' "$case_dir/stderr" \
       "deferred-$name: refusal did not tell the caller when to merge"
     assert_no_grep "pr=$url" "$case_dir/state/task-x1.meta" \
@@ -850,6 +898,44 @@ test_deferred_merge_args_refuse_before_recording_or_comparison() {
     fi
   done
   pass "fm-pr-merge refuses deferred merge flags before recording or comparison"
+}
+
+test_github_immediate_execution_preflight_refuses_queue_and_unknown() {
+  local case_dir name rc expected
+  for name in merge-queue unknown; do
+    case_dir=$(make_case "github-immediate-$name")
+    add_gh_mocks "$case_dir" 9898989898989898989898989898989898989898
+    : >"$case_dir/gh-axi.log"
+    case "$name" in
+      merge-queue)
+        expected='GitHub merge queue on target branch main would defer execution'
+        set +e
+        FM_TEST_GH_QUEUE_ENABLED=true \
+          run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/74 \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        rc=$?
+        set -e
+        ;;
+      unknown)
+        expected='immediate execution state is unknown, and unknown does not prove deferral is absent'
+        set +e
+        FM_TEST_GH_STATE_UNAVAILABLE=1 \
+          run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/74 \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        rc=$?
+        set -e
+        ;;
+    esac
+
+    expect_code 1 "$rc" "github-immediate-$name: unsafe immediacy state should refuse"
+    assert_grep "$expected" "$case_dir/stderr" \
+      "github-immediate-$name: refusal did not name the unsafe state"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" \
+      "github-immediate-$name: the forge merge ran without an immediate-execution guarantee"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "github-immediate-$name: refusal retired the durable merge poll"
+  done
+  pass "fm-pr-merge refuses GitHub merge queues and unknown immediate-execution state"
 }
 
 test_bundled_repo_override_args_refuse_before_recording() {
@@ -1486,7 +1572,7 @@ test_gitlab_url_resolves_and_merges() {
   assert_grep "GITLAB_HOST=$MR_HOST mr view 7 -R $MR_PROJECT_URL -F json" "$case_dir/glab.log" \
     "gitlab-merges: the pre-merge state was not read from the project URL"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes" ] \
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false" ] \
     || fail "gitlab-merges: unexpected merge invocation: '$merge_line'"
   assert_grep "successful pipeline at head $head" "$case_dir/stderr" \
     "gitlab-merges: the verified head was not reported"
@@ -1553,7 +1639,7 @@ test_gitlab_extra_args_forwarded() {
 
   expect_code 0 "$rc" "gitlab-extra-args: merge should succeed"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --remove-source-branch" ] \
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --remove-source-branch" ] \
     || fail "gitlab-extra-args: extra glab flags were not forwarded: '$merge_line'"
   pass "fm-pr-merge forwards extra flags to glab mr merge after the -- separator"
 }
@@ -1943,23 +2029,30 @@ test_gitlab_merge_reports_upward() {
   pass "a landed GitLab merge request is reported upward on the same channel"
 }
 
-test_queued_gitlab_merge_leaves_the_poll_armed() {
-  local case_dir
+test_queued_gitlab_merge_is_refused_and_leaves_the_poll_armed() {
+  local case_dir rc
   case_dir=$(make_gitlab_case queued-gitlab-merge)
   mkdir -p "$case_dir/home"
   : >"$case_dir/glab-stays-open"
 
+  set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$MR_URL" \
-    >"$case_dir/stdout" 2>"$case_dir/stderr" \
-    || fail "queued-gitlab-merge: accepted merge command failed"
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
 
+  expect_code 1 "$rc" "queued-gitlab-merge: a deferred result should refuse"
+  assert_grep 'GitLab left it queued or pending instead of executing immediately' "$case_dir/stderr" \
+    "queued-gitlab-merge: refusal did not name the deferred GitLab result"
+  [ -n "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "queued-gitlab-merge: the fixture never reached the post-command state check"
   assert_absent "$case_dir/state/.wake-queue" \
     "queued-gitlab-merge: a queued merge was reported as landed"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
     || fail "queued-gitlab-merge: the merge poll was not left armed"
   [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] \
     || fail "queued-gitlab-merge: a queued merge was marked as reported"
-  pass "a queued GitLab merge stays silent and leaves confirmation to the armed poll"
+  pass "a queued GitLab merge is refused and leaves its durable poll armed"
 }
 
 test_main_home_merge_leaves_a_durable_wake() {
@@ -1981,25 +2074,33 @@ test_main_home_merge_leaves_a_durable_wake() {
   pass "a merge a main home performs itself leaves one durable wake naming the PR"
 }
 
-test_queued_github_merge_leaves_the_poll_armed() {
-  local case_dir url
+test_queued_github_merge_is_refused_and_leaves_the_poll_armed() {
+  local case_dir rc url
   url=https://github.com/example/repo/pull/66
   case_dir=$(make_home_case queued-github-merge)
   add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
   : >"$case_dir/gh-axi.log"
 
-  FM_TEST_GH_MERGE_STATE=open FM_TEST_HOME="$case_dir/home" \
+  set +e
+  FM_TEST_GH_POST_STATE=OPEN FM_TEST_GH_POST_IN_QUEUE=true \
+    FM_TEST_GH_POST_QUEUE_ENTRY=QUEUED FM_TEST_HOME="$case_dir/home" \
     run_pr_merge "$case_dir" task-x1 "$url" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr" \
-    || fail "queued-github-merge: accepted merge command failed"
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
 
+  expect_code 1 "$rc" "queued-github-merge: a deferred result should refuse"
+  assert_grep 'GitHub queued it for deferred execution on target branch main' "$case_dir/stderr" \
+    "queued-github-merge: refusal did not name the GitHub merge queue"
+  assert_grep 'pr merge 66 ' "$case_dir/gh.log" \
+    "queued-github-merge: the fixture never reached the post-command state check"
   assert_absent "$case_dir/state/.wake-queue" \
     "queued-github-merge: a queued merge was reported as landed"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
     || fail "queued-github-merge: the merge poll was not left armed"
   [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] \
     || fail "queued-github-merge: a queued merge was marked as reported"
-  pass "a queued GitHub merge stays silent and leaves confirmation to the armed poll"
+  pass "a queued GitHub merge is refused and leaves its durable poll armed"
 }
 
 test_distinct_merged_prs_keep_distinct_wakes() {
@@ -2118,6 +2219,7 @@ test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
 test_deferred_merge_args_refuse_before_recording_or_comparison
+test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_bundled_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
@@ -2157,11 +2259,11 @@ test_github_head_override_args_refuse_before_recording
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
 test_gitlab_merge_reports_upward
-test_queued_gitlab_merge_leaves_the_poll_armed
+test_queued_gitlab_merge_is_refused_and_leaves_the_poll_armed
 test_failed_merge_reports_nothing
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
-test_queued_github_merge_leaves_the_poll_armed
+test_queued_github_merge_is_refused_and_leaves_the_poll_armed
 test_distinct_merged_prs_keep_distinct_wakes
 test_uncommitted_marker_retry_is_never_silent
 test_secondmate_without_parent_binding_is_loud

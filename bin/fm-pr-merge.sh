@@ -12,7 +12,8 @@
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
 # Immediate-execution GitHub args are forwarded unchanged, including an
-# explicit --merge.
+# explicit --merge. GitHub's live PR state must prove that the target branch
+# does not use a merge queue before the merge command runs.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -44,9 +45,10 @@
 # success, because the already-completed merge must never look retryable.
 #
 # After the forge command, this script confirms the PR is actually merged before
-# reporting it; an auto-merge-queued or unconfirmed request leaves the poll armed
-# and records no landed outcome. bin/fm-merge-outcome-lib.sh owns a confirmed
-# merge's destination, normal-case deduplication, and at-least-once recovery.
+# reporting it. A queued, pending, or unreadable result is a refusal, leaves the
+# poll armed, and records no landed outcome. bin/fm-merge-outcome-lib.sh owns a
+# confirmed merge's destination, normal-case deduplication, and at-least-once
+# recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
@@ -139,27 +141,33 @@ reject_head_overrides() {
   done
 }
 
-reject_deferred_merge_args() {
-  local arg normalized
-  # This is a denylist: it cannot see a deferring flag invented later, so every new deferring forge flag must be added here.
+require_immediate_merge_arguments() {
+  local arg mechanism normalized
+  mechanism=
   for arg in "$@"; do
     normalized=${arg,,}
-    case "$normalized" in
-      --auto|--auto=true|--auto=1|--auto=t|\
-      --auto-merge|--auto-merge=true|--auto-merge=1|--auto-merge=t|\
-      --when-pipeline-succeeds|--when-pipeline-succeeds=true|\
-      --when-pipeline-succeeds=1|--when-pipeline-succeeds=t)
-        echo "error: deferred merge arguments are not allowed because this path guarantees the base was compared at merge time, and deferred execution breaks that guarantee" >&2
-        echo "action: merge when the PR is actually ready so the guarded comparison runs immediately before merge" >&2
-        return 1
+    case "$PROVIDER:$normalized" in
+      github:--auto|github:--auto=true|github:--auto=1|github:--auto=t)
+        mechanism="GitHub auto-merge requested by $arg"
+        ;;
+      gitlab:--auto-merge|gitlab:--auto-merge=true|gitlab:--auto-merge=1|gitlab:--auto-merge=t|\
+      gitlab:--when-pipeline-succeeds|gitlab:--when-pipeline-succeeds=true|\
+      gitlab:--when-pipeline-succeeds=1|gitlab:--when-pipeline-succeeds=t)
+        mechanism="GitLab auto-merge requested by $arg"
         ;;
     esac
+    [ -z "$mechanism" ] || break
   done
+  [ -z "$mechanism" ] && return 0
+  printf 'error: refusing to merge %s because %s would defer execution after the guarded base comparison\n' \
+    "$URL" "$mechanism" >&2
+  echo "action: merge when the PR is actually ready so the guarded comparison runs immediately before merge" >&2
+  return 1
 }
 
 reject_repo_overrides "$@" || exit 1
 reject_head_overrides "$@" || exit 1
-reject_deferred_merge_args "$@" || exit 1
+require_immediate_merge_arguments "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -313,44 +321,150 @@ FIELDS
   FM_PR_MERGE_HEAD=$live_head
 }
 
+FM_GITHUB_STATE=
+FM_GITHUB_BASE_REF=
+FM_GITHUB_QUEUE_ENABLED=
+FM_GITHUB_IN_QUEUE=
+FM_GITHUB_AUTO_MERGE=
+FM_GITHUB_QUEUE_ENTRY=
+github_read_merge_state() {
+  local fields line
+  local total=0 named=0
+  FM_GITHUB_STATE=
+  FM_GITHUB_BASE_REF=
+  FM_GITHUB_QUEUE_ENABLED=
+  FM_GITHUB_IN_QUEUE=
+  FM_GITHUB_AUTO_MERGE=
+  FM_GITHUB_QUEUE_ENTRY=
+  if ! fields=$(GH_PROMPT_DISABLED=1 gh api graphql --hostname "$FM_PR_HOST" \
+    -f owner="$PR_OWNER" -f name="$PR_REPO" -F number="$PR_NUMBER" \
+    -f query='query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          state
+          baseRefName
+          isMergeQueueEnabled
+          isInMergeQueue
+          autoMergeRequest { enabledAt }
+          mergeQueueEntry { state }
+        }
+      }
+    }' --jq '
+      .data.repository.pullRequest |
+      if type != "object" then error("pull request state is unavailable") else
+        "state=" + ((.state // "") | tostring),
+        "base_ref=" + ((.baseRefName // "") | tostring),
+        "queue_enabled=" + (if has("isMergeQueueEnabled") then (.isMergeQueueEnabled | tostring) else "" end),
+        "in_queue=" + (if has("isInMergeQueue") then (.isInMergeQueue | tostring) else "" end),
+        "auto_merge=" + (if has("autoMergeRequest") then (if .autoMergeRequest == null then "none" else "active" end) else "unknown" end),
+        "queue_entry=" + (if has("mergeQueueEntry") then (if .mergeQueueEntry == null then "none" else ((.mergeQueueEntry.state // "unknown") | tostring) end) else "unknown" end)
+      end' 2>/dev/null); then
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) FM_GITHUB_STATE=${line#state=} ;;
+      base_ref=*) FM_GITHUB_BASE_REF=${line#base_ref=} ;;
+      queue_enabled=*) FM_GITHUB_QUEUE_ENABLED=${line#queue_enabled=} ;;
+      in_queue=*) FM_GITHUB_IN_QUEUE=${line#in_queue=} ;;
+      auto_merge=*) FM_GITHUB_AUTO_MERGE=${line#auto_merge=} ;;
+      queue_entry=*) FM_GITHUB_QUEUE_ENTRY=${line#queue_entry=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  [ "$total" -eq 6 ] && [ "$named" -eq 6 ] || return 1
+  case "$FM_GITHUB_STATE" in OPEN|CLOSED|MERGED) ;; *) return 1 ;; esac
+  [ -n "$FM_GITHUB_BASE_REF" ] || return 1
+  case "$FM_GITHUB_QUEUE_ENABLED:$FM_GITHUB_IN_QUEUE" in
+    true:true|true:false|false:true|false:false) ;;
+    *) return 1 ;;
+  esac
+  case "$FM_GITHUB_AUTO_MERGE" in none|active) ;; *) return 1 ;; esac
+  case "$FM_GITHUB_QUEUE_ENTRY" in
+    none|AWAITING_CHECKS|LOCKED|MERGEABLE|QUEUED|UNMERGEABLE) ;;
+    *) return 1 ;;
+  esac
+}
+
+github_require_immediate_execution() {
+  if ! github_read_merge_state; then
+    printf 'error: refusing to merge %s because GitHub immediate execution state is unknown, and unknown does not prove deferral is absent\n' \
+      "$URL" >&2
+    return 1
+  fi
+  case "$FM_GITHUB_STATE" in
+    MERGED) return 3 ;;
+    CLOSED)
+      printf 'error: refusing to merge %s because GitHub reports the pull request is closed\n' "$URL" >&2
+      return 1
+      ;;
+  esac
+  if [ "$FM_GITHUB_QUEUE_ENABLED" = true ] || [ "$FM_GITHUB_IN_QUEUE" = true ] \
+    || [ "$FM_GITHUB_QUEUE_ENTRY" != none ]; then
+    printf 'error: refusing to merge %s because the GitHub merge queue on target branch %s would defer execution\n' \
+      "$URL" "$FM_GITHUB_BASE_REF" >&2
+    return 1
+  fi
+  if [ "$FM_GITHUB_AUTO_MERGE" = active ]; then
+    printf 'error: refusing to merge %s because GitHub auto-merge is active and would defer execution\n' \
+      "$URL" >&2
+    return 1
+  fi
+}
+
 github_confirm_merged() {
-  local output state
-  if ! output=$(gh-axi pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" 2>/dev/null); then
-    printf 'actionable: GitHub accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+  if ! github_read_merge_state; then
+    printf 'error: refusing to treat %s as merged because its post-command GitHub state is unknown; the merge poll remains armed\n' \
       "$URL" >&2
-    return 2
+    return 1
   fi
-  if ! state=$(printf '%s\n' "$output" | awk '
-    $1 == "state:" { count++; value=$2 }
-    END { if (count == 1 && value != "") print value; else exit 1 }
-  '); then
-    printf 'actionable: GitHub accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+  [ "$FM_GITHUB_STATE" = MERGED ] && return 0
+  if [ "$FM_GITHUB_IN_QUEUE" = true ] || [ "$FM_GITHUB_QUEUE_ENTRY" != none ]; then
+    printf 'error: refusing to treat %s as merged because GitHub queued it for deferred execution on target branch %s; the merge poll remains armed\n' \
+      "$URL" "$FM_GITHUB_BASE_REF" >&2
+    return 1
+  fi
+  if [ "$FM_GITHUB_AUTO_MERGE" = active ]; then
+    printf 'error: refusing to treat %s as merged because GitHub left auto-merge pending; the merge poll remains armed\n' \
       "$URL" >&2
-    return 2
+    return 1
   fi
-  [ "$state" = merged ]
+  printf 'error: refusing to treat %s as merged because GitHub left it pending instead of executing immediately; the merge poll remains armed\n' \
+    "$URL" >&2
+  return 1
 }
 
 gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+    printf 'error: refusing to treat %s as merged because its post-command GitLab state is unknown; the merge poll remains armed\n' \
       "$URL" >&2
-    return 2
+    return 1
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+    printf 'error: refusing to treat %s as merged because its post-command GitLab state is unknown; the merge poll remains armed\n' \
       "$URL" >&2
-    return 2
+    return 1
   fi
-  [ "$state" = merged ]
+  if [ "$state" != merged ]; then
+    printf 'error: refusing to treat %s as merged because GitLab left it queued or pending instead of executing immediately; the merge poll remains armed\n' \
+      "$URL" >&2
+    return 1
+  fi
 }
 
 case "$PROVIDER" in
   github)
+    github_preflight_rc=0
+    github_require_immediate_execution || github_preflight_rc=$?
+    case "$github_preflight_rc" in 0|3) ;; *) exit 1 ;; esac
     merge_args=()
     if ! caller_has_merge_method "$@"; then
       merge_args=(--squash)
@@ -370,12 +484,12 @@ case "$PROVIDER" in
         *) github_args+=("$1"); shift ;;
       esac
     done
-    GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      --match-head-commit "$FM_PR_INSPECTED_HEAD" \
-      "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
-    github_confirm_rc=0
-    github_confirm_merged || github_confirm_rc=$?
-    [ "$github_confirm_rc" -eq 0 ] || exit 0
+    if [ "$github_preflight_rc" -eq 0 ]; then
+      GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+        --match-head-commit "$FM_PR_INSPECTED_HEAD" \
+        "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
+    fi
+    github_confirm_merged || exit 1
     ;;
   gitlab)
     gitlab_verify_rc=0
@@ -400,10 +514,8 @@ case "$PROVIDER" in
     # skips the interactive confirmation, which no supervised run can answer;
     # the conditions above are what authorize the merge.
     GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
-      --sha "$FM_PR_MERGE_HEAD" --yes "$@"
-    gitlab_confirm_rc=0
-    gitlab_confirm_merged || gitlab_confirm_rc=$?
-    [ "$gitlab_confirm_rc" -eq 0 ] || exit 0
+      --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
+    gitlab_confirm_merged || exit 1
     ;;
   *)
     echo "error: invalid PR merge request" >&2
@@ -412,8 +524,8 @@ case "$PROVIDER" in
 esac
 
 # Reached only after the forge confirmed the merge landed: set -e exits on a
-# refused or failed merge above, and a queued forge merge exits without an
-# outcome while its existing poll remains armed.
+# refused, queued, pending, unreadable, or failed merge above while its existing
+# poll remains armed.
 outcome_rc=0
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self || outcome_rc=$?
 case "$outcome_rc" in
