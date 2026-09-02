@@ -91,7 +91,7 @@ fi
 # Surface stale default-branch content when the PR is recorded, while leaving
 # merge-time enforcement to bin/fm-pr-merge.sh so an offline status refresh does
 # not prevent the durable PR watch from being armed.
-if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$NUMBER"; then
+if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER"; then
   fm_pr_stale_base_report warning "$URL"
 fi
 

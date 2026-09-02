@@ -2,7 +2,7 @@
 # Merge a task's PR or MR after recording pr= and any available pr_head= through
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
 # The full canonical URL is parsed by bin/fm-pr-lib.sh. A GitHub pull request is
-# addressed through gh-axi by the derived owner and repository; a GitLab merge
+# merged through gh with its inspected head required to match; a GitLab merge
 # request is addressed through glab by the project URL rebuilt from the parsed
 # host and path, so any instance works and no host is hardcoded.
 #
@@ -27,7 +27,7 @@
 #
 # Extra args must not include --repo or -R in any form, including a bundled
 # short-option cluster such as -yR, because the repository comes only from the
-# URL, nor --sha on GitLab because the head comes only from the live read.
+# URL, nor a head override because the head comes only from the live read.
 # Every provider also fetches the PR head and origin's current default branch
 # immediately before merging.
 # The merge is refused when their comparison would discard changes from paths
@@ -130,7 +130,7 @@ reject_head_overrides() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --sha|--sha=*)
+      --sha|--sha=*|--match-head-commit|--match-head-commit=*)
         echo "error: extra merge arguments must not override the head commit" >&2
         return 1
         ;;
@@ -139,7 +139,7 @@ reject_head_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
-[ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
+reject_head_overrides "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -179,15 +179,17 @@ grep -qxF "pr=$URL" "$META" || {
 # Re-read both tips immediately before the guarded merge instead of trusting
 # the earlier recording-time report or the PR's still-green branch-base checks.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
-if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$PR_NUMBER"; then
+if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
   fm_pr_stale_base_report error "$URL"
   exit 1
 fi
+FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
 # returns non-zero after reporting every condition that failed.
 FM_PR_MERGE_HEAD=
+FM_PR_MERGE_LIVE_HEAD=
 gitlab_verify_mergeable() {
   local json fields line
   local total=0 named=0 refusals=''
@@ -248,6 +250,12 @@ FIELDS
   if ! fm_pr_head_valid "$live_head"; then
     echo "error: could not read the GitLab merge request head commit before merging" >&2
     return 1
+  fi
+  if [ "$live_head" != "$FM_PR_INSPECTED_HEAD" ]; then
+    FM_PR_MERGE_LIVE_HEAD=$live_head
+    printf 'notice: GitLab head moved from inspected %s to live %s; re-inspecting the live head\n' \
+      "$FM_PR_INSPECTED_HEAD" "$live_head" >&2
+    return 3
   fi
   # A rebase moves the head and leaves the recorded value behind, so the
   # disagreement is reported and the live head is what gets verified and merged.
@@ -327,13 +335,46 @@ case "$PROVIDER" in
     if ! caller_has_merge_method "$@"; then
       merge_args=(--squash)
     fi
-    gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+    github_args=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --method)
+          [ "$#" -ge 2 ] || { echo "error: merge method value is missing" >&2; exit 1; }
+          github_args+=("--$2")
+          shift 2
+          ;;
+        --method=*)
+          github_args+=("--${1#--method=}")
+          shift
+          ;;
+        *) github_args+=("$1"); shift ;;
+      esac
+    done
+    GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+      --match-head-commit "$FM_PR_INSPECTED_HEAD" \
+      "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
     github_confirm_rc=0
     github_confirm_merged || github_confirm_rc=$?
     [ "$github_confirm_rc" -eq 0 ] || exit 0
     ;;
   gitlab)
-    gitlab_verify_mergeable || exit 1
+    gitlab_verify_rc=0
+    gitlab_verify_mergeable || gitlab_verify_rc=$?
+    if [ "$gitlab_verify_rc" -eq 3 ]; then
+      if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
+        fm_pr_stale_base_report error "$URL"
+        exit 1
+      fi
+      FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
+      FM_PR_MERGE_LIVE_HEAD=
+      gitlab_verify_rc=0
+      gitlab_verify_mergeable || gitlab_verify_rc=$?
+    fi
+    if [ "$gitlab_verify_rc" -eq 3 ]; then
+      echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
+      exit 1
+    fi
+    [ "$gitlab_verify_rc" -eq 0 ] || exit 1
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;

@@ -17,6 +17,9 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+
 FM_PR_PROVIDER=
 FM_PR_URL=
 FM_PR_HOST=
@@ -247,6 +250,65 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
+fm_pr_remote_matches_identity() { # <worktree> <host> <project-path>
+  local wt=${1-} expected_host=${2-} expected_path=${3-}
+  local remote resolved rest remote_host remote_path remote_count
+  remote=$(git -C "$wt" config --get-all remote.origin.url 2>/dev/null) || return 1
+  remote_count=$(printf '%s\n' "$remote" | awk 'END { print NR + 0 }')
+  [ "$remote_count" -eq 1 ] || return 1
+  resolved=$(git -C "$wt" remote get-url origin 2>/dev/null) || return 1
+  [ "$resolved" = "$remote" ] || return 1
+  case "$remote" in
+    https://*)
+      rest=${remote#https://}
+      remote_host=${rest%%/*}
+      [ "$remote_host" != "$rest" ] || return 1
+      remote_path=${rest#*/}
+      case "$remote_host" in *:*|*@*) return 1 ;; esac
+      ;;
+    ssh://*)
+      rest=${remote#ssh://}
+      rest=${rest#*@}
+      remote_host=${rest%%/*}
+      [ "$remote_host" != "$rest" ] || return 1
+      remote_path=${rest#*/}
+      case "$remote_host" in *:*) return 1 ;; esac
+      ;;
+    *@*:*)
+      rest=${remote#*@}
+      remote_host=${rest%%:*}
+      remote_path=${rest#*:}
+      ;;
+    *) return 1 ;;
+  esac
+  remote_path=${remote_path%.git}
+  [ -n "$remote_host" ] && [ -n "$remote_path" ] || return 1
+  [ "$(printf '%s' "$remote_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
+    = "$(printf '%s' "$expected_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ] \
+    && [ "$(printf '%s' "$remote_path" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
+      = "$(printf '%s' "$expected_path" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]
+}
+
+fm_pr_stale_base_remote_git() { # <timeout-seconds> <git-args...>
+  local bound=$1 ssh_command
+  shift
+  ssh_command="${GIT_SSH_COMMAND:-ssh} -oBatchMode=yes -oConnectTimeout=$bound"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false \
+    SSH_ASKPASS_REQUIRE=never GCM_INTERACTIVE=Never GIT_SSH_COMMAND="$ssh_command" \
+    fm_run_timed "$bound" git -c credential.interactive=never "$@"
+}
+
+fm_pr_git_mode_type() { # <raw-git-mode>
+  case "${1-}" in
+    000000) printf 'absent' ;;
+    100*) printf 'regular file' ;;
+    120000) printf 'symbolic link' ;;
+    160000) printf 'submodule' ;;
+    040000) printf 'directory' ;;
+    *) printf 'object' ;;
+  esac
+}
+
 # Compare one freshly fetched PR head with the freshly fetched current default
 # branch and identify paths changed only by the default branch since the common
 # base.
@@ -256,15 +318,18 @@ fm_pr_head_valid() {
 # when the comparison cannot be completed safely.
 # The caller reports the populated FM_PR_STALE_BASE_* fields and decides whether
 # its surface warns or refuses.
-fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
-  local wt=${1-} id=${2-} provider=${3-} number=${4-}
+fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-path> <number>
+  local wt=${1-} id=${2-} provider=${3-} host=${4-} project_path=${5-} number=${6-}
   local source_ref remote_state default_ref default_name
   local token base_ref head_ref base head merge_base paths_file path delta added deleted quoted
+  local raw raw_meta old_mode new_mode old_oid new_oid status old_type new_type detail
+  local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
   local branch_diff_status inspection_failed=0
   FM_PR_STALE_BASE_RESULT=unavailable
   FM_PR_STALE_BASE_DEFAULT=
   FM_PR_STALE_BASE_DETAILS=
   FM_PR_STALE_BASE_REASON=
+  FM_PR_STALE_BASE_HEAD=
 
   if [ -z "$wt" ] || [ ! -d "$wt" ] \
     || ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -275,6 +340,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
     FM_PR_STALE_BASE_REASON="task identity is invalid"
     return 2
   }
+  case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=15 ;; esac
   case "$provider" in
     github) source_ref="refs/pull/$number/head" ;;
     gitlab) source_ref="refs/merge-requests/$number/head" ;;
@@ -284,7 +350,13 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
       ;;
   esac
 
-  if ! remote_state=$(git -C "$wt" ls-remote --symref origin HEAD "$source_ref" 2>/dev/null); then
+  if ! fm_pr_remote_matches_identity "$wt" "$host" "$project_path"; then
+    FM_PR_STALE_BASE_REASON="task worktree origin does not match the PR repository"
+    return 2
+  fi
+
+  if ! remote_state=$(fm_pr_stale_base_remote_git "$probe_timeout" -C "$wt" \
+    ls-remote --symref origin HEAD "$source_ref" 2>/dev/null); then
     FM_PR_STALE_BASE_REASON="origin did not expose its current default branch and PR head"
     return 2
   fi
@@ -306,7 +378,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
   token="$$-${RANDOM:-0}"
   base_ref="refs/fm-pr-stale-base/$token/base"
   head_ref="refs/fm-pr-stale-base/$token/head"
-  if ! git -C "$wt" fetch --quiet --no-tags origin \
+  if ! fm_pr_stale_base_remote_git "$probe_timeout" -C "$wt" fetch --quiet --no-tags origin \
     "+$default_ref:$base_ref" "+$source_ref:$head_ref" 2>/dev/null; then
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
@@ -321,6 +393,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
     FM_PR_STALE_BASE_REASON="fetched default branch or PR head is not a commit"
     return 2
   fi
+  FM_PR_STALE_BASE_HEAD=$head
   merge_base=$(git -C "$wt" merge-base "$base" "$head" 2>/dev/null) || merge_base=
   if ! fm_pr_head_valid "$merge_base"; then
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
@@ -360,35 +433,69 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
       1) continue ;;
       *) inspection_failed=1; break ;;
     esac
-    if ! delta=$(git -C "$wt" diff --numstat --no-renames "$merge_base" "$base" -- "$path") \
-      || [ -z "$delta" ]; then
+    if ! raw=$(git -C "$wt" diff --raw --no-abbrev --no-renames \
+      "$merge_base" "$base" -- "$path") || [ -z "$raw" ]; then
       inspection_failed=1
       break
     fi
-    IFS=$'\t' read -r added deleted _ <<<"$delta"
+    raw_meta=${raw%%$'\t'*}
+    IFS=' ' read -r old_mode new_mode old_oid new_oid status <<<"${raw_meta#:}"
+    case "$status" in A|D|M|T) ;; *) inspection_failed=1; break ;; esac
+    if ! delta=$(git -C "$wt" diff --numstat --no-renames \
+      "$merge_base" "$base" -- "$path"); then
+      inspection_failed=1
+      break
+    fi
+    if [ -n "$delta" ]; then
+      IFS=$'\t' read -r added deleted _ <<<"$delta"
+    else
+      added=0
+      deleted=0
+    fi
+    old_type=$(fm_pr_git_mode_type "$old_mode")
+    new_type=$(fm_pr_git_mode_type "$new_mode")
     printf -v quoted '%q' "$path"
-    case "$added:$deleted" in
-      -:-)
-        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default changes binary content absent from the PR head
-"
+    case "$status" in
+      A)
+        if [ "$new_type" = "regular file" ] && [ "$added:$deleted" = 0:0 ]; then
+          detail="current default adds an empty file absent from the PR head"
+        elif [ "$new_type" = "regular file" ] && [ "$added:$deleted" != -:- ]; then
+          detail="current default adds a regular file containing $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
+        else
+          detail="current default adds a $new_type absent from the PR head"
+        fi
         ;;
-      :)
-        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default changes content absent from the PR head
-"
+      D)
+        detail="current default deletes the $old_type that the PR head would restore"
         ;;
-      *:0)
-        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head
-"
+      T)
+        detail="current default changes type from $old_type to $new_type; the PR head would restore the $old_type"
         ;;
-      0:*)
-        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore
-"
-        ;;
-      *)
-        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default adds $added and removes $deleted lines absent from the PR head
-"
+      M)
+        if [ "$old_oid" = "$new_oid" ] && [ "$old_mode" != "$new_mode" ]; then
+          detail="current default changes mode from $old_mode to $new_mode absent from the PR head"
+        else
+          case "$added:$deleted" in
+            -:-)
+              detail="current default changes binary content; the PR head lacks the new content and would restore the prior content"
+              ;;
+            *:0)
+              detail="current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
+              ;;
+            0:*)
+              detail="current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore"
+              ;;
+            *)
+              detail="current default adds $added line$([ "$added" = 1 ] || printf 's') and removes $deleted line$([ "$deleted" = 1 ] || printf 's'); the PR head lacks the additions and would restore the removed lines"
+              ;;
+          esac
+          [ "$old_mode" = "$new_mode" ] \
+            || detail="$detail; it also changes mode from $old_mode to $new_mode"
+        fi
         ;;
     esac
+    FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: $detail
+"
   done <"$paths_file"
 
   rm -f -- "$paths_file"

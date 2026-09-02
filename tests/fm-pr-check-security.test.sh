@@ -260,6 +260,7 @@ run_check_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
@@ -270,6 +271,7 @@ run_merge_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
@@ -279,7 +281,7 @@ run_merge_entry() {
 # Invalid-entrypoint cases deliberately do not call this helper, so their
 # zero-side-effect assertions still exercise the scripts alone.
 prepare_merge_comparison() { # <case-dir> <canonical-pr-url>
-  local dir=$1 url=$2 origin source_ref number
+  local dir=$1 url=$2 origin source_ref number canonical
   origin="$dir/origin.git"
   if ! git -C "$dir/wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git init -q --bare --initial-branch=main "$origin"
@@ -300,14 +302,34 @@ prepare_merge_comparison() { # <case-dir> <canonical-pr-url>
     https://github.com/*/pull/*)
       number=${url##*/pull/}
       source_ref="refs/pull/$number/head"
+      canonical="https://github.com/${url#https://github.com/}"
+      canonical="${canonical%/pull/*}.git"
       ;;
     https://*/-/merge_requests/*)
       number=${url##*/merge_requests/}
       source_ref="refs/merge-requests/$number/head"
+      canonical="${url%/-/merge_requests/*}.git"
       ;;
     *) fail "comparison fixture received a noncanonical PR URL" ;;
   esac
-  git -C "$dir/wt" push -q --force origin "HEAD:$source_ref"
+  git -C "$dir/wt" remote set-url origin "$canonical"
+  git -C "$dir/wt" push -q --force "$origin" "HEAD:$source_ref"
+  cat >"$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+rewrite=0
+for arg in "$@"; do
+  case "$arg" in ls-remote|fetch) rewrite=1 ;; esac
+done
+if [ "$rewrite" -eq 1 ]; then
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = origin ]; then args+=("$FM_TEST_GIT_REMOTE"); else args+=("$arg"); fi
+  done
+  exec "$FM_TEST_REAL_GIT" "${args[@]}"
+fi
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  chmod +x "$dir/fakebin/git"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -572,7 +594,7 @@ test_invalid_entrypoints_have_zero_side_effects() {
 }
 
 test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count rc
+  local dir expected sidecar count merge_head rc
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
   expected=0123456789abcdef0123456789abcdef01234567
@@ -604,11 +626,12 @@ test_valid_recording_and_merge_derivation() {
   count=$(grep -c '^pr_head=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
-  : > "$dir/gh-axi.log"
+  : > "$dir/gh.log"
   prepare_merge_comparison "$dir" https://github.com/my-org/repo_name.with-dots/pull/37
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
-  grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
+  merge_head=$(git -C "$dir/wt" rev-parse HEAD)
+  grep -qxF "pr merge 37 --repo my-org/repo_name.with-dots --match-head-commit $merge_head --merge" "$dir/gh.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   # A merge this home performed leaves its own durable outcome, so the poll's
   # confirmation is no longer the first the captain hears of it. Acknowledge that
@@ -712,6 +735,52 @@ SH
       || fail "legacy task teardown changed the reserved migration namespace"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
+}
+
+test_recording_probe_is_noninteractive_bounded_and_best_effort() {
+  local dir real_git started elapsed rc
+  dir=$(make_case bounded-recording-probe)
+  write_task_meta "$dir"
+  prepare_merge_comparison "$dir" https://github.com/o/r/pull/81
+  real_git=$(command -v git)
+  cat >"$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" ls-remote "*)
+    printf 'terminal=%s askpass=%s ssh_askpass=%s ssh_require=%s gcm=%s ssh=%s\n' \
+      "${GIT_TERMINAL_PROMPT-}" "${GIT_ASKPASS-}" "${SSH_ASKPASS-}" \
+      "${SSH_ASKPASS_REQUIRE-}" "${GCM_INTERACTIVE-}" "${GIT_SSH_COMMAND-}" \
+      >"$FM_TEST_GIT_ENV_LOG"
+    sleep 20
+    ;;
+esac
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  chmod +x "$dir/fakebin/git"
+  started=$SECONDS
+  set +e
+  FM_PR_STALE_BASE_TIMEOUT=1 FM_TIMEOUT_KILL_GRACE=1 \
+    FM_TEST_REAL_GIT="$real_git" FM_TEST_GIT_ENV_LOG="$dir/git-env.log" \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/81 \
+    >"$dir/stdout" 2>"$dir/stderr"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+
+  expect_code 0 "$rc" "bounded-recording-probe: unavailable comparison should not block recording"
+  [ "$elapsed" -lt 8 ] \
+    || fail "bounded-recording-probe: record-time probe exceeded its declared bound (${elapsed}s)"
+  assert_grep 'warning: could not compare https://github.com/o/r/pull/81' "$dir/stderr" \
+    "bounded-recording-probe: timeout was not surfaced as an unavailable warning"
+  assert_present "$dir/home/state/task-a.check.sh" \
+    "bounded-recording-probe: timeout prevented durable poll publication"
+  assert_grep 'terminal=0 askpass=/bin/false ssh_askpass=/bin/false ssh_require=never gcm=Never' \
+    "$dir/git-env.log" "bounded-recording-probe: credential prompting was not disabled"
+  assert_grep 'BatchMode=yes' "$dir/git-env.log" \
+    "bounded-recording-probe: SSH prompting was not disabled"
+  assert_grep 'ConnectTimeout=1' "$dir/git-env.log" \
+    "bounded-recording-probe: SSH connection setup was not bounded"
+  pass "record-time remote inspection is noninteractive, bounded, and best effort"
 }
 
 run_watcher_bounded() {
@@ -3725,6 +3794,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_recording_probe_is_noninteractive_bounded_and_best_effort
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact
