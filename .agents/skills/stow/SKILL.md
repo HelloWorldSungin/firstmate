@@ -20,7 +20,7 @@ Markers are compact trailing HTML comments, deliberately cheap because marker by
 
 - `<!--a:YYYY-MM-DD-->` - an `aging` entry; the embedded date is its last-reinforced date.
 - `<!--p:YYYY-MM-DD-->` - a `perishable` entry; the embedded date is its last-reinforced date.
-- `<!--a:YYYY-MM-DD/N-->` - only in a home that has opted in to the pass horizon below: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
+- `<!--a:YYYY-MM-DD/N-->` - written only in a home that has opted in to the pass horizon below, and left in place unread once a home opts out: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
   An absent `/N` means zero, so an entry the fleet keeps exercising costs no counter bytes at all, and a home that has not opted in never writes one.
   Existing `/N` values keep their stored integer; the pass-horizon section below says what they mean after the calendar-day cap.
 - `<!--P-->` - an explicitly `pinned` entry in a file whose default tier is not `pinned`.
@@ -263,7 +263,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
      Never append.
    - File each undone next step as a queued backlog item with a genuine `blocked-by` dependency when applicable.
 4. **Route a pruned-but-still-true learning to the brain before deleting it.**
-   Step 4 of the memory pass removes material that is no longer worth a startup-memory slot but is still true and still expensive to rediscover.
+   Steps 5 through 7 of the memory pass remove material that is no longer worth a startup-memory slot but is still true and still expensive to rediscover.
    Capture that with `bin/fm-gbrain-capture.sh note --id <slug> --title <title> --file <path>` before removing it, so pruning a memory file is not the same as forgetting.
    The command redacts credential-shaped content before it stores anything and refuses a body it cannot clean, exiting non-zero with the reason on stderr, so treat a refusal as a finding about the note, not an obstacle.
    It is inert in a home with no brain, which is a complete answer rather than an exception to report.

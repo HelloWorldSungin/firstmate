@@ -1,6 +1,6 @@
 # 0001 - Mount brain reads at the brief scaffold, and route by kind before retrieving
 
-- Status: proposed, awaiting captain review
+- Status: accepted 2026-08-20, when the captain answered both open captain choices below; implementation remains the follow-up tracked work named under "Consequences"
 - Date: 2026-08-19
 - Deciders: the design interview between the `fm-gbrain-read-integration-design` worker and firstmate, with two choices held for the captain (see "Open captain choices")
 
