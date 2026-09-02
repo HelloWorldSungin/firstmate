@@ -84,9 +84,13 @@ fm_supervision_status() {
     [ -e "$source" ] || continue
     FM_SUP_SOURCES=$((FM_SUP_SOURCES + 1))
   done
+  # shellcheck disable=SC2034 # Read by callers (fm-guard.sh) after sourcing.
+  [ -s "$state/.wake-queue" ] && FM_SUP_QUEUE_PENDING=true
+
   if [ "$FM_SUP_IN_FLIGHT" -gt 0 ] \
     || [ -f "$state/x-watch.check.sh" ] \
-    || [ "$FM_SUP_SOURCES" -gt 0 ]; then
+    || [ "$FM_SUP_SOURCES" -gt 0 ] \
+    || [ "$FM_SUP_QUEUE_PENDING" = true ]; then
     FM_SUP_NEEDED=true
   fi
 
@@ -103,8 +107,6 @@ fm_supervision_status() {
     fi
   fi
 
-  # shellcheck disable=SC2034 # Read by callers (fm-guard.sh) after sourcing.
-  [ -s "$state/.wake-queue" ] && FM_SUP_QUEUE_PENDING=true
   return 0
 }
 

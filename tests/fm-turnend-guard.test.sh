@@ -77,6 +77,32 @@ test_predicate_queue_pending_flag() {
   pass "fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue"
 }
 
+test_predicate_queue_pending_needs_supervision() {
+  local state="$TMP_ROOT/pred-queue-needs/state"
+  mkdir -p "$state"
+  printf 'record\n' > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "queue-only home must have zero in-flight tasks"
+  [ "$FM_SUP_SOURCES" -eq 0 ] || fail "queue-only home must have zero sources"
+  [ ! -f "$state/x-watch.check.sh" ] || fail "queue-only home must have no relay poll"
+  [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "a non-empty wake queue must read as pending"
+  [ "$FM_SUP_NEEDED" = true ] || fail "a pending wake queue on an idle home must make supervision needed"
+  pass "fm_supervision_status: pending wake queue makes supervision needed on an idle home"
+}
+
+test_predicate_queue_pending_drained_no_longer_needs_supervision() {
+  local state="$TMP_ROOT/pred-queue-drained/state"
+  mkdir -p "$state"
+  printf 'record\n' > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_NEEDED" = true ] || fail "pending queue should make supervision needed before drain"
+  : > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "empty wake queue must not read as pending"
+  [ "$FM_SUP_NEEDED" = false ] || fail "an acknowledged/empty queue must not keep supervision needed"
+  pass "fm_supervision_status: draining the queue clears the supervision need"
+}
+
 test_predicate_x_mode_needs_supervision() {
   local state="$TMP_ROOT/pred-x-mode/state"
   mkdir -p "$state"
@@ -1683,6 +1709,8 @@ test_predicate_unhealthy_no_beacon
 test_predicate_unhealthy_stale_beacon
 test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
+test_predicate_queue_pending_needs_supervision
+test_predicate_queue_pending_drained_no_longer_needs_supervision
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
 test_hook_silent_when_no_work_in_flight
