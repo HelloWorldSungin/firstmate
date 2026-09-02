@@ -381,6 +381,10 @@ case "${1:-} ${2:-}" in
       -e "s/__DEFAULT_HEAD__/$default_head/g" "$FM_TEST_GLAB_JSON"
     exit 0
     ;;
+  "api projects/"*"/merge_requests/"*)
+    cat "$case_dir/mr-pre.json"
+    exit 0
+    ;;
   "api projects/"*)
     [ ! -e "$case_dir/glab-project-fails" ] || exit 1
     cat "$FM_TEST_GLAB_PROJECT_JSON"
@@ -396,7 +400,9 @@ case "${1:-} ${2:-}" in
     if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
       exit 1
     fi
-    if [ -e "$case_dir/glab-stays-open" ]; then
+    if [ ! -e "$case_dir/glab-merge-called" ]; then
+      cat "$case_dir/mr-pre.json"
+    elif [ -e "$case_dir/glab-stays-open" ]; then
       printf '{"state":"opened"}\n'
     else
       cat "$case_dir/mr-post.json"
@@ -458,7 +464,7 @@ write_mr_json() {
 # make_gitlab_case <name> [<field>=<value> ...]: a case dir with both forge
 # mocks and a merge request payload. Echoes the case dir.
 make_gitlab_case() {
-  local name=$1 case_dir
+  local name=$1 case_dir state target
   shift
   case_dir=$(make_case "$name")
   mkdir -p "$case_dir/wt"
@@ -467,6 +473,9 @@ make_gitlab_case() {
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/glab.log"
   write_mr_json "$case_dir/mr.json" "$@"
+  state=$(jq -r '.data.project.mergeRequest.state' "$case_dir/mr.json")
+  target=$(jq -r '.data.project.mergeRequest.targetBranch' "$case_dir/mr.json")
+  printf '{"state":"%s","target_branch":"%s"}\n' "$state" "$target" >"$case_dir/mr-pre.json"
   printf '{"state":"merged"}\n' >"$case_dir/mr-post.json"
   printf '{"automatic_rebase_enabled":false}\n' >"$case_dir/project.json"
   printf '{"version":"19.4.0"}\n' >"$case_dir/version.json"
@@ -622,7 +631,7 @@ test_records_pr_and_head_before_merging() {
   : > "$case_dir/gh-axi.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+  GH_HOST=ghe.example run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -633,12 +642,12 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
-  grep -qxF "pr merge 9 --repo example/repo --match-head-commit $head --squash" "$case_dir/gh.log" \
+  grep -qxF "pr merge 9 --repo github.com/example/repo --match-head-commit $head --squash" "$case_dir/gh.log" \
     || fail "records-before-merge: gh pr merge was not bound to the inspected head"
   pass "fm-pr-merge records the PR and binds GitHub merge to the inspected head"
 }
 
-test_stale_pr_refuses_before_merging() {
+test_stale_pr_retains_untouched_default_addition() {
   local case_dir head rc
   case_dir=$(make_stale_case stale-pr-refusal)
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
@@ -651,21 +660,15 @@ test_stale_pr_refuses_before_merging() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "stale-pr-refusal: fm-pr-merge should refuse"
-  assert_grep 'warning: https://github.com/example/repo/pull/73 is behind the current default branch' "$case_dir/stderr" \
-    "stale-pr-refusal: fm-pr-check did not report the stale PR when recording it"
-  assert_grep 'because its head is behind the current default branch' "$case_dir/stderr" \
-    "stale-pr-refusal: refusal did not name the stale-base cause"
-  assert_grep 'published.md: current default adds a regular file containing 1 line absent from the PR head' "$case_dir/stderr" \
-    "stale-pr-refusal: refusal did not name the untouched file and lost content"
-  assert_grep 'bring the branch up to current main and re-run validation' "$case_dir/stderr" \
-    "stale-pr-refusal: refusal did not tell the operator how to recover"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "stale-pr-refusal: gh pr merge was invoked for a stale PR"
-  pass "fm-pr-merge refuses a stale PR that omits current default-branch content"
+  expect_code 0 "$rc" "stale-pr-refusal: retained default content should merge"
+  assert_no_grep 'would delete or replace content' "$case_dir/stderr" \
+    "stale-pr-refusal: retained default content was reported as lost"
+  assert_grep 'pr merge 73 ' "$case_dir/gh.log" \
+    "stale-pr-refusal: a safe stale PR did not reach the merge boundary"
+  pass "fm-pr-merge permits default additions retained by the merge"
 }
 
-test_pathspec_magic_filename_cannot_bypass_stale_refusal() {
+test_pathspec_magic_default_addition_is_retained() {
   local case_dir default_wt head rc
   case_dir=$(make_case stale-pathspec-magic)
   default_wt="$case_dir/default-pathspec-wt"
@@ -683,13 +686,12 @@ test_pathspec_magic_filename_cannot_bypass_stale_refusal() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "stale-pathspec-magic: fm-pr-merge should refuse"
-  assert_grep ':\(glob\)\*: current default adds a regular file containing 1 line absent from the PR head' \
-    "$case_dir/stderr" \
-    "stale-pathspec-magic: refusal did not name the literal pathspec filename"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "stale-pathspec-magic: pathspec interpretation bypassed the stale refusal"
-  pass "literal pathspec filenames cannot bypass stale-base refusal"
+  expect_code 0 "$rc" "stale-pathspec-magic: retained pathspec-named content should merge"
+  assert_no_grep 'would delete or replace content' "$case_dir/stderr" \
+    "stale-pathspec-magic: retained pathspec-named content was reported as lost"
+  assert_grep 'pr merge 79 ' "$case_dir/gh.log" \
+    "stale-pathspec-magic: a safe pathspec-named addition did not reach the merge boundary"
+  pass "literal pathspec filenames retained by the merge are accepted"
 }
 
 test_unavailable_stale_comparison_refuses_before_merging() {
@@ -915,6 +917,16 @@ test_stale_details_name_presence_content_type_and_mode_losses() {
   git -C "$default_wt" add -A
   git -C "$default_wt" commit -qm 'change every stale detail kind'
   git -C "$default_wt" push -q origin main
+  git -C "$case_dir/wt" fetch -q origin main
+  git -C "$case_dir/wt" rebase -q origin/main
+  rm "$case_dir/wt/empty-added.txt"
+  printf 'delete me\n' >"$case_dir/wt/presence-delete.txt"
+  chmod 0644 "$case_dir/wt/mode.sh"
+  rm "$case_dir/wt/type.txt"
+  printf 'plain file\n' >"$case_dir/wt/type.txt"
+  printf 'old first\nold second\n' >"$case_dir/wt/replace.txt"
+  git -C "$case_dir/wt" add -A
+  git -C "$case_dir/wt" commit -qm 'restore stale file states'
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
   add_gh_mocks "$case_dir" "$head"
 
@@ -925,19 +937,15 @@ test_stale_details_name_presence_content_type_and_mode_losses() {
   set -e
 
   expect_code 1 "$rc" "stale-detail-kinds: fm-pr-merge should refuse"
-  assert_grep 'empty-added.txt: current default adds an empty file absent from the PR head' "$case_dir/stderr" \
-    "stale-detail-kinds: empty-file presence loss was inaccurate"
-  assert_grep 'presence-delete.txt: current default deletes the regular file that the PR head would restore' "$case_dir/stderr" \
-    "stale-detail-kinds: deleted-file presence loss was inaccurate"
-  assert_grep 'mode.sh: current default changes mode from 100644 to 100755 absent from the PR head' "$case_dir/stderr" \
+  assert_grep 'mode.sh: merge would change current default mode from 100755 to 100644' "$case_dir/stderr" \
     "stale-detail-kinds: executable-mode loss was inaccurate"
-  assert_grep 'type.txt: current default changes type from regular file to symbolic link' "$case_dir/stderr" \
+  assert_grep 'type.txt: merge would change current default type from symbolic link to regular file' "$case_dir/stderr" \
     "stale-detail-kinds: file-type loss was inaccurate"
-  assert_grep 'replace.txt: current default adds 2 lines and removes 2 lines; the PR head lacks the additions and would restore the removed lines' "$case_dir/stderr" \
+  assert_grep 'replace.txt: merge would replace 2 lines from current default with 2 lines' "$case_dir/stderr" \
     "stale-detail-kinds: replacement content loss was inaccurate"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "stale-detail-kinds: a stale detail case reached the forge merge"
-  pass "stale refusal accurately names presence, content, type, and mode losses"
+  pass "stale refusal accurately names content, type, and mode losses"
 }
 
 test_stale_submodule_update_names_both_commits() {
@@ -967,6 +975,11 @@ test_stale_submodule_update_names_both_commits() {
     --cacheinfo "160000,$new_oid,modules/dependency"
   git -C "$default_wt" commit -qm 'advance submodule revision'
   git -C "$default_wt" push -q origin main
+  git -C "$case_dir/wt" fetch -q origin main
+  git -C "$case_dir/wt" rebase -q origin/main
+  git -C "$case_dir/wt" update-index \
+    --cacheinfo "160000,$old_oid,modules/dependency"
+  git -C "$case_dir/wt" commit -qm 'restore stale submodule revision'
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
   add_gh_mocks "$case_dir" "$head"
 
@@ -977,7 +990,7 @@ test_stale_submodule_update_names_both_commits() {
   set -e
 
   expect_code 1 "$rc" "stale-submodule-update: fm-pr-merge should refuse"
-  assert_grep "modules/dependency: current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid" \
+  assert_grep "modules/dependency: merge would replace current default submodule commit $new_oid with $old_oid" \
     "$case_dir/stderr" \
     "stale-submodule-update: refusal did not name both submodule commits"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
@@ -1028,7 +1041,7 @@ SH
   unset FM_TEST_OLD_HEAD FM_TEST_NEW_HEAD FM_TEST_ORIGIN FM_TEST_SOURCE_REF FM_TEST_MERGED_MARKER
 
   expect_code 1 "$rc" "github-head-race: changed head should reject the merge"
-  assert_grep "pr merge 78 --repo example/repo --match-head-commit $h1" "$case_dir/gh.log" \
+  assert_grep "pr merge 78 --repo github.com/example/repo --match-head-commit $h1" "$case_dir/gh.log" \
     "github-head-race: merge was not bound to the inspected head"
   assert_absent "$case_dir/merged" \
     "github-head-race: the replacement head merged without stale-base inspection"
@@ -1066,7 +1079,7 @@ test_allowlisted_merge_args_forwarded() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "extra-args: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 15 --repo example/repo --match-head-commit $head --squash --subject Guarded merge --body Current base checked --delete-branch -d" "$case_dir/gh.log" \
+  grep -qxF "pr merge 15 --repo github.com/example/repo --match-head-commit $head --squash --subject Guarded merge --body Current base checked --delete-branch -d" "$case_dir/gh.log" \
     || fail "extra-args: allowlisted gh pr merge arguments were not forwarded"
   pass "fm-pr-merge forwards allowlisted GitHub method, message, and cleanup arguments"
 }
@@ -1455,9 +1468,10 @@ test_final_github_preflight_cannot_reopen_default_tip_race() {
 }
 
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck() {
-  local advanced_tip case_dir head rc writer writer_rc
+  local advanced_tip case_dir head old_tip rc writer writer_rc
   case_dir=$(make_case body-file-tip-race)
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  old_tip=$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)
   advanced_tip=$(prepare_advanced_default "$case_dir")
   mkfifo "$case_dir/body.fifo"
   cat >"$case_dir/fakebin/head" <<'SH'
@@ -1526,9 +1540,9 @@ SH
 
   expect_code 0 "$writer_rc" "body-file-tip-race: the synchronized default advance failed"
   expect_code 1 "$rc" "body-file-tip-race: moving main during body input should refuse"
-  assert_grep "GitHub reports target branch main at OID $advanced_tip but guarded inspection used" \
+  assert_grep "current default branch main moved from inspected tip $old_tip to live tip $advanced_tip" \
     "$case_dir/stderr" \
-    "body-file-tip-race: the post-materialization forge binding did not observe the move"
+    "body-file-tip-race: the post-materialization tip check did not observe the move"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "body-file-tip-race: the forge ran after default moved during body input"
   assert_absent "$case_dir/merged" \
@@ -1679,7 +1693,7 @@ test_explicit_merge_method_not_overridden() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "explicit-merge-method: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 22 --repo example/repo --match-head-commit $head --merge" "$case_dir/gh.log" \
+  grep -qxF "pr merge 22 --repo github.com/example/repo --match-head-commit $head --merge" "$case_dir/gh.log" \
     || fail "explicit-merge-method: caller --merge was not forwarded without an extra default --squash"
   pass "fm-pr-merge does not add default --squash when the caller passes an explicit merge method"
 }
@@ -1695,7 +1709,7 @@ test_method_equals_merge_method_not_overridden() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "method-equals-merge-method: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 23 --repo example/repo --match-head-commit $head --merge" "$case_dir/gh.log" \
+  grep -qxF "pr merge 23 --repo github.com/example/repo --match-head-commit $head --merge" "$case_dir/gh.log" \
     || fail "method-equals-merge-method: caller --method=merge was not translated without an extra default --squash"
   pass "fm-pr-merge respects --method=<value> as an explicit merge method"
 }
@@ -1711,7 +1725,7 @@ test_parses_pr_url_for_gh_axi() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "url-parsing: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 126 --repo my-org/my-repo --match-head-commit $head --squash" "$case_dir/gh.log" \
+  grep -qxF "pr merge 126 --repo github.com/my-org/my-repo --match-head-commit $head --squash" "$case_dir/gh.log" \
     || fail "url-parsing: gh pr merge was not addressed and head-bound from the URL"
   pass "fm-pr-merge parses a GitHub URL into repository and head-bound merge arguments"
 }
@@ -1788,7 +1802,7 @@ test_no_recorded_issue_makes_no_issue_calls() {
   assert_no_grep 'issue ' "$case_dir/gh-axi.log" \
     "no-issue: merge path made an issue API call without recorded issue metadata"
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 34 --repo example/repo --match-head-commit $head --squash" "$case_dir/gh.log" \
+  grep -qxF "pr merge 34 --repo github.com/example/repo --match-head-commit $head --squash" "$case_dir/gh.log" \
     || fail "no-issue: ordinary merge invocation changed"
   pass "fm-pr-merge preserves the ordinary path when no issue is recorded"
 }
@@ -2000,7 +2014,7 @@ test_gitea_work_item_is_closed_with_its_own_credential() {
   set -e
 
   expect_code 0 "$rc" "gitea-close: the merge with a gitea work item failed"
-  assert_grep 'pr merge 54 --repo example/repo --match-head-commit' "$case_dir/gh.log" \
+  assert_grep 'pr merge 54 --repo github.com/example/repo --match-head-commit' "$case_dir/gh.log" \
     "gitea-close: the PR was never merged"
   [ "$(cat "$case_dir/gitea-store/issue-state" 2>/dev/null)" = closed ] \
     || fail "gitea-close: the gitea issue was not closed"
@@ -2036,7 +2050,7 @@ test_gitea_close_failure_keeps_merge_success_unambiguous() {
   set -e
 
   expect_code 0 "$rc" "gitea-down: an unreachable gitea host made a completed merge look retryable"
-  assert_grep 'pr merge 56 --repo example/repo --match-head-commit' "$case_dir/gh.log" \
+  assert_grep 'pr merge 56 --repo github.com/example/repo --match-head-commit' "$case_dir/gh.log" \
     "gitea-down: the merge did not happen while the tracker was unreachable"
   assert_grep 'issue bookkeeping did not complete' "$case_dir/stderr" \
     "gitea-down: the failed close was silent"
@@ -2062,7 +2076,7 @@ test_gitea_verification_failure_names_its_own_reason() {
   set -e
 
   expect_code 0 "$rc" "gitea-403: a refused credential made a completed merge look retryable"
-  assert_grep 'pr merge 58 --repo example/repo --match-head-commit' "$case_dir/gh.log" \
+  assert_grep 'pr merge 58 --repo github.com/example/repo --match-head-commit' "$case_dir/gh.log" \
     "gitea-403: the merge did not happen while the tracker refused the credential"
   assert_grep 'could not verify' "$case_dir/stderr" \
     "gitea-403: the failed verification was silent"
@@ -2777,9 +2791,9 @@ test_failed_merge_reports_nothing() {
   pass "a refused or failed merge reports no outcome"
 }
 
-test_gitlab_refusal_reports_nothing() {
+test_gitlab_already_merged_recovers_without_mutation() {
   local case_dir rc
-  case_dir=$(make_gitlab_case gitlab-refusal-silent state=merged)
+  case_dir=$(make_gitlab_case gitlab-already-merged state=merged)
   mkdir -p "$case_dir/home"
   printf '%s\n' mate-x >"$case_dir/home/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\n' >"$case_dir/home/.fm-secondmate-parent"
@@ -2790,10 +2804,15 @@ test_gitlab_refusal_reports_nothing() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "gitlab-refusal-silent: a refused GitLab merge should exit non-zero"
-  assert_absent "$case_dir/state/parent-replies.status" \
-    "gitlab-refusal-silent: a refused merge request was reported as landed"
-  pass "a GitLab merge refused before the forge call reports no outcome"
+  expect_code 0 "$rc" "gitlab-already-merged: recovery should succeed"
+  assert_grep "done [key=merged-task-x1]: merged task-x1 $MR_URL" \
+    "$case_dir/state/parent-replies.status" \
+    "gitlab-already-merged: recovery did not report the landed merge"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-already-merged: recovery invoked a second merge"
+  assert_no_grep ' api graphql ' "$case_dir/glab.log" \
+    "gitlab-already-merged: recovery ran pre-merge validation"
+  pass "an already merged GitLab request recovers without another mutation"
 }
 
 test_gitlab_merge_reports_upward() {
@@ -3041,8 +3060,8 @@ test_secondmate_without_parent_binding_is_loud() {
 }
 
 test_records_pr_and_head_before_merging
-test_stale_pr_refuses_before_merging
-test_pathspec_magic_filename_cannot_bypass_stale_refusal
+test_stale_pr_retains_untouched_default_addition
+test_pathspec_magic_default_addition_is_retained
 test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
 test_supported_origin_spellings_preserve_repository_binding
@@ -3111,7 +3130,7 @@ test_secondmate_merge_reports_on_the_local_route
 test_gitlab_merge_reports_upward
 test_queued_gitlab_merge_is_refused_and_leaves_the_poll_armed
 test_failed_merge_reports_nothing
-test_gitlab_refusal_reports_nothing
+test_gitlab_already_merged_recovers_without_mutation
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_is_refused_and_leaves_the_poll_armed
 test_unknown_github_post_merge_state_is_nonretryable

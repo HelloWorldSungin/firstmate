@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
-# Recording also reports when the PR head omits current default-branch changes
-# from paths the PR itself did not touch.
+# Recording also reports current default-branch content a prospective merge
+# would remove or replace.
 # An unavailable comparison warns without blocking the durable watch, while
 # bin/fm-pr-merge.sh repeats it live and fails closed before any merge.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data

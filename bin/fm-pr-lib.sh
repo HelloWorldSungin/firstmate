@@ -306,20 +306,22 @@ fm_pr_git_mode_type() { # <raw-git-mode>
 }
 
 # Compare one freshly fetched PR head with the freshly fetched current default
-# branch and identify paths changed only by the default branch since the common
-# base.
-# A stale PR head presents those paths as reversions even though its own work
-# never touched them.
-# Returns 0 when no such path exists, 1 when stale content is present, and 2
-# when the comparison cannot be completed safely.
+# branch and identify current content the prospective merge would remove or
+# replace.
+# Returns 0 when no such content exists, 1 when content loss is present, 2 when
+# the comparison cannot be completed safely, and 3 when an expected merge
+# target is not the current default branch.
 # The caller reports the populated FM_PR_STALE_BASE_* fields and decides whether
 # its surface warns or refuses.
-fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-path> <number>
+fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-path> <number> [<target>]
   local wt=${1-} id=${2-} provider=${3-} host=${4-} project_path=${5-} number=${6-}
+  local expected_target=${7-}
   local source_ref remote_state default_ref default_name
-  local token base_ref head_ref base head merge_bases merge_base merge_base_count
-  local stage_dir touched_keys default_keys eligible_keys raw_file numstat_file
-  local path key eligible_key delta delta_rest numstat_path added deleted quoted
+  local token base_ref head_ref base head merge_bases merge_base merge_base_count merge_tree
+  local stage_dir raw_file numstat_file index_file patch_file history_file
+  local default_diff_rc historical history_commit history_entry
+  local history_mode history_type history_oid history_path
+  local path delta delta_rest numstat_path added deleted quoted restored
   local raw_meta old_mode new_mode old_oid new_oid status old_type new_type detail
   local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
   local inspection_failed=0
@@ -373,6 +375,10 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
   }
   default_name=${default_ref#refs/heads/}
   FM_PR_STALE_BASE_DEFAULT=$default_name
+  if [ -n "$expected_target" ] && [ "$expected_target" != "$default_name" ]; then
+    FM_PR_STALE_BASE_RESULT=non-default
+    return 3
+  fi
 
   token="$$-${RANDOM:-0}"
   base_ref="refs/fm-pr-stale-base/$token/base"
@@ -415,6 +421,18 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     FM_PR_STALE_BASE_REASON="current default branch and PR head have an invalid common commit"
     return 2
   fi
+  merge_tree=$(git -C "$wt" merge-tree --write-tree --no-messages "$base" "$head" 2>/dev/null) || {
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="the prospective merge could not be resolved cleanly"
+    return 2
+  }
+  if ! fm_pr_head_valid "$merge_tree"; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="the prospective merge did not produce a readable tree"
+    return 2
+  fi
 
   stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-stale-base.XXXXXX") || {
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
@@ -429,22 +447,17 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     FM_PR_STALE_BASE_REASON="could not protect the default-branch comparison"
     return 2
   }
-  touched_keys="$stage_dir/touched"
-  default_keys="$stage_dir/default"
-  eligible_keys="$stage_dir/eligible"
   raw_file="$stage_dir/raw"
   numstat_file="$stage_dir/numstat"
-  if ! git -C "$wt" -c core.quotePath=true diff --name-only --no-renames \
-      "$merge_base" "$head" -- >"$touched_keys" \
-    || ! git -C "$wt" -c core.quotePath=true diff --name-only --no-renames \
-      "$merge_base" "$base" -- >"$default_keys" \
-    || ! awk 'FILENAME == ARGV[1] { touched[$0] = 1; next } !($0 in touched)' \
-      "$touched_keys" "$default_keys" >"$eligible_keys" \
+  index_file="$stage_dir/index"
+  patch_file="$stage_dir/default.patch"
+  history_file="$stage_dir/history"
+  if ! GIT_INDEX_FILE="$index_file" git -C "$wt" read-tree "$merge_tree" \
     || ! git -C "$wt" diff --raw -z --no-abbrev --no-renames \
-      "$merge_base" "$base" -- >"$raw_file" \
+      "$base" "$merge_tree" -- >"$raw_file" \
     || ! git -C "$wt" diff --numstat -z --no-renames \
-      "$merge_base" "$base" -- >"$numstat_file"; then
-    rm -f -- "$touched_keys" "$default_keys" "$eligible_keys" "$raw_file" "$numstat_file"
+      "$base" "$merge_tree" -- >"$numstat_file"; then
+    rm -f -- "$raw_file" "$numstat_file" "$index_file" "$patch_file" "$history_file"
     rmdir -- "$stage_dir" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
@@ -452,13 +465,9 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     return 2
   fi
   {
-    if ! IFS= read -r eligible_key <&8; then
-      eligible_key=
-    fi
     while IFS= read -r -d '' raw_meta <&6; do
       if ! IFS= read -r -d '' path <&6 \
-        || ! IFS= read -r key <&7 \
-        || ! IFS= read -r -d '' delta <&9; then
+        || ! IFS= read -r -d '' delta <&7; then
         inspection_failed=1
         break
       fi
@@ -470,72 +479,108 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
         inspection_failed=1
         break
       fi
-      if [ "$key" != "$eligible_key" ]; then
-        continue
-      fi
-      if ! IFS= read -r eligible_key <&8; then
-        eligible_key=
-      fi
       IFS=' ' read -r old_mode new_mode old_oid new_oid status <<<"${raw_meta#:}"
       case "$status" in A|D|M|T) ;; *) inspection_failed=1; break ;; esac
       old_type=$(fm_pr_git_mode_type "$old_mode")
       new_type=$(fm_pr_git_mode_type "$new_mode")
+      default_diff_rc=0
+      git -C "$wt" --literal-pathspecs diff --quiet "$merge_base" "$base" \
+        -- "$path" || default_diff_rc=$?
+      case "$default_diff_rc" in
+        0)
+          historical=0
+          if [ "$status" = M ] || [ "$status" = T ]; then
+            if ! git -C "$wt" --literal-pathspecs log --format=%H "$base" \
+              -- "$path" >"$history_file"; then
+              inspection_failed=1
+              break
+            fi
+            while IFS= read -r history_commit; do
+              history_entry=$(git -C "$wt" --literal-pathspecs ls-tree \
+                "$history_commit" -- "$path" 2>/dev/null) || {
+                inspection_failed=1
+                break
+              }
+              [ -n "$history_entry" ] || continue
+              IFS=$' \t' read -r history_mode history_type history_oid history_path \
+                <<<"$history_entry"
+              if [ "$history_mode" = "$new_mode" ] && [ "$history_oid" = "$new_oid" ]; then
+                historical=1
+                break
+              fi
+            done <"$history_file"
+            [ "$inspection_failed" = 0 ] || break
+          fi
+          [ "$historical" = 1 ] || continue
+          ;;
+        1)
+          if ! git -C "$wt" --literal-pathspecs diff --binary --no-renames \
+            --unified=0 "$merge_base" "$base" -- "$path" >"$patch_file"; then
+            inspection_failed=1
+            break
+          fi
+          if GIT_INDEX_FILE="$index_file" git -C "$wt" apply --cached --reverse \
+            --check --unidiff-zero "$patch_file" 2>/dev/null; then
+            continue
+          fi
+          ;;
+        *) inspection_failed=1; break ;;
+      esac
       printf -v quoted '%q' "$path"
       case "$status" in
         A)
-          if [ "$new_type" = "regular file" ] && [ "$added:$deleted" = 0:0 ]; then
-            detail="current default adds an empty file absent from the PR head"
-          elif [ "$new_type" = "regular file" ] && [ "$added:$deleted" != -:- ]; then
-            detail="current default adds a regular file containing $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
-          else
-            detail="current default adds a $new_type absent from the PR head"
-          fi
+          restored=$(git -C "$wt" --literal-pathspecs ls-tree --name-only \
+            "$merge_base" -- "$path" 2>/dev/null) || {
+            inspection_failed=1
+            break
+          }
+          [ -n "$restored" ] || continue
+          detail="merge would restore the $new_type deleted from current default"
           ;;
         D)
-          detail="current default deletes the $old_type that the PR head would restore"
+          detail="merge would delete the $old_type present on current default"
           ;;
         T)
-          detail="current default changes type from $old_type to $new_type; the PR head would restore the $old_type"
+          detail="merge would change current default type from $old_type to $new_type"
           ;;
         M)
           if [ "$old_oid" = "$new_oid" ] && [ "$old_mode" != "$new_mode" ]; then
-            detail="current default changes mode from $old_mode to $new_mode absent from the PR head"
+            detail="merge would change current default mode from $old_mode to $new_mode"
           elif [ "$old_type" = submodule ] && [ "$new_type" = submodule ]; then
-            detail="current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid"
+            detail="merge would replace current default submodule commit $old_oid with $new_oid"
           else
             case "$added:$deleted" in
               -:-)
-                detail="current default changes binary content; the PR head lacks the new content and would restore the prior content"
+                detail="merge would replace binary content from current default"
                 ;;
               *:0)
-                detail="current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
+                [ "$old_mode" = "$new_mode" ] && continue
+                detail="merge would change current default mode from $old_mode to $new_mode"
                 ;;
               0:*)
-                detail="current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore"
+                detail="merge would remove $deleted line$([ "$deleted" = 1 ] || printf 's') from current default"
                 ;;
               *)
-                detail="current default adds $added line$([ "$added" = 1 ] || printf 's') and removes $deleted line$([ "$deleted" = 1 ] || printf 's'); the PR head lacks the additions and would restore the removed lines"
+                detail="merge would replace $deleted line$([ "$deleted" = 1 ] || printf 's') from current default with $added line$([ "$added" = 1 ] || printf 's')"
                 ;;
             esac
             [ "$old_mode" = "$new_mode" ] \
-              || detail="$detail; it also changes mode from $old_mode to $new_mode"
+              || detail="$detail; it would also change mode from $old_mode to $new_mode"
           fi
           ;;
       esac
       FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: $detail
 "
     done
-    raw_meta= path= key= delta=
+    raw_meta= path= delta=
     if [ "$inspection_failed" = 0 ] \
-      && { [ -n "$eligible_key" ] \
-        || IFS= read -r -d '' raw_meta <&6 \
-        || IFS= read -r key <&7 \
-        || IFS= read -r -d '' delta <&9; }; then
+      && { IFS= read -r -d '' raw_meta <&6 \
+        || IFS= read -r -d '' delta <&7; }; then
       inspection_failed=1
     fi
-  } 6<"$raw_file" 7<"$default_keys" 8<"$eligible_keys" 9<"$numstat_file"
+  } 6<"$raw_file" 7<"$numstat_file"
 
-  rm -f -- "$touched_keys" "$default_keys" "$eligible_keys" "$raw_file" "$numstat_file"
+  rm -f -- "$raw_file" "$numstat_file" "$index_file" "$patch_file" "$history_file"
   rmdir -- "$stage_dir" >/dev/null 2>&1 || true
   git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
   git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
@@ -557,10 +602,10 @@ fm_pr_stale_base_report() { # <warning|error> <canonical-url>
   case "$FM_PR_STALE_BASE_RESULT" in
     stale)
       if [ "$level" = error ]; then
-        printf 'error: refusing to merge %s because its head is behind the current default branch %s and would discard changes from files the PR did not touch\n' \
+        printf 'error: refusing to merge %s because it would delete or replace content from current default branch %s\n' \
           "$url" "$FM_PR_STALE_BASE_DEFAULT" >&2
       else
-        printf 'warning: %s is behind the current default branch %s and would discard changes from files the PR did not touch\n' \
+        printf 'warning: %s would delete or replace content from current default branch %s\n' \
           "$url" "$FM_PR_STALE_BASE_DEFAULT" >&2
       fi
       printf '%s' "$FM_PR_STALE_BASE_DETAILS" >&2

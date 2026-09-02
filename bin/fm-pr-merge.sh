@@ -33,8 +33,9 @@
 # URL, nor a head override because the head comes only from the live read.
 # Every provider also fetches the PR head and origin's current default branch
 # immediately before merging.
-# The merge is refused when their comparison would discard changes from paths
-# the PR did not touch, or when that comparison cannot be completed safely.
+# The merge is refused when their prospective merge would remove or replace
+# current default-branch content, or when that comparison cannot be completed
+# safely.
 # bin/fm-pr-check.sh reports the same stale condition when the PR is recorded,
 # but merge time repeats the live read because the default branch may move.
 # After a successful merge, an optional work item recorded in task metadata is
@@ -289,13 +290,61 @@ FM_PR_INSPECTED_HEAD=
 FM_PR_INSPECTED_BASE=
 FM_PR_INSPECTED_DEFAULT=
 inspect_current_default() {
-  if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
-    fm_pr_stale_base_report error "$URL"
-    return 1
-  fi
+  local target=${1-} inspect_rc=0
+  fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" \
+    "$FM_PR_PATH" "$PR_NUMBER" "$target" || inspect_rc=$?
   FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
   FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
   FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
+  case "$inspect_rc" in
+    0) return 0 ;;
+    1|2)
+      fm_pr_stale_base_report error "$URL"
+      return 1
+      ;;
+    3)
+      printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded stale-base inspection is limited to current default branch %s\n' \
+        "$URL" "$([ "$PROVIDER" = github ] && printf GitHub || printf GitLab)" \
+        "${target:-unreadable}" "$FM_PR_INSPECTED_DEFAULT" >&2
+      printf 'action: retarget the PR to current default branch %s, bring the branch up to current %s, and re-run validation\n' \
+        "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_DEFAULT" >&2
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+FM_GITLAB_INITIAL_STATE=
+FM_GITLAB_INITIAL_TARGET=
+gitlab_read_initial_state() {
+  local encoded_path json fields line total=0 named=0
+  FM_GITLAB_INITIAL_STATE=
+  FM_GITLAB_INITIAL_TARGET=
+  encoded_path=$(printf '%s' "$FM_PR_PATH" | sed 's|/|%2F|g')
+  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api \
+    "projects/$encoded_path/merge_requests/$PR_NUMBER" 2>/dev/null) \
+    || [ -z "$json" ] \
+    || ! fields=$(printf '%s' "$json" | jq -r '
+      if type == "object" and (.state | type) == "string"
+        and (.target_branch | type) == "string"
+      then "state=" + .state, "target=" + .target_branch
+      else error("merge request state is unavailable") end' 2>/dev/null); then
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) FM_GITLAB_INITIAL_STATE=${line#state=} ;;
+      target=*) FM_GITLAB_INITIAL_TARGET=${line#target=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  [ "$total" -eq 2 ] && [ "$named" -eq 2 ] \
+    && [ -n "$FM_GITLAB_INITIAL_TARGET" ] \
+    && case "$FM_GITLAB_INITIAL_STATE" in opened|closed|merged) true ;; *) false ;; esac
 }
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
@@ -391,12 +440,14 @@ FIELDS
     return 1
   fi
 
+  FM_PR_MERGE_TARGET=$target
+  FM_PR_MERGE_TARGET_OID=$target_oid
+  [ "$state" = merged ] && return 4
+  [ "$target" = "$FM_PR_INSPECTED_DEFAULT" ] || return 5
   if ! fm_pr_head_valid "$live_head"; then
     echo "error: could not read the GitLab merge request head commit before merging" >&2
     return 1
   fi
-  FM_PR_MERGE_TARGET=$target
-  FM_PR_MERGE_TARGET_OID=$target_oid
   if [ "$live_head" != "$FM_PR_INSPECTED_HEAD" ]; then
     FM_PR_MERGE_LIVE_HEAD=$live_head
     printf 'notice: GitLab head moved from inspected %s to live %s; re-inspecting the live head\n' \
@@ -786,7 +837,7 @@ case "$PROVIDER" in
       merge_args=(--squash)
     fi
     if [ "$github_preflight_rc" -eq 0 ]; then
-      inspect_current_default || exit 1
+      inspect_current_default "$FM_GITHUB_BASE_REF" || exit 1
       github_args=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -816,6 +867,7 @@ case "$PROVIDER" in
           *) github_args+=("$1"); shift ;;
         esac
       done
+      verify_inspected_default_tip || exit 1
       github_preflight_rc=0
       github_require_immediate_execution || github_preflight_rc=$?
       case "$github_preflight_rc" in
@@ -823,8 +875,8 @@ case "$PROVIDER" in
           verify_forge_inspected_identity || exit 1
           # A sub-second residual window remains because neither forge exposes an
           # expected-base parameter; this guard narrows rather than eliminates it.
-          verify_inspected_default_tip || exit 1
-          GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+          GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" \
+            --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" \
             --match-head-commit "$FM_PR_INSPECTED_HEAD" \
             "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
           ;;
@@ -839,34 +891,54 @@ case "$PROVIDER" in
     case "$github_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
     ;;
   gitlab)
-    inspect_current_default || exit 1
-    gitlab_verify_rc=0
-    gitlab_verify_mergeable || gitlab_verify_rc=$?
-    if [ "$gitlab_verify_rc" -eq 3 ]; then
-      inspect_current_default || exit 1
-      FM_PR_MERGE_LIVE_HEAD=
-      gitlab_verify_rc=0
-      gitlab_verify_mergeable || gitlab_verify_rc=$?
-    fi
-    if [ "$gitlab_verify_rc" -eq 3 ]; then
-      echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
+    if ! gitlab_read_initial_state; then
+      echo "error: could not read the GitLab merge request state before merging" >&2
       exit 1
     fi
-    [ "$gitlab_verify_rc" -eq 0 ] || exit 1
-    gitlab_require_attested_merge || exit 1
-    verify_forge_inspected_identity || exit 1
-    # --sha binds the merge to the head this run verified, so a push that lands
-    # in between is refused by GitLab instead of merged unverified. --yes only
-    # skips the interactive confirmation, which no supervised run can answer;
-    # the conditions above are what authorize the merge.
-    # A sub-second residual window remains because neither forge exposes an
-    # expected-base parameter; this guard narrows rather than eliminates it.
-    verify_inspected_default_tip || exit 1
-    GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
-      --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
-    gitlab_confirm_rc=0
-    gitlab_confirm_merged || gitlab_confirm_rc=$?
-    case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+    case "$FM_GITLAB_INITIAL_STATE" in
+      merged) ;;
+      opened|closed)
+        inspect_current_default "$FM_GITLAB_INITIAL_TARGET" || exit 1
+        gitlab_attempt=1
+        while :; do
+          gitlab_require_attested_merge || exit 1
+          # A sub-second residual window remains because neither forge exposes an
+          # expected-base parameter; this guard narrows rather than eliminates it.
+          verify_inspected_default_tip || exit 1
+          gitlab_verify_rc=0
+          gitlab_verify_mergeable || gitlab_verify_rc=$?
+          case "$gitlab_verify_rc" in
+            0|4) break ;;
+            3)
+              if [ "$gitlab_attempt" -ne 1 ]; then
+                echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
+                exit 1
+              fi
+              inspect_current_default "$FM_PR_MERGE_TARGET" || exit 1
+              FM_PR_MERGE_LIVE_HEAD=
+              gitlab_attempt=2
+              ;;
+            5)
+              inspect_current_default "$FM_PR_MERGE_TARGET" || exit 1
+              exit 1
+              ;;
+            *) exit 1 ;;
+          esac
+        done
+        if [ "$gitlab_verify_rc" -eq 0 ]; then
+          verify_forge_inspected_identity || exit 1
+          # --sha binds the merge to the head this run verified, so a push that lands
+          # in between is refused by GitLab instead of merged unverified. --yes only
+          # skips the interactive confirmation, which no supervised run can answer;
+          # the conditions above are what authorize the merge.
+          GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
+            --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
+        fi
+        gitlab_confirm_rc=0
+        gitlab_confirm_merged || gitlab_confirm_rc=$?
+        case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+        ;;
+    esac
     ;;
   *)
     echo "error: invalid PR merge request" >&2
