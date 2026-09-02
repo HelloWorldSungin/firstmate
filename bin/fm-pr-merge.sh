@@ -11,7 +11,8 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
-# Extra GitHub args are forwarded unchanged, including an explicit --merge.
+# Immediate-execution GitHub args are forwarded unchanged, including an
+# explicit --merge.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -138,8 +139,27 @@ reject_head_overrides() {
   done
 }
 
+reject_deferred_merge_args() {
+  local arg normalized
+  # This is a denylist: it cannot see a deferring flag invented later, so every new deferring forge flag must be added here.
+  for arg in "$@"; do
+    normalized=${arg,,}
+    case "$normalized" in
+      --auto|--auto=true|--auto=1|--auto=t|\
+      --auto-merge|--auto-merge=true|--auto-merge=1|--auto-merge=t|\
+      --when-pipeline-succeeds|--when-pipeline-succeeds=true|\
+      --when-pipeline-succeeds=1|--when-pipeline-succeeds=t)
+        echo "error: deferred merge arguments are not allowed because this path guarantees the base was compared at merge time, and deferred execution breaks that guarantee" >&2
+        echo "action: merge when the PR is actually ready so the guarded comparison runs immediately before merge" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
 reject_repo_overrides "$@" || exit 1
 reject_head_overrides "$@" || exit 1
+reject_deferred_merge_args "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"

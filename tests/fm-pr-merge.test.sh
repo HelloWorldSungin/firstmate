@@ -53,6 +53,8 @@
 #        refused before the forge merge call and names the omitted content
 #   (kk) an unavailable default-branch comparison fails closed and tells the
 #        operator to restore the inputs instead of offering a bypass
+#   (ll) deferred merge flags are refused before recording or comparison so the
+#        guarded base cannot change before the forge executes the merge
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -790,6 +792,64 @@ test_repo_override_args_refuse_before_recording() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "repo-override: gh pr merge was invoked despite repo override"
   pass "fm-pr-merge refuses repo override args before recording state"
+}
+
+test_deferred_merge_args_refuse_before_recording_or_comparison() {
+  local case_dir flag name rc url
+  set -- \
+    'github|https://github.com/right/repo/pull/5|--auto' \
+    'github-true|https://github.com/right/repo/pull/5|--auto=TRUE' \
+    "gitlab|$MR_URL|--auto-merge" \
+    "gitlab-true|$MR_URL|--auto-merge=true" \
+    "gitlab-legacy|$MR_URL|--when-pipeline-succeeds" \
+    "gitlab-legacy-true|$MR_URL|--when-pipeline-succeeds=1"
+  for name in "$@"; do
+    flag=${name##*|}
+    url=${name#*|}
+    url=${url%|*}
+    name=${name%%|*}
+    case "$name" in
+      github*)
+        case_dir=$(make_case "deferred-$name")
+        add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
+        : >"$case_dir/gh-axi.log"
+        ;;
+      gitlab*) case_dir=$(make_gitlab_case "deferred-$name") ;;
+    esac
+    fm_write_meta "$case_dir/state/task-x1.meta" \
+      'window=fm-task-x1' \
+      "worktree=$case_dir/missing-worktree" \
+      "project=$case_dir/project" \
+      'kind=ship' \
+      'mode=no-mistakes'
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$url" -- "$flag" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "deferred-$name: fm-pr-merge should refuse $flag"
+    assert_grep 'this path guarantees the base was compared at merge time' "$case_dir/stderr" \
+      "deferred-$name: refusal did not explain the merge-time comparison guarantee"
+    assert_grep 'deferred execution breaks that guarantee' "$case_dir/stderr" \
+      "deferred-$name: refusal did not explain why the flag is unsafe"
+    assert_grep 'merge when the PR is actually ready' "$case_dir/stderr" \
+      "deferred-$name: refusal did not tell the caller when to merge"
+    assert_no_grep "pr=$url" "$case_dir/state/task-x1.meta" \
+      "deferred-$name: PR URL was recorded before rejecting $flag"
+    assert_absent "$case_dir/state/task-x1.check.sh" \
+      "deferred-$name: $flag armed a merge poll"
+    [ ! -s "$case_dir/gh-axi.log" ] \
+      || fail "deferred-$name: the GitHub wrapper was invoked despite $flag"
+    [ ! -s "$case_dir/gh.log" ] \
+      || fail "deferred-$name: GitHub was invoked despite $flag"
+    if [ -e "$case_dir/glab.log" ]; then
+      [ ! -s "$case_dir/glab.log" ] \
+        || fail "deferred-$name: GitLab was invoked despite $flag"
+    fi
+  done
+  pass "fm-pr-merge refuses deferred merge flags before recording or comparison"
 }
 
 test_bundled_repo_override_args_refuse_before_recording() {
@@ -2057,6 +2117,7 @@ test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
+test_deferred_merge_args_refuse_before_recording_or_comparison
 test_bundled_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
