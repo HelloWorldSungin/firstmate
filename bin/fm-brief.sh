@@ -545,22 +545,29 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       type == "string"
       and length <= 200
       and test("^v1\\.[A-Za-z0-9._-]+$");
+    def task_slug:
+      if ((.slug | type) == "string"
+          and (.slug | test("^firstmate/[^/]+/task/[^/]+$"))) then
+        (.slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")) as $slug
+        | if (($slug.id | source_id_valid)
+              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid))
+          then $slug
+          else null
+          end
+      else null
+      end;
     def identity:
-      if has("source_kind") or has("source_id") then
-        if ((.source_kind == "task" or .source_kind == "note")
-            and (.source_id | source_id_valid))
-        then {kind: .source_kind, id: .source_id, classifiable: true}
-        else {kind: "", id: "", classifiable: false}
-        end
-      elif ((.slug | type) == "string"
-            and (.slug | test("^firstmate/[^/]+/(task|note)/[^/]+$"))) then
-        (.slug | capture("^firstmate/(?<tag>[^/]+)/(?<kind>task|note)/(?<id>[^/]+)$")) as $legacy
-        | if (($legacy.id | source_id_valid)
-              and ("v1." + $legacy.tag + "." + $legacy.kind + "." + $legacy.id | document_id_valid))
-          then {kind: $legacy.kind, id: $legacy.id, classifiable: true}
+      task_slug as $slug
+      | if $slug == null then
+          {kind: "", id: "", classifiable: true}
+        elif has("source_kind") or has("source_id") then
+          if (.source_kind == "task"
+              and (.source_id | source_id_valid)
+              and .source_id == $slug.id)
+          then {kind: "task", id: .source_id, classifiable: true}
           else {kind: "", id: "", classifiable: false}
           end
-      else {kind: "", id: "", classifiable: false}
+        else {kind: "task", id: $slug.id, classifiable: true}
       end;
     def displayed($cap):
       tostring
