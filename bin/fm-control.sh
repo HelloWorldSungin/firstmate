@@ -350,6 +350,15 @@ require_state_verified_backend() {  # <verb>
 # before sending anything when the backend cannot deliver either key, because
 # an interrupt that cancels the turn but leaves the restored prompt in the
 # composer would make the next submitted line concatenate onto it.
+#
+# Identity is proven BEFORE the first key, not only after the last one. The
+# delivery primitive carries the caller-facing label alone, which a reused
+# zellij pane under a legacy bare title can still satisfy for the wrong task
+# (docs/zellij-backend.md "Home-scoped tab titles"); the recorded
+# zellij_tab_id is the part that distinguishes them. Verifying only in
+# verify_interrupt_running would name the mismatch after another task's turn
+# had already been cancelled. Backends that record no tab id pass the empty
+# value through and keep their existing label-only identity.
 send_interrupt_keys() {
   local key repeat clear i=0
   key=$(fm_control_interrupt_key "$HARNESS")
@@ -359,6 +368,8 @@ send_interrupt_keys() {
     || die "harness $HARNESS interrupts with $key, which the $BACKEND backend cannot deliver; refusing to send a different key"
   [ -z "$clear" ] || fm_control_backend_supports_key "$BACKEND" "$clear" \
     || die "harness $HARNESS needs $clear to clear its composer after an interrupt, which the $BACKEND backend cannot deliver; refusing to leave the cancelled prompt where the next submitted line would concatenate onto it"
+  fm_backend_target_exists "$BACKEND" "$T" "$LABEL" "$ZELLIJ_TAB_ID" \
+    || die "task $ID's recorded endpoint ($BACKEND $T) no longer identifies task $ID's own agent; refusing to send an interrupt key that could cancel another task's turn"
   while [ "$i" -lt "$repeat" ]; do
     fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL" \
       || die "interrupt key $key was not delivered to task $ID on $BACKEND"

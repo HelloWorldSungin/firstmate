@@ -170,6 +170,25 @@ test_fresh_beacon_without_live_watcher_stays_alarm() {
   pass "fm-guard stale banner: a fresh beacon without a live watcher remains unhealthy"
 }
 
+test_queue_only_need_names_queued_wakes_not_x_mode() {
+  local dir home out
+  dir=$(make_guard_case queue-only-cause)
+  home=$(case_home "$dir")
+  # No in-flight task, no event source, no X-mode relay poll: the pending wake
+  # queue is the whole supervision need, so the banner must say so instead of
+  # blaming Relay polling on a home that never opted into X mode.
+  rm -f "$home/state/task.meta"
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$home/state/.wake-queue"
+  out=$(run_guard_case "$dir")
+  [ "$(count_text "$out" "WATCHER DOWN - SUPERVISION IS OFF")" -eq 1 ] \
+    || fail "a queue-only need without a live watcher must still alarm: $out"
+  assert_contains "$out" "Queued wakes are pending" \
+    "the banner cause must name the pending wake queue"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" \
+    "a home with no X-mode relay poll must not be told Relay polling needs supervision"
+  pass "fm-guard stale banner: a queue-only supervision need names queued wakes as its cause"
+}
+
 test_x_mode_without_live_watcher_stays_alarm() {
   local dir home out
   dir=$(make_guard_case x-mode-no-live)
@@ -757,6 +776,7 @@ test_persistent_no_watcher_banner_names_missing_process
 test_persistent_no_watcher_episode_survives_beacon_touch
 test_fresh_beacon_without_live_watcher_stays_alarm
 test_x_mode_without_live_watcher_stays_alarm
+test_queue_only_need_names_queued_wakes_not_x_mode
 test_healthy_recovery_rearms_next_stale_episode
 test_concurrent_same_episode_prints_one_full_banner
 test_home_isolation

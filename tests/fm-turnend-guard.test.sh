@@ -414,6 +414,24 @@ test_hook_x_mode_reason_sources_cadence() {
   pass "fm-turnend-guard: X-mode repair reason sources the cadence config"
 }
 
+# Issue 234's queue-only home: no in-flight meta, no event source, no X-mode
+# relay poll, just wake records nobody drained. The block is correct, but the
+# banner has to name the real cause instead of blaming Relay polling on a home
+# that never opted into X mode, and the repair line has to say to drain first.
+test_hook_queue_only_block_names_the_pending_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-queue-only")
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$dir/state/.wake-queue"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "a queue-only home must block a blind turn"
+  assert_contains "$out" "Queued wakes are pending" "a queue-only block must name the pending wake queue"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" \
+    "a home with no X-mode relay poll must not be told Relay polling needs supervision"
+  assert_contains "$out" "After draining queued wakes" \
+    "a queue-only block must tell the operator to drain before repairing supervision"
+  pass "fm-turnend-guard: a queue-only blind turn names the pending wake queue as its cause"
+}
+
 test_hook_x_mode_only_blocks_in_default_mode() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-x-mode-only")
@@ -1724,6 +1742,7 @@ test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
+test_hook_queue_only_block_names_the_pending_queue
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry

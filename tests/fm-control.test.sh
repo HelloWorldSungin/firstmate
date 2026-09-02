@@ -17,6 +17,9 @@
 #   6. Marker non-regression: a control command to a kind=secondmate task
 #      carries NO from-firstmate marker and opens no pending-reply expectation,
 #      while fm-send's marking of the same task is untouched.
+#   7. Endpoint identity: a write-path delivery is refused before any key is
+#      sent when the recorded zellij tab no longer holds the recorded pane,
+#      even though the pane's tab still carries a matching legacy label.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -902,6 +905,102 @@ test_fm_send_still_marks_the_same_secondmate_task() {
   pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
 }
 
+# --- 7. endpoint identity on the write path ---------------------------------
+#
+# A zellij pane id is reused once its pane dies, so the recorded pane can
+# reappear inside a DIFFERENT tab (docs/zellij-backend.md). The caller-facing
+# label alone does not separate those two panes: a legacy bare-titled tab
+# belonging to another task satisfies it. The recorded zellij_tab_id is the
+# part that does, and it has to be proven BEFORE a key is typed - a mismatch
+# discovered afterwards means another task's turn was already cancelled.
+#
+# A stubbed zellij CLI whose whole model is three files under $FM_FAKE_DIR:
+#   zellij-sessions  the `list-sessions --short` membership.
+#   zellij-panes     the `action list-panes --json` inventory.
+#   zellij-tabs      the `action list-tabs --json` inventory.
+# Named keys are appended to the same $FM_FAKE_DIR/keys file the tmux stub
+# uses, so keys_sent() reads deliveries on either backend.
+make_zellij_stub() {  # <case-dir>
+  local fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/zellij" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+case "${1:-}" in
+  --version) printf 'zellij 0.44.0\n'; exit 0 ;;
+  list-sessions) cat "$D/zellij-sessions"; exit 0 ;;
+esac
+# Strip the global `--session <name>` flag and everything up to `action`.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session) shift 2 ;;
+    action) shift; break ;;
+    *) shift ;;
+  esac
+done
+case "${1:-}" in
+  list-panes) cat "$D/zellij-panes" ;;
+  list-tabs) cat "$D/zellij-tabs" ;;
+  # action send-keys --pane-id <id> <key>
+  send-keys) printf '%s\n' "${4:-}" >> "$D/keys" ;;
+  # action paste --pane-id <id> -- <text>
+  paste) printf '%s\n' "${5:-}" >> "$D/literal" ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/zellij"
+}
+
+# add_zellij_task: a task whose endpoint is zellij pane <pane> in session
+# "sess", with <recorded-tab> in its metadata, while the LIVE pane currently
+# sits in <live-tab> under the legacy bare title "fm-<id>".
+add_zellij_task() {  # <case-dir> <id> <recorded-tab> <live-tab> [pane]
+  local dir=$1 id=$2 recorded_tab=$3 live_tab=$4 pane=${5:-7}
+  add_task "$dir" "$id" claude ship zellij "sess:$pane"
+  {
+    echo "zellij_session=sess"
+    echo "zellij_tab_id=$recorded_tab"
+    echo "zellij_pane_id=$pane"
+  } >> "$dir/home/state/$id.meta"
+  make_zellij_stub "$dir"
+  printf 'sess\n' > "$dir/fake/zellij-sessions"
+  printf '[{"id":%s,"tab_id":%s,"is_plugin":false}]\n' "$pane" "$live_tab" > "$dir/fake/zellij-panes"
+  printf '[{"tab_id":%s,"name":"fm-%s"}]\n' "$live_tab" "$id" > "$dir/fake/zellij-tabs"
+}
+
+test_zellij_interrupt_refuses_a_reused_pane_under_a_legacy_label() {
+  local dir out rc
+  dir=$(new_case zellij-reused-pane)
+  # Recorded in tab 3; the pane id was reused and now lives in tab 9, whose
+  # bare legacy title still matches this task's caller-facing label.
+  add_zellij_task "$dir" t1 3 9
+  out=$(run_control "$dir" t1 interrupt); rc=$?
+  # Asserted before the refusal itself: a post-delivery-only check also ends in
+  # a nonzero exit, having already cancelled the other task's turn.
+  [ -z "$(keys_sent "$dir")" ] \
+    || fail "no interrupt key may reach a pane that failed the recorded tab-id check, got: $(keys_sent "$dir")"
+  expect_code 1 "$rc" "an interrupt aimed at a reused pane should refuse"$'\n'"$out"
+  assert_contains "$out" "no longer identifies task t1's own agent" \
+    "the refusal should name the task whose endpoint identity failed"
+  assert_not_contains "$out" "interrupt-delivered" \
+    "a refused interrupt must not report delivery"
+  pass "fm-control interrupt: a reused zellij pane under a matching legacy label is refused before any key is sent"
+}
+
+test_zellij_interrupt_delivers_when_the_recorded_tab_still_holds_the_pane() {
+  local dir out rc
+  dir=$(new_case zellij-same-tab)
+  add_zellij_task "$dir" t1 3 3
+  out=$(run_control "$dir" t1 interrupt); rc=$?
+  expect_code 0 "$rc" "an interrupt to the recorded tab should still deliver"$'\n'"$out"
+  [ "$(keys_sent "$dir")" = Esc ] \
+    || fail "claude's interrupt key should reach the pane in its recorded tab, got: $(keys_sent "$dir")"
+  assert_contains "$out" "interrupt-delivered t1 harness=claude backend=zellij" \
+    "a verified endpoint should report its delivery"
+  pass "fm-control interrupt: a pane still living in its recorded tab is interrupted normally"
+}
+
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once
@@ -938,3 +1037,9 @@ test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
 test_fm_send_still_marks_the_same_secondmate_task
+if command -v jq >/dev/null 2>&1; then
+  test_zellij_interrupt_refuses_a_reused_pane_under_a_legacy_label
+  test_zellij_interrupt_delivers_when_the_recorded_tab_still_holds_the_pane
+else
+  echo "skip: jq not found (required by the zellij adapter's endpoint identity cases)"
+fi
