@@ -262,7 +262,7 @@ Startup files after tranches 1+2: **~6,708-6,741**.
 
 Long rationale and history behind stable preferences, resolved decision history, detailed topology reference, incident narratives - the categories `fm-gbrain-capture-tightening` section 6 already names as safe to move once its conditions hold, at the 5,000-5,500 target it already computed.
 That means moving a further ~1,200-1,700 estimated tokens beyond tranche 2.
-This ADR adopts that target as the destination of the tranche system and holds the exact budget number for the captain (see "Open captain choices").
+This ADR adopts that target as the destination of the tranche system and records the exact budget-number choice as answered by the captain on 2026-08-20 (see "Captain choices answered 2026-08-20").
 
 ### What the seams cost
 
@@ -352,9 +352,9 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
 - Implementation is follow-up tracked work, per item: the audit trail (first, and carrying the seam declaration at the dashboard and eval call sites that D2 names), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
   This ADR authorizes none of them to skip their own validation.
 
-## Open captain choices
+## Captain choices answered 2026-08-20
 
-Two choices surfaced by this design belong to the captain and are registered as captain-held items in the fleet's decision ledger; they are listed here so they cannot be lost in prose.
+Two choices surfaced by this design belong to the captain and were registered as captain-held items in the fleet's decision ledger; the captain answered both on 2026-08-20, and they remain listed here by identity without restating the private answers.
 
 1. **The post-gate budget target** (`budget-target-post-gate`): keep the effective 7,500, or lower it toward 5,500 and then 5,000 as capture-tightening recommends once its gates pass and the tranches land.
    The budget knob is the captain's own local operating choice; nothing in this design moves it.
