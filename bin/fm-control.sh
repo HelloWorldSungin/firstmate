@@ -296,6 +296,7 @@ fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
 BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 LABEL="fm-$ID"
+ZELLIJ_TAB_ID=$(fm_meta_get "$META" zellij_tab_id)
 RECORDED_HARNESS=$(fm_meta_get "$META" harness)
 KIND=$(fm_meta_get "$META" kind)
 WT=$(fm_meta_get "$META" worktree)
@@ -412,7 +413,7 @@ deliver_interrupt() {
 
 verify_interrupt_running() {
   local proof after
-  fm_backend_target_exists "$BACKEND" "$T" "$LABEL" \
+  fm_backend_target_exists "$BACKEND" "$T" "$LABEL" "$ZELLIJ_TAB_ID" \
     || die "task $ID's endpoint disappeared while interrupting it; no further control action is safe"
   proof=endpoint
   if fm_control_backend_state_verified "$BACKEND"; then

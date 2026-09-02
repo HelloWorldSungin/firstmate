@@ -560,7 +560,8 @@ EOF
     # backstop, because an unestablished verdict is never evidence of idleness.
     verdict=$(fm_busy_classify_live "$(fm_backend_of_meta "$meta")" \
       "$(fm_backend_target_of_meta "$meta")" "$(fm_meta_get "$meta" harness)" \
-      "$task" "$STATE" "$(fm_backend_expected_label_of_selector "$task" "$STATE")")
+      "$task" "$STATE" "$(fm_backend_expected_label_of_selector "$task" "$STATE")" \
+      "$(fm_meta_get "$meta" zellij_tab_id)")
     state=${verdict%% *}
     source=${verdict#* }
     [ "$source" != "$verdict" ] || source=unrecorded
