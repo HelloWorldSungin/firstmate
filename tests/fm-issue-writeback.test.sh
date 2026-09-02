@@ -1538,7 +1538,16 @@ if [ "${1:-}" = api ]; then
   case " $* " in
     *pullRequest*)
       if [ -e "$FM_TEST_MERGE_MARKER" ]; then state=MERGED; else state=OPEN; fi
-      printf 'state=%s\nbase_ref=main\nqueue_enabled=false\nin_queue=false\nauto_merge=none\nqueue_entry=none\n' "$state"
+      number=
+      for arg in "$@"; do
+        case "$arg" in number=*) number=${arg#number=} ;; esac
+      done
+      head_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+        rev-parse "refs/pull/$number/head") || exit 1
+      base_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+        rev-parse refs/heads/main) || exit 1
+      printf 'state=%s\nbase_ref=main\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=false\nin_queue=false\nauto_merge=none\nqueue_entry=none\n' \
+        "$state" "$head_oid" "$base_oid"
       exit 0
       ;;
   esac

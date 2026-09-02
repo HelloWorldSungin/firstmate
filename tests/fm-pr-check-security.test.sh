@@ -80,12 +80,36 @@ SH
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-case " $* " in
-  *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
-  *" state "*)
+case "${1:-} ${2:-}" in
+  "api graphql")
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
-    printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
+    number=
+    for arg in "$@"; do
+      case "$arg" in number=*) number=${arg#number=} ;; esac
+    done
+    head_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+      rev-parse "refs/pull/$number/head") || exit 1
+    base_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+      rev-parse refs/heads/main) || exit 1
+    if [ -e "$FM_TEST_GH_MERGE_MARKER" ]; then state=MERGED; else state=OPEN; fi
+    printf 'state=%s\nbase_ref=main\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=false\nin_queue=false\nauto_merge=none\nqueue_entry=none\n' \
+      "$state" "$head_oid" "$base_oid"
+    ;;
+  "pr view")
+    case " $* " in
+      *headRefOid*)
+        printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+        ;;
+      *" state "*)
+        [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+        [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+        printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
+        ;;
+    esac
+    ;;
+  "pr merge")
+    : >"$FM_TEST_GH_MERGE_MARKER"
     ;;
 esac
 SH
@@ -104,7 +128,7 @@ SH
   # and exit 0 on success, and a non-zero exit with no stdout on any failure.
   cat > "$fakebin/glab" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
+printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
@@ -261,6 +285,7 @@ run_check_entry() {
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
+    FM_TEST_GH_MERGE_MARKER="$dir/gh-merge-called" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
@@ -272,6 +297,7 @@ run_merge_entry() {
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
+    FM_TEST_GH_MERGE_MARKER="$dir/gh-merge-called" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
@@ -3034,7 +3060,7 @@ EOF
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
     || fail "merge wrapper refused for some reason other than the state it could not read"
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
-  grep -qF "mr view 7 -R https://gitlab.example/group/subgroup/project" "$dir/glab.log" \
+  grep -qF "GITLAB_HOST=gitlab.example api graphql -f fullPath=group/subgroup/project -f iid=7 -f targetRef=main" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
   ! grep -qF ' mr merge ' "$dir/glab.log" \
     || fail "merge wrapper merged despite an unreadable merge request state"
