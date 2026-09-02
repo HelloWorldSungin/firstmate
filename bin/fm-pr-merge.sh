@@ -674,7 +674,7 @@ github_read_merge_state() {
           state
           baseRefName
           headRefOid
-          baseRef { target { oid } }
+          baseRefOid
           isMergeQueueEnabled
           isInMergeQueue
           autoMergeRequest { enabledAt }
@@ -687,7 +687,7 @@ github_read_merge_state() {
         "state=" + ((.state // "") | tostring),
         "base_ref=" + ((.baseRefName // "") | tostring),
         "head_oid=" + ((.headRefOid // "") | tostring),
-        "base_oid=" + ((.baseRef.target.oid // "") | tostring),
+        "base_oid=" + ((.baseRefOid // "") | tostring),
         "queue_enabled=" + (if has("isMergeQueueEnabled") then (.isMergeQueueEnabled | tostring) else "" end),
         "in_queue=" + (if has("isInMergeQueue") then (.isInMergeQueue | tostring) else "" end),
         "auto_merge=" + (if has("autoMergeRequest") then (if .autoMergeRequest == null then "none" else "active" end) else "unknown" end),
@@ -714,32 +714,33 @@ $fields
 FIELDS
   [ "$total" -eq 8 ] && [ "$named" -eq 8 ] || return 1
   case "$FM_GITHUB_STATE" in OPEN|CLOSED|MERGED) ;; *) return 1 ;; esac
-  [ -n "$FM_GITHUB_BASE_REF" ] || return 1
-  fm_pr_head_valid "$FM_GITHUB_HEAD_OID" || return 1
-  fm_pr_head_valid "$FM_GITHUB_BASE_OID" || return 1
-  case "$FM_GITHUB_QUEUE_ENABLED:$FM_GITHUB_IN_QUEUE" in
-    true:true|true:false|false:true|false:false) ;;
-    *) return 1 ;;
-  esac
-  case "$FM_GITHUB_AUTO_MERGE" in none|active) ;; *) return 1 ;; esac
-  case "$FM_GITHUB_QUEUE_ENTRY" in
-    none|AWAITING_CHECKS|LOCKED|MERGEABLE|QUEUED|UNMERGEABLE) ;;
-    *) return 1 ;;
-  esac
+}
+
+github_refuse_unknown_immediate_execution() {
+  printf 'error: refusing to merge %s because GitHub immediate execution state is unknown, and unknown does not prove deferral is absent\n' \
+    "$URL" >&2
+  return 1
 }
 
 github_require_immediate_execution() {
-  if ! github_read_merge_state; then
-    printf 'error: refusing to merge %s because GitHub immediate execution state is unknown, and unknown does not prove deferral is absent\n' \
-      "$URL" >&2
-    return 1
-  fi
   case "$FM_GITHUB_STATE" in
     MERGED) return 3 ;;
     CLOSED)
       printf 'error: refusing to merge %s because GitHub reports the pull request is closed\n' "$URL" >&2
       return 1
       ;;
+  esac
+  case "$FM_GITHUB_QUEUE_ENABLED:$FM_GITHUB_IN_QUEUE" in
+    true:true|true:false|false:true|false:false) ;;
+    *) github_refuse_unknown_immediate_execution; return 1 ;;
+  esac
+  case "$FM_GITHUB_AUTO_MERGE" in
+    none|active) ;;
+    *) github_refuse_unknown_immediate_execution; return 1 ;;
+  esac
+  case "$FM_GITHUB_QUEUE_ENTRY" in
+    none|AWAITING_CHECKS|LOCKED|MERGEABLE|QUEUED|UNMERGEABLE) ;;
+    *) github_refuse_unknown_immediate_execution; return 1 ;;
   esac
   if [ "$FM_GITHUB_QUEUE_ENABLED" = true ] || [ "$FM_GITHUB_IN_QUEUE" = true ] \
     || [ "$FM_GITHUB_QUEUE_ENTRY" != none ]; then
@@ -752,6 +753,21 @@ github_require_immediate_execution() {
       "$URL" >&2
     return 1
   fi
+}
+
+refuse_changed_target_after_reinspection() {
+  local target=$1 old_default=$FM_PR_INSPECTED_DEFAULT forge
+  case "$PROVIDER" in
+    github) forge=GitHub ;;
+    gitlab) forge=GitLab ;;
+    *) return 1 ;;
+  esac
+  inspect_merge_boundary "$target" || return 1
+  printf 'error: refusing to merge %s because the %s target and current default branch changed during validation from %s to %s\n' \
+    "$URL" "$forge" "$old_default" "$FM_PR_INSPECTED_DEFAULT" >&2
+  printf 'action: re-run validation against current default branch %s\n' \
+    "$FM_PR_INSPECTED_DEFAULT" >&2
+  return 1
 }
 
 verify_forge_inspected_identity() {
@@ -874,6 +890,8 @@ verify_inspected_default_tip() {
     printf 'error: refusing to merge %s because the current default branch moved from %s at tip %s to %s at tip %s before merge\n' \
       "$URL" "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_BASE" \
       "${live_ref#refs/heads/}" "$live_tip" >&2
+    printf 'action: re-run validation against current default branch %s\n' \
+      "${live_ref#refs/heads/}" >&2
     return 1
   fi
   if [ "$live_tip" != "$FM_PR_INSPECTED_BASE" ]; then
@@ -888,14 +906,22 @@ verify_inspected_default_tip() {
 case "$PROVIDER" in
   github)
     github_preflight_rc=0
-    github_require_immediate_execution || github_preflight_rc=$?
-    case "$github_preflight_rc" in 0|3) ;; *) exit 1 ;; esac
+    if ! github_read_merge_state; then
+      github_refuse_unknown_immediate_execution
+      exit 1
+    fi
+    if [ "$FM_GITHUB_STATE" = MERGED ]; then
+      github_preflight_rc=3
+    else
+      inspect_merge_boundary "$FM_GITHUB_BASE_REF" || exit 1
+      github_require_immediate_execution || github_preflight_rc=$?
+      [ "$github_preflight_rc" -eq 0 ] || exit 1
+    fi
     merge_args=()
     if ! caller_has_merge_method "$@"; then
       merge_args=(--squash)
     fi
     if [ "$github_preflight_rc" -eq 0 ]; then
-      inspect_merge_boundary "$FM_GITHUB_BASE_REF" || exit 1
       github_args=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -926,6 +952,14 @@ case "$PROVIDER" in
         esac
       done
       github_preflight_rc=0
+      if ! github_read_merge_state; then
+        github_refuse_unknown_immediate_execution
+        exit 1
+      fi
+      if [ "$FM_GITHUB_STATE" != MERGED ] \
+        && [ "$FM_GITHUB_BASE_REF" != "$FM_PR_INSPECTED_DEFAULT" ]; then
+        refuse_changed_target_after_reinspection "$FM_GITHUB_BASE_REF" || exit 1
+      fi
       github_require_immediate_execution || github_preflight_rc=$?
       case "$github_preflight_rc" in
         0)
@@ -974,8 +1008,7 @@ case "$PROVIDER" in
               gitlab_attempt=2
               ;;
             5)
-              inspect_merge_boundary "$FM_PR_MERGE_TARGET" || exit 1
-              exit 1
+              refuse_changed_target_after_reinspection "$FM_PR_MERGE_TARGET" || exit 1
               ;;
             *) exit 1 ;;
           esac

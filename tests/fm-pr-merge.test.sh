@@ -356,8 +356,17 @@ case "${1:-} ${2:-}" in
       "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
         refs/heads/main "$FM_TEST_ADVANCED_BASE"
     fi
+    if [ -n "${FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL:-}" ]; then
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+        "refs/heads/$FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL" \
+        "$FM_TEST_ADVANCED_BASE"
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" symbolic-ref HEAD \
+        "refs/heads/$FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL"
+    fi
     sed -e "s/__TASK_HEAD__/$task_head/g" \
-      -e "s/__DEFAULT_HEAD__/$default_head/g" "$FM_TEST_GLAB_JSON"
+      -e "s/__DEFAULT_HEAD__/$default_head/g" \
+      -e "s/\"targetBranch\":\"main\"/\"targetBranch\":\"${FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL:-main}\"/" \
+      "$FM_TEST_GLAB_JSON"
     exit 0
     ;;
   "api projects/"*"/merge_requests/"*)
@@ -504,20 +513,29 @@ case "${1:-} ${2:-}" in
   "api graphql")
     printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
     case_dir=${FM_TEST_WT%/wt}
-    if [ -n "${FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL:-}" ]; then
-      count_file="$case_dir/graphql-count"
-      count=0
-      [ ! -f "$count_file" ] || count=$(cat "$count_file")
-      count=$((count + 1))
-      printf '%s\n' "$count" >"$count_file"
-      if [ "$count" -eq "$FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL" ]; then
-        "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
-          refs/heads/main "$FM_TEST_ADVANCED_BASE"
-      fi
+    count_file="$case_dir/graphql-count"
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    if [ -n "${FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL:-}" ] \
+      && [ "$count" -eq "$FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL" ]; then
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+        refs/heads/main "$FM_TEST_ADVANCED_BASE"
     fi
-    number=
+    if [ -n "${FM_TEST_RENAME_DEFAULT_ON_GRAPHQL:-}" ] \
+      && [ "$count" -eq "$FM_TEST_RENAME_DEFAULT_ON_GRAPHQL" ]; then
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+        "refs/heads/$FM_TEST_NEW_DEFAULT" "$FM_TEST_ADVANCED_BASE"
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" symbolic-ref \
+        HEAD "refs/heads/$FM_TEST_NEW_DEFAULT"
+    fi
+    number= query=
     for arg in "$@"; do
-      case "$arg" in number=*) number=${arg#number=} ;; esac
+      case "$arg" in
+        number=*) number=${arg#number=} ;;
+        query=*) query=${arg#query=} ;;
+      esac
     done
     [ -n "$number" ] || exit 2
     if [ -e "$case_dir/github-merge-called-$number" ]; then
@@ -540,9 +558,17 @@ case "${1:-} ${2:-}" in
       queue_entry=${FM_TEST_GH_QUEUE_ENTRY:-none}
     fi
     head_oid=${FM_TEST_GH_HEAD_OID:-$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" rev-parse "refs/pull/$number/head")}
-    base_oid=${FM_TEST_GH_BASE_OID:-$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)}
+    base_ref=${FM_TEST_GH_BASE_REF:-main}
+    if [ -n "${FM_TEST_RENAME_DEFAULT_ON_GRAPHQL:-}" ] \
+      && [ "$count" -ge "$FM_TEST_RENAME_DEFAULT_ON_GRAPHQL" ]; then
+      base_ref=$FM_TEST_NEW_DEFAULT
+    fi
+    base_oid=${FM_TEST_GH_BASE_OID:-$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" rev-parse "refs/heads/$base_ref")}
+    if [ -n "${FM_TEST_GH_BASE_REF_DELETED:-}" ]; then
+      case "$query" in *baseRefOid*) ;; *) base_oid= ;; esac
+    fi
     printf 'state=%s\nbase_ref=%s\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=%s\nin_queue=%s\nauto_merge=%s\nqueue_entry=%s\n' \
-      "$state" "${FM_TEST_GH_BASE_REF:-main}" "$head_oid" "$base_oid" \
+      "$state" "$base_ref" "$head_oid" "$base_oid" \
       "$queue_enabled" "$in_queue" "$auto_merge" "$queue_entry"
     ;;
   "pr merge")
@@ -1144,7 +1170,7 @@ test_forge_oid_mismatch_and_unknown_refuse_before_merge() {
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
       github-unknown)
-        expected='GitHub immediate execution state is unknown'
+        expected='GitHub did not provide a readable head OID at the merge boundary'
         FM_TEST_GH_HEAD_OID=unreadable run_pr_merge "$case_dir" task-x1 "$url" \
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
@@ -1194,8 +1220,9 @@ test_non_default_targets_refuse_both_forges() {
     set +e
     case "$provider" in
       github)
-        FM_TEST_GH_BASE_REF=release run_pr_merge "$case_dir" task-x1 "$url" \
-          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        FM_TEST_GH_BASE_REF=release FM_TEST_GH_QUEUE_ENABLED=true \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
       gitlab)
         run_pr_merge "$case_dir" task-x1 "$url" \
@@ -1211,6 +1238,8 @@ test_non_default_targets_refuse_both_forges() {
     assert_grep 'retarget the PR to current default branch main, bring the branch up to current main, and re-run validation' \
       "$case_dir/stderr" \
       "non-default-target-$provider: refusal did not name the recovery action"
+    assert_no_grep 'merge queue' "$case_dir/stderr" \
+      "non-default-target-$provider: target-dependent checks ran before the target contract"
     assert_no_grep 'pr merge' "$case_dir/gh.log" \
       "non-default-target-$provider: GitHub merge ran for a non-default target"
     assert_no_grep ' mr merge ' "$case_dir/glab.log" \
@@ -1219,6 +1248,81 @@ test_non_default_targets_refuse_both_forges() {
       "non-default-target-$provider: refusal disarmed the durable poll"
   done
   pass "both forges refuse merge requests targeting non-default branches"
+}
+
+test_github_already_merged_recovers_with_deleted_base_ref() {
+  local case_dir rc url
+  case_dir=$(make_case github-already-merged-deleted-base)
+  add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+  url=https://github.com/example/repo/pull/91
+
+  set +e
+  FM_TEST_GH_PRE_STATE=MERGED FM_TEST_GH_BASE_REF_DELETED=1 \
+    FM_TEST_GH_QUEUE_ENABLED=unknown \
+    run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-already-merged-deleted-base: recovery should succeed"
+  assert_grep "$url" "$case_dir/state/.wake-queue" \
+    "github-already-merged-deleted-base: recovery did not report the landed merge"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "github-already-merged-deleted-base: recovery invoked a second merge"
+  assert_no_grep 'immediate execution state is unknown' "$case_dir/stderr" \
+    "github-already-merged-deleted-base: open-only state blocked recovery"
+  pass "an already merged GitHub request recovers after its base ref is deleted"
+}
+
+test_target_and_default_transition_names_current_default_for_both_forges() {
+  local case_dir new_tip provider rc url
+  for provider in github gitlab; do
+    case "$provider" in
+      github)
+        case_dir=$(make_case target-default-transition-github)
+        add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+        : >"$case_dir/glab.log"
+        url=https://github.com/example/repo/pull/92
+        ;;
+      gitlab)
+        case_dir=$(make_gitlab_case target-default-transition-gitlab)
+        url=$MR_URL
+        ;;
+    esac
+    new_tip=$(prepare_advanced_default "$case_dir")
+
+    set +e
+    case "$provider" in
+      github)
+        FM_TEST_RENAME_DEFAULT_ON_GRAPHQL=2 FM_TEST_NEW_DEFAULT=trunk \
+          FM_TEST_ADVANCED_BASE=$new_tip \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab)
+        FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL=trunk \
+          FM_TEST_ADVANCED_BASE=$new_tip \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+    esac
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "target-default-transition-$provider: transition should refuse"
+    assert_grep 'target and current default branch changed during validation from main to trunk' \
+      "$case_dir/stderr" \
+      "target-default-transition-$provider: refusal did not name the old and new defaults"
+    assert_grep 're-run validation against current default branch trunk' "$case_dir/stderr" \
+      "target-default-transition-$provider: refusal gave stale recovery guidance"
+    assert_no_grep 'retarget the PR to current default branch main' "$case_dir/stderr" \
+      "target-default-transition-$provider: refusal told the operator to use the obsolete default"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" \
+      "target-default-transition-$provider: GitHub merged across the transition"
+    assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+      "target-default-transition-$provider: GitLab merged across the transition"
+  done
+  pass "both forges name the current default after a target and default transition"
 }
 
 test_final_github_preflight_cannot_reopen_default_tip_race() {
@@ -2881,6 +2985,8 @@ test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
 test_forge_oid_mismatch_and_unknown_refuse_before_merge
 test_non_default_targets_refuse_both_forges
+test_github_already_merged_recovers_with_deleted_base_ref
+test_target_and_default_transition_names_current_default_for_both_forges
 test_final_github_preflight_cannot_reopen_default_tip_race
 test_final_gitlab_preflight_cannot_reopen_default_tip_race
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck
