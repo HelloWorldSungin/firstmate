@@ -314,7 +314,23 @@ gitlab_verify_mergeable() {
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
   # operator's configured default.
-  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" -R "$PROJECT_URL" -F json 2>/dev/null) \
+  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api graphql \
+    -f fullPath="$FM_PR_PATH" -f iid="$PR_NUMBER" \
+    -f targetRef="$FM_PR_INSPECTED_DEFAULT" \
+    -f query='query($fullPath: ID!, $iid: String!, $targetRef: String!) {
+      project(fullPath: $fullPath) {
+        mergeRequest(iid: $iid) {
+          state
+          detailedMergeStatus
+          conflicts
+          mergeableDiscussionsState
+          diffHeadSha
+          targetBranch
+          headPipeline { sha status }
+        }
+        repository { commit(ref: $targetRef) { sha } }
+      }
+    }' 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitLab merge request state before merging" >&2
     return 1
@@ -324,16 +340,21 @@ gitlab_verify_mergeable() {
   # becomes an empty string or the literal "null", neither of which satisfies any
   # check below, so an unreadable field refuses the merge instead of passing it.
   if ! fields=$(printf '%s' "$json" | jq -r '
-      if type == "object" then
-        "state=" + ((.state // "") | tostring),
-        "detail=" + ((.detailed_merge_status // "") | tostring),
-        "conflicts=" + (.has_conflicts | tostring),
-        "discussions=" + (.blocking_discussions_resolved | tostring),
-        "head=" + ((.sha // "") | tostring),
-        "target=" + ((.target_branch // "") | tostring),
-        "target_oid=" + ((.diff_refs.start_sha // "") | tostring),
-        "pipeline_sha=" + ((.head_pipeline.sha // "") | tostring),
-        "pipeline_status=" + ((.head_pipeline.status // "") | tostring)
+      if type == "object" and ((.errors // []) | length) == 0
+        and (.data.project | type) == "object"
+        and (.data.project.mergeRequest | type) == "object"
+      then
+        .data.project as $project |
+        $project.mergeRequest as $mr |
+        "state=" + (($mr.state // "") | tostring),
+        "detail=" + (($mr.detailedMergeStatus // "") | tostring | ascii_downcase),
+        "conflicts=" + ($mr.conflicts | tostring),
+        "discussions=" + ($mr.mergeableDiscussionsState | tostring),
+        "head=" + (($mr.diffHeadSha // "") | tostring),
+        "target=" + (($mr.targetBranch // "") | tostring),
+        "target_oid=" + (($project.repository.commit.sha // "") | tostring),
+        "pipeline_sha=" + (($mr.headPipeline.sha // "") | tostring),
+        "pipeline_status=" + (($mr.headPipeline.status // "") | tostring | ascii_downcase)
       else
         error("merge request payload is not an object")
       end' 2>/dev/null); then

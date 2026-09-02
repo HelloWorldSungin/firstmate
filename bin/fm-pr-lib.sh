@@ -318,10 +318,11 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
   local wt=${1-} id=${2-} provider=${3-} host=${4-} project_path=${5-} number=${6-}
   local source_ref remote_state default_ref default_name
   local token base_ref head_ref base head merge_bases merge_base merge_base_count
-  local paths_file path delta added deleted quoted
-  local raw raw_meta old_mode new_mode old_oid new_oid status old_type new_type detail
+  local stage_dir touched_keys default_keys eligible_keys raw_file numstat_file
+  local path key eligible_key delta delta_rest numstat_path added deleted quoted
+  local raw_meta old_mode new_mode old_oid new_oid status old_type new_type detail
   local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
-  local branch_diff_status inspection_failed=0
+  local inspection_failed=0
   FM_PR_STALE_BASE_RESULT=unavailable
   FM_PR_STALE_BASE_DEFAULT=
   FM_PR_STALE_BASE_DETAILS=
@@ -415,106 +416,127 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     return 2
   fi
 
-  paths_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-stale-base.XXXXXX") || {
+  stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-stale-base.XXXXXX") || {
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
     FM_PR_STALE_BASE_REASON="could not stage the default-branch comparison"
     return 2
   }
-  chmod 0600 "$paths_file" || {
-    rm -f -- "$paths_file"
+  chmod 0700 "$stage_dir" || {
+    rmdir -- "$stage_dir" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
     FM_PR_STALE_BASE_REASON="could not protect the default-branch comparison"
     return 2
   }
-  if ! git -C "$wt" diff --name-only -z --no-renames "$base" "$head" -- >"$paths_file"; then
-    rm -f -- "$paths_file"
+  touched_keys="$stage_dir/touched"
+  default_keys="$stage_dir/default"
+  eligible_keys="$stage_dir/eligible"
+  raw_file="$stage_dir/raw"
+  numstat_file="$stage_dir/numstat"
+  if ! git -C "$wt" -c core.quotePath=true diff --name-only --no-renames \
+      "$merge_base" "$head" -- >"$touched_keys" \
+    || ! git -C "$wt" -c core.quotePath=true diff --name-only --no-renames \
+      "$merge_base" "$base" -- >"$default_keys" \
+    || ! awk 'FILENAME == ARGV[1] { touched[$0] = 1; next } !($0 in touched)' \
+      "$touched_keys" "$default_keys" >"$eligible_keys" \
+    || ! git -C "$wt" diff --raw -z --no-abbrev --no-renames \
+      "$merge_base" "$base" -- >"$raw_file" \
+    || ! git -C "$wt" diff --numstat -z --no-renames \
+      "$merge_base" "$base" -- >"$numstat_file"; then
+    rm -f -- "$touched_keys" "$default_keys" "$eligible_keys" "$raw_file" "$numstat_file"
+    rmdir -- "$stage_dir" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
     FM_PR_STALE_BASE_REASON="could not enumerate the default-branch differences"
     return 2
   fi
-  while IFS= read -r -d '' path; do
-    if git --literal-pathspecs -C "$wt" diff --quiet --no-renames \
-      "$merge_base" "$head" -- "$path"; then
-      branch_diff_status=0
-    else
-      branch_diff_status=$?
+  {
+    if ! IFS= read -r eligible_key <&8; then
+      eligible_key=
     fi
-    case "$branch_diff_status" in
-      0) ;;
-      1) continue ;;
-      *) inspection_failed=1; break ;;
-    esac
-    if ! raw=$(git --literal-pathspecs -C "$wt" diff --raw --no-abbrev --no-renames \
-      "$merge_base" "$base" -- "$path") || [ -z "$raw" ]; then
-      inspection_failed=1
-      break
-    fi
-    raw_meta=${raw%%$'\t'*}
-    IFS=' ' read -r old_mode new_mode old_oid new_oid status <<<"${raw_meta#:}"
-    case "$status" in A|D|M|T) ;; *) inspection_failed=1; break ;; esac
-    if ! delta=$(git --literal-pathspecs -C "$wt" diff --numstat --no-renames \
-      "$merge_base" "$base" -- "$path"); then
-      inspection_failed=1
-      break
-    fi
-    if [ -n "$delta" ]; then
-      IFS=$'\t' read -r added deleted _ <<<"$delta"
-    else
-      added=0
-      deleted=0
-    fi
-    old_type=$(fm_pr_git_mode_type "$old_mode")
-    new_type=$(fm_pr_git_mode_type "$new_mode")
-    printf -v quoted '%q' "$path"
-    case "$status" in
-      A)
-        if [ "$new_type" = "regular file" ] && [ "$added:$deleted" = 0:0 ]; then
-          detail="current default adds an empty file absent from the PR head"
-        elif [ "$new_type" = "regular file" ] && [ "$added:$deleted" != -:- ]; then
-          detail="current default adds a regular file containing $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
-        else
-          detail="current default adds a $new_type absent from the PR head"
-        fi
-        ;;
-      D)
-        detail="current default deletes the $old_type that the PR head would restore"
-        ;;
-      T)
-        detail="current default changes type from $old_type to $new_type; the PR head would restore the $old_type"
-        ;;
-      M)
-        if [ "$old_oid" = "$new_oid" ] && [ "$old_mode" != "$new_mode" ]; then
-          detail="current default changes mode from $old_mode to $new_mode absent from the PR head"
-        elif [ "$old_type" = submodule ] && [ "$new_type" = submodule ]; then
-          detail="current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid"
-        else
-          case "$added:$deleted" in
-            -:-)
-              detail="current default changes binary content; the PR head lacks the new content and would restore the prior content"
-              ;;
-            *:0)
-              detail="current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
-              ;;
-            0:*)
-              detail="current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore"
-              ;;
-            *)
-              detail="current default adds $added line$([ "$added" = 1 ] || printf 's') and removes $deleted line$([ "$deleted" = 1 ] || printf 's'); the PR head lacks the additions and would restore the removed lines"
-              ;;
-          esac
-          [ "$old_mode" = "$new_mode" ] \
-            || detail="$detail; it also changes mode from $old_mode to $new_mode"
-        fi
-        ;;
-    esac
-    FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: $detail
+    while IFS= read -r -d '' raw_meta <&6; do
+      if ! IFS= read -r -d '' path <&6 \
+        || ! IFS= read -r key <&7 \
+        || ! IFS= read -r -d '' delta <&9; then
+        inspection_failed=1
+        break
+      fi
+      delta_rest=${delta#*$'\t'}
+      added=${delta%%$'\t'*}
+      deleted=${delta_rest%%$'\t'*}
+      numstat_path=${delta_rest#*$'\t'}
+      if [ "$numstat_path" != "$path" ]; then
+        inspection_failed=1
+        break
+      fi
+      if [ "$key" != "$eligible_key" ]; then
+        continue
+      fi
+      if ! IFS= read -r eligible_key <&8; then
+        eligible_key=
+      fi
+      IFS=' ' read -r old_mode new_mode old_oid new_oid status <<<"${raw_meta#:}"
+      case "$status" in A|D|M|T) ;; *) inspection_failed=1; break ;; esac
+      old_type=$(fm_pr_git_mode_type "$old_mode")
+      new_type=$(fm_pr_git_mode_type "$new_mode")
+      printf -v quoted '%q' "$path"
+      case "$status" in
+        A)
+          if [ "$new_type" = "regular file" ] && [ "$added:$deleted" = 0:0 ]; then
+            detail="current default adds an empty file absent from the PR head"
+          elif [ "$new_type" = "regular file" ] && [ "$added:$deleted" != -:- ]; then
+            detail="current default adds a regular file containing $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
+          else
+            detail="current default adds a $new_type absent from the PR head"
+          fi
+          ;;
+        D)
+          detail="current default deletes the $old_type that the PR head would restore"
+          ;;
+        T)
+          detail="current default changes type from $old_type to $new_type; the PR head would restore the $old_type"
+          ;;
+        M)
+          if [ "$old_oid" = "$new_oid" ] && [ "$old_mode" != "$new_mode" ]; then
+            detail="current default changes mode from $old_mode to $new_mode absent from the PR head"
+          elif [ "$old_type" = submodule ] && [ "$new_type" = submodule ]; then
+            detail="current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid"
+          else
+            case "$added:$deleted" in
+              -:-)
+                detail="current default changes binary content; the PR head lacks the new content and would restore the prior content"
+                ;;
+              *:0)
+                detail="current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head"
+                ;;
+              0:*)
+                detail="current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore"
+                ;;
+              *)
+                detail="current default adds $added line$([ "$added" = 1 ] || printf 's') and removes $deleted line$([ "$deleted" = 1 ] || printf 's'); the PR head lacks the additions and would restore the removed lines"
+                ;;
+            esac
+            [ "$old_mode" = "$new_mode" ] \
+              || detail="$detail; it also changes mode from $old_mode to $new_mode"
+          fi
+          ;;
+      esac
+      FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: $detail
 "
-  done <"$paths_file"
+    done
+    raw_meta= path= key= delta=
+    if [ "$inspection_failed" = 0 ] \
+      && { [ -n "$eligible_key" ] \
+        || IFS= read -r -d '' raw_meta <&6 \
+        || IFS= read -r key <&7 \
+        || IFS= read -r -d '' delta <&9; }; then
+      inspection_failed=1
+    fi
+  } 6<"$raw_file" 7<"$default_keys" 8<"$eligible_keys" 9<"$numstat_file"
 
-  rm -f -- "$paths_file"
+  rm -f -- "$touched_keys" "$default_keys" "$eligible_keys" "$raw_file" "$numstat_file"
+  rmdir -- "$stage_dir" >/dev/null 2>&1 || true
   git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
   git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
   if [ "$inspection_failed" = 1 ]; then

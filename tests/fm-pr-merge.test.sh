@@ -348,6 +348,14 @@ add_glab_mock() {
 printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
+  "api graphql")
+    [ ! -e "$case_dir/glab-view-fails" ] || exit 1
+    task_head=$(git -C "$FM_TEST_WT" rev-parse HEAD)
+    default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)
+    sed -e "s/__TASK_HEAD__/$task_head/g" \
+      -e "s/__DEFAULT_HEAD__/$default_head/g" "$FM_TEST_GLAB_JSON"
+    exit 0
+    ;;
   "api projects/"*)
     [ ! -e "$case_dir/glab-project-fails" ] || exit 1
     cat "$FM_TEST_GLAB_PROJECT_JSON"
@@ -358,15 +366,11 @@ case "${1:-} ${2:-}" in
     if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
       exit 1
     fi
-    if [ -e "$case_dir/glab-merge-called" ] && [ ! -e "$case_dir/glab-stays-open" ]; then
-      payload=$case_dir/mr-post.json
+    if [ -e "$case_dir/glab-stays-open" ]; then
+      printf '{"state":"opened"}\n'
     else
-      payload=$FM_TEST_GLAB_JSON
+      cat "$case_dir/mr-post.json"
     fi
-    task_head=$(git -C "$FM_TEST_WT" rev-parse HEAD)
-    default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)
-    sed -e "s/__TASK_HEAD__/$task_head/g" \
-      -e "s/__DEFAULT_HEAD__/$default_head/g" "$payload"
     exit 0
     ;;
   "mr merge")
@@ -411,12 +415,12 @@ write_mr_json() {
   if [ "$pipeline" = present ]; then
     pipeline=$(printf '{"sha":"%s","status":"%s"}' "$pipeline_sha" "$pipeline_status")
   fi
-  printf '{"iid":7,"state":"%s","detailed_merge_status":"%s","has_conflicts":%s,' \
+  printf '{"data":{"project":{"mergeRequest":{"state":"%s","detailedMergeStatus":"%s","conflicts":%s,' \
     "$state" "$detail" "$conflicts" > "$file"
-  printf '"blocking_discussions_resolved":%s,"sha":"%s","target_branch":"%s",' \
+  printf '"mergeableDiscussionsState":%s,"diffHeadSha":"%s","targetBranch":"%s",' \
     "$discussions" "$head" "$target" >>"$file"
-  printf '"diff_refs":{"start_sha":"%s"},"head_pipeline":%s}\n' \
-    "$target_oid" "$pipeline" >>"$file"
+  printf '"headPipeline":%s},"repository":{"commit":{"sha":"%s"}}}}}\n' \
+    "$pipeline" "$target_oid" >>"$file"
 }
 
 # make_gitlab_case <name> [<field>=<value> ...]: a case dir with both forge
@@ -431,7 +435,7 @@ make_gitlab_case() {
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/glab.log"
   write_mr_json "$case_dir/mr.json" "$@"
-  write_mr_json "$case_dir/mr-post.json" state=merged
+  printf '{"state":"merged"}\n' >"$case_dir/mr-post.json"
   printf '{"automatic_rebase_enabled":false}\n' >"$case_dir/project.json"
   printf '%s\n' "$case_dir"
 }
@@ -2202,7 +2206,7 @@ test_gitlab_url_resolves_and_merges() {
   expect_code 0 "$rc" "gitlab-merges: a well-formed merge request URL should merge, not error"
   assert_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
     "gitlab-merges: pr= was not recorded before merging"
-  assert_grep "GITLAB_HOST=$MR_HOST mr view 7 -R $MR_PROJECT_URL -F json" "$case_dir/glab.log" \
+  assert_grep "GITLAB_HOST=$MR_HOST api graphql -f fullPath=$MR_PATH -f iid=7 -f targetRef=main" "$case_dir/glab.log" \
     "gitlab-merges: the pre-merge state was not read from the project URL"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
   [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false" ] \
@@ -2228,7 +2232,7 @@ test_gitlab_host_comes_from_the_url() {
   set -e
 
   expect_code 0 "$rc" "gitlab-host-from-url: a self-hosted merge request should merge"
-  assert_grep "GITLAB_HOST=$host mr view 31 -R $project_url -F json" "$case_dir/glab.log" \
+  assert_grep "GITLAB_HOST=$host api graphql -f fullPath=$path -f iid=31 -f targetRef=main" "$case_dir/glab.log" \
     "gitlab-host-from-url: the read did not use the host from the URL"
   assert_grep "GITLAB_HOST=$host mr merge 31 -R $project_url" "$case_dir/glab.log" \
     "gitlab-host-from-url: the merge did not use the host from the URL"
@@ -2483,7 +2487,7 @@ test_gitlab_live_head_mismatch_reinspects_and_refuses() {
   set -e
 
   expect_code 1 "$rc" "gitlab-live-head-mismatch: repeated mismatch should refuse"
-  views=$(grep -c -F ' mr view ' "$case_dir/glab.log")
+  views=$(grep -c -F ' api graphql ' "$case_dir/glab.log")
   [ "$views" -ge 2 ] \
     || fail "gitlab-live-head-mismatch: the changed live head was not re-read after reinspection"
   assert_grep 're-inspecting the live head' "$case_dir/stderr" \
