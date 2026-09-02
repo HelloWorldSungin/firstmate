@@ -255,7 +255,8 @@ fm_pr_head_valid() {
 
 fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-seconds>
   local wt=${1-} expected_host=${2-} expected_path=${3-} bound=${4-}
-  local remote resolved remote_host remote_path remote_count ssh_host
+  local remote resolved remote_user remote_host remote_port remote_path remote_count ssh_host
+  local ssh_args
   case "$bound" in ''|*[!0-9]*|0) return 1 ;; esac
   remote=$(git -C "$wt" config --get-all remote.origin.url 2>/dev/null) || return 1
   remote_count=$(printf '%s\n' "$remote" | awk 'END { print NR + 0 }')
@@ -263,10 +264,15 @@ fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-se
   resolved=$(git -C "$wt" remote get-url origin 2>/dev/null) || return 1
   [ "$resolved" = "$remote" ] || return 1
   fm_project_origin_identity "$remote" || return 1
+  remote_user=$FM_PROJECT_ORIGIN_USER
   remote_host=$FM_PROJECT_ORIGIN_HOST
+  remote_port=$FM_PROJECT_ORIGIN_PORT
   remote_path=$FM_PROJECT_ORIGIN_PATH
   if [ "$FM_PROJECT_ORIGIN_TRANSPORT" = ssh ]; then
-    ssh_host=$(fm_run_timed "$bound" ssh -G "$remote_host" 2>/dev/null | awk '
+    ssh_args=(-G)
+    [ -z "$remote_user" ] || ssh_args+=(-l "$remote_user")
+    [ -z "$remote_port" ] || ssh_args+=(-p "$remote_port")
+    ssh_host=$(fm_run_timed "$bound" ssh "${ssh_args[@]}" "$remote_host" 2>/dev/null | awk '
       tolower($1) == "hostname" { count++; value=$2 }
       END { if (count == 1 && value != "") print value; else exit 1 }
     ') || return 1

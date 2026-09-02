@@ -406,6 +406,37 @@ FIELDS
   FM_PR_MERGE_HEAD=$live_head
 }
 
+gitlab_require_attested_merge() {
+  local encoded_path json automatic_rebase
+  encoded_path=$(printf '%s' "$FM_PR_PATH" | sed 's|/|%2F|g')
+  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api "projects/$encoded_path" 2>/dev/null) \
+    || [ -z "$json" ]; then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  if ! automatic_rebase=$(printf '%s' "$json" | jq -r '
+      if type == "object" and (.automatic_rebase_enabled | type == "boolean")
+      then (.automatic_rebase_enabled | tostring)
+      else error("automatic_rebase_enabled is unavailable") end' 2>/dev/null); then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  if [ "$automatic_rebase" = true ]; then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled is enabled and can rebase the source branch at merge time\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  [ "$automatic_rebase" = false ]
+}
+
 FM_GITHUB_STATE=
 FM_GITHUB_BASE_REF=
 FM_GITHUB_QUEUE_ENABLED=
@@ -660,6 +691,7 @@ case "$PROVIDER" in
       exit 1
     fi
     [ "$gitlab_verify_rc" -eq 0 ] || exit 1
+    gitlab_require_attested_merge || exit 1
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;

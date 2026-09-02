@@ -180,12 +180,14 @@ fm_project_origin_safe() { # <url>; 0 when the URL is an accepted clone URL
 }
 
 FM_PROJECT_ORIGIN_TRANSPORT=
+FM_PROJECT_ORIGIN_USER=
 FM_PROJECT_ORIGIN_HOST=
 FM_PROJECT_ORIGIN_PORT=
 FM_PROJECT_ORIGIN_PATH=
 fm_project_origin_identity() { # <url>; populate a host-backed repository identity
-  local url=${1-} rest authority hostpart userpart host port path transport
+  local url=${1-} rest authority hostpart userpart user= host port path transport
   FM_PROJECT_ORIGIN_TRANSPORT=
+  FM_PROJECT_ORIGIN_USER=
   FM_PROJECT_ORIGIN_HOST=
   FM_PROJECT_ORIGIN_PORT=
   FM_PROJECT_ORIGIN_PATH=
@@ -199,7 +201,11 @@ fm_project_origin_identity() { # <url>; populate a host-backed repository identi
       [ "$authority" != "$rest" ] || return 1
       hostpart=$authority
       case $authority in
-        *@*) hostpart=${authority##*@} ;;
+        *@*)
+          userpart=${authority%@*}
+          hostpart=${authority##*@}
+          [ "$transport" != ssh ] || user=$userpart
+          ;;
       esac
       path=${rest#*/}
       case $hostpart in
@@ -221,7 +227,10 @@ fm_project_origin_identity() { # <url>; populate a host-backed repository identi
       case $url in
         *@*)
           userpart=${url%%@*}
-          case $userpart in *:*) ;; *) rest=${url#*@} ;; esac
+          case $userpart in
+            *:*) ;;
+            *) user=$userpart; rest=${url#*@} ;;
+          esac
           ;;
       esac
       case $rest in
@@ -241,6 +250,7 @@ fm_project_origin_identity() { # <url>; populate a host-backed repository identi
   path=${path%.git}
   [ -n "$host" ] && [ -n "$path" ] || return 1
   FM_PROJECT_ORIGIN_TRANSPORT=$transport
+  FM_PROJECT_ORIGIN_USER=$user
   FM_PROJECT_ORIGIN_HOST=$host
   FM_PROJECT_ORIGIN_PORT=$port
   FM_PROJECT_ORIGIN_PATH=$path

@@ -348,6 +348,11 @@ add_glab_mock() {
 printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
+  "api projects/"*)
+    [ ! -e "$case_dir/glab-project-fails" ] || exit 1
+    cat "$FM_TEST_GLAB_PROJECT_JSON"
+    exit 0
+    ;;
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
@@ -420,6 +425,7 @@ make_gitlab_case() {
   : > "$case_dir/glab.log"
   write_mr_json "$case_dir/mr.json" "$@"
   write_mr_json "$case_dir/mr-post.json" state=merged
+  printf '{"automatic_rebase_enabled":false}\n' >"$case_dir/project.json"
   printf '%s\n' "$case_dir"
 }
 
@@ -549,6 +555,7 @@ run_pr_merge() {
   FM_TEST_GIT_REMOTE="$case_dir/origin.git" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
   FM_TEST_GLAB_JSON="$case_dir/mr.json" \
+  FM_TEST_GLAB_PROJECT_JSON="$case_dir/project.json" \
   FM_TEST_WT="$case_dir/wt" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
@@ -722,6 +729,37 @@ SH
       "supported-origin-$name: matching origin did not reach the forge merge"
   done
   pass "supported origin spellings retain exact repository binding"
+}
+
+test_ssh_resolution_preserves_origin_user_and_port() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case ssh-user-port-resolution)
+  git -C "$case_dir/wt" remote set-url origin \
+    ssh://git@work-gitlab:2222/group/subgroup/project.git
+  cat >"$case_dir/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FM_TEST_SSH_LOG"
+if [ "$*" = '-G -l git -p 2222 work-gitlab' ]; then
+  printf 'hostname gitlab.example\n'
+else
+  printf 'hostname mirror.internal\n'
+fi
+SH
+  chmod +x "$case_dir/fakebin/ssh"
+
+  set +e
+  FM_TEST_SSH_LOG="$case_dir/ssh.log" \
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "ssh-user-port-resolution: matching origin should merge"
+  assert_grep '-G -l git -p 2222 work-gitlab' "$case_dir/ssh.log" \
+    "ssh-user-port-resolution: origin user and port did not reach SSH configuration"
+  assert_grep ' mr merge ' "$case_dir/glab.log" \
+    "ssh-user-port-resolution: matching effective destination did not merge"
+  pass "SSH identity resolution preserves the origin user and port"
 }
 
 test_ssh_hostname_override_refuses_repository_binding() {
@@ -2120,6 +2158,41 @@ test_gitlab_allowlisted_args_forwarded() {
   pass "fm-pr-merge forwards allowlisted GitLab method, message, and cleanup arguments"
 }
 
+test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed() {
+  local case_dir expected name rc
+  for name in enabled unknown; do
+    case_dir=$(make_gitlab_case "gitlab-auto-rebase-$name")
+    case "$name" in
+      enabled)
+        printf '{"automatic_rebase_enabled":true}\n' >"$case_dir/project.json"
+        expected='GitLab project setting automatic_rebase_enabled is enabled'
+        ;;
+      unknown)
+        : >"$case_dir/glab-project-fails"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        ;;
+    esac
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "gitlab-auto-rebase-$name: fm-pr-merge should refuse"
+    assert_grep "$expected" "$case_dir/stderr" \
+      "gitlab-auto-rebase-$name: refusal did not name the project setting"
+    assert_grep 'action: bring the branch up to current main and re-run validation' \
+      "$case_dir/stderr" \
+      "gitlab-auto-rebase-$name: refusal did not name the required recovery"
+    assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+      "gitlab-auto-rebase-$name: unsafe project setting reached merge"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "gitlab-auto-rebase-$name: refusal disarmed the durable poll"
+  done
+  pass "GitLab automatic rebase is rejected and unknown state fails closed"
+}
+
 test_gitlab_merge_failure_propagates() {
   local case_dir rc
   case_dir=$(make_gitlab_case gitlab-merge-fails)
@@ -2741,6 +2814,7 @@ test_pathspec_magic_filename_cannot_bypass_stale_refusal
 test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
 test_supported_origin_spellings_preserve_repository_binding
+test_ssh_resolution_preserves_origin_user_and_port
 test_ssh_hostname_override_refuses_repository_binding
 test_ssh_config_resolution_is_bounded
 test_multiple_merge_bases_refuse_comparison
@@ -2785,6 +2859,7 @@ test_gitlab_url_resolves_and_merges
 test_gitlab_host_comes_from_the_url
 test_gitlab_imposes_no_merge_method
 test_gitlab_allowlisted_args_forwarded
+test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed
 test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently
 test_gitlab_reports_every_failing_condition
