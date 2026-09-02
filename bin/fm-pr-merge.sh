@@ -303,11 +303,13 @@ inspect_current_default() {
 # returns non-zero after reporting every condition that failed.
 FM_PR_MERGE_HEAD=
 FM_PR_MERGE_LIVE_HEAD=
+FM_PR_MERGE_TARGET=
+FM_PR_MERGE_TARGET_OID=
 gitlab_verify_mergeable() {
   local json fields line
   local total=0 named=0 refusals=''
   local state='' detail='' conflicts='' discussions=''
-  local live_head='' pipeline_sha='' pipeline_status=''
+  local live_head='' target='' target_oid='' pipeline_sha='' pipeline_status=''
 
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
@@ -328,6 +330,8 @@ gitlab_verify_mergeable() {
         "conflicts=" + (.has_conflicts | tostring),
         "discussions=" + (.blocking_discussions_resolved | tostring),
         "head=" + ((.sha // "") | tostring),
+        "target=" + ((.target_branch // "") | tostring),
+        "target_oid=" + ((.diff_refs.start_sha // "") | tostring),
         "pipeline_sha=" + ((.head_pipeline.sha // "") | tostring),
         "pipeline_status=" + ((.head_pipeline.status // "") | tostring)
       else
@@ -344,6 +348,8 @@ gitlab_verify_mergeable() {
       conflicts=*) conflicts=${line#conflicts=} ;;
       discussions=*) discussions=${line#discussions=} ;;
       head=*) live_head=${line#head=} ;;
+      target=*) target=${line#target=} ;;
+      target_oid=*) target_oid=${line#target_oid=} ;;
       pipeline_sha=*) pipeline_sha=${line#pipeline_sha=} ;;
       pipeline_status=*) pipeline_status=${line#pipeline_status=} ;;
       *) continue ;;
@@ -355,7 +361,7 @@ FIELDS
   # Every field named exactly once and no unnamed line: a value carrying a
   # newline would split into a line no name matches, so it is refused here
   # rather than silently truncated into a value a check could accept.
-  if [ "$named" -ne 7 ] || [ "$total" -ne 7 ]; then
+  if [ "$named" -ne 9 ] || [ "$total" -ne 9 ]; then
     echo "error: could not read the GitLab merge request state before merging" >&2
     return 1
   fi
@@ -364,6 +370,8 @@ FIELDS
     echo "error: could not read the GitLab merge request head commit before merging" >&2
     return 1
   fi
+  FM_PR_MERGE_TARGET=$target
+  FM_PR_MERGE_TARGET_OID=$target_oid
   if [ "$live_head" != "$FM_PR_INSPECTED_HEAD" ]; then
     FM_PR_MERGE_LIVE_HEAD=$live_head
     printf 'notice: GitLab head moved from inspected %s to live %s; re-inspecting the live head\n' \
@@ -439,6 +447,8 @@ gitlab_require_attested_merge() {
 
 FM_GITHUB_STATE=
 FM_GITHUB_BASE_REF=
+FM_GITHUB_HEAD_OID=
+FM_GITHUB_BASE_OID=
 FM_GITHUB_QUEUE_ENABLED=
 FM_GITHUB_IN_QUEUE=
 FM_GITHUB_AUTO_MERGE=
@@ -448,6 +458,8 @@ github_read_merge_state() {
   local total=0 named=0
   FM_GITHUB_STATE=
   FM_GITHUB_BASE_REF=
+  FM_GITHUB_HEAD_OID=
+  FM_GITHUB_BASE_OID=
   FM_GITHUB_QUEUE_ENABLED=
   FM_GITHUB_IN_QUEUE=
   FM_GITHUB_AUTO_MERGE=
@@ -459,6 +471,8 @@ github_read_merge_state() {
         pullRequest(number: $number) {
           state
           baseRefName
+          headRefOid
+          baseRef { target { oid } }
           isMergeQueueEnabled
           isInMergeQueue
           autoMergeRequest { enabledAt }
@@ -470,6 +484,8 @@ github_read_merge_state() {
       if type != "object" then error("pull request state is unavailable") else
         "state=" + ((.state // "") | tostring),
         "base_ref=" + ((.baseRefName // "") | tostring),
+        "head_oid=" + ((.headRefOid // "") | tostring),
+        "base_oid=" + ((.baseRef.target.oid // "") | tostring),
         "queue_enabled=" + (if has("isMergeQueueEnabled") then (.isMergeQueueEnabled | tostring) else "" end),
         "in_queue=" + (if has("isInMergeQueue") then (.isInMergeQueue | tostring) else "" end),
         "auto_merge=" + (if has("autoMergeRequest") then (if .autoMergeRequest == null then "none" else "active" end) else "unknown" end),
@@ -482,6 +498,8 @@ github_read_merge_state() {
     case "$line" in
       state=*) FM_GITHUB_STATE=${line#state=} ;;
       base_ref=*) FM_GITHUB_BASE_REF=${line#base_ref=} ;;
+      head_oid=*) FM_GITHUB_HEAD_OID=${line#head_oid=} ;;
+      base_oid=*) FM_GITHUB_BASE_OID=${line#base_oid=} ;;
       queue_enabled=*) FM_GITHUB_QUEUE_ENABLED=${line#queue_enabled=} ;;
       in_queue=*) FM_GITHUB_IN_QUEUE=${line#in_queue=} ;;
       auto_merge=*) FM_GITHUB_AUTO_MERGE=${line#auto_merge=} ;;
@@ -492,9 +510,11 @@ github_read_merge_state() {
   done <<FIELDS
 $fields
 FIELDS
-  [ "$total" -eq 6 ] && [ "$named" -eq 6 ] || return 1
+  [ "$total" -eq 8 ] && [ "$named" -eq 8 ] || return 1
   case "$FM_GITHUB_STATE" in OPEN|CLOSED|MERGED) ;; *) return 1 ;; esac
   [ -n "$FM_GITHUB_BASE_REF" ] || return 1
+  fm_pr_head_valid "$FM_GITHUB_HEAD_OID" || return 1
+  fm_pr_head_valid "$FM_GITHUB_BASE_OID" || return 1
   case "$FM_GITHUB_QUEUE_ENABLED:$FM_GITHUB_IN_QUEUE" in
     true:true|true:false|false:true|false:false) ;;
     *) return 1 ;;
@@ -528,6 +548,54 @@ github_require_immediate_execution() {
   if [ "$FM_GITHUB_AUTO_MERGE" = active ]; then
     printf 'error: refusing to merge %s because GitHub auto-merge is active and would defer execution\n' \
       "$URL" >&2
+    return 1
+  fi
+}
+
+verify_forge_inspected_identity() {
+  local forge target head_oid base_oid
+  case "$PROVIDER" in
+    github)
+      forge=GitHub
+      target=$FM_GITHUB_BASE_REF
+      head_oid=$FM_GITHUB_HEAD_OID
+      base_oid=$FM_GITHUB_BASE_OID
+      ;;
+    gitlab)
+      forge=GitLab
+      target=$FM_PR_MERGE_TARGET
+      head_oid=$FM_PR_MERGE_HEAD
+      base_oid=$FM_PR_MERGE_TARGET_OID
+      ;;
+    *) return 1 ;;
+  esac
+  if [ "$target" != "$FM_PR_INSPECTED_DEFAULT" ]; then
+    printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded stale-base inspection is limited to current default branch %s\n' \
+      "$URL" "$forge" "${target:-unreadable}" "$FM_PR_INSPECTED_DEFAULT" >&2
+    printf 'action: retarget the PR to current default branch %s, bring the branch up to current %s, and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  if ! fm_pr_head_valid "$head_oid"; then
+    printf 'error: refusing to merge %s because %s did not provide a readable head OID at the merge boundary\n' \
+      "$URL" "$forge" >&2
+    return 1
+  fi
+  if ! fm_pr_head_valid "$base_oid"; then
+    printf 'error: refusing to merge %s because %s did not provide a readable target-branch OID at the merge boundary\n' \
+      "$URL" "$forge" >&2
+    return 1
+  fi
+  if [ "$head_oid" != "$FM_PR_INSPECTED_HEAD" ]; then
+    printf 'error: refusing to merge %s because %s reports head OID %s but guarded inspection used %s\n' \
+      "$URL" "$forge" "$head_oid" "$FM_PR_INSPECTED_HEAD" >&2
+    return 1
+  fi
+  if [ "$base_oid" != "$FM_PR_INSPECTED_BASE" ]; then
+    printf 'error: refusing to merge %s because %s reports target branch %s at OID %s but guarded inspection used %s\n' \
+      "$URL" "$forge" "$target" "$base_oid" "$FM_PR_INSPECTED_BASE" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
     return 1
   fi
 }
@@ -659,6 +727,7 @@ case "$PROVIDER" in
       github_require_immediate_execution || github_preflight_rc=$?
       case "$github_preflight_rc" in
         0)
+          verify_forge_inspected_identity || exit 1
           # A sub-second residual window remains because neither forge exposes an
           # expected-base parameter; this guard narrows rather than eliminates it.
           verify_inspected_default_tip || exit 1
@@ -692,6 +761,7 @@ case "$PROVIDER" in
     fi
     [ "$gitlab_verify_rc" -eq 0 ] || exit 1
     gitlab_require_attested_merge || exit 1
+    verify_forge_inspected_identity || exit 1
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;

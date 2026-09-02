@@ -364,7 +364,9 @@ case "${1:-} ${2:-}" in
       payload=$FM_TEST_GLAB_JSON
     fi
     task_head=$(git -C "$FM_TEST_WT" rev-parse HEAD)
-    sed "s/__TASK_HEAD__/$task_head/g" "$payload"
+    default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)
+    sed -e "s/__TASK_HEAD__/$task_head/g" \
+      -e "s/__DEFAULT_HEAD__/$default_head/g" "$payload"
     exit 0
     ;;
   "mr merge")
@@ -386,6 +388,7 @@ SH
 write_mr_json() {
   local file=$1 kv key value
   local state=opened detail=mergeable conflicts=false discussions=true
+  local target=main target_oid=__DEFAULT_HEAD__
   local head=$MR_HEAD pipeline_sha=$MR_HEAD pipeline_status=success pipeline=present
   shift
   for kv in "$@"; do
@@ -397,6 +400,8 @@ write_mr_json() {
       conflicts) conflicts=$value ;;
       discussions) discussions=$value ;;
       head) head=$value ;;
+      target) target=$value ;;
+      target_oid) target_oid=$value ;;
       pipeline_sha) pipeline_sha=$value ;;
       pipeline_status) pipeline_status=$value ;;
       pipeline) pipeline=$value ;;
@@ -408,8 +413,10 @@ write_mr_json() {
   fi
   printf '{"iid":7,"state":"%s","detailed_merge_status":"%s","has_conflicts":%s,' \
     "$state" "$detail" "$conflicts" > "$file"
-  printf '"blocking_discussions_resolved":%s,"sha":"%s","head_pipeline":%s}\n' \
-    "$discussions" "$head" "$pipeline" >> "$file"
+  printf '"blocking_discussions_resolved":%s,"sha":"%s","target_branch":"%s",' \
+    "$discussions" "$head" "$target" >>"$file"
+  printf '"diff_refs":{"start_sha":"%s"},"head_pipeline":%s}\n' \
+    "$target_oid" "$pipeline" >>"$file"
 }
 
 # make_gitlab_case <name> [<field>=<value> ...]: a case dir with both forge
@@ -507,8 +514,11 @@ case "${1:-} ${2:-}" in
       auto_merge=${FM_TEST_GH_AUTO_MERGE:-none}
       queue_entry=${FM_TEST_GH_QUEUE_ENTRY:-none}
     fi
-    printf 'state=%s\nbase_ref=%s\nqueue_enabled=%s\nin_queue=%s\nauto_merge=%s\nqueue_entry=%s\n' \
-      "$state" "${FM_TEST_GH_BASE_REF:-main}" "$queue_enabled" "$in_queue" "$auto_merge" "$queue_entry"
+    head_oid=${FM_TEST_GH_HEAD_OID:-$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" rev-parse "refs/pull/$number/head")}
+    base_oid=${FM_TEST_GH_BASE_OID:-$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)}
+    printf 'state=%s\nbase_ref=%s\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=%s\nin_queue=%s\nauto_merge=%s\nqueue_entry=%s\n' \
+      "$state" "${FM_TEST_GH_BASE_REF:-main}" "$head_oid" "$base_oid" \
+      "$queue_enabled" "$in_queue" "$auto_merge" "$queue_entry"
     ;;
   "pr merge")
     "$delegate" "$@" || exit $?
@@ -1269,6 +1279,116 @@ test_default_tip_move_refuses_both_forges() {
   pass "fm-pr-merge rechecks the inspected default tip for both providers"
 }
 
+test_forge_oid_mismatch_and_unknown_refuse_before_merge() {
+  local case_dir expected forge_oid name rc url
+  forge_oid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  for name in github-head github-base github-unknown gitlab-base gitlab-unknown; do
+    case "$name" in
+      github-*)
+        case_dir=$(make_case "forge-oid-$name")
+        add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+        : >"$case_dir/glab.log"
+        url=https://github.com/example/repo/pull/88
+        ;;
+      gitlab-*)
+        case "$name" in
+          gitlab-base) case_dir=$(make_gitlab_case "forge-oid-$name" "target_oid=$forge_oid") ;;
+          gitlab-unknown) case_dir=$(make_gitlab_case "forge-oid-$name" target_oid=unreadable) ;;
+        esac
+        url=$MR_URL
+        ;;
+    esac
+
+    set +e
+    case "$name" in
+      github-head)
+        expected="GitHub reports head OID $forge_oid but guarded inspection used"
+        FM_TEST_GH_HEAD_OID=$forge_oid run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      github-base)
+        expected="GitHub reports target branch main at OID $forge_oid but guarded inspection used"
+        FM_TEST_GH_BASE_OID=$forge_oid run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      github-unknown)
+        expected='GitHub immediate execution state is unknown'
+        FM_TEST_GH_HEAD_OID=unreadable run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab-base)
+        expected="GitLab reports target branch main at OID $forge_oid but guarded inspection used"
+        run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab-unknown)
+        expected='GitLab did not provide a readable target-branch OID at the merge boundary'
+        run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+    esac
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "forge-oid-$name: fm-pr-merge should refuse"
+    assert_grep "$expected" "$case_dir/stderr" \
+      "forge-oid-$name: refusal did not name the forge identity failure"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" \
+      "forge-oid-$name: GitHub merge ran after identity refusal"
+    assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+      "forge-oid-$name: GitLab merge ran after identity refusal"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "forge-oid-$name: identity refusal disarmed the durable poll"
+  done
+  pass "forge head and target OIDs are bound to guarded inspection"
+}
+
+test_non_default_targets_refuse_both_forges() {
+  local case_dir provider rc url
+  for provider in github gitlab; do
+    case "$provider" in
+      github)
+        case_dir=$(make_case non-default-target-github)
+        add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+        : >"$case_dir/glab.log"
+        url=https://github.com/example/repo/pull/89
+        ;;
+      gitlab)
+        case_dir=$(make_gitlab_case non-default-target-gitlab target=release)
+        url=$MR_URL
+        ;;
+    esac
+
+    set +e
+    case "$provider" in
+      github)
+        FM_TEST_GH_BASE_REF=release run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab)
+        run_pr_merge "$case_dir" task-x1 "$url" \
+          >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+    esac
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "non-default-target-$provider: fm-pr-merge should refuse"
+    assert_grep 'actual target branch release' "$case_dir/stderr" \
+      "non-default-target-$provider: refusal did not name the actual target"
+    assert_grep 'retarget the PR to current default branch main, bring the branch up to current main, and re-run validation' \
+      "$case_dir/stderr" \
+      "non-default-target-$provider: refusal did not name the recovery action"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" \
+      "non-default-target-$provider: GitHub merge ran for a non-default target"
+    assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+      "non-default-target-$provider: GitLab merge ran for a non-default target"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "non-default-target-$provider: refusal disarmed the durable poll"
+  done
+  pass "both forges refuse merge requests targeting non-default branches"
+}
+
 test_final_github_preflight_cannot_reopen_default_tip_race() {
   local case_dir head new_tip old_tip rc
   case_dir=$(make_case final-preflight-default-tip-race)
@@ -1287,9 +1407,9 @@ test_final_github_preflight_cannot_reopen_default_tip_race() {
   expect_code 1 "$rc" "final-preflight-default-tip-race: moving main should refuse"
   [ "$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)" = "$new_tip" ] \
     || fail "final-preflight-default-tip-race: the GraphQL preflight did not advance main"
-  assert_grep "current default branch main moved from inspected tip $old_tip to live tip $new_tip before merge" \
+  assert_grep "GitHub reports target branch main at OID $new_tip but guarded inspection used $old_tip" \
     "$case_dir/stderr" \
-    "final-preflight-default-tip-race: the final tip check missed the preflight move"
+    "final-preflight-default-tip-race: forge OID binding missed the preflight move"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "final-preflight-default-tip-race: the forge ran after main moved during preflight"
   pass "GitHub preflight cannot reopen the final default-tip race"
@@ -1367,8 +1487,9 @@ SH
 
   expect_code 0 "$writer_rc" "body-file-tip-race: the synchronized default advance failed"
   expect_code 1 "$rc" "body-file-tip-race: moving main during body input should refuse"
-  assert_grep 'current default branch main moved from inspected tip' "$case_dir/stderr" \
-    "body-file-tip-race: the post-materialization tip check did not observe the move"
+  assert_grep "GitHub reports target branch main at OID $advanced_tip but guarded inspection used" \
+    "$case_dir/stderr" \
+    "body-file-tip-race: the post-materialization forge binding did not observe the move"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "body-file-tip-race: the forge ran after default moved during body input"
   assert_absent "$case_dir/merged" \
@@ -2830,6 +2951,8 @@ test_non_allowlisted_repo_arg_refuses_before_recording
 test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
+test_forge_oid_mismatch_and_unknown_refuse_before_merge
+test_non_default_targets_refuse_both_forges
 test_final_github_preflight_cannot_reopen_default_tip_race
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck
 test_body_file_materialization_rechecks_immediate_execution
