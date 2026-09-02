@@ -3060,7 +3060,7 @@ EOF
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
     || fail "merge wrapper refused for some reason other than the state it could not read"
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
-  grep -qF "GITLAB_HOST=gitlab.example api graphql -f fullPath=group/subgroup/project -f iid=7 -f targetRef=main" "$dir/glab.log" \
+  grep -qF "GITLAB_HOST=gitlab.example api graphql -f fullPath=group/subgroup/project -f iid=7 -f targetRef=refs/heads/main" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
   ! grep -qF ' mr merge ' "$dir/glab.log" \
     || fail "merge wrapper merged despite an unreadable merge request state"

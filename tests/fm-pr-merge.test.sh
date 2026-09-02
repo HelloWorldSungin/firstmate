@@ -163,6 +163,14 @@ prepare_advanced_default() {
   git -C "$advanced_wt" rev-parse HEAD
 }
 
+advance_default_with_empty_commit() {
+  local case_dir=$1 default_wt
+  default_wt="$case_dir/empty-default-wt"
+  git clone -q "$case_dir/origin.git" "$default_wt"
+  git -C "$default_wt" commit -qm 'advance default without file changes' --allow-empty
+  git -C "$default_wt" push -q origin main
+}
+
 # gh-axi mock recording every invocation to a log file, and gh mock answering
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
 add_gh_mocks() {
@@ -351,7 +359,24 @@ case "${1:-} ${2:-}" in
   "api graphql")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     task_head=$(git -C "$FM_TEST_WT" rev-parse HEAD)
-    default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" rev-parse refs/heads/main)
+    target_ref=
+    for arg in "$@"; do
+      case "$arg" in targetRef=*) target_ref=${arg#targetRef=} ;; esac
+    done
+    case "$target_ref" in
+      refs/heads/*)
+        default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" rev-parse "$target_ref")
+        ;;
+      *)
+        if default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" \
+          rev-parse "refs/tags/$target_ref" 2>/dev/null); then
+          :
+        else
+          default_head=$(git --git-dir="$FM_TEST_GIT_REMOTE" \
+            rev-parse "refs/heads/$target_ref")
+        fi
+        ;;
+    esac
     sed -e "s/__TASK_HEAD__/$task_head/g" \
       -e "s/__DEFAULT_HEAD__/$default_head/g" "$FM_TEST_GLAB_JSON"
     exit 0
@@ -2216,7 +2241,7 @@ test_gitlab_url_resolves_and_merges() {
   expect_code 0 "$rc" "gitlab-merges: a well-formed merge request URL should merge, not error"
   assert_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
     "gitlab-merges: pr= was not recorded before merging"
-  assert_grep "GITLAB_HOST=$MR_HOST api graphql -f fullPath=$MR_PATH -f iid=7 -f targetRef=main" "$case_dir/glab.log" \
+  assert_grep "GITLAB_HOST=$MR_HOST api graphql -f fullPath=$MR_PATH -f iid=7 -f targetRef=refs/heads/main" "$case_dir/glab.log" \
     "gitlab-merges: the pre-merge state was not read from the project URL"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
   [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false" ] \
@@ -2242,7 +2267,7 @@ test_gitlab_host_comes_from_the_url() {
   set -e
 
   expect_code 0 "$rc" "gitlab-host-from-url: a self-hosted merge request should merge"
-  assert_grep "GITLAB_HOST=$host api graphql -f fullPath=$path -f iid=31 -f targetRef=main" "$case_dir/glab.log" \
+  assert_grep "GITLAB_HOST=$host api graphql -f fullPath=$path -f iid=31 -f targetRef=refs/heads/main" "$case_dir/glab.log" \
     "gitlab-host-from-url: the read did not use the host from the URL"
   assert_grep "GITLAB_HOST=$host mr merge 31 -R $project_url" "$case_dir/glab.log" \
     "gitlab-host-from-url: the merge did not use the host from the URL"
@@ -2295,7 +2320,8 @@ test_gitlab_allowlisted_args_forwarded() {
 
 test_gitlab_automatic_rebase_setting_handles_version_boundary() {
   local case_dir expected expected_rc name rc
-  for name in enabled unknown pre-19.4-absent current-absent invalid-version; do
+  for name in enabled unknown pre-19.4-merge-behind pre-19.4-rebase-behind \
+    pre-19.4-ff-current current-absent invalid-version; do
     case_dir=$(make_gitlab_case "gitlab-auto-rebase-$name")
     expected_rc=1
     case "$name" in
@@ -2307,8 +2333,20 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
         : >"$case_dir/glab-project-fails"
         expected='GitLab project setting automatic_rebase_enabled could not be determined'
         ;;
-      pre-19.4-absent)
+      pre-19.4-merge-behind)
         printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
+        printf '{"version":"19.3.2-ee"}\n' >"$case_dir/version.json"
+        advance_default_with_empty_commit "$case_dir"
+        expected_rc=0
+        ;;
+      pre-19.4-rebase-behind)
+        printf '{"merge_method":"rebase_merge"}\n' >"$case_dir/project.json"
+        printf '{"version":"19.3.2-ee"}\n' >"$case_dir/version.json"
+        advance_default_with_empty_commit "$case_dir"
+        expected='pre-19.4 GitLab instance does not expose automatic_rebase_enabled and the source branch is behind the target'
+        ;;
+      pre-19.4-ff-current)
+        printf '{"merge_method":"ff"}\n' >"$case_dir/project.json"
         printf '{"version":"19.3.2-ee"}\n' >"$case_dir/version.json"
         expected_rc=0
         ;;
@@ -2346,6 +2384,23 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
     fi
   done
   pass "GitLab automatic rebase honors its API version boundary and fails closed"
+}
+
+test_gitlab_qualified_target_ref_ignores_same_named_tag() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-target-tag-collision)
+  git -C "$case_dir/wt" push -q origin HEAD:refs/tags/main
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitlab-target-tag-collision: the main branch should merge"
+  assert_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-target-tag-collision: a same-named tag displaced the target branch"
+  pass "GitLab target lookup qualifies the branch when a tag has the same name"
 }
 
 test_gitlab_live_source_ref_ignores_lagging_diff_ingestion() {
@@ -3039,6 +3094,7 @@ test_gitlab_host_comes_from_the_url
 test_gitlab_imposes_no_merge_method
 test_gitlab_allowlisted_args_forwarded
 test_gitlab_automatic_rebase_setting_handles_version_boundary
+test_gitlab_qualified_target_ref_ignores_same_named_tag
 test_gitlab_live_source_ref_ignores_lagging_diff_ingestion
 test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently

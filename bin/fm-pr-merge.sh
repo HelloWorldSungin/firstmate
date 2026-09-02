@@ -311,13 +311,14 @@ gitlab_verify_mergeable() {
   local state='' detail='' conflicts='' discussions=''
   local live_head='' target='' target_oid='' pipeline_sha='' pipeline_status=''
   local source_ref="refs/merge-requests/$PR_NUMBER/head"
+  local target_ref="refs/heads/$FM_PR_INSPECTED_DEFAULT"
 
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
   # operator's configured default.
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api graphql \
     -f fullPath="$FM_PR_PATH" -f iid="$PR_NUMBER" \
-    -f targetRef="$FM_PR_INSPECTED_DEFAULT" -f sourceRef="$source_ref" \
+    -f targetRef="$target_ref" -f sourceRef="$source_ref" \
     -f query='query($fullPath: ID!, $iid: String!, $sourceRef: String!, $targetRef: String!) {
       project(fullPath: $fullPath) {
         mergeRequest(iid: $iid) {
@@ -506,11 +507,13 @@ VERSION_FIELDS
     return 1
   fi
 
-  # GitLab's Projects API exposes automatic_rebase_enabled starting in 19.4:
+  # GitLab introduced automatic rebase in 18.0 behind a feature flag, enabled
+  # it on GitLab.com in 18.11, removed the flag in 19.0, and made it generally
+  # available in 19.2: https://docs.gitlab.com/user/project/merge_requests/methods/
+  # The Projects API first exposes automatic_rebase_enabled in 19.4:
   # https://docs.gitlab.com/api/projects/
-  # Automatic rebase itself is generally available from 19.2, so older API
-  # responses are safe only when merge method or ancestry proves it cannot run:
-  # https://docs.gitlab.com/user/project/merge_requests/methods/
+  # The gap between those versions is why a pre-19.4 response without the field
+  # is accepted only when merge method or ancestry proves rebase cannot run.
   if [ "$server_major" -gt 19 ] \
     || { [ "$server_major" -eq 19 ] && [ "$server_minor" -ge 4 ]; }; then
     printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
