@@ -28,6 +28,12 @@
 # Extra args must not include --repo or -R in any form, including a bundled
 # short-option cluster such as -yR, because the repository comes only from the
 # URL, nor --sha on GitLab because the head comes only from the live read.
+# Every provider also fetches the PR head and origin's current default branch
+# immediately before merging.
+# The merge is refused when their comparison would discard changes from paths
+# the PR did not touch, or when that comparison cannot be completed safely.
+# bin/fm-pr-check.sh reports the same stale condition when the PR is recorded,
+# but merge time repeats the live read because the default branch may move.
 # After a successful merge, an optional work item recorded in task metadata is
 # verified and, when it is open on a forge with a write adapter, closed with a
 # comment linking the merged PR. A work_item= record names the tracker the
@@ -169,6 +175,14 @@ grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2
   exit 1
 }
+
+# Re-read both tips immediately before the guarded merge instead of trusting
+# the earlier recording-time report or the PR's still-green branch-base checks.
+WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$PR_NUMBER"; then
+  fm_pr_stale_base_report error "$URL"
+  exit 1
+fi
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and

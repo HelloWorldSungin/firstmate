@@ -274,6 +274,42 @@ run_merge_entry() {
     "$PR_MERGE" "$@"
 }
 
+# Give valid merge-entry fixtures the same remote-backed inputs the guarded
+# stale-base comparison requires.
+# Invalid-entrypoint cases deliberately do not call this helper, so their
+# zero-side-effect assertions still exercise the scripts alone.
+prepare_merge_comparison() { # <case-dir> <canonical-pr-url>
+  local dir=$1 url=$2 origin source_ref number
+  origin="$dir/origin.git"
+  if ! git -C "$dir/wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git init -q --bare --initial-branch=main "$origin"
+    git init -q --initial-branch=main "$dir/wt"
+    printf 'shared base\n' >"$dir/wt/shared.txt"
+    git -C "$dir/wt" add shared.txt
+    git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+      commit -qm 'seed shared base'
+    git -C "$dir/wt" remote add origin "$origin"
+    git -C "$dir/wt" push -q -u origin main
+    git -C "$dir/wt" switch -qc task
+    printf 'task change\n' >"$dir/wt/task.txt"
+    git -C "$dir/wt" add task.txt
+    git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+      commit -qm 'add task change'
+  fi
+  case "$url" in
+    https://github.com/*/pull/*)
+      number=${url##*/pull/}
+      source_ref="refs/pull/$number/head"
+      ;;
+    https://*/-/merge_requests/*)
+      number=${url##*/merge_requests/}
+      source_ref="refs/merge-requests/$number/head"
+      ;;
+    *) fail "comparison fixture received a noncanonical PR URL" ;;
+  esac
+  git -C "$dir/wt" push -q --force origin "HEAD:$source_ref"
+}
+
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
 INVALID_URLS=(
   'https://gitlab.com/single/-/merge_requests/1'
@@ -569,6 +605,7 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
   : > "$dir/gh-axi.log"
+  prepare_merge_comparison "$dir" https://github.com/my-org/repo_name.with-dots/pull/37
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
@@ -605,6 +642,7 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
+  prepare_merge_comparison "$dir" https://github.com/o/r/pull/3
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
@@ -628,7 +666,7 @@ SH
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "endpoint_task_id=$id" \
-      "worktree=$dir/missing-worktree" \
+      "worktree=$dir/wt" \
       "project=$dir/project" \
       'kind=ship' \
       'mode=local-only'
@@ -659,11 +697,13 @@ SH
       --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
       > "$dir/x-link.out" 2> "$dir/x-link.err" \
       || fail "path-safe legacy task ID could not link an X request"
+    prepare_merge_comparison "$dir" https://github.com/o/r/pull/4
     run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
       > "$dir/merge.out" 2> "$dir/merge.err" \
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
+    rm -rf "$dir/wt"
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
@@ -2912,6 +2952,7 @@ EOF
   # merge's JSON read cannot be parsed, which must refuse rather than merge on a
   # state it could not read.
   write_task_meta "$dir" task-c
+  prepare_merge_comparison "$dir" "$url"
   : > "$dir/glab.log"
   # The merge path needs jq before it reads anything, so this case supplies it
   # and the refusal below is the unreadable state rather than a missing tool.
@@ -3140,6 +3181,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-committed: could not arm merge poll"
+  prepare_merge_comparison "$dir" "$url"
   run_merge_entry "$dir" task-a "$url" >"$dir/merge.out" 2>"$dir/merge.err" \
     || fail "merge-outcome-committed: merge entrypoint failed: $(cat "$dir/merge.err")"
   add_stop_custom_check "$dir"
@@ -3164,6 +3206,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-uncommitted: could not arm merge poll"
+  prepare_merge_comparison "$dir" "$url"
   cat >"$dir/fakebin/mv" <<'SH'
 #!/usr/bin/env bash
 case " $* " in

@@ -49,6 +49,10 @@
 #   (gg) an accepted queued GitLab merge emits nothing and leaves its poll armed
 #   (hh) an uncommitted marker retry never loses the durable outcome
 #   (ii) distinct merged PRs for a reused task each survive queue deduplication
+#   (jj) a stale PR that omits a file added to the current default branch is
+#        refused before the forge merge call and names the omitted content
+#   (kk) an unavailable default-branch comparison fails closed and tells the
+#        operator to restore the inputs instead of offering a bypass
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -63,19 +67,45 @@ TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
-  local name=$1 case_dir fakebin
+  local name=$1 case_dir fakebin origin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$fakebin"
+  origin="$case_dir/origin.git"
+  git init -q --bare --initial-branch=main "$origin"
+  git init -q --initial-branch=main "$case_dir/wt"
+  printf 'shared base\n' >"$case_dir/wt/shared.txt"
+  git -C "$case_dir/wt" add shared.txt
+  git -C "$case_dir/wt" commit -qm 'seed shared base'
+  git -C "$case_dir/wt" remote add origin "$origin"
+  git -C "$case_dir/wt" push -q -u origin main
+  git -C "$case_dir/wt" switch -qc task
+  printf 'task change\n' >"$case_dir/wt/task.txt"
+  git -C "$case_dir/wt" add task.txt
+  git -C "$case_dir/wt" commit -qm 'add task change'
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
     "kind=ship" \
     "mode=no-mistakes"
-  # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
-  # stat and simply skips the pr_head lookup via `gh` in that case, so give it
-  # one that resolves for cases that want pr_head recorded.
+  printf '%s\n' "$case_dir"
+}
+
+# Build the stale topology from the 2026-09-02 incidents: the task branch and
+# the default branch share an old base, then the default branch gains a file the
+# task branch never touched while the task's own change and green head remain
+# unchanged.
+make_stale_case() {
+  local name=$1 case_dir origin default_wt
+  case_dir=$(make_case "$name")
+  origin="$case_dir/origin.git"
+  default_wt="$case_dir/default-wt"
+  git clone -q "$origin" "$default_wt"
+  printf 'published while the PR waited\n' >"$default_wt/published.md"
+  git -C "$default_wt" add published.md
+  git -C "$default_wt" commit -qm 'publish current-only content'
+  git -C "$default_wt" push -q origin main
   printf '%s\n' "$case_dir"
 }
 
@@ -355,7 +385,22 @@ glab_merge_line() {
 }
 
 run_pr_merge() {
-  local case_dir=$1 rc; shift
+  local case_dir=$1 url number source_ref rc; shift
+  url=${2:-}
+  case "$url" in
+    https://github.com/*/pull/*)
+      number=${url##*/pull/}
+      source_ref="refs/pull/$number/head"
+      ;;
+    https://*/-/merge_requests/*)
+      number=${url##*/merge_requests/}
+      source_ref="refs/merge-requests/$number/head"
+      ;;
+    *) source_ref= ;;
+  esac
+  if [ -n "$source_ref" ] && git -C "$case_dir/wt" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$case_dir/wt" push -q --force origin "HEAD:$source_ref"
+  fi
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_HOME="${FM_TEST_HOME:-$ROOT}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
@@ -394,6 +439,61 @@ test_records_pr_and_head_before_merging() {
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
+}
+
+test_stale_pr_refuses_before_merging() {
+  local case_dir head rc
+  case_dir=$(make_stale_case stale-pr-refusal)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+  : >"$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/73 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stale-pr-refusal: fm-pr-merge should refuse"
+  assert_grep 'warning: https://github.com/example/repo/pull/73 is behind the current default branch' "$case_dir/stderr" \
+    "stale-pr-refusal: fm-pr-check did not report the stale PR when recording it"
+  assert_grep 'because its head is behind the current default branch' "$case_dir/stderr" \
+    "stale-pr-refusal: refusal did not name the stale-base cause"
+  assert_grep 'published.md: current default adds 1 line absent from the PR head' "$case_dir/stderr" \
+    "stale-pr-refusal: refusal did not name the untouched file and lost content"
+  assert_grep 'bring the branch up to current main and re-run validation' "$case_dir/stderr" \
+    "stale-pr-refusal: refusal did not tell the operator how to recover"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "stale-pr-refusal: gh-axi pr merge was invoked for a stale PR"
+  pass "fm-pr-merge refuses a stale PR that omits current default-branch content"
+}
+
+test_unavailable_stale_comparison_refuses_before_merging() {
+  local case_dir rc
+  case_dir=$(make_case unavailable-stale-comparison)
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" \
+    "worktree=$case_dir/missing-wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  add_gh_mocks "$case_dir" 1212121212121212121212121212121212121212
+  : >"$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/74 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unavailable-stale-comparison: fm-pr-merge should refuse"
+  assert_grep 'refusing to merge https://github.com/example/repo/pull/74 because it could not be compared' "$case_dir/stderr" \
+    "unavailable-stale-comparison: refusal did not name the failed safety check"
+  assert_grep 'restore the task worktree and origin access, then retry the merge' "$case_dir/stderr" \
+    "unavailable-stale-comparison: refusal did not name the recovery action"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "unavailable-stale-comparison: gh-axi pr merge ran without a comparison"
+  pass "fm-pr-merge fails closed when the current-default comparison is unavailable"
 }
 
 test_merge_failure_propagates_after_recording() {
@@ -1746,6 +1846,8 @@ test_secondmate_without_parent_binding_is_loud() {
 }
 
 test_records_pr_and_head_before_merging
+test_stale_pr_refuses_before_merging
+test_unavailable_stale_comparison_refuses_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge

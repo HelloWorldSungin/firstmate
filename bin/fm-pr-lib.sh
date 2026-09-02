@@ -89,6 +89,10 @@ FM_PR_RETIRE_REG_IDENTITY=
 FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
+FM_PR_STALE_BASE_RESULT=
+FM_PR_STALE_BASE_DEFAULT=
+FM_PR_STALE_BASE_DETAILS=
+FM_PR_STALE_BASE_REASON=
 
 # A failed forge read explains itself on its own stderr, and a caller that
 # already prints an operator-visible line folds that explanation into it rather
@@ -241,6 +245,194 @@ fm_pr_head_valid() {
   local head=${1-}
   local LC_ALL=C
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
+}
+
+# Compare one freshly fetched PR head with the freshly fetched current default
+# branch and identify paths changed only by the default branch since the common
+# base.
+# A stale PR head presents those paths as reversions even though its own work
+# never touched them.
+# Returns 0 when no such path exists, 1 when stale content is present, and 2
+# when the comparison cannot be completed safely.
+# The caller reports the populated FM_PR_STALE_BASE_* fields and decides whether
+# its surface warns or refuses.
+fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <number>
+  local wt=${1-} id=${2-} provider=${3-} number=${4-}
+  local source_ref remote_state default_ref default_name
+  local token base_ref head_ref base head merge_base paths_file path delta added deleted quoted
+  local branch_diff_status inspection_failed=0
+  FM_PR_STALE_BASE_RESULT=unavailable
+  FM_PR_STALE_BASE_DEFAULT=
+  FM_PR_STALE_BASE_DETAILS=
+  FM_PR_STALE_BASE_REASON=
+
+  if [ -z "$wt" ] || [ ! -d "$wt" ] \
+    || ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    FM_PR_STALE_BASE_REASON="task worktree is unavailable or is not a Git worktree"
+    return 2
+  fi
+  fm_pr_task_id_valid "$id" || {
+    FM_PR_STALE_BASE_REASON="task identity is invalid"
+    return 2
+  }
+  case "$provider" in
+    github) source_ref="refs/pull/$number/head" ;;
+    gitlab) source_ref="refs/merge-requests/$number/head" ;;
+    *)
+      FM_PR_STALE_BASE_REASON="forge provider is unsupported"
+      return 2
+      ;;
+  esac
+
+  if ! remote_state=$(git -C "$wt" ls-remote --symref origin HEAD "$source_ref" 2>/dev/null); then
+    FM_PR_STALE_BASE_REASON="origin did not expose its current default branch and PR head"
+    return 2
+  fi
+  default_ref=$(printf '%s\n' "$remote_state" | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }')
+  case "$default_ref" in
+    refs/heads/*) ;;
+    *)
+      FM_PR_STALE_BASE_REASON="origin did not name its current default branch"
+      return 2
+      ;;
+  esac
+  git check-ref-format "$default_ref" >/dev/null 2>&1 || {
+    FM_PR_STALE_BASE_REASON="origin named an invalid default branch"
+    return 2
+  }
+  default_name=${default_ref#refs/heads/}
+  FM_PR_STALE_BASE_DEFAULT=$default_name
+
+  token="$$-${RANDOM:-0}"
+  base_ref="refs/fm-pr-stale-base/$token/base"
+  head_ref="refs/fm-pr-stale-base/$token/head"
+  if ! git -C "$wt" fetch --quiet --no-tags origin \
+    "+$default_ref:$base_ref" "+$source_ref:$head_ref" 2>/dev/null; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="origin did not provide the current default branch and PR head"
+    return 2
+  fi
+  base=$(git -C "$wt" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || base=
+  head=$(git -C "$wt" rev-parse --verify "$head_ref^{commit}" 2>/dev/null) || head=
+  if ! fm_pr_head_valid "$base" || ! fm_pr_head_valid "$head"; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="fetched default branch or PR head is not a commit"
+    return 2
+  fi
+  merge_base=$(git -C "$wt" merge-base "$base" "$head" 2>/dev/null) || merge_base=
+  if ! fm_pr_head_valid "$merge_base"; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="current default branch and PR head have no common commit"
+    return 2
+  fi
+
+  paths_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-stale-base.XXXXXX") || {
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="could not stage the default-branch comparison"
+    return 2
+  }
+  chmod 0600 "$paths_file" || {
+    rm -f -- "$paths_file"
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="could not protect the default-branch comparison"
+    return 2
+  }
+  if ! git -C "$wt" diff --name-only -z --no-renames "$base" "$head" -- >"$paths_file"; then
+    rm -f -- "$paths_file"
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="could not enumerate the default-branch differences"
+    return 2
+  fi
+  while IFS= read -r -d '' path; do
+    if git -C "$wt" diff --quiet --no-renames "$merge_base" "$head" -- "$path"; then
+      branch_diff_status=0
+    else
+      branch_diff_status=$?
+    fi
+    case "$branch_diff_status" in
+      0) ;;
+      1) continue ;;
+      *) inspection_failed=1; break ;;
+    esac
+    if ! delta=$(git -C "$wt" diff --numstat --no-renames "$merge_base" "$base" -- "$path") \
+      || [ -z "$delta" ]; then
+      inspection_failed=1
+      break
+    fi
+    IFS=$'\t' read -r added deleted _ <<<"$delta"
+    printf -v quoted '%q' "$path"
+    case "$added:$deleted" in
+      -:-)
+        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default changes binary content absent from the PR head
+"
+        ;;
+      :)
+        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default changes content absent from the PR head
+"
+        ;;
+      *:0)
+        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default adds $added line$([ "$added" = 1 ] || printf 's') absent from the PR head
+"
+        ;;
+      0:*)
+        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default removes $deleted line$([ "$deleted" = 1 ] || printf 's') that the PR head would restore
+"
+        ;;
+      *)
+        FM_PR_STALE_BASE_DETAILS="${FM_PR_STALE_BASE_DETAILS}  - $quoted: current default adds $added and removes $deleted lines absent from the PR head
+"
+        ;;
+    esac
+  done <"$paths_file"
+
+  rm -f -- "$paths_file"
+  git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+  git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+  if [ "$inspection_failed" = 1 ]; then
+    FM_PR_STALE_BASE_DETAILS=
+    FM_PR_STALE_BASE_REASON="could not inspect one or more default-branch differences"
+    return 2
+  fi
+  if [ -n "$FM_PR_STALE_BASE_DETAILS" ]; then
+    FM_PR_STALE_BASE_RESULT=stale
+    return 1
+  fi
+  FM_PR_STALE_BASE_RESULT=clean
+  return 0
+}
+
+fm_pr_stale_base_report() { # <warning|error> <canonical-url>
+  local level=${1-} url=${2-}
+  case "$FM_PR_STALE_BASE_RESULT" in
+    stale)
+      if [ "$level" = error ]; then
+        printf 'error: refusing to merge %s because its head is behind the current default branch %s and would discard changes from files the PR did not touch\n' \
+          "$url" "$FM_PR_STALE_BASE_DEFAULT" >&2
+      else
+        printf 'warning: %s is behind the current default branch %s and would discard changes from files the PR did not touch\n' \
+          "$url" "$FM_PR_STALE_BASE_DEFAULT" >&2
+      fi
+      printf '%s' "$FM_PR_STALE_BASE_DETAILS" >&2
+      printf 'action: bring the branch up to current %s and re-run validation before merging\n' \
+        "$FM_PR_STALE_BASE_DEFAULT" >&2
+      ;;
+    unavailable)
+      if [ "$level" = error ]; then
+        printf 'error: refusing to merge %s because it could not be compared with the current default branch: %s\n' \
+          "$url" "$FM_PR_STALE_BASE_REASON" >&2
+        printf 'action: restore the task worktree and origin access, then retry the merge\n' >&2
+      else
+        printf 'warning: could not compare %s with the current default branch: %s\n' \
+          "$url" "$FM_PR_STALE_BASE_REASON" >&2
+      fi
+      ;;
+  esac
 }
 
 fm_pr_file_mode() {
