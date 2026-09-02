@@ -268,7 +268,9 @@ This sequence owns every user-owned local skill destination creation, whether in
    Reject the destination if any check fails.
 3. Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
 4. Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger and resolving pointer to this Destinations contract, then confirm the skill appears in a fresh session's skill index.
-5. If any step fails, remove the destination content and the exclude rule written by this attempt, leaving neither partial private content nor a partial rule behind.
+5. A failure before this attempt writes the exclude rule leaves every path and rule unchanged and performs no cleanup.
+6. If any failure occurs after this attempt writes the exclude rule, remove only destination content created by this attempt and the single exclude-line occurrence appended by this attempt.
+   Never remove or rewrite any pre-existing path or rule.
 
 ### Flow: reduce, approve, migrate, remove
 
