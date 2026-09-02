@@ -493,7 +493,7 @@ BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   local doc rc=0 detail citation="" title="" id="" state="" record="" report="" rows frame_bytes rendered cap_state
   local candidate_citation candidate_title candidate_kind candidate_id candidate_state candidate_classifiable
-  local identity_rows=0 identities_classifiable=1
+  local task_rows=0 identities_classifiable=1
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
   if ! command -v jq >/dev/null 2>&1; then
@@ -529,12 +529,12 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       && IFS= read -r -d '' candidate_id \
       && IFS= read -r -d '' candidate_state \
       && IFS= read -r -d '' candidate_classifiable; do
-    identity_rows=$((identity_rows + 1))
     if [ "$candidate_classifiable" != true ]; then
       identities_classifiable=0
       break
     fi
     [ "$candidate_kind" = task ] || continue
+    task_rows=$((task_rows + 1))
     record="$FM_HOME/data/$candidate_id"
     report="$record/report.md"
     [ ! -L "$record" ] && [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
@@ -594,7 +594,7 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       ($identity.classifiable | tostring), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
-  elif [ "$identity_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
+  elif [ "$task_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
   fi
   # D1: the embed, gated on the answer contract being observed in this document.

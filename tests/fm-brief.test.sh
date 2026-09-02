@@ -2033,7 +2033,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # framing and provenance fields does not mount the embed, while the advisory
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
-  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc unclassified_doc called output_lines
+  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc note_only_doc unclassified_doc called output_lines
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
@@ -2068,7 +2068,7 @@ EOF
     "the ungated advisory must normalize every protocol field it displays"
 
   bogus_doc="$TMP_ROOT/bogus-answer-document.json"
-  jq -cn '{schema:"fm-recall.v1", answer:{kind:"bogus"}, results:[{citation:"local:firstmate/task/prior-task", slug:"firstmate/task/prior-task", title:"Bogus frame", excerpt:"must not mount", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$bogus_doc"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"bogus"}, results:[{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Bogus frame", excerpt:"must not mount", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$bogus_doc"
   brain_wrapper_scaffold "$home" "$legacy_root" bogus-answer "$bogus_doc"
   expect_code 0 "$SCAFFOLD_RC" "a document with an unknown answer kind must still scaffold"
   assert_no_grep 'scaffold time' "$home/data/bogus-answer/brief.md" \
@@ -2085,6 +2085,13 @@ EOF
   assert_contains "$SCAFFOLD_OUT" \
     'nearest prior work (proximity, not duplication): "Lower readable task" local:firstmate/firstmate-deadbeef/task/prior-task' \
     "an unclassified non-task row must not hide a lower-ranked readable task"
+
+  note_only_doc="$TMP_ROOT/note-only-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/note/known-note", slug:"firstmate/firstmate-deadbeef/note/known-note", title:"Known note", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"note", source_id:"known-note"}]}' > "$note_only_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" note-only-result "$note_only_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a result containing only a known non-task row must still scaffold"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
+    "a non-task row must not create a nearest-prior-work claim"
 
   unclassified_doc="$TMP_ROOT/unclassified-task-document.json"
   jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/task/unknown-task", slug:"firstmate/firstmate-deadbeef/task/unknown-task", title:"Unclassified task", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$unclassified_doc"
