@@ -20,7 +20,7 @@ Markers are compact trailing HTML comments, deliberately cheap because marker by
 
 - `<!--a:YYYY-MM-DD-->` - an `aging` entry; the embedded date is its last-reinforced date.
 - `<!--p:YYYY-MM-DD-->` - a `perishable` entry; the embedded date is its last-reinforced date.
-- `<!--a:YYYY-MM-DD/N-->` - written only in a home that has opted in to the pass horizon below, and left in place unread once a home opts out: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
+- `<!--a:YYYY-MM-DD/N-->` - written only while a home is opted in to the pass horizon below, and left in place unread if that home later opts out: either dated marker may carry `/N`, accumulated ticks toward that horizon; new ticks are applied at most once per calendar day.
   An absent `/N` means zero, so an entry the fleet keeps exercising costs no counter bytes at all, and a home that has not opted in never writes one.
   Existing `/N` values keep their stored integer; the pass-horizon section below says what they mean after the calendar-day cap.
 - `<!--P-->` - an explicitly `pinned` entry in a file whose default tier is not `pinned`.
