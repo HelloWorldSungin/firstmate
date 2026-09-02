@@ -212,6 +212,7 @@ The current guarded-merge contract for both forges is owned by [architecture.md]
 The evidence below verifies GitLab-specific prerequisites and live merge-state fields; `tests/fm-pr-merge.test.sh` pins the complete current orchestration.
 Every run below used a throwaway `FM_HOME`, so no live task record was touched, and a `glab` wrapper that refused any `merge` subcommand outright, so no merge could reach the forge even if a check were wrong.
 That wrapper is why the open fixture merge request could be used as evidence at all: it is `mergeable` with discussions resolved, so the pipeline conditions are the only thing between it and a real merge.
+Dated note, 2026-09-02: the guarded merge path now inspects the merge boundary from the task worktree's `origin` before any GitLab-specific condition is read, so the runs recorded below are preserved as what was accurate when recorded rather than as a procedure a throwaway `FM_HOME` with no task worktree reproduces today.
 
 Merging needs `glab` for the read and `jq` to parse it, and either one absent refuses before anything is recorded:
 

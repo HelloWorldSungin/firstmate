@@ -184,6 +184,9 @@ FM_PROJECT_ORIGIN_USER=
 FM_PROJECT_ORIGIN_HOST=
 FM_PROJECT_ORIGIN_PORT=
 FM_PROJECT_ORIGIN_PATH=
+# Split an accepted origin URL into the parts a caller compares against a forge
+# identity. A local path or file: URL is refused here even though it is an
+# accepted clone URL above, because it names no host to compare.
 fm_project_origin_identity() { # <url>; populate a host-backed repository identity
   local url=${1-} rest authority hostpart userpart user='' host port path transport
   FM_PROJECT_ORIGIN_TRANSPORT=

@@ -247,6 +247,12 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
+# True when the worktree's origin is the repository the PR URL names, so merge
+# boundary objects are never fetched from a repository nothing validated.
+# Exactly one origin URL is required, and it must survive git's own insteadOf
+# rewriting unchanged, because a rewritten fetch reaches a host the recorded URL
+# never named. An ssh remote is canonicalized through ssh -G, whose Hostname is
+# the host git would actually connect to once a config alias is resolved.
 fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-seconds>
   local wt=${1-} expected_host=${2-} expected_path=${3-} bound=${4-}
   local remote resolved remote_user remote_host remote_port remote_path remote_count ssh_host
@@ -279,6 +285,10 @@ fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-se
       = "$(printf '%s' "$expected_path" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]
 }
 
+# One bounded git remote operation that can never block on a prompt: an
+# unattended merge has no terminal to answer a credential or host-key question,
+# so a missing credential must fail fast instead of hanging inside the window
+# between the last pre-merge check and the merge itself.
 fm_pr_remote_git() { # <timeout-seconds> <git-args...>
   local bound=$1 ssh_command
   shift
