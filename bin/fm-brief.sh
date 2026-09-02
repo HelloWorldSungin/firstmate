@@ -688,6 +688,10 @@ $BRAIN_EMBED
 "
     fi
   fi
+elif [ "$KIND" != secondmate ] \
+    && ! command -v jq >/dev/null 2>&1 \
+    && [ "$FM_GBRAIN_ERROR" = "$FM_GBRAIN_LOCAL_FILE is not valid JSON" ]; then
+  echo "brain: the search never started: jq is required; the brief carries the retrieval instruction only" >&2
 fi
 
 if [ "$KIND" = secondmate ]; then

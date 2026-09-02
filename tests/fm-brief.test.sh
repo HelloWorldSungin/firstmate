@@ -2034,6 +2034,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
   local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc unclassified_doc called output_lines
+  local no_jq_bin path_dir executable
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
@@ -2096,16 +2097,21 @@ EOF
     "an incomplete higher-ranked identity must suppress lower-ranked proximity claims"
 
   called="$TMP_ROOT/no-jq-wrapper-called"
+  no_jq_bin="$TMP_ROOT/no-jq-bin"
+  mkdir -p "$home/config" "$no_jq_bin"
+  printf '{}\n' > "$home/config/gbrain-local.json"
+  while IFS= read -r path_dir; do
+    [ -d "$path_dir" ] || continue
+    for executable in "$path_dir"/*; do
+      [ -f "$executable" ] && [ -x "$executable" ] || continue
+      [ "${executable##*/}" = jq ] && continue
+      [ -e "$no_jq_bin/${executable##*/}" ] \
+        || ln -s "$executable" "$no_jq_bin/${executable##*/}"
+    done
+  done < <(printf '%s' "$PATH" | tr ':' '\n')
   SCAFFOLD_RC=0
   SCAFFOLD_OUT=$(
-    # The scaffolded child process invokes this exported command shim indirectly.
-    # shellcheck disable=SC2329
-    command() {
-      if [ "$1" = -v ] && [ "${2:-}" = jq ]; then return 1; fi
-      builtin command "$@"
-    }
-    export -f command
-    FM_HOME="$home" FM_ROOT_OVERRIDE="$legacy_root" FM_BRIEF_WRAPPER_CALLED="$called" \
+    PATH="$no_jq_bin" FM_HOME="$home" FM_ROOT_OVERRIDE="$legacy_root" FM_BRIEF_WRAPPER_CALLED="$called" \
       "$ROOT/bin/fm-brief.sh" no-jq repo --mode no-mistakes 2>"$home/stderr.txt"
   ) || SCAFFOLD_RC=$?
   SCAFFOLD_ERR=$(cat "$home/stderr.txt")
