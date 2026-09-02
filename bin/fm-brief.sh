@@ -624,11 +624,12 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     # The parentheses are a real fix, not grouping for readability. On jq 1.6
     # and 1.7.1, `a + b as $x | body` binds `as` to `b` alone, so `a` is added
     # to the string the body produces and the whole render errors, silently
-    # dropping the citations block; jq 1.8.1 and 1.8.2 bind the complete sum
-    # either way. Verified 2026-09-02 with the official 1.6, 1.7.1, 1.8.1,
-    # and 1.8.2
+    # dropping the citations block; jq 1.8.1 binds the complete sum either
+    # way. Verified 2026-09-02 by running the official 1.6, 1.7.1, and 1.8.1
     # binaries: unparenthesized errors on 1.6 and 1.7.1, parenthesized renders
-    # on all four. No apostrophe may appear in this comment: it sits inside
+    # on all three. The version that makes the parentheses load-bearing in CI
+    # is 1.7.1, which the ubuntu-latest runner image ships; no other version
+    # was run. No apostrophe may appear in this comment: it sits inside
     # the single-quoted jq program.
     | (($frame | utf8bytelength) + ($tail | utf8bytelength)) as $fixed
     | [ .results[] ]
