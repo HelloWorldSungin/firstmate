@@ -1090,6 +1090,10 @@ outcome_rc=0
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self || outcome_rc=$?
 case "$outcome_rc" in
   0) ;;
+  4)
+    printf 'actionable: merged %s and recorded its outcome, but could not commit the notification marker; the merge poll remains armed for retry\n' \
+      "$URL" >&2
+    ;;
   3)
     printf 'actionable: merged %s but could not report it upward: this home has no readable secondmate identity or parent binding (.fm-secondmate-home, .fm-secondmate-parent)\n' \
       "$URL" >&2

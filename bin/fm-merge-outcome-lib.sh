@@ -72,11 +72,13 @@ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 #   poll - this home's merge poll detected the merge, so the canonical outcome
 #          also wakes this home after any upward hop needed by a secondmate.
 #
-# Returns 0 when the outcome is recorded (or already was), 2 on an invalid
-# request, 3 when this home's own role or parent binding cannot be read well
-# enough to say where the outcome belongs, and 1 on any other failure to
-# record. A caller that has already merged must report a non-zero return rather
-# than treat it as success: the merge landed and the record did not.
+# Returns 0 when the outcome and notification marker are recorded (or already
+# were), 2 on an invalid request, 3 when this home's own role or parent binding
+# cannot be read well enough to say where the outcome belongs, 4 when the
+# outcome was recorded but its notification marker could not be committed, and
+# 1 on any other failure to record. Every non-zero return remains retryable to
+# a poll caller, while a merge caller can distinguish a landed, durably reported
+# merge from one whose outcome was not written.
 fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   local home=$1 state=$2 id=$3 url=$4 origin=$5
   local self='' self_rc=0 destination='' line lock status=0
@@ -131,7 +133,7 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin>
   fi
   if [ "$status" -eq 0 ]; then
     fm_pr_poll_merge_mark_notified "$state" "$id" \
-      "$provider" "$host" "$path" "$number" || status=1
+      "$provider" "$host" "$path" "$number" || status=4
   fi
   fm_lock_release "$lock"
   return "$status"

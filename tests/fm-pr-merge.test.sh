@@ -3015,9 +3015,9 @@ SH
     >"$case_dir/stdout-1" 2>"$case_dir/stderr-1"
   rc=$?
   set -e
-  expect_code 1 "$rc" \
-    "uncommitted-wake-retry: an unrecorded landed outcome should fail loudly"
-  assert_grep 'could not record the outcome' "$case_dir/stderr-1" \
+  expect_code 0 "$rc" \
+    "uncommitted-wake-retry: a durably reported landed outcome should stay successful"
+  assert_grep 'recorded its outcome, but could not commit the notification marker' "$case_dir/stderr-1" \
     "uncommitted-wake-retry: failed marker commit was not loud"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
     || fail "uncommitted-wake-retry: failed commit disarmed the retry poll"
