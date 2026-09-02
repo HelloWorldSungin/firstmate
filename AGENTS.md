@@ -548,6 +548,7 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
 Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
+Pass the task's own words with `--query` so the scaffold's one brain read searches for the right thing, and read the nearest-prior-work line it prints before dispatch: it claims proximity, never duplication, and never enters the brief.
 
 Every ship or design brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship or design task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
