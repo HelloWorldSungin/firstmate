@@ -479,6 +479,10 @@ case "${1:-} ${2:-}" in
       [ -z "${FM_TEST_GH_STATE_UNAVAILABLE:-}" ] || exit 1
       state=${FM_TEST_GH_PRE_STATE:-OPEN}
       queue_enabled=${FM_TEST_GH_QUEUE_ENABLED:-false}
+      if [ -n "${FM_TEST_GH_QUEUE_ENABLE_MARKER:-}" ] \
+        && [ -e "$FM_TEST_GH_QUEUE_ENABLE_MARKER" ]; then
+        queue_enabled=true
+      fi
       in_queue=${FM_TEST_GH_IN_QUEUE:-false}
       auto_merge=${FM_TEST_GH_AUTO_MERGE:-none}
       queue_entry=${FM_TEST_GH_QUEUE_ENTRY:-none}
@@ -1111,6 +1115,61 @@ SH
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "body-file-byte-bound: oversized body input reached the forge"
   pass "GitHub body-file input is materialized and bounded before the final tip check"
+}
+
+test_body_file_materialization_rechecks_immediate_execution() {
+  local case_dir head rc writer writer_rc
+  case_dir=$(make_case body-file-queue-race)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+  mkfifo "$case_dir/body.fifo"
+  cat >"$case_dir/fakebin/head" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "$FM_TEST_BODY_FIFO" ]; then
+    : >"$FM_TEST_BODY_READ_STARTED"
+  fi
+done
+exec "$FM_TEST_REAL_HEAD" "$@"
+SH
+  chmod +x "$case_dir/fakebin/head"
+  : >"$case_dir/gh.log"
+  export FM_TEST_BODY_FIFO="$case_dir/body.fifo"
+  export FM_TEST_BODY_READ_STARTED="$case_dir/body-read-started"
+  export FM_TEST_GH_QUEUE_ENABLE_MARKER="$case_dir/queue-enabled"
+  export FM_TEST_REAL_HEAD
+  FM_TEST_REAL_HEAD=$(command -v head)
+  (
+    attempts=0
+    while [ ! -e "$FM_TEST_BODY_READ_STARTED" ] && [ "$attempts" -lt 500 ]; do
+      sleep 0.01
+      attempts=$((attempts + 1))
+    done
+    [ -e "$FM_TEST_BODY_READ_STARTED" ] || exit 1
+    : >"$FM_TEST_GH_QUEUE_ENABLE_MARKER"
+    printf 'stable merge body\n' >"$FM_TEST_BODY_FIFO"
+  ) &
+  writer=$!
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/82 -- \
+    --body-file "$case_dir/body.fifo" >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  wait "$writer"
+  writer_rc=$?
+  set -e
+  unset FM_TEST_BODY_FIFO FM_TEST_BODY_READ_STARTED
+  unset FM_TEST_GH_QUEUE_ENABLE_MARKER FM_TEST_REAL_HEAD
+
+  expect_code 0 "$writer_rc" "body-file-queue-race: the synchronized queue transition failed"
+  expect_code 1 "$rc" "body-file-queue-race: enabling a queue during body input should refuse"
+  assert_grep 'GitHub merge queue on target branch main would defer execution' "$case_dir/stderr" \
+    "body-file-queue-race: the post-materialization preflight missed the queue"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "body-file-queue-race: the forge ran after a queue appeared during body input"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "body-file-queue-race: refusal retired the durable merge poll"
+  pass "GitHub rechecks immediate execution after body-file materialization"
 }
 
 test_non_allowlisted_short_args_refuse_before_recording() {
@@ -2400,6 +2459,7 @@ test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck
+test_body_file_materialization_rechecks_immediate_execution
 test_non_allowlisted_short_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden

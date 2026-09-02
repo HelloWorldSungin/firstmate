@@ -615,9 +615,17 @@ case "$PROVIDER" in
       # A sub-second residual window remains because neither forge exposes an
       # expected-base parameter; this guard narrows rather than eliminates it.
       verify_inspected_default_tip || exit 1
-      GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-        --match-head-commit "$FM_PR_INSPECTED_HEAD" \
-        "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
+      github_preflight_rc=0
+      github_require_immediate_execution || github_preflight_rc=$?
+      case "$github_preflight_rc" in
+        0)
+          GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+            --match-head-commit "$FM_PR_INSPECTED_HEAD" \
+            "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
+          ;;
+        3) ;;
+        *) exit 1 ;;
+      esac
       cleanup_materialized_body_files
       trap - EXIT HUP INT TERM
     fi
