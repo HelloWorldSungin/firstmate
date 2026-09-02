@@ -59,6 +59,8 @@
 #        forge call because neither can prove immediate execution
 #   (nn) both providers re-read the default tip immediately before the forge
 #        call and refuse when it moved since the guarded comparison
+#   (oo) GitHub body-file input is materialized and size-bounded before that
+#        final tip read, so external input cannot reopen the stale-base race
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1011,6 +1013,104 @@ test_default_tip_move_refuses_both_forges() {
     esac
   done
   pass "fm-pr-merge rechecks the inspected default tip for both providers"
+}
+
+test_body_file_is_materialized_and_bounded_before_the_tip_recheck() {
+  local advanced_tip case_dir head rc writer writer_rc
+  case_dir=$(make_case body-file-tip-race)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  advanced_tip=$(prepare_advanced_default "$case_dir")
+  mkfifo "$case_dir/body.fifo"
+  cat >"$case_dir/fakebin/head" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "$FM_TEST_BODY_FIFO" ]; then
+    : >"$FM_TEST_BODY_READ_STARTED"
+  fi
+done
+exec "$FM_TEST_REAL_HEAD" "$@"
+SH
+  cat >"$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
+case "${1:-} ${2:-}" in
+  "pr view") printf '%s\n' "$FM_TEST_BODY_HEAD" ;;
+  "pr merge")
+    body_file=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --body-file|-F) body_file=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    : >"$FM_TEST_BODY_READ_STARTED"
+    cat "$body_file" >"$FM_TEST_BODY_OBSERVED"
+    : >"$FM_TEST_MERGED_MARKER"
+    ;;
+esac
+exit 0
+SH
+  cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/head" "$case_dir/fakebin/gh" "$case_dir/fakebin/gh-axi"
+  : >"$case_dir/gh.log"
+  export FM_TEST_BODY_FIFO="$case_dir/body.fifo"
+  export FM_TEST_BODY_READ_STARTED="$case_dir/body-read-started"
+  export FM_TEST_BODY_HEAD="$head"
+  export FM_TEST_BODY_OBSERVED="$case_dir/body-observed"
+  export FM_TEST_MERGED_MARKER="$case_dir/merged"
+  export FM_TEST_REAL_HEAD
+  FM_TEST_REAL_HEAD=$(command -v head)
+  (
+    attempts=0
+    while [ ! -e "$FM_TEST_BODY_READ_STARTED" ] && [ "$attempts" -lt 500 ]; do
+      sleep 0.01
+      attempts=$((attempts + 1))
+    done
+    [ -e "$FM_TEST_BODY_READ_STARTED" ] || exit 1
+    git --git-dir="$case_dir/origin.git" update-ref refs/heads/main "$advanced_tip"
+    printf 'stable merge body\n' >"$FM_TEST_BODY_FIFO"
+  ) &
+  writer=$!
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/80 -- \
+    --body-file "$case_dir/body.fifo" >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  wait "$writer"
+  writer_rc=$?
+  set -e
+  unset FM_TEST_BODY_FIFO FM_TEST_BODY_READ_STARTED FM_TEST_BODY_HEAD
+  unset FM_TEST_BODY_OBSERVED FM_TEST_MERGED_MARKER FM_TEST_REAL_HEAD
+
+  expect_code 0 "$writer_rc" "body-file-tip-race: the synchronized default advance failed"
+  expect_code 1 "$rc" "body-file-tip-race: moving main during body input should refuse"
+  assert_grep 'current default branch main moved from inspected tip' "$case_dir/stderr" \
+    "body-file-tip-race: the post-materialization tip check did not observe the move"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "body-file-tip-race: the forge ran after default moved during body input"
+  assert_absent "$case_dir/merged" \
+    "body-file-tip-race: a body-file delay reopened the stale-base merge race"
+
+  case_dir=$(make_case body-file-byte-bound)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+  head -c 1048577 /dev/zero >"$case_dir/oversized-body"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/81 -- \
+    --body-file "$case_dir/oversized-body" >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "body-file-byte-bound: oversized input should refuse"
+  assert_grep 'body-file input exceeds the 1048576-byte bound' "$case_dir/stderr" \
+    "body-file-byte-bound: the refusal did not name the input bound"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "body-file-byte-bound: oversized body input reached the forge"
+  pass "GitHub body-file input is materialized and bounded before the final tip check"
 }
 
 test_non_allowlisted_short_args_refuse_before_recording() {
@@ -2299,6 +2399,7 @@ test_non_allowlisted_repo_arg_refuses_before_recording
 test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
+test_body_file_is_materialized_and_bounded_before_the_tip_recheck
 test_non_allowlisted_short_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden

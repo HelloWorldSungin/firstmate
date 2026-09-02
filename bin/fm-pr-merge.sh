@@ -161,6 +161,86 @@ require_forwardable_merge_arguments() {
 
 require_forwardable_merge_arguments "$@" || exit 1
 
+MATERIALIZED_BODY_WORKDIR=
+MATERIALIZED_BODY_DEADLINE=
+MATERIALIZED_BODY_BYTES=0
+MATERIALIZED_BODY_COUNT=0
+FM_PR_MATERIALIZED_BODY_FILE=
+
+cleanup_materialized_body_files() {
+  [ -z "$MATERIALIZED_BODY_WORKDIR" ] || rm -rf -- "$MATERIALIZED_BODY_WORKDIR"
+  MATERIALIZED_BODY_WORKDIR=
+}
+
+materialize_github_body_file() {
+  local source=$1 option=$2 staged read_source read_limit read_rc remaining bytes
+  local timeout=15 max_bytes=1048576
+  if [ -z "$MATERIALIZED_BODY_WORKDIR" ]; then
+    MATERIALIZED_BODY_WORKDIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-pr-merge-body.XXXXXX") || {
+      printf 'error: refusing extra merge argument %s because its body-file input could not be staged safely\n' \
+        "$option" >&2
+      return 1
+    }
+    chmod 0700 "$MATERIALIZED_BODY_WORKDIR" || {
+      cleanup_materialized_body_files
+      printf 'error: refusing extra merge argument %s because its body-file input could not be staged safely\n' \
+        "$option" >&2
+      return 1
+    }
+    MATERIALIZED_BODY_DEADLINE=$((SECONDS + timeout))
+    trap cleanup_materialized_body_files EXIT
+    trap 'cleanup_materialized_body_files; trap - EXIT; exit 143' HUP INT TERM
+  fi
+  remaining=$((MATERIALIZED_BODY_DEADLINE - SECONDS))
+  if [ "$remaining" -le 0 ]; then
+    printf 'error: refusing extra merge argument %s because body-file materialization exceeded %s seconds\n' \
+      "$option" "$timeout" >&2
+    return 1
+  fi
+  read_limit=$((max_bytes - MATERIALIZED_BODY_BYTES + 1))
+  if [ "$read_limit" -le 0 ]; then
+    printf 'error: refusing extra merge argument %s because body-file input exceeds the %s-byte bound\n' \
+      "$option" "$max_bytes" >&2
+    return 1
+  fi
+  MATERIALIZED_BODY_COUNT=$((MATERIALIZED_BODY_COUNT + 1))
+  staged="$MATERIALIZED_BODY_WORKDIR/body-$MATERIALIZED_BODY_COUNT"
+  : >"$staged" && chmod 0600 "$staged" || {
+    printf 'error: refusing extra merge argument %s because its body-file input could not be staged safely\n' \
+      "$option" >&2
+    return 1
+  }
+  case "$source" in
+    -) read_source=- ;;
+    -*) read_source="./$source" ;;
+    *) read_source=$source ;;
+  esac
+  read_rc=0
+  fm_run_timed "$remaining" head -c "$read_limit" "$read_source" >"$staged" || read_rc=$?
+  case "$read_rc" in
+    0) ;;
+    124)
+      printf 'error: refusing extra merge argument %s because body-file materialization exceeded %s seconds\n' \
+        "$option" "$timeout" >&2
+      return 1
+      ;;
+    *)
+      printf 'error: refusing extra merge argument %s because its body-file input could not be read\n' \
+        "$option" >&2
+      return 1
+      ;;
+  esac
+  bytes=$(wc -c <"$staged" | tr -d '[:space:]') || bytes=
+  case "$bytes" in ''|*[!0-9]*) bytes=$((max_bytes + 1)) ;; esac
+  MATERIALIZED_BODY_BYTES=$((MATERIALIZED_BODY_BYTES + bytes))
+  if [ "$MATERIALIZED_BODY_BYTES" -gt "$max_bytes" ]; then
+    printf 'error: refusing extra merge argument %s because body-file input exceeds the %s-byte bound\n' \
+      "$option" "$max_bytes" >&2
+    return 1
+  fi
+  FM_PR_MATERIALIZED_BODY_FILE=$staged
+}
+
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ]; then
@@ -502,32 +582,44 @@ case "$PROVIDER" in
     if ! caller_has_merge_method "$@"; then
       merge_args=(--squash)
     fi
-    github_args=()
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --method)
-          [ "$#" -ge 2 ] || { echo "error: merge method value is missing" >&2; exit 1; }
-          github_args+=("--$2")
-          shift 2
-          ;;
-        --method=*)
-          github_args+=("--${1#--method=}")
-          shift
-          ;;
-        --subject|--body|--body-file|-t|-b|-F)
-          github_args+=("$1" "$2")
-          shift 2
-          ;;
-        *) github_args+=("$1"); shift ;;
-      esac
-    done
     if [ "$github_preflight_rc" -eq 0 ]; then
+      github_args=()
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --method)
+            [ "$#" -ge 2 ] || { echo "error: merge method value is missing" >&2; exit 1; }
+            github_args+=("--$2")
+            shift 2
+            ;;
+          --method=*)
+            github_args+=("--${1#--method=}")
+            shift
+            ;;
+          --body-file|-F)
+            materialize_github_body_file "$2" "$1" || exit 1
+            github_args+=(--body-file "$FM_PR_MATERIALIZED_BODY_FILE")
+            shift 2
+            ;;
+          --body-file=*)
+            materialize_github_body_file "${1#--body-file=}" --body-file || exit 1
+            github_args+=(--body-file "$FM_PR_MATERIALIZED_BODY_FILE")
+            shift
+            ;;
+          --subject|--body|-t|-b)
+            github_args+=("$1" "$2")
+            shift 2
+            ;;
+          *) github_args+=("$1"); shift ;;
+        esac
+      done
       # A sub-second residual window remains because neither forge exposes an
       # expected-base parameter; this guard narrows rather than eliminates it.
       verify_inspected_default_tip || exit 1
       GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
         --match-head-commit "$FM_PR_INSPECTED_HEAD" \
         "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
+      cleanup_materialized_body_files
+      trap - EXIT HUP INT TERM
     fi
     github_confirm_merged || exit 1
     ;;
