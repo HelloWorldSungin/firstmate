@@ -552,7 +552,7 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
-test_watcher_stops_promptly_on_term() {
+test_watcher_stop_is_kernel_delivered_and_still_cleans_up() {
   # A watcher must honor its own stop signal within the cycle it receives it, not
   # at the end of the current poll interval. Bash defers a trapped signal until
   # the running foreground command returns, so a blind `sleep "$POLL"` made exit
@@ -561,12 +561,33 @@ test_watcher_stops_promptly_on_term() {
   # stop-then-relaunch, which gives the old watcher only 5s to exit before
   # falling through to a fresh child. Pin the property with a poll interval far
   # longer than the exit budget, so a regression cannot pass on timing luck.
-  local dir state fakebin out pid i status
+  #
+  # Exiting is not enough on its own, and an earlier version of this case that
+  # asserted only "it exited" was intermittently red. A stop-signal HANDLER is a
+  # string bash must parse at the moment the signal arrives, and that parse can
+  # fail while the shell is inside a command substitution: bash then reports a
+  # trap parse error, runs no handler, and CONTINUES, so the watcher ignores the
+  # stop for the rest of its interval (issue #242). Measured on bash 5.2.21 on
+  # 2026-09-02: 4 ignored TERMs in 700 signalled runs of a command-substitution
+  # loop, against 0 in 600 runs of the same loop with no command substitution.
+  # No handler in any tree was malformed; the string bash failed to parse was
+  # well formed. docs/verification/supervision.md owns that evidence.
+  #
+  # So assert the mechanism that makes the stop reliable, not only its effect.
+  # The watcher must be terminated BY the signal (128+SIGTERM = 143), which is
+  # true only when no stop handler is installed, and its EXIT cleanup must still
+  # have run, which is what releases the singleton lock. A reintroduced handler
+  # would exit with its own status and still satisfy a bare "did it stop" check
+  # while putting the parse exposure back.
+  local dir state fakebin out err pid i status
   dir=$(make_case term-latency)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  # The trap diagnostic issue #242 is about is written to stderr, so capture it
+  # rather than letting it escape to the runner's own stderr unread.
+  err="$dir/watch.err"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
   pid=$!
   i=0
   while [ "$i" -lt 100 ]; do
@@ -584,8 +605,12 @@ test_watcher_stops_promptly_on_term() {
   wait_for_exit "$pid" 100
   status=$?
   [ "$status" -ne 124 ] || fail "watcher ignored TERM for its whole poll interval"
+  [ "$status" -eq 143 ] \
+    || fail "watcher did not stop by default signal disposition (status $status): a stop-signal handler is installed again, which puts the issue #242 trap-parse exposure back"
+  ! grep -q 'trap:' "$err" 2>/dev/null \
+    || fail "watcher reported a trap diagnostic while stopping: $(grep -m1 'trap:' "$err")"
   [ ! -e "$state/.watch.lock/pid" ] || fail "stopped watcher left its singleton lock claimed"
-  pass "watcher honors a stop signal without waiting out its poll interval"
+  pass "watcher stop is kernel-delivered and its EXIT cleanup still releases the lock"
 }
 
 test_watcher_stop_burst_during_cleanup_still_releases_lock() {
@@ -1356,7 +1381,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
-test_watcher_stops_promptly_on_term
+test_watcher_stop_is_kernel_delivered_and_still_cleans_up
 test_watcher_stop_burst_during_cleanup_still_releases_lock
 test_watch_restart_hands_over_within_its_own_budget
 test_watcher_liveness_beacon_survives_interruptible_waits

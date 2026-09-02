@@ -490,6 +490,59 @@ The singleton lock is released in every measured case.
 Current limit: the herdr push path in `event_wait_or_sleep` waits inside a foreground command substitution, so a push-capable home remains up to `FM_POLL` deaf to its own stop signal.
 That reader owns a fifo directory and a child reader process that it removes on its own return path, so interrupting it from the caller would leak both on every stop.
 
+### Watcher stop disposition
+
+Measured on 2026-09-02 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`, superseding the stop-path mechanism recorded above.
+The latency table above still holds; what changed is how the stop signal is received.
+
+A stop-signal HANDLER is a string bash parses at the moment the signal arrives.
+That parse can fail while the shell is inside a command substitution.
+Bash then prints a trap diagnostic, runs no handler, and CONTINUES, so the watcher ignored the stop for the rest of its poll interval (issue #242).
+
+The handler text is not what is malformed.
+`bin/fm-watch.sh` installed `trap watcher_stop_signal HUP INT TERM`, a single well-formed word, and `trap -p` read out of a live watcher at the moment of failure showed only well-formed entries.
+The diagnostic names whichever sourced file was executing when the signal landed, not where any trap is installed, which is why CI reported `bin/fm-wake-lib.sh` - a file that installs no trap at all.
+
+Reproduce with two loops that differ only in whether the body performs a command substitution, sending one TERM per run at a randomised offset:
+
+```sh
+# arm A: command substitution in the loop
+printf '%s\n' '#!/usr/bin/env bash' 'trap "exit 1" TERM' 'while :; do c=$(date +%s); done' > /tmp/arm-a.sh
+# arm B: same loop shape, no command substitution
+printf '%s\n' '#!/usr/bin/env bash' 'trap "exit 1" TERM' 'while :; do printf -v c "%s" "$SECONDS"; done' > /tmp/arm-b.sh
+# for each arm: start it, sleep 0.02-0.35s, send one TERM, record whether the
+# process survived a further second and whether stderr carried a trap diagnostic
+```
+
+Observed, interleaved so load drift hits both arms equally:
+
+| arm | runs | trap diagnostics | ignored TERM |
+| --- | --- | --- | --- |
+| command substitution in loop | 700 | 5 | 4 |
+| no command substitution | 600 | 0 | 0 |
+
+The same failure was reproduced against the real watcher at 2 occurrences in 640 signalled runs (`FM_POLL=0.05`, one TERM per run at a randomised offset).
+One of those runs also printed `bin/fm-watch.sh: line 515: unexpected EOF while looking for matching ')'`, bash failing to parse its own script source, which a malformed handler string cannot cause.
+
+The watcher therefore installs no HUP/INT/TERM handler and lets those signals keep their default disposition.
+Bash still runs the EXIT trap for an untrapped fatal signal, so `watcher_cleanup` is unchanged:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' 'cleanup() { echo EXIT_TRAP_RAN >&2; }' 'trap cleanup EXIT' 'trap - TERM' 'echo READY >&2' 'sleep 30' > /tmp/exit-probe.sh
+```
+
+Signalling that probe with TERM prints `EXIT_TRAP_RAN` and yields wait status 143.
+A real watcher signalled the same way exits 143 with `state/.watch.lock/pid` removed, so child reaping, private check-file removal and lock release all still run.
+Issue #160's burst case also still holds, because `watcher_cleanup`'s first statement ignores further stop signals.
+
+After the change, 250 signalled runs of the real watcher produced no trap diagnostic and no ignored TERM.
+`tests/fm-watcher-lock.test.sh` pins the mechanism rather than only the effect: the watcher must exit 143, which is true only with no handler installed, and must still have released its lock.
+That case fails deterministically with status 1 against a watcher carrying a stop handler.
+
+Not reproduced, and recorded so a later reader does not chase it: upstream `kunchenguid/firstmate#3565` attributes the same diagnostic to a runtime-built handler restored through `_FM_SIGNAL_DEFER_RESTORE=$(trap -p HUP INT TERM)` and `eval`.
+Neither `fm_signal_defer` nor `trap -p` exists in `bin/` at this fork's HEAD, at upstream `d22318ea`, or at the merge base `60bedde5`.
+The minimal reproduction above carries no `eval` and no dynamically built handler and still produces the identical message, so that mechanism is not required to explain it.
+
 ### Recovery-loop continuity
 
 The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.
