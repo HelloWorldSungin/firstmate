@@ -611,8 +611,8 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       else "" end;
     frame as $frame
     | tail as $tail
-    # Bind the complete byte sum before `as`; jq otherwise binds the right-hand
-    # pipeline too early and the citations block fails to render.
+    # Bind the complete byte sum before `as`, because jq otherwise binds the
+    # right-hand pipeline too early and the citations block fails to render.
     | (($frame | utf8bytelength) + ($tail | utf8bytelength)) as $fixed
     | [ .results[] ]
     | reduce .[] as $r ([]; if any(.[]; .citation == $r.citation) then . else . + [$r] end)
