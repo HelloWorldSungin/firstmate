@@ -92,6 +92,7 @@ A run that could not create its own working files is the third state and exits 5
 A hosted provider that is unusable fails on its own, and the refusal names `search` as the path that still works.
 
 A crewmate learns this from its brief rather than from memory: `bin/fm-brief.sh` adds one instruction naming the command, the citation label, and the hosted-provider boundary, and adds it only when the home actually has an index, so a fleet with no brain carries no dead pointer.
+A ship, design, or scout scaffold also runs one scope-local search with the task's words and embeds its provenance-labeled rows after that instruction when the installed wrapper is observed to emit the answer contract above; a search that never starts, fails, times out, or returns nothing leaves the instruction alone and never blocks the scaffold (`bin/fm-brief.sh` header owns the shape, the gate, and the advisory nearest-prior-work line it prints for firstmate).
 
 ## Source precedence and name collisions
 

@@ -1136,9 +1136,9 @@ test_brain_instruction_tracks_whether_the_home_has_one() {
   assert_no_grep "fm-recall.sh" "$nobrain/data/nb-ship/brief.md" \
     "a home with no brain must not point a crewmate at retrieval"
 
-  FM_HOME="$withbrain" "$ROOT/bin/fm-brief.sh" wb-ship repo --mode no-mistakes >/dev/null 2>&1 \
+  FM_HOME="$withbrain" FM_GBRAIN_BIN="$TMP_ROOT/no-gbrain-installed" "$ROOT/bin/fm-brief.sh" wb-ship repo --mode no-mistakes >/dev/null 2>&1 \
     || fail "ship scaffold failed for a home with a brain"
-  FM_HOME="$withbrain" "$ROOT/bin/fm-brief.sh" wb-scout repo --scout >/dev/null 2>&1 \
+  FM_HOME="$withbrain" FM_GBRAIN_BIN="$TMP_ROOT/no-gbrain-installed" "$ROOT/bin/fm-brief.sh" wb-scout repo --scout >/dev/null 2>&1 \
     || fail "scout scaffold failed for a home with a brain"
   FM_SECONDMATE_CHARTER='Supervise alpha.' FM_HOME="$withbrain" \
     "$ROOT/bin/fm-brief.sh" wb-sm --secondmate alpha >/dev/null 2>&1 \
@@ -1797,6 +1797,437 @@ test_continue_branch_flag_validation() {
 
 test_script_parses
 test_no_heredoc_in_command_substitution
+# --- the scaffold-time brain read (docs/adr/0001-brain-read-mount.md D1, D4) ---
+#
+# bin/fm-recall.sh is the real wrapper in every case below; only GBrain is a
+# stub, one that records the operation it was asked for and answers with what
+# the case staged. Each case drives the scaffold through its public interface
+# and judges the brief, the stdout, and the stderr it produced.
+BRAIN_STUB_DIR="$TMP_ROOT/brain-stub"
+mkdir -p "$BRAIN_STUB_DIR"
+cat > "$BRAIN_STUB_DIR/gbrain" <<'STUBEOF'
+#!/usr/bin/env bash
+set -u
+# The floor read is a separate question; "not found" leaves the wrapper on its
+# disclosed pinned default, which is the ordinary brain.
+if [ "${1:-}" = config ]; then printf 'Config key not found: %s\n' "${3:-}" >&2; exit 1; fi
+printf '%s\n' "$@" >> "$FM_BRIEF_STUB_ARGV"
+[ "${FM_BRIEF_STUB_SLEEP:-0}" = 0 ] || sleep "$FM_BRIEF_STUB_SLEEP"
+[ -z "${FM_BRIEF_STUB_OUT:-}" ] || cat "$FM_BRIEF_STUB_OUT"
+exit "${FM_BRIEF_STUB_RC:-0}"
+STUBEOF
+chmod 0755 "$BRAIN_STUB_DIR/gbrain"
+
+brain_home() {  # <name> -> a home whose brain has a local index
+  local home="$TMP_ROOT/$1"
+  mkdir -p "$home/data/gbrain/pglite" "$home/state"
+  printf '%s\n' "$home"
+}
+
+# Rows in the slug shape a Firstmate capture produces, so the wrapper can name
+# the task record each one came from: a note first, then a task, then a second
+# chunk of that same task page.
+BRAIN_ROWS_JSON="$TMP_ROOT/brain-rows.json"
+jq -n '[
+  {slug:"firstmate/firstmate-deadbeef/note/some-note", title:"A note", chunk_text:"Note body.", score:0.5, stale:false},
+  {slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Prior task", chunk_text:("Prior body\n\ntext  here. " + ("a" * 400) + "ZZZ"), score:0.9, rerank_score:0.95, stale:false},
+  {slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Prior task", chunk_text:"second chunk", score:0.8, stale:false}
+]' > "$BRAIN_ROWS_JSON"
+
+brain_scaffold() {  # <home> <id> <stub-out-or-empty> <stub-rc> <stub-sleep> <args...> -> SCAFFOLD_RC / SCAFFOLD_OUT / SCAFFOLD_ERR
+  local home=$1 id=$2 out=$3 rc=$4 sleep_s=$5
+  shift 5
+  : > "$home/argv.txt"
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(FM_HOME="$home" FM_GBRAIN_BIN="$BRAIN_STUB_DIR/gbrain" \
+    FM_BRIEF_STUB_ARGV="$home/argv.txt" FM_BRIEF_STUB_OUT="$out" \
+    FM_BRIEF_STUB_RC="$rc" FM_BRIEF_STUB_SLEEP="$sleep_s" \
+    "$ROOT/bin/fm-brief.sh" "$id" repo "$@" 2>"$home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+}
+
+brain_wrapper_scaffold() {  # <home> <wrapper-root> <id> <document> -> SCAFFOLD_RC / SCAFFOLD_OUT / SCAFFOLD_ERR
+  local home=$1 wrapper_root=$2 id=$3 document=$4
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$wrapper_root" \
+    FM_BRIEF_WRAPPER_DOCUMENT="$document" \
+    "$ROOT/bin/fm-brief.sh" "$id" repo --mode no-mistakes 2>"$home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+}
+
+brain_section() {  # <brief> -> the "# Brain" section up to its closing blank line
+  awk '/^# Brain$/ { on = 1 } on && /^$/ { exit } on { print }' "$1"
+}
+
+# D1 and D4 on a search that finds rows: the rows reach the brief with their
+# provenance labels, one page is one row, the wrapper's excerpt cap holds, the
+# instruction to search again stays, and the nearest-prior-work line names the
+# closest task record and its report on stdout without entering the brief.
+test_brain_scaffold_read_embeds_found_rows() {
+  local home brief argv ranked forged title_lines
+  home=$(brain_home brain-found)
+  mkdir -p "$home/data/prior-task"
+  printf 'a completed report\n' > "$home/data/prior-task/report.md"
+  brain_scaffold "$home" found-ship "$BRAIN_ROWS_JSON" 0 0 --mode no-mistakes --query "read mount brief scaffold"
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold whose search found rows must succeed (stderr: $SCAFFOLD_ERR)"
+  [ -z "$SCAFFOLD_ERR" ] || fail "a found search must not warn on stderr: $SCAFFOLD_ERR"
+  brief="$home/data/found-ship/brief.md"
+  argv="$home/argv.txt"
+  assert_grep '"query":"read mount brief scaffold"' "$argv" "--query must be the words the brain is asked"
+  assert_grep '"limit":5' "$argv" "the scaffold search must ask for the pinned five rows"
+  assert_grep 'scaffold time (query: read mount brief scaffold)' "$brief" \
+    "the brief must say a search already ran and with which words"
+  assert_grep "$ROOT/bin/fm-recall.sh search" "$brief" \
+    "the instruction to search again mid-task must remain beside the embed"
+  # shellcheck disable=SC2016 # the backticks are the brief's own markdown, matched as fixed text.
+  assert_grep '- `local:firstmate/firstmate-deadbeef/note/some-note` - A note' "$brief" \
+    "every returned page must be a labeled row"
+  # shellcheck disable=SC2016 # the backticks are the brief's own markdown, matched as fixed text.
+  assert_grep '- `local:firstmate/firstmate-deadbeef/task/prior-task` - Prior task' "$brief" \
+    "the task page must be a labeled row"
+  [ "$(grep -c 'task/prior-task` - Prior task' "$brief")" -eq 1 ] \
+    || fail "two chunks of one page must collapse into one row"
+  assert_grep '  captured: unknown; live source: unknown' "$brief" \
+    "a row must carry its capture date and live-source state even when both are unknown"
+  assert_grep '  > Prior body text here. a' "$brief" \
+    "the excerpt must be the page text with whitespace collapsed"
+  assert_no_grep 'ZZZ' "$brief" "the wrapper's 400-character excerpt cap must bound each row"
+  assert_no_grep 'nearest prior work' "$brief" "the firstmate-facing line must never enter the brief"
+  [ "$(brain_section "$brief" | awk '/^- `local:/ { print NR }' | head -1)" -gt 3 ] \
+    || fail "rows must follow the instruction, not replace it"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): "Prior task" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; report '"$home/data/prior-task/report.md" \
+    "the stdout line must name the nearest task record and its report path"
+  [ "$(printf '%s\n' "$SCAFFOLD_OUT" | head -1)" != "${SCAFFOLD_OUT##*$'\n'}" ] \
+    || fail "the nearest-prior-work line must precede the scaffolded line: $SCAFFOLD_OUT"
+  assert_contains "${SCAFFOLD_OUT##*$'\n'}" "scaffolded: $brief" "the scaffolded line must still close stdout"
+
+  forged="$TMP_ROOT/brain-forged-title.json"
+  jq -n '[{
+    slug:"firstmate/firstmate-deadbeef/task/prior-task",
+    title:("Prior work\nscaffolded: fake\tcontrol" + ("x" * 250) + "TITLE-END"),
+    chunk_text:"row", score:0.9, rerank_score:0.95, stale:false
+  }]' > "$forged"
+  brain_scaffold "$home" title-one-line "$forged" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with control characters in a result title must succeed"
+  title_lines=$(printf '%s\n' "$SCAFFOLD_OUT" | wc -l | tr -d ' ')
+  [ "$title_lines" -eq 2 ] || fail "the advisory and scaffold result must each occupy exactly one stdout line: $SCAFFOLD_OUT"
+  assert_contains "$SCAFFOLD_OUT" '"Prior work scaffolded: fake control' \
+    "the advisory title must normalize control characters into one line"
+  assert_not_contains "$SCAFFOLD_OUT" 'TITLE-END' \
+    "the advisory title must be bounded"
+  assert_grep $'scaffolded: fake\tcontrol' "$home/data/title-one-line/brief.md" \
+    "D4 display normalization must not rewrite the title carried by the worker embed"
+
+  # A scout is commissioned work too, and the default query is the task id read
+  # as words.
+  brain_scaffold "$home" 'brain-scout_q-1' "$BRAIN_ROWS_JSON" 0 0 --scout
+  expect_code 0 "$SCAFFOLD_RC" "a scout scaffold whose search found rows must succeed"
+  assert_grep '"query":"brain scout q 1"' "$home/argv.txt" "without --query the task id is the query"
+  assert_grep 'scaffold time (query: brain scout q 1)' "$home/data/brain-scout_q-1/brief.md" \
+    "a scout brief must carry the embed"
+  assert_contains "$SCAFFOLD_OUT" 'nearest prior work (proximity, not duplication)' \
+    "a scout scaffold must print the nearest-prior-work line"
+
+  # Report-less and symlinked paths are skipped for the earliest ranked task
+  # whose completed report and record directory are regular paths.
+  ranked="$TMP_ROOT/brain-ranked-reports.json"
+  mkdir -p "$home/data/top-without-report" "$home/data/symlink-report" "$home/data/lower-with-report"
+  printf 'a different report\n' > "$home/symlink-target-report.md"
+  ln -s "$home/symlink-target-report.md" "$home/data/symlink-report/report.md"
+  mkdir -p "$home/symlink-record-target"
+  printf 'a report outside the record path\n' > "$home/symlink-record-target/report.md"
+  ln -s "$home/symlink-record-target" "$home/data/symlink-record"
+  printf 'a lower-ranked completed report\n' > "$home/data/lower-with-report/report.md"
+  jq -n '[
+    {slug:"firstmate/firstmate-deadbeef/task/top-without-report", title:"Top without report", chunk_text:"top", score:0.9, stale:false},
+    {slug:"firstmate/firstmate-deadbeef/task/symlink-report", title:"Symlink report", chunk_text:"symlink", score:0.85, stale:false},
+    {slug:"firstmate/firstmate-deadbeef/task/symlink-record", title:"Symlink record", chunk_text:"symlink", score:0.825, stale:false},
+    {slug:"firstmate/firstmate-deadbeef/task/lower-with-report", title:"", chunk_text:"lower", score:0.8, stale:false}
+  ]' > "$ranked"
+  brain_scaffold "$home" found-outranked-report "$ranked" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with a lower-ranked readable report must succeed"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): "" local:firstmate/firstmate-deadbeef/task/lower-with-report; live source unknown; report '"$home/data/lower-with-report/report.md" \
+    "the first readable report in ranked order must be named without shifting an empty title"
+  assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
+    "a higher-ranked task without a readable report must be skipped"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-report' \
+    "a higher-ranked symlinked report must be skipped"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-record' \
+    "a higher-ranked symlinked record directory must be skipped"
+
+  # Ranked rows with no readable completed report make no proximity claim.
+  rm "$home/data/lower-with-report/report.md"
+  brain_scaffold "$home" found-no-report "$ranked" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with no readable report must succeed"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): no local report' \
+    "ranked rows without a readable report must state that no local report exists"
+  assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
+    "the no-report line must not name a report-less task record"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-report' \
+    "the no-report line must not name a symlinked report"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-record' \
+    "the no-report line must not name a report beneath a symlinked record directory"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/lower-with-report' \
+    "the no-report line must not claim proximity to an unreadable report"
+  pass "fm-brief.sh: a found scaffold search embeds labeled rows and prints the nearest prior work"
+}
+
+# The degradation table: a search that returns nothing, fails, never starts,
+# or overruns its pinned bound leaves the instruction-only section, prints no
+# nearest-prior-work line, and never stops the scaffold.
+test_brain_scaffold_read_degrades_without_blocking() {
+  local home brief empty start elapsed
+  home=$(brain_home brain-degraded)
+  empty="$TMP_ROOT/brain-empty.json"
+  printf '[]\n' > "$empty"
+
+  brain_scaffold "$home" empty-ship "$empty" 0 0 --mode no-mistakes
+  expect_code 0 "$SCAFFOLD_RC" "an empty search must still scaffold"
+  brief="$home/data/empty-ship/brief.md"
+  assert_grep "$ROOT/bin/fm-recall.sh search" "$brief" "an empty search keeps the retrieval instruction"
+  assert_no_grep 'scaffold time' "$brief" "an empty search must not mount an embed"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' "an empty search has no nearest prior work to name"
+  [ -z "$SCAFFOLD_ERR" ] || fail "read-and-empty is not a failure and must not warn: $SCAFFOLD_ERR"
+
+  brain_scaffold "$home" failed-ship "" 1 0 --mode no-mistakes
+  expect_code 0 "$SCAFFOLD_RC" "a failed search must still scaffold"
+  brief="$home/data/failed-ship/brief.md"
+  assert_grep "$ROOT/bin/fm-recall.sh search" "$brief" "a failed search keeps the retrieval instruction"
+  assert_no_grep 'scaffold time' "$brief" "a failed search must not mount an embed"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' "a failed search has nothing to name"
+  assert_contains "$SCAFFOLD_ERR" 'the brain was asked and did not answer' \
+    "a failed read must be reported as asked-and-unanswered"
+  assert_contains "$SCAFFOLD_ERR" 'retrieval instruction only' "the diagnostic must say what the brief carries instead"
+
+  # The wrapper cannot create its working files, so no corpus was ever asked:
+  # a different state from the failure above, and named as one.
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(FM_HOME="$home" FM_GBRAIN_BIN="$BRAIN_STUB_DIR/gbrain" FM_BRIEF_STUB_ARGV="$home/argv.txt" \
+    FM_BRIEF_STUB_OUT="$BRAIN_ROWS_JSON" TMPDIR="$TMP_ROOT/no-such-tmpdir" \
+    "$ROOT/bin/fm-brief.sh" never-ship repo --mode no-mistakes 2>"$home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a search that never started must still scaffold"
+  assert_grep "$ROOT/bin/fm-recall.sh search" "$home/data/never-ship/brief.md" \
+    "a never-started search keeps the retrieval instruction"
+  assert_no_grep 'scaffold time' "$home/data/never-ship/brief.md" "a never-started search must not mount an embed"
+  assert_contains "$SCAFFOLD_ERR" 'the search never started' \
+    "never-started must be distinguished from asked-and-unanswered"
+
+  # The pinned bound: a brain that does not answer costs the scaffold ten
+  # seconds, never the wrapper's sixty-second default and never a hang.
+  start=$(date +%s)
+  brain_scaffold "$home" slow-ship "$BRAIN_ROWS_JSON" 0 40 --mode no-mistakes
+  elapsed=$(( $(date +%s) - start ))
+  expect_code 0 "$SCAFFOLD_RC" "an overrunning search must still scaffold"
+  [ "$elapsed" -le 15 ] || fail "the scaffold must stop within the pinned bound plus kill grace (took ${elapsed}s)"
+  [ "$elapsed" -ge 9 ] || fail "the pinned bound is ten seconds, not shorter (took ${elapsed}s)"
+  assert_no_grep 'scaffold time' "$home/data/slow-ship/brief.md" "an overrun must not mount an embed"
+  assert_contains "$SCAFFOLD_ERR" 'did not answer within' "an overrun must be reported as the brain not answering in time"
+  pass "fm-brief.sh: an empty, failed, never-started, or overrunning scaffold search leaves the instruction-only section"
+}
+
+# The two gates: an installed wrapper that emits a document without the answer
+# framing and provenance fields does not mount the embed, while the advisory
+# line still prints from the rows it did return.
+test_brain_scaffold_read_gates_embed_on_answer_contract() {
+  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc unclassified_doc called output_lines
+  local no_jq_bin path_dir executable no_brain_home
+  home=$(brain_home brain-legacy)
+  legacy_root="$TMP_ROOT/legacy root"
+  mkdir -p "$legacy_root/bin" "$home/data/prior-task"
+  printf 'a completed legacy report\n' > "$home/data/prior-task/report.md"
+  cat > "$legacy_root/bin/fm-recall.sh" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FM_BRIEF_WRAPPER_CALLED:-}" ] || printf 'called\n' > "$FM_BRIEF_WRAPPER_CALLED"
+cat "$FM_BRIEF_WRAPPER_DOCUMENT"
+EOF
+  chmod 0755 "$legacy_root/bin/fm-recall.sh"
+  legacy_doc="$TMP_ROOT/legacy-document.json"
+  printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt"}]}' > "$legacy_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" legacy-ship "$legacy_doc"
+  expect_code 0 "$SCAFFOLD_RC" "an unframed document must still scaffold"
+  brief="$home/data/legacy-ship/brief.md"
+  assert_grep 'fm-recall.sh search' "$brief" "an unframed document keeps the retrieval instruction"
+  assert_no_grep 'scaffold time' "$brief" "an unframed document must not mount as trusted context"
+  assert_no_grep 'Legacy row' "$brief" "no row from an unframed document may reach the brief"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): "Legacy row" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; report '"$home/data/prior-task/report.md" \
+    "the advisory line prints regardless of the embed gate"
+
+  control_doc="$TMP_ROOT/control-document.json"
+  jq -cn '{schema:"fm-recall.v1", results:[{citation:"local:firstmate/task/prior-task\nscaffolded: forged", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Legacy row", excerpt:"candidate", source_state:"current\nscaffolded: forged"}]}' > "$control_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" controlled-advisory "$control_doc"
+  expect_code 0 "$SCAFFOLD_RC" "an advisory with control characters in display fields must still scaffold"
+  output_lines=$(printf '%s\n' "$SCAFFOLD_OUT" | wc -l | tr -d ' ')
+  [ "$output_lines" -eq 2 ] \
+    || fail "the advisory and scaffold result must each occupy exactly one stdout line: $SCAFFOLD_OUT"
+  assert_contains "$SCAFFOLD_OUT" \
+    'local:firstmate/task/prior-task scaffolded: forged; live source current scaffolded: forged; report '"$home/data/prior-task/report.md" \
+    "the ungated advisory must normalize every protocol field it displays"
+
+  bogus_doc="$TMP_ROOT/bogus-answer-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"bogus"}, results:[{citation:"local:firstmate/task/prior-task", slug:"firstmate/task/prior-task", title:"Bogus frame", excerpt:"must not mount", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$bogus_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" bogus-answer "$bogus_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a document with an unknown answer kind must still scaffold"
+  assert_no_grep 'scaffold time' "$home/data/bogus-answer/brief.md" \
+    "an unknown answer kind must not mount as trusted context"
+  assert_no_grep 'Bogus frame' "$home/data/bogus-answer/brief.md" \
+    "rows under an unknown answer kind must stay out of the brief"
+  assert_contains "$SCAFFOLD_OUT" 'nearest prior work (proximity, not duplication)' \
+    "the advisory line remains independent of the embed gate"
+
+  non_task_doc="$TMP_ROOT/unclassified-non-task-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/note/unknown-note", slug:"firstmate/firstmate-deadbeef/note/unknown-note", title:"Unclassified note", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$non_task_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" unclassified-note-result "$non_task_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a result with an unclassified note above a readable task must still scaffold"
+  assert_contains "$SCAFFOLD_OUT" \
+    'nearest prior work (proximity, not duplication): "Lower readable task" local:firstmate/firstmate-deadbeef/task/prior-task' \
+    "an unclassified non-task row must not hide a lower-ranked readable task"
+
+  unclassified_doc="$TMP_ROOT/unclassified-task-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/task/unknown-task", slug:"firstmate/firstmate-deadbeef/task/unknown-task", title:"Unclassified task", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$unclassified_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" unclassified-result "$unclassified_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a result with incomplete identity provenance must still scaffold"
+  assert_grep 'scaffold time' "$home/data/unclassified-result/brief.md" \
+    "identity provenance must not add a new worker-embed gate"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
+    "an incomplete higher-ranked identity must suppress lower-ranked proximity claims"
+
+  called="$TMP_ROOT/no-jq-wrapper-called"
+  no_jq_bin="$TMP_ROOT/no-jq-bin"
+  mkdir -p "$home/config" "$no_jq_bin"
+  printf '{}\n' > "$home/config/gbrain-local.json"
+  while IFS= read -r path_dir; do
+    [ -d "$path_dir" ] || continue
+    for executable in "$path_dir"/*; do
+      [ -f "$executable" ] && [ -x "$executable" ] || continue
+      [ "${executable##*/}" = jq ] && continue
+      [ -e "$no_jq_bin/${executable##*/}" ] \
+        || ln -s "$executable" "$no_jq_bin/${executable##*/}"
+    done
+  done < <(printf '%s' "$PATH" | tr ':' '\n')
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(
+    PATH="$no_jq_bin" FM_HOME="$home" FM_ROOT_OVERRIDE="$legacy_root" FM_BRIEF_WRAPPER_CALLED="$called" \
+      "$ROOT/bin/fm-brief.sh" no-jq repo --mode no-mistakes 2>"$home/stderr.txt"
+  ) || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold without jq must still succeed"
+  assert_absent "$called" "a search classified as never-started must not invoke the wrapper"
+  assert_contains "$SCAFFOLD_ERR" 'the search never started' \
+    "a missing parser dependency must be classified as never-started"
+  assert_contains "$SCAFFOLD_ERR" 'jq is required' \
+    "the never-started diagnostic must name the missing dependency"
+  assert_grep 'fm-recall.sh search' "$home/data/no-jq/brief.md" \
+    "a missing parser dependency must leave the retrieval instruction in the brief"
+  assert_no_grep 'scaffold time' "$home/data/no-jq/brief.md" \
+    "a search that never started must leave the instruction-only section"
+
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(
+    FM_SECONDMATE_CHARTER='Supervise alpha.' PATH="$no_jq_bin" FM_HOME="$home" \
+      FM_ROOT_OVERRIDE="$legacy_root" "$ROOT/bin/fm-brief.sh" no-jq-charter repo \
+      --secondmate alpha 2>"$home/charter-stderr.txt"
+  ) || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/charter-stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a secondmate charter without jq must still scaffold"
+  assert_grep 'fm-recall.sh search' "$home/data/no-jq-charter/brief.md" \
+    "a secondmate charter without jq must retain the retrieval instruction"
+  assert_no_grep 'scaffold time' "$home/data/no-jq-charter/brief.md" \
+    "a secondmate charter without jq must not gain a scaffold search embed"
+  [ -z "$SCAFFOLD_ERR" ] \
+    || fail "a charter performs no search and must not emit a never-started diagnostic: $SCAFFOLD_ERR"
+
+  no_brain_home="$TMP_ROOT/no-jq-no-brain"
+  mkdir -p "$no_brain_home/data"
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(PATH="$no_jq_bin" FM_HOME="$no_brain_home" FM_ROOT_OVERRIDE="$legacy_root" \
+    "$ROOT/bin/fm-brief.sh" no-jq-no-brain repo --mode no-mistakes \
+    2>"$no_brain_home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$no_brain_home/stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a home without a brain or jq must still scaffold"
+  assert_no_grep '^# Brain$' "$no_brain_home/data/no-jq-no-brain/brief.md" \
+    "a home with no local index must still omit the Brain section"
+  [ -z "$SCAFFOLD_ERR" ] \
+    || fail "a legitimate no-brain home must not emit a search diagnostic: $SCAFFOLD_ERR"
+  pass "fm-brief.sh: the embed and advisory gates reject untrusted or incomplete protocol states"
+}
+
+# Bounds and exclusions: the embed never exceeds its byte cap, the secondmate
+# charter runs no search, and --query is validated where it applies.
+test_brain_scaffold_read_bounds_and_exclusions() {
+  local home wide dropped brief bytes rows long_query wrapper_query
+  home=$(brain_home brain-bounds)
+  wide="$TMP_ROOT/brain-wide.json"
+  jq -n '[range(0; 5) | {slug: ("firstmate/firstmate-deadbeef/task/wide-" + tostring), title: ("T" * 300), chunk_text: ("w" * 400), score: 0.5, stale: false}]' > "$wide"
+  brain_scaffold "$home" wide-ship "$wide" 0 0 --mode no-mistakes
+  expect_code 0 "$SCAFFOLD_RC" "a wide result set must still scaffold"
+  brief="$home/data/wide-ship/brief.md"
+  bytes=$(brain_section "$brief" | wc -c)
+  rows=$(grep -c '^- `local:' "$brief")
+  [ "$rows" -ge 1 ] || fail "a wide result set must still mount at least one row"
+  [ "$rows" -lt 5 ] || fail "the byte cap must drop trailing rows (mounted $rows)"
+  # 3,300 bytes is the pinned embed bound; the heading line is outside it.
+  [ "$bytes" -le 3310 ] || fail "the Brain section must stay within the pinned bound (got $bytes bytes)"
+  assert_contains "$SCAFFOLD_ERR" 'citations block was truncated by the 3300-byte cap' \
+    "dropping trailing citation rows at the cap must produce a diagnostic"
+
+  long_query=$(jq -nr '"task description " + ("q" * 3200)')
+  brain_scaffold "$home" long-query "$BRAIN_ROWS_JSON" 0 0 --mode no-mistakes --query "$long_query"
+  expect_code 0 "$SCAFFOLD_RC" "a long task query must still scaffold"
+  wrapper_query=$(tail -1 "$home/argv.txt" | jq -r '.query')
+  [ "$wrapper_query" = "$long_query" ] || fail "recall must receive the full long task query"
+  brief="$home/data/long-query/brief.md"
+  rows=$(grep -c '^- `local:' "$brief")
+  [ "$rows" -ge 1 ] || fail "a bounded display query must leave room for citation rows"
+  bytes=$(brain_section "$brief" | wc -c)
+  [ "$bytes" -le 3310 ] || fail "a long query must not push the Brain section past its byte cap (got $bytes bytes)"
+  assert_grep 'scaffold time (query: task description ' "$brief" \
+    "the frame must retain a recognizable bounded copy of the query"
+  [ -z "$SCAFFOLD_ERR" ] || fail "a long query whose rows fit after display bounding must not warn: $SCAFFOLD_ERR"
+
+  dropped="$TMP_ROOT/brain-dropped.json"
+  jq -n '[{slug: ("oversized-" + ("x" * 4000)), title:"Oversized citation", chunk_text:"row", score:0.9, rerank_score:0.95, stale:false}]' > "$dropped"
+  brain_scaffold "$home" dropped-ship "$dropped" 0 0 --mode no-mistakes
+  expect_code 0 "$SCAFFOLD_RC" "a citation too large for the embed cap must still scaffold"
+  assert_no_grep 'scaffold time' "$home/data/dropped-ship/brief.md" \
+    "a citations block with no row that fits must stay out of the brief"
+  assert_contains "$SCAFFOLD_ERR" 'citations block was dropped because no citation fit the 3300-byte cap' \
+    "dropping the entire citations block at the cap must produce a diagnostic"
+
+  brain_scaffold "$home" rejected-issue "$BRAIN_ROWS_JSON" 0 0 --mode local-only --issue 9
+  expect_code 1 "$SCAFFOLD_RC" "a local-only issue scaffold must be refused"
+  [ ! -s "$home/argv.txt" ] || fail "a refused local-only issue scaffold must perform no brain search"
+  assert_absent "$home/data/rejected-issue/brief.md" \
+    "a refused local-only issue scaffold must not write a brief"
+
+  brain_scaffold "$home" rejected-work-item "$BRAIN_ROWS_JSON" 0 0 --mode local-only \
+    --work-item github:https://github.com/acme/widget/issues/42 \
+    --pr-target github:github.com/acme/widget
+  expect_code 1 "$SCAFFOLD_RC" "a local-only work-item scaffold must be refused"
+  [ ! -s "$home/argv.txt" ] || fail "a refused local-only work-item scaffold must perform no brain search"
+  assert_absent "$home/data/rejected-work-item/brief.md" \
+    "a refused local-only work-item scaffold must not write a brief"
+
+  FM_SECONDMATE_CHARTER='Supervise alpha.' brain_scaffold "$home" wide-sm "$BRAIN_ROWS_JSON" 0 0 --secondmate alpha
+  expect_code 0 "$SCAFFOLD_RC" "a secondmate charter must scaffold in a home with a brain"
+  [ ! -s "$home/argv.txt" ] || fail "a charter is not a commissioned task and must run no search"
+  assert_grep 'fm-recall.sh search' "$home/data/wide-sm/brief.md" "a charter keeps the retrieval instruction"
+  assert_no_grep 'scaffold time' "$home/data/wide-sm/brief.md" "a charter carries no embed"
+
+  brain_scaffold "$home" q-empty "$BRAIN_ROWS_JSON" 0 0 --mode no-mistakes --query '  '
+  expect_code 1 "$SCAFFOLD_RC" "a blank --query must be refused"
+  assert_contains "$SCAFFOLD_ERR" '--query requires' "a blank --query must say what it needs"
+  FM_SECONDMATE_CHARTER='Supervise alpha.' brain_scaffold "$home" q-sm "$BRAIN_ROWS_JSON" 0 0 --secondmate alpha --query words
+  expect_code 1 "$SCAFFOLD_RC" "--query on a charter must be refused"
+  assert_contains "$SCAFFOLD_ERR" '--query applies only to ship, design, or scout briefs' \
+    "the charter refusal must name where --query applies"
+  pass "fm-brief.sh: the embed honors its byte cap, charters run no search, and --query is validated"
+}
+
 test_help_includes_entire_header
 test_design_help_authorizes_no_implementation
 test_issue_traceability_is_strictly_opt_in
@@ -1824,6 +2255,10 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_brain_instruction_tracks_whether_the_home_has_one
+test_brain_scaffold_read_embeds_found_rows
+test_brain_scaffold_read_degrades_without_blocking
+test_brain_scaffold_read_gates_embed_on_answer_contract
+test_brain_scaffold_read_bounds_and_exclusions
 test_firstmate_repo_crew_persona_section
 test_firstmate_repo_crew_persona_without_a_projects_clone
 test_design_brief_is_harness_independent_and_adr_only

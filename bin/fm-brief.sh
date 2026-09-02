@@ -8,10 +8,12 @@
 # those hand-edits: pass --continue-branch so the generated Setup and the
 # task-branch marker agree, rather than contradicting git checkout -b from the
 # Task section.
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --design --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--query <text>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --design --mode <no-mistakes|direct-PR|local-only> [--continue-branch <name>] [--query <text>] [--issue <number>] [--work-item <forge>:<url>]... [--pr-target <forge>:<host>/<path>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--query <text>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#   --query <text> is the task's own words for the scaffold-time brain read below;
+#   without it the query is the task id with its dashes read as spaces.
 #   --work-item records a resolved work item that lives in the MANAGED PROJECT's
 #   tracker, which is usually not this repository. It is repeatable, so a task
 #   may carry several references or none, and it takes only a fully resolved
@@ -137,6 +139,23 @@
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
 # Design tasks omit it because their sole tracked project deliverable is the ADR.
+# Brain section (docs/adr/0001-brain-read-mount.md D1 and D4): every scaffold in a
+# home whose brain has a local index carries the retrieval instruction, and a
+# ship, design, or scout scaffold additionally runs ONE scope-local
+# bin/fm-recall.sh search with the task's words (--query, else the task id) at
+# --limit 5 --excerpt 400 --timeout 10, never think. When the installed wrapper
+# is observed to emit the framed answer and per-result provenance fields, the
+# rows become a bounded, provenance-labeled citations block (about 3,300 bytes,
+# ~1,100 estimated tokens) after the instruction; when the search never starts,
+# fails, times out, returns no rows, or emits an unframed document, the brief
+# carries the instruction alone and the scaffold still succeeds. The same search
+# prints at most one advisory "nearest prior work" stdout line for firstmate.
+# Once ranked task identities are classifiable, it names the earliest one whose
+# report is safe and readable, or says no local report exists; an unclassifiable
+# task identity leaves the advisory silent rather than guessing. The line claims
+# proximity, never duplication, is independent of whether the embed mounted,
+# and never enters the brief. A home with no local index runs no search and
+# omits the section. The secondmate charter carries the instruction alone.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -212,6 +231,8 @@ PR_TARGET=
 PR_TARGET_SET=0
 CONTINUE_BRANCH=
 CONTINUE_BRANCH_SET=0
+QUERY=
+QUERY_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -225,6 +246,7 @@ for a in "$@"; do
       work-item) WORK_ITEMS+=("$a") ;;
       pr-target) PR_TARGET=$a; PR_TARGET_SET=1 ;;
       continue-branch) CONTINUE_BRANCH=$a; CONTINUE_BRANCH_SET=1 ;;
+      query) QUERY=$a; QUERY_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -246,6 +268,8 @@ for a in "$@"; do
     --pr-target=*) PR_TARGET=${a#--pr-target=}; PR_TARGET_SET=1 ;;
     --continue-branch) want_value=continue-branch ;;
     --continue-branch=*) CONTINUE_BRANCH=${a#--continue-branch=}; CONTINUE_BRANCH_SET=1 ;;
+    --query) want_value=query ;;
+    --query=*) QUERY=${a#--query=}; QUERY_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -327,6 +351,17 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship or design briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
+
+# Issue traceability rides the PR, so it is meaningless without one.
+if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
+  echo "error: --issue requires a PR-based delivery mode" >&2
+  exit 1
+fi
+if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
+  echo "error: --work-item requires a PR-based delivery mode" >&2
+  exit 1
+fi
+
 ID=${POS[0]}
 REPO=${POS[1]:-}
 
@@ -339,6 +374,20 @@ fi
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
   exit 1
+fi
+
+# The scaffold-time brain read queries with the task's own words. The task id
+# is a slugged title, so it is the default; --query carries richer words when
+# firstmate has them. A charter is not a commissioned task, so it takes none.
+if [ "$QUERY_SET" -eq 1 ]; then
+  [ "$KIND" != secondmate ] || { echo "error: --query applies only to ship, design, or scout briefs; a charter is not a commissioned task" >&2; exit 1; }
+  case "$QUERY" in
+    *[![:space:]]*) ;;
+    *) echo "error: --query requires the task's words" >&2; exit 1 ;;
+  esac
+  BRAIN_QUERY=$QUERY
+else
+  BRAIN_QUERY=$(printf "%s" "$ID" | tr "_-" "  ")
 fi
 
 TASK_BRANCH="fm/$ID"
@@ -404,14 +453,250 @@ INBOX_SECTION=${INBOX_SECTION%$'\n'}
 # actually has an index to read, so the instruction appears when this home has
 # built one and is silent otherwise rather than pointing every brief at a tool
 # that would answer "no brain". bin/fm-recall.sh owns the retrieval contract.
+#
+# A ship, design, or scout scaffold also reads that index once, here, so the
+# knowledge the fleet captures at teardown reaches a worker at the one moment it
+# is commissioned (docs/adr/0001-brain-read-mount.md, D1 and D4). The mechanics
+# below are this script's own: one scope-local search with the task's words,
+# the pinned shape, the embed gate, the byte cap, and the stdout line. The
+# secondmate charter keeps the instruction alone, because a charter is not a
+# commissioned task with a query.
+BRAIN_INSTRUCTION="This home keeps a searchable record of the fleet's prior work: run \`$FM_ROOT/bin/fm-recall.sh search <query>\` before re-deriving something already known, and cite anything you use by the \`<source>:<slug>\` label it prints.
+Results are nearest indexed pages, not answers: a miss is absence of a match, never evidence that the queried thing is absent, a listed page may be unrelated or stale, and when a live source disagrees with a page the live source wins.
+Retrieval stays on this host, but \`fm-recall.sh think\` sends your question and the excerpts it selects to a hosted provider, so reach for it only when local results are not enough and never for anything that must not leave this host."
+
+# The search shape is pinned rather than inherited from the wrapper's defaults:
+# five rows of 400 characters is the measured ~1,100-estimated-token embed, and
+# 10 seconds is the ADR-pinned commissioning ceiling; slower or cold reads
+# degrade to the instruction-only section instead of charging a dispatch the
+# wrapper's full minute. The same --timeout also sizes the wrapper's
+# provenance pass, so rows it does not reach arrive labeled unknown, which the
+# gate below accepts: it tests that the provenance FIELDS are present, never
+# that they hold a particular value.
+BRAIN_SCAFFOLD_LIMIT=5
+BRAIN_SCAFFOLD_EXCERPT=400
+BRAIN_SCAFFOLD_TIMEOUT=10
+# ceil(3300 / 3) = 1,100 estimated tokens, the embed bound the ADR names.
+BRAIN_SCAFFOLD_EMBED_MAX_BYTES=3300
+BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
+
+# One read, two outputs, two gates. The worker-facing embed becomes trusted
+# context, so it mounts only when the installed wrapper is OBSERVED to emit the
+# framed answer and per-result provenance fields; the firstmate-facing line is
+# independent of that embed gate, but prints only after task identities remain
+# classifiable through the selected ranked candidate.
+# Every other outcome - never started, failed, timed out, empty, unframed -
+# leaves BRAIN_EMBED empty so the brief carries the instruction alone, and none
+# of them can stop the scaffold. The wrapper's exit codes keep never-started
+# (5) apart from asked-and-unanswered (3); the diagnostic names which.
+brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
+  local doc rc=0 detail citation="" title="" id="" state="" record="" report="" rows frame_bytes rendered cap_state
+  local candidate_citation candidate_title candidate_kind candidate_id candidate_state candidate_classifiable
+  local identity_rows=0 identities_classifiable=1
+  BRAIN_EMBED=""
+  BRAIN_NEAREST=""
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "brain: the search never started: jq is required; the brief carries the retrieval instruction only" >&2
+    return 0
+  fi
+  doc=$("$FM_ROOT/bin/fm-recall.sh" search --json --home "$FM_HOME" --scope local \
+    --limit "$BRAIN_SCAFFOLD_LIMIT" --excerpt "$BRAIN_SCAFFOLD_EXCERPT" \
+    --timeout "$BRAIN_SCAFFOLD_TIMEOUT" -- "$BRAIN_QUERY" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    detail=$(printf '%s' "$doc" | jq -r '[.sources[]? | select(.state != "ok") | .detail // .state] | join("; ")' 2>/dev/null) || detail=""
+    case "$rc" in
+      5) detail="the search never started${detail:+: $detail}" ;;
+      3) detail="the brain was asked and did not answer${detail:+: $detail}" ;;
+      *) detail="fm-recall.sh exited $rc${detail:+: $detail}" ;;
+    esac
+    echo "brain: $detail; the brief carries the retrieval instruction only" >&2
+    return 0
+  fi
+  printf '%s' "$doc" | jq -e '.schema == "fm-recall.v1" and (.results | type) == "array"' >/dev/null 2>&1 || {
+    echo "brain: the search returned something other than an fm-recall.v1 document; the brief carries the retrieval instruction only" >&2
+    return 0
+  }
+  # D4: skip rows that are definitely not tasks, then name the first ranked
+  # classifiable task whose completed report this home can read. A task-shaped
+  # row with unclassifiable identity stops the claim rather than letting a lower
+  # row masquerade as nearest. Ungated, advisory, and never in the brief. Reports
+  # are looked up under the brain's own home, the same place the wrapper reads
+  # provenance from, rather than under a relocated brief directory.
+  while IFS= read -r -d '' candidate_citation \
+      && IFS= read -r -d '' candidate_title \
+      && IFS= read -r -d '' candidate_kind \
+      && IFS= read -r -d '' candidate_id \
+      && IFS= read -r -d '' candidate_state \
+      && IFS= read -r -d '' candidate_classifiable; do
+    identity_rows=$((identity_rows + 1))
+    if [ "$candidate_classifiable" != true ]; then
+      identities_classifiable=0
+      break
+    fi
+    [ "$candidate_kind" = task ] || continue
+    record="$FM_HOME/data/$candidate_id"
+    report="$record/report.md"
+    [ ! -L "$record" ] && [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
+    citation=$candidate_citation
+    title=$candidate_title
+    id=$candidate_id
+    state=$candidate_state
+    break
+  done < <(printf '%s' "$doc" | jq -j '
+    def source_id_valid:
+      type == "string"
+      and test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$");
+    def document_id_valid:
+      type == "string"
+      and length <= 200
+      and test("^v1\\.[A-Za-z0-9._-]+$");
+    def task_slug:
+      if ((.slug | type) == "string"
+          and (.slug | test("^firstmate/[^/]+/task/[^/]+$"))) then
+        (.slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")) as $slug
+        | if (($slug.id | source_id_valid)
+              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid))
+          then $slug
+          else null
+          end
+      else null
+      end;
+    def identity:
+      task_slug as $slug
+      | if $slug == null then
+          {kind: "", id: "", classifiable: true}
+        elif has("source_kind") or has("source_id") then
+          if (.source_kind == "task"
+              and (.source_id | source_id_valid)
+              and .source_id == $slug.id)
+          then {kind: "task", id: .source_id, classifiable: true}
+          else {kind: "", id: "", classifiable: false}
+          end
+        else {kind: "task", id: $slug.id, classifiable: true}
+      end;
+    def displayed($cap):
+      tostring
+      | explode
+      | map(if (. < 32 or (. >= 127 and . <= 159) or . == 8232 or . == 8233) then 32 else . end)
+      | implode
+      | gsub("\\s+"; " ")
+      | sub("^ "; "")
+      | sub(" $"; "")
+      | .[0:$cap];
+    .results[]
+    | identity as $identity
+    | ((.citation // .slug // "") | displayed(256)), "\u0000",
+      ((.title // "(untitled)") | displayed(200)), "\u0000",
+      $identity.kind, "\u0000",
+      $identity.id, "\u0000",
+      ((.source_state // "unknown") | displayed(32)), "\u0000",
+      ($identity.classifiable | tostring), "\u0000"' 2>/dev/null)
+  if [ -n "$id" ]; then
+    BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
+  elif [ "$identity_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
+    BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
+  fi
+  # D1: the embed, gated on the answer contract being observed in this document.
+  printf '%s' "$doc" | jq -e '
+    (.answer | type) == "object" and .answer.kind == "nearest"
+    and (.results | length) > 0
+    and all(.results[]; has("captured_at") and has("source_state"))' >/dev/null 2>&1 || return 0
+  frame_bytes=$(printf '%s' "$BRAIN_INSTRUCTION" | wc -c)
+  rendered=$(printf '%s' "$doc" | jq -c \
+    --argjson cap "$((BRAIN_SCAFFOLD_EMBED_MAX_BYTES - frame_bytes))" \
+    --argjson query_cap "$BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS" --arg query "$BRAIN_QUERY" '
+    def row:
+      "- `\(.citation // .slug)` - \((.title // "(untitled)") | .[0:200])\n"
+      + "  captured: \(.captured_at // "unknown"); live source: \(.source_state // "unknown")"
+      + (if .source_state == "drifted" then " (the live source wins)" else "" end)
+      + (if .stale == true then "; stale" else "" end)
+      + (if .source_updated_at then "; live updated: \(.source_updated_at)" else "" end)
+      + "\n  > \((.excerpt // "") | gsub("\\s+"; " "))\n";
+    def displayed_query:
+      ($query | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $normalized
+      | if ($normalized | length) > $query_cap
+        then $normalized[0:($query_cap - 3)] + "..."
+        else $normalized
+        end;
+    def frame:
+      "One such search already ran for this task at scaffold time (query: \(displayed_query)); its nearest pages, with capture and live-source provenance, follow. Read them as candidates to compare, never as proof the work was done.\n";
+    def tail:
+      if .answer.no_confident_match == true
+      then "The brain'"'"'s own confidence floor cleared none of these, so treat them as loosely related at best.\n"
+      else "" end;
+    frame as $frame
+    | tail as $tail
+    # The parentheses are a real fix, not grouping for readability. On jq 1.6
+    # and 1.7.1, `a + b as $x | body` binds `as` to `b` alone, so `a` is added
+    # to the string the body produces and the whole render errors, silently
+    # dropping the citations block; jq 1.8.1 binds the complete sum either
+    # way. Verified 2026-09-02 by running the official 1.6, 1.7.1, and 1.8.1
+    # binaries: unparenthesized errors on 1.6 and 1.7.1, parenthesized renders
+    # on all three. The version that makes the parentheses load-bearing in CI
+    # is 1.7.1, which the ubuntu-latest runner image ships; no other version
+    # was run. No apostrophe may appear in this comment: it sits inside
+    # the single-quoted jq program.
+    | (($frame | utf8bytelength) + ($tail | utf8bytelength)) as $fixed
+    | [ .results[] ]
+    | reduce .[] as $r ([]; if any(.[]; .citation == $r.citation) then . else . + [$r] end)
+    | map(row) as $lines
+    | reduce $lines[] as $line ({text: "", bytes: $fixed, mounted: 0, truncated: false};
+        if .truncated then .
+        elif (.bytes + ($line | utf8bytelength)) > $cap then .truncated = true
+        else {
+          text: (.text + $line),
+          bytes: (.bytes + ($line | utf8bytelength)),
+          mounted: (.mounted + 1),
+          truncated: false
+        }
+        end)
+    | {
+        text: (if .mounted == 0 then "" else $frame + .text + $tail end),
+        cap_state: (if .truncated then (if .mounted == 0 then "dropped" else "truncated" end) else "complete" end)
+      }' 2>/dev/null) || rendered=""
+  if [ -z "$rendered" ]; then
+    echo "brain: the citations block could not be rendered; the brief carries the retrieval instruction only" >&2
+    return 0
+  fi
+  rows=$(printf '%s' "$rendered" | jq -r '.text') || rows=""
+  cap_state=$(printf '%s' "$rendered" | jq -r '.cap_state') || cap_state=render_failed
+  case "$cap_state" in
+    dropped)
+      echo "brain: the citations block was dropped because no citation fit the ${BRAIN_SCAFFOLD_EMBED_MAX_BYTES}-byte cap; the brief carries the retrieval instruction only" >&2
+      ;;
+    truncated)
+      echo "brain: the citations block was truncated by the ${BRAIN_SCAFFOLD_EMBED_MAX_BYTES}-byte cap; trailing citations were omitted" >&2
+      ;;
+  esac
+  BRAIN_EMBED=$rows
+}
+
 BRAIN_SECTION=""
 if fm_gbrain_resolve_paths "$FM_HOME" && [ -d "$FM_GBRAIN_PGLITE" ]; then
   BRAIN_SECTION="# Brain
-This home keeps a searchable record of the fleet's prior work: run \`$FM_ROOT/bin/fm-recall.sh search <query>\` before re-deriving something already known, and cite anything you use by the \`<source>:<slug>\` label it prints.
-Results are nearest indexed pages, not answers: a miss is absence of a match, never evidence that the queried thing is absent, a listed page may be unrelated or stale, and when a live source disagrees with a page the live source wins.
-Retrieval stays on this host, but \`fm-recall.sh think\` sends your question and the excerpts it selects to a hosted provider, so reach for it only when local results are not enough and never for anything that must not leave this host.
+$BRAIN_INSTRUCTION
 
 "
+  if [ "$KIND" != secondmate ]; then
+    brain_scaffold_read
+    [ -z "$BRAIN_NEAREST" ] || printf '%s\n' "$BRAIN_NEAREST"
+    if [ -n "$BRAIN_EMBED" ]; then
+      BRAIN_SECTION="# Brain
+$BRAIN_INSTRUCTION
+$BRAIN_EMBED
+
+"
+    fi
+  fi
+elif ! command -v jq >/dev/null 2>&1 \
+    && [ "$FM_GBRAIN_ERROR" = "$FM_GBRAIN_LOCAL_FILE is not valid JSON" ]; then
+  BRAIN_SECTION="# Brain
+$BRAIN_INSTRUCTION
+
+"
+  if [ "$KIND" != secondmate ]; then
+    echo "brain: the search never started: jq is required; the brief carries the retrieval instruction only" >&2
+  fi
 fi
 
 if [ "$KIND" = secondmate ]; then
@@ -705,16 +990,6 @@ fi
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
-# Issue traceability rides the PR, so it is meaningless without one.
-if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
-  echo "error: --issue requires a PR-based delivery mode" >&2
-  exit 1
-fi
-if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
-  echo "error: --work-item requires a PR-based delivery mode" >&2
-  exit 1
-fi
-
 DESIGN_SECTION=
 DESIGN_DOD=
 IFS= read -r -d '' DECISION_RULE <<'EOF' || true
