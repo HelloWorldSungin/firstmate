@@ -487,7 +487,8 @@ BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 # (5) apart from asked-and-unanswered (3); the diagnostic names which.
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   local doc rc=0 detail citation="" title="" id="" state="" record="" report="" rows frame_bytes rendered cap_state
-  local candidate_citation candidate_title candidate_id candidate_state
+  local candidate_citation candidate_title candidate_kind candidate_id candidate_state candidate_classifiable
+  local identity_rows=0 identities_classifiable=1
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
   if ! command -v jq >/dev/null 2>&1; then
@@ -517,8 +518,13 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   # provenance from, rather than under a relocated brief directory.
   while IFS= read -r -d '' candidate_citation \
       && IFS= read -r -d '' candidate_title \
+      && IFS= read -r -d '' candidate_kind \
       && IFS= read -r -d '' candidate_id \
-      && IFS= read -r -d '' candidate_state; do
+      && IFS= read -r -d '' candidate_state \
+      && IFS= read -r -d '' candidate_classifiable; do
+    identity_rows=$((identity_rows + 1))
+    [ "$candidate_classifiable" = true ] || identities_classifiable=0
+    [ "$candidate_kind" = task ] || continue
     record="$FM_HOME/data/$candidate_id"
     report="$record/report.md"
     [ ! -L "$record" ] && [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
@@ -528,6 +534,30 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     state=$candidate_state
     break
   done < <(printf '%s' "$doc" | jq -j '
+    def source_id_valid:
+      type == "string"
+      and test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$");
+    def document_id_valid:
+      type == "string"
+      and length <= 200
+      and test("^v1\\.[A-Za-z0-9._-]+$");
+    def identity:
+      if has("source_kind") or has("source_id") then
+        if ((.source_kind == "task" or .source_kind == "note")
+            and (.source_id | source_id_valid))
+        then {kind: .source_kind, id: .source_id, classifiable: true}
+        else {kind: "", id: "", classifiable: false}
+        end
+      elif ((.slug | type) == "string"
+            and (.slug | test("^firstmate/[^/]+/(task|note)/[^/]+$"))) then
+        (.slug | capture("^firstmate/(?<tag>[^/]+)/(?<kind>task|note)/(?<id>[^/]+)$")) as $legacy
+        | if (($legacy.id | source_id_valid)
+              and ("v1." + $legacy.tag + "." + $legacy.kind + "." + $legacy.id | document_id_valid))
+          then {kind: $legacy.kind, id: $legacy.id, classifiable: true}
+          else {kind: "", id: "", classifiable: false}
+          end
+      else {kind: "", id: "", classifiable: false}
+      end;
     def displayed($cap):
       tostring
       | explode
@@ -538,22 +568,16 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       | sub(" $"; "")
       | .[0:$cap];
     .results[]
-    | select(.source_kind == "task")
-    | select((.source_id | type) == "string")
-    | select(.source_id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"))
+    | identity as $identity
     | (.citation // .slug // ""), "\u0000",
       ((.title // "(untitled)") | displayed(200)), "\u0000",
-      .source_id, "\u0000",
-      (.source_state // "unknown"), "\u0000"' 2>/dev/null)
+      $identity.kind, "\u0000",
+      $identity.id, "\u0000",
+      (.source_state // "unknown"), "\u0000",
+      ($identity.classifiable | tostring), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
-  elif printf '%s' "$doc" | jq -e '
-    (.results | length) > 0
-    and all(.results[];
-      if ((.source_kind == "task" or .source_kind == "note") and (.source_id | type) == "string")
-      then (.source_id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"))
-      else false
-      end)' >/dev/null 2>&1; then
+  elif [ "$identity_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
   fi
   # D1: the embed, gated on the answer contract being observed in this document.

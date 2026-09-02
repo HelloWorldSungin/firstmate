@@ -2045,7 +2045,7 @@ cat "$FM_BRIEF_WRAPPER_DOCUMENT"
 EOF
   chmod 0755 "$legacy_root/bin/fm-recall.sh"
   legacy_doc="$TMP_ROOT/legacy-document.json"
-  printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt","source_kind":"task","source_id":"prior-task"}]}' > "$legacy_doc"
+  printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt"}]}' > "$legacy_doc"
   brain_wrapper_scaffold "$home" "$legacy_root" legacy-ship "$legacy_doc"
   expect_code 0 "$SCAFFOLD_RC" "an unframed document must still scaffold"
   brief="$home/data/legacy-ship/brief.md"
