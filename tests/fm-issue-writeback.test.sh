@@ -74,6 +74,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_git_identity fmtest fmtest@example.invalid
 
 COMMENT="$ROOT/bin/fm-issue-comment.sh"
 BOARD="$ROOT/bin/fm-project-board.sh"
@@ -1497,6 +1498,81 @@ test_an_unknown_milestone_is_a_usage_error() {
   pass "an unknown milestone is a caller error rather than a silently skipped update"
 }
 
+prepare_merge_path_case() {
+  local dir=$1 wt origin canonical
+  wt=$(sed -n 's/^worktree=//p' "$dir/state/task-1.meta")
+  origin="$dir/origin.git"
+  canonical=https://github.com/acme/widget.git
+  mkdir -p "$wt" "$dir/projects/widget"
+  git init -q --bare --initial-branch=main "$origin"
+  git init -q --initial-branch=main "$wt"
+  printf 'base\n' >"$wt/base.txt"
+  git -C "$wt" add base.txt
+  git -C "$wt" commit -qm 'seed merge fixture'
+  git -C "$wt" remote add origin "$canonical"
+  git -C "$wt" push -q "$origin" HEAD:main
+  git -C "$wt" switch -qc task
+  printf 'task\n' >"$wt/task.txt"
+  git -C "$wt" add task.txt
+  git -C "$wt" commit -qm 'add merge fixture task'
+  git -C "$wt" push -q "$origin" HEAD:refs/pull/9/head
+  cat >"$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+rewrite=0
+for arg in "$@"; do
+  case "$arg" in ls-remote|fetch) rewrite=1 ;; esac
+done
+if [ "$rewrite" -eq 1 ]; then
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = origin ]; then args+=("$FM_TEST_GIT_REMOTE"); else args+=("$arg"); fi
+  done
+  exec "$FM_TEST_REAL_GIT" "${args[@]}"
+fi
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
+  cat >"$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case " $* " in
+    *pullRequest*)
+      if [ -e "$FM_TEST_MERGE_MARKER" ]; then state=MERGED; else state=OPEN; fi
+      number=
+      for arg in "$@"; do
+        case "$arg" in number=*) number=${arg#number=} ;; esac
+      done
+      head_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+        rev-parse "refs/pull/$number/head") || exit 1
+      base_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+        rev-parse refs/heads/main) || exit 1
+      printf 'state=%s\nbase_ref=main\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=false\nin_queue=false\nauto_merge=none\nqueue_entry=none\n' \
+        "$state" "$head_oid" "$base_oid"
+      exit 0
+      ;;
+  esac
+  exec "$(dirname "$0")/gh-api-fake" "$@"
+fi
+case "${1:-} ${2:-}" in
+  "pr view") git -C "$FM_TEST_WT" rev-parse HEAD ;;
+  "pr merge")
+    printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
+    : >"$FM_TEST_MERGE_MARKER"
+    ;;
+esac
+exit 0
+SH
+  cat >"$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/git" "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+}
+
 # --- (j) the milestones that must not depend on anyone remembering -----------
 #
 # A milestone firstmate has to remember to post is one it will eventually forget,
@@ -1507,48 +1583,22 @@ test_an_unknown_milestone_is_a_usage_error() {
 # comment would appear if the two call sites did not find each other's work.
 
 test_the_merge_path_posts_its_own_milestones() {
-  local dir out rc body
+  local dir out rc body wt
   dir=$(board_case mergepath)
-  mkdir -p "$dir/wt" "$dir/projects/widget"
-  # `gh api` is the fake GitHub; every other `gh` call fm-pr-check.sh makes
-  # answers as the PR-head lookup, and gh-axi records the merge.
-  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
-  cat > "$dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = api ]; then
-  exec "$(dirname "$0")/gh-api-fake" "$@"
-fi
-case "${1:-} ${2:-}" in
-  "pr view")
-    case " $* " in
-      *headRefOid*) printf '%s\n' deadbeefcafe ; exit 0 ;;
-    esac
-    ;;
-esac
-exit 0
-SH
-  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
-  # for a merge it cannot confirm, so this stub must report the landed state
-  # the fixture is modelling before any bookkeeping runs.
-  cat > "$dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+  prepare_merge_path_case "$dir"
+  wt=$(sed -n 's/^worktree=//p' "$dir/state/task-1.meta")
 
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
-    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GH_LOG="$dir/gh.log" \
+    FM_TEST_GIT_REMOTE="$dir/origin.git" FM_TEST_REAL_GIT="$(command -v git)" \
+    FM_TEST_MERGE_MARKER="$dir/merged" FM_TEST_WT="$wt" PATH="$dir/fakebin:$PATH" \
     "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
   rc=$?
   set -e
   expect_code 0 "$rc" "the merge path failed: $out"
-  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh-axi.log" "the PR was never merged"
+  assert_grep 'pr merge 9 --repo github.com/acme/widget' "$dir/gh.log" "the PR was never merged"
   [ "$(comment_count "$dir")" = 1 ] \
     || fail "arming and merging produced $(comment_count "$dir") comments instead of one"
   body=$(cat "$(firstmate_comment "$dir")")
@@ -1561,40 +1611,23 @@ SH
 }
 
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable() {
-  local dir out rc
+  local dir out rc wt
   dir=$(board_case mergepath-refused)
-  mkdir -p "$dir/wt" "$dir/projects/widget"
-  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
-  cat > "$dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = api ]; then
-  exec "$(dirname "$0")/gh-api-fake" "$@"
-fi
-exit 0
-SH
-  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
-  # for a merge it cannot confirm, so this stub must report the landed state
-  # the fixture is modelling before any bookkeeping runs.
-  cat > "$dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+  prepare_merge_path_case "$dir"
+  wt=$(sed -n 's/^worktree=//p' "$dir/state/task-1.meta")
 
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
     FM_CONFIG_OVERRIDE="$dir/config" FM_FAKE_GH_STORE="$dir/store" \
     FM_FAKE_GH_FAIL=all \
-    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" PATH="$dir/fakebin:$PATH" \
+    FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GH_LOG="$dir/gh.log" \
+    FM_TEST_GIT_REMOTE="$dir/origin.git" FM_TEST_REAL_GIT="$(command -v git)" \
+    FM_TEST_MERGE_MARKER="$dir/merged" FM_TEST_WT="$wt" PATH="$dir/fakebin:$PATH" \
     "$ROOT/bin/fm-pr-merge.sh" task-1 https://github.com/acme/widget/pull/9 2>&1)
   rc=$?
   set -e
   expect_code 0 "$rc" "a refusing tracker made a completed merge look retryable"
-  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh-axi.log" \
+  assert_grep 'pr merge 9 --repo github.com/acme/widget' "$dir/gh.log" \
     "the merge did not happen while the tracker was unreachable"
   assert_contains "$out" 'warning: status comment not updated' \
     "a tracker that refused the merge's milestone said nothing"

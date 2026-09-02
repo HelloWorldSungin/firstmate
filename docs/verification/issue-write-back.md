@@ -131,6 +131,7 @@ The token appeared in no process arguments, no scratch state, and no captured ev
 One limit of this run is recorded deliberately: the credential used authenticates as `DuckKingOri` with `admin=true` on this host, while the code is designed for a narrow `read:issue` plus `write:issue` token.
 The run therefore proves the code path, not the credential posture, and issuing that narrow token and re-running the procedure above remains follow-up work.
 Re-running the procedure above is what refreshes this evidence; `tests/fm-issue-writeback.test.sh` and `tests/fm-pr-merge.test.sh` pin the same path against a fake Gitea on every CI run, needing no credential and no host.
+Dated note, 2026-09-02: the guarded merge path now inspects the merge boundary before mutating, so re-running its half of this record needs a task worktree whose `origin` serves the pull request head and the default branch, and stubbing the GitHub merge externals alone no longer reaches the merge; [`../architecture.md`](../architecture.md#delivery-modes-are-explicit-per-task) owns that contract.
 
 ## What this record does not cover
 

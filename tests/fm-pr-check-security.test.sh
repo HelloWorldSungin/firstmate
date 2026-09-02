@@ -80,12 +80,36 @@ SH
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-case " $* " in
-  *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
-  *" state "*)
+case "${1:-} ${2:-}" in
+  "api graphql")
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
-    printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
+    number=
+    for arg in "$@"; do
+      case "$arg" in number=*) number=${arg#number=} ;; esac
+    done
+    head_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+      rev-parse "refs/pull/$number/head") || exit 1
+    base_oid=$("$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" \
+      rev-parse refs/heads/main) || exit 1
+    if [ -e "$FM_TEST_GH_MERGE_MARKER" ]; then state=MERGED; else state=OPEN; fi
+    printf 'state=%s\nbase_ref=main\nhead_oid=%s\nbase_oid=%s\nqueue_enabled=false\nin_queue=false\nauto_merge=none\nqueue_entry=none\n' \
+      "$state" "$head_oid" "$base_oid"
+    ;;
+  "pr view")
+    case " $* " in
+      *headRefOid*)
+        printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+        ;;
+      *" state "*)
+        [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+        [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+        printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
+        ;;
+    esac
+    ;;
+  "pr merge")
+    : >"$FM_TEST_GH_MERGE_MARKER"
     ;;
 esac
 SH
@@ -104,7 +128,7 @@ SH
   # and exit 0 on success, and a non-zero exit with no stdout on any failure.
   cat > "$fakebin/glab" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
+printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
@@ -260,6 +284,8 @@ run_check_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
+    FM_TEST_GH_MERGE_MARKER="$dir/gh-merge-called" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
@@ -270,8 +296,66 @@ run_merge_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    FM_TEST_REAL_GIT="${FM_TEST_REAL_GIT:-$(command -v git)}" FM_TEST_GIT_REMOTE="$dir/origin.git" \
+    FM_TEST_GH_MERGE_MARKER="$dir/gh-merge-called" \
     PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
+}
+
+# Give valid merge-entry fixtures the remote-backed repository snapshot the
+# guarded merge requires.
+# Invalid-entrypoint cases deliberately do not call this helper, so their
+# zero-side-effect assertions still exercise the scripts alone.
+prepare_merge_snapshot() { # <case-dir> <canonical-pr-url>
+  local dir=$1 url=$2 origin source_ref number canonical
+  origin="$dir/origin.git"
+  if ! git -C "$dir/wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git init -q --bare --initial-branch=main "$origin"
+    git init -q --initial-branch=main "$dir/wt"
+    printf 'shared base\n' >"$dir/wt/shared.txt"
+    git -C "$dir/wt" add shared.txt
+    git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+      commit -qm 'seed shared base'
+    git -C "$dir/wt" remote add origin "$origin"
+    git -C "$dir/wt" push -q -u origin main
+    git -C "$dir/wt" switch -qc task
+    printf 'task change\n' >"$dir/wt/task.txt"
+    git -C "$dir/wt" add task.txt
+    git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+      commit -qm 'add task change'
+  fi
+  case "$url" in
+    https://github.com/*/pull/*)
+      number=${url##*/pull/}
+      source_ref="refs/pull/$number/head"
+      canonical="https://github.com/${url#https://github.com/}"
+      canonical="${canonical%/pull/*}.git"
+      ;;
+    https://*/-/merge_requests/*)
+      number=${url##*/merge_requests/}
+      source_ref="refs/merge-requests/$number/head"
+      canonical="${url%/-/merge_requests/*}.git"
+      ;;
+    *) fail "snapshot fixture received a noncanonical PR URL" ;;
+  esac
+  git -C "$dir/wt" remote set-url origin "$canonical"
+  git -C "$dir/wt" push -q --force "$origin" "HEAD:$source_ref"
+  cat >"$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+rewrite=0
+for arg in "$@"; do
+  case "$arg" in ls-remote|fetch) rewrite=1 ;; esac
+done
+if [ "$rewrite" -eq 1 ]; then
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = origin ]; then args+=("$FM_TEST_GIT_REMOTE"); else args+=("$arg"); fi
+  done
+  exec "$FM_TEST_REAL_GIT" "${args[@]}"
+fi
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  chmod +x "$dir/fakebin/git"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -536,7 +620,7 @@ test_invalid_entrypoints_have_zero_side_effects() {
 }
 
 test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count rc
+  local dir expected sidecar count merge_head rc
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
   expected=0123456789abcdef0123456789abcdef01234567
@@ -568,10 +652,12 @@ test_valid_recording_and_merge_derivation() {
   count=$(grep -c '^pr_head=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
-  : > "$dir/gh-axi.log"
+  : > "$dir/gh.log"
+  prepare_merge_snapshot "$dir" https://github.com/my-org/repo_name.with-dots/pull/37
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
-  grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
+  merge_head=$(git -C "$dir/wt" rev-parse HEAD)
+  grep -qxF "pr merge 37 --repo github.com/my-org/repo_name.with-dots --match-head-commit $merge_head --merge" "$dir/gh.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   # A merge this home performed leaves its own durable outcome, so the poll's
   # confirmation is no longer the first the captain hears of it. Acknowledge that
@@ -605,6 +691,7 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
+  prepare_merge_snapshot "$dir" https://github.com/o/r/pull/3
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
@@ -628,7 +715,7 @@ SH
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "endpoint_task_id=$id" \
-      "worktree=$dir/missing-worktree" \
+      "worktree=$dir/wt" \
       "project=$dir/project" \
       'kind=ship' \
       'mode=local-only'
@@ -659,11 +746,13 @@ SH
       --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
       > "$dir/x-link.out" 2> "$dir/x-link.err" \
       || fail "path-safe legacy task ID could not link an X request"
+    prepare_merge_snapshot "$dir" https://github.com/o/r/pull/4
     run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
       > "$dir/merge.out" 2> "$dir/merge.err" \
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
+    rm -rf "$dir/wt"
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
@@ -2912,6 +3001,7 @@ EOF
   # merge's JSON read cannot be parsed, which must refuse rather than merge on a
   # state it could not read.
   write_task_meta "$dir" task-c
+  prepare_merge_snapshot "$dir" "$url"
   : > "$dir/glab.log"
   # The merge path needs jq before it reads anything, so this case supplies it
   # and the refusal below is the unreadable state rather than a missing tool.
@@ -2924,7 +3014,7 @@ EOF
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
     || fail "merge wrapper refused for some reason other than the state it could not read"
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
-  grep -qF "mr view 7 -R https://gitlab.example/group/subgroup/project" "$dir/glab.log" \
+  grep -qF "GITLAB_HOST=gitlab.example api projects/group%2Fsubgroup%2Fproject/merge_requests/7" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
   ! grep -qF ' mr merge ' "$dir/glab.log" \
     || fail "merge wrapper merged despite an unreadable merge request state"
@@ -3140,6 +3230,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-committed: could not arm merge poll"
+  prepare_merge_snapshot "$dir" "$url"
   run_merge_entry "$dir" task-a "$url" >"$dir/merge.out" 2>"$dir/merge.err" \
     || fail "merge-outcome-committed: merge entrypoint failed: $(cat "$dir/merge.err")"
   add_stop_custom_check "$dir"
@@ -3164,6 +3255,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-uncommitted: could not arm merge poll"
+  prepare_merge_snapshot "$dir" "$url"
   cat >"$dir/fakebin/mv" <<'SH'
 #!/usr/bin/env bash
 case " $* " in

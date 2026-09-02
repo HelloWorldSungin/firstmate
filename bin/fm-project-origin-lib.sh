@@ -178,3 +178,89 @@ fm_project_origin_safe() { # <url>; 0 when the URL is an accepted clone URL
   esac
   return 0
 }
+
+FM_PROJECT_ORIGIN_TRANSPORT=
+FM_PROJECT_ORIGIN_USER=
+FM_PROJECT_ORIGIN_HOST=
+FM_PROJECT_ORIGIN_PORT=
+FM_PROJECT_ORIGIN_PATH=
+# Split an accepted origin URL into the parts a caller compares against a forge
+# identity. A local path or file: URL is refused here even though it is an
+# accepted clone URL above, because it names no host to compare.
+fm_project_origin_identity() { # <url>; populate a host-backed repository identity
+  local url=${1-} rest authority hostpart userpart user='' host port path transport
+  FM_PROJECT_ORIGIN_TRANSPORT=
+  FM_PROJECT_ORIGIN_USER=
+  FM_PROJECT_ORIGIN_HOST=
+  FM_PROJECT_ORIGIN_PORT=
+  FM_PROJECT_ORIGIN_PATH=
+  fm_project_origin_safe "$url" || return 1
+
+  case $url in
+    https://* | http://* | ssh://* | git://*)
+      transport=${url%%://*}
+      rest=${url#*://}
+      authority=${rest%%/*}
+      [ "$authority" != "$rest" ] || return 1
+      hostpart=$authority
+      case $authority in
+        *@*)
+          userpart=${authority%@*}
+          hostpart=${authority##*@}
+          [ "$transport" != ssh ] || user=$userpart
+          ;;
+      esac
+      path=${rest#*/}
+      case $hostpart in
+        '['*)
+          host=${hostpart%%']'*}']'
+          port=${hostpart#"$host"}
+          port=${port#:}
+          ;;
+        *)
+          host=${hostpart%%:*}
+          if [[ $hostpart == *:* ]]; then port=${hostpart#*:}; else port=; fi
+          ;;
+      esac
+      ;;
+    file://* | /*) return 1 ;;
+    *)
+      transport=ssh
+      rest=$url
+      case $url in
+        *@*)
+          userpart=${url%%@*}
+          case $userpart in
+            *:*) ;;
+            *) user=$userpart; rest=${url#*@} ;;
+          esac
+          ;;
+      esac
+      case $rest in
+        '['*)
+          host=${rest%%']'*}']'
+          path=${rest#"$host"}
+          path=${path#:}
+          ;;
+        *)
+          host=${rest%%:*}
+          path=${rest#*:}
+          ;;
+      esac
+      port=
+      ;;
+  esac
+  path=${path%.git}
+  [ -n "$host" ] && [ -n "$path" ] || return 1
+  # These documented parser outputs are read across files by bin/fm-pr-lib.sh.
+  # shellcheck disable=SC2034
+  FM_PROJECT_ORIGIN_TRANSPORT=$transport
+  # shellcheck disable=SC2034
+  FM_PROJECT_ORIGIN_USER=$user
+  # shellcheck disable=SC2034
+  FM_PROJECT_ORIGIN_HOST=$host
+  # shellcheck disable=SC2034
+  FM_PROJECT_ORIGIN_PORT=$port
+  # shellcheck disable=SC2034
+  FM_PROJECT_ORIGIN_PATH=$path
+}

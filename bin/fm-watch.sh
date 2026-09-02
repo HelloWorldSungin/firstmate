@@ -301,13 +301,15 @@ hash_pane() {
 # <tail40> is the same bounded capture already read for hashing and is
 # consumed only by the Grok-scoped fallback inside the contract.
 window_is_busy() {  # <window> <tail40>
-  local w=$1 tail40=$2 task meta verdict
+  local w=$1 tail40=$2 task meta verdict backend harness
   task=$(window_to_task "$w" "$STATE")
   meta="$STATE/$task.meta"
   if [ -n "$task" ] && [ -f "$meta" ]; then
     verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
+    backend=$(window_backend "$w")
+    harness=$(window_harness "$w")
+    verdict=$(fm_busy_classify "$backend" "$w" "$harness" \
       "${task:-unknown}" "$STATE" "$tail40")
   fi
   [ "${verdict%% *}" = busy ]
@@ -426,7 +428,7 @@ window_key() {  # <window>
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc backend label harness
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -438,14 +440,17 @@ inbox_steer_check() {  # <window> <task>
       rec=${rec% *}
       ;;
   esac
-  tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || tail40=
+  backend=$(window_backend "$w")
+  label=$(window_label "$w")
+  tail40=$(fm_backend_capture "$backend" "$w" 40 "$label" 2>/dev/null) || tail40=
   if window_is_busy "$w" "$tail40"; then
     return 0
   fi
   case "$verb" in
     ring)
       ring_rc=0
-      fm_task_inbox_ring "$(window_backend "$w")" "$w" "$rec" "$(window_label "$w")" "$(window_harness "$w")" || ring_rc=$?
+      harness=$(window_harness "$w")
+      fm_task_inbox_ring "$backend" "$w" "$rec" "$label" "$harness" || ring_rc=$?
       if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec"; then
         if [ ! -f "$rec" ]; then
           fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
@@ -512,9 +517,10 @@ secondmate_oldest_queue_row() {  # <queue-path>
 # cycles converge without a notification storm, while an empty queue removes
 # only this home's marker so a later row can be observed.
 secondmate_wake_stall_tick() {
-  local now=$(( $(date +%s) )) backstop=$SECONDMATE_WAKE_STALL_SECS idle_secs=$SECONDMATE_WAKE_IDLE_STALL_SECS
+  local now backstop=$SECONDMATE_WAKE_STALL_SECS idle_secs=$SECONDMATE_WAKE_IDLE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason
-  local verdict state source threshold
+  local verdict state source threshold backend target harness expected_label
+  now=$(date +%s)
   case "$backstop" in ''|*[!0-9]*|0) backstop=1800 ;; esac
   case "$idle_secs" in ''|*[!0-9]*|0) idle_secs=60 ;; esac
   [ "$idle_secs" -le "$backstop" ] || idle_secs=$backstop
@@ -558,9 +564,12 @@ EOF
     # suppress this check forever. busy suppresses, idle takes the short age,
     # and every other verdict - unknown, dead, unreadable - takes the bare-time
     # backstop, because an unestablished verdict is never evidence of idleness.
-    verdict=$(fm_busy_classify_live "$(fm_backend_of_meta "$meta")" \
-      "$(fm_backend_target_of_meta "$meta")" "$(fm_meta_get "$meta" harness)" \
-      "$task" "$STATE" "$(fm_backend_expected_label_of_selector "$task" "$STATE")")
+    backend=$(fm_backend_of_meta "$meta")
+    target=$(fm_backend_target_of_meta "$meta")
+    harness=$(fm_meta_get "$meta" harness)
+    expected_label=$(fm_backend_expected_label_of_selector "$task" "$STATE")
+    verdict=$(fm_busy_classify_live "$backend" "$target" "$harness" \
+      "$task" "$STATE" "$expected_label")
     state=${verdict%% *}
     source=${verdict#* }
     [ "$source" != "$verdict" ] || source=unrecorded
@@ -774,7 +783,7 @@ clear_write_tracking() {  # <window-key>
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <hold-count-file> <task> [<pane-hash>]
   local win=$1 since_file=$2 label=$3 escalation_file=$4 holds_file=$5
   local task=$6 wait_hash=${7:-}
-  local since age n reason progress detail holds agent
+  local since age n reason progress detail holds agent now backend count
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -785,9 +794,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       triage_log "absorbed $label timer reset: $win"
       ;;
     *)
-      age=$(( $(date +%s) - since ))
+      now=$(date +%s)
+      age=$((now - since))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
-        agent=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent=unknown
+        backend=$(window_backend "$win")
+        agent=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || agent=unknown
         progress=$(wedge_run_progress "$win" "$agent")
         detail=""
         case "$progress" in
@@ -834,7 +845,8 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             fi
             ;;
         esac
-        n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
+        count=$(cat "$escalation_file" 2>/dev/null || echo 0)
+        n=$((count + 1))
         echo "$n" > "$escalation_file"
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n$detail)"
         if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
@@ -894,7 +906,7 @@ busy_turn_over_age() {  # <task>
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age detail reason rf rf_age wait_line streak_file resurface_window
+  local win=$1 task=$2 h=$3 key statusf mtime age detail reason rf rf_age wait_line streak_file resurface_window now streak
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -903,7 +915,8 @@ handle_paused_stale() {  # <window> <task> <hash>
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
+  now=$(date +%s)
+  age=$((now - mtime))
   rf="$STATE/.paused-resurfaced-$key"
   wait_line=$(last_status_line "$statusf")
   streak_file="$STATE/.paused-streak-$key"
@@ -911,7 +924,8 @@ handle_paused_stale() {  # <window> <task> <hash>
     rm -f "$rf"
   fi
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  resurface_window=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
+  streak=$(pause_streak_count "$streak_file")
+  resurface_window=$(pause_resurface_window "$streak")
   if status_is_captain_held "$wait_line"; then
     detail="captain-held, awaiting the captain"
     reason="stale: $win (captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold)"
@@ -984,7 +998,7 @@ clear_pause_tracking() {  # <window-key>
 # crew that declared no wait at all never reaches past the first branch, so a
 # genuine wedge still escalates on the unchanged cadence.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive declared_pause kind
+  local win=$1 task=$2 key last recheck_file class agent_alive declared_pause kind backend
   key=$(window_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
@@ -997,7 +1011,8 @@ pause_state_class() {  # <window> <task>
   kind=$(window_kind "$win")
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
     if [ "$declared_pause" -ne 0 ] && [ "$kind" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
+      backend=$(window_backend "$win")
+      agent_alive=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
         printf 'none'
@@ -1014,7 +1029,8 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ "$declared_pause" -ne 0 ] && [ "$kind" != secondmate ]; then
-    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
+    backend=$(window_backend "$win")
+    agent_alive=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
       printf 'none'
@@ -1036,8 +1052,9 @@ pause_state_class() {  # <window> <task>
 # unreadable, or unverified backend read stays absorbed), so suppressing the
 # repeat surface above never costs wedge detection for a parked crew that dies.
 parked_agent_is_dead() {  # <window>
-  local win=$1 state
-  state=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || return 1
+  local win=$1 state backend
+  backend=$(window_backend "$win")
+  state=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || return 1
   [ "$state" = dead ]
 }
 
@@ -1077,9 +1094,10 @@ surface_nonterminal_stale() {  # <window> <hash>
 # watcher may be relaunched before in-memory counters reach their threshold on a
 # busy fleet. Persist the schedule as file mtimes instead.
 age_of() {  # seconds since file mtime; "due immediately" if missing
-  local f=$1 m
+  local f=$1 m now
   m=$(stat_mtime "$f") || { echo 999999; return; }
-  echo $(( $(date +%s) - m ))
+  now=$(date +%s)
+  echo $((now - m))
 }
 
 # Layer 2 + 3 signal scan: status files and turn-end markers. Each file is
@@ -1259,10 +1277,11 @@ mark_all_captain_relevant_surfaced() {
 # surfaces only a captain-relevant status the per-wake path absorbed by mistake -
 # the fail-safe backstop.
 heartbeat_scan_finds_actionable() {
-  local f task last surfaced
+  local f task last surfaced marker
   while IFS=$(printf '\t') read -r f task last; do
     [ -n "$f" ] || continue
-    surfaced=$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)
+    marker=$(_hb_surfaced_path "$task")
+    surfaced=$(cat "$marker" 2>/dev/null || true)
     [ "$surfaced" = "$last" ] && continue
     return 0
   done < <(scan_captain_relevant_statuses "$STATE")
@@ -1666,7 +1685,8 @@ while :; do
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
     interruptible_sleep "$SIGNAL_GRACE"
-    pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
+    more_pending=$(scan_signals)
+    pending=$(printf '%s\n%s' "$pending" "$more_pending")
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue
@@ -1745,7 +1765,9 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused_or_captain_held "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    backend=$(window_backend "$w")
+    label=$(window_label "$w")
+    tail40=$(fm_backend_capture "$backend" "$w" 40 "$label" 2>/dev/null) || continue
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
@@ -1762,7 +1784,8 @@ EOF
     # reused below so a busy verdict is consistent within one cycle.
     if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
     if [ "$h" = "$prev" ]; then
-      n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
+      count=$(cat "$cf" 2>/dev/null || echo 0)
+      n=$((count + 1))
       echo "$n" > "$cf"
       if [ "$n" -ge 2 ] && [ "$busy_now" -ne 0 ]; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
@@ -1928,7 +1951,10 @@ EOF
         # is cleared - but not in the same poll the declared-pause cadence just
         # recorded it, or the re-surface throttle it depends on would be erased and
         # the pause would re-surface every poll instead of once per long cadence.
-        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
+        status_task=$(window_to_task "$w" "$STATE")
+        status_last=$(last_status_line "$STATE/$status_task.status")
+        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] \
+          && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$status_last"; }; then
           clear_pause_tracking "$key"
         fi
       fi
@@ -1984,7 +2010,8 @@ EOF
       wake "heartbeat"
     else
       touch "$STATE/.last-heartbeat"
-      echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak"
+      heartbeat_streak=$(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0)
+      echo $((heartbeat_streak + 1)) > "$STATE/.heartbeat-streak"
       triage_log "absorbed heartbeat (no captain-relevant change)"
     fi
   fi

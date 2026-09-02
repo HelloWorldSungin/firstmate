@@ -17,6 +17,11 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-project-origin-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-project-origin-lib.sh"
+
 FM_PR_PROVIDER=
 FM_PR_URL=
 FM_PR_HOST=
@@ -89,7 +94,6 @@ FM_PR_RETIRE_REG_IDENTITY=
 FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
-
 # A failed forge read explains itself on its own stderr, and a caller that
 # already prints an operator-visible line folds that explanation into it rather
 # than onto a channel every production call site discards. The appended cause
@@ -241,6 +245,57 @@ fm_pr_head_valid() {
   local head=${1-}
   local LC_ALL=C
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
+}
+
+# True when the worktree's origin is the repository the PR URL names, so merge
+# boundary objects are never fetched from a repository nothing validated.
+# Exactly one origin URL is required, and it must survive git's own insteadOf
+# rewriting unchanged, because a rewritten fetch reaches a host the recorded URL
+# never named. An ssh remote is canonicalized through ssh -G, whose Hostname is
+# the host git would actually connect to once a config alias is resolved.
+fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-seconds>
+  local wt=${1-} expected_host=${2-} expected_path=${3-} bound=${4-}
+  local remote resolved remote_user remote_host remote_port remote_path remote_count ssh_host
+  local ssh_args
+  case "$bound" in ''|*[!0-9]*|0) return 1 ;; esac
+  remote=$(git -C "$wt" config --get-all remote.origin.url 2>/dev/null) || return 1
+  remote_count=$(printf '%s\n' "$remote" | awk 'END { print NR + 0 }')
+  [ "$remote_count" -eq 1 ] || return 1
+  resolved=$(git -C "$wt" remote get-url origin 2>/dev/null) || return 1
+  [ "$resolved" = "$remote" ] || return 1
+  fm_project_origin_identity "$remote" || return 1
+  remote_user=$FM_PROJECT_ORIGIN_USER
+  remote_host=$FM_PROJECT_ORIGIN_HOST
+  remote_port=$FM_PROJECT_ORIGIN_PORT
+  remote_path=$FM_PROJECT_ORIGIN_PATH
+  if [ "$FM_PROJECT_ORIGIN_TRANSPORT" = ssh ]; then
+    ssh_args=(-G)
+    [ -z "$remote_user" ] || ssh_args+=(-l "$remote_user")
+    [ -z "$remote_port" ] || ssh_args+=(-p "$remote_port")
+    ssh_host=$(fm_run_timed "$bound" ssh "${ssh_args[@]}" "$remote_host" 2>/dev/null | awk '
+      tolower($1) == "hostname" { count++; value=$2 }
+      END { if (count == 1 && value != "") print value; else exit 1 }
+    ') || return 1
+    remote_host=$ssh_host
+  fi
+  [ -n "$remote_host" ] && [ -n "$remote_path" ] || return 1
+  [ "$(printf '%s' "$remote_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
+    = "$(printf '%s' "$expected_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ] \
+    && [ "$(printf '%s' "$remote_path" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
+      = "$(printf '%s' "$expected_path" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]
+}
+
+# One bounded git remote operation that can never block on a prompt: an
+# unattended merge has no terminal to answer a credential or host-key question,
+# so a missing credential must fail fast instead of hanging inside the window
+# between the last pre-merge check and the merge itself.
+fm_pr_remote_git() { # <timeout-seconds> <git-args...>
+  local bound=$1 ssh_command
+  shift
+  ssh_command="${GIT_SSH_COMMAND:-ssh} -oBatchMode=yes -oConnectTimeout=$bound"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false \
+    SSH_ASKPASS_REQUIRE=never GCM_INTERACTIVE=Never GIT_SSH_COMMAND="$ssh_command" \
+    fm_run_timed "$bound" git -c credential.interactive=never "$@"
 }
 
 fm_pr_file_mode() {

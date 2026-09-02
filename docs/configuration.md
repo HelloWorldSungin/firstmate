@@ -959,6 +959,7 @@ FM_ISSUE_STATUS_MIN_INTERVAL=2   # best-effort minimum seconds between live work
 FM_ISSUE_STATUS_TIMEOUT=10   # seconds allowed per live work-item status request
 FM_ISSUE_COMMENT_TIMEOUT=10   # seconds allowed per forge call fm-issue-comment.sh makes for the living status comment, on GitHub and on a per-host forge alike
 FM_ISSUE_CLOSE_TIMEOUT=10   # seconds allowed per per-host forge call fm-pr-merge.sh makes to verify and close a landed work item
+FM_PR_MERGE_PROBE_TIMEOUT=15   # seconds allowed per origin probe fm-pr-merge.sh makes to inspect the merge boundary and to re-read the default-branch tip immediately before merging
 FM_PROJECT_BOARD_TIMEOUT=15   # seconds allowed per GitHub GraphQL call fm-project-board.sh makes for the captain's board
 FM_BOARD_SWEEP_TIMEOUT=240   # seconds bounding the whole fleet-wide board reconciliation sweep; a tighter inherited FM_WRITE_BACK_BUDGET wins and a larger one cannot loosen it (see "Project issue trackers")
 FM_BOARD_SWEEP_MAX_PAGES=20   # pages of 100 that sweep reads per board or tracker listing; a listing it could not finish reading plans no changes for that project and says so
