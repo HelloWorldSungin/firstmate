@@ -465,8 +465,9 @@ Retrieval stays on this host, but \`fm-recall.sh think\` sends your question and
 
 # The search shape is pinned rather than inherited from the wrapper's defaults:
 # five rows of 400 characters is the measured ~1,100-estimated-token embed, and
-# 10 seconds clears the measured worst case while never charging a dispatch a
-# minute for a hung endpoint. The same --timeout also sizes the wrapper's
+# 10 seconds is the ADR-pinned commissioning ceiling; slower or cold reads
+# degrade to the instruction-only section instead of charging a dispatch the
+# wrapper's full minute. The same --timeout also sizes the wrapper's
 # provenance pass, so rows it does not reach arrive labeled unknown, which the
 # gate below accepts: it tests that the provenance FIELDS are present, never
 # that they hold a particular value.
