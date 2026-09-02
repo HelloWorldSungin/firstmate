@@ -2070,7 +2070,7 @@ EOF
 # Bounds and exclusions: the embed never exceeds its byte cap, the secondmate
 # charter runs no search, and --query is validated where it applies.
 test_brain_scaffold_read_bounds_and_exclusions() {
-  local home wide brief bytes rows
+  local home wide dropped brief bytes rows long_query wrapper_query
   home=$(brain_home brain-bounds)
   wide="$TMP_ROOT/brain-wide.json"
   jq -n '[range(0; 5) | {slug: ("firstmate/firstmate-deadbeef/task/wide-" + tostring), title: ("T" * 300), chunk_text: ("w" * 400), score: 0.5, stale: false}]' > "$wide"
@@ -2083,6 +2083,31 @@ test_brain_scaffold_read_bounds_and_exclusions() {
   [ "$rows" -lt 5 ] || fail "the byte cap must drop trailing rows (mounted $rows)"
   # 3,300 bytes is the pinned embed bound; the heading line is outside it.
   [ "$bytes" -le 3310 ] || fail "the Brain section must stay within the pinned bound (got $bytes bytes)"
+  assert_contains "$SCAFFOLD_ERR" 'citations block was truncated by the 3300-byte cap' \
+    "dropping trailing citation rows at the cap must produce a diagnostic"
+
+  long_query=$(jq -nr '"task description " + ("q" * 3200)')
+  brain_scaffold "$home" long-query "$BRAIN_ROWS_JSON" 0 0 --mode no-mistakes --query "$long_query"
+  expect_code 0 "$SCAFFOLD_RC" "a long task query must still scaffold"
+  wrapper_query=$(tail -1 "$home/argv.txt" | jq -r '.query')
+  [ "$wrapper_query" = "$long_query" ] || fail "recall must receive the full long task query"
+  brief="$home/data/long-query/brief.md"
+  rows=$(grep -c '^- `local:' "$brief")
+  [ "$rows" -ge 1 ] || fail "a bounded display query must leave room for citation rows"
+  bytes=$(brain_section "$brief" | wc -c)
+  [ "$bytes" -le 3310 ] || fail "a long query must not push the Brain section past its byte cap (got $bytes bytes)"
+  assert_grep 'scaffold time (query: task description ' "$brief" \
+    "the frame must retain a recognizable bounded copy of the query"
+  [ -z "$SCAFFOLD_ERR" ] || fail "a long query whose rows fit after display bounding must not warn: $SCAFFOLD_ERR"
+
+  dropped="$TMP_ROOT/brain-dropped.json"
+  jq -n '[{slug: ("oversized-" + ("x" * 4000)), title:"Oversized citation", chunk_text:"row", score:0.9, rerank_score:0.95, stale:false}]' > "$dropped"
+  brain_scaffold "$home" dropped-ship "$dropped" 0 0 --mode no-mistakes
+  expect_code 0 "$SCAFFOLD_RC" "a citation too large for the embed cap must still scaffold"
+  assert_no_grep 'scaffold time' "$home/data/dropped-ship/brief.md" \
+    "a citations block with no row that fits must stay out of the brief"
+  assert_contains "$SCAFFOLD_ERR" 'citations block was dropped because no citation fit the 3300-byte cap' \
+    "dropping the entire citations block at the cap must produce a diagnostic"
 
   FM_SECONDMATE_CHARTER='Supervise alpha.' brain_scaffold "$home" wide-sm "$BRAIN_ROWS_JSON" 0 0 --secondmate alpha
   expect_code 0 "$SCAFFOLD_RC" "a secondmate charter must scaffold in a home with a brain"

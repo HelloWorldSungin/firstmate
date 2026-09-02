@@ -464,6 +464,7 @@ BRAIN_SCAFFOLD_EXCERPT=400
 BRAIN_SCAFFOLD_TIMEOUT=10
 # ceil(3300 / 3) = 1,100 estimated tokens, the embed bound the ADR names.
 BRAIN_SCAFFOLD_EMBED_MAX_BYTES=3300
+BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 
 # One read, two outputs, two gates. The worker-facing embed becomes trusted
 # context, so it mounts only when the installed wrapper is OBSERVED to emit the
@@ -474,7 +475,7 @@ BRAIN_SCAFFOLD_EMBED_MAX_BYTES=3300
 # of them can stop the scaffold. The wrapper's exit codes keep never-started
 # (5) apart from asked-and-unanswered (3); the diagnostic names which.
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
-  local doc rc=0 detail citation="" title="" id="" state="" report="" rows frame_bytes
+  local doc rc=0 detail citation="" title="" id="" state="" report="" rows frame_bytes rendered cap_state
   local candidate_citation candidate_title candidate_id candidate_state
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
@@ -540,7 +541,9 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     and (.results | length) > 0
     and all(.results[]; has("captured_at") and has("source_state"))' >/dev/null 2>&1 || return 0
   frame_bytes=$(printf '%s' "$BRAIN_INSTRUCTION" | wc -c)
-  rows=$(printf '%s' "$doc" | jq -r --argjson cap "$((BRAIN_SCAFFOLD_EMBED_MAX_BYTES - frame_bytes))" --arg query "$BRAIN_QUERY" '
+  rendered=$(printf '%s' "$doc" | jq -c \
+    --argjson cap "$((BRAIN_SCAFFOLD_EMBED_MAX_BYTES - frame_bytes))" \
+    --argjson query_cap "$BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS" --arg query "$BRAIN_QUERY" '
     def row:
       "- `\(.citation // .slug)` - \((.title // "(untitled)") | .[0:200])\n"
       + "  captured: \(.captured_at // "unknown"); live source: \(.source_state // "unknown")"
@@ -548,22 +551,52 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       + (if .stale == true then "; stale" else "" end)
       + (if .source_updated_at then "; live updated: \(.source_updated_at)" else "" end)
       + "\n  > \((.excerpt // "") | gsub("\\s+"; " "))\n";
+    def displayed_query:
+      ($query | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $normalized
+      | if ($normalized | length) > $query_cap
+        then $normalized[0:($query_cap - 3)] + "..."
+        else $normalized
+        end;
     def frame:
-      "One such search already ran for this task at scaffold time (query: \($query)); its nearest pages, with capture and live-source provenance, follow. Read them as candidates to compare, never as proof the work was done.\n";
+      "One such search already ran for this task at scaffold time (query: \(displayed_query)); its nearest pages, with capture and live-source provenance, follow. Read them as candidates to compare, never as proof the work was done.\n";
     def tail:
       if .answer.no_confident_match == true
       then "The brain'"'"'s own confidence floor cleared none of these, so treat them as loosely related at best.\n"
       else "" end;
-    (frame | utf8bytelength) + (tail | utf8bytelength) as $fixed
+    frame as $frame
+    | tail as $tail
+    | ($frame | utf8bytelength) + ($tail | utf8bytelength) as $fixed
     | [ .results[] ]
     | reduce .[] as $r ([]; if any(.[]; .citation == $r.citation) then . else . + [$r] end)
-    | map(row)
-    | reduce .[] as $line ({text: "", bytes: $fixed, full: false};
-        if .full then .
-        elif (.bytes + ($line | utf8bytelength)) > $cap then .full = true
-        else {text: (.text + $line), bytes: (.bytes + ($line | utf8bytelength)), full: false} end)
-    | .text as $rows
-    | if $rows == "" then "" else frame + $rows + tail end' 2>/dev/null) || rows=""
+    | map(row) as $lines
+    | reduce $lines[] as $line ({text: "", bytes: $fixed, mounted: 0, truncated: false};
+        if .truncated then .
+        elif (.bytes + ($line | utf8bytelength)) > $cap then .truncated = true
+        else {
+          text: (.text + $line),
+          bytes: (.bytes + ($line | utf8bytelength)),
+          mounted: (.mounted + 1),
+          truncated: false
+        }
+        end)
+    | {
+        text: (if .mounted == 0 then "" else $frame + .text + $tail end),
+        cap_state: (if .truncated then (if .mounted == 0 then "dropped" else "truncated" end) else "complete" end)
+      }' 2>/dev/null) || rendered=""
+  if [ -z "$rendered" ]; then
+    echo "brain: the citations block could not be rendered; the brief carries the retrieval instruction only" >&2
+    return 0
+  fi
+  rows=$(printf '%s' "$rendered" | jq -r '.text') || rows=""
+  cap_state=$(printf '%s' "$rendered" | jq -r '.cap_state') || cap_state=render_failed
+  case "$cap_state" in
+    dropped)
+      echo "brain: the citations block was dropped because no citation fit the ${BRAIN_SCAFFOLD_EMBED_MAX_BYTES}-byte cap; the brief carries the retrieval instruction only" >&2
+      ;;
+    truncated)
+      echo "brain: the citations block was truncated by the ${BRAIN_SCAFFOLD_EMBED_MAX_BYTES}-byte cap; trailing citations were omitted" >&2
+      ;;
+  esac
   BRAIN_EMBED=$rows
 }
 
