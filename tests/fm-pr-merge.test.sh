@@ -8,12 +8,12 @@
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
-#   (c) extra gh-axi pr merge args are forwarded after number and --repo
+#   (c) allowlisted merge-method and message args are forwarded to the forge
 #   (d) merge is refused before gh-axi when task meta is missing
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
-#   (h) repo override args fail fast because the repo comes from the URL
+#   (h) non-allowlisted args fail fast because passthrough cannot prove immediacy
 #   (i) an open recorded issue is closed after merge and linked to the PR
 #   (j) an already-closed recorded issue is left alone
 #   (k) issue-close failure reports the merge as successful and exits zero
@@ -35,9 +35,9 @@
 #   (v) a stale recorded pr_head= is reported and the live head is verified
 #   (w) an unreadable merge request state refuses rather than merging blind
 #   (x) glab or jq absent refuses before any state is recorded
-#   (y) --sha in extra GitLab args fails fast, and still forwards on GitHub
+#   (y) caller-controlled head bindings fail fast on both providers
 #   (z) a GitLab refusal still leaves pr= recorded and the merge poll armed
-#   (aa) a bundled short-option cluster carrying -R is refused before recording
+#   (aa) non-allowlisted short options are refused before recording
 #   (bb) a successful merge in a secondmate home reports the landed PR upward
 #        once, on the route its parent binding names, and a repeat merge of the
 #        same PR does not duplicate that line
@@ -53,10 +53,12 @@
 #        refused before the forge merge call and names the omitted content
 #   (kk) an unavailable default-branch comparison fails closed and tells the
 #        operator to restore the inputs instead of offering a bypass
-#   (ll) deferred merge flags are refused before recording or comparison so the
-#        guarded base cannot change before the forge executes the merge
+#   (ll) non-allowlisted merge flags are refused before recording or comparison
+#        because unbounded passthrough cannot guarantee immediate execution
 #   (mm) a GitHub merge queue or unreadable immediacy state refuses before the
 #        forge call because neither can prove immediate execution
+#   (nn) both providers re-read the default tip immediately before the forge
+#        call and refuse when it moved since the guarded comparison
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -100,10 +102,25 @@ make_case() {
   cat >"$fakebin/git" <<'SH'
 #!/usr/bin/env bash
 rewrite=0
+ls_remote=0
 for arg in "$@"; do
-  case "$arg" in ls-remote|fetch) rewrite=1 ;; esac
+  case "$arg" in
+    ls-remote) rewrite=1; ls_remote=1 ;;
+    fetch) rewrite=1 ;;
+  esac
 done
 if [ "$rewrite" -eq 1 ]; then
+  if [ "$ls_remote" -eq 1 ] && [ -n "${FM_TEST_ADVANCE_DEFAULT_ON_LS_REMOTE:-}" ]; then
+    count_file="${FM_TEST_WT%/wt}/ls-remote-count"
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    if [ "$count" -eq "$FM_TEST_ADVANCE_DEFAULT_ON_LS_REMOTE" ]; then
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+        refs/heads/main "$FM_TEST_ADVANCED_BASE"
+    fi
+  fi
   args=()
   for arg in "$@"; do
     if [ "$arg" = origin ]; then args+=("$FM_TEST_GIT_REMOTE"); else args+=("$arg"); fi
@@ -131,6 +148,17 @@ make_stale_case() {
   git -C "$default_wt" commit -qm 'publish current-only content'
   git -C "$default_wt" push -q origin main
   printf '%s\n' "$case_dir"
+}
+
+prepare_advanced_default() {
+  local case_dir=$1 advanced_wt
+  advanced_wt="$case_dir/advanced-default-wt"
+  git clone -q "$case_dir/origin.git" "$advanced_wt"
+  printf 'landed after guarded comparison\n' >"$advanced_wt/late-default.txt"
+  git -C "$advanced_wt" add late-default.txt
+  git -C "$advanced_wt" commit -qm 'advance default after comparison'
+  git -C "$advanced_wt" push -q origin HEAD:refs/fm-test/advanced-base
+  git -C "$advanced_wt" rev-parse HEAD
 }
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
@@ -723,20 +751,21 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
-test_extra_merge_args_forwarded() {
-  local case_dir head rc
+test_allowlisted_merge_args_forwarded() {
+  local case_dir head
   case_dir=$(make_case extra-args)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 2222222222222222222222222222222222222222
   : > "$case_dir/gh-axi.log"
 
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 -- --squash --delete-branch \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 -- \
+    --squash --subject 'Guarded merge' --body 'Current base checked' \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "extra-args: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 15 --repo example/repo --match-head-commit $head --squash --delete-branch" "$case_dir/gh.log" \
-    || fail "extra-args: extra gh pr merge flags were not forwarded"
-  pass "fm-pr-merge forwards extra flags to the head-bound GitHub merge"
+  grep -qxF "pr merge 15 --repo example/repo --match-head-commit $head --squash --subject Guarded merge --body Current base checked" "$case_dir/gh.log" \
+    || fail "extra-args: allowlisted gh pr merge arguments were not forwarded"
+  pass "fm-pr-merge forwards allowlisted GitHub method and message arguments"
 }
 
 test_missing_meta_refuses_before_merge() {
@@ -817,7 +846,7 @@ test_rejects_unsafe_url_segments_before_recording() {
   pass "fm-pr-merge refuses unsafe PR URL segments before recording state"
 }
 
-test_repo_override_args_refuse_before_recording() {
+test_non_allowlisted_repo_arg_refuses_before_recording() {
   local case_dir rc
   case_dir=$(make_case repo-override)
   mkdir -p "$case_dir/wt"
@@ -831,26 +860,28 @@ test_repo_override_args_refuse_before_recording() {
   set -e
 
   expect_code 1 "$rc" "repo-override: fm-pr-merge should refuse repo override flags"
-  assert_grep 'extra merge arguments must not override the repository' "$case_dir/stderr" \
-    "repo-override: refusal did not explain the repo override"
+  assert_grep 'refusing extra merge argument --repo because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+    "repo-override: refusal did not explain why passthrough is unsafe"
   assert_no_grep 'pr=https://github.com/right/repo/pull/5' "$case_dir/state/task-x1.meta" \
     "repo-override: PR URL was recorded before rejecting repo override"
   assert_absent "$case_dir/state/task-x1.check.sh" \
     "repo-override: repo override armed a merge poll"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "repo-override: gh pr merge was invoked despite repo override"
-  pass "fm-pr-merge refuses repo override args before recording state"
+  pass "fm-pr-merge refuses a non-allowlisted repository argument before recording state"
 }
 
-test_deferred_merge_args_refuse_before_recording_or_comparison() {
+test_non_allowlisted_merge_args_refuse_before_recording_or_comparison() {
   local case_dir flag name rc url
   set -- \
     'github|https://github.com/right/repo/pull/5|--auto' \
     'github-true|https://github.com/right/repo/pull/5|--auto=TRUE' \
+    'github-delete|https://github.com/right/repo/pull/5|--delete-branch' \
     "gitlab|$MR_URL|--auto-merge" \
     "gitlab-true|$MR_URL|--auto-merge=true" \
     "gitlab-legacy|$MR_URL|--when-pipeline-succeeds" \
-    "gitlab-legacy-true|$MR_URL|--when-pipeline-succeeds=1"
+    "gitlab-legacy-true|$MR_URL|--when-pipeline-succeeds=1" \
+    "gitlab-remove|$MR_URL|--remove-source-branch"
   for name in "$@"; do
     flag=${name##*|}
     url=${name#*|}
@@ -878,12 +909,8 @@ test_deferred_merge_args_refuse_before_recording_or_comparison() {
     set -e
 
     expect_code 1 "$rc" "deferred-$name: fm-pr-merge should refuse $flag"
-    assert_grep 'auto-merge requested by' "$case_dir/stderr" \
-      "deferred-$name: refusal did not name the provider's deferring mechanism"
-    assert_grep 'would defer execution after the guarded base comparison' "$case_dir/stderr" \
-      "deferred-$name: refusal did not explain why deferred execution is unsafe"
-    assert_grep 'merge when the PR is actually ready' "$case_dir/stderr" \
-      "deferred-$name: refusal did not tell the caller when to merge"
+    assert_grep "refusing extra merge argument $flag because an unbounded passthrough cannot guarantee immediate execution" "$case_dir/stderr" \
+      "deferred-$name: refusal did not name the argument and immediate-execution guarantee"
     assert_no_grep "pr=$url" "$case_dir/state/task-x1.meta" \
       "deferred-$name: PR URL was recorded before rejecting $flag"
     assert_absent "$case_dir/state/task-x1.check.sh" \
@@ -897,7 +924,7 @@ test_deferred_merge_args_refuse_before_recording_or_comparison() {
         || fail "deferred-$name: GitLab was invoked despite $flag"
     fi
   done
-  pass "fm-pr-merge refuses deferred merge flags before recording or comparison"
+  pass "fm-pr-merge refuses non-allowlisted merge flags before recording or comparison"
 }
 
 test_github_immediate_execution_preflight_refuses_queue_and_unknown() {
@@ -938,8 +965,56 @@ test_github_immediate_execution_preflight_refuses_queue_and_unknown() {
   pass "fm-pr-merge refuses GitHub merge queues and unknown immediate-execution state"
 }
 
-test_bundled_repo_override_args_refuse_before_recording() {
-  local case_dir head rc
+test_default_tip_move_refuses_both_forges() {
+  local case_dir new_tip old_tip provider rc url
+  for provider in github gitlab; do
+    case "$provider" in
+      github)
+        case_dir=$(make_case default-tip-move-github)
+        add_gh_mocks "$case_dir" 9797979797979797979797979797979797979797
+        : >"$case_dir/gh-axi.log"
+        url=https://github.com/example/repo/pull/79
+        ;;
+      gitlab)
+        case_dir=$(make_gitlab_case default-tip-move-gitlab)
+        url=$MR_URL
+        ;;
+    esac
+    old_tip=$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)
+    new_tip=$(prepare_advanced_default "$case_dir")
+
+    set +e
+    FM_TEST_ADVANCE_DEFAULT_ON_LS_REMOTE=3 FM_TEST_ADVANCED_BASE=$new_tip \
+      run_pr_merge "$case_dir" task-x1 "$url" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "default-tip-move-$provider: moving main should refuse"
+    [ "$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)" = "$new_tip" ] \
+      || fail "default-tip-move-$provider: the fixture did not advance main"
+    assert_grep "current default branch main moved from inspected tip $old_tip to live tip $new_tip before merge" \
+      "$case_dir/stderr" "default-tip-move-$provider: refusal did not name both default tips"
+    assert_grep 'bring the branch up to current main and re-run validation' "$case_dir/stderr" \
+      "default-tip-move-$provider: refusal did not name the recovery action"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "default-tip-move-$provider: refusal retired the durable merge poll"
+    case "$provider" in
+      github)
+        assert_no_grep 'pr merge' "$case_dir/gh.log" \
+          "default-tip-move-github: the forge call ran after main moved"
+        ;;
+      gitlab)
+        assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+          "default-tip-move-gitlab: the forge call ran after main moved"
+        ;;
+    esac
+  done
+  pass "fm-pr-merge rechecks the inspected default tip for both providers"
+}
+
+test_non_allowlisted_short_args_refuse_before_recording() {
+  local case_dir rc
   case_dir=$(make_case bundled-repo-override)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" abababababababababababababababababababab
@@ -952,8 +1027,8 @@ test_bundled_repo_override_args_refuse_before_recording() {
   set -e
 
   expect_code 1 "$rc" "bundled-repo-override: fm-pr-merge should refuse a bundled repo override"
-  assert_grep 'extra merge arguments must not override the repository' "$case_dir/stderr" \
-    "bundled-repo-override: refusal did not explain the repo override"
+  assert_grep 'refusing extra merge argument -dR because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+    "bundled-repo-override: refusal did not explain why passthrough is unsafe"
   assert_no_grep 'pr=https://github.com/right/repo/pull/6' "$case_dir/state/task-x1.meta" \
     "bundled-repo-override: PR URL was recorded before rejecting the bundled repo override"
   assert_absent "$case_dir/state/task-x1.check.sh" \
@@ -970,8 +1045,8 @@ test_bundled_repo_override_args_refuse_before_recording() {
   set -e
 
   expect_code 1 "$rc" "bundled-repo-override-gitlab: fm-pr-merge should refuse a bundled instance override"
-  assert_grep 'extra merge arguments must not override the repository' "$case_dir/stderr" \
-    "bundled-repo-override-gitlab: refusal did not explain the repo override"
+  assert_grep 'refusing extra merge argument -yR because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+    "bundled-repo-override-gitlab: refusal did not explain why passthrough is unsafe"
   assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
     "bundled-repo-override-gitlab: the URL was recorded before rejecting the bundled override"
   assert_absent "$case_dir/state/task-x1.check.sh" \
@@ -979,21 +1054,23 @@ test_bundled_repo_override_args_refuse_before_recording() {
   [ ! -s "$case_dir/glab.log" ] \
     || fail "bundled-repo-override-gitlab: glab was invoked despite the bundled override"
 
-  # Only a cluster carrying the repository flag is refused: every other short
-  # cluster is still the caller's business and still reaches the forge.
   case_dir=$(make_case bundled-non-repo-cluster)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc
   : > "$case_dir/gh-axi.log"
 
+  set +e
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/8 -- -d \
-    > "$case_dir/stdout" 2> "$case_dir/stderr" \
-    || fail "bundled-non-repo-cluster: fm-pr-merge refused a short flag that overrides nothing"
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
 
-  head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 8 --repo example/repo --match-head-commit $head --squash -d" "$case_dir/gh.log" \
-    || fail "bundled-non-repo-cluster: a short flag carrying no repository override was not forwarded"
-  pass "fm-pr-merge refuses a bundled short-option repo override and forwards other short flags"
+  expect_code 1 "$rc" "bundled-non-repo-cluster: a non-allowlisted short option should refuse"
+  assert_grep 'refusing extra merge argument -d because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+    "bundled-non-repo-cluster: refusal did not name the short option"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "bundled-non-repo-cluster: non-allowlisted short option reached the forge"
+  pass "fm-pr-merge refuses non-allowlisted short arguments before recording"
 }
 
 test_explicit_merge_method_not_overridden() {
@@ -1626,22 +1703,23 @@ test_gitlab_imposes_no_merge_method() {
   pass "fm-pr-merge imposes no merge method on GitLab, leaving the project's own one"
 }
 
-test_gitlab_extra_args_forwarded() {
+test_gitlab_allowlisted_args_forwarded() {
   local case_dir head rc merge_line
   case_dir=$(make_gitlab_case gitlab-extra-args)
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   set +e
-  run_pr_merge "$case_dir" task-x1 "$MR_URL" -- --remove-source-branch \
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" -- \
+    --squash --message guarded-merge --squash-message=base-checked \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "gitlab-extra-args: merge should succeed"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --remove-source-branch" ] \
-    || fail "gitlab-extra-args: extra glab flags were not forwarded: '$merge_line'"
-  pass "fm-pr-merge forwards extra flags to glab mr merge after the -- separator"
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --squash --message guarded-merge --squash-message=base-checked" ] \
+    || fail "gitlab-extra-args: allowlisted glab arguments were not forwarded: '$merge_line'"
+  pass "fm-pr-merge forwards allowlisted GitLab method and message arguments"
 }
 
 test_gitlab_merge_failure_propagates() {
@@ -1869,8 +1947,8 @@ test_gitlab_head_override_args_refuse_before_recording() {
   set -e
 
   expect_code 1 "$rc" "gitlab-head-override: fm-pr-merge should refuse a caller head override"
-  assert_grep 'extra merge arguments must not override the head commit' "$case_dir/stderr" \
-    "gitlab-head-override: refusal did not explain the head override"
+  assert_grep 'refusing extra merge argument --sha because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+    "gitlab-head-override: refusal did not explain why passthrough is unsafe"
   assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
     "gitlab-head-override: the URL was recorded before rejecting the head override"
   assert_absent "$case_dir/state/task-x1.check.sh" \
@@ -1892,7 +1970,7 @@ test_github_head_override_args_refuse_before_recording() {
     set -e
 
     expect_code 1 "$rc" "github-head-override: $arg should refuse"
-    assert_grep 'extra merge arguments must not override the head commit' "$case_dir/stderr" \
+    assert_grep "refusing extra merge argument $arg because an unbounded passthrough cannot guarantee immediate execution" "$case_dir/stderr" \
       "github-head-override: $arg refusal was unexplained"
     assert_no_grep 'pr=https://github.com/example/repo/pull/44' "$case_dir/state/task-x1.meta" \
       "github-head-override: $arg was rejected after recording"
@@ -2213,14 +2291,15 @@ test_mismatched_repository_refuses_before_merging
 test_stale_details_name_presence_content_type_and_mode_losses
 test_github_head_race_is_rejected_by_the_forge_binding
 test_merge_failure_propagates_after_recording
-test_extra_merge_args_forwarded
+test_allowlisted_merge_args_forwarded
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
-test_repo_override_args_refuse_before_recording
-test_deferred_merge_args_refuse_before_recording_or_comparison
+test_non_allowlisted_repo_arg_refuses_before_recording
+test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
-test_bundled_repo_override_args_refuse_before_recording
+test_default_tip_move_refuses_both_forges
+test_non_allowlisted_short_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
@@ -2245,7 +2324,7 @@ test_refresh_reason_is_bounded_to_one_line
 test_gitlab_url_resolves_and_merges
 test_gitlab_host_comes_from_the_url
 test_gitlab_imposes_no_merge_method
-test_gitlab_extra_args_forwarded
+test_gitlab_allowlisted_args_forwarded
 test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently
 test_gitlab_reports_every_failing_condition

@@ -96,6 +96,7 @@ FM_PR_STALE_BASE_RESULT=
 FM_PR_STALE_BASE_DEFAULT=
 FM_PR_STALE_BASE_DETAILS=
 FM_PR_STALE_BASE_REASON=
+FM_PR_STALE_BASE_TIP=
 
 # A failed forge read explains itself on its own stderr, and a caller that
 # already prints an operator-visible line folds that explanation into it rather
@@ -330,6 +331,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
   FM_PR_STALE_BASE_DETAILS=
   FM_PR_STALE_BASE_REASON=
   FM_PR_STALE_BASE_HEAD=
+  FM_PR_STALE_BASE_TIP=
 
   if [ -z "$wt" ] || [ ! -d "$wt" ] \
     || ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -394,6 +396,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     return 2
   fi
   FM_PR_STALE_BASE_HEAD=$head
+  FM_PR_STALE_BASE_TIP=$base
   merge_base=$(git -C "$wt" merge-base "$base" "$head" 2>/dev/null) || merge_base=
   if ! fm_pr_head_valid "$merge_base"; then
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true

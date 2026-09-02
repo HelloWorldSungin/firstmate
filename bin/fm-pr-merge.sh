@@ -11,9 +11,10 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
-# Immediate-execution GitHub args are forwarded unchanged, including an
-# explicit --merge. GitHub's live PR state must prove that the target branch
-# does not use a merge queue before the merge command runs.
+# Extra forge arguments are limited to merge-method selectors and commit-message
+# inputs because an unbounded passthrough cannot guarantee immediate execution.
+# GitHub's live PR state must also prove that the target branch does not use a
+# merge queue before the merge command runs.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -101,73 +102,64 @@ shift 2
 [ "${1:-}" = "--" ] && shift
 
 caller_has_merge_method() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --squash|--merge|--rebase|--method|--method=*) return 0 ;;
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --squash|--merge|--rebase|-s|-m|-r|--method|--method=*) return 0 ;;
+      --subject|--body|--body-file|-t|-b|-F) shift 2 ;;
+      *) shift ;;
     esac
   done
   return 1
 }
 
-reject_repo_overrides() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --repo|--repo=*)
-        echo "error: extra merge arguments must not override the repository" >&2
-        return 1
-        ;;
-      --*) ;;
-      # A single-dash argument is a short-option cluster, which both CLIs expand
-      # one character at a time, so -yR carries --repo exactly as a bare -R does.
-      -*R*)
-        echo "error: extra merge arguments must not override the repository" >&2
-        return 1
-        ;;
-    esac
-  done
+merge_method_value_valid() {
+  case "${1-}" in merge|squash|rebase) return 0 ;; *) return 1 ;; esac
 }
 
-reject_head_overrides() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --sha|--sha=*|--match-head-commit|--match-head-commit=*)
-        echo "error: extra merge arguments must not override the head commit" >&2
-        return 1
-        ;;
-    esac
-  done
-}
-
-require_immediate_merge_arguments() {
-  local arg mechanism normalized
-  mechanism=
-  for arg in "$@"; do
-    normalized=${arg,,}
-    case "$PROVIDER:$normalized" in
-      github:--auto|github:--auto=true|github:--auto=1|github:--auto=t)
-        mechanism="GitHub auto-merge requested by $arg"
-        ;;
-      gitlab:--auto-merge|gitlab:--auto-merge=true|gitlab:--auto-merge=1|gitlab:--auto-merge=t|\
-      gitlab:--when-pipeline-succeeds|gitlab:--when-pipeline-succeeds=true|\
-      gitlab:--when-pipeline-succeeds=1|gitlab:--when-pipeline-succeeds=t)
-        mechanism="GitLab auto-merge requested by $arg"
-        ;;
-    esac
-    [ -z "$mechanism" ] || break
-  done
-  [ -z "$mechanism" ] && return 0
-  printf 'error: refusing to merge %s because %s would defer execution after the guarded base comparison\n' \
-    "$URL" "$mechanism" >&2
-  echo "action: merge when the PR is actually ready so the guarded comparison runs immediately before merge" >&2
+forwarded_argument_refusal() {
+  printf 'error: refusing extra merge argument %s because an unbounded passthrough cannot guarantee immediate execution\n' \
+    "${1-<missing>}" >&2
   return 1
 }
 
-reject_repo_overrides "$@" || exit 1
-reject_head_overrides "$@" || exit 1
-require_immediate_merge_arguments "$@" || exit 1
+require_forwardable_merge_arguments() {
+  local arg value
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    case "$PROVIDER:$arg" in
+      github:--merge|github:--squash|github:--rebase|github:-m|github:-s|github:-r|\
+      gitlab:--squash|gitlab:-s)
+        shift
+        ;;
+      github:--method)
+        [ "$#" -ge 2 ] || { echo "error: merge method value is missing" >&2; return 1; }
+        value=$2
+        merge_method_value_valid "$value" \
+          || { printf 'error: unsupported merge method %s\n' "$value" >&2; return 1; }
+        shift 2
+        ;;
+      github:--method=*)
+        value=${arg#--method=}
+        merge_method_value_valid "$value" \
+          || { printf 'error: unsupported merge method %s\n' "${value:-<empty>}" >&2; return 1; }
+        shift
+        ;;
+      github:--subject|github:--body|github:--body-file|github:-t|github:-b|github:-F|\
+      gitlab:--message|gitlab:--squash-message|gitlab:-m)
+        [ "$#" -ge 2 ] \
+          || { printf 'error: value is missing for extra merge argument %s\n' "$arg" >&2; return 1; }
+        shift 2
+        ;;
+      github:--subject=*|github:--body=*|github:--body-file=*|\
+      gitlab:--message=*|gitlab:--squash-message=*)
+        shift
+        ;;
+      *) forwarded_argument_refusal "$arg"; return 1 ;;
+    esac
+  done
+}
+
+require_forwardable_merge_arguments "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -212,6 +204,8 @@ if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH
   exit 1
 fi
 FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
+FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
+FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
@@ -460,6 +454,45 @@ gitlab_confirm_merged() {
   fi
 }
 
+verify_inspected_default_tip() {
+  local remote_state live_ref live_tip
+  local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
+  case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=15 ;; esac
+  if ! remote_state=$(fm_pr_stale_base_remote_git "$probe_timeout" \
+    -C "$WT" ls-remote --symref origin HEAD 2>/dev/null); then
+    printf 'error: refusing to merge %s because the current default-branch tip could not be re-read immediately before merge\n' \
+      "$URL" >&2
+    return 1
+  fi
+  live_ref=$(printf '%s\n' "$remote_state" | awk '
+    $1 == "ref:" && $3 == "HEAD" { count++; value=$2 }
+    END { if (count == 1) print value; else exit 1 }
+  ') || live_ref=
+  live_tip=$(printf '%s\n' "$remote_state" | awk '
+    $2 == "HEAD" && $1 != "ref:" { count++; value=$1 }
+    END { if (count == 1) print value; else exit 1 }
+  ') || live_tip=
+  case "$live_ref" in refs/heads/*) ;; *) live_ref= ;; esac
+  if [ -z "$live_ref" ] || ! fm_pr_head_valid "$live_tip"; then
+    printf 'error: refusing to merge %s because the current default-branch tip could not be identified immediately before merge\n' \
+      "$URL" >&2
+    return 1
+  fi
+  if [ "$live_ref" != "refs/heads/$FM_PR_INSPECTED_DEFAULT" ]; then
+    printf 'error: refusing to merge %s because the current default branch moved from %s at tip %s to %s at tip %s before merge\n' \
+      "$URL" "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_BASE" \
+      "${live_ref#refs/heads/}" "$live_tip" >&2
+    return 1
+  fi
+  if [ "$live_tip" != "$FM_PR_INSPECTED_BASE" ]; then
+    printf 'error: refusing to merge %s because current default branch %s moved from inspected tip %s to live tip %s before merge\n' \
+      "$URL" "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_BASE" "$live_tip" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+}
+
 case "$PROVIDER" in
   github)
     github_preflight_rc=0
@@ -481,10 +514,17 @@ case "$PROVIDER" in
           github_args+=("--${1#--method=}")
           shift
           ;;
+        --subject|--body|--body-file|-t|-b|-F)
+          github_args+=("$1" "$2")
+          shift 2
+          ;;
         *) github_args+=("$1"); shift ;;
       esac
     done
     if [ "$github_preflight_rc" -eq 0 ]; then
+      # A sub-second residual window remains because neither forge exposes an
+      # expected-base parameter; this guard narrows rather than eliminates it.
+      verify_inspected_default_tip || exit 1
       GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
         --match-head-commit "$FM_PR_INSPECTED_HEAD" \
         "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
@@ -500,6 +540,8 @@ case "$PROVIDER" in
         exit 1
       fi
       FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
+      FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
+      FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
       FM_PR_MERGE_LIVE_HEAD=
       gitlab_verify_rc=0
       gitlab_verify_mergeable || gitlab_verify_rc=$?
@@ -513,6 +555,9 @@ case "$PROVIDER" in
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;
     # the conditions above are what authorize the merge.
+    # A sub-second residual window remains because neither forge exposes an
+    # expected-base parameter; this guard narrows rather than eliminates it.
+    verify_inspected_default_tip || exit 1
     GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
       --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
     gitlab_confirm_merged || exit 1
