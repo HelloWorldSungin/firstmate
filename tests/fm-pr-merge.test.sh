@@ -361,6 +361,11 @@ case "${1:-} ${2:-}" in
     cat "$FM_TEST_GLAB_PROJECT_JSON"
     exit 0
     ;;
+  "api version")
+    [ ! -e "$case_dir/glab-version-fails" ] || exit 1
+    cat "$case_dir/version.json"
+    exit 0
+    ;;
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
@@ -393,7 +398,8 @@ write_mr_json() {
   local file=$1 kv key value
   local state=opened detail=mergeable conflicts=false discussions=true
   local target=main target_oid=__DEFAULT_HEAD__
-  local head=$MR_HEAD pipeline_sha=$MR_HEAD pipeline_status=success pipeline=present
+  local head=$MR_HEAD diff_head=$MR_HEAD
+  local pipeline_sha=$MR_HEAD pipeline_status=success pipeline=present
   shift
   for kv in "$@"; do
     key=${kv%%=*}
@@ -404,6 +410,7 @@ write_mr_json() {
       conflicts) conflicts=$value ;;
       discussions) discussions=$value ;;
       head) head=$value ;;
+      diff_head) diff_head=$value ;;
       target) target=$value ;;
       target_oid) target_oid=$value ;;
       pipeline_sha) pipeline_sha=$value ;;
@@ -418,9 +425,9 @@ write_mr_json() {
   printf '{"data":{"project":{"mergeRequest":{"state":"%s","detailedMergeStatus":"%s","conflicts":%s,' \
     "$state" "$detail" "$conflicts" > "$file"
   printf '"mergeableDiscussionsState":%s,"diffHeadSha":"%s","targetBranch":"%s",' \
-    "$discussions" "$head" "$target" >>"$file"
-  printf '"headPipeline":%s},"repository":{"commit":{"sha":"%s"}}}}}\n' \
-    "$pipeline" "$target_oid" >>"$file"
+    "$discussions" "$diff_head" "$target" >>"$file"
+  printf '"headPipeline":%s},"repository":{"mergeRequestHead":{"sha":"%s"},"target":{"sha":"%s"}}}}}\n' \
+    "$pipeline" "$head" "$target_oid" >>"$file"
 }
 
 # make_gitlab_case <name> [<field>=<value> ...]: a case dir with both forge
@@ -437,6 +444,7 @@ make_gitlab_case() {
   write_mr_json "$case_dir/mr.json" "$@"
   printf '{"state":"merged"}\n' >"$case_dir/mr-post.json"
   printf '{"automatic_rebase_enabled":false}\n' >"$case_dir/project.json"
+  printf '{"version":"19.4.0"}\n' >"$case_dir/version.json"
   printf '%s\n' "$case_dir"
 }
 
@@ -1151,6 +1159,8 @@ test_non_allowlisted_merge_args_refuse_before_recording_or_comparison() {
     "gitlab-true|$MR_URL|--auto-merge=true" \
     "gitlab-legacy|$MR_URL|--when-pipeline-succeeds" \
     "gitlab-legacy-true|$MR_URL|--when-pipeline-succeeds=1" \
+    "gitlab-rebase|$MR_URL|--rebase" \
+    "gitlab-rebase-short|$MR_URL|-r" \
     "gitlab-wrong-cleanup|$MR_URL|--delete-branch"
   for name in "$@"; do
     flag=${name##*|}
@@ -2270,7 +2280,7 @@ test_gitlab_allowlisted_args_forwarded() {
 
   set +e
   run_pr_merge "$case_dir" task-x1 "$MR_URL" -- \
-    --rebase -r --message guarded-merge --squash-message=base-checked \
+    --squash -s --message guarded-merge --squash-message=base-checked \
     --remove-source-branch -d \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -2278,15 +2288,16 @@ test_gitlab_allowlisted_args_forwarded() {
 
   expect_code 0 "$rc" "gitlab-extra-args: merge should succeed"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --rebase -r --message guarded-merge --squash-message=base-checked --remove-source-branch -d" ] \
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --squash -s --message guarded-merge --squash-message=base-checked --remove-source-branch -d" ] \
     || fail "gitlab-extra-args: allowlisted glab arguments were not forwarded: '$merge_line'"
-  pass "fm-pr-merge forwards allowlisted GitLab method, message, and cleanup arguments"
+  pass "fm-pr-merge forwards safe GitLab squash, message, and cleanup arguments"
 }
 
-test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed() {
-  local case_dir expected name rc
-  for name in enabled unknown; do
+test_gitlab_automatic_rebase_setting_handles_version_boundary() {
+  local case_dir expected expected_rc name rc
+  for name in enabled unknown pre-19.4-absent current-absent invalid-version; do
     case_dir=$(make_gitlab_case "gitlab-auto-rebase-$name")
+    expected_rc=1
     case "$name" in
       enabled)
         printf '{"automatic_rebase_enabled":true}\n' >"$case_dir/project.json"
@@ -2294,6 +2305,20 @@ test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed() {
         ;;
       unknown)
         : >"$case_dir/glab-project-fails"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        ;;
+      pre-19.4-absent)
+        printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
+        printf '{"version":"19.3.2-ee"}\n' >"$case_dir/version.json"
+        expected_rc=0
+        ;;
+      current-absent)
+        printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        ;;
+      invalid-version)
+        printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
+        printf '{"version":"unreadable"}\n' >"$case_dir/version.json"
         expected='GitLab project setting automatic_rebase_enabled could not be determined'
         ;;
     esac
@@ -2304,18 +2329,45 @@ test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed() {
     rc=$?
     set -e
 
-    expect_code 1 "$rc" "gitlab-auto-rebase-$name: fm-pr-merge should refuse"
-    assert_grep "$expected" "$case_dir/stderr" \
-      "gitlab-auto-rebase-$name: refusal did not name the project setting"
-    assert_grep 'action: bring the branch up to current main and re-run validation' \
-      "$case_dir/stderr" \
-      "gitlab-auto-rebase-$name: refusal did not name the required recovery"
-    assert_no_grep ' mr merge ' "$case_dir/glab.log" \
-      "gitlab-auto-rebase-$name: unsafe project setting reached merge"
-    assert_present "$case_dir/state/task-x1.check.sh" \
-      "gitlab-auto-rebase-$name: refusal disarmed the durable poll"
+    expect_code "$expected_rc" "$rc" "gitlab-auto-rebase-$name: unexpected merge result"
+    if [ "$expected_rc" -eq 0 ]; then
+      assert_grep ' mr merge ' "$case_dir/glab.log" \
+        "gitlab-auto-rebase-$name: a supported pre-19.4 project did not merge"
+    else
+      assert_grep "$expected" "$case_dir/stderr" \
+        "gitlab-auto-rebase-$name: refusal did not name the project setting"
+      assert_grep 'action: bring the branch up to current main and re-run validation' \
+        "$case_dir/stderr" \
+        "gitlab-auto-rebase-$name: refusal did not name the required recovery"
+      assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+        "gitlab-auto-rebase-$name: unsafe project setting reached merge"
+      assert_present "$case_dir/state/task-x1.check.sh" \
+        "gitlab-auto-rebase-$name: refusal disarmed the durable poll"
+    fi
   done
-  pass "GitLab automatic rebase is rejected and unknown state fails closed"
+  pass "GitLab automatic rebase honors its API version boundary and fails closed"
+}
+
+test_gitlab_live_source_ref_ignores_lagging_diff_ingestion() {
+  local case_dir head merge_line rc
+  case_dir=$(make_gitlab_case gitlab-lagging-diff-head "diff_head=$MR_STALE_HEAD")
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitlab-lagging-diff-head: current source ref should merge"
+  merge_line=$(glab_merge_line "$case_dir/glab.log")
+  case "$merge_line" in
+    *"--sha $head"*) : ;;
+    *) fail "gitlab-lagging-diff-head: merge was not bound to the live source ref: '$merge_line'" ;;
+  esac
+  assert_no_grep 're-inspecting the live head' "$case_dir/stderr" \
+    "gitlab-lagging-diff-head: persisted diff metadata was mistaken for the live source ref"
+  pass "GitLab merge binding uses the live source ref while diff ingestion lags"
 }
 
 test_gitlab_merge_failure_propagates() {
@@ -2986,7 +3038,8 @@ test_gitlab_url_resolves_and_merges
 test_gitlab_host_comes_from_the_url
 test_gitlab_imposes_no_merge_method
 test_gitlab_allowlisted_args_forwarded
-test_gitlab_automatic_rebase_setting_refuses_and_unknown_fails_closed
+test_gitlab_automatic_rebase_setting_handles_version_boundary
+test_gitlab_live_source_ref_ignores_lagging_diff_ingestion
 test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently
 test_gitlab_reports_every_failing_condition

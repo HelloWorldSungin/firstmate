@@ -129,7 +129,7 @@ require_forwardable_merge_arguments() {
     case "$PROVIDER:$arg" in
       # Merge-method selectors choose the form of an immediate merge and cannot defer execution.
       github:--merge|github:--squash|github:--rebase|github:-m|github:-s|github:-r|\
-      gitlab:--squash|gitlab:--rebase|gitlab:-s|gitlab:-r)
+      gitlab:--squash|gitlab:-s)
         shift
         ;;
       github:--method)
@@ -310,25 +310,28 @@ gitlab_verify_mergeable() {
   local total=0 named=0 refusals=''
   local state='' detail='' conflicts='' discussions=''
   local live_head='' target='' target_oid='' pipeline_sha='' pipeline_status=''
+  local source_ref="refs/merge-requests/$PR_NUMBER/head"
 
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
   # operator's configured default.
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api graphql \
     -f fullPath="$FM_PR_PATH" -f iid="$PR_NUMBER" \
-    -f targetRef="$FM_PR_INSPECTED_DEFAULT" \
-    -f query='query($fullPath: ID!, $iid: String!, $targetRef: String!) {
+    -f targetRef="$FM_PR_INSPECTED_DEFAULT" -f sourceRef="$source_ref" \
+    -f query='query($fullPath: ID!, $iid: String!, $sourceRef: String!, $targetRef: String!) {
       project(fullPath: $fullPath) {
         mergeRequest(iid: $iid) {
           state
           detailedMergeStatus
           conflicts
           mergeableDiscussionsState
-          diffHeadSha
           targetBranch
           headPipeline { sha status }
         }
-        repository { commit(ref: $targetRef) { sha } }
+        repository {
+          mergeRequestHead: commit(ref: $sourceRef) { sha }
+          target: commit(ref: $targetRef) { sha }
+        }
       }
     }' 2>/dev/null) \
     || [ -z "$json" ]; then
@@ -350,9 +353,9 @@ gitlab_verify_mergeable() {
         "detail=" + (($mr.detailedMergeStatus // "") | tostring | ascii_downcase),
         "conflicts=" + ($mr.conflicts | tostring),
         "discussions=" + ($mr.mergeableDiscussionsState | tostring),
-        "head=" + (($mr.diffHeadSha // "") | tostring),
+        "head=" + (($project.repository.mergeRequestHead.sha // "") | tostring),
         "target=" + (($mr.targetBranch // "") | tostring),
-        "target_oid=" + (($project.repository.commit.sha // "") | tostring),
+        "target_oid=" + (($project.repository.target.sha // "") | tostring),
         "pipeline_sha=" + (($mr.headPipeline.sha // "") | tostring),
         "pipeline_status=" + (($mr.headPipeline.status // "") | tostring | ascii_downcase)
       else
@@ -436,7 +439,9 @@ FIELDS
 }
 
 gitlab_require_attested_merge() {
-  local encoded_path json automatic_rebase
+  local encoded_path json automatic_rebase merge_method
+  local version_json version_fields line server_major='' server_minor=''
+  local total=0 named=0
   encoded_path=$(printf '%s' "$FM_PR_PATH" | sed 's|/|%2F|g')
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api "projects/$encoded_path" 2>/dev/null) \
     || [ -z "$json" ]; then
@@ -447,9 +452,12 @@ gitlab_require_attested_merge() {
     return 1
   fi
   if ! automatic_rebase=$(printf '%s' "$json" | jq -r '
-      if type == "object" and (.automatic_rebase_enabled | type == "boolean")
-      then (.automatic_rebase_enabled | tostring)
-      else error("automatic_rebase_enabled is unavailable") end' 2>/dev/null); then
+      if type != "object" then error("project payload is not an object")
+      elif has("automatic_rebase_enabled") then
+        if (.automatic_rebase_enabled | type) == "boolean"
+        then (.automatic_rebase_enabled | tostring)
+        else error("automatic_rebase_enabled is unreadable") end
+      else "absent" end' 2>/dev/null); then
     printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
       "$URL" >&2
     printf 'action: bring the branch up to current %s and re-run validation\n' \
@@ -463,7 +471,68 @@ gitlab_require_attested_merge() {
       "$FM_PR_INSPECTED_DEFAULT" >&2
     return 1
   fi
-  [ "$automatic_rebase" = false ]
+  [ "$automatic_rebase" = false ] && return 0
+
+  if ! version_json=$(GITLAB_HOST="$FM_PR_HOST" glab api version 2>/dev/null) \
+    || [ -z "$version_json" ] \
+    || ! version_fields=$(printf '%s' "$version_json" | jq -r '
+      if type == "object" and (.version | type) == "string"
+      then .version | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)") |
+        "major=" + .major, "minor=" + .minor
+      else error("GitLab version is unavailable") end' 2>/dev/null); then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      major=*) server_major=${line#major=} ;;
+      minor=*) server_minor=${line#minor=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<VERSION_FIELDS
+$version_fields
+VERSION_FIELDS
+  if [ "$named" -ne 2 ] || [ "$total" -ne 2 ] \
+    || [ -z "$server_major" ] || [ -z "$server_minor" ]; then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+
+  # GitLab's Projects API exposes automatic_rebase_enabled starting in 19.4:
+  # https://docs.gitlab.com/api/projects/
+  # Automatic rebase itself is generally available from 19.2, so older API
+  # responses are safe only when merge method or ancestry proves it cannot run:
+  # https://docs.gitlab.com/user/project/merge_requests/methods/
+  if [ "$server_major" -gt 19 ] \
+    || { [ "$server_major" -eq 19 ] && [ "$server_minor" -ge 4 ]; }; then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+
+  merge_method=$(printf '%s' "$json" | jq -r '
+    if type == "object" and (.merge_method | type) == "string"
+    then .merge_method else "" end' 2>/dev/null) || merge_method=
+  [ "$merge_method" = merge ] && return 0
+  if git -C "$WT" merge-base --is-ancestor \
+    "$FM_PR_INSPECTED_BASE" "$FM_PR_INSPECTED_HEAD" 2>/dev/null; then
+    return 0
+  fi
+  printf 'error: refusing to merge %s because this pre-19.4 GitLab instance does not expose automatic_rebase_enabled and the source branch is behind the target, so automatic rebase cannot be ruled out\n' \
+    "$URL" >&2
+  printf 'action: bring the branch up to current %s and re-run validation\n' \
+    "$FM_PR_INSPECTED_DEFAULT" >&2
+  return 1
 }
 
 FM_GITHUB_STATE=
