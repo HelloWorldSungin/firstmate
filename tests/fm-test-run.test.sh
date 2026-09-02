@@ -15,6 +15,20 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+# The CI workflow contract case parses YAML with ruby and reads the result with
+# python3, neither of which bin/fm-bootstrap.sh installs. Announce the shortfall
+# on the first output line so bin/fm-test-run.sh's detect_gate_skip records this
+# file as a gate skip instead of an indistinguishable full pass. Every case that
+# does not need those interpreters still runs below.
+OPTIONAL_INTERPRETERS_MISSING=
+for interp in ruby python3; do
+  command -v "$interp" >/dev/null 2>&1 && continue
+  OPTIONAL_INTERPRETERS_MISSING="${OPTIONAL_INTERPRETERS_MISSING:+$OPTIONAL_INTERPRETERS_MISSING }$interp"
+done
+[ -z "$OPTIONAL_INTERPRETERS_MISSING" ] || printf \
+  'skip: optional interpreters not installed (%s); the CI workflow contract case does not run\n' \
+  "$OPTIONAL_INTERPRETERS_MISSING"
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -674,9 +688,13 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
+  local title='Herdr CI family-run step times out at 20 min under a 75 min job backstop'
   command -v ruby >/dev/null 2>&1 \
     || { printf 'ok - %s # skip ruby not found (optional YAML parser is not installed by bin/fm-bootstrap.sh)\n' \
-         "Herdr CI family-run step times out at 20 min under a 75 min job backstop"; exit 0; }
+         "$title"; return 0; }
+  command -v python3 >/dev/null 2>&1 \
+    || { printf 'ok - %s # skip python3 not found (optional JSON reader is not installed by bin/fm-bootstrap.sh)\n' \
+         "$title"; return 0; }
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -702,7 +720,7 @@ puts JSON.generate(
     || fail "family-run step timeout must be 20 minutes, got $step_timeout"
   [ "$step_timeout" -lt "$job_timeout" ] \
     || fail "family-run step timeout must be below the job backstop"
-  pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
+  pass "$title"
 }
 
 test_aggregate_json() {

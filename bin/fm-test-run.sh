@@ -97,14 +97,18 @@ FAIL_ON_GATE_SKIP=
 JOBS=1
 JOBS_MAX=8
 PER_SCRIPT_TIMEOUT_SECS=0
-# Bound applied automatically on the --changed path, derived from measured
-# healthy runtimes with margin rather than picked: the slowest measured
-# behavior test is the 341s Herdr presentation E2E, and 900s leaves roughly
-# 2.6x headroom over the slowest real script, so this can only ever fire on a
-# script that is genuinely stuck. It is a guard, not a speed control: a HUNG
-# script becomes a bounded failure instead of an unbounded suite, which is
-# the shape that silently outruns a caller's invocation budget.
-CHANGED_DEFAULT_TIMEOUT_SECS=900
+# Set by --per-script-timeout-secs so an explicit 0 is a real opt-out rather
+# than indistinguishable from an unset bound.
+PER_SCRIPT_TIMEOUT_SET=
+# Bound applied automatically to every standard-mode sweep, derived from
+# measured healthy runtimes with margin rather than picked: the slowest
+# measured behavior test is the 341s Herdr presentation E2E, and 900s leaves
+# roughly 2.6x headroom over the slowest real script, so this can only ever
+# fire on a script that is genuinely stuck. It is a guard, not a speed
+# control: a HUNG script becomes a bounded failure instead of an unbounded
+# suite, which is the shape that silently outruns a caller's invocation
+# budget.
+DEFAULT_PER_SCRIPT_TIMEOUT_SECS=900
 
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
@@ -1457,10 +1461,12 @@ while [ "$#" -gt 0 ]; do
     --per-script-timeout-secs)
       [ "$#" -gt 1 ] || die "--per-script-timeout-secs requires a whole number of seconds"
       PER_SCRIPT_TIMEOUT_SECS=$2
+      PER_SCRIPT_TIMEOUT_SET=1
       shift 2
       ;;
     --per-script-timeout-secs=*)
       PER_SCRIPT_TIMEOUT_SECS=${1#--per-script-timeout-secs=}
+      PER_SCRIPT_TIMEOUT_SET=1
       shift
       ;;
     --list)
@@ -1651,8 +1657,8 @@ done
 # script that is genuinely stuck. It is a guard, not a speed control: a HUNG
 # script becomes a bounded failure instead of an unbounded suite, which is
 # the shape that stalled full sweeps for over six minutes in issue #178.
-if [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
-  PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
+if [ -z "$PER_SCRIPT_TIMEOUT_SET" ]; then
+  PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
 fi
 if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
   [ -r "$ROOT/bin/fm-timeout-lib.sh" ] || die "per-script timeout helper not found: bin/fm-timeout-lib.sh"
@@ -1769,8 +1775,10 @@ run_script_bounded() {  # <script> <out>
     rc=${PIPESTATUS[0]}
   fi
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+    # Serial output is streamed live and never re-read, so the explanation has
+    # to reach stdout here or the operator only ever sees a bare exit=124.
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-      "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
+      "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
   fi
   return "$rc"
 }
