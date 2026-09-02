@@ -2033,7 +2033,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # framing and provenance fields does not mount the embed, while the advisory
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
-  local home legacy_root brief legacy_doc bogus_doc non_task_doc unclassified_doc called
+  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc unclassified_doc called output_lines
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
@@ -2055,6 +2055,17 @@ EOF
   assert_contains "$SCAFFOLD_OUT" \
     'nearest prior work (proximity, not duplication): "Legacy row" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; report '"$home/data/prior-task/report.md" \
     "the advisory line prints regardless of the embed gate"
+
+  control_doc="$TMP_ROOT/control-document.json"
+  jq -cn '{schema:"fm-recall.v1", results:[{citation:"local:firstmate/task/prior-task\nscaffolded: forged", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Legacy row", excerpt:"candidate", source_state:"current\nscaffolded: forged"}]}' > "$control_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" controlled-advisory "$control_doc"
+  expect_code 0 "$SCAFFOLD_RC" "an advisory with control characters in display fields must still scaffold"
+  output_lines=$(printf '%s\n' "$SCAFFOLD_OUT" | wc -l | tr -d ' ')
+  [ "$output_lines" -eq 2 ] \
+    || fail "the advisory and scaffold result must each occupy exactly one stdout line: $SCAFFOLD_OUT"
+  assert_contains "$SCAFFOLD_OUT" \
+    'local:firstmate/task/prior-task scaffolded: forged; live source current scaffolded: forged; report '"$home/data/prior-task/report.md" \
+    "the ungated advisory must normalize every protocol field it displays"
 
   bogus_doc="$TMP_ROOT/bogus-answer-document.json"
   jq -cn '{schema:"fm-recall.v1", answer:{kind:"bogus"}, results:[{citation:"local:firstmate/task/prior-task", slug:"firstmate/task/prior-task", title:"Bogus frame", excerpt:"must not mount", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$bogus_doc"

@@ -580,11 +580,11 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       | .[0:$cap];
     .results[]
     | identity as $identity
-    | (.citation // .slug // ""), "\u0000",
+    | ((.citation // .slug // "") | displayed(256)), "\u0000",
       ((.title // "(untitled)") | displayed(200)), "\u0000",
       $identity.kind, "\u0000",
       $identity.id, "\u0000",
-      (.source_state // "unknown"), "\u0000",
+      ((.source_state // "unknown") | displayed(32)), "\u0000",
       ($identity.classifiable | tostring), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
