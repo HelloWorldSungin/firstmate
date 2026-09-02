@@ -42,6 +42,14 @@
 #                   selected script is in the proven-isolated set
 #                   (bin/fm-test-isolation-proof.sh --list). Cap is 8. Stateful
 #                   families never schedule under --jobs.
+#   --per-script-timeout-secs N
+#                   terminate a script that runs longer than N seconds and
+#                   record it as exit 124 (0 disables the default). Every
+#                   standard-mode sweep applies 900s automatically: no real
+#                   script approaches it, so it only converts a HUNG script
+#                   into a bounded failure. A hung suite is the shape that
+#                   silently outruns a caller's invocation budget, so the
+#                   bound is a guard, not a speed control.
 #   -h, --help      print this header
 #
 # Per-script machine-parseable markers (stdout):
@@ -88,6 +96,15 @@ EXCLUDE_FAMILIES=()
 FAIL_ON_GATE_SKIP=
 JOBS=1
 JOBS_MAX=8
+PER_SCRIPT_TIMEOUT_SECS=0
+# Bound applied automatically on the --changed path, derived from measured
+# healthy runtimes with margin rather than picked: the slowest measured
+# behavior test is the 341s Herdr presentation E2E, and 900s leaves roughly
+# 2.6x headroom over the slowest real script, so this can only ever fire on a
+# script that is genuinely stuck. It is a guard, not a speed control: a HUNG
+# script becomes a bounded failure instead of an unbounded suite, which is
+# the shape that silently outruns a caller's invocation budget.
+CHANGED_DEFAULT_TIMEOUT_SECS=900
 
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
@@ -1437,6 +1454,15 @@ while [ "$#" -gt 0 ]; do
       JOBS=${1#--jobs=}
       shift
       ;;
+    --per-script-timeout-secs)
+      [ "$#" -gt 1 ] || die "--per-script-timeout-secs requires a whole number of seconds"
+      PER_SCRIPT_TIMEOUT_SECS=$2
+      shift 2
+      ;;
+    --per-script-timeout-secs=*)
+      PER_SCRIPT_TIMEOUT_SECS=${1#--per-script-timeout-secs=}
+      shift
+      ;;
     --list)
       LIST_ONLY=1
       shift
@@ -1538,6 +1564,10 @@ esac
 [ "$JOBS" -ge 1 ] || die "--jobs must be >= 1"
 [ "$JOBS" -le "$JOBS_MAX" ] || die "--jobs is capped at $JOBS_MAX (got $JOBS)"
 
+case "$PER_SCRIPT_TIMEOUT_SECS" in
+  ''|*[!0-9]*) die "--per-script-timeout-secs requires a whole number of seconds (0 disables)" ;;
+esac
+
 case "${MODE:-}" in
   all)
     select_all
@@ -1612,6 +1642,23 @@ for s in "${SCRIPTS[@]}"; do
   [ -f "$s" ] || die "test script not found: $s"
   [ -x "$s" ] || [ -r "$s" ] || die "test script not readable: $s"
 done
+
+# A hung script is what silently outruns the caller's invocation budget, so
+# every standard-mode sweep applies a generous per-script bound by default.
+# The bound is opt-out (--per-script-timeout-secs 0) and authoritative when
+# set; 900s leaves roughly 2.6x headroom over the slowest measured healthy
+# script (the 341s Herdr presentation E2E), so this only ever fires on a
+# script that is genuinely stuck. It is a guard, not a speed control: a HUNG
+# script becomes a bounded failure instead of an unbounded suite, which is
+# the shape that stalled full sweeps for over six minutes in issue #178.
+if [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
+  PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
+fi
+if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+  [ -r "$ROOT/bin/fm-timeout-lib.sh" ] || die "per-script timeout helper not found: bin/fm-timeout-lib.sh"
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+fi
 
 # --jobs N>1 only for the proven-isolated set. Stateful families stay serial.
 if [ "$JOBS" -gt 1 ]; then
@@ -1701,6 +1748,33 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+# Run <script>, capturing output to <out>. When PER_SCRIPT_TIMEOUT_SECS is
+# positive, a script that outruns it is terminated and reported as exit 124:
+# a hung script must become a bounded failure rather than an unbounded suite,
+# because an unbounded suite is what silently outruns a caller's budget.
+# Caller must have `set +e` active so a non-zero return only seeds `$?` for the
+# follow-up rc=$? assignment; this function does not re-enable errexit, which
+# would leak errexit to the caller and turn a failing test into a script exit.
+run_script_bounded() {  # <script> <out>
+  local script=$1 out=$2 rc
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+    # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
+    # Expansion is intentionally deferred to the child bash passed to -c.
+    # shellcheck disable=SC2016
+    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+      'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
+    rc=$?
+  else
+    bash "$script" 2>&1 | tee "$out"
+    rc=${PIPESTATUS[0]}
+  fi
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+    printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+      "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
+  fi
+  return "$rc"
+}
+
 run_one_serial() {
   local script=$1
   local base family expected out begin_iso begin_ms end_ms end_iso duration rc
@@ -1716,9 +1790,8 @@ run_one_serial() {
 
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
-  # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
-  rc=${PIPESTATUS[0]}
+  run_script_bounded "$script" "$out"
+  rc=$?
   set -e
   : "${rc:=1}"
 
@@ -1824,8 +1897,16 @@ else
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
+      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+        fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$work/output" 2>&1
+      else
+        bash "$script" >"$work/output" 2>&1
+      fi
       rc=$?
+      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+        printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+          "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
+      fi
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))
       if [ "$duration" -lt 0 ]; then
