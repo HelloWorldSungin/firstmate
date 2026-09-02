@@ -463,6 +463,17 @@ case "${1:-} ${2:-}" in
   "api graphql")
     printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
     case_dir=${FM_TEST_WT%/wt}
+    if [ -n "${FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL:-}" ]; then
+      count_file="$case_dir/graphql-count"
+      count=0
+      [ ! -f "$count_file" ] || count=$(cat "$count_file")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$count_file"
+      if [ "$count" -eq "$FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL" ]; then
+        "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+          refs/heads/main "$FM_TEST_ADVANCED_BASE"
+      fi
+    fi
     number=
     for arg in "$@"; do
       case "$arg" in number=*) number=${arg#number=} ;; esac
@@ -1044,6 +1055,32 @@ test_default_tip_move_refuses_both_forges() {
     esac
   done
   pass "fm-pr-merge rechecks the inspected default tip for both providers"
+}
+
+test_final_github_preflight_cannot_reopen_default_tip_race() {
+  local case_dir head new_tip old_tip rc
+  case_dir=$(make_case final-preflight-default-tip-race)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+  old_tip=$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)
+  new_tip=$(prepare_advanced_default "$case_dir")
+
+  set +e
+  FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL=2 FM_TEST_ADVANCED_BASE=$new_tip \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/83 \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "final-preflight-default-tip-race: moving main should refuse"
+  [ "$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)" = "$new_tip" ] \
+    || fail "final-preflight-default-tip-race: the GraphQL preflight did not advance main"
+  assert_grep "current default branch main moved from inspected tip $old_tip to live tip $new_tip before merge" \
+    "$case_dir/stderr" \
+    "final-preflight-default-tip-race: the final tip check missed the preflight move"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "final-preflight-default-tip-race: the forge ran after main moved during preflight"
+  pass "GitHub preflight cannot reopen the final default-tip race"
 }
 
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck() {
@@ -2489,6 +2526,7 @@ test_non_allowlisted_repo_arg_refuses_before_recording
 test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
+test_final_github_preflight_cannot_reopen_default_tip_race
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck
 test_body_file_materialization_rechecks_immediate_execution
 test_non_allowlisted_short_args_refuse_before_recording
