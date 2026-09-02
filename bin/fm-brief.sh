@@ -475,7 +475,7 @@ BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 # of them can stop the scaffold. The wrapper's exit codes keep never-started
 # (5) apart from asked-and-unanswered (3); the diagnostic names which.
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
-  local doc rc=0 detail citation="" title="" id="" state="" report="" rows frame_bytes rendered cap_state
+  local doc rc=0 detail citation="" title="" id="" state="" record="" report="" rows frame_bytes rendered cap_state
   local candidate_citation candidate_title candidate_id candidate_state
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
@@ -508,8 +508,9 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       && IFS= read -r -d '' candidate_title \
       && IFS= read -r -d '' candidate_id \
       && IFS= read -r -d '' candidate_state; do
-    report="$FM_HOME/data/$candidate_id/report.md"
-    [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
+    record="$FM_HOME/data/$candidate_id"
+    report="$record/report.md"
+    [ ! -L "$record" ] && [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
     citation=$candidate_citation
     title=$candidate_title
     id=$candidate_id
