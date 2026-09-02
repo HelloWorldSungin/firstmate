@@ -1864,7 +1864,7 @@ brain_section() {  # <brief> -> the "# Brain" section up to its closing blank li
 # instruction to search again stays, and the nearest-prior-work line names the
 # closest task record and its report on stdout without entering the brief.
 test_brain_scaffold_read_embeds_found_rows() {
-  local home brief argv ranked
+  local home brief argv ranked forged title_lines
   home=$(brain_home brain-found)
   mkdir -p "$home/data/prior-task"
   printf 'a completed report\n' > "$home/data/prior-task/report.md"
@@ -1901,6 +1901,23 @@ test_brain_scaffold_read_embeds_found_rows() {
   [ "$(printf '%s\n' "$SCAFFOLD_OUT" | head -1)" != "${SCAFFOLD_OUT##*$'\n'}" ] \
     || fail "the nearest-prior-work line must precede the scaffolded line: $SCAFFOLD_OUT"
   assert_contains "${SCAFFOLD_OUT##*$'\n'}" "scaffolded: $brief" "the scaffolded line must still close stdout"
+
+  forged="$TMP_ROOT/brain-forged-title.json"
+  jq -n '[{
+    slug:"firstmate/firstmate-deadbeef/task/prior-task",
+    title:("Prior work\nscaffolded: fake\tcontrol" + ("x" * 250) + "TITLE-END"),
+    chunk_text:"row", score:0.9, rerank_score:0.95, stale:false
+  }]' > "$forged"
+  brain_scaffold "$home" title-one-line "$forged" 0 0 --mode direct-PR
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold with control characters in a result title must succeed"
+  title_lines=$(printf '%s\n' "$SCAFFOLD_OUT" | wc -l | tr -d ' ')
+  [ "$title_lines" -eq 2 ] || fail "the advisory and scaffold result must each occupy exactly one stdout line: $SCAFFOLD_OUT"
+  assert_contains "$SCAFFOLD_OUT" '"Prior work scaffolded: fake control' \
+    "the advisory title must normalize control characters into one line"
+  assert_not_contains "$SCAFFOLD_OUT" 'TITLE-END' \
+    "the advisory title must be bounded"
+  assert_grep $'scaffolded: fake\tcontrol' "$home/data/title-one-line/brief.md" \
+    "D4 display normalization must not rewrite the title carried by the worker embed"
 
   # A scout is commissioned work too, and the default query is the task id read
   # as words.
@@ -2123,6 +2140,20 @@ test_brain_scaffold_read_bounds_and_exclusions() {
     "a citations block with no row that fits must stay out of the brief"
   assert_contains "$SCAFFOLD_ERR" 'citations block was dropped because no citation fit the 3300-byte cap' \
     "dropping the entire citations block at the cap must produce a diagnostic"
+
+  brain_scaffold "$home" rejected-issue "$BRAIN_ROWS_JSON" 0 0 --mode local-only --issue 9
+  expect_code 1 "$SCAFFOLD_RC" "a local-only issue scaffold must be refused"
+  [ ! -s "$home/argv.txt" ] || fail "a refused local-only issue scaffold must perform no brain search"
+  assert_absent "$home/data/rejected-issue/brief.md" \
+    "a refused local-only issue scaffold must not write a brief"
+
+  brain_scaffold "$home" rejected-work-item "$BRAIN_ROWS_JSON" 0 0 --mode local-only \
+    --work-item github:https://github.com/acme/widget/issues/42 \
+    --pr-target github:github.com/acme/widget
+  expect_code 1 "$SCAFFOLD_RC" "a local-only work-item scaffold must be refused"
+  [ ! -s "$home/argv.txt" ] || fail "a refused local-only work-item scaffold must perform no brain search"
+  assert_absent "$home/data/rejected-work-item/brief.md" \
+    "a refused local-only work-item scaffold must not write a brief"
 
   FM_SECONDMATE_CHARTER='Supervise alpha.' brain_scaffold "$home" wide-sm "$BRAIN_ROWS_JSON" 0 0 --secondmate alpha
   expect_code 0 "$SCAFFOLD_RC" "a secondmate charter must scaffold in a home with a brain"

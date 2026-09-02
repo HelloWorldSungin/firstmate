@@ -349,6 +349,17 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship or design briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
+
+# Issue traceability rides the PR, so it is meaningless without one.
+if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
+  echo "error: --issue requires a PR-based delivery mode" >&2
+  exit 1
+fi
+if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
+  echo "error: --work-item requires a PR-based delivery mode" >&2
+  exit 1
+fi
+
 ID=${POS[0]}
 REPO=${POS[1]:-}
 
@@ -517,12 +528,21 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     state=$candidate_state
     break
   done < <(printf '%s' "$doc" | jq -j '
+    def displayed($cap):
+      tostring
+      | explode
+      | map(if (. < 32 or (. >= 127 and . <= 159) or . == 8232 or . == 8233) then 32 else . end)
+      | implode
+      | gsub("\\s+"; " ")
+      | sub("^ "; "")
+      | sub(" $"; "")
+      | .[0:$cap];
     .results[]
     | select(.source_kind == "task")
     | select((.source_id | type) == "string")
     | select(.source_id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"))
     | (.citation // .slug // ""), "\u0000",
-      (.title // "(untitled)"), "\u0000",
+      ((.title // "(untitled)") | displayed(200)), "\u0000",
       .source_id, "\u0000",
       (.source_state // "unknown"), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
@@ -911,16 +931,6 @@ fi
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
-# Issue traceability rides the PR, so it is meaningless without one.
-if [ "$ISSUE_SET" -eq 1 ] && [ "$MODE" = local-only ]; then
-  echo "error: --issue requires a PR-based delivery mode" >&2
-  exit 1
-fi
-if [ "${#WORK_ITEMS[@]}" -gt 0 ] && [ "$MODE" = local-only ]; then
-  echo "error: --work-item requires a PR-based delivery mode" >&2
-  exit 1
-fi
-
 DESIGN_SECTION=
 DESIGN_DOD=
 IFS= read -r -d '' DECISION_RULE <<'EOF' || true
