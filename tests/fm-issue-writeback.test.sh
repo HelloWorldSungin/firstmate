@@ -74,6 +74,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_git_identity fmtest fmtest@example.invalid
 
 COMMENT="$ROOT/bin/fm-issue-comment.sh"
 BOARD="$ROOT/bin/fm-project-board.sh"
