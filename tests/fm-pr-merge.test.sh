@@ -101,6 +101,7 @@ for arg in "$@"; do
   case "$arg" in
     ls-remote) rewrite=1; ls_remote=1 ;;
     fetch) rewrite=1 ;;
+    merge-base) [ -z "${FM_TEST_FAIL_MERGE_BASE:-}" ] || exit 2 ;;
   esac
 done
 if [ "$rewrite" -eq 1 ]; then
@@ -385,6 +386,7 @@ case "${1:-} ${2:-}" in
     ;;
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
+    [ ! -e "$case_dir/glab-confirm-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
       exit 1
     fi
@@ -538,6 +540,10 @@ case "${1:-} ${2:-}" in
       esac
     done
     [ -n "$number" ] || exit 2
+    if [ -n "${FM_TEST_GH_FAIL_ON_GRAPHQL:-}" ] \
+      && [ "$count" -eq "$FM_TEST_GH_FAIL_ON_GRAPHQL" ]; then
+      exit 1
+    fi
     if [ -e "$case_dir/github-merge-called-$number" ]; then
       [ -z "${FM_TEST_GH_POST_STATE_UNAVAILABLE:-}" ] || exit 1
       state=${FM_TEST_GH_POST_STATE:-MERGED}
@@ -548,6 +554,10 @@ case "${1:-} ${2:-}" in
     else
       [ -z "${FM_TEST_GH_STATE_UNAVAILABLE:-}" ] || exit 1
       state=${FM_TEST_GH_PRE_STATE:-OPEN}
+      if [ -n "${FM_TEST_GH_MERGED_ON_GRAPHQL:-}" ] \
+        && [ "$count" -ge "$FM_TEST_GH_MERGED_ON_GRAPHQL" ]; then
+        state=MERGED
+      fi
       queue_enabled=${FM_TEST_GH_QUEUE_ENABLED:-false}
       if [ -n "${FM_TEST_GH_QUEUE_ENABLE_MARKER:-}" ] \
         && [ -e "$FM_TEST_GH_QUEUE_ENABLE_MARKER" ]; then
@@ -1258,7 +1268,7 @@ test_github_already_merged_recovers_with_deleted_base_ref() {
 
   set +e
   FM_TEST_GH_PRE_STATE=MERGED FM_TEST_GH_BASE_REF_DELETED=1 \
-    FM_TEST_GH_QUEUE_ENABLED=unknown \
+    FM_TEST_GH_QUEUE_ENABLED=unknown FM_TEST_GH_FAIL_ON_GRAPHQL=2 \
     run_pr_merge "$case_dir" task-x1 "$url" \
       >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
@@ -1272,6 +1282,54 @@ test_github_already_merged_recovers_with_deleted_base_ref() {
   assert_no_grep 'immediate execution state is unknown' "$case_dir/stderr" \
     "github-already-merged-deleted-base: open-only state blocked recovery"
   pass "an already merged GitHub request recovers after its base ref is deleted"
+}
+
+test_preflight_merged_recovery_skips_confirmation_for_both_forges() {
+  local case_dir rc url
+  url=https://github.com/example/repo/pull/93
+  case_dir=$(make_home_case github-merged-during-preflight remote)
+  add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+
+  set +e
+  FM_TEST_GH_MERGED_ON_GRAPHQL=2 FM_TEST_GH_FAIL_ON_GRAPHQL=3 \
+    FM_TEST_HOME="$case_dir/home" \
+    run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-merged-during-preflight: recovery should succeed"
+  assert_grep "done [key=merged-task-x1]: merged task-x1 $url" \
+    "$case_dir/state/parent-replies.status" \
+    "github-merged-during-preflight: recovery did not report the landed merge"
+  [ "$(cat "$case_dir/graphql-count")" -eq 2 ] \
+    || fail "github-merged-during-preflight: recovery redundantly confirmed the merged state"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "github-merged-during-preflight: recovery invoked a second merge"
+
+  case_dir=$(make_gitlab_case gitlab-merged-during-preflight state=merged)
+  mkdir -p "$case_dir/home"
+  printf '%s\n' mate-x >"$case_dir/home/.fm-secondmate-home"
+  printf 'schema=fm-secondmate-parent.v1\nroute=remote\n' \
+    >"$case_dir/home/.fm-secondmate-parent"
+  printf '{"state":"opened","target_branch":"main"}\n' >"$case_dir/mr-pre.json"
+  : >"$case_dir/glab-confirm-fails"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitlab-merged-during-preflight: recovery should succeed"
+  assert_grep "done [key=merged-task-x1]: merged task-x1 $MR_URL" \
+    "$case_dir/state/parent-replies.status" \
+    "gitlab-merged-during-preflight: recovery did not report the landed merge"
+  assert_no_grep ' mr view ' "$case_dir/glab.log" \
+    "gitlab-merged-during-preflight: recovery redundantly confirmed the merged state"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-merged-during-preflight: recovery invoked a second merge"
+  pass "both forges report a preflight-observed merge without redundant confirmation"
 }
 
 test_target_and_default_transition_names_current_default_for_both_forges() {
@@ -2242,14 +2300,43 @@ test_gitlab_allowlisted_args_forwarded() {
 
 test_gitlab_automatic_rebase_setting_handles_version_boundary() {
   local case_dir expected expected_rc name rc
-  for name in enabled unknown pre-19.4-merge-behind pre-19.4-rebase-behind \
-    pre-19.4-ff-current current-absent invalid-version; do
+  for name in enabled-ff-behind enabled-ff-current enabled-merge-behind \
+    enabled-unknown-method enabled-invalid-method enabled-unknown-ancestry \
+    unknown pre-19.4-merge-behind pre-19.4-rebase-behind pre-19.4-ff-current \
+    current-absent invalid-version; do
     case_dir=$(make_gitlab_case "gitlab-auto-rebase-$name")
     expected_rc=1
     case "$name" in
-      enabled)
-        printf '{"automatic_rebase_enabled":true}\n' >"$case_dir/project.json"
+      enabled-ff-behind)
+        printf '{"automatic_rebase_enabled":true,"merge_method":"ff"}\n' \
+          >"$case_dir/project.json"
+        advance_default_with_empty_commit "$case_dir"
         expected='GitLab project setting automatic_rebase_enabled is enabled'
+        ;;
+      enabled-ff-current)
+        printf '{"automatic_rebase_enabled":true,"merge_method":"ff"}\n' \
+          >"$case_dir/project.json"
+        expected_rc=0
+        ;;
+      enabled-merge-behind)
+        printf '{"automatic_rebase_enabled":true,"merge_method":"merge"}\n' \
+          >"$case_dir/project.json"
+        advance_default_with_empty_commit "$case_dir"
+        expected_rc=0
+        ;;
+      enabled-unknown-method)
+        printf '{"automatic_rebase_enabled":true}\n' >"$case_dir/project.json"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        ;;
+      enabled-invalid-method)
+        printf '{"automatic_rebase_enabled":true,"merge_method":"unknown"}\n' \
+          >"$case_dir/project.json"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        ;;
+      enabled-unknown-ancestry)
+        printf '{"automatic_rebase_enabled":true,"merge_method":"rebase_merge"}\n' \
+          >"$case_dir/project.json"
+        expected='GitLab project setting automatic_rebase_enabled could not be determined'
         ;;
       unknown)
         : >"$case_dir/glab-project-fails"
@@ -2284,15 +2371,20 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
     esac
 
     set +e
-    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    if [ "$name" = enabled-unknown-ancestry ]; then
+      FM_TEST_FAIL_MERGE_BASE=1 run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+    else
+      run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+    fi
     rc=$?
     set -e
 
     expect_code "$expected_rc" "$rc" "gitlab-auto-rebase-$name: unexpected merge result"
     if [ "$expected_rc" -eq 0 ]; then
       assert_grep ' mr merge ' "$case_dir/glab.log" \
-        "gitlab-auto-rebase-$name: a supported pre-19.4 project did not merge"
+        "gitlab-auto-rebase-$name: a project outside the rebase risk window did not merge"
     else
       assert_grep "$expected" "$case_dir/stderr" \
         "gitlab-auto-rebase-$name: refusal did not name the project setting"
@@ -2897,7 +2989,7 @@ test_distinct_merged_prs_keep_distinct_wakes() {
 }
 
 test_uncommitted_marker_retry_is_never_silent() {
-  local case_dir url count
+  local case_dir url count rc
   url=https://github.com/example/repo/pull/67
   case_dir=$(make_home_case uncommitted-wake-retry)
   add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -2918,9 +3010,13 @@ SH
   export FM_TEST_REAL_MV
   FM_TEST_REAL_MV=$(command -v mv)
 
+  set +e
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
-    >"$case_dir/stdout-1" 2>"$case_dir/stderr-1" \
-    || fail "uncommitted-wake-retry: landed merge was reported as failed"
+    >"$case_dir/stdout-1" 2>"$case_dir/stderr-1"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "uncommitted-wake-retry: an unrecorded landed outcome should fail loudly"
   assert_grep 'could not record the outcome' "$case_dir/stderr-1" \
     "uncommitted-wake-retry: failed marker commit was not loud"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
@@ -2959,7 +3055,7 @@ test_secondmate_without_parent_binding_is_loud() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "unbound-secondmate: the merge itself landed and must not be reported as failed"
+  expect_code 1 "$rc" "unbound-secondmate: an unreported landed merge should fail loudly"
   assert_grep 'could not report it upward' "$case_dir/stderr" \
     "unbound-secondmate: a merge that could not be reported upward said nothing about it"
   assert_absent "$case_dir/state/.wake-queue" \
@@ -2986,6 +3082,7 @@ test_default_tip_move_refuses_both_forges
 test_forge_oid_mismatch_and_unknown_refuse_before_merge
 test_non_default_targets_refuse_both_forges
 test_github_already_merged_recovers_with_deleted_base_ref
+test_preflight_merged_recovery_skips_confirmation_for_both_forges
 test_target_and_default_transition_names_current_default_for_both_forges
 test_final_github_preflight_cannot_reopen_default_tip_race
 test_final_gitlab_preflight_cannot_reopen_default_tip_race

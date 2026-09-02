@@ -549,7 +549,7 @@ FIELDS
 }
 
 gitlab_require_attested_merge() {
-  local encoded_path json automatic_rebase merge_method
+  local encoded_path json automatic_rebase merge_method ancestry_rc
   local version_json version_fields line server_major='' server_minor=''
   local total=0 named=0
   encoded_path=$(printf '%s' "$FM_PR_PATH" | sed 's|/|%2F|g')
@@ -575,6 +575,42 @@ gitlab_require_attested_merge() {
     return 1
   fi
   if [ "$automatic_rebase" = true ]; then
+    if ! merge_method=$(printf '%s' "$json" | jq -r '
+        if type == "object" and (.merge_method | type) == "string"
+        then .merge_method else error("merge_method is unreadable") end' \
+        2>/dev/null); then
+      printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+        "$URL" >&2
+      printf 'action: bring the branch up to current %s and re-run validation\n' \
+        "$FM_PR_INSPECTED_DEFAULT" >&2
+      return 1
+    fi
+    case "$merge_method" in
+      merge) return 0 ;;
+      rebase_merge|ff) ;;
+      *)
+        printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+          "$URL" >&2
+        printf 'action: bring the branch up to current %s and re-run validation\n' \
+          "$FM_PR_INSPECTED_DEFAULT" >&2
+        return 1
+        ;;
+    esac
+    ancestry_rc=0
+    git -C "$WT" merge-base --is-ancestor \
+      "$FM_PR_INSPECTED_BASE" "$FM_PR_INSPECTED_HEAD" 2>/dev/null \
+      || ancestry_rc=$?
+    case "$ancestry_rc" in
+      0) return 0 ;;
+      1) ;;
+      *)
+        printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+          "$URL" >&2
+        printf 'action: bring the branch up to current %s and re-run validation\n' \
+          "$FM_PR_INSPECTED_DEFAULT" >&2
+        return 1
+        ;;
+    esac
     printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled is enabled and can rebase the source branch at merge time\n' \
       "$URL" >&2
     printf 'action: bring the branch up to current %s and re-run validation\n' \
@@ -903,6 +939,7 @@ verify_inspected_default_tip() {
   fi
 }
 
+merge_mutation_accepted=0
 case "$PROVIDER" in
   github)
     github_preflight_rc=0
@@ -971,6 +1008,7 @@ case "$PROVIDER" in
             --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" \
             --match-head-commit "$FM_PR_INSPECTED_HEAD" \
             "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
+          merge_mutation_accepted=1
           ;;
         3) ;;
         *) exit 1 ;;
@@ -978,9 +1016,11 @@ case "$PROVIDER" in
       cleanup_materialized_body_files
       trap - EXIT HUP INT TERM
     fi
-    github_confirm_rc=0
-    github_confirm_merged || github_confirm_rc=$?
-    case "$github_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+    if [ "$merge_mutation_accepted" -eq 1 ]; then
+      github_confirm_rc=0
+      github_confirm_merged || github_confirm_rc=$?
+      case "$github_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+    fi
     ;;
   gitlab)
     if ! gitlab_read_initial_state; then
@@ -1024,10 +1064,13 @@ case "$PROVIDER" in
           # the conditions above are what authorize the merge.
           GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
             --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
+          merge_mutation_accepted=1
         fi
-        gitlab_confirm_rc=0
-        gitlab_confirm_merged || gitlab_confirm_rc=$?
-        case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+        if [ "$merge_mutation_accepted" -eq 1 ]; then
+          gitlab_confirm_rc=0
+          gitlab_confirm_merged || gitlab_confirm_rc=$?
+          case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+        fi
         ;;
     esac
     ;;
@@ -1037,9 +1080,9 @@ case "$PROVIDER" in
     ;;
 esac
 
-# Reached only after the forge confirmed the merge landed: set -e exits on a
-# refused, queued, pending, unreadable, or failed merge above while its existing
-# poll remains armed.
+# Reached only after a preflight or post-mutation forge read reported the merge
+# landed: set -e exits on a refused, queued, pending, unreadable, or failed merge
+# above while its existing poll remains armed.
 outcome_rc=0
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self || outcome_rc=$?
 case "$outcome_rc" in
@@ -1047,9 +1090,11 @@ case "$outcome_rc" in
   3)
     printf 'actionable: merged %s but could not report it upward: this home has no readable secondmate identity or parent binding (.fm-secondmate-home, .fm-secondmate-parent)\n' \
       "$URL" >&2
+    exit 1
     ;;
   *)
     printf 'actionable: merged %s but could not record the outcome for supervision\n' "$URL" >&2
+    exit 1
     ;;
 esac
 
