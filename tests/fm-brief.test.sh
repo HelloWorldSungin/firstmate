@@ -2022,7 +2022,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
   brain_scaffold "$home" slow-ship "$BRAIN_ROWS_JSON" 0 40 --mode no-mistakes
   elapsed=$(( $(date +%s) - start ))
   expect_code 0 "$SCAFFOLD_RC" "an overrunning search must still scaffold"
-  [ "$elapsed" -lt 30 ] || fail "the scaffold must stop waiting at the pinned bound (took ${elapsed}s)"
+  [ "$elapsed" -le 15 ] || fail "the scaffold must stop within the pinned bound plus kill grace (took ${elapsed}s)"
   [ "$elapsed" -ge 9 ] || fail "the pinned bound is ten seconds, not shorter (took ${elapsed}s)"
   assert_no_grep 'scaffold time' "$home/data/slow-ship/brief.md" "an overrun must not mount an embed"
   assert_contains "$SCAFFOLD_ERR" 'did not answer within' "an overrun must be reported as the brain not answering in time"
