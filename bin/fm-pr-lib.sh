@@ -426,7 +426,8 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     return 2
   fi
   while IFS= read -r -d '' path; do
-    if git -C "$wt" diff --quiet --no-renames "$merge_base" "$head" -- "$path"; then
+    if git --literal-pathspecs -C "$wt" diff --quiet --no-renames \
+      "$merge_base" "$head" -- "$path"; then
       branch_diff_status=0
     else
       branch_diff_status=$?
@@ -436,7 +437,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
       1) continue ;;
       *) inspection_failed=1; break ;;
     esac
-    if ! raw=$(git -C "$wt" diff --raw --no-abbrev --no-renames \
+    if ! raw=$(git --literal-pathspecs -C "$wt" diff --raw --no-abbrev --no-renames \
       "$merge_base" "$base" -- "$path") || [ -z "$raw" ]; then
       inspection_failed=1
       break
@@ -444,7 +445,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
     raw_meta=${raw%%$'\t'*}
     IFS=' ' read -r old_mode new_mode old_oid new_oid status <<<"${raw_meta#:}"
     case "$status" in A|D|M|T) ;; *) inspection_failed=1; break ;; esac
-    if ! delta=$(git -C "$wt" diff --numstat --no-renames \
+    if ! delta=$(git --literal-pathspecs -C "$wt" diff --numstat --no-renames \
       "$merge_base" "$base" -- "$path"); then
       inspection_failed=1
       break

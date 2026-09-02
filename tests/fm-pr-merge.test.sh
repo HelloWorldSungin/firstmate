@@ -597,6 +597,33 @@ test_stale_pr_refuses_before_merging() {
   pass "fm-pr-merge refuses a stale PR that omits current default-branch content"
 }
 
+test_pathspec_magic_filename_cannot_bypass_stale_refusal() {
+  local case_dir default_wt head rc
+  case_dir=$(make_case stale-pathspec-magic)
+  default_wt="$case_dir/default-pathspec-wt"
+  git clone -q "$case_dir/origin.git" "$default_wt"
+  printf 'published while the PR waited\n' >"$default_wt/:(glob)*"
+  git -C "$default_wt" add -A
+  git -C "$default_wt" commit -qm 'publish pathspec-named content'
+  git -C "$default_wt" push -q origin main
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/79 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stale-pathspec-magic: fm-pr-merge should refuse"
+  assert_grep ':\(glob\)\*: current default adds a regular file containing 1 line absent from the PR head' \
+    "$case_dir/stderr" \
+    "stale-pathspec-magic: refusal did not name the literal pathspec filename"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "stale-pathspec-magic: pathspec interpretation bypassed the stale refusal"
+  pass "literal pathspec filenames cannot bypass stale-base refusal"
+}
+
 test_unavailable_stale_comparison_refuses_before_merging() {
   local case_dir rc
   case_dir=$(make_case unavailable-stale-comparison)
@@ -2169,7 +2196,7 @@ parent_reply_lines() {  # <file> <url>
 }
 
 test_secondmate_merge_reports_upward_once() {
-  local case_dir replies url
+  local advanced case_dir replies url
   url=https://github.com/example/repo/pull/61
   case_dir=$(make_home_case secondmate-merge-reports remote)
   add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
@@ -2184,12 +2211,15 @@ test_secondmate_merge_reports_upward_once() {
   [ "$(wc -l <"$replies")" -eq 1 ] \
     || fail "secondmate-merge-reports: one merge produced more than one upward line"
 
-  # The same merge again: the forge accepts it in this fixture, so only the
-  # at-most-once contract can keep the parent from being told twice.
+  advanced=$(prepare_advanced_default "$case_dir")
+  git --git-dir="$case_dir/origin.git" update-ref refs/heads/main "$advanced"
+
   FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
     >"$case_dir/stdout2" 2>"$case_dir/stderr2" || fail "secondmate-merge-reports: repeat merge failed"
   [ "$(parent_reply_lines "$replies" "$url")" -eq 1 ] \
     || fail "secondmate-merge-reports: a repeat merge of the same PR duplicated the upward line"
+  [ "$(grep -c -F 'pr merge 61 ' "$case_dir/gh.log")" -eq 1 ] \
+    || fail "secondmate-merge-reports: an already merged PR invoked the forge merge again"
   pass "a merge a secondmate home performs itself is reported upward exactly once"
 }
 
@@ -2445,6 +2475,7 @@ test_secondmate_without_parent_binding_is_loud() {
 
 test_records_pr_and_head_before_merging
 test_stale_pr_refuses_before_merging
+test_pathspec_magic_filename_cannot_bypass_stale_refusal
 test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
 test_stale_details_name_presence_content_type_and_mode_losses

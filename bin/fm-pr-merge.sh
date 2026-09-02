@@ -279,13 +279,18 @@ grep -qxF "pr=$URL" "$META" || {
 # Re-read both tips immediately before the guarded merge instead of trusting
 # the earlier recording-time report or the PR's still-green branch-base checks.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
-if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
-  fm_pr_stale_base_report error "$URL"
-  exit 1
-fi
-FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
-FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
-FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
+FM_PR_INSPECTED_HEAD=
+FM_PR_INSPECTED_BASE=
+FM_PR_INSPECTED_DEFAULT=
+inspect_current_default() {
+  if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
+    fm_pr_stale_base_report error "$URL"
+    return 1
+  fi
+  FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
+  FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
+  FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
+}
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
@@ -583,6 +588,7 @@ case "$PROVIDER" in
       merge_args=(--squash)
     fi
     if [ "$github_preflight_rc" -eq 0 ]; then
+      inspect_current_default || exit 1
       github_args=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -632,16 +638,11 @@ case "$PROVIDER" in
     github_confirm_merged || exit 1
     ;;
   gitlab)
+    inspect_current_default || exit 1
     gitlab_verify_rc=0
     gitlab_verify_mergeable || gitlab_verify_rc=$?
     if [ "$gitlab_verify_rc" -eq 3 ]; then
-      if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$PR_NUMBER"; then
-        fm_pr_stale_base_report error "$URL"
-        exit 1
-      fi
-      FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
-      FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
-      FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
+      inspect_current_default || exit 1
       FM_PR_MERGE_LIVE_HEAD=
       gitlab_verify_rc=0
       gitlab_verify_mergeable || gitlab_verify_rc=$?
