@@ -478,7 +478,10 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   local candidate_citation candidate_title candidate_id candidate_state
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
-  command -v jq >/dev/null 2>&1 || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "brain: the search never started: jq is required; the brief carries the retrieval instruction only" >&2
+    return 0
+  fi
   doc=$("$FM_ROOT/bin/fm-recall.sh" search --json --home "$FM_HOME" --scope local \
     --limit "$BRAIN_SCAFFOLD_LIMIT" --excerpt "$BRAIN_SCAFFOLD_EXCERPT" \
     --timeout "$BRAIN_SCAFFOLD_TIMEOUT" -- "$BRAIN_QUERY" 2>/dev/null) || rc=$?
@@ -500,7 +503,10 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   # report this home can read. Ungated, advisory, and never in the brief. Reports
   # are looked up under the brain's own home, the same place the wrapper reads
   # provenance from, rather than under a relocated brief directory.
-  while IFS=$'\t' read -r candidate_citation candidate_title candidate_id candidate_state; do
+  while IFS= read -r -d '' candidate_citation \
+      && IFS= read -r -d '' candidate_title \
+      && IFS= read -r -d '' candidate_id \
+      && IFS= read -r -d '' candidate_state; do
     report="$FM_HOME/data/$candidate_id/report.md"
     [ -f "$report" ] && [ -r "$report" ] || continue
     citation=$candidate_citation
@@ -508,19 +514,29 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     id=$candidate_id
     state=$candidate_state
     break
-  done < <(printf '%s' "$doc" | jq -r '
+  done < <(printf '%s' "$doc" | jq -j '
     .results[]
-    | select(.source_kind == "task" and (.source_id | type) == "string" and .source_id != "")
-    | [ (.citation // .slug // ""), (.title // "(untitled)"), .source_id, (.source_state // "unknown") ]
-    | @tsv' 2>/dev/null)
+    | select(.source_kind == "task")
+    | select((.source_id | type) == "string")
+    | select(.source_id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"))
+    | (.citation // .slug // ""), "\u0000",
+      (.title // "(untitled)"), "\u0000",
+      .source_id, "\u0000",
+      (.source_state // "unknown"), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
-  elif printf '%s' "$doc" | jq -e '(.results | length) > 0' >/dev/null 2>&1; then
+  elif printf '%s' "$doc" | jq -e '
+    (.results | length) > 0
+    and all(.results[];
+      if ((.source_kind == "task" or .source_kind == "note") and (.source_id | type) == "string")
+      then (.source_id | test("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"))
+      else false
+      end)' >/dev/null 2>&1; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
   fi
   # D1: the embed, gated on the answer contract being observed in this document.
   printf '%s' "$doc" | jq -e '
-    (.answer | type) == "object" and (.answer.kind | type) == "string"
+    (.answer | type) == "object" and .answer.kind == "nearest"
     and (.results | length) > 0
     and all(.results[]; has("captured_at") and has("source_state"))' >/dev/null 2>&1 || return 0
   frame_bytes=$(printf '%s' "$BRAIN_INSTRUCTION" | wc -c)

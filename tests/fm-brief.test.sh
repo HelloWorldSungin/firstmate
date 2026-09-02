@@ -1846,6 +1846,15 @@ brain_scaffold() {  # <home> <id> <stub-out-or-empty> <stub-rc> <stub-sleep> <ar
   SCAFFOLD_ERR=$(cat "$home/stderr.txt")
 }
 
+brain_wrapper_scaffold() {  # <home> <wrapper-root> <id> <document> -> SCAFFOLD_RC / SCAFFOLD_OUT / SCAFFOLD_ERR
+  local home=$1 wrapper_root=$2 id=$3 document=$4
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$wrapper_root" \
+    FM_BRIEF_WRAPPER_DOCUMENT="$document" \
+    "$ROOT/bin/fm-brief.sh" "$id" repo --mode no-mistakes 2>"$home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+}
+
 brain_section() {  # <brief> -> the "# Brain" section up to its closing blank line
   awk '/^# Brain$/ { on = 1 } on && /^$/ { exit } on { print }' "$1"
 }
@@ -1910,13 +1919,13 @@ test_brain_scaffold_read_embeds_found_rows() {
   printf 'a lower-ranked completed report\n' > "$home/data/lower-with-report/report.md"
   jq -n '[
     {slug:"firstmate/firstmate-deadbeef/task/top-without-report", title:"Top without report", chunk_text:"top", score:0.9, stale:false},
-    {slug:"firstmate/firstmate-deadbeef/task/lower-with-report", title:"Lower with report", chunk_text:"lower", score:0.8, stale:false}
+    {slug:"firstmate/firstmate-deadbeef/task/lower-with-report", title:"", chunk_text:"lower", score:0.8, stale:false}
   ]' > "$ranked"
   brain_scaffold "$home" found-outranked-report "$ranked" 0 0 --mode direct-PR
   expect_code 0 "$SCAFFOLD_RC" "a scaffold with a lower-ranked readable report must succeed"
   assert_contains "$SCAFFOLD_OUT" \
-    'nearest prior work (proximity, not duplication): "Lower with report" local:firstmate/firstmate-deadbeef/task/lower-with-report; live source unknown; report '"$home/data/lower-with-report/report.md" \
-    "the first readable report in ranked order must be named"
+    'nearest prior work (proximity, not duplication): "" local:firstmate/firstmate-deadbeef/task/lower-with-report; live source unknown; report '"$home/data/lower-with-report/report.md" \
+    "the first readable report in ranked order must be named without shifting an empty title"
   assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
     "a higher-ranked task without a readable report must be skipped"
 
@@ -1929,7 +1938,7 @@ test_brain_scaffold_read_embeds_found_rows() {
     "ranked rows without a readable report must state that no local report exists"
   assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
     "the no-report line must not name a report-less task record"
-  assert_not_contains "$SCAFFOLD_OUT" 'Lower with report' \
+  assert_not_contains "$SCAFFOLD_OUT" 'task/lower-with-report' \
     "the no-report line must not claim proximity to an unreadable report"
   pass "fm-brief.sh: a found scaffold search embeds labeled rows and prints the nearest prior work"
 }
@@ -1992,19 +2001,20 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # framing and provenance fields does not mount the embed, while the advisory
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
-  local home legacy_root brief
+  local home legacy_root brief legacy_doc bogus_doc unclassified_doc called
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
   printf 'a completed legacy report\n' > "$home/data/prior-task/report.md"
   cat > "$legacy_root/bin/fm-recall.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt","source_kind":"task","source_id":"prior-task"}]}'
+[ -z "${FM_BRIEF_WRAPPER_CALLED:-}" ] || printf 'called\n' > "$FM_BRIEF_WRAPPER_CALLED"
+cat "$FM_BRIEF_WRAPPER_DOCUMENT"
 EOF
   chmod 0755 "$legacy_root/bin/fm-recall.sh"
-  SCAFFOLD_RC=0
-  SCAFFOLD_OUT=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$legacy_root" \
-    "$ROOT/bin/fm-brief.sh" legacy-ship repo --mode no-mistakes 2>"$home/stderr.txt") || SCAFFOLD_RC=$?
+  legacy_doc="$TMP_ROOT/legacy-document.json"
+  printf '%s\n' '{"schema":"fm-recall.v1","command":"search","sources":[{"source":"local","state":"ok","results":1}],"results":[{"source":"local","citation":"local:firstmate/firstmate-deadbeef/task/prior-task","slug":"firstmate/firstmate-deadbeef/task/prior-task","title":"Legacy row","score":0.9,"stale":false,"excerpt":"legacy excerpt","source_kind":"task","source_id":"prior-task"}]}' > "$legacy_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" legacy-ship "$legacy_doc"
   expect_code 0 "$SCAFFOLD_RC" "an unframed document must still scaffold"
   brief="$home/data/legacy-ship/brief.md"
   assert_grep 'fm-recall.sh search' "$brief" "an unframed document keeps the retrieval instruction"
@@ -2013,7 +2023,48 @@ EOF
   assert_contains "$SCAFFOLD_OUT" \
     'nearest prior work (proximity, not duplication): "Legacy row" local:firstmate/firstmate-deadbeef/task/prior-task; live source unknown; report '"$home/data/prior-task/report.md" \
     "the advisory line prints regardless of the embed gate"
-  pass "fm-brief.sh: the embed is gated on the answer contract while the nearest-prior-work line is not"
+
+  bogus_doc="$TMP_ROOT/bogus-answer-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"bogus"}, results:[{citation:"local:firstmate/task/prior-task", slug:"firstmate/task/prior-task", title:"Bogus frame", excerpt:"must not mount", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$bogus_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" bogus-answer "$bogus_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a document with an unknown answer kind must still scaffold"
+  assert_no_grep 'scaffold time' "$home/data/bogus-answer/brief.md" \
+    "an unknown answer kind must not mount as trusted context"
+  assert_no_grep 'Bogus frame' "$home/data/bogus-answer/brief.md" \
+    "rows under an unknown answer kind must stay out of the brief"
+  assert_contains "$SCAFFOLD_OUT" 'nearest prior work (proximity, not duplication)' \
+    "the advisory line remains independent of the embed gate"
+
+  unclassified_doc="$TMP_ROOT/unclassified-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:?", title:"Unclassified row", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null}]}' > "$unclassified_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" unclassified-result "$unclassified_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a result with incomplete identity provenance must still scaffold"
+  assert_grep 'scaffold time' "$home/data/unclassified-result/brief.md" \
+    "identity provenance must not add a new worker-embed gate"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
+    "incomplete result identities must stay silent rather than claim no local report"
+
+  called="$TMP_ROOT/no-jq-wrapper-called"
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(
+    command() {
+      if [ "$1" = -v ] && [ "${2:-}" = jq ]; then return 1; fi
+      builtin command "$@"
+    }
+    export -f command
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$legacy_root" FM_BRIEF_WRAPPER_CALLED="$called" \
+      "$ROOT/bin/fm-brief.sh" no-jq repo --mode no-mistakes 2>"$home/stderr.txt"
+  ) || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a scaffold without jq must still succeed"
+  assert_absent "$called" "a search classified as never-started must not invoke the wrapper"
+  assert_contains "$SCAFFOLD_ERR" 'the search never started' \
+    "a missing parser dependency must be classified as never-started"
+  assert_contains "$SCAFFOLD_ERR" 'jq is required' \
+    "the never-started diagnostic must name the missing dependency"
+  assert_no_grep 'scaffold time' "$home/data/no-jq/brief.md" \
+    "a search that never started must leave the instruction-only section"
+  pass "fm-brief.sh: the embed and advisory gates reject untrusted or incomplete protocol states"
 }
 
 # Bounds and exclusions: the embed never exceeds its byte cap, the secondmate
