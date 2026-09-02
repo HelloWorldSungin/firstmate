@@ -577,28 +577,30 @@ gitlab_require_attested_merge() {
       "$FM_PR_INSPECTED_DEFAULT" >&2
     return 1
   fi
-  if [ "$automatic_rebase" = true ]; then
-    if ! merge_method=$(printf '%s' "$json" | jq -r '
-        if type == "object" and (.merge_method | type) == "string"
-        then .merge_method else error("merge_method is unreadable") end' \
-        2>/dev/null); then
+  [ "$automatic_rebase" = false ] && return 0
+
+  if ! merge_method=$(printf '%s' "$json" | jq -r '
+      if type == "object" and (.merge_method | type) == "string"
+      then .merge_method else error("merge_method is unreadable") end' \
+      2>/dev/null); then
+    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: bring the branch up to current %s and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+  case "$merge_method" in
+    merge) return 0 ;;
+    rebase_merge|ff) ;;
+    *)
       printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
         "$URL" >&2
       printf 'action: bring the branch up to current %s and re-run validation\n' \
         "$FM_PR_INSPECTED_DEFAULT" >&2
       return 1
-    fi
-    case "$merge_method" in
-      merge) return 0 ;;
-      rebase_merge|ff) ;;
-      *)
-        printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled could not be determined, and unknown does not prove automatic rebase is disabled\n' \
-          "$URL" >&2
-        printf 'action: bring the branch up to current %s and re-run validation\n' \
-          "$FM_PR_INSPECTED_DEFAULT" >&2
-        return 1
-        ;;
-    esac
+      ;;
+  esac
+  if [ "$automatic_rebase" = true ]; then
     ancestry_rc=0
     git -C "$WT" merge-base --is-ancestor \
       "$FM_PR_INSPECTED_BASE" "$FM_PR_INSPECTED_HEAD" 2>/dev/null \
@@ -620,7 +622,6 @@ gitlab_require_attested_merge() {
       "$FM_PR_INSPECTED_DEFAULT" >&2
     return 1
   fi
-  [ "$automatic_rebase" = false ] && return 0
 
   if ! version_json=$(GITLAB_HOST="$FM_PR_HOST" glab api version 2>/dev/null) \
     || [ -z "$version_json" ] \
@@ -1037,11 +1038,23 @@ case "$PROVIDER" in
         inspect_merge_boundary "$FM_GITLAB_INITIAL_TARGET" || exit 1
         gitlab_attempt=1
         while :; do
-          gitlab_require_attested_merge || exit 1
           gitlab_verify_rc=0
           gitlab_verify_mergeable || gitlab_verify_rc=$?
           case "$gitlab_verify_rc" in
-            0|4) break ;;
+            0)
+              if ! gitlab_attestation_error=$(gitlab_require_attested_merge 2>&1); then
+                gitlab_recheck_rc=0
+                gitlab_verify_mergeable 2>/dev/null || gitlab_recheck_rc=$?
+                if [ "$gitlab_recheck_rc" -eq 4 ]; then
+                  gitlab_verify_rc=4
+                  break
+                fi
+                printf '%s\n' "$gitlab_attestation_error" >&2
+                exit 1
+              fi
+              break
+              ;;
+            4) break ;;
             3)
               if [ "$gitlab_attempt" -ne 1 ]; then
                 echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
@@ -1097,11 +1110,9 @@ case "$outcome_rc" in
   3)
     printf 'actionable: merged %s but could not report it upward: this home has no readable secondmate identity or parent binding (.fm-secondmate-home, .fm-secondmate-parent)\n' \
       "$URL" >&2
-    exit 1
     ;;
   *)
     printf 'actionable: merged %s but could not record the outcome for supervision\n' "$URL" >&2
-    exit 1
     ;;
 esac
 

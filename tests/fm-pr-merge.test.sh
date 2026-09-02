@@ -364,10 +364,14 @@ case "${1:-} ${2:-}" in
       "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" symbolic-ref HEAD \
         "refs/heads/$FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL"
     fi
-    sed -e "s/__TASK_HEAD__/$task_head/g" \
+    sed_args=(-e "s/__TASK_HEAD__/$task_head/g" \
       -e "s/__DEFAULT_HEAD__/$default_head/g" \
       -e "s/\"targetBranch\":\"main\"/\"targetBranch\":\"${FM_TEST_RENAME_DEFAULT_DURING_GITLAB_GRAPHQL:-main}\"/" \
-      "$FM_TEST_GLAB_JSON"
+    )
+    if [ -e "$case_dir/glab-merged-during-project-read" ]; then
+      sed_args+=(-e 's/"state":"opened"/"state":"merged"/')
+    fi
+    sed "${sed_args[@]}" "$FM_TEST_GLAB_JSON"
     exit 0
     ;;
   "api projects/"*"/merge_requests/"*)
@@ -375,6 +379,9 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   "api projects/"*)
+    if [ -e "$case_dir/glab-merge-on-project-read" ]; then
+      : >"$case_dir/glab-merged-during-project-read"
+    fi
     [ ! -e "$case_dir/glab-project-fails" ] || exit 1
     cat "$FM_TEST_GLAB_PROJECT_JSON"
     exit 0
@@ -1307,12 +1314,14 @@ test_preflight_merged_recovery_skips_confirmation_for_both_forges() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "github-merged-during-preflight: recovery invoked a second merge"
 
-  case_dir=$(make_gitlab_case gitlab-merged-during-preflight state=merged)
+  case_dir=$(make_gitlab_case gitlab-merged-during-preflight)
   mkdir -p "$case_dir/home"
   printf '%s\n' mate-x >"$case_dir/home/.fm-secondmate-home"
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\n' \
     >"$case_dir/home/.fm-secondmate-parent"
   printf '{"state":"opened","target_branch":"main"}\n' >"$case_dir/mr-pre.json"
+  : >"$case_dir/glab-merge-on-project-read"
+  : >"$case_dir/glab-project-fails"
   : >"$case_dir/glab-confirm-fails"
 
   set +e
@@ -1329,6 +1338,8 @@ test_preflight_merged_recovery_skips_confirmation_for_both_forges() {
     "gitlab-merged-during-preflight: recovery redundantly confirmed the merged state"
   assert_no_grep ' mr merge ' "$case_dir/glab.log" \
     "gitlab-merged-during-preflight: recovery invoked a second merge"
+  [ "$(grep -c -F ' api graphql ' "$case_dir/glab.log")" -eq 2 ] \
+    || fail "gitlab-merged-during-preflight: recovery did not re-read state after the setting refusal"
   pass "both forges report a preflight-observed merge without redundant confirmation"
 }
 
@@ -2303,7 +2314,7 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
   for name in enabled-ff-behind enabled-ff-current enabled-merge-behind \
     enabled-unknown-method enabled-invalid-method enabled-unknown-ancestry \
     unknown pre-19.4-merge-behind pre-19.4-rebase-behind pre-19.4-ff-current \
-    current-absent invalid-version; do
+    current-absent invalid-version unavailable-version unreadable-method; do
     case_dir=$(make_gitlab_case "gitlab-auto-rebase-$name")
     expected_rc=1
     case "$name" in
@@ -2361,11 +2372,21 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
         ;;
       current-absent)
         printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
-        expected='GitLab project setting automatic_rebase_enabled could not be determined'
+        expected_rc=0
         ;;
       invalid-version)
         printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
         printf '{"version":"unreadable"}\n' >"$case_dir/version.json"
+        expected_rc=0
+        ;;
+      unavailable-version)
+        printf '{"merge_method":"merge"}\n' >"$case_dir/project.json"
+        : >"$case_dir/glab-version-fails"
+        expected_rc=0
+        ;;
+      unreadable-method)
+        printf '{}\n' >"$case_dir/project.json"
+        : >"$case_dir/glab-version-fails"
         expected='GitLab project setting automatic_rebase_enabled could not be determined'
         ;;
     esac
@@ -2396,6 +2417,12 @@ test_gitlab_automatic_rebase_setting_handles_version_boundary() {
       assert_present "$case_dir/state/task-x1.check.sh" \
         "gitlab-auto-rebase-$name: refusal disarmed the durable poll"
     fi
+    case "$name" in
+      current-absent|invalid-version|unavailable-version|unreadable-method)
+        assert_no_grep ' api version' "$case_dir/glab.log" \
+          "gitlab-auto-rebase-$name: the merge method was not resolved before the version boundary"
+        ;;
+    esac
   done
   pass "GitLab automatic rebase honors its API version boundary and fails closed"
 }
@@ -3055,7 +3082,7 @@ test_secondmate_without_parent_binding_is_loud() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "unbound-secondmate: an unreported landed merge should fail loudly"
+  expect_code 0 "$rc" "unbound-secondmate: the merge itself landed and must not be reported as failed"
   assert_grep 'could not report it upward' "$case_dir/stderr" \
     "unbound-secondmate: a merge that could not be reported upward said nothing about it"
   assert_absent "$case_dir/state/.wake-queue" \
