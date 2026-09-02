@@ -150,10 +150,9 @@
 # fails, times out, returns no rows, or emits an unframed document, the brief
 # carries the instruction alone and the scaffold still succeeds. The same search
 # prints at most one advisory "nearest prior work" stdout line for firstmate.
-# After skipping rows that are definitely not tasks, it names the earliest
-# classifiable task whose report is safe and readable, or says no local report
-# exists; a task-shaped unclassifiable row leaves the advisory silent rather
-# than guessing. The line claims
+# Once ranked task identities are classifiable, it names the earliest one whose
+# report is safe and readable, or says no local report exists; an unclassifiable
+# task identity leaves the advisory silent rather than guessing. The line claims
 # proximity, never duplication, is independent of whether the embed mounted,
 # and never enters the brief. A home with no local index runs no search and
 # omits the section. The secondmate charter carries the instruction alone.
@@ -493,7 +492,7 @@ BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
   local doc rc=0 detail citation="" title="" id="" state="" record="" report="" rows frame_bytes rendered cap_state
   local candidate_citation candidate_title candidate_kind candidate_id candidate_state candidate_classifiable
-  local task_rows=0 identities_classifiable=1
+  local identity_rows=0 identities_classifiable=1
   BRAIN_EMBED=""
   BRAIN_NEAREST=""
   if ! command -v jq >/dev/null 2>&1; then
@@ -529,12 +528,12 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       && IFS= read -r -d '' candidate_id \
       && IFS= read -r -d '' candidate_state \
       && IFS= read -r -d '' candidate_classifiable; do
+    identity_rows=$((identity_rows + 1))
     if [ "$candidate_classifiable" != true ]; then
       identities_classifiable=0
       break
     fi
     [ "$candidate_kind" = task ] || continue
-    task_rows=$((task_rows + 1))
     record="$FM_HOME/data/$candidate_id"
     report="$record/report.md"
     [ ! -L "$record" ] && [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
@@ -554,16 +553,18 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     def task_slug:
       if ((.slug | type) == "string"
           and (.slug | test("^firstmate/[^/]+/task/[^/]+$"))) then
-        .slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")
+        (.slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")) as $slug
+        | if (($slug.id | source_id_valid)
+              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid))
+          then $slug
+          else null
+          end
       else null
       end;
     def identity:
       task_slug as $slug
       | if $slug == null then
           {kind: "", id: "", classifiable: true}
-        elif ((($slug.id | source_id_valid)
-              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid)) | not) then
-          {kind: "", id: "", classifiable: false}
         elif has("source_kind") or has("source_id") then
           if (.source_kind == "task"
               and (.source_id | source_id_valid)
@@ -592,7 +593,7 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       ($identity.classifiable | tostring), "\u0000"' 2>/dev/null)
   if [ -n "$id" ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): \"$title\"${citation:+ $citation}; live source $state; report $report"
-  elif [ "$task_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
+  elif [ "$identity_rows" -gt 0 ] && [ "$identities_classifiable" -eq 1 ]; then
     BRAIN_NEAREST="nearest prior work (proximity, not duplication): no local report"
   fi
   # D1: the embed, gated on the answer contract being observed in this document.
