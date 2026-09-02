@@ -266,11 +266,14 @@ This sequence owns every user-owned local skill destination creation, whether in
    Secondmate provisioning always supplies the exact seeded home path, so the provisioning session's own `$FM_HOME` never selects the target.
 2. Immediately before creation, validate that the chosen freeform destination under `home_root` is absent from that home's git index, collides with no existing file or directory in this home, and is home-distinct.
    Reject the destination if any check fails.
-3. Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
-4. Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger and resolving pointer to this Destinations contract, then confirm the skill appears in a fresh session's skill index.
-5. A failure before this attempt writes the exclude rule leaves every path and rule unchanged and performs no cleanup.
-6. If any failure occurs after this attempt writes the exclude rule, remove only destination content created by this attempt and the single exclude-line occurrence appended by this attempt.
-   Never remove or rewrite any pre-existing path or rule.
+3. Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude` and count exact occurrences of the destination directory rule.
+4. Reuse one exact existing rule, or append exactly one when none exists, and record whether this attempt appended it.
+   Reject multiple exact occurrences without changing them.
+   Verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
+5. Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger and resolving pointer to this Destinations contract, then confirm the skill appears in a fresh session's skill index.
+6. A failure before any attempt-owned write leaves every path and rule unchanged and performs no cleanup.
+7. If any failure occurs after an attempt-owned write, remove only destination content created by this attempt, and remove the exact exclude-line occurrence only when this attempt appended it.
+   Never remove or rewrite a reused rule or any other pre-existing path or rule.
 
 ### Flow: reduce, approve, migrate, remove
 
