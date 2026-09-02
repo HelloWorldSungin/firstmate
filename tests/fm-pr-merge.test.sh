@@ -597,6 +597,11 @@ case "${1:-} ${2:-}" in
       "$queue_enabled" "$in_queue" "$auto_merge" "$queue_entry"
     ;;
   "pr merge")
+    if [ -n "${FM_TEST_GH_MERGE_REJECTED:-}" ]; then
+      printf '%s\n' "$*" >>"$FM_TEST_GH_LOG"
+      echo "error: GitHub rejected the merge" >&2
+      exit 1
+    fi
     "$delegate" "$@" || exit $?
     : >"${FM_TEST_WT%/wt}/github-merge-called-${3:?missing pull request number}"
     if [ -n "${FM_TEST_GH_MERGE_LANDS_THEN_FAILS:-}" ]; then
@@ -2897,6 +2902,92 @@ test_queued_gitlab_merge_is_refused_and_leaves_the_poll_armed() {
   pass "a queued GitLab merge is refused and leaves its durable poll armed"
 }
 
+test_rejected_merge_is_not_reported_as_deferred() {
+  local case_dir rc url
+
+  # GitHub: --match-head-commit loses the race, the command exits non-zero, and
+  # the confirmation read proves the request is still open with no queue entry
+  # and no auto-merge. Nothing deferred it; the forge refused it outright.
+  url=https://github.com/example/repo/pull/67
+  case_dir=$(make_home_case rejected-github-merge)
+  add_gh_mocks "$case_dir" 8888888888888888888888888888888888888888
+  : >"$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_GH_MERGE_REJECTED=1 FM_TEST_HOME="$case_dir/home" \
+    run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "rejected-github-merge: a rejected merge should refuse"
+  assert_grep 'pr merge 67 ' "$case_dir/gh.log" \
+    "rejected-github-merge: the fixture never reached the post-command state check"
+  assert_grep 'GitHub rejected the merge rather than deferring it' "$case_dir/stderr" \
+    "rejected-github-merge: the refusal did not name the rejection"
+  assert_grep 'merge command exited with status 1' "$case_dir/stderr" \
+    "rejected-github-merge: the refusal did not report the merge command status"
+  assert_no_grep 'left it pending instead of executing immediately' "$case_dir/stderr" \
+    "rejected-github-merge: a rejected merge was described as a deferral"
+  assert_absent "$case_dir/state/.wake-queue" \
+    "rejected-github-merge: a rejected merge was reported as landed"
+  [ -f "$case_dir/state/task-x1.check.sh" ] \
+    || fail "rejected-github-merge: the merge poll was not left armed"
+
+  # GitLab: the same shape through glab, whose post-command view still reports
+  # the request open.
+  case_dir=$(make_gitlab_case rejected-gitlab-merge)
+  mkdir -p "$case_dir/home"
+  : >"$case_dir/glab-merge-fails"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "rejected-gitlab-merge: a rejected merge should refuse"
+  [ -n "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "rejected-gitlab-merge: the fixture never reached the merge command"
+  assert_grep 'GitLab rejected the merge rather than deferring it' "$case_dir/stderr" \
+    "rejected-gitlab-merge: the refusal did not name the rejection"
+  assert_grep 'merge command exited with status 1' "$case_dir/stderr" \
+    "rejected-gitlab-merge: the refusal did not report the merge command status"
+  assert_no_grep 'left it queued or pending instead of executing immediately' \
+    "$case_dir/stderr" \
+    "rejected-gitlab-merge: a rejected merge was described as a deferral"
+  assert_absent "$case_dir/state/.wake-queue" \
+    "rejected-gitlab-merge: a rejected merge was reported as landed"
+  [ -f "$case_dir/state/task-x1.check.sh" ] \
+    || fail "rejected-gitlab-merge: the merge poll was not left armed"
+  pass "a merge the forge rejected is refused as a rejection, not as a deferral"
+}
+
+test_gitlab_verification_notices_are_not_repeated() {
+  local case_dir head reads verified notices
+  case_dir=$(make_gitlab_case gitlab-verify-notices)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf 'pr_head=%s\n' "$MR_STALE_HEAD" >>"$case_dir/state/task-x1.meta"
+
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr" \
+    || fail "gitlab-verify-notices: the merge should have landed"
+
+  # The re-read after attestation is what catches a merge that landed in the
+  # settings window, so it must still happen on a healthy merge.
+  reads=$(grep -c -F ' api graphql ' "$case_dir/glab.log")
+  [ "$reads" -ge 2 ] \
+    || fail "gitlab-verify-notices: the post-attestation re-read stopped running ($reads reads)"
+  verified=$(grep -c -F "verified: $MR_URL is open and mergeable" "$case_dir/stderr")
+  [ "$verified" -eq 1 ] \
+    || fail "gitlab-verify-notices: one merge printed the verified line $verified times"
+  notices=$(grep -c -F "recorded head $MR_STALE_HEAD disagrees with the live head $head" \
+    "$case_dir/stderr")
+  [ "$notices" -eq 1 ] \
+    || fail "gitlab-verify-notices: one merge printed the stale-head notice $notices times"
+  pass "a healthy GitLab merge re-reads state without repeating its verification notices"
+}
+
 test_main_home_merge_leaves_a_durable_wake() {
   local case_dir url
   url=https://github.com/example/repo/pull/64
@@ -3285,6 +3376,8 @@ test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
 test_gitlab_merge_reports_upward
 test_queued_gitlab_merge_is_refused_and_leaves_the_poll_armed
+test_rejected_merge_is_not_reported_as_deferred
+test_gitlab_verification_notices_are_not_repeated
 test_failed_merge_reports_nothing
 test_gitlab_already_merged_recovers_without_mutation
 test_main_home_merge_leaves_a_durable_wake

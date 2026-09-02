@@ -45,10 +45,20 @@
 # success, because the already-completed merge must never look retryable.
 #
 # After an attempted forge mutation, this script confirms the PR is actually
-# merged before reporting it. A queued or pending result is a refusal, while an
-# unreadable result is actionable; each leaves the poll armed and records no
-# landed outcome. bin/fm-merge-outcome-lib.sh owns a confirmed merge's
-# destination, normal-case deduplication, and at-least-once recovery.
+# merged before reporting it. THE MERGE COMMAND'S EXIT STATUS IS NOT
+# AUTHORITATIVE, deliberately: a non-zero `gh pr merge` or `glab mr merge`
+# followed by a read that confirms the request is merged is recorded as LANDED
+# and exits zero, because forge state is the authority and a transport or
+# response failure after the merge landed is not a failed merge. Only a merge a
+# read confirms did NOT land exits non-zero. Do not "correct" this back to
+# trusting the command status; an inverted form of this rule has already
+# propagated into a test and into docs/architecture.md once.
+# A confirmed-not-landed result names its actual cause: a non-zero merge command
+# means the forge rejected the merge, which is reported as a rejection and never
+# as a deferral. A queued or pending result is a refusal, while an unreadable
+# result is actionable; each leaves the poll armed and records no landed outcome.
+# bin/fm-merge-outcome-lib.sh owns a confirmed merge's destination, normal-case
+# deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
@@ -415,6 +425,12 @@ FIELDS
 FM_PR_MERGE_HEAD=
 FM_PR_MERGE_TARGET=
 FM_PR_MERGE_TARGET_OID=
+# The merged-transition recovery re-reads live state after attestation, so this
+# function runs more than once per merge. Both operator-facing notices below are
+# keyed by the head they describe: a second read of the same head repeats
+# nothing, while a different head is a different fact and is reported again.
+FM_GITLAB_VERIFIED_HEAD=
+FM_GITLAB_RECORDED_HEAD_NOTICED=
 gitlab_verify_mergeable() {
   local json fields line
   local total=0 named=0 refusals=''
@@ -517,9 +533,11 @@ FIELDS
   fi
   # A rebase moves the head and leaves the recorded value behind, so the
   # disagreement is reported and the live head is what gets verified and merged.
-  if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
+  if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ] \
+    && [ "$FM_GITLAB_RECORDED_HEAD_NOTICED" != "$live_head" ]; then
     printf 'notice: recorded head %s disagrees with the live head %s; verifying the live head\n' \
       "$RECORDED_HEAD" "$live_head" >&2
+    FM_GITLAB_RECORDED_HEAD_NOTICED=$live_head
   fi
 
   [ "$state" = opened ] \
@@ -546,8 +564,11 @@ FIELDS
     printf '%s' "$refusals" >&2
     return 1
   fi
-  printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
-    "$URL" "$live_head" >&2
+  if [ "$FM_GITLAB_VERIFIED_HEAD" != "$live_head" ]; then
+    printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
+      "$URL" "$live_head" >&2
+    FM_GITLAB_VERIFIED_HEAD=$live_head
+  fi
   FM_PR_MERGE_HEAD=$live_head
 }
 
@@ -882,6 +903,11 @@ github_confirm_merged() {
       "$URL" >&2
     return 1
   fi
+  if [ "$command_rc" -ne 0 ]; then
+    printf 'error: refusing to treat %s as merged because the GitHub merge command exited with status %s and GitHub still reports state %s with no queue entry and no auto-merge: GitHub rejected the merge rather than deferring it; the merge poll remains armed\n' \
+      "$URL" "$command_rc" "${FM_GITHUB_STATE:-unreadable}" >&2
+    return 1
+  fi
   printf 'error: refusing to treat %s as merged because GitHub left it pending instead of executing immediately; the merge poll remains armed\n' \
     "$URL" >&2
   return 1
@@ -913,6 +939,11 @@ gitlab_confirm_merged() {
     return 2
   fi
   if [ "$state" != merged ]; then
+    if [ "$command_rc" -ne 0 ]; then
+      printf 'error: refusing to treat %s as merged because the GitLab merge command exited with status %s and GitLab still reports state %s: GitLab rejected the merge rather than deferring it; the merge poll remains armed\n' \
+        "$URL" "$command_rc" "${state:-unreadable}" >&2
+      return 1
+    fi
     printf 'error: refusing to treat %s as merged because GitLab left it queued or pending instead of executing immediately; the merge poll remains armed\n' \
       "$URL" >&2
     return 1
