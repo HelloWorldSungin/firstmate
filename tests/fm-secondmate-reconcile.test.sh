@@ -54,20 +54,7 @@ write_snapshot() {  # <path> <mate-id> <invalidity-json> [state]
 
 # Age the home's cooldown record so the next run sees the window as elapsed.
 age_cooldown() {  # <state-dir> <mate-id> <seconds-ago>
-  printf '%s\n' "$(( ${FM_TEST_EPOCH:-$(date +%s)} - $3 ))" > "$1/$2.reconcile-nudged"
-}
-
-install_fake_epoch_clock() {  # <fakebin>
-  cat > "$1/date" <<'SH'
-#!/usr/bin/env bash
-set -u
-if [ "$#" -eq 1 ] && [ "$1" = +%s ] && [ -n "${FM_TEST_EPOCH:-}" ]; then
-  printf '%s\n' "$FM_TEST_EPOCH"
-  exit 0
-fi
-exec "$FM_TEST_REAL_DATE" "$@"
-SH
-  chmod +x "$1/date"
+  printf '%s\n' "$(( $(date +%s) - $3 ))" > "$1/$2.reconcile-nudged"
 }
 
 run_notify() {  # <home> <fakebin> <name> <snapshot> [extra args...]
@@ -187,11 +174,8 @@ SH
 }
 
 test_the_window_is_four_hours() {
-  local home mate fakebin snap out FM_TEST_EPOCH=2000000000 FM_TEST_REAL_DATE
+  local home mate fakebin snap out
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home fourhours mate)
-  FM_TEST_REAL_DATE=$(command -v date)
-  export FM_TEST_EPOCH FM_TEST_REAL_DATE
-  install_fake_epoch_clock "$fakebin"
   snap="$home/snapshot.json"
   write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
   run_notify "$home" "$fakebin" fourhours "$snap" >/dev/null || fail "the first ask failed"
