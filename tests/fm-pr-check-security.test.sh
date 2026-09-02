@@ -302,11 +302,11 @@ run_merge_entry() {
     "$PR_MERGE" "$@"
 }
 
-# Give valid merge-entry fixtures the same remote-backed inputs the guarded
-# stale-base comparison requires.
+# Give valid merge-entry fixtures the remote-backed repository snapshot the
+# guarded merge requires.
 # Invalid-entrypoint cases deliberately do not call this helper, so their
 # zero-side-effect assertions still exercise the scripts alone.
-prepare_merge_comparison() { # <case-dir> <canonical-pr-url>
+prepare_merge_snapshot() { # <case-dir> <canonical-pr-url>
   local dir=$1 url=$2 origin source_ref number canonical
   origin="$dir/origin.git"
   if ! git -C "$dir/wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -336,7 +336,7 @@ prepare_merge_comparison() { # <case-dir> <canonical-pr-url>
       source_ref="refs/merge-requests/$number/head"
       canonical="${url%/-/merge_requests/*}.git"
       ;;
-    *) fail "comparison fixture received a noncanonical PR URL" ;;
+    *) fail "snapshot fixture received a noncanonical PR URL" ;;
   esac
   git -C "$dir/wt" remote set-url origin "$canonical"
   git -C "$dir/wt" push -q --force "$origin" "HEAD:$source_ref"
@@ -653,11 +653,11 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
   : > "$dir/gh.log"
-  prepare_merge_comparison "$dir" https://github.com/my-org/repo_name.with-dots/pull/37
+  prepare_merge_snapshot "$dir" https://github.com/my-org/repo_name.with-dots/pull/37
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   merge_head=$(git -C "$dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 37 --repo my-org/repo_name.with-dots --match-head-commit $merge_head --merge" "$dir/gh.log" \
+  grep -qxF "pr merge 37 --repo github.com/my-org/repo_name.with-dots --match-head-commit $merge_head --merge" "$dir/gh.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   # A merge this home performed leaves its own durable outcome, so the poll's
   # confirmation is no longer the first the captain hears of it. Acknowledge that
@@ -691,7 +691,7 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
-  prepare_merge_comparison "$dir" https://github.com/o/r/pull/3
+  prepare_merge_snapshot "$dir" https://github.com/o/r/pull/3
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
@@ -746,7 +746,7 @@ SH
       --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
       > "$dir/x-link.out" 2> "$dir/x-link.err" \
       || fail "path-safe legacy task ID could not link an X request"
-    prepare_merge_comparison "$dir" https://github.com/o/r/pull/4
+    prepare_merge_snapshot "$dir" https://github.com/o/r/pull/4
     run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
       > "$dir/merge.out" 2> "$dir/merge.err" \
       || fail "path-safe legacy task ID could not use the PR merge flow"
@@ -761,52 +761,6 @@ SH
       || fail "legacy task teardown changed the reserved migration namespace"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
-}
-
-test_recording_probe_is_noninteractive_bounded_and_best_effort() {
-  local dir real_git started elapsed rc
-  dir=$(make_case bounded-recording-probe)
-  write_task_meta "$dir"
-  prepare_merge_comparison "$dir" https://github.com/o/r/pull/81
-  real_git=$(command -v git)
-  cat >"$dir/fakebin/git" <<'SH'
-#!/usr/bin/env bash
-case " $* " in
-  *" ls-remote "*)
-    printf 'terminal=%s askpass=%s ssh_askpass=%s ssh_require=%s gcm=%s ssh=%s\n' \
-      "${GIT_TERMINAL_PROMPT-}" "${GIT_ASKPASS-}" "${SSH_ASKPASS-}" \
-      "${SSH_ASKPASS_REQUIRE-}" "${GCM_INTERACTIVE-}" "${GIT_SSH_COMMAND-}" \
-      >"$FM_TEST_GIT_ENV_LOG"
-    sleep 20
-    ;;
-esac
-exec "$FM_TEST_REAL_GIT" "$@"
-SH
-  chmod +x "$dir/fakebin/git"
-  started=$SECONDS
-  set +e
-  FM_PR_STALE_BASE_TIMEOUT=1 FM_TIMEOUT_KILL_GRACE=1 \
-    FM_TEST_REAL_GIT="$real_git" FM_TEST_GIT_ENV_LOG="$dir/git-env.log" \
-    run_check_entry "$dir" task-a https://github.com/o/r/pull/81 \
-    >"$dir/stdout" 2>"$dir/stderr"
-  rc=$?
-  set -e
-  elapsed=$((SECONDS - started))
-
-  expect_code 0 "$rc" "bounded-recording-probe: unavailable comparison should not block recording"
-  [ "$elapsed" -lt 8 ] \
-    || fail "bounded-recording-probe: record-time probe exceeded its declared bound (${elapsed}s)"
-  assert_grep 'warning: could not compare https://github.com/o/r/pull/81' "$dir/stderr" \
-    "bounded-recording-probe: timeout was not surfaced as an unavailable warning"
-  assert_present "$dir/home/state/task-a.check.sh" \
-    "bounded-recording-probe: timeout prevented durable poll publication"
-  assert_grep 'terminal=0 askpass=/bin/false ssh_askpass=/bin/false ssh_require=never gcm=Never' \
-    "$dir/git-env.log" "bounded-recording-probe: credential prompting was not disabled"
-  assert_grep 'BatchMode=yes' "$dir/git-env.log" \
-    "bounded-recording-probe: SSH prompting was not disabled"
-  assert_grep 'ConnectTimeout=1' "$dir/git-env.log" \
-    "bounded-recording-probe: SSH connection setup was not bounded"
-  pass "record-time remote inspection is noninteractive, bounded, and best effort"
 }
 
 run_watcher_bounded() {
@@ -3047,7 +3001,7 @@ EOF
   # merge's JSON read cannot be parsed, which must refuse rather than merge on a
   # state it could not read.
   write_task_meta "$dir" task-c
-  prepare_merge_comparison "$dir" "$url"
+  prepare_merge_snapshot "$dir" "$url"
   : > "$dir/glab.log"
   # The merge path needs jq before it reads anything, so this case supplies it
   # and the refusal below is the unreadable state rather than a missing tool.
@@ -3060,7 +3014,7 @@ EOF
   grep -qF 'could not read the GitLab merge request state before merging' "$dir/merge-c.err" \
     || fail "merge wrapper refused for some reason other than the state it could not read"
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
-  grep -qF "GITLAB_HOST=gitlab.example api graphql -f fullPath=group/subgroup/project -f iid=7 -f targetRef=refs/heads/main" "$dir/glab.log" \
+  grep -qF "GITLAB_HOST=gitlab.example api projects/group%2Fsubgroup%2Fproject/merge_requests/7" "$dir/glab.log" \
     || fail "merge wrapper did not read the merge request through glab at its own instance"
   ! grep -qF ' mr merge ' "$dir/glab.log" \
     || fail "merge wrapper merged despite an unreadable merge request state"
@@ -3276,7 +3230,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-committed: could not arm merge poll"
-  prepare_merge_comparison "$dir" "$url"
+  prepare_merge_snapshot "$dir" "$url"
   run_merge_entry "$dir" task-a "$url" >"$dir/merge.out" 2>"$dir/merge.err" \
     || fail "merge-outcome-committed: merge entrypoint failed: $(cat "$dir/merge.err")"
   add_stop_custom_check "$dir"
@@ -3301,7 +3255,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-uncommitted: could not arm merge poll"
-  prepare_merge_comparison "$dir" "$url"
+  prepare_merge_snapshot "$dir" "$url"
   cat >"$dir/fakebin/mv" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
@@ -3820,7 +3774,6 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
-test_recording_probe_is_noninteractive_bounded_and_best_effort
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

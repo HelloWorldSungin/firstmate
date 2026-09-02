@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
-# Recording also reports current default-branch content a prospective merge
-# would remove or replace.
-# An unavailable comparison warns without blocking the durable watch, while
-# bin/fm-pr-merge.sh repeats it live and fails closed before any merge.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -86,13 +82,6 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
   fi
-fi
-
-# Surface stale default-branch content when the PR is recorded, while leaving
-# merge-time enforcement to bin/fm-pr-merge.sh so an offline status refresh does
-# not prevent the durable PR watch from being armed.
-if ! fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER"; then
-  fm_pr_stale_base_report warning "$URL"
 fi
 
 META_TMP=

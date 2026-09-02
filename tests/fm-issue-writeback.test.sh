@@ -1598,7 +1598,7 @@ test_the_merge_path_posts_its_own_milestones() {
   rc=$?
   set -e
   expect_code 0 "$rc" "the merge path failed: $out"
-  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh.log" "the PR was never merged"
+  assert_grep 'pr merge 9 --repo github.com/acme/widget' "$dir/gh.log" "the PR was never merged"
   [ "$(comment_count "$dir")" = 1 ] \
     || fail "arming and merging produced $(comment_count "$dir") comments instead of one"
   body=$(cat "$(firstmate_comment "$dir")")
@@ -1627,7 +1627,7 @@ test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable() {
   rc=$?
   set -e
   expect_code 0 "$rc" "a refusing tracker made a completed merge look retryable"
-  assert_grep 'pr merge 9 --repo acme/widget' "$dir/gh.log" \
+  assert_grep 'pr merge 9 --repo github.com/acme/widget' "$dir/gh.log" \
     "the merge did not happen while the tracker was unreachable"
   assert_contains "$out" 'warning: status comment not updated' \
     "a tracker that refused the merge's milestone said nothing"

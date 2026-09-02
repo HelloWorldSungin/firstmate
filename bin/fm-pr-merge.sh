@@ -32,12 +32,8 @@
 # short-option cluster such as -yR, because the repository comes only from the
 # URL, nor a head override because the head comes only from the live read.
 # Every provider also fetches the PR head and origin's current default branch
-# immediately before merging.
-# The merge is refused when their prospective merge would remove or replace
-# current default-branch content, or when that comparison cannot be completed
-# safely.
-# bin/fm-pr-check.sh reports the same stale condition when the PR is recorded,
-# but merge time repeats the live read because the default branch may move.
+# before merging so the forge's final object identities can be bound to the
+# repository this task inspected.
 # After a successful merge, an optional work item recorded in task metadata is
 # verified and, when it is open on a forge with a write adapter, closed with a
 # comment linking the merged PR. A work_item= record names the tracker the
@@ -283,35 +279,97 @@ grep -qxF "pr=$URL" "$META" || {
   exit 1
 }
 
-# Re-read both tips immediately before the guarded merge instead of trusting
-# the earlier recording-time report or the PR's still-green branch-base checks.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 FM_PR_INSPECTED_HEAD=
 FM_PR_INSPECTED_BASE=
 FM_PR_INSPECTED_DEFAULT=
-inspect_current_default() {
-  local target=${1-} inspect_rc=0
-  fm_pr_stale_base_inspect "$WT" "$ID" "$PROVIDER" "$FM_PR_HOST" \
-    "$FM_PR_PATH" "$PR_NUMBER" "$target" || inspect_rc=$?
-  FM_PR_INSPECTED_HEAD=$FM_PR_STALE_BASE_HEAD
-  FM_PR_INSPECTED_BASE=$FM_PR_STALE_BASE_TIP
-  FM_PR_INSPECTED_DEFAULT=$FM_PR_STALE_BASE_DEFAULT
-  case "$inspect_rc" in
-    0) return 0 ;;
-    1|2)
-      fm_pr_stale_base_report error "$URL"
-      return 1
-      ;;
-    3)
-      printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded stale-base inspection is limited to current default branch %s\n' \
-        "$URL" "$([ "$PROVIDER" = github ] && printf GitHub || printf GitLab)" \
-        "${target:-unreadable}" "$FM_PR_INSPECTED_DEFAULT" >&2
-      printf 'action: retarget the PR to current default branch %s, bring the branch up to current %s, and re-run validation\n' \
-        "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_DEFAULT" >&2
-      return 1
-      ;;
-    *) return 1 ;;
+FM_PR_INSPECTION_REASON=
+inspect_merge_boundary() {
+  local target=${1-} source_ref remote_state default_ref default_name
+  local token base_ref head_ref base head
+  local probe_timeout=${FM_PR_MERGE_PROBE_TIMEOUT:-15}
+  FM_PR_INSPECTED_HEAD=
+  FM_PR_INSPECTED_BASE=
+  FM_PR_INSPECTED_DEFAULT=
+  FM_PR_INSPECTION_REASON=
+
+  if [ -z "$WT" ] || [ ! -d "$WT" ] \
+    || ! git -C "$WT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    FM_PR_INSPECTION_REASON="task worktree is unavailable or is not a Git worktree"
+  elif ! fm_pr_task_id_valid "$ID"; then
+    FM_PR_INSPECTION_REASON="task identity is invalid"
+  fi
+  case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=15 ;; esac
+  case "$PROVIDER" in
+    github) source_ref="refs/pull/$PR_NUMBER/head" ;;
+    gitlab) source_ref="refs/merge-requests/$PR_NUMBER/head" ;;
+    *) FM_PR_INSPECTION_REASON="forge provider is unsupported" ;;
   esac
+  if [ -z "$FM_PR_INSPECTION_REASON" ] \
+    && ! fm_pr_remote_matches_identity "$WT" "$FM_PR_HOST" "$FM_PR_PATH" "$probe_timeout"; then
+    FM_PR_INSPECTION_REASON="task worktree origin does not match the PR repository"
+  fi
+  if [ -z "$FM_PR_INSPECTION_REASON" ]; then
+    remote_state=$(fm_pr_remote_git "$probe_timeout" -C "$WT" \
+      ls-remote --symref origin HEAD "$source_ref" 2>/dev/null) \
+      || FM_PR_INSPECTION_REASON="origin did not expose its current default branch and PR head"
+  fi
+  if [ -z "$FM_PR_INSPECTION_REASON" ]; then
+    default_ref=$(printf '%s\n' "$remote_state" | awk '
+      $1 == "ref:" && $3 == "HEAD" { count++; value=$2 }
+      END { if (count == 1) print value; else exit 1 }
+    ') || default_ref=
+    case "$default_ref" in
+      refs/heads/*) ;;
+      *) FM_PR_INSPECTION_REASON="origin did not name its current default branch" ;;
+    esac
+  fi
+  if [ -z "$FM_PR_INSPECTION_REASON" ] \
+    && ! git check-ref-format "$default_ref" >/dev/null 2>&1; then
+    FM_PR_INSPECTION_REASON="origin named an invalid default branch"
+  fi
+  if [ -n "$FM_PR_INSPECTION_REASON" ]; then
+    printf 'error: refusing to merge %s because the merge-boundary repository state could not be read: %s\n' \
+      "$URL" "$FM_PR_INSPECTION_REASON" >&2
+    printf 'action: restore the task worktree and origin access, then retry the merge\n' >&2
+    return 1
+  fi
+
+  default_name=${default_ref#refs/heads/}
+  FM_PR_INSPECTED_DEFAULT=$default_name
+  if [ "$target" != "$default_name" ]; then
+    printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded merging is limited to current default branch %s\n' \
+      "$URL" "$([ "$PROVIDER" = github ] && printf GitHub || printf GitLab)" \
+      "${target:-unreadable}" "$FM_PR_INSPECTED_DEFAULT" >&2
+    printf 'action: retarget the PR to current default branch %s, bring the branch up to current %s, and re-run validation\n' \
+      "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_DEFAULT" >&2
+    return 1
+  fi
+
+  token="$$-${RANDOM:-0}"
+  base_ref="refs/fm-pr-merge/$token/base"
+  head_ref="refs/fm-pr-merge/$token/head"
+  if ! fm_pr_remote_git "$probe_timeout" -C "$WT" fetch --quiet --no-tags origin \
+    "+$default_ref:$base_ref" "+$source_ref:$head_ref" 2>/dev/null; then
+    git -C "$WT" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$WT" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    printf 'error: refusing to merge %s because the merge-boundary repository state could not be read: origin did not provide the current default branch and PR head\n' \
+      "$URL" >&2
+    printf 'action: restore the task worktree and origin access, then retry the merge\n' >&2
+    return 1
+  fi
+  base=$(git -C "$WT" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) || base=
+  head=$(git -C "$WT" rev-parse --verify "$head_ref^{commit}" 2>/dev/null) || head=
+  git -C "$WT" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+  git -C "$WT" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+  if ! fm_pr_head_valid "$base" || ! fm_pr_head_valid "$head"; then
+    printf 'error: refusing to merge %s because the merge-boundary repository state could not be read: fetched default branch or PR head is not a commit\n' \
+      "$URL" >&2
+    printf 'action: restore the task worktree and origin access, then retry the merge\n' >&2
+    return 1
+  fi
+  FM_PR_INSPECTED_HEAD=$head
+  FM_PR_INSPECTED_BASE=$base
 }
 
 FM_GITLAB_INITIAL_STATE=
@@ -714,7 +772,7 @@ verify_forge_inspected_identity() {
     *) return 1 ;;
   esac
   if [ "$target" != "$FM_PR_INSPECTED_DEFAULT" ]; then
-    printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded stale-base inspection is limited to current default branch %s\n' \
+    printf 'error: refusing to merge %s because %s reports actual target branch %s, but guarded merging is limited to current default branch %s\n' \
       "$URL" "$forge" "${target:-unreadable}" "$FM_PR_INSPECTED_DEFAULT" >&2
     printf 'action: retarget the PR to current default branch %s, bring the branch up to current %s, and re-run validation\n' \
       "$FM_PR_INSPECTED_DEFAULT" "$FM_PR_INSPECTED_DEFAULT" >&2
@@ -731,12 +789,12 @@ verify_forge_inspected_identity() {
     return 1
   fi
   if [ "$head_oid" != "$FM_PR_INSPECTED_HEAD" ]; then
-    printf 'error: refusing to merge %s because %s reports head OID %s but guarded inspection used %s\n' \
+    printf 'error: refusing to merge %s because %s reports head OID %s but the merge-boundary repository snapshot used %s\n' \
       "$URL" "$forge" "$head_oid" "$FM_PR_INSPECTED_HEAD" >&2
     return 1
   fi
   if [ "$base_oid" != "$FM_PR_INSPECTED_BASE" ]; then
-    printf 'error: refusing to merge %s because %s reports target branch %s at OID %s but guarded inspection used %s\n' \
+    printf 'error: refusing to merge %s because %s reports target branch %s at OID %s but the merge-boundary repository snapshot used %s\n' \
       "$URL" "$forge" "$target" "$base_oid" "$FM_PR_INSPECTED_BASE" >&2
     printf 'action: bring the branch up to current %s and re-run validation\n' \
       "$FM_PR_INSPECTED_DEFAULT" >&2
@@ -790,9 +848,9 @@ gitlab_confirm_merged() {
 
 verify_inspected_default_tip() {
   local remote_state live_ref live_tip
-  local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
+  local probe_timeout=${FM_PR_MERGE_PROBE_TIMEOUT:-15}
   case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=15 ;; esac
-  if ! remote_state=$(fm_pr_stale_base_remote_git "$probe_timeout" \
+  if ! remote_state=$(fm_pr_remote_git "$probe_timeout" \
     -C "$WT" ls-remote --symref origin HEAD 2>/dev/null); then
     printf 'error: refusing to merge %s because the current default-branch tip could not be re-read immediately before merge\n' \
       "$URL" >&2
@@ -837,7 +895,7 @@ case "$PROVIDER" in
       merge_args=(--squash)
     fi
     if [ "$github_preflight_rc" -eq 0 ]; then
-      inspect_current_default "$FM_GITHUB_BASE_REF" || exit 1
+      inspect_merge_boundary "$FM_GITHUB_BASE_REF" || exit 1
       github_args=()
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -867,7 +925,6 @@ case "$PROVIDER" in
           *) github_args+=("$1"); shift ;;
         esac
       done
-      verify_inspected_default_tip || exit 1
       github_preflight_rc=0
       github_require_immediate_execution || github_preflight_rc=$?
       case "$github_preflight_rc" in
@@ -875,6 +932,7 @@ case "$PROVIDER" in
           verify_forge_inspected_identity || exit 1
           # A sub-second residual window remains because neither forge exposes an
           # expected-base parameter; this guard narrows rather than eliminates it.
+          verify_inspected_default_tip || exit 1
           GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" \
             --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" \
             --match-head-commit "$FM_PR_INSPECTED_HEAD" \
@@ -898,13 +956,10 @@ case "$PROVIDER" in
     case "$FM_GITLAB_INITIAL_STATE" in
       merged) ;;
       opened|closed)
-        inspect_current_default "$FM_GITLAB_INITIAL_TARGET" || exit 1
+        inspect_merge_boundary "$FM_GITLAB_INITIAL_TARGET" || exit 1
         gitlab_attempt=1
         while :; do
           gitlab_require_attested_merge || exit 1
-          # A sub-second residual window remains because neither forge exposes an
-          # expected-base parameter; this guard narrows rather than eliminates it.
-          verify_inspected_default_tip || exit 1
           gitlab_verify_rc=0
           gitlab_verify_mergeable || gitlab_verify_rc=$?
           case "$gitlab_verify_rc" in
@@ -914,12 +969,12 @@ case "$PROVIDER" in
                 echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
                 exit 1
               fi
-              inspect_current_default "$FM_PR_MERGE_TARGET" || exit 1
+              inspect_merge_boundary "$FM_PR_MERGE_TARGET" || exit 1
               FM_PR_MERGE_LIVE_HEAD=
               gitlab_attempt=2
               ;;
             5)
-              inspect_current_default "$FM_PR_MERGE_TARGET" || exit 1
+              inspect_merge_boundary "$FM_PR_MERGE_TARGET" || exit 1
               exit 1
               ;;
             *) exit 1 ;;
@@ -927,6 +982,9 @@ case "$PROVIDER" in
         done
         if [ "$gitlab_verify_rc" -eq 0 ]; then
           verify_forge_inspected_identity || exit 1
+          # A sub-second residual window remains because neither forge exposes an
+          # expected-base parameter; this guard narrows rather than eliminates it.
+          verify_inspected_default_tip || exit 1
           # --sha binds the merge to the head this run verified, so a push that lands
           # in between is refused by GitLab instead of merged unverified. --yes only
           # skips the interactive confirmation, which no supervised run can answer;

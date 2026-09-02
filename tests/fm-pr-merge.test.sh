@@ -49,18 +49,14 @@
 #   (gg) a post-command queued GitLab merge is a refusal and leaves its poll armed
 #   (hh) an uncommitted marker retry never loses the durable outcome
 #   (ii) distinct merged PRs for a reused task each survive queue deduplication
-#   (jj) a stale PR that omits a file added to the current default branch is
-#        refused before the forge merge call and names the omitted content
-#   (kk) an unavailable default-branch comparison fails closed and tells the
-#        operator to restore the inputs instead of offering a bypass
-#   (ll) non-allowlisted merge flags are refused before recording or comparison
+#   (jj) non-allowlisted merge flags are refused before recording or inspection
 #        because unbounded passthrough cannot guarantee immediate execution
-#   (mm) a GitHub merge queue or unreadable immediacy state refuses before the
+#   (kk) a GitHub merge queue or unreadable immediacy state refuses before the
 #        forge call because neither can prove immediate execution
-#   (nn) both providers re-read the default tip immediately before the forge
-#        call and refuse when it moved since the guarded comparison
-#   (oo) GitHub body-file input is materialized and size-bounded before that
-#        final tip read, so external input cannot reopen the stale-base race
+#   (ll) both providers re-read the default tip immediately before the forge
+#        call and refuse when it moved since the repository snapshot
+#   (mm) GitHub body-file input is materialized and size-bounded before that
+#        final tip read, so external input cannot widen the residual race
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -83,11 +79,7 @@ make_case() {
   git init -q --bare --initial-branch=main "$origin"
   git init -q --initial-branch=main "$case_dir/wt"
   printf 'shared base\n' >"$case_dir/wt/shared.txt"
-  printf 'delete me\n' >"$case_dir/wt/presence-delete.txt"
-  printf '#!/bin/sh\nexit 0\n' >"$case_dir/wt/mode.sh"
-  printf 'plain file\n' >"$case_dir/wt/type.txt"
-  printf 'old first\nold second\n' >"$case_dir/wt/replace.txt"
-  git -C "$case_dir/wt" add shared.txt presence-delete.txt mode.sh type.txt replace.txt
+  git -C "$case_dir/wt" add shared.txt
   git -C "$case_dir/wt" commit -qm 'seed shared base'
   git -C "$case_dir/wt" remote add origin "$origin"
   git -C "$case_dir/wt" push -q -u origin main
@@ -135,30 +127,13 @@ SH
   printf '%s\n' "$case_dir"
 }
 
-# Build the stale topology from the 2026-09-02 incidents: the task branch and
-# the default branch share an old base, then the default branch gains a file the
-# task branch never touched while the task's own change and green head remain
-# unchanged.
-make_stale_case() {
-  local name=$1 case_dir origin default_wt
-  case_dir=$(make_case "$name")
-  origin="$case_dir/origin.git"
-  default_wt="$case_dir/default-wt"
-  git clone -q "$origin" "$default_wt"
-  printf 'published while the PR waited\n' >"$default_wt/published.md"
-  git -C "$default_wt" add published.md
-  git -C "$default_wt" commit -qm 'publish current-only content'
-  git -C "$default_wt" push -q origin main
-  printf '%s\n' "$case_dir"
-}
-
 prepare_advanced_default() {
   local case_dir=$1 advanced_wt
   advanced_wt="$case_dir/advanced-default-wt"
   git clone -q "$case_dir/origin.git" "$advanced_wt"
-  printf 'landed after guarded comparison\n' >"$advanced_wt/late-default.txt"
+  printf 'landed after repository snapshot\n' >"$advanced_wt/late-default.txt"
   git -C "$advanced_wt" add late-default.txt
-  git -C "$advanced_wt" commit -qm 'advance default after comparison'
+  git -C "$advanced_wt" commit -qm 'advance default after snapshot'
   git -C "$advanced_wt" push -q origin HEAD:refs/fm-test/advanced-base
   git -C "$advanced_wt" rev-parse HEAD
 }
@@ -377,6 +352,10 @@ case "${1:-} ${2:-}" in
         fi
         ;;
     esac
+    if [ -n "${FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL:-}" ]; then
+      "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
+        refs/heads/main "$FM_TEST_ADVANCED_BASE"
+    fi
     sed -e "s/__TASK_HEAD__/$task_head/g" \
       -e "s/__DEFAULT_HEAD__/$default_head/g" "$FM_TEST_GLAB_JSON"
     exit 0
@@ -647,81 +626,6 @@ test_records_pr_and_head_before_merging() {
   pass "fm-pr-merge records the PR and binds GitHub merge to the inspected head"
 }
 
-test_stale_pr_retains_untouched_default_addition() {
-  local case_dir head rc
-  case_dir=$(make_stale_case stale-pr-refusal)
-  head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  add_gh_mocks "$case_dir" "$head"
-  : >"$case_dir/gh-axi.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/73 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 0 "$rc" "stale-pr-refusal: retained default content should merge"
-  assert_no_grep 'would delete or replace content' "$case_dir/stderr" \
-    "stale-pr-refusal: retained default content was reported as lost"
-  assert_grep 'pr merge 73 ' "$case_dir/gh.log" \
-    "stale-pr-refusal: a safe stale PR did not reach the merge boundary"
-  pass "fm-pr-merge permits default additions retained by the merge"
-}
-
-test_pathspec_magic_default_addition_is_retained() {
-  local case_dir default_wt head rc
-  case_dir=$(make_case stale-pathspec-magic)
-  default_wt="$case_dir/default-pathspec-wt"
-  git clone -q "$case_dir/origin.git" "$default_wt"
-  printf 'published while the PR waited\n' >"$default_wt/:(glob)*"
-  git -C "$default_wt" add -A
-  git -C "$default_wt" commit -qm 'publish pathspec-named content'
-  git -C "$default_wt" push -q origin main
-  head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  add_gh_mocks "$case_dir" "$head"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/79 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 0 "$rc" "stale-pathspec-magic: retained pathspec-named content should merge"
-  assert_no_grep 'would delete or replace content' "$case_dir/stderr" \
-    "stale-pathspec-magic: retained pathspec-named content was reported as lost"
-  assert_grep 'pr merge 79 ' "$case_dir/gh.log" \
-    "stale-pathspec-magic: a safe pathspec-named addition did not reach the merge boundary"
-  pass "literal pathspec filenames retained by the merge are accepted"
-}
-
-test_unavailable_stale_comparison_refuses_before_merging() {
-  local case_dir rc
-  case_dir=$(make_case unavailable-stale-comparison)
-  fm_write_meta "$case_dir/state/task-x1.meta" \
-    "window=fm-task-x1" \
-    "worktree=$case_dir/missing-wt" \
-    "project=$case_dir/project" \
-    "kind=ship" \
-    "mode=no-mistakes"
-  add_gh_mocks "$case_dir" 1212121212121212121212121212121212121212
-  : >"$case_dir/gh-axi.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/74 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "unavailable-stale-comparison: fm-pr-merge should refuse"
-  assert_grep 'refusing to merge https://github.com/example/repo/pull/74 because it could not be compared' "$case_dir/stderr" \
-    "unavailable-stale-comparison: refusal did not name the failed safety check"
-  assert_grep 'restore the task worktree and origin access, then retry the merge' "$case_dir/stderr" \
-    "unavailable-stale-comparison: refusal did not name the recovery action"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "unavailable-stale-comparison: gh pr merge ran without a comparison"
-  pass "fm-pr-merge fails closed when the current-default comparison is unavailable"
-}
-
 test_mismatched_repository_refuses_before_merging() {
   local case_dir origin rc
   case_dir=$(make_case mismatched-repository)
@@ -742,7 +646,7 @@ test_mismatched_repository_refuses_before_merging() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "mismatched-repository: GitHub merge reached the wrong repository boundary"
   assert_present "$case_dir/state/task-x1.check.sh" \
-    "mismatched-repository: record-time warning prevented the durable poll"
+    "mismatched-repository: merge refusal retired the durable poll"
   pass "fm-pr-merge refuses when task origin and PR repository identities differ"
 }
 
@@ -837,7 +741,7 @@ SH
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "ssh-hostname-override: merge crossed the effective SSH host boundary"
   assert_present "$case_dir/state/task-x1.check.sh" \
-    "ssh-hostname-override: record-time warning prevented the durable poll"
+    "ssh-hostname-override: merge refusal retired the durable poll"
   pass "effective SSH host overrides cannot bypass repository binding"
 }
 
@@ -855,7 +759,7 @@ SH
 
   started=$SECONDS
   set +e
-  FM_PR_STALE_BASE_TIMEOUT=1 FM_TIMEOUT_KILL_GRACE=1 \
+  FM_PR_MERGE_PROBE_TIMEOUT=1 FM_TIMEOUT_KILL_GRACE=1 \
     run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/86 \
       >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
@@ -871,131 +775,7 @@ SH
     "ssh-config-timeout: merge ran after SSH configuration resolution timed out"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "ssh-config-timeout: timeout prevented the durable poll"
-  pass "SSH configuration resolution obeys the stale-base probe timeout"
-}
-
-test_multiple_merge_bases_refuse_comparison() {
-  local a1 a2 b1 b2 case_dir root tree rc
-  case_dir=$(make_case multiple-merge-bases)
-  root=$(git -C "$case_dir/wt" rev-parse main)
-  tree=$(git -C "$case_dir/wt" rev-parse "$root^{tree}")
-  a1=$(printf 'first side\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$root")
-  b1=$(printf 'second side\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$root")
-  a2=$(printf 'first merge\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$a1" -p "$b1")
-  b2=$(printf 'second merge\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$b1" -p "$a1")
-  git -C "$case_dir/wt" push -q --force origin "$a2:refs/heads/main"
-  git -C "$case_dir/wt" switch -q --detach "$b2"
-  add_gh_mocks "$case_dir" "$b2"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/87 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "multiple-merge-bases: fm-pr-merge should refuse"
-  assert_grep 'multiple best merge bases' "$case_dir/stderr" \
-    "multiple-merge-bases: ambiguous comparison was not reported"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "multiple-merge-bases: ambiguous history reached the forge merge"
-  assert_present "$case_dir/state/task-x1.check.sh" \
-    "multiple-merge-bases: comparison refusal prevented the durable poll"
-  pass "multiple best merge bases fail the stale-base comparison closed"
-}
-
-test_stale_details_name_presence_content_type_and_mode_losses() {
-  local case_dir default_wt head rc
-  case_dir=$(make_case stale-detail-kinds)
-  default_wt="$case_dir/default-detail-wt"
-  git clone -q "$case_dir/origin.git" "$default_wt"
-  : >"$default_wt/empty-added.txt"
-  rm "$default_wt/presence-delete.txt"
-  chmod +x "$default_wt/mode.sh"
-  rm "$default_wt/type.txt"
-  ln -s shared.txt "$default_wt/type.txt"
-  printf 'new first\nnew third\n' >"$default_wt/replace.txt"
-  git -C "$default_wt" add -A
-  git -C "$default_wt" commit -qm 'change every stale detail kind'
-  git -C "$default_wt" push -q origin main
-  git -C "$case_dir/wt" fetch -q origin main
-  git -C "$case_dir/wt" rebase -q origin/main
-  rm "$case_dir/wt/empty-added.txt"
-  printf 'delete me\n' >"$case_dir/wt/presence-delete.txt"
-  chmod 0644 "$case_dir/wt/mode.sh"
-  rm "$case_dir/wt/type.txt"
-  printf 'plain file\n' >"$case_dir/wt/type.txt"
-  printf 'old first\nold second\n' >"$case_dir/wt/replace.txt"
-  git -C "$case_dir/wt" add -A
-  git -C "$case_dir/wt" commit -qm 'restore stale file states'
-  head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  add_gh_mocks "$case_dir" "$head"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/77 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "stale-detail-kinds: fm-pr-merge should refuse"
-  assert_grep 'mode.sh: merge would change current default mode from 100755 to 100644' "$case_dir/stderr" \
-    "stale-detail-kinds: executable-mode loss was inaccurate"
-  assert_grep 'type.txt: merge would change current default type from symbolic link to regular file' "$case_dir/stderr" \
-    "stale-detail-kinds: file-type loss was inaccurate"
-  assert_grep 'replace.txt: merge would replace 2 lines from current default with 2 lines' "$case_dir/stderr" \
-    "stale-detail-kinds: replacement content loss was inaccurate"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "stale-detail-kinds: a stale detail case reached the forge merge"
-  pass "stale refusal accurately names content, type, and mode losses"
-}
-
-test_stale_submodule_update_names_both_commits() {
-  local case_dir default_wt head new_oid old_oid rc subrepo
-  case_dir=$(make_case stale-submodule-update)
-  subrepo="$case_dir/subrepo"
-  git init -q --initial-branch=main "$subrepo"
-  printf 'old submodule content\n' >"$subrepo/content.txt"
-  git -C "$subrepo" add content.txt
-  git -C "$subrepo" commit -qm 'old submodule commit'
-  old_oid=$(git -C "$subrepo" rev-parse HEAD)
-  printf 'new submodule content\n' >"$subrepo/content.txt"
-  git -C "$subrepo" commit -qam 'new submodule commit'
-  new_oid=$(git -C "$subrepo" rev-parse HEAD)
-
-  git -C "$case_dir/wt" switch -q main
-  git -C "$case_dir/wt" update-index --add \
-    --cacheinfo "160000,$old_oid,modules/dependency"
-  git -C "$case_dir/wt" commit -qm 'add shared submodule revision'
-  git -C "$case_dir/wt" push -q origin main
-  git -C "$case_dir/wt" switch -q task
-  git -C "$case_dir/wt" rebase -q main
-
-  default_wt="$case_dir/default-submodule-wt"
-  git clone -q "$case_dir/origin.git" "$default_wt"
-  git -C "$default_wt" update-index \
-    --cacheinfo "160000,$new_oid,modules/dependency"
-  git -C "$default_wt" commit -qm 'advance submodule revision'
-  git -C "$default_wt" push -q origin main
-  git -C "$case_dir/wt" fetch -q origin main
-  git -C "$case_dir/wt" rebase -q origin/main
-  git -C "$case_dir/wt" update-index \
-    --cacheinfo "160000,$old_oid,modules/dependency"
-  git -C "$case_dir/wt" commit -qm 'restore stale submodule revision'
-  head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  add_gh_mocks "$case_dir" "$head"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/84 \
-    >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "stale-submodule-update: fm-pr-merge should refuse"
-  assert_grep "modules/dependency: merge would replace current default submodule commit $new_oid with $old_oid" \
-    "$case_dir/stderr" \
-    "stale-submodule-update: refusal did not name both submodule commits"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "stale-submodule-update: an omitted submodule update reached the forge"
-  pass "stale submodule updates name both commit identities"
+  pass "SSH configuration resolution obeys the merge probe timeout"
 }
 
 test_github_head_race_is_rejected_by_the_forge_binding() {
@@ -1044,8 +824,8 @@ SH
   assert_grep "pr merge 78 --repo github.com/example/repo --match-head-commit $h1" "$case_dir/gh.log" \
     "github-head-race: merge was not bound to the inspected head"
   assert_absent "$case_dir/merged" \
-    "github-head-race: the replacement head merged without stale-base inspection"
-  pass "GitHub rejects a replacement head that did not pass stale-base inspection"
+    "github-head-race: the replacement head merged without repository inspection"
+  pass "GitHub rejects a replacement head that was not inspected"
 }
 
 test_merge_failure_propagates_after_recording() {
@@ -1187,7 +967,7 @@ test_non_allowlisted_repo_arg_refuses_before_recording() {
   pass "fm-pr-merge refuses a non-allowlisted repository argument before recording state"
 }
 
-test_non_allowlisted_merge_args_refuse_before_recording_or_comparison() {
+test_non_allowlisted_merge_args_refuse_before_recording_or_inspection() {
   local case_dir flag name rc url
   set -- \
     'github|https://github.com/right/repo/pull/5|--auto' \
@@ -1242,7 +1022,7 @@ test_non_allowlisted_merge_args_refuse_before_recording_or_comparison() {
         || fail "deferred-$name: GitLab was invoked despite $flag"
     fi
   done
-  pass "fm-pr-merge refuses non-allowlisted merge flags before recording or comparison"
+  pass "fm-pr-merge refuses non-allowlisted merge flags before recording or inspection"
 }
 
 test_github_immediate_execution_preflight_refuses_queue_and_unknown() {
@@ -1302,7 +1082,7 @@ test_default_tip_move_refuses_both_forges() {
     new_tip=$(prepare_advanced_default "$case_dir")
 
     set +e
-    FM_TEST_ADVANCE_DEFAULT_ON_LS_REMOTE=3 FM_TEST_ADVANCED_BASE=$new_tip \
+    FM_TEST_ADVANCE_DEFAULT_ON_LS_REMOTE=2 FM_TEST_ADVANCED_BASE=$new_tip \
       run_pr_merge "$case_dir" task-x1 "$url" \
         >"$case_dir/stdout" 2>"$case_dir/stderr"
     rc=$?
@@ -1354,12 +1134,12 @@ test_forge_oid_mismatch_and_unknown_refuse_before_merge() {
     set +e
     case "$name" in
       github-head)
-        expected="GitHub reports head OID $forge_oid but guarded inspection used"
+        expected="GitHub reports head OID $forge_oid but the merge-boundary repository snapshot used"
         FM_TEST_GH_HEAD_OID=$forge_oid run_pr_merge "$case_dir" task-x1 "$url" \
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
       github-base)
-        expected="GitHub reports target branch main at OID $forge_oid but guarded inspection used"
+        expected="GitHub reports target branch main at OID $forge_oid but the merge-boundary repository snapshot used"
         FM_TEST_GH_BASE_OID=$forge_oid run_pr_merge "$case_dir" task-x1 "$url" \
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
@@ -1369,7 +1149,7 @@ test_forge_oid_mismatch_and_unknown_refuse_before_merge() {
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
       gitlab-base)
-        expected="GitLab reports target branch main at OID $forge_oid but guarded inspection used"
+        expected="GitLab reports target branch main at OID $forge_oid but the merge-boundary repository snapshot used"
         run_pr_merge "$case_dir" task-x1 "$url" \
           >"$case_dir/stdout" 2>"$case_dir/stderr"
         ;;
@@ -1451,6 +1231,7 @@ test_final_github_preflight_cannot_reopen_default_tip_race() {
 
   set +e
   FM_TEST_ADVANCE_DEFAULT_ON_GRAPHQL=2 FM_TEST_ADVANCED_BASE=$new_tip \
+    FM_TEST_GH_BASE_OID=$old_tip \
     run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/83 \
       >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
@@ -1459,12 +1240,34 @@ test_final_github_preflight_cannot_reopen_default_tip_race() {
   expect_code 1 "$rc" "final-preflight-default-tip-race: moving main should refuse"
   [ "$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)" = "$new_tip" ] \
     || fail "final-preflight-default-tip-race: the GraphQL preflight did not advance main"
-  assert_grep "GitHub reports target branch main at OID $new_tip but guarded inspection used $old_tip" \
+  assert_grep "current default branch main moved from inspected tip $old_tip to live tip $new_tip" \
     "$case_dir/stderr" \
-    "final-preflight-default-tip-race: forge OID binding missed the preflight move"
+    "final-preflight-default-tip-race: final tip verification missed the preflight move"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "final-preflight-default-tip-race: the forge ran after main moved during preflight"
   pass "GitHub preflight cannot reopen the final default-tip race"
+}
+
+test_final_gitlab_preflight_cannot_reopen_default_tip_race() {
+  local case_dir new_tip old_tip rc
+  case_dir=$(make_gitlab_case final-gitlab-preflight-default-tip-race)
+  old_tip=$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)
+  new_tip=$(prepare_advanced_default "$case_dir")
+
+  set +e
+  FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL=1 FM_TEST_ADVANCED_BASE=$new_tip \
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "final-gitlab-preflight-default-tip-race: moving main should refuse"
+  assert_grep "current default branch main moved from inspected tip $old_tip to live tip $new_tip" \
+    "$case_dir/stderr" \
+    "final-gitlab-preflight-default-tip-race: final tip verification missed the preflight move"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "final-gitlab-preflight-default-tip-race: the forge ran after main moved during preflight"
+  pass "GitLab preflight cannot reopen the final default-tip race"
 }
 
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck() {
@@ -1529,7 +1332,8 @@ SH
   writer=$!
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/80 -- \
+  FM_TEST_GH_BASE_OID=$old_tip \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/80 -- \
     --body-file "$case_dir/body.fifo" >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
   wait "$writer"
@@ -1546,7 +1350,7 @@ SH
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "body-file-tip-race: the forge ran after default moved during body input"
   assert_absent "$case_dir/merged" \
-    "body-file-tip-race: a body-file delay reopened the stale-base merge race"
+    "body-file-tip-race: a body-file delay widened the residual merge race"
 
   case_dir=$(make_case body-file-byte-bound)
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
@@ -3060,17 +2864,11 @@ test_secondmate_without_parent_binding_is_loud() {
 }
 
 test_records_pr_and_head_before_merging
-test_stale_pr_retains_untouched_default_addition
-test_pathspec_magic_default_addition_is_retained
-test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
 test_supported_origin_spellings_preserve_repository_binding
 test_ssh_resolution_preserves_origin_user_and_port
 test_ssh_hostname_override_refuses_repository_binding
 test_ssh_config_resolution_is_bounded
-test_multiple_merge_bases_refuse_comparison
-test_stale_details_name_presence_content_type_and_mode_losses
-test_stale_submodule_update_names_both_commits
 test_github_head_race_is_rejected_by_the_forge_binding
 test_merge_failure_propagates_after_recording
 test_allowlisted_merge_args_forwarded
@@ -3078,12 +2876,13 @@ test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_non_allowlisted_repo_arg_refuses_before_recording
-test_non_allowlisted_merge_args_refuse_before_recording_or_comparison
+test_non_allowlisted_merge_args_refuse_before_recording_or_inspection
 test_github_immediate_execution_preflight_refuses_queue_and_unknown
 test_default_tip_move_refuses_both_forges
 test_forge_oid_mismatch_and_unknown_refuse_before_merge
 test_non_default_targets_refuse_both_forges
 test_final_github_preflight_cannot_reopen_default_tip_race
+test_final_gitlab_preflight_cannot_reopen_default_tip_race
 test_body_file_is_materialized_and_bounded_before_the_tip_recheck
 test_body_file_materialization_rechecks_immediate_execution
 test_non_allowlisted_short_args_refuse_before_recording
